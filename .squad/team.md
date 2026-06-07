@@ -54,6 +54,14 @@
 - Changes to the SquadScope integration contract or response shape
 - Anything touching distribution rights/licensing
 
+## Issue Source
+
+**Repository:** jmservera/SquadScope-Podcaster  
+**Connected:** 2026-06-07  
+**Platform:** GitHub  
+**Filters:**
+- Labels: `squad`
+
 ## Project Context
 
 - **Owner:** jmservera
