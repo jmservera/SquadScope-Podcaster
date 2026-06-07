@@ -1,0 +1,53 @@
+# Product Requirements: SquadScope Podcaster
+
+## Summary
+
+SquadScope Podcaster is a separate Azure-hosted service that turns a published SquadScope article into podcast production artifacts. It is intentionally separated from the main SquadScope publishing pipeline so podcast work can evolve independently and never block article publishing.
+
+## Goals
+
+- Accept a post-publish article URL or artifact reference from SquadScope.
+- Create a podcast generation job and return stable artifact URLs.
+- Produce a reviewed script, transcript, show notes, publishing packet, and audio files in later iterations.
+- Stage artifacts in Azure Blob Storage with expiring access URLs or controlled access.
+- Keep the initial Spotify or podcast-host publishing workflow manual.
+- Provide a simple endpoint/key contract for SquadScope integration.
+
+## Non-goals
+
+- No change to the existing SquadScope article publishing process.
+- No website audio hosting or embedded audio player in SquadScope for the initial release.
+- No claim that Spotify supports direct podcast upload automation until researched.
+- No generated audio files in source control.
+
+## Users
+
+- SquadScope maintainers triggering podcast generation after publication.
+- Human editors reviewing scripts, show notes, and publishing packets.
+- Future distribution operators publishing to Spotify or a podcast host.
+
+## Functional requirements
+
+1. Provide `POST /api/generate` with API-key authentication.
+2. Validate required fields: `week` and `article_url`.
+3. Accept optional `article_sha256`, `source_artifacts`, `dry_run`, `force`, and `callback` fields.
+4. Return `job_id`, `status`, artifact URLs, expiration time, warnings, and errors.
+5. Stage artifacts in Azure Blob Storage when generation is implemented.
+6. Preserve traceability from article URL and hash to podcast artifacts.
+7. Include a human review gate before public publishing.
+
+## Quality requirements
+
+- Secrets are stored in GitHub Actions secrets or Azure app settings, never in code.
+- Logs must not include API keys.
+- API responses must have deterministic shape for caller automation.
+- CI must run validation tests.
+
+## Milestones
+
+1. Contract scaffold: API validates input and returns stub accepted/completed responses.
+2. Blob staging: write manifest and packet placeholders to Azure Blob Storage.
+3. TTS bakeoff: compare providers, cost, quality, rights, and operational fit.
+4. Human review gate: editor approval before final artifact release.
+5. Manual publishing packet: package all content needed for human publication.
+6. Distribution research: evaluate Spotify and podcast-host automation options.

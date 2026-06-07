@@ -1,0 +1,112 @@
+name: Deploy Azure
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync_squadscope:
+        description: 'Sync endpoint variable and API key secret to jmservera/SquadScope when SQUADSCOPE_SYNC_TOKEN is configured'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_FUNCTION_APP_NAME: ${{ vars.AZURE_FUNCTION_APP_NAME }}
+      AZURE_STORAGE_ACCOUNT_NAME: ${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
+    outputs:
+      endpoint: ${{ steps.deploy_bicep.outputs.endpoint }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate configuration
+        env:
+          PODCASTER_API_KEY: ${{ secrets.PODCASTER_API_KEY }}
+        run: |
+          test -n "${{ vars.AZURE_CLIENT_ID }}"
+          test -n "${{ vars.AZURE_TENANT_ID }}"
+          test -n "${{ vars.AZURE_SUBSCRIPTION_ID }}"
+          test -n "$AZURE_LOCATION"
+          test -n "$AZURE_RESOURCE_GROUP"
+          test -n "$AZURE_FUNCTION_APP_NAME"
+          test -n "$AZURE_STORAGE_ACCOUNT_NAME"
+          test -n "$PODCASTER_API_KEY"
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create resource group
+        run: |
+          az group create \
+            --name "$AZURE_RESOURCE_GROUP" \
+            --location "$AZURE_LOCATION" \
+            --output none
+
+      - name: Deploy infrastructure
+        id: deploy_bicep
+        env:
+          PODCASTER_API_KEY: ${{ secrets.PODCASTER_API_KEY }}
+        run: |
+          set +x
+          endpoint=$(az deployment group create \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters location="$AZURE_LOCATION" \
+            --parameters functionAppName="$AZURE_FUNCTION_APP_NAME" \
+            --parameters storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
+            --parameters podcasterApiKey="$PODCASTER_API_KEY" \
+            --query properties.outputs.endpoint.value \
+            --output tsv)
+          echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
+          echo "### Podcaster integration" >> "$GITHUB_STEP_SUMMARY"
+          echo "Endpoint: \`$endpoint\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "API key: stored in secrets; not printed." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies for package
+        run: |
+          python -m pip install --upgrade pip
+          pip install --target=".python_packages/lib/site-packages" -r requirements.txt
+
+      - name: Deploy Function App package
+        run: |
+          zip -r app.zip function_app.py host.json podcaster .python_packages -x '*.pyc' '*/__pycache__/*'
+          az functionapp deployment source config-zip \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_FUNCTION_APP_NAME" \
+            --src app.zip \
+            --build-remote false \
+            --output none
+
+      - name: Optionally sync values to SquadScope
+        if: ${{ inputs.sync_squadscope == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.SQUADSCOPE_SYNC_TOKEN }}
+          ENDPOINT: ${{ steps.deploy_bicep.outputs.endpoint }}
+          PODCASTER_API_KEY: ${{ secrets.PODCASTER_API_KEY }}
+        run: |
+          set +x
+          if [ -z "$GH_TOKEN" ]; then
+            echo "SquadScope sync requested but SQUADSCOPE_SYNC_TOKEN is not configured." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh variable set PODCASTER_ENDPOINT --repo jmservera/SquadScope --body "$ENDPOINT"
+          printf '%s' "$PODCASTER_API_KEY" | gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope
+          echo "Synced PODCASTER_ENDPOINT variable and PODCASTER_API_KEY secret to jmservera/SquadScope." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,9 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "PODCASTER_API_KEY": "local-dev-key",
+    "PODCASTER_ARTIFACT_BASE_URL": "https://example.invalid/podcaster-stub"
+  }
+}

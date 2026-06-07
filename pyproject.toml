@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "squadscope-podcaster"
+version = "0.1.0"
+description = "Azure Functions API scaffold for SquadScope podcast generation."
+requires-python = ">=3.11"
+dependencies = ["azure-functions>=1.20,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

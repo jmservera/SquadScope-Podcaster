@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+local.settings.json
+.python_packages/
+.funcignore
+.DS_Store
+*.log
+*.mp3
+*.wav
+*.zip
