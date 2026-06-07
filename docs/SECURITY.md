@@ -46,16 +46,38 @@ A second Azure federated identity is **not** useful for writing GitHub secrets o
 - Permissions: no subscription Contributor/Owner and no Storage roles; grant only the app role or Function/App Service authentication audience needed to invoke `/api/generate`.
 - Compatibility: keep `x-podcaster-api-key` until SquadScope has deployed and verified OIDC token acquisition and Podcaster validates it without logging token contents.
 
-### Azure Resource Secrets (Deployment Only)
+### Azure Resource Access (Deployment Only)
 
-- **Storage Account Key**: Used by the Bicep deployment to configure the Function App's `AzureWebJobsStorage` connection string.
-  - Never committed to git.
-  - Never printed by workflow steps (masked by GitHub Actions).
-  - Only passed as a secure parameter to Bicep.
+- **Function host storage**: `AzureWebJobsStorage` uses identity-based service URI settings, not an account-key connection string.
+  - No Storage Account key is committed, printed, or passed through workflow logs.
+  - The Function App's system-assigned managed identity receives storage data-plane roles required by the Functions host.
+
+- **Function package deployment**: GitHub Actions uploads `app.zip` to a private blob container using OIDC/Entra auth.
+  - The deploy identity receives `Storage Blob Data Contributor` on the Storage Account for package upload.
+  - `WEBSITE_RUN_FROM_PACKAGE` is set to a private blob URL with managed-identity package access, not a bearer SAS URL.
+  - Storage Account keys and unsupported zipdeploy/config-zip paths are not used.
 
 - **`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`**: OIDC federation credentials for GitHub Actions.
   - Stored as repository variables (not secrets—these are non-sensitive in OIDC flow).
   - GitHub Actions exchanges these for a short-lived Azure access token; the token is never committed.
+
+### Durable GitHub Actions Package Deployment Gate
+
+The production deploy workflow must use the working OIDC + private blob package path. `az functionapp deployment source config-zip` and `az webapp deploy --type zip` are not approved for this environment.
+
+- **GitHub Actions permissions:** minimum workflow token permissions are:
+  - `contents: read` for checkout and packaging source code.
+  - `id-token: write` for Azure OIDC login.
+  - No `actions`, `checks`, `deployments`, `issues`, `packages`, or `pull-requests` permissions unless a later step explicitly proves need. Optional SquadScope sync must continue to use the separate tightly scoped `SQUADSCOPE_SYNC_TOKEN`, not broaden `GITHUB_TOKEN`.
+- **Azure deploy identity:** use Entra/OIDC only; no Azure client secrets and no Storage Account keys.
+  - Management-plane rights must cover the existing deployment needs: create/update the target resource group resources, deploy Bicep, update Function App settings, and restart the Function App.
+  - If the workflow creates role assignments from Bicep, the identity also needs role-assignment rights at the target scope (for example Owner/User Access Administrator during bootstrap, then reduce after roles exist).
+  - Data-plane access to the package container requires `Storage Blob Data Contributor` or narrower equivalent at the storage account/container scope so the workflow can upload package blobs.
+- **Run-from-package managed identity:** `WEBSITE_RUN_FROM_PACKAGE` uses a private blob URL without a SAS query string. `WEBSITE_USE_MANAGED_IDENTITY=true` and `WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned` make the Function App use its managed identity to read the package.
+  - The Function App identity must have blob read access to the package container or storage account. Current Bicep grants Storage Blob Data Owner on the account for host/artifact needs, which also permits package reads.
+  - Use HTTPS only and keep Storage public blob access disabled.
+  - Disable shell tracing around package deployment, use Azure CLI `--output none` where possible, and never write bearer credentials to step summaries, artifacts, PR comments, or logs.
+- **Merge blocker:** any final workflow that prints SAS/API keys, uses Storage Account keys for deployment, omits data-plane RBAC for package upload/read, or retains the unsupported zip deployment commands is blocked.
 
 ## Logging & Observability Policy
 
@@ -90,7 +112,8 @@ A second Azure federated identity is **not** useful for writing GitHub secrets o
 
 **Azure deployment path:**
 - Podcaster Function App uses **managed identity** to access the Storage Account when Azure storage settings are configured.
-- The Bicep template already assigns `Storage Blob Data Contributor` role to the Function App's system-assigned managed identity (line 117–125, `main.bicep`).
+- The Bicep template assigns Storage Blob Data Owner plus Queue/Table Data Contributor roles to the Function App's system-assigned managed identity for identity-based Functions host storage and artifact writes.
+- The deploy workflow stages Function App ZIP packages in a separate private `function-packages` container via Entra-authenticated blob upload, then configures managed-identity package reads for `WEBSITE_RUN_FROM_PACKAGE`.
 - **Returned URLs must be short-lived SAS URLs or private URLs brokered by managed identity**, never public storage URLs.
 - The Storage Account has `allowBlobPublicAccess: false` to enforce private-by-default.
 
@@ -311,6 +334,7 @@ Use this checklist before marking a release as ready for SquadScope consumption:
 - [ ] No secrets appear in workflow logs, summaries, or artifacts.
 - [ ] The deploy workflow validates required variables before proceeding and does not require optional app/storage names or a pre-existing API key.
 - [ ] OIDC federation is configured and working (no long-lived Azure credentials stored).
+- [ ] Function package deployment uses private run-from-package blob upload with `--auth-mode login` and managed-identity package reads; no package SAS URL or storage key is emitted.
 - [ ] The Function App is deployed with HTTPS-only and `minimumTlsVersion: TLS1_2`.
 
 ### 2. API Security ✓
@@ -330,7 +354,7 @@ Use this checklist before marking a release as ready for SquadScope consumption:
 ### 4. Artifact Staging ✓
 
 - [ ] The Storage Account has `allowBlobPublicAccess: false`.
-- [ ] The Function App's system-assigned managed identity has `Storage Blob Data Contributor` role.
+- [ ] The Function App's system-assigned managed identity has Storage Blob Data Owner plus Queue/Table Data Contributor roles.
 - [ ] (Future) Returned artifact URLs are short-lived SAS URLs or brokered by managed identity.
 - [ ] (Future) Lifecycle management or a cleanup job deletes expired artifacts after 7 days.
 

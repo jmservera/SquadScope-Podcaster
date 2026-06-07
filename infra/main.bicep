@@ -29,7 +29,14 @@ param artifactBaseUrl string = 'https://example.invalid/podcaster-stub'
 @description('Private blob container used for generated podcaster artifacts.')
 param storageContainerName string = 'podcaster-artifacts'
 
+@description('Private blob container used by GitHub Actions to stage Function App run-from-package ZIPs.')
+param packageContainerName string = 'function-packages'
+
+@description('Optional object ID of the GitHub Actions deployment service principal. When provided, it receives Storage Blob Data Contributor on the storage account for OIDC package uploads.')
+param deploymentPrincipalObjectId string = ''
+
 var hostingPlanName = '${functionAppName}-plan'
+var hasDeploymentPrincipalObjectId = !empty(deploymentPrincipalObjectId)
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
@@ -47,6 +54,13 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 
 resource artifactContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   name: '${storage.name}/default/${storageContainerName}'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource packageContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${storage.name}/default/${packageContainerName}'
   properties: {
     publicAccess: 'None'
   }
@@ -100,8 +114,16 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
       linuxFxVersion: 'Python|3.11'
       appSettings: [
         {
-          name: 'AzureWebJobsStorage'
-          value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
+          name: 'AzureWebJobsStorage__blobServiceUri'
+          value: 'https://${storage.name}.blob.${environment().suffixes.storage}'
+        }
+        {
+          name: 'AzureWebJobsStorage__queueServiceUri'
+          value: 'https://${storage.name}.queue.${environment().suffixes.storage}'
+        }
+        {
+          name: 'AzureWebJobsStorage__tableServiceUri'
+          value: 'https://${storage.name}.table.${environment().suffixes.storage}'
         }
         {
           name: 'FUNCTIONS_EXTENSION_VERSION'
@@ -136,12 +158,12 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   }
 }
 
-resource blobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(functionApp.id, storage.id, 'Storage Blob Data Contributor')
+resource blobDataOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(functionApp.id, storage.id, 'Storage Blob Data Owner')
   scope: storage
   properties: {
     principalId: functionApp.identity.principalId
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
     principalType: 'ServicePrincipal'
   }
   dependsOn: [
@@ -149,7 +171,41 @@ resource blobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   ]
 }
 
+resource queueDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(functionApp.id, storage.id, 'Storage Queue Data Contributor')
+  scope: storage
+  properties: {
+    principalId: functionApp.identity.principalId
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource tableDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(functionApp.id, storage.id, 'Storage Table Data Contributor')
+  scope: storage
+  properties: {
+    principalId: functionApp.identity.principalId
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource deploymentBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (hasDeploymentPrincipalObjectId) {
+  name: guid(storage.id, deploymentPrincipalObjectId, 'Deployment Storage Blob Data Contributor')
+  scope: storage
+  properties: {
+    principalId: deploymentPrincipalObjectId
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+    principalType: 'ServicePrincipal'
+  }
+  dependsOn: [
+    packageContainer
+  ]
+}
+
 output endpoint string = 'https://${functionApp.properties.defaultHostName}/api/generate'
 output functionAppName string = functionApp.name
 output storageAccountName string = storage.name
 output storageContainerName string = storageContainerName
+output packageContainerName string = packageContainerName
