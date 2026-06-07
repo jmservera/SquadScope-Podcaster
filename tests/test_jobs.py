@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from zipfile import ZipFile
+
+from podcaster.generation import generate_artifacts, manifest_bytes
+from podcaster.jobs import build_job_id, run_generation_job
+from podcaster.storage import LocalStorageBackend, create_storage_backend
+from podcaster.validation import RESPONSE_KEYS
+
+
+def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
+    artifact_root = Path(".test-artifacts")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    result = run_generation_job(
+        {"week": "2026-W23", "article_url": "https://example.com/article"},
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+
+    assert tuple(result.response.keys()) == RESPONSE_KEYS
+    assert result.response["status"] == "accepted"
+    assert result.manifest["status"] == "review_pending"
+    assert result.manifest["review"]["status"] == "pending"
+    assert result.manifest["review"]["required"] is True
+    assert result.manifest["review"]["gate"]["status"] == "blocked"
+    assert result.response["publishing_packet_url"].endswith(".zip")
+    assert "human review is required before publishing" in result.response["warnings"]
+
+    job_dir = artifact_root / "jobs" / result.response["job_id"]
+    manifest_file = job_dir / "manifest.json"
+    packet_file = job_dir / "packets" / f"{result.response['job_id']}.zip"
+    assert (job_dir / "script.txt").exists()
+    assert packet_file.exists()
+    
+    # Verify packet manifest uses flat structure per editorial standards section 7.2
+    with ZipFile(packet_file) as packet:
+        packet_manifest = json.loads(packet.read("MANIFEST.json"))
+        assert packet_manifest["review_status"] == "pending"
+        assert packet_manifest["review"]["gate"]["status"] == "blocked"
+    
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_dry_run_preserves_response_shape_and_review_metadata() -> None:
+    artifact_root = Path(".test-artifacts-dry-run")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    result = run_generation_job(
+        {"week": "2026-W23", "article_url": "https://example.com/article", "dry_run": True, "callback": {"url": "https://example.com/cb", "secret_name": "CALLBACK_SECRET"}},
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+
+    assert tuple(result.response.keys()) == RESPONSE_KEYS
+    assert result.response["status"] == "dry_run"
+    assert result.manifest["request"]["dry_run"] is True
+    assert result.manifest["status"] == "dry_run"
+    assert result.manifest["request"]["callback"] == {
+        "requested": True,
+        "url_host": "example.com",
+        "secret_name_provided": True,
+    }
+    assert result.manifest["review"]["required"] is True
+    assert result.manifest["review"]["status"] == "pending"
+    assert "callback accepted by contract but not invoked yet" in result.response["warnings"]
+    assert "CALLBACK_SECRET" not in json.dumps(result.manifest)
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
+    artifact_root = Path(".test-artifacts-packet")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    result = run_generation_job(
+        {"week": "2026-W23", "article_url": "https://example.com/article"},
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+
+    packet_file = artifact_root / "jobs" / result.response["job_id"] / "packets" / f"{result.response['job_id']}.zip"
+    with ZipFile(packet_file) as packet:
+        names = set(packet.namelist())
+        required = {
+            "README.txt",
+            "MANIFEST.json",
+            "script.txt",
+            "claim-ledger.json",
+            "transcript.txt",
+            "show-notes.md",
+            "audio/episode-2026-W23.mp3",
+            "RIGHTS-AND-ATTRIBUTION.txt",
+            "CHECKSUMS.txt",
+        }
+        assert required <= names
+        manifest = json.loads(packet.read("MANIFEST.json"))
+        assert manifest["job_id"] == result.response["job_id"]
+        # Verify flat structure per editorial standards section 7.2
+        assert manifest["review_status"] == "pending"
+        checksums = _parse_checksums(packet.read("CHECKSUMS.txt").decode("utf-8"))
+        assert set(checksums) == names - {"CHECKSUMS.txt"}
+        for name, expected in checksums.items():
+            assert hashlib.sha256(packet.read(name)).hexdigest() == expected
+
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_generation_outputs_are_deterministic_and_documented() -> None:
+    payload = {"week": "2026-W23", "article_url": "https://example.com/article", "article_sha256": "a" * 64}
+    created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
+    job_id = build_job_id(payload)
+
+    first = generate_artifacts(job_id, payload, created_at)
+    second = generate_artifacts(job_id, payload, created_at)
+
+    assert [(artifact.path, artifact.content, artifact.content_type) for artifact in first] == [
+        (artifact.path, artifact.content, artifact.content_type) for artifact in second
+    ]
+    assert [artifact.path for artifact in first] == [
+        f"jobs/{job_id}/script.txt",
+        f"jobs/{job_id}/transcript.txt",
+        f"jobs/{job_id}/show-notes.md",
+        f"jobs/{job_id}/audio/{job_id}.mp3",
+        f"jobs/{job_id}/packets/{job_id}.zip",
+    ]
+    script = first[0].content.decode("utf-8")
+    transcript = first[1].content.decode("utf-8")
+    show_notes = first[2].content.decode("utf-8")
+    assert "deterministic production-path placeholder" in script
+    assert "Title: SquadScope Podcast" in transcript
+    assert "Original article](https://example.com/article)" in show_notes
+    assert first[3].content.startswith(f"Audio placeholder for {job_id}".encode("utf-8"))
+    assert first[4].content_type == "application/zip"
+
+
+def test_local_storage_backend_stages_under_safe_project_relative_paths(monkeypatch) -> None:
+    artifact_root = Path(".test-artifacts-storage")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    monkeypatch.delenv("PODCASTER_STORAGE_ACCOUNT_URL", raising=False)
+    monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(artifact_root))
+    monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/base/")
+
+    storage = create_storage_backend()
+    stored = storage.put_bytes("../jobs/./podcast-safe/../manifest.json", b"{}", "application/json")
+
+    assert isinstance(storage, LocalStorageBackend)
+    assert stored.path == "jobs/podcast-safe/manifest.json"
+    assert stored.url == "https://example.invalid/base/jobs/podcast-safe/manifest.json"
+    assert stored.size_bytes == 2
+    assert stored.content_type == "application/json"
+    assert (artifact_root / "jobs" / "podcast-safe" / "manifest.json").read_bytes() == b"{}"
+    assert not Path("manifest.json").exists()
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog) -> None:
+    artifact_root = Path(".test-artifacts-lifecycle")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_sha256": "b" * 64,
+        "source_artifacts": ["https://example.com/source.json"],
+        "force": True,
+    }
+
+    with caplog.at_level(logging.INFO):
+        result = run_generation_job(payload, storage=storage, now=datetime(2026, 6, 7, 19, 7, 49, 816000, tzinfo=timezone.utc))
+
+    manifest = result.manifest
+    job_id = build_job_id(payload)
+    assert result.response["job_id"] == job_id
+    assert manifest["job_id"] == job_id
+    assert manifest["status"] == "review_pending"
+    assert manifest["created_at"] == "2026-06-07T19:07:49Z"
+    assert manifest["expires_at"] == result.response["expires_at"] == "2026-06-14T19:07:49Z"
+    assert manifest["request"] == {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_sha256": "b" * 64,
+        "source_artifacts": ["https://example.com/source.json"],
+        "dry_run": False,
+        "force": True,
+        "callback": {"requested": False, "url_host": None, "secret_name_provided": False},
+    }
+    assert manifest["lifecycle"]["force"] is True
+    assert manifest["lifecycle"]["transitions"][-1]["to"] == "review_pending"
+    assert manifest["publishing"]["blocked_by"] == ["human_review", "real_tts_not_implemented"]
+    assert manifest["observability"]["correlation_id"] == job_id
+    assert all(details["url"].startswith("https://example.invalid/artifacts/jobs/") for details in manifest["artifacts"].values())
+    assert all(details["size_bytes"] > 0 and details["content_type"] and len(details["sha256"]) == 64 for details in manifest["artifacts"].values())
+    serialized = json.loads(manifest_bytes(manifest).decode("utf-8"))
+    assert serialized == manifest
+    assert f"podcaster job staged job_id={job_id} status=review_pending dry_run=False artifact_count=6" in caplog.text
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_artifacts_do_not_include_api_secret_marker() -> None:
+    artifact_root = Path(".test-artifacts-secret-scan")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    result = run_generation_job(
+        {"week": "2026-W23", "article_url": "https://example.com/article"},
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+
+    serialized_response = json.dumps(result.response)
+    serialized_manifest = json.dumps(result.manifest)
+    packet_bytes = (artifact_root / "jobs" / result.response["job_id"] / "packets" / f"{result.response['job_id']}.zip").read_bytes()
+    assert "dont-leak-me" not in serialized_response
+    assert "dont-leak-me" not in serialized_manifest
+    assert b"dont-leak-me" not in packet_bytes
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def _parse_checksums(content: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for line in content.splitlines():
+        digest, name = line.split("  ", 1)
+        parsed[name] = digest
+    return parsed

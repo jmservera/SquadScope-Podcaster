@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 import hmac
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -104,31 +103,13 @@ def empty_error_response(errors: list[str], warnings: list[str] | None = None) -
 
 
 def build_stub_response(payload: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
-    current = now or datetime.now(timezone.utc)
-    week = str(payload["week"]).strip()
-    article_url = str(payload["article_url"]).strip()
-    digest = hashlib.sha256(f"{week}|{article_url}".encode("utf-8")).hexdigest()[:12]
-    safe_week = re.sub(r"[^A-Za-z0-9_.-]", "-", week)
-    job_id = f"podcast-{safe_week}-{digest}"
-    base_url = os.environ.get("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-stub")
-    base_url = base_url.rstrip("/")
-    status = "dry_run" if payload.get("dry_run") else "accepted"
-    expires_at = (current + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    from pathlib import Path
 
-    warnings = ["stub response: generation, review, storage, and TTS are not implemented yet"]
-    if payload.get("callback"):
-        warnings.append("callback accepted by contract but not invoked by scaffold")
+    from podcaster.jobs import run_generation_job
+    from podcaster.storage import LocalStorageBackend
 
-    return {
-        "job_id": job_id,
-        "status": status,
-        "manifest_url": f"{base_url}/manifests/{job_id}.json",
-        "mp3_url": f"{base_url}/audio/{job_id}.mp3",
-        "wav_url": None,
-        "transcript_url": f"{base_url}/transcripts/{job_id}.txt",
-        "show_notes_url": f"{base_url}/show-notes/{job_id}.md",
-        "publishing_packet_url": f"{base_url}/packets/{job_id}.zip",
-        "expires_at": expires_at,
-        "warnings": warnings,
-        "errors": [],
-    }
+    storage = LocalStorageBackend(
+        root=Path(os.environ.get("PODCASTER_LOCAL_STORAGE_PATH", ".podcaster-artifacts")),
+        base_url=os.environ.get("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-stub"),
+    )
+    return run_generation_job(payload, storage=storage, now=now).response
