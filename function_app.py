@@ -6,7 +6,8 @@ from typing import Any
 
 import azure.functions as func
 
-from podcaster.validation import build_stub_response, empty_error_response, is_authorized, validate_payload
+from podcaster.jobs import failed_response, run_generation_job
+from podcaster.validation import empty_error_response, is_authorized, validate_payload
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -26,7 +27,13 @@ def generate(req: func.HttpRequest) -> func.HttpResponse:
         return _json_response(empty_error_response(errors), status_code=400)
 
     logging.info("accepted podcaster request for week=%s", payload.get("week"))
-    return _json_response(build_stub_response(payload), status_code=202)
+    try:
+        result = run_generation_job(payload)
+    except Exception:
+        logging.exception("podcaster generation failed for week=%s", payload.get("week"))
+        return _json_response(failed_response(["generation failed; retry later or contact operator"]), status_code=500)
+
+    return _json_response(result.response, status_code=202)
 
 
 def _json_response(body: dict[str, Any], status_code: int) -> func.HttpResponse:

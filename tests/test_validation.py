@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 
 from podcaster.validation import RESPONSE_KEYS, build_stub_response, empty_error_response, is_authorized, validate_payload
 
@@ -38,7 +40,10 @@ def test_rejects_bad_types_and_urls() -> None:
     assert "callback.secret_name must be a string" in errors
 
 
-def test_stub_response_shape_is_contract_complete() -> None:
+def test_stub_response_shape_is_contract_complete(monkeypatch) -> None:
+    artifact_root = Path(".test-artifacts")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(artifact_root))
     response = build_stub_response(
         {"week": "2026-W23", "article_url": "https://example.com/article", "dry_run": True},
         now=datetime(2026, 6, 7, 17, 41, 40, tzinfo=timezone.utc),
@@ -46,11 +51,13 @@ def test_stub_response_shape_is_contract_complete() -> None:
     assert tuple(response.keys()) == RESPONSE_KEYS
     assert response["job_id"].startswith("podcast-2026-W23-")
     assert response["status"] == "dry_run"
-    assert response["manifest_url"].endswith(f"/{response['job_id']}.json")
-    assert response["mp3_url"].endswith(f"/{response['job_id']}.mp3")
+    assert response["manifest_url"].endswith(f"/jobs/{response['job_id']}/manifest.json")
+    assert response["mp3_url"].endswith(f"/audio/{response['job_id']}.mp3")
     assert response["wav_url"] is None
     assert response["expires_at"] == "2026-06-14T17:41:40Z"
     assert response["errors"] == []
+    assert (artifact_root / "jobs" / response["job_id"] / "manifest.json").exists()
+    shutil.rmtree(artifact_root, ignore_errors=True)
 
 
 def test_error_response_shape_is_contract_complete() -> None:

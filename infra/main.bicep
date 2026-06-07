@@ -19,8 +19,11 @@ param logAnalyticsName string = '${functionAppName}-law'
 @description('Podcaster API key stored as a Function App setting. Do not print this value.')
 param podcasterApiKey string
 
-@description('Artifact base URL returned by the scaffold until Blob staging is implemented.')
+@description('Artifact base URL used by local/dev fallback when Azure Blob Storage is not configured.')
 param artifactBaseUrl string = 'https://example.invalid/podcaster-stub'
+
+@description('Private blob container used for generated podcaster artifacts.')
+param storageContainerName string = 'podcaster-artifacts'
 
 var hostingPlanName = '${functionAppName}-plan'
 
@@ -35,6 +38,13 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowBlobPublicAccess: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
+  }
+}
+
+resource artifactContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${storage.name}/default/${storageContainerName}'
+  properties: {
+    publicAccess: 'None'
   }
 }
 
@@ -109,6 +119,14 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'PODCASTER_ARTIFACT_BASE_URL'
           value: artifactBaseUrl
         }
+        {
+          name: 'PODCASTER_STORAGE_ACCOUNT_URL'
+          value: 'https://${storage.name}.blob.${environment().suffixes.storage}'
+        }
+        {
+          name: 'PODCASTER_STORAGE_CONTAINER'
+          value: storageContainerName
+        }
       ]
     }
   }
@@ -122,8 +140,12 @@ resource blobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
     principalType: 'ServicePrincipal'
   }
+  dependsOn: [
+    artifactContainer
+  ]
 }
 
 output endpoint string = 'https://${functionApp.properties.defaultHostName}/api/generate'
 output functionAppName string = functionApp.name
 output storageAccountName string = storage.name
+output storageContainerName string = storageContainerName

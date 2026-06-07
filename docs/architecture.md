@@ -19,12 +19,14 @@ SquadScope Podcaster is a sister repository and service. SquadScope remains resp
 - Resource group supplied by deployment workflow.
 - Storage Account for Function host state and podcast artifact staging.
 - Linux Function App running Python.
-- User-assigned or system-assigned managed identity for future storage access.
+- System-assigned managed identity for blob storage writes (active when `PODCASTER_STORAGE_ACCOUNT_URL` is configured).
 - Log Analytics workspace and Application Insights.
 
 ## API design
 
-The initial API returns a deterministic stub response with the full response shape. This lets SquadScope integration tests and workflow wiring proceed before TTS and storage implementation are complete.
+The API returns the stable response shape while running a synchronous production-path increment: deterministic job ID creation, artifact generation interfaces, manifest staging, review-pending metadata, publishing packet creation, and an audio placeholder. Local development uses filesystem-backed storage; Azure deployments use Blob Storage through managed identity.
+
+Lifecycle, review-gate, publishing readiness, and observability metadata live in the staged manifest and publishing packet rather than new top-level response fields. This keeps SquadScope callers compatible while letting editors and operators inspect `schema_version`, lifecycle transitions, blocked review checks, packet eligibility, artifact hashes/content types, and safe `correlation_id` metadata.
 
 ## Security
 
@@ -35,4 +37,4 @@ The initial API returns a deterministic stub response with the full response sha
 
 ## Failure handling
 
-Validation errors return HTTP 400 with structured error messages. Authentication failures return HTTP 401. Generation failures should return a job response with `status` set to `failed` and populated `errors` once asynchronous processing is implemented.
+Validation errors return HTTP 400 with structured error messages. Authentication failures return HTTP 401. Generation failures return HTTP 500 with a job response with `status` set to `failed` and populated `errors`.

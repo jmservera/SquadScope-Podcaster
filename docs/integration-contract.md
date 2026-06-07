@@ -52,14 +52,14 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 {
   "job_id": "podcast-2026-W23-abc12345",
   "status": "accepted",
-  "manifest_url": "https://storage.example/manifests/podcast-2026-W23-abc12345.json",
-  "mp3_url": "https://storage.example/audio/podcast-2026-W23-abc12345.mp3",
+  "manifest_url": "https://storage.example/jobs/podcast-2026-W23-abc12345/manifest.json",
+  "mp3_url": "https://storage.example/jobs/podcast-2026-W23-abc12345/audio/podcast-2026-W23-abc12345.mp3",
   "wav_url": null,
-  "transcript_url": "https://storage.example/transcripts/podcast-2026-W23-abc12345.txt",
-  "show_notes_url": "https://storage.example/show-notes/podcast-2026-W23-abc12345.md",
-  "publishing_packet_url": "https://storage.example/packets/podcast-2026-W23-abc12345.zip",
+  "transcript_url": "https://storage.example/jobs/podcast-2026-W23-abc12345/transcript.txt",
+  "show_notes_url": "https://storage.example/jobs/podcast-2026-W23-abc12345/show-notes.md",
+  "publishing_packet_url": "https://storage.example/jobs/podcast-2026-W23-abc12345/packets/podcast-2026-W23-abc12345.zip",
   "expires_at": "2026-06-14T17:41:40Z",
-  "warnings": [],
+  "warnings": ["audio is a deterministic placeholder pending TTS implementation", "human review is required before publishing"],
   "errors": []
 }
 ```
@@ -97,3 +97,19 @@ Validation failure:
   "errors": ["week is required"]
 }
 ```
+
+## Local artifact staging
+
+When `PODCASTER_STORAGE_ACCOUNT_URL` is not configured, the service writes deterministic development artifacts under `.podcaster-artifacts/jobs/<job_id>/` and returns URLs using `PODCASTER_ARTIFACT_BASE_URL`. Artifacts are staged with a 7-day expiration set in `expires_at`. This keeps local tests and API contract validation independent of Azure credentials. Azure deployments configure `PODCASTER_STORAGE_ACCOUNT_URL` and `PODCASTER_STORAGE_CONTAINER`; blob writes use the Function App managed identity, and artifacts expire per the same `expires_at` schedule.
+
+## Manifest and packet metadata
+
+The top-level response keys remain stable for SquadScope compatibility. Additional lifecycle details are stored in `manifest_url` and inside the publishing packet `MANIFEST.json`, including:
+
+- `schema_version`
+- `lifecycle.status`, `revision`, `force`, and deterministic transition timestamps
+- `review.status`, blocked gate checks, and empty audit trail placeholders
+- `generation.engine=local-deterministic-placeholder`, `deterministic=true`, and no paid/live TTS provider
+- `publishing.mode=manual`, `eligible=false`, and blockers until human review and real audio exist
+- artifact `content_type`, `size_bytes`, and `sha256`
+- `observability.correlation_id` and safe log field names only
