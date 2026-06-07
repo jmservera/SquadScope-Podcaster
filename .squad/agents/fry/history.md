@@ -10,3 +10,5 @@
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
 - 2026-06-07: Chartered as QA/Tester during the Podcaster squad rebuild. Tests live in `tests/`; run with `pytest`. Key paths to keep covered: 401 unauthorized, 400 validation/malformed JSON, 202 accepted stub. The deterministic response shape is a contract under test — guard it against drift.
+
+- 📌 Team update (2026-06-07T18:26:33.954+00:00): Security handoff review completed; API contract verified; secret handling confirmed; auto-sync requires SQUADSCOPE_SYNC_TOKEN — decided by Hermes
