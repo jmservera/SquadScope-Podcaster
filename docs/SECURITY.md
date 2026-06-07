@@ -8,15 +8,16 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
 
 - **`PODCASTER_API_KEY`** (GitHub repository secret, Azure app setting)
   - The bearer token for cross-repo callers to authenticate requests.
-  - Stored as a GitHub secret in this repository for deployment.
+  - Optionally stored as a GitHub secret in this repository for stable deployment/rotation.
+  - If the secret is absent, the deploy workflow generates a 256-bit key during deployment, masks it immediately, and sets it only as an Azure Function App app setting.
   - Transmitted to Azure as a secure parameter and configured as a Function App setting.
   - Never logged, echoed, printed to outputs, or included in workflow summaries.
-  - **Rotating:** Generate a new key, update GitHub secret, re-deploy via `deploy-azure.yml`.
+  - **Rotating:** Generate a new key, update GitHub/SquadScope secrets, re-deploy via `deploy-azure.yml`. If using generated-per-deploy keys, run the optional SquadScope sync during the same deployment.
 
 - **`SQUADSCOPE_SYNC_TOKEN`** (GitHub repository secret, optional)
   - Fine-grained personal access token with permission to write variables and secrets in `jmservera/SquadScope`.
   - Used by the deploy workflow's optional sync step to configure `PODCASTER_ENDPOINT` (variable) and `PODCASTER_API_KEY` (secret) in the caller repository.
-  - If not configured, the sync step silently succeeds (no error, no action).
+  - If not configured, the sync step is skipped unless `sync_squadscope=true` is explicitly requested.
   - Must have scope: `repository` and permissions: `secrets:write, variables:write`.
 
 ### Secrets Passed to SquadScope
@@ -26,8 +27,24 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
   - Example: `https://podcaster-app.azurewebsites.net/api/generate`
   
 - **`PODCASTER_API_KEY`** (secret in SquadScope)
-  - The same API key configured in this repository.
+  - The same API key configured in the Podcaster Function App.
   - Must be read from GitHub secrets, never hard-coded or committed.
+
+### Auth Bootstrap Decision
+
+- **Current release:** keep `x-podcaster-api-key` for compatibility and bootstrap safely. If a stable `PODCASTER_API_KEY` secret is unavailable, deployment generates a high-entropy key, masks it, and writes it only to the Function App app setting.
+- **Handoff:** prefer `sync_squadscope=true` with the gated `SQUADSCOPE_SYNC_TOKEN` during the same run, or pre-create a stable key and store it in both repositories. Do not print generated keys for manual copy/paste.
+- **Future hardening:** migrate SquadScope caller authentication to Azure federated identity/OIDC or EasyAuth while accepting the API-key header during a compatibility window.
+
+### Second Federated Identity Guidance
+
+A second Azure federated identity is **not** useful for writing GitHub secrets or variables; GitHub sync still needs a GitHub credential such as a tightly scoped fine-grained token or GitHub App installation. A second Azure federated identity is appropriate only for future keyless caller auth from `jmservera/SquadScope` to Azure. If adopted, configure:
+
+- Azure app registration or user-assigned managed identity dedicated to the SquadScope caller.
+- Federated credential subject: `repo:jmservera/SquadScope:environment:prod` (or the exact protected environment/branch used by the caller).
+- Audience: `api://AzureADTokenExchange`.
+- Permissions: no subscription Contributor/Owner and no Storage roles; grant only the app role or Function/App Service authentication audience needed to invoke `/api/generate`.
+- Compatibility: keep `x-podcaster-api-key` until SquadScope has deployed and verified OIDC token acquisition and Podcaster validates it without logging token contents.
 
 ### Azure Resource Secrets (Deployment Only)
 
@@ -186,9 +203,9 @@ Before relying on auto-sync, SquadScope engineers must manually verify:
 - [ ] **Azure subscription exists** with Contributor or equivalent access.
 - [ ] **Resource group name decided** (e.g., `podcaster-prod`). If it doesn't exist, the deploy workflow creates it.
 - [ ] **Location confirmed** (e.g., `eastus`). Must be a valid Azure region.
-- [ ] **Function App name is globally unique** (Azure enforces global uniqueness for `.azurewebsites.net`).
-- [ ] **Storage Account name is globally unique and lowercase** (Azure storage names must be 3–24 characters, lowercase letters and digits only).
-- [ ] **Avoid naming conflicts:** Check `az storage account list` and `az functionapp list` to ensure names are not in use.
+- [ ] **Function App name is globally unique** (Azure enforces global uniqueness for `.azurewebsites.net`). The workflow derives a deterministic default; set `AZURE_FUNCTION_APP_NAME` only to override a collision or naming preference.
+- [ ] **Storage Account name is globally unique and lowercase** (Azure storage names must be 3–24 characters, lowercase letters and digits only). The workflow derives a deterministic default; set `AZURE_STORAGE_ACCOUNT_NAME` only to override a collision or naming preference.
+- [ ] **Avoid naming conflicts:** If Azure reports a global name conflict, set the relevant override variable and re-deploy.
 
 ### Repository Variables (Non-Secret)
 
@@ -200,17 +217,24 @@ AZURE_TENANT_ID=<tenant-id>
 AZURE_SUBSCRIPTION_ID=<subscription-id>
 AZURE_LOCATION=eastus
 AZURE_RESOURCE_GROUP=podcaster-prod
+```
+
+Optional overrides:
+
+```text
 AZURE_FUNCTION_APP_NAME=podcaster-app-prod
 AZURE_STORAGE_ACCOUNT_NAME=podcasterstg
 ```
 
 ### Repository Secrets
 
-Set them in Settings > Secrets and variables > Secrets:
+Optionally set a stable API key in Settings > Secrets and variables > Secrets:
 
 ```
 PODCASTER_API_KEY=<randomly-generated-api-key-at-least-32-chars>
 ```
+
+If omitted, deployment generates the API key without logging it. Manual SquadScope setup then requires a redeploy with a known secret or an automated sync during the same deploy because the generated value is intentionally unrecoverable from logs.
 
 Optional (required only if syncing to SquadScope):
 
@@ -220,21 +244,24 @@ SQUADSCOPE_SYNC_TOKEN=<fine-grained-personal-access-token>
 
 ### OIDC Federation (GitHub ↔ Azure)
 
-1. **Create an app registration in Azure** (or reuse an existing one).
+1. **Create an app registration in Azure** dedicated to Podcaster deployment, or reuse only if its permissions are already limited to the Podcaster deployment scope.
 2. **Add a federated credential** to the app:
-   - **Entity type:** GitHub Actions Deployment
-   - **Repository:** `jmservera/SquadScope-Podcaster`
-   - **Environment (optional):** Leave blank or specify a GitHub environment
-   - **Subject identifier:** `repo:jmservera/SquadScope-Podcaster:ref:refs/heads/main` (or your branch)
+   - **Scenario:** GitHub Actions deploying Azure resources
+   - **Organization/repository:** `jmservera/SquadScope-Podcaster`
+   - **Entity type:** `Environment`
+   - **GitHub environment:** `prod`
+   - **Subject identifier:** `repo:jmservera/SquadScope-Podcaster:environment:prod`
+   - **Audience:** `api://AzureADTokenExchange`
 3. **Get the app credentials:**
    - **Application ID** → `AZURE_CLIENT_ID`
    - **Tenant ID** → `AZURE_TENANT_ID`
    - **Subscription ID** → `AZURE_SUBSCRIPTION_ID` (from the subscription you want to deploy to)
-4. **Verify OIDC works:** Run the deploy workflow; it should authenticate without requiring a stored Azure credential.
+4. **Role assignment:** grant only the minimum Azure role needed for deployment at the target resource group or subscription. Contributor is acceptable for bootstrap; reduce scope after resources exist.
+5. **Verify OIDC works:** Run the deploy workflow; it should authenticate without requiring a stored Azure credential.
 
 ### First Deploy
 
-1. **Set all variables and secrets** in the repository.
+1. **Set required variables** in the repository. Set `PODCASTER_API_KEY` only if you need a stable known key; otherwise the workflow generates one.
 2. **Run the deploy workflow manually:**
    ```bash
    gh workflow run deploy-azure.yml -R jmservera/SquadScope-Podcaster
@@ -280,9 +307,9 @@ Use this checklist before marking a release as ready for SquadScope consumption:
 
 ### 1. Secrets & Deployment ✓
 
-- [ ] All GitHub secrets are non-empty and randomly generated (minimum 32 characters for API key).
+- [ ] The deployed API key is randomly generated (minimum 32 characters) either from the GitHub secret or by the deploy workflow.
 - [ ] No secrets appear in workflow logs, summaries, or artifacts.
-- [ ] The deploy workflow validates all required variables and secrets before proceeding.
+- [ ] The deploy workflow validates required variables before proceeding and does not require optional app/storage names or a pre-existing API key.
 - [ ] OIDC federation is configured and working (no long-lived Azure credentials stored).
 - [ ] The Function App is deployed with HTTPS-only and `minimumTlsVersion: TLS1_2`.
 

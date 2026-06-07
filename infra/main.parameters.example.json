@@ -3,8 +3,6 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "location": { "value": "eastus" },
-    "storageAccountName": { "value": "replacewithuniqueacct" },
-    "functionAppName": { "value": "replace-with-function-app" },
     "podcasterApiKey": { "value": "DO_NOT_COMMIT_REAL_KEYS" },
     "artifactBaseUrl": { "value": "https://example.invalid/podcaster-stub" },
     "storageContainerName": { "value": "podcaster-artifacts" }
