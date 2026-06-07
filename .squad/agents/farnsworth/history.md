@@ -10,3 +10,4 @@
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
 - 2026-06-07: Chartered as Script & Audio Editor during the Podcaster squad rebuild. Owns script/transcript/show-note standards and TTS-readiness. TTS provider selection is research-stage (`backlog/tts-bakeoff.md`); no audio in source control. Human review gate is mandatory before public publishing.
+- 📌 Team update (2026-06-07): GitHub issue connect + triage. Assigned issues: #4 (1 total)

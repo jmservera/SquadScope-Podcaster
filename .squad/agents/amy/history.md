@@ -10,3 +10,4 @@
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
 - 2026-06-07: Chartered as Distribution UX during the Podcaster squad rebuild. SquadScope integration is link-only (no hosted/embedded audio initially). Distribution automation (Spotify/podcast-host) is research-stage. Owns publishing-packet usability. See `backlog/manual-publishing-packet.md` and `backlog/spotify-publishing-research.md`.
+- 📌 Team update (2026-06-07): GitHub issue connect + triage. Assigned issues: #5, #6 (2 total)

@@ -10,3 +10,4 @@
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
 - 2026-06-07: Chartered as Safety & Security during the Podcaster squad rebuild. Core rules: `PODCASTER_API_KEY` stored as GitHub/Azure secret, never logged; the API never echoes received keys; deploy uses GitHub OIDC; future storage access should prefer managed identity + short-lived SAS. See README "Secret handling" and `docs/architecture.md` "Security".
+- 📌 Team update (2026-06-07): GitHub issue connect + triage. Assigned issues: #2 (1 total)
