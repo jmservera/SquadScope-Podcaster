@@ -52,3 +52,5 @@
 - 2026-06-07T20:52:01.950+00:00: Reviewed PR #11 deployment bootstrap/auth design for issue #7. Recommended current-release shared-key compatibility with safe generated-key bootstrap when `PODCASTER_API_KEY` is absent, deterministic optional Function App/Storage names, and explicit gated SquadScope sync. Determined a second Azure federated identity is not useful for GitHub secret sync, but is appropriate later for keyless SquadScope caller auth with subject `repo:jmservera/SquadScope:environment:prod`, audience `api://AzureADTokenExchange`, and no Azure management/storage roles. Gate: APPROVE WITH CONDITIONS; Bender's committed workflow now meets the key conditions, leaving live prod/OIDC deployment verification as the remaining release gate.
 
 📌 Team update (2026-06-07T20:52:01Z): Security conditions on PR #11 auth bootstrap satisfied; Leela's naming fix ensures no half-baked Azure deployments. OIDC migration path documented for Phase 2. — decided by Leela
+
+📌 Team update (2026-06-07T21:43:10): Bender durable Function package deployment decision merged (private blob, managed identity, no SAS/keys) — Bender

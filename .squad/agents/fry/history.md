@@ -25,3 +25,5 @@
 
 📌 Team update (2026-06-07T20:52:01Z): PR #11 naming rejection fixed by Leela (Function App capped at 35 chars). Re-review approved with conditions; deployment smoke tests pending Azure subscription. — decided by Leela
 - 2026-06-07T21:43:10Z: Final Issue #7 workflow/package QA review approved locally. `pytest` passed 24 tests, compileall clean, diff whitespace clean, package build simulation produced a valid app.zip, and `az bicep build` compiled `infra/main.bicep`. Workflow remains manual-only and uses private Blob run-from-package with managed identity; no deploy was triggered.
+
+📌 Team update (2026-06-07T21:43:10): Bender durable Function package deployment decision merged (private blob, managed identity, 24 tests passing) — Bender
