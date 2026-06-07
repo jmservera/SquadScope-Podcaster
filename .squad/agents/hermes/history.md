@@ -44,3 +44,7 @@
   - All backward-compatible names preserved: `/api/generate`, `x-podcaster-api-key`, `PODCASTER_API_KEY`, `PODCASTER_ENDPOINT`, response keys.
   - Security/deployment wording is deployment-handoff ready.
 📌 Team update (2026-06-07T19:49:59Z): Issue-first/PR workflow rule activated. PR #10 (wave-1-2-3-contract-pipeline-docs) closes #3, #8; progresses #1, #2, #6, #7. Inbox decisions merged (15 files). Post-merge tasks: #4 (TTS), #5 (Spotify) parallel, then #9 (CI) and #7 (deploy).
+
+- 2026-06-07T20:24:55Z: Reviewed PR #11 (`fix/prod-deploy-environment`) deployment safety. The Azure deploy workflow is bound to GitHub environment `prod`, preserves `permissions: id-token: write`, uses `azure/login` with environment variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`, validates required prod variables/secrets by name only, and avoids printing `PODCASTER_API_KEY`/`SQUADSCOPE_SYNC_TOKEN` values. Documentation in README and `docs/AZURE-DEPLOYMENT.md` safely distinguishes non-secret variables from secrets.
+
+📌 Team update (2026-06-07T20:24:55Z): prod-deploy-env decision merged to decisions.md — prod environment requires 7 vars and 1 secret (PODCASTER_API_KEY); deployment blocked until prod config complete

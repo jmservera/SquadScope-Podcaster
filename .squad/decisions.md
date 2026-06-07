@@ -1203,3 +1203,19 @@ Wave 1/2/3 local increment covers:
 Approved to commit Wave 1/2/3 local increment as a single cohesive release. No Azure deployment. Review gate remains a human step before any public publishing.
 
 
+
+### 2026-06-07T20:24:55.821+00:00: prod deployment environment (bender)
+
+**By:** Bender
+
+**What:**
+- The Azure deployment workflow must use the GitHub environment named exactly `prod`
+- Authenticate with `azure/login` using environment variables: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
+- Required `prod` variables: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_LOCATION`, `AZURE_RESOURCE_GROUP`, `AZURE_FUNCTION_APP_NAME`, `AZURE_STORAGE_ACCOUNT_NAME`
+- Required `prod` secret: `PODCASTER_API_KEY`
+- Optional `prod` secret: `SQUADSCOPE_SYNC_TOKEN`, required only when `sync_squadscope=true`
+
+**Why:**
+- Environment-scoped OIDC aligns with the existing Azure federated credential
+- Keeps deploy configuration scoped away from repository-wide settings
+- Validation reports missing variable/secret names only; it never prints secret values
