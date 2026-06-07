@@ -31,3 +31,4 @@
   - **Test alignment:** Updated test assertions to expect flat manifest structure (review_status not nested review.status) per editorial standards
   - Deterministic stub approach is sound for integration testing; metadata headers enable both human review and machine parsing
   - All 14 tests pass; backward-compatible with integration contract (section 8 of editorial-standards.md)
+📌 Team update (2026-06-07T19:49:59Z): Issue-first/PR workflow rule activated. PR #10 (wave-1-2-3-contract-pipeline-docs) closes #3, #8; progresses #1, #2, #6, #7. Inbox decisions merged (15 files). Post-merge tasks: #4 (TTS), #5 (Spotify) parallel, then #9 (CI) and #7 (deploy).

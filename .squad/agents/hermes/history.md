@@ -43,3 +43,4 @@
   - No secret-leakage or deployment-blocking issues found in the Wave 2→3 diff.
   - All backward-compatible names preserved: `/api/generate`, `x-podcaster-api-key`, `PODCASTER_API_KEY`, `PODCASTER_ENDPOINT`, response keys.
   - Security/deployment wording is deployment-handoff ready.
+📌 Team update (2026-06-07T19:49:59Z): Issue-first/PR workflow rule activated. PR #10 (wave-1-2-3-contract-pipeline-docs) closes #3, #8; progresses #1, #2, #6, #7. Inbox decisions merged (15 files). Post-merge tasks: #4 (TTS), #5 (Spotify) parallel, then #9 (CI) and #7 (deploy).
