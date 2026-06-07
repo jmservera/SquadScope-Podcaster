@@ -17,7 +17,11 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: prod
     env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_FUNCTION_APP_NAME: ${{ vars.AZURE_FUNCTION_APP_NAME }}
@@ -34,15 +38,39 @@ jobs:
       - name: Validate configuration
         env:
           PODCASTER_API_KEY: ${{ secrets.PODCASTER_API_KEY }}
+          SQUADSCOPE_SYNC_TOKEN: ${{ secrets.SQUADSCOPE_SYNC_TOKEN }}
+          SYNC_SQUADSCOPE: ${{ inputs.sync_squadscope }}
         run: |
-          test -n "${{ vars.AZURE_CLIENT_ID }}"
-          test -n "${{ vars.AZURE_TENANT_ID }}"
-          test -n "${{ vars.AZURE_SUBSCRIPTION_ID }}"
-          test -n "$AZURE_LOCATION"
-          test -n "$AZURE_RESOURCE_GROUP"
-          test -n "$AZURE_FUNCTION_APP_NAME"
-          test -n "$AZURE_STORAGE_ACCOUNT_NAME"
-          test -n "$PODCASTER_API_KEY"
+          set -euo pipefail
+
+          missing=0
+          require_config() {
+            local name="$1"
+            local source="$2"
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured in GitHub environment prod $source."
+              missing=1
+            fi
+          }
+
+          require_config AZURE_CLIENT_ID "variables"
+          require_config AZURE_TENANT_ID "variables"
+          require_config AZURE_SUBSCRIPTION_ID "variables"
+          require_config AZURE_LOCATION "variables"
+          require_config AZURE_RESOURCE_GROUP "variables"
+          require_config AZURE_FUNCTION_APP_NAME "variables"
+          require_config AZURE_STORAGE_ACCOUNT_NAME "variables"
+          require_config PODCASTER_API_KEY "secrets"
+
+          if [ "$SYNC_SQUADSCOPE" = "true" ]; then
+            require_config SQUADSCOPE_SYNC_TOKEN "secrets for sync_squadscope=true"
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "Configuration present for GitHub environment prod. Secret values were not printed."
 
       - name: Azure login
         # azure/login v2
@@ -109,8 +137,8 @@ jobs:
         run: |
           set +x
           if [ -z "$GH_TOKEN" ]; then
-            echo "SquadScope sync requested but SQUADSCOPE_SYNC_TOKEN is not configured." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            echo "::error::SquadScope sync requested but SQUADSCOPE_SYNC_TOKEN is not configured in GitHub environment prod."
+            exit 1
           fi
           gh variable set PODCASTER_ENDPOINT --repo jmservera/SquadScope --body "$ENDPOINT"
           printf '%s' "$PODCASTER_API_KEY" | gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope

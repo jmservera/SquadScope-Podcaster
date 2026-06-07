@@ -54,9 +54,9 @@ curl -X POST http://localhost:7071/api/generate \
 
 ## Deployment
 
-The deployment workflow is `.github/workflows/deploy-azure.yml`. It uses GitHub OIDC with `azure/login`, deploys Bicep from `infra/main.bicep`, packages the Function App, deploys it, and prints only non-secret integration values.
+The deployment workflow is `.github/workflows/deploy-azure.yml`. It uses the GitHub environment named exactly `prod`, authenticates with GitHub OIDC via `azure/login`, deploys Bicep from `infra/main.bicep`, packages the Function App, deploys it, and prints only non-secret integration values.
 
-Required repository variables:
+Required `prod` environment variables:
 
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
@@ -66,11 +66,11 @@ Required repository variables:
 - `AZURE_FUNCTION_APP_NAME`
 - `AZURE_STORAGE_ACCOUNT_NAME`
 
-Required repository secret:
+Required `prod` environment secret:
 
 - `PODCASTER_API_KEY` - the API key configured as an app setting. Never print this value.
 
-Optional secret for syncing integration values to SquadScope:
+Optional `prod` environment secret for syncing integration values to SquadScope:
 
 - `SQUADSCOPE_SYNC_TOKEN` - fine-grained token with permission to write variables and secrets in `jmservera/SquadScope`.
 

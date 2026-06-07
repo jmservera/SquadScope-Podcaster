@@ -53,10 +53,10 @@ This document specifies the exact Azure setup required before deploying Podcaste
 4. Fill in:
    - **Organization:** `jmservera`
    - **Repository:** `SquadScope-Podcaster`
-   - **Entity type:** `Branch`
-   - **GitHub branch name:** `main` (or the branch you want to deploy from)
+   - **Entity type:** `Environment`
+   - **GitHub environment name:** `prod`
 5. Click **Add**.
-6. **Verify:** The credential appears in the list with a preview of the subject identifier (e.g., `repo:jmservera/SquadScope-Podcaster:ref:refs/heads/main`).
+6. **Verify:** The credential appears in the list with a preview of the subject identifier `repo:jmservera/SquadScope-Podcaster:environment:prod`.
 
 #### Step 3: Get Azure Subscription & Tenant IDs
 
@@ -74,11 +74,11 @@ This document specifies the exact Azure setup required before deploying Podcaste
 4. **Members > Select members:** Search for the app registration name (e.g., `Podcaster-GitHub-Actions`).
 5. Click **Assign**.
 
-### GitHub Repository Configuration
+### GitHub Environment Configuration
 
-#### Step 1: Add Repository Variables
+#### Step 1: Add `prod` Environment Variables
 
-Go to **Settings > Secrets and variables > Variables** and create:
+The deploy workflow uses the GitHub environment named exactly `prod`. Go to **Settings > Environments > prod > Environment variables** and create:
 
 ```
 AZURE_CLIENT_ID=<Application ID from step 1>
@@ -90,11 +90,11 @@ AZURE_FUNCTION_APP_NAME=podcaster-app-prod
 AZURE_STORAGE_ACCOUNT_NAME=podcasterstgprod
 ```
 
-**Important:** These are **variables**, not secrets. They are non-sensitive and appear in workflow summaries.
+**Important:** These are **environment variables**, not secrets. They are non-sensitive, but the workflow only checks that they are present and does not print their values.
 
-#### Step 2: Add Repository Secrets
+#### Step 2: Add `prod` Environment Secrets
 
-Go to **Settings > Secrets and variables > Secrets** and create:
+Go to **Settings > Environments > prod > Environment secrets** and create:
 
 ```
 PODCASTER_API_KEY=<randomly-generated-key-at-least-32-characters>
@@ -128,7 +128,7 @@ SQUADSCOPE_SYNC_TOKEN=<fine-grained-PAT-with-secrets:write-and-variables:write>
    - **Secrets:** Read and write
    - **Variables:** Read and write
 7. Click **Generate token**.
-8. **Copy the token** and paste into the Podcaster repository's `SQUADSCOPE_SYNC_TOKEN` secret.
+8. **Copy the token** and paste into the Podcaster `prod` environment's `SQUADSCOPE_SYNC_TOKEN` secret.
 9. **Store the token securely** (GitHub shows it only once).
 
 ### Pre-Flight Validation
@@ -152,12 +152,12 @@ az functionapp list --query "[].name" | grep podcaster-app-prod
 az storage account list --query "[].name" | grep podcasterstgprod
 # Should return empty (good, name is available)
 
-# 5. Verify GitHub variables are set
-gh variable list --repo jmservera/SquadScope-Podcaster
+# 5. Verify GitHub prod environment variables are set (names only)
+gh variable list --repo jmservera/SquadScope-Podcaster --env prod
 # Should show AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_LOCATION, AZURE_RESOURCE_GROUP, AZURE_FUNCTION_APP_NAME, AZURE_STORAGE_ACCOUNT_NAME
 
-# 6. Verify GitHub secret is set
-gh secret list --repo jmservera/SquadScope-Podcaster | grep PODCASTER_API_KEY
+# 6. Verify GitHub prod environment secret names are set (values are never shown)
+gh secret list --repo jmservera/SquadScope-Podcaster --env prod | grep PODCASTER_API_KEY
 # Should show PODCASTER_API_KEY in the list (value not shown)
 ```
 
@@ -276,13 +276,13 @@ cd /home/azureuser/source/SquadScope-Podcaster
 git add <files>
 git commit -m "Update podcaster function" \
   -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
-git push origin main
+git push origin <feature-branch>
 ```
 
 #### Step 2: Trigger Deploy (Automatic or Manual)
 
 The deploy workflow can be triggered:
-- **Manually:** `gh workflow run deploy-azure.yml -R jmservera/SquadScope-Podcaster`
+- **Manually:** `gh workflow run deploy-azure.yml -R jmservera/SquadScope-Podcaster --ref main`
 - **On push (optional):** Configure a workflow trigger in `.github/workflows/deploy-azure.yml` to run on `push: branches: [main]`.
 
 #### Step 3: Verify Deployment
