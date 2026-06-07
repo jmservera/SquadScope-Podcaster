@@ -1219,3 +1219,74 @@ Approved to commit Wave 1/2/3 local increment as a single cohesive release. No A
 - Environment-scoped OIDC aligns with the existing Azure federated credential
 - Keeps deploy configuration scoped away from repository-wide settings
 - Validation reports missing variable/secret names only; it never prints secret values
+
+
+### 2026-06-07T20:52:01.950+00:00: Deployment auth bootstrap - optional PODCASTER_API_KEY with automatic generation (consolidated)
+
+**By:** Bender, Hermes
+
+**What:**
+- Keep the current shared `x-podcaster-api-key` contract
+- Make the deploy path bootstrap-safe: `PODCASTER_API_KEY` is optional in the Podcaster `prod` environment
+- If `PODCASTER_API_KEY` is absent, generate a 256-bit key, mask it immediately, set as Function App app setting, never print it
+- If `PODCASTER_API_KEY` exists, deploy that stable secret as the Function App app setting
+- Never print generated keys to logs, summaries, artifacts, or `.squad/` records
+- Automated SquadScope sync is explicitly gated by `sync_squadscope=true` and `SQUADSCOPE_SYNC_TOKEN`
+- Optional overrides: `AZURE_FUNCTION_APP_NAME` and `AZURE_STORAGE_ACCOUNT_NAME` with deterministic defaults validated against Azure naming rules
+
+**Why:**
+- Allows Azure deployment to succeed without pre-existing secret material while preserving SquadScope compatibility
+- Prevents log-based manual copy/paste of generated keys (intentionally unrecoverable from logs)
+- Avoids long-lived Azure credentials and keeps GitHub OIDC least-privileged for deployment
+- Manual caller handoff requires stable pre-created secret (generated keys are unrecoverable)
+- Azure OIDC cannot write GitHub secrets in another repository; sync requires GitHub-scoped credentials
+
+**Future considerations:**
+- A second Azure federated identity is not appropriate now for GitHub secret/variable sync
+- Second federated identity is appropriate later if SquadScope caller auth migrates to OIDC
+  - Requires dedicated Azure app registration or user-assigned managed identity for `jmservera/SquadScope`
+  - Federated credential subject: `repo:jmservera/SquadScope:environment:prod`
+  - Audience: `api://AzureADTokenExchange`
+  - Permissions: only app role or Function/App Service auth audience needed to invoke `/api/generate`
+  - Retain `x-podcaster-api-key` until SquadScope verifies OIDC token acquisition
+
+**Gate:**
+APPROVE WITH CONDITIONS: deployment may proceed after workflow uses optional deterministic names, never logs generated keys, and syncs resolved key rather than empty/missing GitHub secret.
+
+# Fry PR #11 QA rejection: derived Azure names can exceed limits
+
+- Date: 2026-06-07T20:52:01.950+00:00
+- Reviewer: Fry
+- PR: #11 (`fix/prod-deploy-environment`, commit `58ad887`)
+- Verdict: REJECT — implementation revision required by an agent other than Bender.
+
+## Finding
+
+The deploy workflow validates and can generate `AZURE_FUNCTION_APP_NAME` values up to 60 characters, which is valid for `Microsoft.Web/sites`. However, `infra/main.bicep` derives sibling resource names from the Function App name:
+
+- `hostingPlanName = '${functionAppName}-plan'`
+- `logAnalyticsName = '${functionAppName}-law'`
+- `appInsightsName = '${functionAppName}-appi'`
+
+A valid 60-character Function App name therefore produces derived names of 64–65 characters. That can exceed Azure resource limits, especially App Service Plan (`Microsoft.Web/serverfarms`, 40 chars) and Log Analytics workspace (63 chars), so deployment can fail despite workflow validation passing. Fry reproduced the workflow naming edge case locally with a long resource group producing a 60-character default Function App name.
+
+## Checks run
+
+- `.venv/bin/python -m pytest -q` — 19 passed
+- `.venv/bin/python -m compileall -q function_app.py podcaster tests` — passed
+- `git diff --check` — passed
+- Workflow run blocks through `shellcheck` — passed with CI env/style warnings ignored (`SC2154`, `SC2129`)
+- `gh workflow view deploy-azure.yml --ref fix/prod-deploy-environment --yaml` — GitHub recognizes workflow YAML
+- `gh pr checks 11` — CI/test successful
+- Local Azure/Bicep validation — blocked: `az` and `bicep` unavailable
+
+## Required revision
+
+Have a non-Bender implementation agent update naming so every derived Azure resource has its own deterministic, Azure-valid length and character handling, or add explicit validated override parameters for constrained derived names. Add regression coverage or scripted validation for long/weird resource group names.
+
+
+
+### 2026-06-07T20:52:01.950+00:00: Cap deploy Function App names for derived Azure resources
+**By:** Leela
+**What:** PR #11 deployment now treats `AZURE_FUNCTION_APP_NAME` as optional but validates any resolved value to 2–35 characters. The workflow default truncates the resource-group-derived prefix accordingly, and Bicep adds matching min/max decorators. Storage account override behavior remains optional and validated at 3–24 lowercase alphanumeric characters.
+**Why:** Azure Function Apps can be longer, but this template derives the App Service Plan and Log Analytics workspace by appending suffixes. Capping the source name keeps `${functionAppName}-plan` and `${functionAppName}-law` within Azure resource-name limits before live deployment, preserving the stable SquadScope response contract and avoiding half-baked deploy failures.

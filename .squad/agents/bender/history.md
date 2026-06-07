@@ -22,3 +22,5 @@
 
 📌 Team update (2026-06-07T20:24:55Z): prod-deploy-env decision merged to decisions.md — prod environment requires 7 vars and 1 secret (PODCASTER_API_KEY); deployment blocked until prod config complete
 - 2026-06-07T20:52:01.950+00:00: Updated PR #11 deployment bootstrap for issue #7. Deploy workflow now derives deterministic Function App and Storage Account names when prod override variables are absent, validates Azure naming constraints, and no longer requires a pre-existing PODCASTER_API_KEY secret. If the key is absent, deployment generates a masked high-entropy key and can sync the resolved endpoint/key to SquadScope only when explicitly requested with SQUADSCOPE_SYNC_TOKEN. Local checks passed in .venv; actual Azure deployment remains unattempted pending live prod/OIDC execution.
+
+📌 Team update (2026-06-07T20:52:01Z): PR #11 auth bootstrap approved with conditions; Leela resolved Fry's naming rejection (35-char cap on Function App names). Deployment ready pending Azure subscription. — decided by Hermes, Fry, Leela
