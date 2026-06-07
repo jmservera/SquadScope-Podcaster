@@ -38,8 +38,8 @@ def test_generate_endpoint_rejects_unauthorized(monkeypatch) -> None:
 
 
 def test_generate_endpoint_rejects_invalid_payload(monkeypatch) -> None:
-    monkeypatch.delenv("PODCASTER_API_KEY", raising=False)
-    response = generate(_request({}))
+    monkeypatch.setenv("PODCASTER_API_KEY", "expected")
+    response = generate(_request({}, {"x-podcaster-api-key": "expected"}))
     body = json.loads(response.get_body())
     assert response.status_code == 400
     assert "week is required" in body["errors"]

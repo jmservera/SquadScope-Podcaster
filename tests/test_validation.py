@@ -60,9 +60,9 @@ def test_error_response_shape_is_contract_complete() -> None:
     assert response["errors"] == ["bad request"]
 
 
-def test_api_key_auth_is_optional_for_local_dev(monkeypatch) -> None:
+def test_api_key_auth_fails_closed_when_missing(monkeypatch) -> None:
     monkeypatch.delenv("PODCASTER_API_KEY", raising=False)
-    assert is_authorized({}) is True
+    assert is_authorized({}) is False
 
 
 def test_api_key_auth_uses_header_without_exposing_secret(monkeypatch) -> None:

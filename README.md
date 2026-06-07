@@ -34,6 +34,7 @@ python -m compileall podcaster function_app.py
 Run locally with Azure Functions Core Tools:
 
 ```bash
+export PODCASTER_API_KEY=local-dev-key
 func start
 ```
 

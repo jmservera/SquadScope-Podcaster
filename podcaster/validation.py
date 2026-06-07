@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -32,13 +33,13 @@ def expected_api_key() -> str | None:
 def is_authorized(headers: dict[str, str]) -> bool:
     configured = expected_api_key()
     if not configured:
-        return True
+        return False
     supplied = ""
     for key, value in headers.items():
         if key.lower() == "x-podcaster-api-key":
             supplied = value
             break
-    return bool(supplied) and supplied == configured
+    return bool(supplied) and hmac.compare_digest(supplied, configured)
 
 
 def validate_payload(payload: Any) -> list[str]:
