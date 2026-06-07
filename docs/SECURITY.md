@@ -203,7 +203,7 @@ Before relying on auto-sync, SquadScope engineers must manually verify:
 - [ ] **Azure subscription exists** with Contributor or equivalent access.
 - [ ] **Resource group name decided** (e.g., `podcaster-prod`). If it doesn't exist, the deploy workflow creates it.
 - [ ] **Location confirmed** (e.g., `eastus`). Must be a valid Azure region.
-- [ ] **Function App name is globally unique** (Azure enforces global uniqueness for `.azurewebsites.net`). The workflow derives a deterministic default; set `AZURE_FUNCTION_APP_NAME` only to override a collision or naming preference.
+- [ ] **Function App name is globally unique** (Azure enforces global uniqueness for `.azurewebsites.net`). The workflow derives a deterministic default; set `AZURE_FUNCTION_APP_NAME` only to override a collision or naming preference. Overrides must be 2–35 characters so derived Azure resource names also stay within service limits.
 - [ ] **Storage Account name is globally unique and lowercase** (Azure storage names must be 3–24 characters, lowercase letters and digits only). The workflow derives a deterministic default; set `AZURE_STORAGE_ACCOUNT_NAME` only to override a collision or naming preference.
 - [ ] **Avoid naming conflicts:** If Azure reports a global name conflict, set the relevant override variable and re-deploy.
 

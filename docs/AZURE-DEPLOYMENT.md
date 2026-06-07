@@ -19,7 +19,8 @@ This document specifies the exact Azure setup required before deploying Podcaste
 - [ ] **Function App name is globally unique** (Azure enforces global uniqueness for `.azurewebsites.net` domain).
   - The workflow derives a deterministic default from `AZURE_RESOURCE_GROUP` and `AZURE_SUBSCRIPTION_ID`.
   - Example default shape: `podcaster-podcaster-prod-<12-hex-hash>`.
-  - Constraint: 1–60 characters; lowercase letters, digits, hyphens allowed; must start with letter or digit.
+  - Workflow constraint: 2–35 characters; letters, digits, hyphens allowed; must start and end with a letter or digit.
+  - Azure allows longer Function App names, but Podcaster reserves room for derived App Service Plan and Log Analytics names (`-plan`, `-law`) so deployment cannot fail on resource-name length limits.
   - If the derived name conflicts globally, set `AZURE_FUNCTION_APP_NAME` as an override.
 
 - [ ] **Storage Account name is globally unique, lowercase, alphanumeric only**.
@@ -99,7 +100,7 @@ AZURE_FUNCTION_APP_NAME=podcaster-app-prod
 AZURE_STORAGE_ACCOUNT_NAME=podcasterstgprod
 ```
 
-If omitted, the workflow computes safe deterministic defaults. Function App names are globally unique in Azure DNS and Storage Account names are globally unique across Azure; a rare collision still requires setting the override variable.
+If omitted, the workflow computes safe deterministic defaults. Function App override names must be 2–35 characters so derived Azure resource names stay compliant. Function App names are globally unique in Azure DNS and Storage Account names are globally unique across Azure; a rare collision still requires setting the override variable.
 
 #### Step 2: Add `prod` Environment Secrets
 

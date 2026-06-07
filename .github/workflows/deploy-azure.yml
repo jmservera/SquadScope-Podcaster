@@ -83,7 +83,7 @@ jobs:
           if [ -z "$function_prefix" ]; then
             function_prefix="podcaster"
           fi
-          function_prefix=$(printf '%s' "$function_prefix" | cut -c1-37)
+          function_prefix=$(printf '%s' "$function_prefix" | cut -c1-12)
           default_function_app_name="podcaster-${function_prefix}-${suffix}"
 
           storage_prefix=$(printf '%s' "$AZURE_RESOURCE_GROUP" \
@@ -98,8 +98,8 @@ jobs:
           function_app_name="${AZURE_FUNCTION_APP_NAME:-$default_function_app_name}"
           storage_account_name="${AZURE_STORAGE_ACCOUNT_NAME:-$default_storage_account_name}"
 
-          if ! [[ "$function_app_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$ ]]; then
-            echo "::error::AZURE_FUNCTION_APP_NAME must be 2-60 characters, alphanumeric or hyphen, and start/end with alphanumeric."
+          if ! [[ "$function_app_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,33}[a-zA-Z0-9]$ ]]; then
+            echo "::error::AZURE_FUNCTION_APP_NAME must be 2-35 characters, alphanumeric or hyphen, and start/end with alphanumeric. This keeps derived Azure resource names within service limits."
             exit 1
           fi
           if ! [[ "$storage_account_name" =~ ^[a-z0-9]{3,24}$ ]]; then
