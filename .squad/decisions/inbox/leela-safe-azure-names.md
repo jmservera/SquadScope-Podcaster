@@ -1,4 +1,0 @@
-### 2026-06-07T20:52:01.950+00:00: Cap deploy Function App names for derived Azure resources
-**By:** Leela
-**What:** PR #11 deployment now treats `AZURE_FUNCTION_APP_NAME` as optional but validates any resolved value to 2–35 characters. The workflow default truncates the resource-group-derived prefix accordingly, and Bicep adds matching min/max decorators. Storage account override behavior remains optional and validated at 3–24 lowercase alphanumeric characters.
-**Why:** Azure Function Apps can be longer, but this template derives the App Service Plan and Log Analytics workspace by appending suffixes. Capping the source name keeps `${functionAppName}-plan` and `${functionAppName}-law` within Azure resource-name limits before live deployment, preserving the stable SquadScope response contract and avoiding half-baked deploy failures.
