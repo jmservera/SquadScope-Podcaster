@@ -17,7 +17,11 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: prod
     env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_FUNCTION_APP_NAME: ${{ vars.AZURE_FUNCTION_APP_NAME }}
@@ -33,16 +37,95 @@ jobs:
 
       - name: Validate configuration
         env:
-          PODCASTER_API_KEY: ${{ secrets.PODCASTER_API_KEY }}
+          SQUADSCOPE_SYNC_TOKEN: ${{ secrets.SQUADSCOPE_SYNC_TOKEN }}
+          SYNC_SQUADSCOPE: ${{ inputs.sync_squadscope }}
         run: |
-          test -n "${{ vars.AZURE_CLIENT_ID }}"
-          test -n "${{ vars.AZURE_TENANT_ID }}"
-          test -n "${{ vars.AZURE_SUBSCRIPTION_ID }}"
-          test -n "$AZURE_LOCATION"
-          test -n "$AZURE_RESOURCE_GROUP"
-          test -n "$AZURE_FUNCTION_APP_NAME"
-          test -n "$AZURE_STORAGE_ACCOUNT_NAME"
-          test -n "$PODCASTER_API_KEY"
+          set -euo pipefail
+
+          missing=0
+          require_config() {
+            local name="$1"
+            local source="$2"
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured in GitHub environment prod $source."
+              missing=1
+            fi
+          }
+
+          require_config AZURE_CLIENT_ID "variables"
+          require_config AZURE_TENANT_ID "variables"
+          require_config AZURE_SUBSCRIPTION_ID "variables"
+          require_config AZURE_LOCATION "variables"
+          require_config AZURE_RESOURCE_GROUP "variables"
+
+          if [ "$SYNC_SQUADSCOPE" = "true" ]; then
+            require_config SQUADSCOPE_SYNC_TOKEN "secrets for sync_squadscope=true"
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "Required configuration present for GitHub environment prod. Optional app/storage names and API key may be derived."
+
+      - name: Resolve deployment names and API key
+        env:
+          PODCASTER_API_KEY_SECRET: ${{ secrets.PODCASTER_API_KEY }}
+        run: |
+          set -euo pipefail
+          set +x
+
+          suffix=$(printf '%s' "${AZURE_SUBSCRIPTION_ID}:${AZURE_RESOURCE_GROUP}" | sha256sum | cut -c1-12)
+
+          function_prefix=$(printf '%s' "$AZURE_RESOURCE_GROUP" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')
+          if [ -z "$function_prefix" ]; then
+            function_prefix="podcaster"
+          fi
+          function_prefix=$(printf '%s' "$function_prefix" | cut -c1-12)
+          default_function_app_name="podcaster-${function_prefix}-${suffix}"
+
+          storage_prefix=$(printf '%s' "$AZURE_RESOURCE_GROUP" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9]+//g' \
+            | cut -c1-12)
+          if [ -z "$storage_prefix" ]; then
+            storage_prefix="podcaster"
+          fi
+          default_storage_account_name="${storage_prefix}${suffix}"
+
+          function_app_name="${AZURE_FUNCTION_APP_NAME:-$default_function_app_name}"
+          storage_account_name="${AZURE_STORAGE_ACCOUNT_NAME:-$default_storage_account_name}"
+
+          if ! [[ "$function_app_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,33}[a-zA-Z0-9]$ ]]; then
+            echo "::error::AZURE_FUNCTION_APP_NAME must be 2-35 characters, alphanumeric or hyphen, and start/end with alphanumeric. This keeps derived Azure resource names within service limits."
+            exit 1
+          fi
+          if ! [[ "$storage_account_name" =~ ^[a-z0-9]{3,24}$ ]]; then
+            echo "::error::AZURE_STORAGE_ACCOUNT_NAME must be 3-24 lowercase alphanumeric characters."
+            exit 1
+          fi
+
+          if [ -n "${PODCASTER_API_KEY_SECRET:-}" ]; then
+            podcaster_api_key="$PODCASTER_API_KEY_SECRET"
+            api_key_source="GitHub environment secret PODCASTER_API_KEY"
+          else
+            podcaster_api_key=$(openssl rand -hex 32)
+            api_key_source="generated during this deployment"
+            echo "::warning::PODCASTER_API_KEY is not configured in GitHub environment prod; generated a deployment key. Use sync_squadscope=true during this run or set a stable secret and redeploy for manual handoff."
+          fi
+          echo "::add-mask::$podcaster_api_key"
+
+          {
+            echo "AZURE_FUNCTION_APP_NAME=$function_app_name"
+            echo "AZURE_STORAGE_ACCOUNT_NAME=$storage_account_name"
+            echo "PODCASTER_API_KEY=$podcaster_api_key"
+          } >> "$GITHUB_ENV"
+
+          echo "Using Function App name: $function_app_name"
+          echo "Using Storage Account name: $storage_account_name"
+          echo "API key source: $api_key_source; value not printed."
 
       - name: Azure login
         # azure/login v2
@@ -61,8 +144,6 @@ jobs:
 
       - name: Deploy infrastructure
         id: deploy_bicep
-        env:
-          PODCASTER_API_KEY: ${{ secrets.PODCASTER_API_KEY }}
         run: |
           set +x
           endpoint=$(az deployment group create \
@@ -77,7 +158,7 @@ jobs:
           echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
           echo "### Podcaster integration" >> "$GITHUB_STEP_SUMMARY"
           echo "Endpoint: \`$endpoint\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "API key: stored in secrets; not printed." >> "$GITHUB_STEP_SUMMARY"
+          echo "API key: configured as a Function App setting; not printed." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Python
         # actions/setup-python v5
@@ -105,12 +186,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SQUADSCOPE_SYNC_TOKEN }}
           ENDPOINT: ${{ steps.deploy_bicep.outputs.endpoint }}
-          PODCASTER_API_KEY: ${{ secrets.PODCASTER_API_KEY }}
         run: |
+          set -euo pipefail
           set +x
           if [ -z "$GH_TOKEN" ]; then
-            echo "SquadScope sync requested but SQUADSCOPE_SYNC_TOKEN is not configured." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            echo "::error::SquadScope sync requested but SQUADSCOPE_SYNC_TOKEN is not configured in GitHub environment prod."
+            exit 1
+          fi
+          if [ -z "${PODCASTER_API_KEY:-}" ]; then
+            echo "::error::Podcaster API key was not resolved; refusing to sync an empty secret."
+            exit 1
           fi
           gh variable set PODCASTER_ENDPOINT --repo jmservera/SquadScope --body "$ENDPOINT"
           printf '%s' "$PODCASTER_API_KEY" | gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope

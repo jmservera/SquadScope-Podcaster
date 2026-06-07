@@ -3,11 +3,15 @@ targetScope = 'resourceGroup'
 @description('Azure region for all resources.')
 param location string = resourceGroup().location
 
-@description('Globally unique Storage Account name.')
-param storageAccountName string
+@description('Globally unique Storage Account name. Defaults to a deterministic safe name based on the resource group.')
+@minLength(3)
+@maxLength(24)
+param storageAccountName string = 'podcaster${uniqueString(resourceGroup().id)}'
 
-@description('Globally unique Function App name.')
-param functionAppName string
+@description('Globally unique Function App name. Defaults to a deterministic safe name based on the resource group.')
+@minLength(2)
+@maxLength(35)
+param functionAppName string = 'podcaster-${uniqueString(resourceGroup().id)}'
 
 @description('Application Insights name.')
 param appInsightsName string = '${functionAppName}-appi'

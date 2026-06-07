@@ -54,23 +54,26 @@ curl -X POST http://localhost:7071/api/generate \
 
 ## Deployment
 
-The deployment workflow is `.github/workflows/deploy-azure.yml`. It uses GitHub OIDC with `azure/login`, deploys Bicep from `infra/main.bicep`, packages the Function App, deploys it, and prints only non-secret integration values.
+The deployment workflow is `.github/workflows/deploy-azure.yml`. It uses the GitHub environment named exactly `prod`, authenticates with GitHub OIDC via `azure/login`, deploys Bicep from `infra/main.bicep`, packages the Function App, deploys it, and prints only non-secret integration values.
 
-Required repository variables:
+Required `prod` environment variables:
 
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
 - `AZURE_SUBSCRIPTION_ID`
 - `AZURE_LOCATION` (for example, `eastus`)
 - `AZURE_RESOURCE_GROUP`
-- `AZURE_FUNCTION_APP_NAME`
-- `AZURE_STORAGE_ACCOUNT_NAME`
 
-Required repository secret:
+Optional `prod` environment variables:
 
-- `PODCASTER_API_KEY` - the API key configured as an app setting. Never print this value.
+- `AZURE_FUNCTION_APP_NAME` - override the deterministic default Function App name.
+- `AZURE_STORAGE_ACCOUNT_NAME` - override the deterministic default Storage Account name.
 
-Optional secret for syncing integration values to SquadScope:
+Optional `prod` environment secret:
+
+- `PODCASTER_API_KEY` - if absent, the workflow generates a high-entropy key, masks it, and sets it only as an Azure app setting. Never print this value.
+
+Optional `prod` environment secret for syncing integration values to SquadScope:
 
 - `SQUADSCOPE_SYNC_TOKEN` - fine-grained token with permission to write variables and secrets in `jmservera/SquadScope`.
 
@@ -88,7 +91,7 @@ The response contains `job_id`, `status`, artifact URLs, `expires_at`, `warnings
 ## Secret handling
 
 - Do not commit subscription IDs, tenant IDs, API keys, storage keys, or publish profiles.
-- Store the Podcaster API key as `PODCASTER_API_KEY` in this repository for deployment.
-- Store the same API key as `PODCASTER_API_KEY` in `jmservera/SquadScope` for caller authentication.
+- Prefer setting `PODCASTER_API_KEY` in this repository when you need stable manual rotation; otherwise the deploy workflow generates one per deployment.
+- Store or sync the same API key as `PODCASTER_API_KEY` in `jmservera/SquadScope` for caller authentication.
 - Use GitHub Actions masking and avoid shell tracing around secret operations.
 - The API does not echo received API keys or include them in logs or responses.

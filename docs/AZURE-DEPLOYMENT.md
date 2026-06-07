@@ -17,14 +17,17 @@ This document specifies the exact Azure setup required before deploying Podcaste
   - If it doesn't exist, the deploy workflow creates it.
 
 - [ ] **Function App name is globally unique** (Azure enforces global uniqueness for `.azurewebsites.net` domain).
-  - Example: `podcaster-app-prod-abc123` (append a random suffix if needed).
-  - Constraint: 1–60 characters; lowercase letters, digits, hyphens allowed; must start with letter or digit.
-  - **Test:** Run `az functionapp list --query "[].name"` to see existing names.
+  - The workflow derives a deterministic default from `AZURE_RESOURCE_GROUP` and `AZURE_SUBSCRIPTION_ID`.
+  - Example default shape: `podcaster-podcaster-prod-<12-hex-hash>`.
+  - Workflow constraint: 2–35 characters; letters, digits, hyphens allowed; must start and end with a letter or digit.
+  - Azure allows longer Function App names, but Podcaster reserves room for derived App Service Plan and Log Analytics names (`-plan`, `-law`) so deployment cannot fail on resource-name length limits.
+  - If the derived name conflicts globally, set `AZURE_FUNCTION_APP_NAME` as an override.
 
 - [ ] **Storage Account name is globally unique, lowercase, alphanumeric only**.
-  - Example: `podcasterstgprod123` (no hyphens or underscores in storage names).
+  - The workflow derives a deterministic default from `AZURE_RESOURCE_GROUP` and `AZURE_SUBSCRIPTION_ID`.
+  - Example default shape: `podcasterprod<12hex>`.
   - Constraint: 3–24 characters; lowercase letters and digits only.
-  - **Test:** Run `az storage account list --query "[].name"` to see existing names.
+  - If the derived name conflicts globally, set `AZURE_STORAGE_ACCOUNT_NAME` as an override.
 
 - [ ] **Avoid naming conflicts:** If any name is already in use in your subscription, choose a different name.
 
@@ -53,10 +56,10 @@ This document specifies the exact Azure setup required before deploying Podcaste
 4. Fill in:
    - **Organization:** `jmservera`
    - **Repository:** `SquadScope-Podcaster`
-   - **Entity type:** `Branch`
-   - **GitHub branch name:** `main` (or the branch you want to deploy from)
+   - **Entity type:** `Environment`
+   - **GitHub environment name:** `prod`
 5. Click **Add**.
-6. **Verify:** The credential appears in the list with a preview of the subject identifier (e.g., `repo:jmservera/SquadScope-Podcaster:ref:refs/heads/main`).
+6. **Verify:** The credential appears in the list with a preview of the subject identifier `repo:jmservera/SquadScope-Podcaster:environment:prod`.
 
 #### Step 3: Get Azure Subscription & Tenant IDs
 
@@ -74,11 +77,11 @@ This document specifies the exact Azure setup required before deploying Podcaste
 4. **Members > Select members:** Search for the app registration name (e.g., `Podcaster-GitHub-Actions`).
 5. Click **Assign**.
 
-### GitHub Repository Configuration
+### GitHub Environment Configuration
 
-#### Step 1: Add Repository Variables
+#### Step 1: Add `prod` Environment Variables
 
-Go to **Settings > Secrets and variables > Variables** and create:
+The deploy workflow uses the GitHub environment named exactly `prod`. Go to **Settings > Environments > prod > Environment variables** and create:
 
 ```
 AZURE_CLIENT_ID=<Application ID from step 1>
@@ -86,21 +89,30 @@ AZURE_TENANT_ID=<Tenant ID from step 3>
 AZURE_SUBSCRIPTION_ID=<Subscription ID from step 3>
 AZURE_LOCATION=eastus
 AZURE_RESOURCE_GROUP=podcaster-prod
+```
+
+**Important:** These are **environment variables**, not secrets. They are non-sensitive, but the workflow only checks that they are present and does not print their values.
+
+Optional override variables:
+
+```text
 AZURE_FUNCTION_APP_NAME=podcaster-app-prod
 AZURE_STORAGE_ACCOUNT_NAME=podcasterstgprod
 ```
 
-**Important:** These are **variables**, not secrets. They are non-sensitive and appear in workflow summaries.
+If omitted, the workflow computes safe deterministic defaults. Function App override names must be 2–35 characters so derived Azure resource names stay compliant. Function App names are globally unique in Azure DNS and Storage Account names are globally unique across Azure; a rare collision still requires setting the override variable.
 
-#### Step 2: Add Repository Secrets
+#### Step 2: Add `prod` Environment Secrets
 
-Go to **Settings > Secrets and variables > Secrets** and create:
+Go to **Settings > Environments > prod > Environment secrets** and optionally create:
 
 ```
 PODCASTER_API_KEY=<randomly-generated-key-at-least-32-characters>
 ```
 
-**Generation:** Use a secure random generator:
+If `PODCASTER_API_KEY` is absent, the deploy workflow generates a 256-bit key with OpenSSL, masks it immediately, and sets it as the Function App app setting without printing it. That generated value is not recoverable from logs; use `sync_squadscope=true` with `SQUADSCOPE_SYNC_TOKEN` during that deployment to push it to SquadScope, or set your own `PODCASTER_API_KEY` secret before deploying when manual handoff/rotation is required.
+
+**Manual generation:** Use a secure random generator:
 ```bash
 # Option 1: OpenSSL
 openssl rand -hex 32
@@ -128,7 +140,7 @@ SQUADSCOPE_SYNC_TOKEN=<fine-grained-PAT-with-secrets:write-and-variables:write>
    - **Secrets:** Read and write
    - **Variables:** Read and write
 7. Click **Generate token**.
-8. **Copy the token** and paste into the Podcaster repository's `SQUADSCOPE_SYNC_TOKEN` secret.
+8. **Copy the token** and paste into the Podcaster `prod` environment's `SQUADSCOPE_SYNC_TOKEN` secret.
 9. **Store the token securely** (GitHub shows it only once).
 
 ### Pre-Flight Validation
@@ -144,21 +156,22 @@ az account show
 az group exists --name podcaster-prod
 # Returns: false (good, it will be created) or true (already exists, safe to reuse)
 
-# 3. Verify Function App name is globally unique
+# 3. If using an override, verify Function App name is globally unique
 az functionapp list --query "[].name" | grep podcaster-app-prod
 # Should return empty (good, name is available)
 
-# 4. Verify Storage Account name is globally unique
+# 4. If using an override, verify Storage Account name is globally unique
 az storage account list --query "[].name" | grep podcasterstgprod
 # Should return empty (good, name is available)
 
-# 5. Verify GitHub variables are set
-gh variable list --repo jmservera/SquadScope-Podcaster
-# Should show AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_LOCATION, AZURE_RESOURCE_GROUP, AZURE_FUNCTION_APP_NAME, AZURE_STORAGE_ACCOUNT_NAME
+# 5. Verify GitHub prod environment variables are set (names only)
+gh variable list --repo jmservera/SquadScope-Podcaster --env prod
+# Should show AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_LOCATION, AZURE_RESOURCE_GROUP
+# AZURE_FUNCTION_APP_NAME and AZURE_STORAGE_ACCOUNT_NAME are optional overrides.
 
-# 6. Verify GitHub secret is set
-gh secret list --repo jmservera/SquadScope-Podcaster | grep PODCASTER_API_KEY
-# Should show PODCASTER_API_KEY in the list (value not shown)
+# 6. Optionally verify GitHub prod environment secret names are set (values are never shown)
+gh secret list --repo jmservera/SquadScope-Podcaster --env prod | grep PODCASTER_API_KEY
+# If absent, deployment generates and masks a transient key.
 ```
 
 ---
@@ -179,7 +192,7 @@ gh workflow run deploy-azure.yml \
 1. Go to **SquadScope-Podcaster > Actions > Deploy Azure**.
 2. Click **Run workflow**.
 3. **Inputs:**
-   - `sync_squadscope`: Leave as `false` for the first deployment.
+   - `sync_squadscope`: Use `true` only when `SQUADSCOPE_SYNC_TOKEN` is configured and you want the endpoint/key pushed to SquadScope. If `PODCASTER_API_KEY` is absent and you need SquadScope to call this deployment, use `true` during the same run.
 4. Click **Run workflow**.
 
 #### Step 2: Monitor the Workflow Run
@@ -194,7 +207,8 @@ gh run view -R jmservera/SquadScope-Podcaster --log
 
 **Expected output:**
 - ✓ Checkout code
-- ✓ Validate configuration (all variables/secrets present)
+- ✓ Validate configuration (required variables present; optional names/key may be derived)
+- ✓ Resolve deployment names and API key (API key value is masked and not printed)
 - ✓ Azure login (OIDC federated identity)
 - ✓ Create resource group
 - ✓ Deploy infrastructure (Bicep)
@@ -206,7 +220,7 @@ gh run view -R jmservera/SquadScope-Podcaster --log
 - ✓ Print integration summary:
   ```
   Endpoint: https://podcaster-app-prod.azurewebsites.net/api/generate
-  API key: stored in secrets; not printed.
+  API key: configured as an app setting; not printed.
   ```
 
 #### Step 3: Verify the Deployment
@@ -222,7 +236,7 @@ az functionapp show \
 
 # 2. Test the endpoint
 PODCASTER_ENDPOINT="https://podcaster-app-prod.azurewebsites.net/api/generate"
-PODCASTER_API_KEY="<your-api-key>"
+PODCASTER_API_KEY="<your-api-key-or-synced-secret>"
 
 curl -X POST "$PODCASTER_ENDPOINT" \
   -H 'content-type: application/json' \
@@ -244,7 +258,7 @@ curl -X POST "$PODCASTER_ENDPOINT" \
 
 #### Step 4: Verify SquadScope Integration (Manual Setup)
 
-If `SQUADSCOPE_SYNC_TOKEN` is not configured, manually set up SquadScope:
+If `SQUADSCOPE_SYNC_TOKEN` is not configured, manually set up SquadScope. Manual setup requires a stable API key that you generated and stored as the Podcaster `PODCASTER_API_KEY` secret before deploy; a workflow-generated key is intentionally not printed or recoverable.
 
 1. In **SquadScope repository settings** (`jmservera/SquadScope`):
    - Go to **Settings > Secrets and variables > Variables**.
@@ -276,13 +290,13 @@ cd /home/azureuser/source/SquadScope-Podcaster
 git add <files>
 git commit -m "Update podcaster function" \
   -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
-git push origin main
+git push origin <feature-branch>
 ```
 
 #### Step 2: Trigger Deploy (Automatic or Manual)
 
 The deploy workflow can be triggered:
-- **Manually:** `gh workflow run deploy-azure.yml -R jmservera/SquadScope-Podcaster`
+- **Manually:** `gh workflow run deploy-azure.yml -R jmservera/SquadScope-Podcaster --ref main`
 - **On push (optional):** Configure a workflow trigger in `.github/workflows/deploy-azure.yml` to run on `push: branches: [main]`.
 
 #### Step 3: Verify Deployment
@@ -291,7 +305,7 @@ Same as Step 3 from "First Deployment"; test the endpoint to confirm the new cod
 
 ### Sync to SquadScope (Optional, After First Deploy)
 
-After the first deployment, if `SQUADSCOPE_SYNC_TOKEN` is configured, you can automate the sync:
+If `SQUADSCOPE_SYNC_TOKEN` is configured, you can automate the sync:
 
 ```bash
 gh workflow run deploy-azure.yml \
@@ -301,7 +315,7 @@ gh workflow run deploy-azure.yml \
 
 The workflow will:
 1. Deploy Podcaster (if needed).
-2. Sync `PODCASTER_ENDPOINT` variable and `PODCASTER_API_KEY` secret to SquadScope automatically.
+2. Sync `PODCASTER_ENDPOINT` variable and `PODCASTER_API_KEY` secret to SquadScope automatically. This works with either a preconfigured Podcaster secret or a key generated during the same deployment.
 
 ---
 
@@ -323,7 +337,7 @@ The workflow will:
 **Solution:**
 1. The Function App or Storage Account name is already in use.
 2. Choose a different name (e.g., append `-v2` or a timestamp).
-3. Update the GitHub variables and re-deploy.
+3. Set `AZURE_FUNCTION_APP_NAME` or `AZURE_STORAGE_ACCOUNT_NAME` in the `prod` environment and re-deploy.
 
 ### Endpoint Returns 401 Unauthorized
 
@@ -399,7 +413,7 @@ az group exists --name podcaster-prod
 
 ## Security Best Practices
 
-1. **Rotate API keys quarterly:** Generate a new `PODCASTER_API_KEY`, update GitHub secret, re-deploy.
+1. **Rotate API keys quarterly:** Generate a new `PODCASTER_API_KEY`, update GitHub secret, re-deploy, and sync/update SquadScope.
 2. **Monitor costs:** Check Azure Cost Management monthly to detect unexpected usage.
 3. **Enable alerts:** Set up Application Insights alerts for 5xx errors, high latency, or auth failures.
 4. **Audit logs:** Enable Azure Activity Log to track who deployed what and when.
