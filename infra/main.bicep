@@ -122,8 +122,13 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: 'https://${storage.name}.queue.${environment().suffixes.storage}'
         }
         {
+        {
           name: 'AzureWebJobsStorage__tableServiceUri'
           value: 'https://${storage.name}.table.${environment().suffixes.storage}'
+        }
+        {
+          name: 'AzureWebJobsStorage__credential'
+          value: 'managedidentity'
         }
         {
           name: 'FUNCTIONS_EXTENSION_VERSION'
