@@ -69,13 +69,21 @@ This document specifies the exact Azure setup required before deploying Podcaste
 4. Go to **Microsoft Entra ID > Overview**.
 5. **Copy the Tenant ID** → this is `AZURE_TENANT_ID`.
 
-#### Step 4: Grant the App Registration Subscription Access
+#### Step 4: Grant the App Registration Azure Access
 
 1. Go to **Azure Portal > Subscriptions > Your Subscription > Access control (IAM)**.
 2. Click **+ Add > Add role assignment**.
 3. **Role:** `Contributor` (or `Owner` if you need to create resource groups and manage all resources).
 4. **Members > Select members:** Search for the app registration name (e.g., `Podcaster-GitHub-Actions`).
 5. Click **Assign**.
+
+The deployment also creates Azure role assignments for the Function App managed identity and for the GitHub Actions deploy identity. The deploy identity therefore needs permission to write role assignments at the target scope during bootstrap (for example `Owner`, or `Contributor` plus `User Access Administrator`). After the first successful deployment, keep the scope as narrow as possible.
+
+For code deployment, the workflow uses Entra-authenticated storage data-plane operations, not account keys. The Bicep template assigns the GitHub Actions service principal `Storage Blob Data Contributor` on the deployed Storage Account so it can:
+
+- upload `app.zip` to the private `function-packages` container with `--auth-mode login`
+- set the Function App to read that private package blob with its managed identity
+- avoid using or printing Storage Account keys
 
 ### GitHub Environment Configuration
 
@@ -215,8 +223,10 @@ gh run view -R jmservera/SquadScope-Podcaster --log
   - Creates Storage Account, Function App, App Insights, Log Analytics
   - Assigns managed identity to Function App
   - Outputs endpoint URL
-- ✓ Set up Python and install dependencies
-- ✓ Deploy Function App package (ZIP)
+- ✓ Set up Python 3.11 and install dependencies into `.python_packages/lib/site-packages`
+- ✓ Build `app.zip` with the Function App, host file, `podcaster/`, and Python dependencies
+- ✓ Upload `app.zip` to the private `function-packages` blob container with OIDC/Entra auth
+- ✓ Set `WEBSITE_RUN_FROM_PACKAGE` to the private package blob URL, enable managed-identity package access, and restart the Function App
 - ✓ Print integration summary:
   ```
   Endpoint: https://podcaster-app-prod.azurewebsites.net/api/generate
@@ -303,6 +313,18 @@ The deploy workflow can be triggered:
 
 Same as Step 3 from "First Deployment"; test the endpoint to confirm the new code is running.
 
+### Function App Package Deployment Design
+
+Podcaster intentionally does **not** use `az functionapp deployment source config-zip` or `az webapp deploy --type zip`. Those deployment APIs failed in the target Function App environment. The durable workflow uses the pattern that was verified manually:
+
+1. Build dependencies on the GitHub runner with Python 3.11, matching the Function App runtime.
+2. Create `app.zip` locally, excluding git metadata, local settings, virtualenvs, caches, `.env*`, and bytecode.
+3. Upload the package to the private `function-packages` container using `az storage blob upload --auth-mode login`.
+4. Set `WEBSITE_RUN_FROM_PACKAGE` to the private blob URL and set `WEBSITE_USE_MANAGED_IDENTITY=true` plus `WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned` so the Function App reads the package with its system-assigned managed identity.
+5. Restart the Function App.
+
+The package URL does not include a SAS token. Blob public access remains disabled, and the Function App managed identity already has storage data-plane access from the Bicep deployment.
+
 ### Sync to SquadScope (Optional, After First Deploy)
 
 If `SQUADSCOPE_SYNC_TOKEN` is configured, you can automate the sync:
@@ -338,6 +360,18 @@ The workflow will:
 1. The Function App or Storage Account name is already in use.
 2. Choose a different name (e.g., append `-v2` or a timestamp).
 3. Set `AZURE_FUNCTION_APP_NAME` or `AZURE_STORAGE_ACCOUNT_NAME` in the `prod` environment and re-deploy.
+
+**Error:** package upload or managed-identity package read fails with authorization errors.
+
+**Solution:**
+1. Verify the deploy identity has role-assignment write permission for bootstrap.
+2. Verify the Storage Account has a `Storage Blob Data Contributor` assignment for the GitHub Actions service principal.
+3. Verify the Function App managed identity has storage blob read access on the package container or storage account.
+4. Wait a few minutes for Azure RBAC propagation, then re-run the workflow.
+
+**Error:** `config-zip` or `az webapp deploy --type zip` examples fail.
+
+**Solution:** Do not use those paths for this app. Use `deploy-azure.yml`, which deploys by private run-from-package blob.
 
 ### Endpoint Returns 401 Unauthorized
 

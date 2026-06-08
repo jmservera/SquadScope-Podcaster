@@ -26,6 +26,7 @@ jobs:
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_FUNCTION_APP_NAME: ${{ vars.AZURE_FUNCTION_APP_NAME }}
       AZURE_STORAGE_ACCOUNT_NAME: ${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
+      AZURE_PACKAGE_CONTAINER_NAME: function-packages
     outputs:
       endpoint: ${{ steps.deploy_bicep.outputs.endpoint }}
     steps:
@@ -145,13 +146,47 @@ jobs:
       - name: Deploy infrastructure
         id: deploy_bicep
         run: |
+          set -euo pipefail
           set +x
+          deployment_principal_object_id=$(az ad sp show \
+            --id "$AZURE_CLIENT_ID" \
+            --query id \
+            --output tsv 2>/dev/null || true)
+
+          if [ -z "$deployment_principal_object_id" ]; then
+            arm_access_token=$(az account get-access-token \
+              --resource https://management.azure.com/ \
+              --query accessToken \
+              --output tsv)
+            echo "::add-mask::$arm_access_token"
+            deployment_principal_object_id=$(ARM_ACCESS_TOKEN="$arm_access_token" python3 - <<'PY'
+          import base64
+          import json
+          import os
+
+          token = os.environ["ARM_ACCESS_TOKEN"]
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          print(claims.get("oid", ""))
+          PY
+          )
+            unset arm_access_token
+          fi
+
+          if [ -z "$deployment_principal_object_id" ]; then
+            echo "::error::Could not resolve the Azure deployment service principal object ID for storage data-plane role assignment."
+            exit 1
+          fi
+
           endpoint=$(az deployment group create \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
             --parameters location="$AZURE_LOCATION" \
             --parameters functionAppName="$AZURE_FUNCTION_APP_NAME" \
             --parameters storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
+            --parameters packageContainerName="$AZURE_PACKAGE_CONTAINER_NAME" \
+            --parameters deploymentPrincipalObjectId="$deployment_principal_object_id" \
             --parameters podcasterApiKey="$PODCASTER_API_KEY" \
             --query properties.outputs.endpoint.value \
             --output tsv)
@@ -168,18 +203,115 @@ jobs:
 
       - name: Install dependencies for package
         run: |
+          set -euo pipefail
+          rm -rf .python_packages app.zip
           python -m pip install --upgrade pip
-          pip install --target=".python_packages/lib/site-packages" -r requirements.txt
+          python -m pip install --target=".python_packages/lib/site-packages" -r requirements.txt
 
-      - name: Deploy Function App package
+      - name: Build Function App package
         run: |
-          zip -r app.zip function_app.py host.json podcaster .python_packages -x '*.pyc' '*/__pycache__/*'
-          az functionapp deployment source config-zip \
+          set -euo pipefail
+          rm -f app.zip
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+          import zipfile
+
+          roots = [
+              Path("function_app.py"),
+              Path("host.json"),
+              Path("podcaster"),
+              Path(".python_packages"),
+          ]
+          required = {
+              "function_app.py",
+              "host.json",
+              "podcaster/__init__.py",
+              ".python_packages/lib/site-packages/azure/functions/__init__.py",
+          }
+          forbidden_dirs = {".git", ".github", ".venv", ".pytest_cache", "__pycache__"}
+          forbidden_names = {"local.settings.json"}
+
+          def excluded(path: Path) -> bool:
+              return (
+                  any(part in forbidden_dirs for part in path.parts)
+                  or path.name in forbidden_names
+                  or path.name.startswith(".env")
+                  or path.suffix == ".pyc"
+              )
+
+          with zipfile.ZipFile("app.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+              for root in roots:
+                  paths = [root] if root.is_file() else sorted(path for path in root.rglob("*") if path.is_file())
+                  for path in paths:
+                      if not excluded(path):
+                          archive.write(path, path.as_posix())
+
+          with zipfile.ZipFile("app.zip") as archive:
+              names = set(archive.namelist())
+              missing = sorted(required - names)
+              forbidden = sorted(
+                  name for name in names
+                  if any(part in forbidden_dirs for part in Path(name).parts)
+                  or "/__pycache__/" in name
+                  or Path(name).name in forbidden_names
+                  or Path(name).name.startswith(".env")
+                  or name.endswith(".pyc")
+              )
+          if missing:
+              sys.exit(f"Package missing required files: {', '.join(missing)}")
+          if forbidden:
+              sys.exit(f"Package contains forbidden files: {', '.join(forbidden[:5])}")
+          PY
+
+      - name: Deploy package from private blob
+        run: |
+          set -euo pipefail
+          set +x
+
+          package_blob_name="function-app/${GITHUB_SHA}-${GITHUB_RUN_ID}.zip"
+          storage_blob_endpoint=$(az storage account show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_STORAGE_ACCOUNT_NAME" \
+            --query primaryEndpoints.blob \
+            --output tsv)
+
+          for attempt in 1 2 3 4 5 6; do
+            if az storage blob upload \
+              --account-name "$AZURE_STORAGE_ACCOUNT_NAME" \
+              --container-name "$AZURE_PACKAGE_CONTAINER_NAME" \
+              --name "$package_blob_name" \
+              --file app.zip \
+              --overwrite true \
+              --auth-mode login \
+              --only-show-errors \
+              --output none; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "::error::Package upload failed. Ensure the deploy identity has Storage Blob Data Contributor on the storage account."
+              exit 1
+            fi
+            sleep 20
+          done
+
+          package_url="${storage_blob_endpoint}${AZURE_PACKAGE_CONTAINER_NAME}/${package_blob_name}"
+
+          az functionapp config appsettings set \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$AZURE_FUNCTION_APP_NAME" \
-            --src app.zip \
-            --build-remote false \
+            --settings \
+              "WEBSITE_RUN_FROM_PACKAGE=$package_url" \
+              "WEBSITE_USE_MANAGED_IDENTITY=true" \
+              "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned" \
             --output none
+
+          az functionapp restart \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_FUNCTION_APP_NAME" \
+            --output none
+
+          echo "Deployed Function App from private run-from-package blob using managed identity; no package SAS or storage key was emitted." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Optionally sync values to SquadScope
         if: ${{ inputs.sync_squadscope == 'true' }}

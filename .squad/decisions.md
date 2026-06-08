@@ -1290,3 +1290,10 @@ Have a non-Bender implementation agent update naming so every derived Azure reso
 **By:** Leela
 **What:** PR #11 deployment now treats `AZURE_FUNCTION_APP_NAME` as optional but validates any resolved value to 2–35 characters. The workflow default truncates the resource-group-derived prefix accordingly, and Bicep adds matching min/max decorators. Storage account override behavior remains optional and validated at 3–24 lowercase alphanumeric characters.
 **Why:** Azure Function Apps can be longer, but this template derives the App Service Plan and Log Analytics workspace by appending suffixes. Capping the source name keeps `${functionAppName}-plan` and `${functionAppName}-law` within Azure resource-name limits before live deployment, preserving the stable SquadScope response contract and avoiding half-baked deploy failures.
+# Durable Function package deployment
+
+- Date: 2026-06-07
+- Owner: Bender
+- Context: Azure rejected `az functionapp deployment source config-zip` and `az webapp deploy --type zip` for this Function App environment, while manual private blob run-from-package deployment worked.
+- Decision: `deploy-azure.yml` now builds Python 3.11 dependencies on the runner, packages the Function App locally, uploads the ZIP to a private `function-packages` blob container with OIDC/Entra auth, sets `WEBSITE_RUN_FROM_PACKAGE` to that private blob URL, enables managed-identity package reads, and restarts the app.
+- Security: No Storage Account keys or package SAS URLs are used. The deploy service principal is assigned Storage Blob Data Contributor on the deployed Storage Account for package upload. The Function App's managed identity reads the private package blob.
