@@ -67,7 +67,7 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str) -> str:
     article_url = str(payload["article_url"])
     article_sha256 = str(payload.get("article_sha256") or "computed-on-retrieval")
     source_artifacts = payload.get("source_artifacts") or []
-    source_artifact_lines = [f"Source Artifact: {item}" for item in source_artifacts] or ["Source Artifact: none supplied"]
+    source_artifact_lines = [_source_artifact_line(item) for item in source_artifacts] or ["Source Artifact: none supplied"]
 
     return "\n".join(
         [
@@ -88,6 +88,23 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str) -> str:
             "",
         ]
     )
+
+
+def _source_artifact_line(item: object) -> str:
+    if isinstance(item, str):
+        return f"Source Artifact: {item}"
+    if not isinstance(item, dict):
+        return f"Source Artifact: {item}"
+
+    role = item.get("role")
+    reference = item.get("url") or item.get("path") or "unspecified"
+    sha256 = item.get("sha256")
+    parts = [str(reference)]
+    if isinstance(role, str) and role.strip():
+        parts.insert(0, f"{role}:")
+    if isinstance(sha256, str) and sha256.strip():
+        parts.append(f"sha256={sha256}")
+    return f"Source Artifact: {' '.join(parts)}"
 
 
 def _transcript(script: str) -> str:

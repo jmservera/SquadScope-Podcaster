@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import shutil
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 from podcaster.validation import RESPONSE_KEYS, build_stub_response, empty_error_response, is_authorized, validate_payload
 
 
+FIXTURE_ROOT = Path(__file__).parent / "fixtures"
+
+
 def test_valid_minimal_payload_has_no_errors() -> None:
     errors = validate_payload({"week": "2026-W23", "article_url": "https://example.com/article"})
     assert errors == []
+
+
+def test_legacy_string_source_artifacts_fixture_has_no_errors() -> None:
+    payload = json.loads((FIXTURE_ROOT / "podcaster_request_legacy_strings.json").read_text(encoding="utf-8"))
+    assert validate_payload(payload) == []
+
+
+def test_squadscope_object_source_artifacts_fixture_has_no_errors() -> None:
+    payload = json.loads((FIXTURE_ROOT / "podcaster_request_squadscope_objects.json").read_text(encoding="utf-8"))
+    assert validate_payload(payload) == []
 
 
 def test_missing_required_fields_return_errors() -> None:
@@ -33,11 +47,41 @@ def test_rejects_bad_types_and_urls() -> None:
     assert "week contains unsupported characters" in errors
     assert "article_url must be an http or https URL" in errors
     assert "article_sha256 must be a lowercase hex SHA-256 digest" in errors
-    assert "source_artifacts must be an array of strings" in errors
+    assert "source_artifacts[1] must be a string or source artifact object" in errors
     assert "dry_run must be a boolean" in errors
     assert "force must be a boolean" in errors
     assert "callback.url must be an http or https URL" in errors
     assert "callback.secret_name must be a string" in errors
+
+
+def test_rejects_malformed_source_artifact_objects() -> None:
+    errors = validate_payload(
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "source_artifacts": [
+                {},
+                {
+                    "role": 7,
+                    "path": "data/raw/2026-W23.json",
+                    "sha256": "bad-sha",
+                    "exists": "yes",
+                    "size_bytes": -1,
+                    "freshness": [],
+                    "unexpected": "value",
+                },
+                {"url": "ftp://example.com/source.json"},
+            ],
+        }
+    )
+    assert "source_artifacts[0] must include path or url" in errors
+    assert "source_artifacts[1] contains unsupported fields: unexpected" in errors
+    assert "source_artifacts[1].role must be a string" in errors
+    assert "source_artifacts[1].sha256 must be a lowercase hex SHA-256 digest" in errors
+    assert "source_artifacts[1].exists must be a boolean" in errors
+    assert "source_artifacts[1].size_bytes must be a non-negative integer" in errors
+    assert "source_artifacts[1].freshness must be an object" in errors
+    assert "source_artifacts[2].url must be an http or https URL" in errors
 
 
 def test_stub_response_shape_is_contract_complete(monkeypatch) -> None:

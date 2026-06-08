@@ -1,0 +1,11 @@
+{
+  "week": "2026-W23",
+  "article_url": "https://squadscope.example/articles/2026-w23",
+  "article_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_artifacts": [
+    "https://example.blob.core.windows.net/artifacts/source.json",
+    "data/candidates/2026-W23/publish-manifest.json"
+  ],
+  "dry_run": false,
+  "force": false
+}

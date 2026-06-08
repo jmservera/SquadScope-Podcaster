@@ -9,6 +9,29 @@ from urllib.parse import urlparse
 
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 WEEK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+SOURCE_ARTIFACT_OBJECT_FIELDS = {
+    "artifact_checksum",
+    "crawled_at",
+    "exists",
+    "freshness",
+    "generated_at",
+    "path",
+    "provenance",
+    "role",
+    "same_day_reuse",
+    "sha256",
+    "size_bytes",
+    "source_artifact_provenance",
+    "source_config_checksum",
+    "source_reuse_summary",
+    "source_status",
+    "sources_failed",
+    "sources_requested",
+    "sources_succeeded",
+    "schema_checksum",
+    "url",
+    "week",
+}
 
 RESPONSE_KEYS = (
     "job_id",
@@ -65,8 +88,10 @@ def validate_payload(payload: Any) -> list[str]:
 
     source_artifacts = payload.get("source_artifacts")
     if source_artifacts is not None:
-        if not isinstance(source_artifacts, list) or not all(isinstance(item, str) for item in source_artifacts):
-            errors.append("source_artifacts must be an array of strings")
+        if not isinstance(source_artifacts, list):
+            errors.append("source_artifacts must be an array of strings or source artifact objects")
+        else:
+            errors.extend(_validate_source_artifacts(source_artifacts))
 
     for field in ("dry_run", "force"):
         if field in payload and not isinstance(payload[field], bool):
@@ -84,6 +109,76 @@ def validate_payload(payload: Any) -> list[str]:
             errors.append("callback.secret_name must be a string")
 
     return errors
+
+
+def _validate_source_artifacts(source_artifacts: list[Any]) -> list[str]:
+    errors: list[str] = []
+    for index, item in enumerate(source_artifacts):
+        label = f"source_artifacts[{index}]"
+        if isinstance(item, str):
+            continue
+        if not isinstance(item, dict):
+            errors.append(f"{label} must be a string or source artifact object")
+            continue
+        errors.extend(_validate_source_artifact_object(label, item))
+    return errors
+
+
+def _validate_source_artifact_object(label: str, artifact: dict[Any, Any]) -> list[str]:
+    errors: list[str] = []
+    if not artifact:
+        return [f"{label} must include path or url"]
+
+    unknown_fields = sorted(str(key) for key in artifact if isinstance(key, str) and key not in SOURCE_ARTIFACT_OBJECT_FIELDS)
+    if unknown_fields:
+        errors.append(f"{label} contains unsupported fields: {', '.join(unknown_fields)}")
+
+    path = artifact.get("path")
+    url = artifact.get("url")
+    if not _is_non_empty_string(path) and not _is_non_empty_string(url):
+        errors.append(f"{label} must include path or url")
+    if url is not None and (not isinstance(url, str) or urlparse(url).scheme not in {"http", "https"}):
+        errors.append(f"{label}.url must be an http or https URL")
+
+    for string_field in ("role", "path", "week", "generated_at", "crawled_at", "source_status"):
+        value = artifact.get(string_field)
+        if value is not None and not isinstance(value, str):
+            errors.append(f"{label}.{string_field} must be a string")
+
+    for digest_field in ("sha256", "artifact_checksum", "schema_checksum", "source_config_checksum"):
+        value = artifact.get(digest_field)
+        if value is not None and (not isinstance(value, str) or not SHA256_RE.match(value)):
+            errors.append(f"{label}.{digest_field} must be a lowercase hex SHA-256 digest")
+
+    exists = artifact.get("exists")
+    if exists is not None and not isinstance(exists, bool):
+        errors.append(f"{label}.exists must be a boolean")
+
+    size_bytes = artifact.get("size_bytes")
+    if size_bytes is not None and (not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0):
+        errors.append(f"{label}.size_bytes must be a non-negative integer")
+
+    for object_field in (
+        "freshness",
+        "provenance",
+        "same_day_reuse",
+        "source_artifact_provenance",
+        "source_reuse_summary",
+    ):
+        value = artifact.get(object_field)
+        if value is not None and not isinstance(value, dict):
+            errors.append(f"{label}.{object_field} must be an object")
+
+    for array_field in ("sources_requested", "sources_succeeded", "sources_failed"):
+        value = artifact.get(array_field)
+        if value is not None and not isinstance(value, list):
+            errors.append(f"{label}.{array_field} must be an array")
+
+    return errors
+
+
+def _is_non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def empty_error_response(errors: list[str], warnings: list[str] | None = None) -> dict[str, Any]:
