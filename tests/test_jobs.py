@@ -31,7 +31,17 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     assert result.manifest["status"] == "review_pending"
     assert result.manifest["review"]["status"] == "pending"
     assert result.manifest["review"]["required"] is True
+    assert result.manifest["review"]["mechanism"] == "github_environment"
+    assert result.manifest["review"]["environment"] == "podcast-review"
+    assert result.manifest["review"]["workflow"] == ".github/workflows/podcast-review-gate.yml"
     assert result.manifest["review"]["gate"]["status"] == "blocked"
+    assert result.manifest["review"]["gate"]["approval_required_before"] == "non_dry_run_tts_synthesis"
+    assert result.manifest["generation"]["tts_synthesis"] == {
+        "status": "blocked",
+        "allowed": False,
+        "blocked_by": ["human_review", "provider_not_selected"],
+        "dry_run_bypass_allowed": False,
+    }
     assert result.manifest["artifact_access"]["model"] == "private_operator_path"
     assert result.manifest["artifact_access"]["response_urls"] == {
         "publicly_accessible": False,
@@ -50,12 +60,15 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     manifest_file = job_dir / "manifest.json"
     packet_file = job_dir / "packets" / f"{result.response['job_id']}.zip"
     assert (job_dir / "script.txt").exists()
+    assert (job_dir / "claim-ledger.json").exists()
+    assert (job_dir / "review-checklist.md").exists()
     assert packet_file.exists()
     
     # Verify packet manifest uses flat structure per editorial standards section 7.2
     with ZipFile(packet_file) as packet:
         packet_manifest = json.loads(packet.read("MANIFEST.json"))
         assert packet_manifest["review_status"] == "pending"
+        assert packet_manifest["review"]["environment"] == "podcast-review"
         assert packet_manifest["review"]["gate"]["status"] == "blocked"
         assert packet_manifest["artifact_access"]["model"] == "private_operator_path"
         assert packet_manifest["artifact_access"]["publication"]["eligible"] is False
@@ -84,7 +97,10 @@ def test_dry_run_preserves_response_shape_and_review_metadata() -> None:
         "secret_name_provided": True,
     }
     assert result.manifest["review"]["required"] is True
+    assert result.manifest["review"]["required_for_tts"] is False
     assert result.manifest["review"]["status"] == "pending"
+    assert result.manifest["review"]["gate"]["status"] == "dry_run_bypass"
+    assert result.manifest["generation"]["tts_synthesis"]["dry_run_bypass_allowed"] is True
     assert "callback accepted by contract but not invoked yet" in result.response["warnings"]
     assert "CALLBACK_SECRET" not in json.dumps(result.manifest)
     shutil.rmtree(artifact_root, ignore_errors=True)
@@ -107,6 +123,7 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
         required = {
             "README.txt",
             "MANIFEST.json",
+            "REVIEW-CHECKLIST.md",
             "script.txt",
             "claim-ledger.json",
             "transcript.txt",
@@ -141,19 +158,21 @@ def test_generation_outputs_are_deterministic_and_documented() -> None:
     ]
     assert [artifact.path for artifact in first] == [
         f"jobs/{job_id}/script.txt",
+        f"jobs/{job_id}/claim-ledger.json",
         f"jobs/{job_id}/transcript.txt",
         f"jobs/{job_id}/show-notes.md",
+        f"jobs/{job_id}/review-checklist.md",
         f"jobs/{job_id}/audio/{job_id}.mp3",
         f"jobs/{job_id}/packets/{job_id}.zip",
     ]
     script = first[0].content.decode("utf-8")
-    transcript = first[1].content.decode("utf-8")
-    show_notes = first[2].content.decode("utf-8")
+    transcript = first[2].content.decode("utf-8")
+    show_notes = first[3].content.decode("utf-8")
     assert "deterministic production-path placeholder" in script
     assert "Title: SquadScope Podcast" in transcript
     assert "Original article](https://example.com/article)" in show_notes
-    assert first[3].content.startswith(f"Audio placeholder for {job_id}".encode("utf-8"))
-    assert first[4].content_type == "application/zip"
+    assert first[5].content.startswith(f"Audio placeholder for {job_id}".encode("utf-8"))
+    assert first[6].content_type == "application/zip"
 
 
 def test_local_storage_backend_stages_under_safe_project_relative_paths(monkeypatch) -> None:
@@ -254,6 +273,16 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     assert manifest["lifecycle"]["force"] is True
     assert manifest["lifecycle"]["transitions"][-1]["to"] == "review_pending"
     assert manifest["publishing"]["blocked_by"] == ["human_review", "real_tts_not_implemented"]
+    assert manifest["review"]["artifacts_for_review"] == [
+        "script.txt",
+        "claim-ledger.json",
+        "transcript.txt",
+        "show-notes.md",
+        "review-checklist.md",
+        "manifest.json",
+        "publishing-packet.zip",
+    ]
+    assert manifest["generation"]["tts_synthesis"]["allowed"] is False
     assert manifest["artifact_access"]["publication"]["blocked_by"] == ["human_review", "real_tts_not_implemented"]
     assert manifest["observability"]["correlation_id"] == job_id
     assert all(details["url"].startswith("https://example.invalid/artifacts/jobs/") for details in manifest["artifacts"].values())
@@ -267,7 +296,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     )
     serialized = json.loads(manifest_bytes(manifest).decode("utf-8"))
     assert serialized == manifest
-    assert f"podcaster job staged job_id={job_id} status=review_pending dry_run=False artifact_count=6" in caplog.text
+    assert f"podcaster job staged job_id={job_id} status=review_pending dry_run=False artifact_count=8" in caplog.text
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 

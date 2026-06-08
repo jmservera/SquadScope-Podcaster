@@ -35,6 +35,7 @@ def generate_artifacts(
     audio_placeholder = _audio_placeholder(job_id, payload)
     metadata = _metadata(job_id, payload, created_at, expires_at)
     claim_ledger = _claim_ledger(payload)
+    review_checklist = _review_checklist(job_id, payload)
     rights = _rights_and_attribution()
     packet = _packet(
         script=script,
@@ -42,6 +43,7 @@ def generate_artifacts(
         show_notes=show_notes,
         metadata=metadata,
         claim_ledger=claim_ledger,
+        review_checklist=review_checklist,
         rights=rights,
         audio_placeholder=audio_placeholder,
     )
@@ -49,8 +51,10 @@ def generate_artifacts(
     prefix = f"jobs/{job_id}"
     return [
         GeneratedArtifact(f"{prefix}/script.txt", script.encode("utf-8"), "text/plain; charset=utf-8"),
+        GeneratedArtifact(f"{prefix}/claim-ledger.json", claim_ledger.encode("utf-8"), "application/json; charset=utf-8"),
         GeneratedArtifact(f"{prefix}/transcript.txt", transcript.encode("utf-8"), "text/plain; charset=utf-8"),
         GeneratedArtifact(f"{prefix}/show-notes.md", show_notes.encode("utf-8"), "text/markdown; charset=utf-8"),
+        GeneratedArtifact(f"{prefix}/review-checklist.md", review_checklist.encode("utf-8"), "text/markdown; charset=utf-8"),
         GeneratedArtifact(f"{prefix}/audio/{job_id}.mp3", audio_placeholder, "audio/mpeg"),
         GeneratedArtifact(f"{prefix}/packets/{job_id}.zip", packet, "application/zip"),
     ]
@@ -223,11 +227,16 @@ def _metadata(job_id: str, payload: dict[str, object], created_at: datetime, exp
         "review": {
             "status": "pending",
             "required": True,
+            "mechanism": "github_environment",
+            "environment": "podcast-review",
+            "workflow": ".github/workflows/podcast-review-gate.yml",
             "approved_by": None,
             "approved_at": None,
             "audit_trail": [],
+            "artifact": "review-checklist.md",
             "gate": {
                 "status": "blocked",
+                "approval_required_before": "non_dry_run_tts_synthesis",
                 "checks": [
                     "script_accuracy",
                     "claim_verification",
@@ -246,6 +255,12 @@ def _metadata(job_id: str, payload: dict[str, object], created_at: datetime, exp
             "tts_provider": None,
             "tts_voice": None,
             "audio_placeholder": True,
+            "tts_synthesis": {
+                "status": "blocked",
+                "allowed": False,
+                "blocked_by": ["provider_not_selected"] if payload.get("dry_run") else ["human_review", "provider_not_selected"],
+                "dry_run_bypass_allowed": bool(payload.get("dry_run")),
+            },
             "duration_seconds": None,
         },
         "tts_provider": None,
@@ -281,6 +296,36 @@ def _claim_ledger(payload: dict[str, object]) -> str:
     ) + "\n"
 
 
+def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
+    return "\n".join(
+        [
+            "# Podcaster human review checklist",
+            "",
+            f"- Job ID: `{job_id}`",
+            f"- Week: `{payload['week']}`",
+            f"- Source article: {payload['article_url']}",
+            "- Review mechanism: GitHub Environment `podcast-review` via `.github/workflows/podcast-review-gate.yml`",
+            "",
+            "Reviewers must inspect `script.txt`, `claim-ledger.json`, `transcript.txt`, `show-notes.md`, `MANIFEST.json`, and the publishing packet before approving.",
+            "",
+            "## Required checks",
+            "",
+            "- [ ] Script accuracy: every claim is represented in the claim ledger and unresolved editorial placeholders are rejected.",
+            "- [ ] Claim verification: at least three major claims are spot-checked against the source article.",
+            "- [ ] Citation/link integrity: show-note URLs resolve and point to the cited resources.",
+            "- [ ] Transcript readiness: transcript metadata is complete and matches the script/audio plan.",
+            "- [ ] TTS readiness: provider constraints and licensing are satisfied before non-dry-run synthesis.",
+            "- [ ] Rights/attribution: source and future TTS provider attribution are documented.",
+            "",
+            "## Enforcement",
+            "",
+            "Non-dry-run TTS synthesis remains blocked until the review workflow records an approved decision with reviewer identity and timestamp.",
+            "Dry-run and non-publishing validation may run without approval, but cannot publish generated audio.",
+            "",
+        ]
+    )
+
+
 def _operator_readme(metadata: dict[str, object]) -> str:
     week = metadata.get("week", "unknown")
     article_url = metadata.get("article_url", "")
@@ -305,6 +350,7 @@ def _operator_readme(metadata: dict[str, object]) -> str:
             "CONTENTS:",
             "  • README.txt (this file)",
             "  • MANIFEST.json — Packet metadata and review tracking",
+            "  • REVIEW-CHECKLIST.md — Required editorial approval checklist",
             "  • PUBLISHING-GUIDE.txt — Step-by-step publishing instructions",
             "  • script.txt — Episode script",
             "  • transcript.txt — Full transcript",
@@ -506,6 +552,7 @@ def _packet(
     show_notes: str,
     metadata: dict[str, object],
     claim_ledger: str,
+    review_checklist: str,
     rights: str,
     audio_placeholder: bytes,
 ) -> bytes:
@@ -514,6 +561,7 @@ def _packet(
     files: dict[str, bytes] = {
         "README.txt": readme.encode("utf-8"),
         "MANIFEST.json": (json.dumps(metadata, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+        "REVIEW-CHECKLIST.md": review_checklist.encode("utf-8"),
         "PUBLISHING-GUIDE.txt": _publishing_guide().encode("utf-8"),
         "script.txt": script.encode("utf-8"),
         "claim-ledger.json": claim_ledger.encode("utf-8"),
