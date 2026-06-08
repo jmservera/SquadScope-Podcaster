@@ -49,11 +49,6 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   properties: {
     allowBlobPublicAccess: false
     minimumTlsVersion: 'TLS1_2'
-    networkAcls: {
-      bypass: 'AzureServices'
-      defaultAction: 'Deny'
-    }
-    publicNetworkAccess: 'Enabled'
     supportsHttpsTrafficOnly: true
   }
 }
