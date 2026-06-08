@@ -16,7 +16,7 @@ def _workflow_text() -> str:
 def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:
     workflow = _workflow_text()
 
-    on_match = re.search(r"(?ms)^on:\s*\n(?P<body>(?:^[ \t].*\n)*)", workflow)
+    on_match = re.search(r"(?m)^on:\s*\n(?P<body>(?:^[ \t].*\n)*)", workflow)
     assert on_match, "deploy-azure.yml must define an `on:` block"
     body = on_match.group("body")
 
