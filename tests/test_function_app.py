@@ -42,6 +42,26 @@ def test_generate_endpoint_returns_accepted_shape(monkeypatch) -> None:
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
+def test_generate_endpoint_accepts_squadscope_source_artifacts_fixture(monkeypatch) -> None:
+    artifact_root = Path(".test-artifacts-squadscope")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    monkeypatch.setenv("PODCASTER_API_KEY", "expected")
+    monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(artifact_root))
+    payload = json.loads(
+        (Path(__file__).parent / "fixtures" / "podcaster_request_squadscope_objects.json").read_text(encoding="utf-8")
+    )
+
+    response = generate(_request(payload, {"x-podcaster-api-key": "expected"}))
+
+    body = json.loads(response.get_body())
+    assert response.status_code == 202
+    assert tuple(body.keys()) == RESPONSE_KEYS
+    assert body["job_id"]
+    assert body["manifest_url"]
+    assert body["errors"] == []
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
 def test_generate_endpoint_rejects_unauthorized(monkeypatch) -> None:
     monkeypatch.setenv("PODCASTER_API_KEY", "expected")
     response = generate(_request({"week": "2026-W23", "article_url": "https://example.com/article"}, {"x-podcaster-api-key": "wrong"}))

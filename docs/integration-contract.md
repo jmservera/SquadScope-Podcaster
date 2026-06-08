@@ -25,7 +25,22 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
   "article_url": "https://squadscope.example/articles/2026-w23",
   "article_sha256": "optional-lowercase-hex-sha256",
   "source_artifacts": [
-    "https://example.blob.core.windows.net/artifacts/source.json"
+    "https://example.blob.core.windows.net/artifacts/source.json",
+    {
+      "role": "raw_github",
+      "path": "data/candidates/2026-W23/github-crawl.json",
+      "exists": true,
+      "size_bytes": 45823,
+      "sha256": "686085ace216e10d36837a91471e28a334b2fc3d93cc1085b8d5d0e7616891bf",
+      "freshness": {
+        "status": "fresh",
+        "reasons": []
+      },
+      "provenance": {
+        "generated_at": "2026-06-08T10:15:00Z",
+        "sha256": "686085ace216e10d36837a91471e28a334b2fc3d93cc1085b8d5d0e7616891bf"
+      }
+    }
   ],
   "dry_run": false,
   "force": false,
@@ -41,10 +56,26 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 - `week` (required string): Issue or ISO week identifier.
 - `article_url` (required string): Published article URL from SquadScope.
 - `article_sha256` (optional string): SHA-256 digest of article artifact/content.
-- `source_artifacts` (optional array of strings): Supporting artifact URLs.
+- `source_artifacts` (optional array): Supporting artifact references. For backward compatibility, each item may be either a string reference or an object reference emitted by SquadScope publish manifests.
 - `dry_run` (optional boolean): Validate and generate draft/stub artifacts only.
 - `force` (optional boolean): Regenerate even if prior artifacts exist.
 - `callback` (optional object): Future callback target. The `secret_name` names a secret, not the secret value.
+
+### `source_artifacts` compatibility
+
+Podcaster accepts both legacy string references and SquadScope object references in the same request. This is a backward-compatible `v1` contract behavior; callers do not need to send a new schema version.
+
+String references are preserved as submitted. Object references must include at least one of:
+
+- `path` (string): Repository-relative or artifact-relative path from the SquadScope publish manifest.
+- `url` (string): HTTP(S) artifact URL.
+
+Recognized object metadata is preserved in the generated manifest and packet metadata when present: `role`, `exists`, `size_bytes`, `sha256`, `artifact_checksum`, `week`, `crawled_at`, `generated_at`, `same_day_reuse`, `provenance`, `freshness`, `source_status`, `source_reuse_summary`, `source_artifact_provenance`, `source_config_checksum`, `schema_checksum`, `sources_requested`, `sources_succeeded`, and `sources_failed`. Unknown object fields are rejected so contract drift is visible during integration testing.
+
+Regression fixtures live under `tests/fixtures/`:
+
+- `podcaster_request_legacy_strings.json`
+- `podcaster_request_squadscope_objects.json`
 
 ## Response body
 

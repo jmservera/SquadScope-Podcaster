@@ -1,0 +1,40 @@
+{
+  "week": "2026-W23",
+  "article_url": "https://squadscope.example/articles/2026-w23",
+  "article_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "source_artifacts": [
+    {
+      "role": "raw_github",
+      "path": "data/candidates/2026-W23/github-crawl.json",
+      "exists": true,
+      "size_bytes": 45823,
+      "sha256": "686085ace216e10d36837a91471e28a334b2fc3d93cc1085b8d5d0e7616891bf",
+      "same_day_reuse": {
+        "status": "reused",
+        "source": "default"
+      },
+      "freshness": {
+        "status": "fresh",
+        "reasons": []
+      },
+      "provenance": {
+        "generated_at": "2026-06-08T10:15:00Z",
+        "sha256": "686085ace216e10d36837a91471e28a334b2fc3d93cc1085b8d5d0e7616891bf"
+      }
+    },
+    {
+      "role": "published_summary",
+      "path": "data/published/2026-W23/index.md",
+      "exists": true,
+      "size_bytes": 12048,
+      "sha256": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+      "generated_at": "2026-06-08T11:20:00Z",
+      "provenance": {
+        "path": "data/published/2026-W23/index.md",
+        "sha256": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
+      }
+    }
+  ],
+  "dry_run": false,
+  "force": false
+}
