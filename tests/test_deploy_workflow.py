@@ -16,9 +16,15 @@ def _workflow_text() -> str:
 def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:
     workflow = _workflow_text()
 
-    assert re.search(r"(?m)^on:\s*\n(?:^[ \t].*\n)*^[ \t]+workflow_dispatch:", workflow)
-    assert not re.search(r"(?m)^  (push|pull_request|pull_request_target):", workflow)
+    on_match = re.search(r"(?ms)^on:\s*\n(?P<body>(?:^[ \t].*\n)*)", workflow)
+    assert on_match, "deploy-azure.yml must define an `on:` block"
+    body = on_match.group("body")
 
+    dispatch_match = re.search(r"(?m)^(?P<indent>[ \t]+)workflow_dispatch:", body)
+    assert dispatch_match, "deploy-azure.yml must be triggered only via workflow_dispatch"
+    indent = dispatch_match.group("indent")
+
+    assert not re.search(rf"(?m)^{re.escape(indent)}(?!workflow_dispatch:)\w+:", body)
 
 def test_deploy_workflow_packages_run_from_private_blob_with_oidc() -> None:
     workflow = _workflow_text()
