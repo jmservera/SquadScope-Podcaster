@@ -36,6 +36,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Build Bicep templates
+        run: az bicep build --file infra/main.bicep --stdout >/dev/null
+
       - name: Validate configuration
         env:
           SQUADSCOPE_SYNC_TOKEN: ${{ secrets.SQUADSCOPE_SYNC_TOKEN }}

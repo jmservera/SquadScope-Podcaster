@@ -37,6 +37,7 @@ param deploymentPrincipalObjectId string = ''
 
 var hostingPlanName = '${functionAppName}-plan'
 var hasDeploymentPrincipalObjectId = !empty(deploymentPrincipalObjectId)
+var storageDnsSuffix = environment().suffixes.storage
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
@@ -115,16 +116,15 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
       appSettings: [
         {
           name: 'AzureWebJobsStorage__blobServiceUri'
-          value: 'https://${storage.name}.blob.${environment().suffixes.storage}'
+          value: 'https://${storage.name}.blob.${storageDnsSuffix}'
         }
         {
           name: 'AzureWebJobsStorage__queueServiceUri'
-          value: 'https://${storage.name}.queue.${environment().suffixes.storage}'
+          value: 'https://${storage.name}.queue.${storageDnsSuffix}'
         }
         {
-        {
           name: 'AzureWebJobsStorage__tableServiceUri'
-          value: 'https://${storage.name}.table.${environment().suffixes.storage}'
+          value: 'https://${storage.name}.table.${storageDnsSuffix}'
         }
         {
           name: 'AzureWebJobsStorage__credential'
@@ -152,7 +152,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'PODCASTER_STORAGE_ACCOUNT_URL'
-          value: 'https://${storage.name}.blob.${environment().suffixes.storage}'
+          value: 'https://${storage.name}.blob.${storageDnsSuffix}'
         }
         {
           name: 'PODCASTER_STORAGE_CONTAINER'
