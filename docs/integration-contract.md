@@ -116,7 +116,7 @@ The script verifies HTTP 202 plus non-empty `job_id` and `manifest_url` fields w
 - `show_notes_url`: URL for show notes.
 - `publishing_packet_url`: URL for the manual publishing packet.
 - `expires_at`: Expiration timestamp for temporary URLs.
-- `warnings`: Non-fatal issues.
+- `warnings`: Non-fatal issues, including reminders that placeholder artifacts require human review and returned artifact URLs are private operator paths.
 - `errors`: Fatal issues. Empty for accepted jobs.
 
 ## Error responses
@@ -143,6 +143,22 @@ Validation failure:
 
 When `PODCASTER_STORAGE_ACCOUNT_URL` is not configured, the service writes deterministic development artifacts under `.podcaster-artifacts/jobs/<job_id>/` and returns URLs using `PODCASTER_ARTIFACT_BASE_URL`. Artifacts are staged with a 7-day expiration set in `expires_at`. This keeps local tests and API contract validation independent of Azure credentials. Azure deployments configure `PODCASTER_STORAGE_ACCOUNT_URL` and `PODCASTER_STORAGE_CONTAINER`; blob writes use the Function App managed identity, and artifacts expire per the same `expires_at` schedule.
 
+## Artifact access semantics
+
+Returned artifact URL fields (`manifest_url`, `mp3_url`, `transcript_url`, `show_notes_url`, and `publishing_packet_url`) are intentionally **private operator paths**, not public publishing links. Podcaster does not append SAS tokens, URL credentials, query strings, or fragments to response URLs. Access requires the operator's local filesystem access in development or explicitly granted Azure Storage permissions in deployed environments.
+
+The manifest and packet metadata include `artifact_access` with:
+
+- `model=private_operator_path`
+- `response_urls.publicly_accessible=false`
+- `response_urls.requires_operator_credentials=true`
+- `response_urls.signed_urls=false`
+- `retention.expires_at` and `retention.cleanup_after` equal to the top-level `expires_at`
+- `audit.correlation_id` equal to `job_id`
+- `publication.eligible=false` and blockers for `human_review` and `real_tts_not_implemented`
+
+Cleanup is owned by the operator or a storage lifecycle policy using `expires_at`/`cleanup_after`. Audit review uses the job manifest, review audit trail placeholders, Application Insights `correlation_id`, and Azure Storage diagnostics. Placeholder artifacts remain blocked from publication until human/editorial review and real TTS gates exist.
+
 ## Manifest and packet metadata
 
 The top-level response keys remain stable for SquadScope compatibility. Additional lifecycle details are stored in `manifest_url` and inside the publishing packet `MANIFEST.json`, including:
@@ -152,5 +168,6 @@ The top-level response keys remain stable for SquadScope compatibility. Addition
 - `review.status`, blocked gate checks, and empty audit trail placeholders
 - `generation.engine=local-deterministic-placeholder`, `deterministic=true`, and no paid/live TTS provider
 - `publishing.mode=manual`, `eligible=false`, and blockers until human review and real audio exist
+- `artifact_access.model=private_operator_path`, retention/cleanup timestamps, and audit correlation metadata
 - artifact `content_type`, `size_bytes`, and `sha256`
 - `observability.correlation_id` and safe log field names only

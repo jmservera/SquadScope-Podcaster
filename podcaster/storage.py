@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,7 @@ class StorageBackend(Protocol):
 class LocalStorageBackend:
     def __init__(self, root: Path, base_url: str) -> None:
         self.root = root
-        self.base_url = base_url.rstrip("/")
+        self.base_url = normalize_artifact_base_url(base_url)
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
@@ -44,7 +45,7 @@ class AzureBlobStorageBackend:
         credential = DefaultAzureCredential()
         self._container = BlobServiceClient(account_url=account_url, credential=credential).get_container_client(container_name)
         self._container_name = container_name
-        self._account_url = account_url.rstrip("/")
+        self._account_url = normalize_artifact_base_url(account_url)
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
@@ -78,3 +79,12 @@ def _safe_blob_path(path: str) -> str:
     if not parts:
         raise ValueError("artifact path must not be empty")
     return "/".join(parts)
+
+
+def normalize_artifact_base_url(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("artifact base URL must be an http or https URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("artifact base URL must not contain credentials, query strings, or fragments")
+    return base_url.rstrip("/")
