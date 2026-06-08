@@ -278,6 +278,29 @@ jobs:
             --name "$AZURE_STORAGE_ACCOUNT_NAME" \
             --query primaryEndpoints.blob \
             --output tsv)
+          runner_ip=$(curl -fsS https://api.ipify.org)
+          if ! [[ "$runner_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Could not resolve the GitHub runner IPv4 address for temporary storage firewall access."
+            exit 1
+          fi
+
+          cleanup_storage_rule() {
+            az storage account network-rule remove \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --account-name "$AZURE_STORAGE_ACCOUNT_NAME" \
+              --ip-address "$runner_ip" \
+              --only-show-errors \
+              --output none \
+              || echo "::warning::Failed to remove temporary storage network rule for the GitHub runner IP."
+          }
+          trap cleanup_storage_rule EXIT
+
+          az storage account network-rule add \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --account-name "$AZURE_STORAGE_ACCOUNT_NAME" \
+            --ip-address "$runner_ip" \
+            --only-show-errors \
+            --output none
 
           for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             if az storage blob upload \
@@ -292,10 +315,10 @@ jobs:
               break
             fi
             if [ "$attempt" -eq 15 ]; then
-              echo "::error::Package upload failed. Ensure the deploy identity has Storage Blob Data Contributor on the storage account."
+              echo "::error::Package upload failed. Ensure the deploy identity has Storage Blob Data Contributor and the temporary runner firewall rule propagated."
               exit 1
             fi
-            echo "Package upload is waiting for Azure RBAC data-plane propagation; retrying in 30 seconds."
+            echo "Package upload is waiting for Azure storage firewall/RBAC data-plane propagation; retrying in 30 seconds."
             sleep 30
           done
 

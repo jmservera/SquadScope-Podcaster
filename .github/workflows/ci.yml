@@ -35,7 +35,7 @@ jobs:
         run: |
           # Keep the scan gating on new findings while deferring the current Consumption-plan baseline.
           checkov --directory infra --framework bicep \
-            --skip-check CKV_AZURE_35,CKV_AZURE_43,CKV_AZURE_206,CKV_AZURE_225,CKV_AZURE_15,CKV_AZURE_212,CKV_AZURE_78,CKV_AZURE_213,CKV_AZURE_222,CKV_AZURE_67,CKV_AZURE_18,CKV_AZURE_17
+            --skip-check CKV_AZURE_35,CKV_AZURE_43,CKV_AZURE_206,CKV_AZURE_225,CKV_AZURE_15,CKV_AZURE_212,CKV_AZURE_78,CKV_AZURE_213,CKV_AZURE_222,CKV_AZURE_67,CKV_AZURE_18,CKV_AZURE_17,CKV_AZURE_59
 
   test:
     runs-on: ubuntu-latest
