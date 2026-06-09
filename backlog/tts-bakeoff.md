@@ -4,7 +4,7 @@
 
 Select and evaluate TTS providers to synthesize Podcaster scripts into high-quality narration. Decision must balance **quality**, **cost**, **operational fit**, **rights**, and **reliability**.
 
-Candidates may include Azure AI Speech and other providers after legal and security review. No generated audio belongs in git.
+Candidates include the provider families named in #4. No generated audio belongs in git; store listening samples outside the repository and attach only human notes, non-secret metadata, and redacted links to the issue.
 
 ---
 
@@ -35,6 +35,25 @@ Each candidate provider MUST:
 
 ## Evaluation Criteria
 
+### Shared reviewed test script
+
+Every candidate MUST synthesize the same reviewed script so the comparison is fair.
+
+- Length: 5-10 minutes of spoken audio.
+- Source: a published SquadScope-style article or a synthetic article approved for provider sharing; do not use unpublished drafts unless Hermes explicitly approves.
+- Content coverage:
+  - technical acronyms: API, CI/CD, OIDC, TTS, SAS
+  - proper nouns: SquadScope, Podcaster, Azure, GitHub Actions, OpenAI
+  - numbers and dates: ISO week, percentages, currency, durations
+  - punctuation and pacing: short paragraph, long paragraph, quotation, comma-heavy sentence
+  - two-speaker requirement: a narrator voice and a short quoted/alternate-speaker segment if the provider supports multiple voices
+- Review before synthesis:
+  - Farnsworth confirms the script is TTS-ready under `docs/editorial-standards.md`.
+  - Hermes confirms the script contains no secrets, private drafts, personal data, or real-person voice-cloning request.
+  - Leela confirms the script is representative enough for MVP provider selection.
+
+Record the exact script hash in the issue notes. Do not commit provider-generated audio or transcript files.
+
 ### 1. Quality (40%)
 
 **Narration quality:**
@@ -45,7 +64,7 @@ Each candidate provider MUST:
 
 **Test procedure:**
 - Synthesize 5–10 minute test script in each candidate voice
-- Have three editors score naturalness on a 1–5 scale
+- Have at least two human listeners score naturalness on a 1–5 scale; three is preferred
 - Spot-check pronunciation of 10 technical terms from the script
 - Compare pacing against human-narrated podcasts in the same domain
 - Resynthesise the same script on day 7 and compare for consistency
@@ -109,7 +128,7 @@ Each candidate provider MUST:
 
 **Test procedure:**
 - Review provider terms of service for all above points
-- Request a written confirmation of voice/commercial rights for testify
+- Request written confirmation of voice/commercial rights for distribution
 - Confirm data retention and privacy policy with legal team
 
 **Pass threshold:** Voice rights permit non-exclusive commercial distribution; no long-term data retention by provider; GDPR compliance (if needed) confirmed.
@@ -134,8 +153,41 @@ Each candidate provider MUST:
 
 | Provider | Quality | Cost | Ops Fit | Rights | Resilience | Status | Notes |
 |----------|---------|------|---------|--------|-----------|--------|-------|
-| Azure AI Speech | TBD | TBD | High | TBD | TBD | Pending | First candidate; native Azure integration |
-| [Other] | — | — | — | — | — | TBD | Add candidates after screening |
+| Azure AI Speech Standard voices via Speech SDK | TBD | TBD | High | TBD | TBD | Pending | Preferred Azure-first candidate for two or more voices and per-segment control |
+| Azure AI Speech batch synthesis | TBD | TBD | High for long-form async | TBD | TBD | Pending | Evaluate for long scripts and queue-style processing; not enough alone if MVP needs live multi-voice control |
+| Azure AI Speech OpenAI voices / Foundry voices | TBD | TBD | TBD | TBD | TBD | Conditional | Evaluate only if available in the target region and terms/retention are reviewed |
+| OpenAI `tts-1` or `gpt-4o-mini-tts` | TBD | TBD | TBD | TBD | TBD | Conditional | Evaluate only if legal/privacy terms and retention controls fit the MVP |
+
+---
+
+## Human Listening Notes Template
+
+Attach notes to #4 using this structure for each candidate. Do not include secrets, provider keys, raw SAS URLs, or generated audio checked into git.
+
+```markdown
+### TTS bakeoff notes — {provider} / {voice}
+
+- Test script hash: `{sha256}`
+- Provider path: `{Speech SDK | batch synthesis | Foundry/OpenAI voice | OpenAI API}`
+- Region/account boundary: `{region and resource type}`
+- Voice/model: `{voice or model name}`
+- Audio format returned: `{codec, bitrate, sample rate}`
+- Synthesis duration / latency: `{wall-clock time}`
+- Estimated episode cost: `{cost and assumptions}`
+- Retention/training assumption: `{linked policy or reviewed setting}`
+- Attribution/licensing requirement: `{required text or none}`
+
+#### Listener scores
+| Listener | Naturalness 1-5 | Pronunciation 1-5 | Pacing 1-5 | Technical-term errors | Notes |
+|----------|------------------|-------------------|------------|-----------------------|-------|
+| {name/role} | TBD | TBD | TBD | TBD | TBD |
+
+#### Decision
+- Passes quality threshold: `{yes/no}`
+- Passes rights/privacy threshold: `{yes/no}`
+- Recommended role: `{primary | fallback | reject}`
+- Follow-up required before implementation: `{none or list}`
+```
 
 ---
 
@@ -147,6 +199,8 @@ Each candidate provider MUST:
 3. Operational fit: SLA ≥99.5%, latency <10s, Python support
 4. Rights: commercial use permitted, no long-term data retention
 5. Resilience: fallback strategy defined or second provider ready
+6. Human listening notes attached to #4 for the selected primary and fallback providers
+7. Selected provider and fallback recorded in `docs/SECURITY.md` before any non-dry-run TTS implementation
 
 **Final approval:** Editorial team + Leela (coordinator) sign-off required.
 
@@ -185,7 +239,7 @@ Each candidate provider MUST:
 ### Integration Security
 
 - [ ] **Azure managed identity support:** Can the Function App authenticate using its system-assigned identity, or only API keys?
-- [ ] **Credential storage:** Provider API key is stored as `PODCASTER_TTS_API_KEY` in GitHub/Azure secrets, never logged.
+- [ ] **Credential storage:** Provider credentials are stored in GitHub secrets, Azure app settings, or Key Vault references, never logged.
 - [ ] **Logging:** Podcaster logs do not include API keys, provider credentials, or full audio output.
 - [ ] **Error messages:** Errors returned to SquadScope do not leak provider details or credentials.
 - [ ] **Timeout behavior:** If TTS takes >30 seconds, Function App times out gracefully (not with stack trace).
