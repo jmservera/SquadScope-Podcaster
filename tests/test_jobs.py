@@ -6,11 +6,18 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 from zipfile import ZipFile
 
 from podcaster.generation import generate_artifacts, manifest_bytes
 from podcaster.jobs import build_job_id, run_generation_job
-from podcaster.storage import LocalStorageBackend, _managed_identity_resource, _token_expires_on, create_storage_backend
+from podcaster.storage import (
+    LocalStorageBackend,
+    _managed_identity_resource,
+    _token_expires_on,
+    create_storage_backend,
+    normalize_artifact_base_url,
+)
 from podcaster.validation import RESPONSE_KEYS
 
 
@@ -31,8 +38,19 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     assert result.manifest["review"]["status"] == "pending"
     assert result.manifest["review"]["required"] is True
     assert result.manifest["review"]["gate"]["status"] == "blocked"
+    assert result.manifest["artifact_access"]["model"] == "private_operator_path"
+    assert result.manifest["artifact_access"]["response_urls"] == {
+        "publicly_accessible": False,
+        "requires_operator_credentials": True,
+        "signed_urls": False,
+        "query_strings_allowed": False,
+        "credential_material_allowed": False,
+    }
+    assert result.manifest["artifact_access"]["retention"]["cleanup_after"] == result.response["expires_at"]
+    assert result.manifest["artifact_access"]["audit"]["correlation_id"] == result.response["job_id"]
     assert result.response["publishing_packet_url"].endswith(".zip")
     assert "human review is required before publishing" in result.response["warnings"]
+    assert "artifact URLs are private operator paths, not public publishing links" in result.response["warnings"]
 
     job_dir = artifact_root / "jobs" / result.response["job_id"]
     manifest_file = job_dir / "manifest.json"
@@ -45,6 +63,8 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
         packet_manifest = json.loads(packet.read("MANIFEST.json"))
         assert packet_manifest["review_status"] == "pending"
         assert packet_manifest["review"]["gate"]["status"] == "blocked"
+        assert packet_manifest["artifact_access"]["model"] == "private_operator_path"
+        assert packet_manifest["artifact_access"]["publication"]["eligible"] is False
     
     shutil.rmtree(artifact_root, ignore_errors=True)
 
@@ -173,6 +193,50 @@ def test_managed_identity_expiry_accepts_epoch_or_expires_in(monkeypatch) -> Non
     assert _token_expires_on({"expires_in": "60"}) == 1060
 
 
+def test_artifact_urls_are_private_operator_paths_without_query_credentials() -> None:
+    artifact_root = Path(".test-artifacts-private-urls")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://storage.example.invalid/private-artifacts")
+
+    result = run_generation_job(
+        {"week": "2026-W23", "article_url": "https://example.com/article"},
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+
+    response_urls = [
+        result.response[key]
+        for key in ("manifest_url", "mp3_url", "transcript_url", "show_notes_url", "publishing_packet_url")
+    ]
+    manifest_urls = [details["url"] for details in result.manifest["artifacts"].values()]
+    for url in response_urls + manifest_urls:
+        parsed = urlparse(url)
+        assert parsed.scheme == "https"
+        assert parsed.query == ""
+        assert parsed.fragment == ""
+        assert parsed.username is None
+        assert parsed.password is None
+
+    assert result.manifest["artifact_access"]["response_urls"]["signed_urls"] is False
+    assert result.manifest["artifact_access"]["operator_access"]["method"] == "Azure RBAC or local filesystem access"
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_artifact_base_urls_reject_embedded_credentials_and_signed_queries() -> None:
+    assert normalize_artifact_base_url("https://storage.example.invalid/base/") == "https://storage.example.invalid/base"
+    for unsafe_url in (
+        "https://storage.example.invalid/base?sig=secret",
+        "https://user:pass@storage.example.invalid/base",
+        "https://storage.example.invalid/base#token",
+    ):
+        try:
+            normalize_artifact_base_url(unsafe_url)
+        except ValueError as exc:
+            assert "must not contain credentials" in str(exc)
+        else:
+            raise AssertionError(f"unsafe artifact base URL was accepted: {unsafe_url}")
+
+
 def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog) -> None:
     artifact_root = Path(".test-artifacts-lifecycle")
     shutil.rmtree(artifact_root, ignore_errors=True)
@@ -207,9 +271,17 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     assert manifest["lifecycle"]["force"] is True
     assert manifest["lifecycle"]["transitions"][-1]["to"] == "review_pending"
     assert manifest["publishing"]["blocked_by"] == ["human_review", "real_tts_not_implemented"]
+    assert manifest["artifact_access"]["publication"]["blocked_by"] == ["human_review", "real_tts_not_implemented"]
     assert manifest["observability"]["correlation_id"] == job_id
     assert all(details["url"].startswith("https://example.invalid/artifacts/jobs/") for details in manifest["artifacts"].values())
-    assert all(details["size_bytes"] > 0 and details["content_type"] and len(details["sha256"]) == 64 for details in manifest["artifacts"].values())
+    assert all(
+        details["access_model"] == "private_operator_path"
+        and details["publicly_accessible"] is False
+        and details["size_bytes"] > 0
+        and details["content_type"]
+        and len(details["sha256"]) == 64
+        for details in manifest["artifacts"].values()
+    )
     serialized = json.loads(manifest_bytes(manifest).decode("utf-8"))
     assert serialized == manifest
     assert f"podcaster job staged job_id={job_id} status=review_pending dry_run=False artifact_count=6" in caplog.text

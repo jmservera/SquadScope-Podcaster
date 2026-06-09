@@ -41,7 +41,7 @@ export PODCASTER_ARTIFACT_BASE_URL=https://example.invalid/podcaster-stub
 func start
 ```
 
-Without Azure storage settings, generated manifests, script drafts, transcripts, show notes, publishing packets, and audio placeholders are written under `.podcaster-artifacts/jobs/<job_id>/`. The ZIP packet is byte-stable for the same inputs and timestamp. In Azure, set `PODCASTER_STORAGE_ACCOUNT_URL` and `PODCASTER_STORAGE_CONTAINER`; the Function App uses managed identity for blob writes.
+Without Azure storage settings, generated manifests, script drafts, transcripts, show notes, publishing packets, and audio placeholders are written under `.podcaster-artifacts/jobs/<job_id>/`. The ZIP packet is byte-stable for the same inputs and timestamp. In Azure, set `PODCASTER_STORAGE_ACCOUNT_URL` and `PODCASTER_STORAGE_CONTAINER`; the Function App uses managed identity for blob writes. Returned artifact URLs are private operator paths, not public publishing links, and must not include SAS tokens, query strings, or embedded credentials.
 
 Example request:
 
@@ -97,6 +97,8 @@ SquadScope calls:
 - Body fields: `week`, `article_url`, optional `article_sha256`, `source_artifacts`, `dry_run`, `force`, `callback`
 
 The response contains `job_id`, `status`, artifact URLs, `expires_at`, `warnings`, and `errors`. See `docs/integration-contract.md` for the full contract.
+
+Artifact access uses a private/operator-only model for the initial release: response URLs require local filesystem access or Azure RBAC/storage permissions, expire after seven days by manifest policy, and are tied to the job `correlation_id` for audit review. Placeholder artifacts remain ineligible for publication until human review and real TTS gates are implemented.
 
 ## Secret handling
 

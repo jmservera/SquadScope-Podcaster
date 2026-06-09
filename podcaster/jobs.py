@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
+from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
@@ -33,7 +34,11 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     job_id = build_job_id(payload)
     storage = storage or create_storage_backend()
 
-    warnings = ["audio is a deterministic placeholder pending TTS implementation", "human review is required before publishing"]
+    warnings = [
+        "audio is a deterministic placeholder pending TTS implementation",
+        "human review is required before publishing",
+        "artifact URLs are private operator paths, not public publishing links",
+    ]
     if payload.get("callback"):
         warnings.append("callback accepted by contract but not invoked yet")
 
@@ -69,9 +74,12 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
             "blocked_by": ["human_review", "real_tts_not_implemented"],
             "public_url": None,
         },
+        "artifact_access": artifact_access_metadata(job_id, created_at, expires_at),
         "artifacts": {
             path: {
                 "url": artifact.url,
+                "access_model": ACCESS_MODEL,
+                "publicly_accessible": False,
                 "size_bytes": artifact.size_bytes,
                 "content_type": artifact.content_type,
                 "sha256": checksums[path],
