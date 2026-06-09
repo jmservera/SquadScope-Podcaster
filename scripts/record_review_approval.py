@@ -62,14 +62,15 @@ def apply_review_decision(
 
     generation = updated.setdefault("generation", {})
     tts_synthesis = generation.setdefault("tts_synthesis", {})
+    tts_blockers = list(tts_synthesis.get("blocked_by", []))
     if decision == APPROVED:
-        tts_synthesis["status"] = "review_approved"
-        tts_synthesis["allowed"] = True
-        tts_synthesis["blocked_by"] = []
+        tts_blockers = [reason for reason in tts_blockers if reason != "human_review"]
     else:
-        tts_synthesis["status"] = "blocked"
-        tts_synthesis["allowed"] = False
-        tts_synthesis["blocked_by"] = ["human_review"]
+        tts_blockers = [reason for reason in tts_blockers if reason != "human_review"]
+        tts_blockers.insert(0, "human_review")
+    tts_synthesis["blocked_by"] = tts_blockers
+    tts_synthesis["allowed"] = not tts_blockers
+    tts_synthesis["status"] = "review_approved" if not tts_blockers and decision == APPROVED else "blocked"
 
     publishing = updated.setdefault("publishing", {})
     blocked_by = [reason for reason in publishing.get("blocked_by", []) if reason != "human_review"]
@@ -77,6 +78,7 @@ def apply_review_decision(
         blocked_by.insert(0, "human_review")
     publishing["blocked_by"] = blocked_by
     publishing["eligible"] = False
+    publishing["packet_ready"] = False
 
     return updated
 

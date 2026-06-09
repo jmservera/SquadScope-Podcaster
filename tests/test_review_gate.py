@@ -26,7 +26,7 @@ def test_review_workflow_uses_podcast_review_environment_and_uploads_record() ->
     assert "scripts/record_review_approval.py" in workflow
 
 
-def test_review_approval_records_actor_time_and_opens_tts_gate(tmp_path: Path) -> None:
+def test_review_approval_records_actor_time_and_preserves_non_human_tts_gate(tmp_path: Path) -> None:
     storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
     result = run_generation_job(
         {"week": "2026-W23", "article_url": "https://example.com/article"},
@@ -48,10 +48,16 @@ def test_review_approval_records_actor_time_and_opens_tts_gate(tmp_path: Path) -
     assert reviewed["review"]["approved_by"] == "leela"
     assert reviewed["review"]["approved_at"] == "2026-06-08T22:00:00Z"
     assert reviewed["review"]["audit_trail"][-1]["actor"] == "leela"
-    assert reviewed["generation"]["tts_synthesis"]["allowed"] is True
-    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == []
+    assert reviewed["generation"]["tts_synthesis"]["allowed"] is False
+    assert reviewed["generation"]["tts_synthesis"]["status"] == "blocked"
+    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == ["provider_not_selected"]
     assert "human_review" not in reviewed["publishing"]["blocked_by"]
+    assert reviewed["publishing"]["blocked_by"] == ["real_tts_not_implemented", "audio_validation_not_passed"]
     assert reviewed["publishing"]["eligible"] is False
+    assert reviewed["publishing"]["packet_ready"] is False
+    assert reviewed["generation"]["audio_mode"] == "placeholder"
+    assert reviewed["generation"]["audio_validation"]["ready"] is False
+    assert reviewed["generation"]["audio_validation"]["status"] == "blocked"
 
 
 def test_record_review_approval_cli_writes_reviewed_manifest(tmp_path: Path) -> None:
