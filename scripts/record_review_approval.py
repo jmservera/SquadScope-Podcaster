@@ -11,6 +11,11 @@ APPROVED = "approved"
 CHANGES_REQUESTED = "changes_requested"
 REJECTED = "rejected"
 VALID_DECISIONS = {APPROVED, CHANGES_REQUESTED, REJECTED}
+PROVIDER_TTS_BLOCKERS = [
+    "provider_not_selected",
+    "provider_privacy_review_required",
+    "rai_security_signoff_required",
+]
 
 
 def apply_review_decision(
@@ -62,14 +67,20 @@ def apply_review_decision(
 
     generation = updated.setdefault("generation", {})
     tts_synthesis = generation.setdefault("tts_synthesis", {})
+    existing_blockers = [
+        blocker
+        for blocker in tts_synthesis.get("blocked_by", PROVIDER_TTS_BLOCKERS)
+        if blocker != "human_review"
+    ]
+    existing_blockers = [*existing_blockers, *[blocker for blocker in PROVIDER_TTS_BLOCKERS if blocker not in existing_blockers]]
     if decision == APPROVED:
-        tts_synthesis["status"] = "review_approved"
-        tts_synthesis["allowed"] = True
-        tts_synthesis["blocked_by"] = []
+        tts_synthesis["status"] = "blocked" if existing_blockers else "review_approved"
+        tts_synthesis["allowed"] = not existing_blockers
+        tts_synthesis["blocked_by"] = existing_blockers
     else:
         tts_synthesis["status"] = "blocked"
         tts_synthesis["allowed"] = False
-        tts_synthesis["blocked_by"] = ["human_review"]
+        tts_synthesis["blocked_by"] = ["human_review", *existing_blockers]
 
     publishing = updated.setdefault("publishing", {})
     blocked_by = [reason for reason in publishing.get("blocked_by", []) if reason != "human_review"]
