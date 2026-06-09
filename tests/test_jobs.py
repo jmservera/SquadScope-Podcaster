@@ -376,6 +376,39 @@ def test_non_dry_run_fails_closed_when_monthly_episode_limit_exceeded() -> None:
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
+def test_monthly_budget_is_reserved_before_artifacts_are_staged() -> None:
+    artifact_root = Path(".test-artifacts-budget-reservation")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+    class TrackingStorage(LocalStorageBackend):
+        def __init__(self, root: Path, base_url: str) -> None:
+            super().__init__(root, base_url)
+            self.monthly_updates: list[str] = []
+
+        def update_bytes(self, path, content_type, update):
+            self.monthly_updates.append(path)
+            return super().update_bytes(path, content_type, update)
+
+        def put_bytes(self, path, content, content_type):
+            if path.startswith("jobs/") and not self.monthly_updates:
+                raise AssertionError("job artifacts were staged before monthly budget reservation")
+            return super().put_bytes(path, content, content_type)
+
+    storage = TrackingStorage(artifact_root, "https://example.invalid/artifacts")
+
+    result = run_generation_job(
+        {"week": "2026-W29", "article_url": "https://example.com/new-article"},
+        storage=storage,
+        now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
+    )
+
+    assert result.response["status"] == "accepted"
+    assert storage.monthly_updates == [monthly_ledger_path("2026-06"), monthly_ledger_path("2026-06")]
+    monthly = json.loads((artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8"))
+    assert monthly["episodes"][-1].get("state") != "reserved"
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
 def test_non_dry_run_allows_explicit_operator_cost_override() -> None:
     artifact_root = Path(".test-artifacts-budget-override")
     shutil.rmtree(artifact_root, ignore_errors=True)

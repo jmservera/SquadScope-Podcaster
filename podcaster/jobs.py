@@ -15,6 +15,7 @@ from podcaster.costs import (
     load_monthly_ledger,
     monthly_budget_inputs,
     monthly_ledger_path,
+    reserve_monthly_ledger_entry,
     update_monthly_ledger,
 )
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
@@ -27,6 +28,12 @@ from podcaster.validation import RESPONSE_KEYS
 class JobResult:
     response: dict[str, Any]
     manifest: dict[str, Any]
+
+
+class MonthlyBudgetExceeded(RuntimeError):
+    def __init__(self, budget: dict[str, Any]) -> None:
+        super().__init__("monthly podcast budget exceeded; explicit operator override required")
+        self.budget = budget
 
 
 def build_job_id(payload: dict[str, Any]) -> str:
@@ -44,27 +51,47 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     storage = storage or create_storage_backend()
     month = current.strftime("%Y-%m")
     monthly_path = monthly_ledger_path(month)
-    monthly_ledger = load_monthly_ledger(storage.get_bytes(monthly_path), month=month)
-    prior_episode_count, prior_monthly_spend = monthly_budget_inputs(monthly_ledger, job_id=job_id)
     cost_override = _cost_override(payload)
-    budget = evaluate_monthly_guardrail(
-        prior_episode_count=prior_episode_count,
-        prior_monthly_spend_usd=prior_monthly_spend,
-        projected_episode_cost_usd=USD_ZERO,
-        override=cost_override,
-    )
-    if not payload.get("dry_run") and budget["status"] == "over_budget":
+    budget_context: dict[str, Any] = {}
+
+    def reserve_monthly_budget(content: bytes | None) -> bytes:
+        monthly_ledger = load_monthly_ledger(content, month=month)
+        prior_episode_count, prior_monthly_spend = monthly_budget_inputs(monthly_ledger, job_id=job_id)
+        budget = evaluate_monthly_guardrail(
+            prior_episode_count=prior_episode_count,
+            prior_monthly_spend_usd=prior_monthly_spend,
+            projected_episode_cost_usd=USD_ZERO,
+            override=cost_override,
+        )
+        if not payload.get("dry_run") and budget["status"] == "over_budget":
+            raise MonthlyBudgetExceeded(budget)
+        budget_context["prior_episode_count"] = prior_episode_count
+        budget_context["prior_monthly_spend"] = prior_monthly_spend
+        return manifest_bytes(
+            reserve_monthly_ledger_entry(
+                monthly_ledger,
+                job_id=job_id,
+                week=str(payload["week"]),
+                budget=budget,
+            )
+        )
+
+    try:
+        storage.update_bytes(monthly_path, "application/json; charset=utf-8", reserve_monthly_budget)
+    except MonthlyBudgetExceeded as exc:
         logging.warning(
             "podcaster job blocked by monthly budget job_id=%s week=%s projected_episode_count=%s projected_monthly_spend_usd=%s",
             job_id,
             payload.get("week"),
-            budget["projected_episode_count"],
-            budget["projected_monthly_spend_usd"],
+            exc.budget["projected_episode_count"],
+            exc.budget["projected_monthly_spend_usd"],
         )
         return JobResult(
             response=failed_response(["monthly podcast budget exceeded; explicit operator override required"]),
-            manifest={"job_id": job_id, "status": "failed", "budget": budget},
+            manifest={"job_id": job_id, "status": "failed", "budget": exc.budget},
         )
+    prior_episode_count = int(budget_context["prior_episode_count"])
+    prior_monthly_spend = budget_context["prior_monthly_spend"]
 
     warnings = [
         "audio is a deterministic placeholder pending TTS implementation",
@@ -160,8 +187,12 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     }
     manifest_path = f"jobs/{job_id}/manifest.json"
     manifest_artifact = storage.put_bytes(manifest_path, manifest_bytes(manifest), "application/json; charset=utf-8")
-    updated_monthly_ledger = update_monthly_ledger(monthly_ledger, job_id=job_id, episode_ledger=cost_ledger)
-    storage.put_bytes(monthly_path, manifest_bytes(updated_monthly_ledger), "application/json; charset=utf-8")
+    def finalize_monthly_budget(content: bytes | None) -> bytes:
+        monthly_ledger = load_monthly_ledger(content, month=month)
+        updated_monthly_ledger = update_monthly_ledger(monthly_ledger, job_id=job_id, episode_ledger=cost_ledger)
+        return manifest_bytes(updated_monthly_ledger)
+
+    storage.update_bytes(monthly_path, "application/json; charset=utf-8", finalize_monthly_budget)
     logging.info(
         "podcaster job staged job_id=%s status=%s dry_run=%s artifact_count=%s",
         job_id,

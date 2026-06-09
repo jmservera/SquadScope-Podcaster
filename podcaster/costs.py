@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
+from decimal import InvalidOperation
 from typing import Any
 
 
@@ -152,9 +153,9 @@ def missing_cost_ledger_fields(ledger: dict[str, Any]) -> list[str]:
                 missing.append(f"costs.{category}.estimated_usd")
                 missing.append(f"costs.{category}.actual_usd")
             else:
-                if _is_missing(costs[category].get("estimated_usd")):
+                if _is_missing_money(costs[category].get("estimated_usd")):
                     missing.append(f"costs.{category}.estimated_usd")
-                if _is_missing(costs[category].get("actual_usd")):
+                if _is_missing_money(costs[category].get("actual_usd")):
                     missing.append(f"costs.{category}.actual_usd")
     else:
         missing.extend(f"costs.{category}" for category in COST_CATEGORIES)
@@ -212,6 +213,32 @@ def update_monthly_ledger(monthly_ledger: dict[str, Any], *, job_id: str, episod
             "week": episode_ledger.get("week"),
             "estimated_total_usd": _money(estimated_total),
             "budget_status": budget.get("status"),
+        }
+    )
+    return updated
+
+
+def reserve_monthly_ledger_entry(
+    monthly_ledger: dict[str, Any],
+    *,
+    job_id: str,
+    week: str,
+    budget: dict[str, Any],
+) -> dict[str, Any]:
+    import json
+
+    updated = json.loads(json.dumps(monthly_ledger))
+    episodes = updated.setdefault("episodes", [])
+    if not isinstance(episodes, list):
+        raise RuntimeError("monthly cost ledger episodes was not an array")
+    episodes[:] = [episode for episode in episodes if not isinstance(episode, dict) or episode.get("job_id") != job_id]
+    episodes.append(
+        {
+            "job_id": job_id,
+            "week": week,
+            "estimated_total_usd": "0.00",
+            "budget_status": budget.get("status"),
+            "state": "reserved",
         }
     )
     return updated
@@ -289,5 +316,15 @@ def _is_missing(value: Any) -> bool:
     if value is None:
         return True
     if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
+def _is_missing_money(value: Any) -> bool:
+    if _is_missing(value) or not isinstance(value, str):
+        return True
+    try:
+        Decimal(value)
+    except InvalidOperation:
         return True
     return False
