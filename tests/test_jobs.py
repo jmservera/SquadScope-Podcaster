@@ -42,6 +42,8 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     assert result.manifest["review"]["workflow"] == ".github/workflows/podcast-review-gate.yml"
     assert result.manifest["review"]["gate"]["status"] == "blocked"
     assert result.manifest["review"]["gate"]["approval_required_before"] == "non_dry_run_tts_synthesis"
+    assert result.manifest["cost_ledger"]["budget"]["status"] == "within_budget"
+    assert result.manifest["cost_ledger"]["readiness"]["complete"] is True
     assert result.manifest["generation"]["tts_synthesis"] == {
         "status": "blocked",
         "allowed": False,
@@ -67,6 +69,7 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     packet_file = job_dir / "packets" / f"{result.response['job_id']}.zip"
     assert (job_dir / "script.txt").exists()
     assert (job_dir / "claim-ledger.json").exists()
+    assert (job_dir / "cost-ledger.json").exists()
     assert (job_dir / "review-checklist.md").exists()
     assert packet_file.exists()
     
@@ -76,6 +79,9 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
         assert packet_manifest["review_status"] == "pending"
         assert packet_manifest["review"]["environment"] == "podcast-review"
         assert packet_manifest["review"]["gate"]["status"] == "blocked"
+        assert packet_manifest["cost_ledger"]["budget"]["status"] == "within_budget"
+        assert packet_manifest["publishing"]["packet_ready"] is False
+        assert packet_manifest["publishing"]["readiness_checks"]["cost_ledger_complete"] is True
         assert packet_manifest["artifact_access"]["model"] == "private_operator_path"
         assert packet_manifest["artifact_access"]["publication"]["eligible"] is False
     
@@ -132,6 +138,7 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
             "REVIEW-CHECKLIST.md",
             "script.txt",
             "claim-ledger.json",
+            "COST-LEDGER.json",
             "transcript.txt",
             "show-notes.md",
             "audio/episode-2026-W23.mp3",
@@ -143,6 +150,8 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
         assert manifest["job_id"] == result.response["job_id"]
         # Verify flat structure per editorial standards section 7.2
         assert manifest["review_status"] == "pending"
+        cost_ledger = json.loads(packet.read("COST-LEDGER.json"))
+        assert cost_ledger == manifest["cost_ledger"]
         checksums = _parse_checksums(packet.read("CHECKSUMS.txt").decode("utf-8"))
         assert set(checksums) == names - {"CHECKSUMS.txt"}
         for name, expected in checksums.items():
@@ -165,6 +174,7 @@ def test_generation_outputs_are_deterministic_and_documented() -> None:
     assert [artifact.path for artifact in first] == [
         f"jobs/{job_id}/script.txt",
         f"jobs/{job_id}/claim-ledger.json",
+        f"jobs/{job_id}/cost-ledger.json",
         f"jobs/{job_id}/transcript.txt",
         f"jobs/{job_id}/show-notes.md",
         f"jobs/{job_id}/review-checklist.md",
@@ -172,13 +182,16 @@ def test_generation_outputs_are_deterministic_and_documented() -> None:
         f"jobs/{job_id}/packets/{job_id}.zip",
     ]
     script = first[0].content.decode("utf-8")
-    transcript = first[2].content.decode("utf-8")
-    show_notes = first[3].content.decode("utf-8")
+    cost_ledger = json.loads(first[2].content.decode("utf-8"))
+    transcript = first[3].content.decode("utf-8")
+    show_notes = first[4].content.decode("utf-8")
     assert "deterministic production-path placeholder" in script
+    assert cost_ledger["budget"]["status"] == "within_budget"
+    assert cost_ledger["costs"]["staging_storage"]["estimated_usd"] == "0.00"
     assert "Title: SquadScope Podcast" in transcript
     assert "Original article](https://example.com/article)" in show_notes
-    assert first[5].content.startswith(f"Audio placeholder for {job_id}".encode("utf-8"))
-    assert first[6].content_type == "application/zip"
+    assert first[6].content.startswith(f"Audio placeholder for {job_id}".encode("utf-8"))
+    assert first[7].content_type == "application/zip"
 
 
 def test_local_storage_backend_stages_under_safe_project_relative_paths(monkeypatch) -> None:
@@ -293,6 +306,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     assert manifest["review"]["artifacts_for_review"] == [
         "script.txt",
         "claim-ledger.json",
+        "cost-ledger.json",
         "transcript.txt",
         "show-notes.md",
         "review-checklist.md",
@@ -301,6 +315,15 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     ]
     assert manifest["generation"]["tts_synthesis"]["allowed"] is False
     assert manifest["artifact_access"]["publication"]["blocked_by"] == ["human_review", "real_tts_not_implemented"]
+    assert manifest["publishing"]["packet_ready"] is False
+    assert manifest["publishing"]["readiness_checks"] == {
+        "cost_ledger_complete": True,
+        "budget_status": "within_budget",
+        "editorial_review_complete": False,
+        "real_audio_available": False,
+    }
+    assert manifest["cost_ledger"]["week"] == "2026-W23"
+    assert manifest["cost_ledger"]["privacy"]["secrets_recorded"] is False
     assert manifest["observability"]["correlation_id"] == job_id
     assert all(details["url"].startswith("https://example.invalid/artifacts/jobs/") for details in manifest["artifacts"].values())
     assert all(
@@ -313,7 +336,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     )
     serialized = json.loads(manifest_bytes(manifest).decode("utf-8"))
     assert serialized == manifest
-    assert f"podcaster job staged job_id={job_id} status=review_pending dry_run=False artifact_count=8" in caplog.text
+    assert f"podcaster job staged job_id={job_id} status=review_pending dry_run=False artifact_count=9" in caplog.text
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 

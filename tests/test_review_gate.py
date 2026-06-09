@@ -50,8 +50,32 @@ def test_review_approval_records_actor_time_and_opens_tts_gate(tmp_path: Path) -
     assert reviewed["review"]["audit_trail"][-1]["actor"] == "leela"
     assert reviewed["generation"]["tts_synthesis"]["allowed"] is True
     assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == []
+    assert reviewed["publishing"]["packet_ready"] is False
+    assert reviewed["publishing"]["readiness_checks"]["cost_ledger_complete"] is True
+    assert reviewed["publishing"]["readiness_checks"]["editorial_review_complete"] is True
     assert "human_review" not in reviewed["publishing"]["blocked_by"]
     assert reviewed["publishing"]["eligible"] is False
+
+
+def test_review_approval_fails_closed_when_cost_ledger_is_missing() -> None:
+    reviewed = apply_review_decision(
+        {
+            "job_id": "podcast-2026-W23-test",
+            "review": {"status": "pending", "audit_trail": [], "gate": {"status": "blocked"}},
+            "generation": {"tts_synthesis": {"status": "blocked", "allowed": False, "blocked_by": ["human_review"]}},
+            "publishing": {"eligible": False, "blocked_by": ["human_review", "real_tts_not_implemented"]},
+            "lifecycle": {"status": "review_pending", "transitions": []},
+        },
+        reviewer="leela",
+        reviewed_at="2026-06-08T22:00:00Z",
+        decision="approved",
+    )
+
+    assert reviewed["review"]["status"] == "approved"
+    assert reviewed["generation"]["tts_synthesis"]["allowed"] is False
+    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == ["cost_ledger_missing"]
+    assert "cost_ledger_missing" in reviewed["publishing"]["blocked_by"]
+    assert reviewed["publishing"]["packet_ready"] is False
 
 
 def test_record_review_approval_cli_writes_reviewed_manifest(tmp_path: Path) -> None:

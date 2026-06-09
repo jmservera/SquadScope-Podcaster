@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from podcaster.costs import cost_gate_blockers
 
 
 APPROVED = "approved"
@@ -62,21 +69,30 @@ def apply_review_decision(
 
     generation = updated.setdefault("generation", {})
     tts_synthesis = generation.setdefault("tts_synthesis", {})
+    cost_blockers = cost_gate_blockers(updated.get("cost_ledger"))
     if decision == APPROVED:
-        tts_synthesis["status"] = "review_approved"
-        tts_synthesis["allowed"] = True
-        tts_synthesis["blocked_by"] = []
+        tts_synthesis["status"] = "review_approved" if not cost_blockers else "blocked"
+        tts_synthesis["allowed"] = not cost_blockers
+        tts_synthesis["blocked_by"] = cost_blockers
     else:
         tts_synthesis["status"] = "blocked"
         tts_synthesis["allowed"] = False
-        tts_synthesis["blocked_by"] = ["human_review"]
+        tts_synthesis["blocked_by"] = ["human_review", *cost_blockers]
 
     publishing = updated.setdefault("publishing", {})
     blocked_by = [reason for reason in publishing.get("blocked_by", []) if reason != "human_review"]
     if decision != APPROVED and "human_review" not in blocked_by:
         blocked_by.insert(0, "human_review")
+    for blocker in cost_blockers:
+        if blocker not in blocked_by:
+            blocked_by.append(blocker)
     publishing["blocked_by"] = blocked_by
     publishing["eligible"] = False
+    publishing["packet_ready"] = False
+    readiness_checks = publishing.setdefault("readiness_checks", {})
+    readiness_checks["cost_ledger_complete"] = not cost_blockers
+    readiness_checks["editorial_review_complete"] = decision == APPROVED
+    readiness_checks.setdefault("real_audio_available", False)
 
     return updated
 

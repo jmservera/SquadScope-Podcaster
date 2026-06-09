@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -44,10 +45,18 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
 
     stored: dict[str, StoredArtifact] = {}
     checksums: dict[str, str] = {}
+    cost_ledger: dict[str, Any] | None = None
     for artifact in generate_artifacts(job_id, payload, current, expires_at):
         stored_artifact = storage.put_bytes(artifact.path, artifact.content, artifact.content_type)
         stored[artifact.path] = stored_artifact
         checksums[artifact.path] = checksum(artifact.content)
+        if artifact.path.endswith("/cost-ledger.json"):
+            loaded_cost_ledger = json.loads(artifact.content.decode("utf-8"))
+            if not isinstance(loaded_cost_ledger, dict):
+                raise RuntimeError("generated cost ledger was not a JSON object")
+            cost_ledger = loaded_cost_ledger
+    if cost_ledger is None:
+        raise RuntimeError("generated artifacts did not include cost-ledger.json")
 
     created_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     manifest_status = "dry_run" if payload.get("dry_run") else "review_pending"
@@ -60,6 +69,7 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
         "request": _request_metadata(payload),
         "lifecycle": _lifecycle_metadata(payload, created_at, manifest_status),
         "review": _review_metadata(payload),
+        "cost_ledger": cost_ledger,
         "generation": {
             "engine": "local-deterministic-placeholder",
             "deterministic": True,
@@ -75,9 +85,19 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
         },
         "publishing": {
             "mode": "manual",
-            "packet_ready": True,
+            "packet_ready": False,
             "eligible": False,
             "blocked_by": ["human_review", "real_tts_not_implemented"],
+            "readiness_checks": {
+                "cost_ledger_complete": bool(cost_ledger.get("readiness", {}).get("complete"))
+                if isinstance(cost_ledger.get("readiness"), dict)
+                else False,
+                "budget_status": cost_ledger.get("budget", {}).get("status")
+                if isinstance(cost_ledger.get("budget"), dict)
+                else "unknown",
+                "editorial_review_complete": False,
+                "real_audio_available": False,
+            },
             "public_url": None,
         },
         "artifact_access": artifact_access_metadata(job_id, created_at, expires_at),
@@ -170,6 +190,7 @@ def _review_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "artifacts_for_review": [
             "script.txt",
             "claim-ledger.json",
+            "cost-ledger.json",
             "transcript.txt",
             "show-notes.md",
             "review-checklist.md",
