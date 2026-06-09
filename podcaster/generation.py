@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
+from podcaster.artifact_access import artifact_access_metadata
+
 
 @dataclass(frozen=True)
 class GeneratedArtifact:
@@ -257,6 +259,7 @@ def _metadata(job_id: str, payload: dict[str, object], created_at: datetime, exp
             "blocked_by": ["human_review", "real_tts_not_implemented"],
             "public_url": None,
         },
+        "artifact_access": artifact_access_metadata(job_id, created_ts, expires_at),
         "observability": {"correlation_id": job_id, "safe_log_fields": ["job_id", "week", "status", "artifact_count"]},
     }
 
