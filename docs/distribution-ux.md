@@ -192,31 +192,28 @@ Example: Article URL returns 404 or is behind authentication
 
 ## Future: Spotify and Podcast-Host Automation
 
-### Research Scope
+### Research Result
 
-Before automating Spotify or podcast-host publishing, research must answer:
+The current recommendation is manual publication for MVP. Spotify should be treated as an RSS distribution target, not a direct API target:
 
-1. **APIs and Support**
-   - Does Spotify expose a public API for direct episode upload? (Current known: Spotify for Creators accepts RSS feeds, but not direct API uploads)
-   - What are the official podcast host APIs (Apple Podcasts, Google Podcasts, Anchor, Podbean, etc.)?
-   - Are there rate limits, review delays, or approval requirements?
+1. **Spotify direct upload**
+   - Spotify's public Web API documentation covers Spotify app integrations such as metadata, playlists, and playback. It does not document a podcast episode upload or publish endpoint.
+   - If the show is hosted in Spotify for Creators, a human operator uploads and manages the episode there.
 
-2. **Authentication and Credentials**
-   - How are operator credentials (Spotify username/token, podcast host API keys) stored securely?
-   - Can Podcaster safely receive and use these credentials without logging them?
-   - Should credentials be stored in Podcaster or passed through SquadScope?
+2. **RSS and host distribution**
+   - Spotify for Creators creates an RSS feed after the first hosted episode is published.
+   - Shows hosted elsewhere reach Spotify by submitting the host-provided RSS feed.
+   - New or updated episodes usually appear on submitted platforms within a few hours, but operators should allow up to 24 hours.
 
-3. **Platform Terms**
-   - Do Spotify and podcast host terms allow automated publishing?
-   - Are there restrictions on bulk uploads, AI-generated content, or third-party automation?
+3. **Future automation target**
+   - If automation is later approved, integrate with a selected podcast host API or feed-management provider, then let Spotify ingest the resulting RSS feed.
+   - Do not add Spotify credentials, podcast-host credentials, or publication fields to Podcaster until a separate publish workflow and credential model are reviewed.
 
-4. **Operator Experience**
-   - Should operators pre-authorize Podcaster with their credentials (OAuth flow)?
-   - Or should publication remain manual with operator control?
-
-5. **Rollback and Audit**
-   - If an episode is auto-published and later needs removal, how does the operator control that?
-   - How is publication audited for compliance?
+4. **Platform and safety constraints**
+   - Do not use real-person voice cloning. Spotify has reaffirmed that unauthorized impersonation of a creator or host's likeness, including AI voice cloning, can be removed.
+   - Keep the project-level AI/synthetic voice disclosure in the episode audio and show notes before public publication.
+   - RSS distribution can expose the feed email address; operators should use a distribution mailbox.
+   - Public RSS feeds can be scraped by third-party apps, so takedown/removal may not be fully controlled through Spotify.
 
 ### Automation Boundaries (Not In Scope)
 
@@ -227,15 +224,19 @@ The following are explicitly research/future work:
 - **Automatic episode numbering:** Podcaster does not auto-increment episode numbers or manage series metadata.
 - **Embedded SquadScope player:** SquadScope does not embed audio players; it links to external platforms.
 
-### Recommended Initial Path (Post-MVP Research)
+### Recommended Initial Path
 
-1. Operator pre-authorizes Podcaster with podcast host credentials via secure OAuth/token flow
-2. Podcaster exposes an optional `"publish_to"` field in the request body: `["rss", "spotify"]`
-3. For RSS: Podcaster generates an RSS `<item>` and posts it to the operator's RSS endpoint
-4. For Spotify: Podcaster submits the episode via Spotify for Creators RSS submission or equivalent
-5. Response includes a `"publication_urls"` field with final platform URLs (added after operator approves)
+1. Operator downloads the reviewed publishing packet.
+2. Operator uploads the MP3 and metadata in Spotify for Creators or the selected podcast host UI.
+3. Operator records the public episode URL, publish time, and any corrections in the audit trail.
 
-This path remains contingent on research validation and operator workflow feedback.
+### Recommended Future Automation Path
+
+1. Select a podcast host or feed-management provider with a supported publishing API.
+2. Operator pre-authorizes Podcaster or a publish worker with host credentials via secure OAuth/token flow.
+3. A separate publish workflow submits the reviewed episode to the host and records an audit trail.
+4. Spotify receives the episode through RSS ingestion.
+5. Response fields such as `"publication_urls"` are added only after contract review and human approval gates.
 
 ## Documentation Checklist for Operators
 
