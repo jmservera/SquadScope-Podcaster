@@ -11,6 +11,11 @@ APPROVED = "approved"
 CHANGES_REQUESTED = "changes_requested"
 REJECTED = "rejected"
 VALID_DECISIONS = {APPROVED, CHANGES_REQUESTED, REJECTED}
+PROVIDER_TTS_BLOCKERS = [
+    "provider_not_selected",
+    "provider_privacy_review_required",
+    "rai_security_signoff_required",
+]
 
 
 def apply_review_decision(
@@ -63,14 +68,18 @@ def apply_review_decision(
     generation = updated.setdefault("generation", {})
     tts_synthesis = generation.setdefault("tts_synthesis", {})
     tts_blockers = _blocked_by(tts_synthesis)
+    provider_selection_complete = _provider_selection_complete(updated)
+    tts_blockers = [reason for reason in tts_blockers if reason != "human_review"]
     if decision == APPROVED:
-        tts_blockers = [reason for reason in tts_blockers if reason != "human_review"]
-        if _provider_selection_complete(updated):
+        if provider_selection_complete:
             tts_blockers = [reason for reason in tts_blockers if reason != "provider_not_selected"]
         else:
-            tts_blockers = _append_blocker(tts_blockers, "provider_not_selected")
+            for blocker in PROVIDER_TTS_BLOCKERS:
+                tts_blockers = _append_blocker(tts_blockers, blocker)
     else:
-        tts_blockers = [reason for reason in tts_blockers if reason != "human_review"]
+        if not provider_selection_complete:
+            for blocker in PROVIDER_TTS_BLOCKERS:
+                tts_blockers = _append_blocker(tts_blockers, blocker)
         tts_blockers.insert(0, "human_review")
     tts_synthesis["blocked_by"] = tts_blockers
     tts_synthesis["allowed"] = decision == APPROVED and not tts_blockers

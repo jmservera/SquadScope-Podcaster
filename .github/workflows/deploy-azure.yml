@@ -31,8 +31,8 @@ jobs:
       endpoint: ${{ steps.deploy_bicep.outputs.endpoint }}
     steps:
       - name: Checkout
-        # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        # actions/checkout v6.0.3
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
         with:
           persist-credentials: false
 
@@ -132,8 +132,8 @@ jobs:
           echo "API key source: $api_key_source; value not printed."
 
       - name: Azure login
-        # azure/login v2
-        uses: azure/login@1384c340ab2dda50fed2bee3041d1d87018aa5e8
+        # azure/login v3.0.0
+        uses: azure/login@93381592711f247e165c389ebb30b596c84cdc48
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -199,8 +199,8 @@ jobs:
           echo "API key: configured as a Function App setting; not printed." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Python
-        # actions/setup-python v5
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        # actions/setup-python v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.11'
 

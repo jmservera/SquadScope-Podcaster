@@ -1,98 +1,101 @@
-# SquadScope Integration UX — Link-Only Distribution
+# Backlog: Spotify Publishing Research
 
-## Design Principle
+Issue: #5
 
-SquadScope displays podcast artifacts as links, not embedded content. This keeps SquadScope focused on article publishing and allows podcast workflows to evolve independently. Operators control where and how episodes are published.
+## Research conclusion
 
-## What SquadScope Surfaces (Link-Only)
+Spotify should be treated as an RSS distribution target for Podcaster MVP, not as a direct publish API target.
 
-After calling Podcaster `POST /api/generate`, SquadScope can store and display:
+As of this research pass, Spotify's public developer Web API is for Spotify app integrations such as content metadata, playlist management, and playback control. It does not document a podcast episode upload or publish endpoint. Spotify for Creators publishes shows hosted on Spotify automatically, and externally hosted shows reach Spotify through host/provider submission and RSS ingestion.
 
-1. **Publishing packet link** (`publishing_packet_url` from response)
-   - Labeled: "Download episode packet"
-   - Tooltips: "Contains script, transcript, show notes, and audio — ready for manual publication"
-   - Link opens a zip download; no audio embedded on SquadScope
+## Direct Spotify upload API
 
-2. **Manifest link** (`manifest_url` from response)
-   - Labeled: "Episode metadata" (optional; primarily for operators/auditing)
-   - Contains job tracking, checksums, and artifact inventory
+No direct Spotify upload path is selected for MVP.
 
-3. **Transcript link** (`transcript_url` from response)
-   - Labeled: "Episode transcript" (optional)
-   - Can be displayed as inline text or as a downloadable link
+- **Direct API publish:** Not supported by the public Spotify Web API documentation reviewed for this issue.
+- **Spotify-hosted show:** A human operator can upload and manage the episode in Spotify for Creators.
+- **Externally hosted show:** A human operator or host automation publishes the episode through the podcast host; Spotify ingests it from the show RSS feed after the show is submitted to Spotify.
 
-4. **Show notes link** (`show_notes_url` from response)
-   - Labeled: "Episode show notes" (optional; pre-rendered for reference)
+## Supported automation paths
 
-## What SquadScope Does NOT Do
+### MVP path: manual upload
 
-- **No audio player:** SquadScope does not embed `<audio>` tags or stream the MP3 directly
-- **No direct Spotify/Apple Podcasts links:** SquadScope does not assume episodes are published; it only links to the packet or the operator's destination
-- **No automation of Spotify/podcast-host uploads:** SquadScope does not call Spotify APIs or podcast host APIs on behalf of the operator
-- **No storage:** SquadScope does not cache or copy artifacts; it links to transient URLs from Podcaster
+1. Podcaster generates a reviewed publishing packet.
+2. Operator downloads the packet before artifact URL expiry.
+3. Operator confirms the episode is approved, audio is final, and required disclosures are present.
+4. Operator uploads the MP3 and metadata in Spotify for Creators or the selected podcast host UI.
+5. Operator records the public platform URL, publish time, and any corrections outside Podcaster's current API response.
 
-## Integration Handoff
+This keeps publication human-gated and avoids storing platform credentials in Podcaster.
 
-### Request
+### Preferred future automation path: podcast host API plus RSS
 
-SquadScope calls `POST /api/generate` with:
-- `week`: Article publication week (ISO format, e.g., "2026-W23")
-- `article_url`: Published article URL
-- `article_sha256`: (optional) SHA-256 of article content for traceability
-- `dry_run`: (optional) If true, returns draft/stub artifacts only
+If automation is later approved, select a podcast host that provides an episode publishing API or secure workflow for updating the show feed. Podcaster would publish to that host, and Spotify would receive the episode through RSS ingestion.
 
-### Response
+Required design work before implementation:
 
-```json
-{
-  "job_id": "podcast-2026-W23-abc12345",
-  "status": "accepted|completed|dry_run",
-  "manifest_url": "https://storage.blob.core.windows.net/podcasts/manifests/podcast-2026-W23-abc12345.json",
-  "mp3_url": "https://storage.blob.core.windows.net/podcasts/audio/podcast-2026-W23-abc12345.mp3",
-  "wav_url": null,
-  "transcript_url": "https://storage.blob.core.windows.net/podcasts/transcripts/podcast-2026-W23-abc12345.txt",
-  "show_notes_url": "https://storage.blob.core.windows.net/podcasts/show-notes/podcast-2026-W23-abc12345.md",
-  "publishing_packet_url": "https://storage.blob.core.windows.net/podcasts/packets/podcast-2026-W23-abc12345.zip",
-  "expires_at": "2026-06-14T17:41:40Z",
-  "warnings": [],
-  "errors": []
-}
-```
+- Host/vendor selection and terms review.
+- Credential model, preferably OAuth or short-lived tokens owned by the operator.
+- Secret storage in Azure or GitHub environments with no logging of tokens.
+- Idempotency key for episode creation/update.
+- Rollback/removal workflow owned by the operator.
+- Audit trail recording requester, reviewer, publish target, publish time, public URL, and checksum of the submitted audio.
 
-**Response Shape is Stable:** These keys are fixed; SquadScope can depend on them for automation or UI rendering. See `docs/integration-contract.md` for the contract.
+### Not selected: Podcaster-managed RSS feed
 
-### Displaying Results to End Users
+Podcaster could theoretically generate and host an RSS feed, but that would turn Podcaster into a public podcast hosting service. That is not selected for MVP because it adds public hosting, feed availability, takedown, analytics, artwork, email exposure, retention, and platform compliance responsibilities.
 
-SquadScope can surface results in article metadata or a separate "podcast" section:
+## Manual MVP process
 
-```
-📻 Episode Available
-✓ Status: Completed
-🔗 [Download episode packet] (expires 2026-06-14)
-📋 [Show notes] | [Transcript] (optional)
-Article ID: 2026-W23
-```
+The operator packet must contain or point to:
 
-## No Automatic Publication
+- Final MP3.
+- Episode title.
+- Episode description/show notes.
+- Transcript.
+- Source article URL.
+- Corrections/contact link.
+- AI/synthetic voice disclosure text when TTS or synthetic narration is used.
+- Rights and attribution notes for article content, TTS provider, voice, music, and artwork.
+- Review approval evidence and reviewer identity.
+- Cost ledger and audio validation status.
 
-- SquadScope does NOT publish to Spotify, Apple Podcasts, or any platform automatically
-- SquadScope does NOT sync episode URLs back to Podcaster or store Spotify URIs
-- An operator (human editor or distribution staff) must manually download the packet and publish using the README instructions
-- Future automation (Spotify/podcast-host direct API calls) is research-stage and out of scope for SquadScope core
+Manual upload checklist:
 
-## Error Handling for SquadScope
+1. Confirm `MANIFEST.json` has `review_status: approved`.
+2. Confirm placeholder audio has been replaced by final reviewed audio.
+3. Confirm ffmpeg/audio validation has passed.
+4. Confirm the monthly cost ledger is within guardrails or has an explicit operator override.
+5. Copy title, description, transcript, and disclosure from the packet into Spotify for Creators or the selected podcast host.
+6. Upload the MP3.
+7. Schedule or publish.
+8. Record the public episode URL and publish timestamp in the operator audit trail.
 
-If Podcaster returns `status: failed` or `errors` are populated:
-- SquadScope should surface the error to the editor (e.g., "Podcast generation failed: [error message]")
-- SquadScope does NOT retry automatically
-- Editor can request a regeneration with `force: true` in a follow-up call
+## Platform constraints
 
-## Future: Podcast URL Linking (Not In Scope)
+- **AI voice / impersonation:** Do not use real-person voice cloning. Spotify has reaffirmed that unauthorized impersonation of a creator or host's likeness, including AI voice cloning, can be removed. Podcaster should keep the project-level requirement that AI-generated voices are disclosed in audio and show notes before any public publication.
+- **RSS email exposure:** Spotify's RSS help states the feed email can become public when RSS distribution is enabled. Operators should use a distribution mailbox, not a personal address.
+- **Episode propagation:** Spotify's creator docs say new or updated episodes usually appear on submitted platforms within a few hours, but operators should allow up to 24 hours.
+- **External platform control:** Public RSS feeds can be scraped by third-party apps. Operators may not be able to remove all downstream copies through Spotify alone.
+- **Video/music limitations:** Spotify notes video episodes and Music + Talk content have platform-specific availability limits. Podcaster MVP should stay audio-only and avoid licensed music.
+- **Analytics:** Spotify/platform analytics remain in the selected host or Spotify for Creators. Podcaster should not promise listener analytics until a platform integration is designed.
+- **Monetization:** Do not enable or imply monetization automation. Any monetization setting remains a human operator/platform decision.
 
-If/when episodes are published to a public platform (e.g., Spotify or Apple Podcasts), a *separate* link might be added to the SquadScope article:
+## Future automation architecture
 
-```
-Listen on: [Spotify] [Apple Podcasts]
-```
+If automation is approved after MVP:
 
-This link would be added manually or through a future, separate integration. It is NOT part of the Podcaster MVP and must be explicitly designed when podcast URLs are public and stable.
+1. Add a separate `publish` capability or workflow after human review, not to `/api/generate` by default.
+2. Use a selected podcast host API as the primary integration target.
+3. Keep Spotify distribution indirect through RSS ingestion unless Spotify publishes an official podcast episode upload API.
+4. Store platform credentials outside artifacts and logs.
+5. Require explicit operator approval per episode.
+6. Return additive `publication_urls` and `publication_audit_url` fields only after the contract is reviewed.
+
+## Sources reviewed
+
+- Spotify Web API documentation: https://developer.spotify.com/documentation/web-api
+- Spotify for Creators RSS feed help: https://support.spotify.com/us/creators/article/finding-and-enabling-your-rss-feed/
+- Spotify for Creators distribution help: https://support.spotify.com/us/creators/article/distributing-your-show-to-other-platforms/
+- Spotify for Creators external hosting help: https://support.spotify.com/us/creators/article/getting-your-show-on-spotify/
+- Spotify newsroom on podcast verification and impersonation policy: https://newsroom.spotify.com/2026-05-19/podcast-verification-trust-creators-listeners/
