@@ -35,6 +35,7 @@ SquadScope Podcaster is a separate Azure-hosted service that turns a published S
 5. Stage artifacts in Azure Blob Storage when generation is implemented.
 6. Preserve traceability from article URL and hash to podcast artifacts.
 7. Include a human review gate before public publishing.
+8. Record a cost ledger for every episode and block non-dry-run synthesis or packet readiness when monthly guardrails are unknown or exceeded.
 
 ## Quality requirements
 
@@ -42,6 +43,7 @@ SquadScope Podcaster is a separate Azure-hosted service that turns a published S
 - Logs must not include API keys.
 - API responses must have deterministic shape for caller automation.
 - CI must run validation tests.
+- MVP podcast operations are capped at 5 episodes/month and $5/month total podcast spend unless an explicit operator override is recorded. The ledger must include script generation, validation, TTS, staging storage, egress/download, and platform/provider cost categories, even when current estimated cost is zero.
 
 ## Milestones
 

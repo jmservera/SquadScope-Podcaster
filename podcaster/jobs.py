@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -8,6 +9,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
+from podcaster.costs import (
+    USD_ZERO,
+    evaluate_monthly_guardrail,
+    load_monthly_ledger,
+    monthly_budget_inputs,
+    monthly_ledger_path,
+    reserve_monthly_ledger_entry,
+    update_monthly_ledger,
+)
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
@@ -18,6 +28,12 @@ from podcaster.validation import RESPONSE_KEYS
 class JobResult:
     response: dict[str, Any]
     manifest: dict[str, Any]
+
+
+class MonthlyBudgetExceeded(RuntimeError):
+    def __init__(self, budget: dict[str, Any]) -> None:
+        super().__init__("monthly podcast budget exceeded; explicit operator override required")
+        self.budget = budget
 
 
 def build_job_id(payload: dict[str, Any]) -> str:
@@ -33,6 +49,49 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     expires_at = (current + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     job_id = build_job_id(payload)
     storage = storage or create_storage_backend()
+    month = current.strftime("%Y-%m")
+    monthly_path = monthly_ledger_path(month)
+    cost_override = _cost_override(payload)
+    budget_context: dict[str, Any] = {}
+
+    def reserve_monthly_budget(content: bytes | None) -> bytes:
+        monthly_ledger = load_monthly_ledger(content, month=month)
+        prior_episode_count, prior_monthly_spend = monthly_budget_inputs(monthly_ledger, job_id=job_id)
+        budget = evaluate_monthly_guardrail(
+            prior_episode_count=prior_episode_count,
+            prior_monthly_spend_usd=prior_monthly_spend,
+            projected_episode_cost_usd=USD_ZERO,
+            override=cost_override,
+        )
+        if not payload.get("dry_run") and budget["status"] == "over_budget":
+            raise MonthlyBudgetExceeded(budget)
+        budget_context["prior_episode_count"] = prior_episode_count
+        budget_context["prior_monthly_spend"] = prior_monthly_spend
+        return manifest_bytes(
+            reserve_monthly_ledger_entry(
+                monthly_ledger,
+                job_id=job_id,
+                week=str(payload["week"]),
+                budget=budget,
+            )
+        )
+
+    try:
+        storage.update_bytes(monthly_path, "application/json; charset=utf-8", reserve_monthly_budget)
+    except MonthlyBudgetExceeded as exc:
+        logging.warning(
+            "podcaster job blocked by monthly budget job_id=%s week=%s projected_episode_count=%s projected_monthly_spend_usd=%s",
+            job_id,
+            payload.get("week"),
+            exc.budget["projected_episode_count"],
+            exc.budget["projected_monthly_spend_usd"],
+        )
+        return JobResult(
+            response=failed_response(["monthly podcast budget exceeded; explicit operator override required"]),
+            manifest={"job_id": job_id, "status": "failed", "budget": exc.budget},
+        )
+    prior_episode_count = int(budget_context["prior_episode_count"])
+    prior_monthly_spend = budget_context["prior_monthly_spend"]
 
     warnings = [
         "audio is a deterministic placeholder pending TTS implementation",
@@ -44,10 +103,26 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
 
     stored: dict[str, StoredArtifact] = {}
     checksums: dict[str, str] = {}
-    for artifact in generate_artifacts(job_id, payload, current, expires_at):
+    cost_ledger: dict[str, Any] | None = None
+    for artifact in generate_artifacts(
+        job_id,
+        payload,
+        current,
+        expires_at,
+        prior_monthly_episode_count=prior_episode_count,
+        prior_monthly_spend_usd=prior_monthly_spend,
+        cost_override=cost_override,
+    ):
         stored_artifact = storage.put_bytes(artifact.path, artifact.content, artifact.content_type)
         stored[artifact.path] = stored_artifact
         checksums[artifact.path] = checksum(artifact.content)
+        if artifact.path.endswith("/cost-ledger.json"):
+            loaded_cost_ledger = json.loads(artifact.content.decode("utf-8"))
+            if not isinstance(loaded_cost_ledger, dict):
+                raise RuntimeError("generated cost ledger was not a JSON object")
+            cost_ledger = loaded_cost_ledger
+    if cost_ledger is None:
+        raise RuntimeError("generated artifacts did not include cost-ledger.json")
 
     created_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     manifest_status = "dry_run" if payload.get("dry_run") else "review_pending"
@@ -60,6 +135,7 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
         "request": _request_metadata(payload),
         "lifecycle": _lifecycle_metadata(payload, created_at, manifest_status),
         "review": _review_metadata(payload),
+        "cost_ledger": cost_ledger,
         "generation": {
             "engine": "local-deterministic-placeholder",
             "deterministic": True,
@@ -75,9 +151,19 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
         },
         "publishing": {
             "mode": "manual",
-            "packet_ready": True,
+            "packet_ready": False,
             "eligible": False,
             "blocked_by": ["human_review", "real_tts_not_implemented"],
+            "readiness_checks": {
+                "cost_ledger_complete": bool(cost_ledger.get("readiness", {}).get("complete"))
+                if isinstance(cost_ledger.get("readiness"), dict)
+                else False,
+                "budget_status": cost_ledger.get("budget", {}).get("status")
+                if isinstance(cost_ledger.get("budget"), dict)
+                else "unknown",
+                "editorial_review_complete": False,
+                "real_audio_available": False,
+            },
             "public_url": None,
         },
         "artifact_access": artifact_access_metadata(job_id, created_at, expires_at),
@@ -101,6 +187,12 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     }
     manifest_path = f"jobs/{job_id}/manifest.json"
     manifest_artifact = storage.put_bytes(manifest_path, manifest_bytes(manifest), "application/json; charset=utf-8")
+    def finalize_monthly_budget(content: bytes | None) -> bytes:
+        monthly_ledger = load_monthly_ledger(content, month=month)
+        updated_monthly_ledger = update_monthly_ledger(monthly_ledger, job_id=job_id, episode_ledger=cost_ledger)
+        return manifest_bytes(updated_monthly_ledger)
+
+    storage.update_bytes(monthly_path, "application/json; charset=utf-8", finalize_monthly_budget)
     logging.info(
         "podcaster job staged job_id=%s status=%s dry_run=%s artifact_count=%s",
         job_id,
@@ -133,6 +225,7 @@ def failed_response(errors: list[str], warnings: list[str] | None = None) -> dic
 def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     callback = payload.get("callback") if isinstance(payload.get("callback"), dict) else {}
     callback_url = callback.get("url") if isinstance(callback, dict) else None
+    cost_override = _cost_override(payload)
     return {
         "week": payload.get("week"),
         "article_url": payload.get("article_url"),
@@ -140,12 +233,31 @@ def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "source_artifacts": payload.get("source_artifacts", []),
         "dry_run": bool(payload.get("dry_run")),
         "force": bool(payload.get("force")),
+        "cost_override": {
+            "recorded": cost_override is not None,
+            "actor": cost_override.get("actor") if cost_override else None,
+            "recorded_at": cost_override.get("recorded_at") if cost_override else None,
+        },
         "callback": {
             "requested": bool(payload.get("callback")),
             "url_host": urlparse(callback_url).netloc if isinstance(callback_url, str) else None,
             "secret_name_provided": bool(callback.get("secret_name")) if isinstance(callback, dict) else False,
         },
     }
+
+
+def _cost_override(payload: dict[str, Any]) -> dict[str, Any] | None:
+    if payload.get("force") is not True:
+        return None
+    override = payload.get("cost_override")
+    if not isinstance(override, dict):
+        return None
+    actor = override.get("actor")
+    reason = override.get("reason")
+    recorded_at = override.get("recorded_at")
+    if all(isinstance(value, str) and bool(value.strip()) for value in (actor, reason, recorded_at)):
+        return {"actor": actor, "reason": reason, "recorded_at": recorded_at}
+    return None
 
 
 def _lifecycle_metadata(payload: dict[str, Any], created_at: str, status: str) -> dict[str, Any]:
@@ -170,6 +282,7 @@ def _review_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "artifacts_for_review": [
             "script.txt",
             "claim-ledger.json",
+            "cost-ledger.json",
             "transcript.txt",
             "show-notes.md",
             "review-checklist.md",

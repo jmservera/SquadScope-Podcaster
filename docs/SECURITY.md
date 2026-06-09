@@ -103,6 +103,7 @@ The production deploy workflow must use the working OIDC + private blob package 
 - Python validation module does not echo or log the incoming key header.
 - Response bodies never include received API keys or transient tokens.
 - Workflow steps disable shell tracing (`set +x`) before any secret operations.
+- Cost ledgers may record provider names, voice/config hashes, billable characters, duration, byte length, estimated/actual costs, budget status, and explicit operator override metadata; they must not record secrets, provider credentials, or full prompt text.
 
 ## Artifact Staging & Retention
 
