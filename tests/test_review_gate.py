@@ -13,6 +13,7 @@ from scripts.record_review_approval import apply_review_decision
 
 ROOT = Path(__file__).resolve().parents[1]
 REVIEW_WORKFLOW = ROOT / ".github/workflows/podcast-review-gate.yml"
+SECURITY_DOC = ROOT / "docs/SECURITY.md"
 
 
 def test_review_workflow_uses_podcast_review_environment_and_uploads_record() -> None:
@@ -23,6 +24,7 @@ def test_review_workflow_uses_podcast_review_environment_and_uploads_record() ->
     assert "github.actor" in workflow
     assert "actions/upload-artifact@" in workflow
     assert "must not contain credentials, query strings, or fragments" in workflow
+    assert '"tts_synthesis": {"status": "blocked", "allowed": False, "blocked_by": ["human_review"]}' in workflow
     assert "scripts/record_review_approval.py" in workflow
 
 
@@ -95,3 +97,16 @@ def test_record_review_approval_cli_writes_reviewed_manifest(tmp_path: Path) -> 
     assert reviewed["review"]["approved_by"] is None
     assert reviewed["generation"]["tts_synthesis"]["allowed"] is False
     assert reviewed["review"]["audit_trail"][-1]["notes"] == "Claim ledger has unverified placeholders."
+
+
+def test_security_doc_discloses_tts_provider_and_staging_privacy_gates() -> None:
+    security_doc = SECURITY_DOC.read_text(encoding="utf-8")
+
+    assert "Selected production provider:** none yet" in security_doc
+    assert "Azure AI Speech Standard voices" in security_doc
+    assert "OpenAI `tts-1` or `gpt-4o-mini-tts`" in security_doc
+    assert "No `PODCASTER_API_KEY`" in security_doc
+    assert "Non-dry-run TTS is blocked" in security_doc
+    assert "Temporary Azure Blob Staging Disclosure" in security_doc
+    assert "Retention is 7 days" in security_doc
+    assert "SquadScope privacy changes are limited" in security_doc
