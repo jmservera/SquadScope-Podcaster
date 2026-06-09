@@ -4,15 +4,20 @@ import hashlib
 import json
 import logging
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from zipfile import ZipFile
+
+import pytest
 
 from podcaster.costs import monthly_ledger_path
 from podcaster.generation import generate_artifacts, manifest_bytes
 from podcaster.jobs import build_job_id, run_generation_job
 from podcaster.storage import (
+    AzureBlobStorageBackend,
     LocalStorageBackend,
     _managed_identity_resource,
     _token_expires_on,
@@ -409,6 +414,51 @@ def test_monthly_budget_is_reserved_before_artifacts_are_staged() -> None:
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
+def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
+    artifact_root = Path(".test-artifacts-concurrent-budget")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    payloads = [
+        {"week": f"2026-W2{index}", "article_url": f"https://example.com/article-{index}"}
+        for index in range(6)
+    ]
+
+    try:
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            results = list(
+                executor.map(
+                    lambda payload: run_generation_job(
+                        payload,
+                        storage=storage,
+                        now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
+                    ),
+                    payloads,
+                )
+            )
+
+        statuses = [result.response["status"] for result in results]
+        assert statuses.count("accepted") == 5
+        assert statuses.count("failed") == 1
+
+        monthly = json.loads((artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8"))
+        assert len(monthly["episodes"]) == 5
+        assert len({episode["job_id"] for episode in monthly["episodes"]}) == 5
+        assert all(episode.get("state") != "reserved" for episode in monthly["episodes"])
+
+        staged_job_ids = {path.name for path in (artifact_root / "jobs").iterdir() if path.is_dir()}
+        accepted_job_ids = {
+            build_job_id(payload)
+            for payload, result in zip(payloads, results, strict=True)
+            if result.response["status"] == "accepted"
+        }
+        failed_job_ids = {build_job_id(payload) for payload in payloads} - accepted_job_ids
+        assert staged_job_ids == accepted_job_ids
+        assert not any((artifact_root / "jobs" / job_id).exists() for job_id in failed_job_ids)
+    finally:
+        shutil.rmtree(artifact_root, ignore_errors=True)
+
+
 def test_non_dry_run_allows_explicit_operator_cost_override() -> None:
     artifact_root = Path(".test-artifacts-budget-override")
     shutil.rmtree(artifact_root, ignore_errors=True)
@@ -454,6 +504,83 @@ def test_non_dry_run_allows_explicit_operator_cost_override() -> None:
     assert len(monthly["episodes"]) == 6
     assert monthly["episodes"][-1]["budget_status"] == "override_recorded"
     shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_azure_conditional_update_retries_412_conflicts_then_succeeds(monkeypatch) -> None:
+    backend = AzureBlobStorageBackend("https://storage.example.invalid", "podcaster-artifacts")
+    states = [(b'{"attempt": 1}', '"etag-1"'), (b'{"attempt": 2}', '"etag-2"')]
+    put_attempts: list[dict[str, str | None]] = []
+
+    def get_blob_state(safe_path: str) -> tuple[bytes | None, str | None]:
+        assert safe_path == monthly_ledger_path("2026-06")
+        return states.pop(0)
+
+    def put_blob(
+        path: str,
+        content: bytes,
+        content_type: str,
+        *,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+    ) -> None:
+        put_attempts.append(
+            {
+                "path": path,
+                "content": content.decode("utf-8"),
+                "if_match": if_match,
+                "if_none_match": if_none_match,
+            }
+        )
+        if len(put_attempts) == 1:
+            raise HTTPError("https://storage.example.invalid/blob", 412, "Precondition Failed", hdrs=None, fp=None)
+
+    monkeypatch.setattr(backend, "_get_blob_state", get_blob_state)
+    monkeypatch.setattr(backend, "_put_blob", put_blob)
+
+    stored = backend.update_bytes(
+        monthly_ledger_path("2026-06"),
+        "application/json; charset=utf-8",
+        lambda content: content.replace(b"attempt", b"updated") if content else b"{}",
+    )
+
+    assert stored.path == monthly_ledger_path("2026-06")
+    assert [attempt["if_match"] for attempt in put_attempts] == ['"etag-1"', '"etag-2"']
+    assert [attempt["if_none_match"] for attempt in put_attempts] == [None, None]
+    assert put_attempts[-1]["content"] == '{"updated": 2}'
+
+
+def test_azure_conditional_update_fails_after_412_retry_exhaustion(monkeypatch) -> None:
+    backend = AzureBlobStorageBackend("https://storage.example.invalid", "podcaster-artifacts")
+    get_attempts: list[str] = []
+    put_attempts: list[str] = []
+
+    def get_blob_state(safe_path: str) -> tuple[bytes | None, str | None]:
+        get_attempts.append(safe_path)
+        return b'{"episodes": []}', '"stale-etag"'
+
+    def put_blob(
+        path: str,
+        content: bytes,
+        content_type: str,
+        *,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+    ) -> None:
+        put_attempts.append(f"{path}:{if_match}:{if_none_match}")
+        raise HTTPError("https://storage.example.invalid/blob", 412, "Precondition Failed", hdrs=None, fp=None)
+
+    monkeypatch.setattr(backend, "_get_blob_state", get_blob_state)
+    monkeypatch.setattr(backend, "_put_blob", put_blob)
+
+    with pytest.raises(RuntimeError, match="concurrent updates did not settle"):
+        backend.update_bytes(
+            monthly_ledger_path("2026-06"),
+            "application/json; charset=utf-8",
+            lambda content: content or b"{}",
+        )
+
+    assert get_attempts == [monthly_ledger_path("2026-06")] * 5
+    assert put_attempts == [f"{monthly_ledger_path('2026-06')}:\"stale-etag\":None"] * 5
 
 
 def test_artifacts_do_not_include_api_secret_marker() -> None:
