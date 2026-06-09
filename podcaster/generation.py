@@ -4,11 +4,13 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from podcaster.artifact_access import artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
+from podcaster.costs import build_cost_ledger
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,9 @@ def generate_artifacts(
     payload: dict[str, object],
     created_at: datetime,
     expires_at: str | None = None,
+    prior_monthly_episode_count: int = 0,
+    prior_monthly_spend_usd: Decimal = Decimal("0.00"),
+    cost_override: dict[str, object] | None = None,
 ) -> list[GeneratedArtifact]:
     generated_at_str = created_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     if expires_at is None:
@@ -35,19 +40,40 @@ def generate_artifacts(
     show_notes = _show_notes(payload, generated_at_str)
     audio_placeholder = _audio_placeholder(job_id, payload)
     audio_validation = placeholder_audio_validation(byte_length=len(audio_placeholder), sha256=checksum(audio_placeholder)).to_manifest()
-    metadata = _metadata(job_id, payload, created_at, expires_at)
-    metadata["generation"]["audio_validation"] = audio_validation
-    metadata["publishing"]["packet_ready"] = False
-    metadata["publishing"]["blocked_by"] = ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"]
     claim_ledger = _claim_ledger(payload)
     review_checklist = _review_checklist(job_id, payload)
     rights = _rights_and_attribution()
+    pre_packet_bytes = [
+        script.encode("utf-8"),
+        claim_ledger.encode("utf-8"),
+        transcript.encode("utf-8"),
+        show_notes.encode("utf-8"),
+        review_checklist.encode("utf-8"),
+        audio_placeholder,
+    ]
+    cost_ledger = build_cost_ledger(
+        week=str(payload["week"]),
+        month=created_at.astimezone(timezone.utc).strftime("%Y-%m"),
+        provider="not_selected",
+        voice="not_selected",
+        voice_config_hash=checksum(b"provider:not_selected|voice:not_selected"),
+        billable_characters=len(script),
+        duration_seconds=0,
+        audio_byte_length=len(audio_placeholder),
+        staged_byte_length=sum(len(content) for content in pre_packet_bytes),
+        prior_episode_count=prior_monthly_episode_count,
+        prior_monthly_spend_usd=prior_monthly_spend_usd,
+        override=cost_override,
+    )
+    cost_ledger_json = json.dumps(cost_ledger, sort_keys=True, indent=2) + "\n"
+    metadata = _metadata(job_id, payload, created_at, expires_at, cost_ledger, audio_validation)
     packet = _packet(
         script=script,
         transcript=transcript,
         show_notes=show_notes,
         metadata=metadata,
         claim_ledger=claim_ledger,
+        cost_ledger=cost_ledger_json,
         review_checklist=review_checklist,
         rights=rights,
         audio_placeholder=audio_placeholder,
@@ -57,6 +83,7 @@ def generate_artifacts(
     return [
         GeneratedArtifact(f"{prefix}/script.txt", script.encode("utf-8"), "text/plain; charset=utf-8"),
         GeneratedArtifact(f"{prefix}/claim-ledger.json", claim_ledger.encode("utf-8"), "application/json; charset=utf-8"),
+        GeneratedArtifact(f"{prefix}/cost-ledger.json", cost_ledger_json.encode("utf-8"), "application/json; charset=utf-8"),
         GeneratedArtifact(f"{prefix}/transcript.txt", transcript.encode("utf-8"), "text/plain; charset=utf-8"),
         GeneratedArtifact(f"{prefix}/show-notes.md", show_notes.encode("utf-8"), "text/markdown; charset=utf-8"),
         GeneratedArtifact(f"{prefix}/review-checklist.md", review_checklist.encode("utf-8"), "text/markdown; charset=utf-8"),
@@ -215,7 +242,14 @@ def _audio_placeholder(job_id: str, payload: dict[str, object]) -> bytes:
     return text.encode("utf-8")
 
 
-def _metadata(job_id: str, payload: dict[str, object], created_at: datetime, expires_at: str) -> dict[str, object]:
+def _metadata(
+    job_id: str,
+    payload: dict[str, object],
+    created_at: datetime,
+    expires_at: str,
+    cost_ledger: dict[str, object],
+    audio_validation: dict[str, object],
+) -> dict[str, object]:
     created_ts = created_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     return {
@@ -229,6 +263,7 @@ def _metadata(job_id: str, payload: dict[str, object], created_at: datetime, exp
         "expires_at": expires_at,
         "reviewed_at": None,
         "reviewer": None,
+        "cost_ledger": cost_ledger,
         "review": {
             "status": "pending",
             "required": True,
@@ -266,6 +301,7 @@ def _metadata(job_id: str, payload: dict[str, object], created_at: datetime, exp
                 "blocked_by": ["provider_not_selected"] if payload.get("dry_run") else ["human_review", "provider_not_selected"],
                 "dry_run_bypass_allowed": bool(payload.get("dry_run")),
             },
+            "audio_validation": audio_validation,
             "duration_seconds": None,
         },
         "tts_provider": None,
@@ -278,6 +314,16 @@ def _metadata(job_id: str, payload: dict[str, object], created_at: datetime, exp
             "packet_ready": False,
             "eligible": False,
             "blocked_by": ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"],
+            "readiness_checks": {
+                "cost_ledger_complete": bool(cost_ledger.get("readiness", {}).get("complete"))
+                if isinstance(cost_ledger.get("readiness"), dict)
+                else False,
+                "budget_status": cost_ledger.get("budget", {}).get("status")
+                if isinstance(cost_ledger.get("budget"), dict)
+                else "unknown",
+                "editorial_review_complete": False,
+                "real_audio_available": False,
+            },
             "public_url": None,
         },
         "artifact_access": artifact_access_metadata(job_id, created_ts, expires_at),
@@ -312,7 +358,7 @@ def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
             f"- Source article: {payload['article_url']}",
             "- Review mechanism: GitHub Environment `podcast-review` via `.github/workflows/podcast-review-gate.yml`",
             "",
-            "Reviewers must inspect `script.txt`, `claim-ledger.json`, `transcript.txt`, `show-notes.md`, `MANIFEST.json`, and the publishing packet before approving.",
+            "Reviewers must inspect `script.txt`, `claim-ledger.json`, `COST-LEDGER.json`, `transcript.txt`, `show-notes.md`, `MANIFEST.json`, and the publishing packet before approving.",
             "",
             "## Required checks",
             "",
@@ -359,6 +405,7 @@ def _operator_readme(metadata: dict[str, object]) -> str:
             "  • REVIEW-CHECKLIST.md — Required editorial approval checklist",
             "  • PUBLISHING-GUIDE.txt — Step-by-step publishing instructions",
             "  • script.txt — Episode script",
+            "  • COST-LEDGER.json — Episode cost and monthly budget evidence",
             "  • transcript.txt — Full transcript",
             "  • show-notes.md — Markdown for podcast platform metadata",
             "  • audio/episode-{week}.mp3 — Audio file (currently placeholder)",
@@ -558,6 +605,7 @@ def _packet(
     show_notes: str,
     metadata: dict[str, object],
     claim_ledger: str,
+    cost_ledger: str,
     review_checklist: str,
     rights: str,
     audio_placeholder: bytes,
@@ -571,6 +619,7 @@ def _packet(
         "PUBLISHING-GUIDE.txt": _publishing_guide().encode("utf-8"),
         "script.txt": script.encode("utf-8"),
         "claim-ledger.json": claim_ledger.encode("utf-8"),
+        "COST-LEDGER.json": cost_ledger.encode("utf-8"),
         "transcript.txt": transcript.encode("utf-8"),
         "show-notes.md": show_notes.encode("utf-8"),
         f"audio/episode-{week}.mp3": audio_placeholder,

@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from podcaster.costs import cost_gate_blockers
 
 
 APPROVED = "approved"
@@ -67,23 +74,29 @@ def apply_review_decision(
 
     generation = updated.setdefault("generation", {})
     tts_synthesis = generation.setdefault("tts_synthesis", {})
-    tts_blockers = _blocked_by(tts_synthesis)
+    cost_blockers = cost_gate_blockers(updated.get("cost_ledger"))
     provider_selection_complete = _provider_selection_complete(updated)
-    tts_blockers = [reason for reason in tts_blockers if reason != "human_review"]
+    provider_blockers = (
+        ["provider_privacy_review_required", "rai_security_signoff_required"]
+        if provider_selection_complete
+        else PROVIDER_TTS_BLOCKERS
+    )
+    existing_blockers = [
+        blocker
+        for blocker in _blocked_by(tts_synthesis)
+        if blocker != "human_review" and blocker not in cost_blockers and blocker not in PROVIDER_TTS_BLOCKERS
+    ]
+    remaining_blockers = existing_blockers
+    for blocker in [*provider_blockers, *cost_blockers]:
+        remaining_blockers = _append_blocker(remaining_blockers, blocker)
     if decision == APPROVED:
-        if provider_selection_complete:
-            tts_blockers = [reason for reason in tts_blockers if reason != "provider_not_selected"]
-        else:
-            for blocker in PROVIDER_TTS_BLOCKERS:
-                tts_blockers = _append_blocker(tts_blockers, blocker)
+        tts_synthesis["status"] = "review_approved" if not remaining_blockers else "blocked"
+        tts_synthesis["allowed"] = not remaining_blockers
+        tts_synthesis["blocked_by"] = remaining_blockers
     else:
-        if not provider_selection_complete:
-            for blocker in PROVIDER_TTS_BLOCKERS:
-                tts_blockers = _append_blocker(tts_blockers, blocker)
-        tts_blockers.insert(0, "human_review")
-    tts_synthesis["blocked_by"] = tts_blockers
-    tts_synthesis["allowed"] = decision == APPROVED and not tts_blockers
-    tts_synthesis["status"] = "review_approved" if not tts_blockers and decision == APPROVED else "blocked"
+        tts_synthesis["status"] = "blocked"
+        tts_synthesis["allowed"] = False
+        tts_synthesis["blocked_by"] = ["human_review", *remaining_blockers]
 
     publishing = updated.setdefault("publishing", {})
     blocked_by = [reason for reason in _blocked_by(publishing) if reason != "human_review"]
@@ -94,9 +107,15 @@ def apply_review_decision(
         blocked_by = _append_blocker(blocked_by, "audio_validation_not_passed")
     elif not _audio_validation_ready(updated):
         blocked_by = _append_blocker(blocked_by, "audio_validation_not_passed")
+    for blocker in remaining_blockers:
+        blocked_by = _append_blocker(blocked_by, blocker)
     publishing["blocked_by"] = blocked_by
     publishing["eligible"] = False
     publishing["packet_ready"] = False
+    readiness_checks = publishing.setdefault("readiness_checks", {})
+    readiness_checks["cost_ledger_complete"] = not cost_blockers
+    readiness_checks["editorial_review_complete"] = decision == APPROVED
+    readiness_checks.setdefault("real_audio_available", False)
 
     return updated
 

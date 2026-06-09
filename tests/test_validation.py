@@ -41,6 +41,7 @@ def test_rejects_bad_types_and_urls() -> None:
             "source_artifacts": ["ok", 123],
             "dry_run": "yes",
             "force": "no",
+            "cost_override": {"actor": "", "reason": "", "recorded_at": ""},
             "callback": {"url": "mailto:test@example.com", "secret_name": 7},
         }
     )
@@ -50,6 +51,10 @@ def test_rejects_bad_types_and_urls() -> None:
     assert "source_artifacts[1] must be a string or source artifact object" in errors
     assert "dry_run must be a boolean" in errors
     assert "force must be a boolean" in errors
+    assert "cost_override.actor is required" in errors
+    assert "cost_override.reason is required" in errors
+    assert "cost_override.recorded_at is required" in errors
+    assert "cost_override requires force=true" in errors
     assert "callback.url must be an http or https URL" in errors
     assert "callback.secret_name must be a string" in errors
 

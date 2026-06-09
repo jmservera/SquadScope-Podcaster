@@ -59,8 +59,18 @@ def test_review_approval_records_actor_time_and_preserves_provider_tts_gate(tmp_
         "provider_privacy_review_required",
         "rai_security_signoff_required",
     ]
+    assert reviewed["publishing"]["packet_ready"] is False
+    assert reviewed["publishing"]["readiness_checks"]["cost_ledger_complete"] is True
+    assert reviewed["publishing"]["readiness_checks"]["editorial_review_complete"] is True
     assert "human_review" not in reviewed["publishing"]["blocked_by"]
-    assert reviewed["publishing"]["blocked_by"] == ["real_tts_not_implemented", "audio_validation_not_passed"]
+    assert reviewed["publishing"]["blocked_by"] == [
+        "real_tts_not_implemented",
+        "audio_validation_not_passed",
+        "provider_not_selected",
+        "provider_privacy_review_required",
+        "rai_security_signoff_required",
+    ]
+    assert "provider_not_selected" in reviewed["publishing"]["blocked_by"]
     assert reviewed["publishing"]["eligible"] is False
     assert reviewed["publishing"]["packet_ready"] is False
     assert reviewed["generation"]["audio_mode"] == "placeholder"
@@ -94,13 +104,21 @@ def test_review_approval_reinstates_provider_gate_when_manifest_only_had_human_r
         "provider_not_selected",
         "provider_privacy_review_required",
         "rai_security_signoff_required",
+        "cost_ledger_missing",
     ]
     assert reviewed["publishing"]["eligible"] is False
     assert reviewed["publishing"]["packet_ready"] is False
-    assert reviewed["publishing"]["blocked_by"] == ["real_tts_not_implemented", "audio_validation_not_passed"]
+    assert reviewed["publishing"]["blocked_by"] == [
+        "real_tts_not_implemented",
+        "audio_validation_not_passed",
+        "provider_not_selected",
+        "provider_privacy_review_required",
+        "rai_security_signoff_required",
+        "cost_ledger_missing",
+    ]
 
 
-def test_review_approval_requires_provider_and_fallback_before_tts_is_allowed() -> None:
+def test_review_approval_preserves_privacy_and_rai_gates_after_provider_selection() -> None:
     base_manifest = {
         "job_id": "podcast-2026-W23-real-audio",
         "review": {"status": "pending", "audit_trail": [], "gate": {"status": "blocked"}},
@@ -128,6 +146,7 @@ def test_review_approval_requires_provider_and_fallback_before_tts_is_allowed() 
         "provider_not_selected",
         "provider_privacy_review_required",
         "rai_security_signoff_required",
+        "cost_ledger_missing",
     ]
 
     complete_provider_selection = json.loads(json.dumps(base_manifest))
@@ -138,8 +157,38 @@ def test_review_approval_requires_provider_and_fallback_before_tts_is_allowed() 
         reviewed_at="2026-06-08T22:00:00Z",
         decision="approved",
     )
-    assert reviewed["generation"]["tts_synthesis"]["allowed"] is True
-    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == []
+    assert reviewed["generation"]["tts_synthesis"]["allowed"] is False
+    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == [
+        "provider_privacy_review_required",
+        "rai_security_signoff_required",
+        "cost_ledger_missing",
+    ]
+
+
+def test_review_approval_fails_closed_when_cost_ledger_is_missing() -> None:
+    reviewed = apply_review_decision(
+        {
+            "job_id": "podcast-2026-W23-test",
+            "review": {"status": "pending", "audit_trail": [], "gate": {"status": "blocked"}},
+            "generation": {"tts_synthesis": {"status": "blocked", "allowed": False, "blocked_by": ["human_review"]}},
+            "publishing": {"eligible": False, "blocked_by": ["human_review", "real_tts_not_implemented"]},
+            "lifecycle": {"status": "review_pending", "transitions": []},
+        },
+        reviewer="leela",
+        reviewed_at="2026-06-08T22:00:00Z",
+        decision="approved",
+    )
+
+    assert reviewed["review"]["status"] == "approved"
+    assert reviewed["generation"]["tts_synthesis"]["allowed"] is False
+    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == [
+        "provider_not_selected",
+        "provider_privacy_review_required",
+        "rai_security_signoff_required",
+        "cost_ledger_missing",
+    ]
+    assert "cost_ledger_missing" in reviewed["publishing"]["blocked_by"]
+    assert reviewed["publishing"]["packet_ready"] is False
 
 
 def test_record_review_approval_cli_writes_reviewed_manifest(tmp_path: Path) -> None:
@@ -198,6 +247,7 @@ def test_record_review_approval_cli_writes_reviewed_manifest(tmp_path: Path) -> 
         "provider_not_selected",
         "provider_privacy_review_required",
         "rai_security_signoff_required",
+        "cost_ledger_missing",
     ]
     assert reviewed["review"]["audit_trail"][-1]["notes"] == "Claim ledger has unverified placeholders."
 

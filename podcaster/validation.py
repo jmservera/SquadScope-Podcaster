@@ -100,6 +100,18 @@ def validate_payload(payload: Any) -> list[str]:
         if field in payload and not isinstance(payload[field], bool):
             errors.append(f"{field} must be a boolean")
 
+    cost_override = payload.get("cost_override")
+    if cost_override is not None:
+        if not isinstance(cost_override, dict):
+            errors.append("cost_override must be an object")
+        else:
+            for field in ("actor", "reason", "recorded_at"):
+                value = cost_override.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"cost_override.{field} is required")
+            if payload.get("force") is not True:
+                errors.append("cost_override requires force=true")
+
     callback = payload.get("callback")
     if callback is not None and not isinstance(callback, dict):
         errors.append("callback must be an object")
