@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from email.utils import formatdate
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlencode
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -37,32 +39,42 @@ class LocalStorageBackend:
 
 class AzureBlobStorageBackend:
     def __init__(self, account_url: str, container_name: str) -> None:
-        try:
-            from azure.core.credentials import AccessToken
-            from azure.storage.blob import BlobServiceClient, ContentSettings
-        except ImportError as exc:  # pragma: no cover - depends on deployment extras
-            raise RuntimeError("Azure storage dependencies are not installed") from exc
-
-        self._content_settings_type = ContentSettings
-        credential = ManagedIdentityTokenCredential(access_token_type=AccessToken)
-        self._container = BlobServiceClient(account_url=account_url, credential=credential).get_container_client(container_name)
+        self._credential = ManagedIdentityTokenCredential()
         self._container_name = container_name
         self._account_url = account_url.rstrip("/")
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
-        self._container.upload_blob(
-            name=safe_path,
-            data=content,
-            overwrite=True,
-            content_settings=self._content_settings_type(content_type=content_type),
-        )
+        self._put_blob(safe_path, content, content_type)
         return StoredArtifact(
             path=safe_path,
             url=f"{self._account_url}/{self._container_name}/{safe_path}",
             size_bytes=len(content),
             content_type=content_type,
         )
+
+    def _put_blob(self, path: str, content: bytes, content_type: str) -> None:
+        encoded_path = "/".join(quote(part, safe="") for part in path.split("/"))
+        token = self._credential.get_token("https://storage.azure.com/.default")
+        request = Request(
+            f"{self._account_url}/{self._container_name}/{encoded_path}",
+            data=content,
+            method="PUT",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Length": str(len(content)),
+                "Content-Type": content_type,
+                "x-ms-blob-type": "BlockBlob",
+                "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
+                "x-ms-version": "2023-11-03",
+            },
+        )
+        try:
+            with urlopen(request, timeout=30):
+                return
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"blob upload failed for {path}: HTTP {exc.code} {detail}") from exc
 
 
 def create_storage_backend() -> StorageBackend:
@@ -77,16 +89,14 @@ def create_storage_backend() -> StorageBackend:
 
 
 class ManagedIdentityTokenCredential:
-    def __init__(self, access_token_type: type) -> None:
-        self._access_token_type = access_token_type
-
-    def get_token(self, *scopes: str, **_: object) -> object:
+    def get_token(self, *scopes: str) -> str:
         resource = _managed_identity_resource(scopes[0] if scopes else "https://storage.azure.com/.default")
         token_payload = _request_managed_identity_token(resource)
         token = token_payload.get("access_token")
         if not isinstance(token, str) or not token:
             raise RuntimeError("managed identity token response did not include an access token")
-        return self._access_token_type(token, _token_expires_on(token_payload))
+        _token_expires_on(token_payload)
+        return token
 
 
 def _managed_identity_resource(scope: str) -> str:
