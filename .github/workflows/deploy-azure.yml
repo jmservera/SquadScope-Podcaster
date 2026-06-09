@@ -36,6 +36,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Build Bicep templates
+        run: az bicep build --file infra/main.bicep --stdout >/dev/null
+
       - name: Validate configuration
         env:
           SQUADSCOPE_SYNC_TOKEN: ${{ secrets.SQUADSCOPE_SYNC_TOKEN }}
@@ -275,8 +278,7 @@ jobs:
             --name "$AZURE_STORAGE_ACCOUNT_NAME" \
             --query primaryEndpoints.blob \
             --output tsv)
-
-          for attempt in 1 2 3 4 5 6; do
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             if az storage blob upload \
               --account-name "$AZURE_STORAGE_ACCOUNT_NAME" \
               --container-name "$AZURE_PACKAGE_CONTAINER_NAME" \
@@ -288,11 +290,12 @@ jobs:
               --output none; then
               break
             fi
-            if [ "$attempt" -eq 6 ]; then
+            if [ "$attempt" -eq 15 ]; then
               echo "::error::Package upload failed. Ensure the deploy identity has Storage Blob Data Contributor on the storage account."
               exit 1
             fi
-            sleep 20
+            echo "Package upload is waiting for Azure RBAC data-plane propagation; retrying in 30 seconds."
+            sleep 30
           done
 
           package_url="${storage_blob_endpoint}${AZURE_PACKAGE_CONTAINER_NAME}/${package_blob_name}"
