@@ -18,6 +18,11 @@ APPROVED = "approved"
 CHANGES_REQUESTED = "changes_requested"
 REJECTED = "rejected"
 VALID_DECISIONS = {APPROVED, CHANGES_REQUESTED, REJECTED}
+PROVIDER_TTS_BLOCKERS = [
+    "provider_not_selected",
+    "provider_privacy_review_required",
+    "rai_security_signoff_required",
+]
 
 
 def apply_review_decision(
@@ -72,8 +77,12 @@ def apply_review_decision(
     cost_blockers = cost_gate_blockers(updated.get("cost_ledger"))
     existing_blockers = [
         blocker
-        for blocker in tts_synthesis.get("blocked_by", [])
+        for blocker in tts_synthesis.get("blocked_by", PROVIDER_TTS_BLOCKERS)
         if blocker != "human_review" and blocker not in cost_blockers
+    ]
+    existing_blockers = [
+        *existing_blockers,
+        *[blocker for blocker in PROVIDER_TTS_BLOCKERS if blocker not in existing_blockers],
     ]
     remaining_blockers = [*existing_blockers, *cost_blockers]
     if decision == APPROVED:

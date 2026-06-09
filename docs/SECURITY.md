@@ -164,6 +164,66 @@ When the human review feature is implemented (backlog: `human-review-gate.md`), 
 
 ## TTS Provider Disclosure & Security
 
+No live or non-dry-run TTS provider call is approved in the current release. Podcaster may generate deterministic placeholder audio and metadata for review, but any workflow, endpoint path, or operator runbook that sends article/script text to a third-party or Azure TTS service is blocked until this section is reviewed and the selected provider is recorded in a follow-up decision.
+
+### Current Provider Decision
+
+- **Selected production provider:** none yet. Production synthesis is blocked.
+- **MVP candidates for bakeoff:**
+  - Azure AI Speech Standard voices.
+  - Azure AI Speech HD/OpenAI voices, if available in the target Azure region and covered by reviewed terms.
+  - OpenAI `tts-1` or `gpt-4o-mini-tts`, if reviewed terms, retention controls, and cost fit the MVP.
+- **Fallback provider:** not selected. The bakeoff must record a primary provider and fallback before non-dry-run synthesis is enabled.
+- **Voice cloning:** prohibited for MVP. Do not use real-person voice cloning, custom neural voice training, or uploaded voice samples unless a separate legal, privacy, and consent review approves it.
+
+### Data Sent to Candidate Providers
+
+If a candidate is evaluated, the operator must document exactly what leaves Podcaster before the first non-dry-run call:
+
+- Episode script text derived from the published SquadScope article.
+- Optional SSML wrapper or voice/style parameters.
+- Non-secret operational metadata needed for synthesis, such as language, voice name, format, and correlation/job ID.
+- No `PODCASTER_API_KEY`, `SQUADSCOPE_SYNC_TOKEN`, Azure credentials, callback secrets, raw GitHub tokens, storage keys, or SAS tokens.
+- No unpublished SquadScope draft content unless the review explicitly approves pre-publication data sharing.
+
+Provider responses may include generated audio bytes, timing/viseme metadata, provider request IDs, and error codes. Those response IDs are operational metadata and must not contain secrets.
+
+### Provider Region, Retention, and Disclosure Assumptions
+
+Until a provider is selected, all assumptions are conservative release blockers:
+
+- Region must be documented before use. Prefer the same Azure region as Podcaster for Azure Speech, or a region explicitly approved by the operator for non-Azure providers.
+- Provider retention, training use, abuse-monitoring retention, deletion rights, and data-processing terms must be linked or summarized in the TTS bakeoff result.
+- If a provider may retain prompts, scripts, generated audio, or request metadata beyond transient processing, disclose that to operators before enabling non-dry-run synthesis.
+- If opt-out settings are required to prevent training or long-term retention, document the setting owner and verification evidence before use.
+- Cost, rate limits, and retry behavior must be documented so failures do not cause uncontrolled provider calls.
+
+### Operator Disclosure Requirements
+
+Before any non-dry-run TTS run, operators must see a disclosure that includes:
+
+- selected provider and fallback provider
+- data categories sent to the provider
+- processing region and retention/deletion assumptions
+- whether the provider may use content for training or service improvement
+- voice name/model and any required attribution text
+- confirmation that generated audio remains non-public until human/editorial review approves it
+
+The disclosure may live in the TTS bakeoff decision, release notes, or an operator runbook, but it must be linked from this security document before release.
+
+### Non-Dry-Run TTS Release Blocker
+
+Non-dry-run TTS is blocked unless all of the following are true:
+
+- This provider disclosure is merged.
+- The TTS bakeoff records the selected MVP provider and fallback.
+- Provider credentials are stored only as GitHub secrets or Azure app settings and are never printed.
+- The review gate records reviewer identity/time and approves the script/artifacts.
+- The generated manifest records TTS provider, voice/model, review status, and audit trail.
+- A security/RAI reviewer signs off on terms, retention, logging, and operator disclosure.
+
+Dry-run and placeholder audio paths remain allowed because they do not send content to a provider and are not publishable output.
+
 Before integrating any Text-to-Speech provider, a security review must cover:
 
 ### Provider Transparency
@@ -186,13 +246,40 @@ Before integrating any Text-to-Speech provider, a security review must cover:
 - [ ] Credentials: are provider API keys stored as repository secrets and never logged?
 - [ ] Testing: can TTS be toggled off for local development and CI?
 
-### Default Providers (To Evaluate)
+### Candidate Provider Notes
 
-- **Azure AI Speech (Cognitive Services)**
-  - Pro: Integrated with Azure; managed identity support
-  - Con: Must evaluate data retention and SSML safety
+- **Azure AI Speech Standard**
+  - Pro: Azure-native operations and regional controls.
+  - Review needed: exact region, retention/data-use terms, SSML safety, and whether managed identity can replace static keys for the chosen API path.
+- **Azure AI Speech HD/OpenAI voices**
+  - Pro: higher-quality voice candidates if available.
+  - Review needed: availability in target region, service-specific retention/training terms, attribution requirements, and cost.
+- **OpenAI `tts-1` or `gpt-4o-mini-tts`**
+  - Pro: external fallback candidate for quality comparison.
+  - Review needed: data processing terms, retention controls, regional processing, credential storage, and operator disclosure.
 
-- **Other candidates:** To be evaluated post-legal-review (see `backlog/tts-bakeoff.md`)
+### Temporary Azure Blob Staging Disclosure
+
+Podcaster stages generated artifacts in private Azure Blob Storage or local filesystem-backed storage during development. Staged data may include:
+
+- request metadata (`week`, `article_url`, `article_sha256`, normalized `source_artifacts`, `dry_run`, `force`, callback metadata without secret values)
+- script, transcript, show notes, claim ledger, manifest, and publishing packet
+- placeholder audio today; future generated MP3/WAV only after TTS gates pass
+- artifact hashes, sizes, content types, lifecycle status, review status, and audit trail metadata
+
+Access semantics are private operator paths, not public publishing URLs. Blob public access remains disabled; deployed access uses the Function App managed identity and operator-granted Azure Storage permissions. Returned artifact URLs must not contain SAS tokens, query strings, fragments, API keys, or storage keys unless a later documented access model intentionally introduces bounded signed URLs.
+
+Retention is 7 days from job creation via the `expires_at` and `cleanup_after` metadata. Until automated lifecycle cleanup is deployed, operators are responsible for deleting expired artifacts or enabling a storage lifecycle policy that honors that retention. Audit trail evidence comes from the job manifest, review manifest, Application Insights correlation ID, GitHub Actions review run, and Azure Storage diagnostics when enabled.
+
+### SquadScope Privacy Boundary
+
+For MVP, SquadScope only calls Podcaster after article publication and later may link to externally hosted podcast output. SquadScope privacy changes are limited to:
+
+- disclosing the outbound Podcaster call and endpoint/key secret usage in operator documentation
+- documenting link/analytics implications if SquadScope displays an external podcast link
+- avoiding any claim that SquadScope hosts, embeds, or publishes generated audio until that product path is explicitly built and reviewed
+
+Podcaster owns provider disclosure, TTS privacy, artifact staging, and operator review for generated podcast artifacts.
 
 ## Endpoint Handoff to SquadScope
 
@@ -356,8 +443,8 @@ Use this checklist before marking a release as ready for SquadScope consumption:
 
 - [ ] The Storage Account has `allowBlobPublicAccess: false`.
 - [ ] The Function App's system-assigned managed identity has Storage Blob Data Owner plus Queue/Table Data Contributor roles.
-- [ ] (Future) Returned artifact URLs are short-lived SAS URLs or brokered by managed identity.
-- [ ] (Future) Lifecycle management or a cleanup job deletes expired artifacts after 7 days.
+- [ ] Returned artifact URLs follow the documented private operator path model and do not contain credentials, query strings, or fragments.
+- [ ] Lifecycle management, cleanup job, or an operator cleanup process deletes expired artifacts after 7 days.
 
 ### 5. Integration with SquadScope ✓
 
@@ -384,6 +471,13 @@ Use this checklist before marking a release as ready for SquadScope consumption:
 - [ ] Hermes (Safety & Security) has reviewed the deployment workflow, secret handling, and logging.
 - [ ] No security issues remain unresolved.
 - [ ] All decisions are recorded in `.squad/decisions.md`.
+
+### 9. TTS & Provider Privacy ✓
+
+- [ ] Non-dry-run TTS remains blocked until provider selection, retention/region assumptions, and operator disclosures are reviewed.
+- [ ] The selected provider and fallback provider are recorded before any script text is sent to a TTS service.
+- [ ] Provider credentials are stored only in secrets/app settings and are absent from logs, artifacts, manifests, and response bodies.
+- [ ] Generated audio remains non-public until human/editorial review approves the script, claim ledger, transcript, show notes, manifest, and packet.
 
 ---
 

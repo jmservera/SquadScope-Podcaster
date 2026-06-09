@@ -95,7 +95,18 @@ jobs:
                   "audit_trail": [],
                   "gate": {"status": "blocked"},
               },
-              "generation": {"tts_synthesis": {"status": "blocked", "allowed": False, "blocked_by": ["human_review"]}},
+              "generation": {
+                  "tts_synthesis": {
+                      "status": "blocked",
+                      "allowed": False,
+                      "blocked_by": [
+                          "human_review",
+                          "provider_not_selected",
+                          "provider_privacy_review_required",
+                          "rai_security_signoff_required"
+                      ],
+                  }
+              },
               "publishing": {"eligible": False, "blocked_by": ["human_review", "real_tts_not_implemented"]},
               "lifecycle": {"status": "review_pending", "transitions": []},
           }
