@@ -9,22 +9,22 @@ def test_cost_ledger_records_required_episode_budget_and_privacy_fields() -> Non
     ledger = build_cost_ledger(
         week="2026-W23",
         month="2026-06",
-        provider=None,
-        voice=None,
-        voice_config_hash=None,
+        provider="not_selected",
+        voice="not_selected",
+        voice_config_hash="a" * 64,
         billable_characters=1200,
-        duration_seconds=None,
+        duration_seconds=0,
         audio_byte_length=256,
         staged_byte_length=4096,
     )
 
     assert ledger["week"] == "2026-W23"
     assert ledger["month"] == "2026-06"
-    assert ledger["provider"] is None
-    assert ledger["voice"] is None
-    assert ledger["voice_config_hash"] is None
+    assert ledger["provider"] == "not_selected"
+    assert ledger["voice"] == "not_selected"
+    assert ledger["voice_config_hash"] == "a" * 64
     assert ledger["billable_characters"] == 1200
-    assert ledger["duration_seconds"] is None
+    assert ledger["duration_seconds"] == 0
     assert ledger["audio_byte_length"] == 256
     assert ledger["staged_byte_length"] == 4096
     assert set(ledger["costs"]) == {
@@ -88,7 +88,10 @@ def test_cost_gate_blocks_missing_fields_and_unknown_budget_status() -> None:
         "privacy": {"secrets_recorded": False, "provider_credentials_recorded": False, "full_prompts_recorded": False},
     }
 
-    assert "month" in missing_cost_ledger_fields(incomplete)
+    missing = missing_cost_ledger_fields(incomplete)
+    assert "month" in missing
+    assert "provider" in missing
+    assert "costs.tts" in missing
     assert cost_gate_blockers(incomplete) == ["cost_ledger_incomplete"]
     assert cost_gate_blockers(None) == ["cost_ledger_missing"]
 

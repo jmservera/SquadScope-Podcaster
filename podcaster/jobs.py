@@ -9,6 +9,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
+from podcaster.costs import (
+    USD_ZERO,
+    evaluate_monthly_guardrail,
+    load_monthly_ledger,
+    monthly_budget_inputs,
+    monthly_ledger_path,
+    update_monthly_ledger,
+)
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
@@ -34,6 +42,27 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     expires_at = (current + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     job_id = build_job_id(payload)
     storage = storage or create_storage_backend()
+    month = current.strftime("%Y-%m")
+    monthly_path = monthly_ledger_path(month)
+    monthly_ledger = load_monthly_ledger(storage.get_bytes(monthly_path), month=month)
+    prior_episode_count, prior_monthly_spend = monthly_budget_inputs(monthly_ledger, job_id=job_id)
+    budget = evaluate_monthly_guardrail(
+        prior_episode_count=prior_episode_count,
+        prior_monthly_spend_usd=prior_monthly_spend,
+        projected_episode_cost_usd=USD_ZERO,
+    )
+    if not payload.get("dry_run") and budget["status"] == "over_budget":
+        logging.warning(
+            "podcaster job blocked by monthly budget job_id=%s week=%s projected_episode_count=%s projected_monthly_spend_usd=%s",
+            job_id,
+            payload.get("week"),
+            budget["projected_episode_count"],
+            budget["projected_monthly_spend_usd"],
+        )
+        return JobResult(
+            response=failed_response(["monthly podcast budget exceeded; explicit operator override required"]),
+            manifest={"job_id": job_id, "status": "failed", "budget": budget},
+        )
 
     warnings = [
         "audio is a deterministic placeholder pending TTS implementation",
@@ -46,7 +75,14 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     stored: dict[str, StoredArtifact] = {}
     checksums: dict[str, str] = {}
     cost_ledger: dict[str, Any] | None = None
-    for artifact in generate_artifacts(job_id, payload, current, expires_at):
+    for artifact in generate_artifacts(
+        job_id,
+        payload,
+        current,
+        expires_at,
+        prior_monthly_episode_count=prior_episode_count,
+        prior_monthly_spend_usd=prior_monthly_spend,
+    ):
         stored_artifact = storage.put_bytes(artifact.path, artifact.content, artifact.content_type)
         stored[artifact.path] = stored_artifact
         checksums[artifact.path] = checksum(artifact.content)
@@ -121,6 +157,8 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     }
     manifest_path = f"jobs/{job_id}/manifest.json"
     manifest_artifact = storage.put_bytes(manifest_path, manifest_bytes(manifest), "application/json; charset=utf-8")
+    updated_monthly_ledger = update_monthly_ledger(monthly_ledger, job_id=job_id, episode_ledger=cost_ledger)
+    storage.put_bytes(monthly_path, manifest_bytes(updated_monthly_ledger), "application/json; charset=utf-8")
     logging.info(
         "podcaster job staged job_id=%s status=%s dry_run=%s artifact_count=%s",
         job_id,

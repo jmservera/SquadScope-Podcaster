@@ -33,6 +33,7 @@ def build_cost_ledger(
     prior_monthly_spend_usd: Decimal = USD_ZERO,
     projected_episode_cost_usd: Decimal = USD_ZERO,
     override: dict[str, Any] | None = None,
+    durable_state_source: str = "storage",
 ) -> dict[str, Any]:
     budget = evaluate_monthly_guardrail(
         prior_episode_count=prior_episode_count,
@@ -53,6 +54,10 @@ def build_cost_ledger(
         "staged_byte_length": staged_byte_length,
         "costs": _cost_categories(projected_episode_cost_usd),
         "budget": budget,
+        "durable_monthly_state": {
+            "source": durable_state_source,
+            "enforced": durable_state_source != "not_configured",
+        },
         "privacy": {
             "secrets_recorded": False,
             "provider_credentials_recorded": False,
@@ -119,7 +124,11 @@ def missing_cost_ledger_fields(ledger: dict[str, Any]) -> list[str]:
     required_paths = [
         ("week",),
         ("month",),
+        ("provider",),
+        ("voice",),
+        ("voice_config_hash",),
         ("billable_characters",),
+        ("duration_seconds",),
         ("audio_byte_length",),
         ("staged_byte_length",),
         ("costs",),
@@ -127,21 +136,85 @@ def missing_cost_ledger_fields(ledger: dict[str, Any]) -> list[str]:
         ("budget", "status"),
         ("budget", "projected_episode_count"),
         ("budget", "projected_monthly_spend_usd"),
+        ("durable_monthly_state", "source"),
+        ("durable_monthly_state", "enforced"),
         ("privacy", "secrets_recorded"),
         ("privacy", "provider_credentials_recorded"),
         ("privacy", "full_prompts_recorded"),
     ]
-    missing = [".".join(path) for path in required_paths if _lookup(ledger, path) is None]
+    missing = [".".join(path) for path in required_paths if _is_missing(_lookup(ledger, path))]
     costs = ledger.get("costs")
     if isinstance(costs, dict):
         for category in COST_CATEGORIES:
             if category not in costs:
                 missing.append(f"costs.{category}")
-            elif not isinstance(costs[category], dict) or "estimated_usd" not in costs[category]:
+            elif not isinstance(costs[category], dict):
                 missing.append(f"costs.{category}.estimated_usd")
+                missing.append(f"costs.{category}.actual_usd")
+            else:
+                if _is_missing(costs[category].get("estimated_usd")):
+                    missing.append(f"costs.{category}.estimated_usd")
+                if _is_missing(costs[category].get("actual_usd")):
+                    missing.append(f"costs.{category}.actual_usd")
     else:
         missing.extend(f"costs.{category}" for category in COST_CATEGORIES)
     return missing
+
+
+def monthly_ledger_path(month: str) -> str:
+    return f"ledgers/{month}/cost-ledger.json"
+
+
+def load_monthly_ledger(content: bytes | None, *, month: str) -> dict[str, Any]:
+    if content is None:
+        return {"schema_version": "squadscope-podcaster-monthly-cost-ledger-v1", "month": month, "episodes": []}
+    import json
+
+    ledger = json.loads(content.decode("utf-8"))
+    if not isinstance(ledger, dict):
+        raise RuntimeError("monthly cost ledger was not a JSON object")
+    if ledger.get("month") != month:
+        raise RuntimeError("monthly cost ledger month did not match requested month")
+    episodes = ledger.get("episodes")
+    if not isinstance(episodes, list):
+        raise RuntimeError("monthly cost ledger episodes was not an array")
+    return ledger
+
+
+def monthly_budget_inputs(monthly_ledger: dict[str, Any], *, job_id: str) -> tuple[int, Decimal]:
+    episodes = monthly_ledger.get("episodes")
+    if not isinstance(episodes, list):
+        raise RuntimeError("monthly cost ledger episodes was not an array")
+    counted = [episode for episode in episodes if isinstance(episode, dict) and episode.get("job_id") != job_id]
+    spend = USD_ZERO
+    for episode in counted:
+        spend += _decimal_from_money(episode.get("estimated_total_usd", "0.00"))
+    return len(counted), spend
+
+
+def update_monthly_ledger(monthly_ledger: dict[str, Any], *, job_id: str, episode_ledger: dict[str, Any]) -> dict[str, Any]:
+    import json
+
+    updated = json.loads(json.dumps(monthly_ledger))
+    episodes = updated.setdefault("episodes", [])
+    if not isinstance(episodes, list):
+        raise RuntimeError("monthly cost ledger episodes was not an array")
+    episodes[:] = [episode for episode in episodes if not isinstance(episode, dict) or episode.get("job_id") != job_id]
+    budget = episode_ledger.get("budget") if isinstance(episode_ledger.get("budget"), dict) else {}
+    costs = episode_ledger.get("costs") if isinstance(episode_ledger.get("costs"), dict) else {}
+    estimated_total = USD_ZERO
+    for details in costs.values():
+        if isinstance(details, dict):
+            estimated_total += _decimal_from_money(details.get("estimated_usd", "0.00"))
+    episodes.append(
+        {
+            "job_id": job_id,
+            "week": episode_ledger.get("week"),
+            "estimated_total_usd": _money(estimated_total),
+            "budget_status": budget.get("status"),
+        }
+    )
+    return updated
 
 
 def cost_gate_blockers(ledger: dict[str, Any] | None) -> list[str]:
@@ -163,14 +236,14 @@ def _cost_categories(projected_episode_cost_usd: Decimal) -> dict[str, dict[str,
     categories = {category: _zero_cost_entry("estimated zero for current placeholder pipeline") for category in COST_CATEGORIES}
     categories["tts"] = {
         "estimated_usd": _money(projected_episode_cost_usd),
-        "actual_usd": None,
+        "actual_usd": _money(USD_ZERO),
         "basis": "blocked before provider call; no non-dry-run synthesis cost incurred",
     }
     return categories
 
 
 def _zero_cost_entry(basis: str) -> dict[str, Any]:
-    return {"estimated_usd": _money(USD_ZERO), "actual_usd": None, "basis": basis}
+    return {"estimated_usd": _money(USD_ZERO), "actual_usd": _money(USD_ZERO), "basis": basis}
 
 
 def _valid_override(override: dict[str, Any] | None) -> bool:
@@ -197,6 +270,12 @@ def _money(amount: Decimal) -> str:
     return str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
+def _decimal_from_money(value: Any) -> Decimal:
+    if not isinstance(value, str):
+        raise RuntimeError("money value must be a string")
+    return Decimal(value)
+
+
 def _lookup(mapping: dict[str, Any], path: tuple[str, ...]) -> Any:
     current: Any = mapping
     for part in path:
@@ -204,3 +283,11 @@ def _lookup(mapping: dict[str, Any], path: tuple[str, ...]) -> Any:
             return None
         current = current[part]
     return current
+
+
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False

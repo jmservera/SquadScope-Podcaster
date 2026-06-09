@@ -70,20 +70,26 @@ def apply_review_decision(
     generation = updated.setdefault("generation", {})
     tts_synthesis = generation.setdefault("tts_synthesis", {})
     cost_blockers = cost_gate_blockers(updated.get("cost_ledger"))
+    existing_blockers = [
+        blocker
+        for blocker in tts_synthesis.get("blocked_by", [])
+        if blocker != "human_review" and blocker not in cost_blockers
+    ]
+    remaining_blockers = [*existing_blockers, *cost_blockers]
     if decision == APPROVED:
-        tts_synthesis["status"] = "review_approved" if not cost_blockers else "blocked"
-        tts_synthesis["allowed"] = not cost_blockers
-        tts_synthesis["blocked_by"] = cost_blockers
+        tts_synthesis["status"] = "review_approved" if not remaining_blockers else "blocked"
+        tts_synthesis["allowed"] = not remaining_blockers
+        tts_synthesis["blocked_by"] = remaining_blockers
     else:
         tts_synthesis["status"] = "blocked"
         tts_synthesis["allowed"] = False
-        tts_synthesis["blocked_by"] = ["human_review", *cost_blockers]
+        tts_synthesis["blocked_by"] = ["human_review", *remaining_blockers]
 
     publishing = updated.setdefault("publishing", {})
     blocked_by = [reason for reason in publishing.get("blocked_by", []) if reason != "human_review"]
     if decision != APPROVED and "human_review" not in blocked_by:
         blocked_by.insert(0, "human_review")
-    for blocker in cost_blockers:
+    for blocker in remaining_blockers:
         if blocker not in blocked_by:
             blocked_by.append(blocker)
     publishing["blocked_by"] = blocked_by

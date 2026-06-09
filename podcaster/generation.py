@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
@@ -26,6 +27,8 @@ def generate_artifacts(
     payload: dict[str, object],
     created_at: datetime,
     expires_at: str | None = None,
+    prior_monthly_episode_count: int = 0,
+    prior_monthly_spend_usd: Decimal = Decimal("0.00"),
 ) -> list[GeneratedArtifact]:
     generated_at_str = created_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     if expires_at is None:
@@ -48,13 +51,15 @@ def generate_artifacts(
     cost_ledger = build_cost_ledger(
         week=str(payload["week"]),
         month=created_at.astimezone(timezone.utc).strftime("%Y-%m"),
-        provider=None,
-        voice=None,
-        voice_config_hash=None,
+        provider="not_selected",
+        voice="not_selected",
+        voice_config_hash=checksum(b"provider:not_selected|voice:not_selected"),
         billable_characters=len(script),
-        duration_seconds=None,
+        duration_seconds=0,
         audio_byte_length=len(audio_placeholder),
         staged_byte_length=sum(len(content) for content in pre_packet_bytes),
+        prior_episode_count=prior_monthly_episode_count,
+        prior_monthly_spend_usd=prior_monthly_spend_usd,
     )
     cost_ledger_json = json.dumps(cost_ledger, sort_keys=True, indent=2) + "\n"
     metadata = _metadata(job_id, payload, created_at, expires_at, cost_ledger)

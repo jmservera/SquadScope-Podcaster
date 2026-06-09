@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from zipfile import ZipFile
 
+from podcaster.costs import monthly_ledger_path
 from podcaster.generation import generate_artifacts, manifest_bytes
 from podcaster.jobs import build_job_id, run_generation_job
 from podcaster.storage import (
@@ -323,6 +324,8 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
         "real_audio_available": False,
     }
     assert manifest["cost_ledger"]["week"] == "2026-W23"
+    assert manifest["cost_ledger"]["provider"] == "not_selected"
+    assert manifest["cost_ledger"]["duration_seconds"] == 0
     assert manifest["cost_ledger"]["privacy"]["secrets_recorded"] is False
     assert manifest["observability"]["correlation_id"] == job_id
     assert all(details["url"].startswith("https://example.invalid/artifacts/jobs/") for details in manifest["artifacts"].values())
@@ -337,6 +340,38 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     serialized = json.loads(manifest_bytes(manifest).decode("utf-8"))
     assert serialized == manifest
     assert f"podcaster job staged job_id={job_id} status=review_pending dry_run=False artifact_count=9" in caplog.text
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_non_dry_run_fails_closed_when_monthly_episode_limit_exceeded() -> None:
+    artifact_root = Path(".test-artifacts-budget")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+    storage.put_bytes(
+        monthly_ledger_path("2026-06"),
+        manifest_bytes(
+            {
+                "schema_version": "squadscope-podcaster-monthly-cost-ledger-v1",
+                "month": "2026-06",
+                "episodes": [
+                    {"job_id": f"existing-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
+                    for index in range(5)
+                ],
+            }
+        ),
+        "application/json; charset=utf-8",
+    )
+
+    result = run_generation_job(
+        {"week": "2026-W29", "article_url": "https://example.com/new-article"},
+        storage=storage,
+        now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
+    )
+
+    assert result.response["status"] == "failed"
+    assert result.response["errors"] == ["monthly podcast budget exceeded; explicit operator override required"]
+    assert result.manifest["budget"]["status"] == "over_budget"
+    assert not (artifact_root / "jobs" / str(result.manifest["job_id"])).exists()
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 

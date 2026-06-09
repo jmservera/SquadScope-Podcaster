@@ -48,12 +48,13 @@ def test_review_approval_records_actor_time_and_opens_tts_gate(tmp_path: Path) -
     assert reviewed["review"]["approved_by"] == "leela"
     assert reviewed["review"]["approved_at"] == "2026-06-08T22:00:00Z"
     assert reviewed["review"]["audit_trail"][-1]["actor"] == "leela"
-    assert reviewed["generation"]["tts_synthesis"]["allowed"] is True
-    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == []
+    assert reviewed["generation"]["tts_synthesis"]["allowed"] is False
+    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == ["provider_not_selected"]
     assert reviewed["publishing"]["packet_ready"] is False
     assert reviewed["publishing"]["readiness_checks"]["cost_ledger_complete"] is True
     assert reviewed["publishing"]["readiness_checks"]["editorial_review_complete"] is True
     assert "human_review" not in reviewed["publishing"]["blocked_by"]
+    assert "provider_not_selected" in reviewed["publishing"]["blocked_by"]
     assert reviewed["publishing"]["eligible"] is False
 
 

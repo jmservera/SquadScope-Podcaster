@@ -23,6 +23,9 @@ class StorageBackend(Protocol):
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         ...
 
+    def get_bytes(self, path: str) -> bytes | None:
+        ...
+
 
 class LocalStorageBackend:
     def __init__(self, root: Path, base_url: str) -> None:
@@ -35,6 +38,13 @@ class LocalStorageBackend:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         return StoredArtifact(path=safe_path, url=f"{self.base_url}/{safe_path}", size_bytes=len(content), content_type=content_type)
+
+    def get_bytes(self, path: str) -> bytes | None:
+        safe_path = _safe_blob_path(path)
+        target = self.root / safe_path
+        if not target.exists():
+            return None
+        return target.read_bytes()
 
 
 class AzureBlobStorageBackend:
@@ -75,6 +85,28 @@ class AzureBlobStorageBackend:
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
             raise RuntimeError(f"blob upload failed for {path}: HTTP {exc.code} {detail}") from exc
+
+    def get_bytes(self, path: str) -> bytes | None:
+        safe_path = _safe_blob_path(path)
+        encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
+        token = self._credential.get_token("https://storage.azure.com/.default")
+        request = Request(
+            f"{self._account_url}/{self._container_name}/{encoded_path}",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
+                "x-ms-version": "2023-11-03",
+            },
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                return response.read()
+        except HTTPError as exc:
+            if exc.code == 404:
+                return None
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"blob read failed for {safe_path}: HTTP {exc.code} {detail}") from exc
 
 
 def create_storage_backend() -> StorageBackend:
