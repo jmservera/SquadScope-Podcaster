@@ -583,6 +583,41 @@ def test_azure_conditional_update_fails_after_412_retry_exhaustion(monkeypatch) 
     assert put_attempts == [f"{monthly_ledger_path('2026-06')}:\"stale-etag\":None"] * 5
 
 
+def test_azure_conditional_update_retry_exhaustion_stops_before_artifacts() -> None:
+    class AlwaysConflictingAzureStorage(AzureBlobStorageBackend):
+        def __init__(self) -> None:
+            self._account_url = "https://storage.example.invalid"
+            self._container_name = "podcaster-artifacts"
+            self.get_attempts = 0
+            self.put_attempts = 0
+            self.artifact_puts: list[str] = []
+
+        def put_bytes(self, path, content, content_type):
+            self.artifact_puts.append(path)
+            return super().put_bytes(path, content, content_type)
+
+        def _get_blob_state(self, safe_path: str):
+            self.get_attempts += 1
+            return None, None
+
+        def _put_blob(self, path, content, content_type, *, if_match=None, if_none_match=None):
+            self.put_attempts += 1
+            raise HTTPError("https://storage.example.invalid/blob", 412, "Precondition Failed", hdrs=None, fp=None)
+
+    storage = AlwaysConflictingAzureStorage()
+
+    with pytest.raises(RuntimeError, match="concurrent updates did not settle"):
+        run_generation_job(
+            {"week": "2026-W29", "article_url": "https://example.com/new-article"},
+            storage=storage,
+            now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
+        )
+
+    assert storage.get_attempts == 5
+    assert storage.put_attempts == 5
+    assert storage.artifact_puts == []
+
+
 def test_artifacts_do_not_include_api_secret_marker() -> None:
     artifact_root = Path(".test-artifacts-secret-scan")
     shutil.rmtree(artifact_root, ignore_errors=True)
