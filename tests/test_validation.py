@@ -74,7 +74,7 @@ def test_rejects_malformed_source_artifact_objects() -> None:
             ],
         }
     )
-    assert "source_artifacts[0] must include path or url" in errors
+    assert "source_artifacts[0] must include path, url, href, uri, or name" in errors
     assert "source_artifacts[1] contains unsupported fields: unexpected" in errors
     assert "source_artifacts[1].role must be a string" in errors
     assert "source_artifacts[1].sha256 must be a lowercase hex SHA-256 digest" in errors
@@ -82,6 +82,21 @@ def test_rejects_malformed_source_artifact_objects() -> None:
     assert "source_artifacts[1].size_bytes must be a non-negative integer" in errors
     assert "source_artifacts[1].freshness must be an object" in errors
     assert "source_artifacts[2].url must be an http or https URL" in errors
+
+
+def test_accepts_source_artifact_object_reference_fields() -> None:
+    errors = validate_payload(
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "source_artifacts": [
+                {"href": "https://example.com/source.json"},
+                {"uri": "https://example.com/source-2.json"},
+                {"name": "operator-note"},
+            ],
+        }
+    )
+    assert errors == []
 
 
 def test_stub_response_shape_is_contract_complete(monkeypatch) -> None:

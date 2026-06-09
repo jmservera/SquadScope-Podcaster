@@ -24,7 +24,7 @@
     },
     {
       "role": "published_summary",
-      "path": "data/published/2026-W23/index.md",
+      "href": "https://squadscope.example/articles/2026-w23/source-index.json",
       "exists": true,
       "size_bytes": 12048,
       "sha256": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
@@ -33,6 +33,11 @@
         "path": "data/published/2026-W23/index.md",
         "sha256": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
       }
+    },
+    {
+      "role": "operator_packet",
+      "name": "weekly-publishing-packet",
+      "uri": "https://squadscope.example/artifacts/2026-w23/publishing-packet.json"
     }
   ],
   "dry_run": false,

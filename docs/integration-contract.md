@@ -69,8 +69,11 @@ String references are preserved as submitted. Object references must include at 
 
 - `path` (string): Repository-relative or artifact-relative path from the SquadScope publish manifest.
 - `url` (string): HTTP(S) artifact URL.
+- `href` (string): HTTP(S) artifact link emitted by a SquadScope manifest.
+- `uri` (string): HTTP(S) artifact URI emitted by a SquadScope manifest.
+- `name` (string): Stable operator-facing artifact name when no path or URL is available.
 
-Recognized object metadata is preserved in the generated manifest and packet metadata when present: `role`, `exists`, `size_bytes`, `sha256`, `artifact_checksum`, `week`, `crawled_at`, `generated_at`, `same_day_reuse`, `provenance`, `freshness`, `source_status`, `source_reuse_summary`, `source_artifact_provenance`, `source_config_checksum`, `schema_checksum`, `sources_requested`, `sources_succeeded`, and `sources_failed`. Unknown object fields are rejected so contract drift is visible during integration testing.
+Recognized object metadata is preserved in the generated manifest and packet metadata when present: `role`, `path`, `url`, `href`, `uri`, `name`, `exists`, `size_bytes`, `sha256`, `artifact_checksum`, `week`, `crawled_at`, `generated_at`, `same_day_reuse`, `provenance`, `freshness`, `source_status`, `source_reuse_summary`, `source_artifact_provenance`, `source_config_checksum`, `schema_checksum`, `sources_requested`, `sources_succeeded`, and `sources_failed`. Unknown object fields are rejected so contract drift is visible during integration testing.
 
 Regression fixtures live under `tests/fixtures/`:
 
