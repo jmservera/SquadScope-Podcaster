@@ -164,10 +164,12 @@ MANIFEST.json: stu901...
 4. Review RIGHTS-AND-ATTRIBUTION.txt to confirm licensing and distribution rights
 5. Verify CHECKSUMS.txt for file integrity
 6. Use show-notes.md as content template for podcast host metadata
-7. Upload audio file (MP3) to Spotify, Anchor, Podbean, or other host
-8. Enter episode title, description (from show-notes.md), and links
-9. Set publish date and schedule
-10. Publish episode
+7. Confirm AI/synthetic voice disclosure and rights attribution are present in the audio and show notes
+8. Upload audio file (MP3) to Spotify for Creators or the selected podcast host
+9. Enter episode title, description (from show-notes.md), transcript, source article URL, and corrections/contact link
+10. Set publish date and schedule
+11. Publish episode
+12. Record the public episode URL, platform/show URL, publish timestamp, and any corrections/update notes in the operator audit trail
 
 ---
 
