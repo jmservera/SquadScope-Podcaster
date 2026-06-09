@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
+from podcaster.audio import placeholder_audio_validation
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
@@ -44,10 +45,17 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
 
     stored: dict[str, StoredArtifact] = {}
     checksums: dict[str, str] = {}
+    audio_validation = None
     for artifact in generate_artifacts(job_id, payload, current, expires_at):
+        artifact_checksum = checksum(artifact.content)
+        if artifact.path.endswith(".mp3"):
+            audio_validation = placeholder_audio_validation(byte_length=len(artifact.content), sha256=artifact_checksum)
         stored_artifact = storage.put_bytes(artifact.path, artifact.content, artifact.content_type)
         stored[artifact.path] = stored_artifact
-        checksums[artifact.path] = checksum(artifact.content)
+        checksums[artifact.path] = artifact_checksum
+
+    if audio_validation is None:
+        audio_validation = placeholder_audio_validation(byte_length=0, sha256="")
 
     created_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     manifest_status = "dry_run" if payload.get("dry_run") else "review_pending"
@@ -72,12 +80,13 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
                 "blocked_by": ["human_review", "provider_not_selected"] if not payload.get("dry_run") else ["provider_not_selected"],
                 "dry_run_bypass_allowed": bool(payload.get("dry_run")),
             },
+            "audio_validation": audio_validation.to_manifest(),
         },
         "publishing": {
             "mode": "manual",
-            "packet_ready": True,
+            "packet_ready": False,
             "eligible": False,
-            "blocked_by": ["human_review", "real_tts_not_implemented"],
+            "blocked_by": ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"],
             "public_url": None,
         },
         "artifact_access": artifact_access_metadata(job_id, created_at, expires_at),

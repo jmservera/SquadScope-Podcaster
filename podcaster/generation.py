@@ -8,6 +8,7 @@ from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from podcaster.artifact_access import artifact_access_metadata
+from podcaster.audio import placeholder_audio_validation
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,11 @@ def generate_artifacts(
     transcript = _transcript(script)
     show_notes = _show_notes(payload, generated_at_str)
     audio_placeholder = _audio_placeholder(job_id, payload)
+    audio_validation = placeholder_audio_validation(byte_length=len(audio_placeholder), sha256=checksum(audio_placeholder)).to_manifest()
     metadata = _metadata(job_id, payload, created_at, expires_at)
+    metadata["generation"]["audio_validation"] = audio_validation
+    metadata["publishing"]["packet_ready"] = False
+    metadata["publishing"]["blocked_by"] = ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"]
     claim_ledger = _claim_ledger(payload)
     review_checklist = _review_checklist(job_id, payload)
     rights = _rights_and_attribution()
@@ -270,8 +275,9 @@ def _metadata(job_id: str, payload: dict[str, object], created_at: datetime, exp
         "publishing": {
             "mode": "manual",
             "packet_format": "squadscope-podcaster-packet-v1",
+            "packet_ready": False,
             "eligible": False,
-            "blocked_by": ["human_review", "real_tts_not_implemented"],
+            "blocked_by": ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"],
             "public_url": None,
         },
         "artifact_access": artifact_access_metadata(job_id, created_ts, expires_at),
@@ -382,7 +388,7 @@ def _publishing_guide() -> str:
             "  PUBLISHING GUIDE FOR PODCAST PLATFORMS",
             "===========================================",
             "",
-            "This packet is ready for manual publishing once editorial review is complete.",
+            "This packet is not ready for manual publishing until editorial review and audio validation pass.",
             "Choose your publishing platform below.",
             "",
             "---",

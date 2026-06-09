@@ -42,6 +42,7 @@ SquadScope Podcaster is a separate Azure-hosted service that turns a published S
 - Logs must not include API keys.
 - API responses must have deterministic shape for caller automation.
 - CI must run validation tests.
+- Podcast audio must pass technical validation before any publishing packet is marked ready: MP3, mono, 44.1 kHz, 64-96 kbps, near -16 LUFS, under 10 minutes unless a manual override is recorded, and under 10 MB unless explicitly documented.
 
 ## Milestones
 
@@ -49,5 +50,5 @@ SquadScope Podcaster is a separate Azure-hosted service that turns a published S
 2. Blob staging: write manifest and packet placeholders to Azure Blob Storage.
 3. TTS bakeoff: compare providers, cost, quality, rights, and operational fit.
 4. Human review gate: editor approval before final artifact release.
-5. Manual publishing packet: package all content needed for human publication.
+5. Manual publishing packet: package all content needed for human publication, but keep it blocked until audio validation and human review pass.
 6. Distribution research: evaluate Spotify and podcast-host automation options.
