@@ -316,6 +316,31 @@ jobs:
 
           echo "Deployed Function App from private run-from-package blob using managed identity; no package SAS or storage key was emitted." >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Smoke deployed generate endpoint
+        env:
+          PODCASTER_GENERATE_URL: ${{ steps.deploy_bicep.outputs.endpoint }}
+        run: |
+          set -euo pipefail
+          set +x
+
+          if [ -z "${PODCASTER_API_KEY:-}" ]; then
+            echo "::error::Podcaster API key was not resolved; refusing to smoke with an empty key."
+            exit 1
+          fi
+
+          for attempt in 1 2 3 4 5 6; do
+            if python scripts/smoke_generate.py; then
+              echo "Smoke confirmed HTTP 202 generate readiness with non-empty job_id, manifest_url, and errors=[]; API key was not printed." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "::error::Deployed /api/generate smoke failed after restart."
+              exit 1
+            fi
+            echo "Smoke endpoint is not ready yet; retrying in 20 seconds."
+            sleep 20
+          done
+
       - name: Optionally sync values to SquadScope
         if: ${{ inputs.sync_squadscope == 'true' }}
         env:
