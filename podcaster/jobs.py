@@ -59,13 +59,19 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
         "expires_at": expires_at,
         "request": _request_metadata(payload),
         "lifecycle": _lifecycle_metadata(payload, created_at, manifest_status),
-        "review": _review_metadata(),
+        "review": _review_metadata(payload),
         "generation": {
             "engine": "local-deterministic-placeholder",
             "deterministic": True,
             "audio_mode": "placeholder",
             "tts_provider": None,
             "tts_voice": None,
+            "tts_synthesis": {
+                "status": "blocked",
+                "allowed": False,
+                "blocked_by": ["human_review", "provider_not_selected"] if not payload.get("dry_run") else ["provider_not_selected"],
+                "dry_run_bypass_allowed": bool(payload.get("dry_run")),
+            },
         },
         "publishing": {
             "mode": "manual",
@@ -149,15 +155,30 @@ def _lifecycle_metadata(payload: dict[str, Any], created_at: str, status: str) -
     return {"status": status, "revision": 1, "force": bool(payload.get("force")), "transitions": transitions}
 
 
-def _review_metadata() -> dict[str, Any]:
+def _review_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    dry_run = bool(payload.get("dry_run"))
     return {
         "required": True,
+        "required_for_tts": not dry_run,
         "status": "pending",
+        "mechanism": "github_environment",
+        "environment": "podcast-review",
+        "workflow": ".github/workflows/podcast-review-gate.yml",
         "approved_by": None,
         "approved_at": None,
         "audit_trail": [],
+        "artifacts_for_review": [
+            "script.txt",
+            "claim-ledger.json",
+            "transcript.txt",
+            "show-notes.md",
+            "review-checklist.md",
+            "manifest.json",
+            "publishing-packet.zip",
+        ],
         "gate": {
-            "status": "blocked",
+            "status": "dry_run_bypass" if dry_run else "blocked",
+            "approval_required_before": "non_dry_run_tts_synthesis",
             "checks": [
                 "script_accuracy",
                 "claim_verification",

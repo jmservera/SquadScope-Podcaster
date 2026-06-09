@@ -43,6 +43,10 @@ func start
 
 Without Azure storage settings, generated manifests, script drafts, transcripts, show notes, publishing packets, and audio placeholders are written under `.podcaster-artifacts/jobs/<job_id>/`. The ZIP packet is byte-stable for the same inputs and timestamp. In Azure, set `PODCASTER_STORAGE_ACCOUNT_URL` and `PODCASTER_STORAGE_CONTAINER`; the Function App uses managed identity for blob writes. Returned artifact URLs are private operator paths, not public publishing links, and must not include SAS tokens, query strings, or embedded credentials.
 
+## Human review gate
+
+Non-dry-run TTS synthesis is blocked until a human records approval through `.github/workflows/podcast-review-gate.yml`, which uses the GitHub Environment `podcast-review`. Configure that environment with the required editorial reviewers. The workflow requires the job ID, private manifest URL, and private publishing packet URL, pauses for environment approval, records `github.actor` and the UTC approval time, and uploads `review-manifest.json` as the audit artifact. Dry-run/non-publishing validation may run without approval, but generated output remains ineligible for publication.
+
 Example request:
 
 ```bash

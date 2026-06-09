@@ -39,10 +39,12 @@ Before any non-dry-run TTS synthesis, reviewers MUST verify all items in **secti
 
 ## Functional Requirements
 
-- A job transitions from `accepted` (auto-generated) to `approved` (human reviewed) or `rejected` (needs rework).
+- MVP review mechanism: use the GitHub Environment named `podcast-review` in `.github/workflows/podcast-review-gate.yml`. Maintainers configure required reviewers on that environment; the workflow pauses before recording any approval decision.
+- A job transitions from `accepted`/`review_pending` (auto-generated) to `review_approved`, `changes_requested`, or `rejected`.
 - Reviewers can request script changes, new voice, or audio regeneration.
 - Only `approved` jobs should be eligible for manual publishing to Spotify/podcast hosts.
 - If script, TTS provider, or voice selection changes, audio must be invalidated and regenerated with new review.
+- Non-dry-run TTS synthesis remains blocked until the review manifest records `decision: approved`; dry-run/non-publishing checks may run without approval.
 
 ---
 
@@ -113,11 +115,12 @@ When a reviewer requests changes (e.g., "use British accent"), the job transitio
    - Add `review_status` field: `pending`, `approved`, `rejected`, `changes_requested`.
    - Add `reviewer_id` (GitHub username) and `review_timestamp`.
    - Add `review_notes` (optional comment).
+   - Include the selected review mechanism (`github_environment`, `podcast-review`) and the artifacts a reviewer must inspect.
 
 2. **Implement reviewer interface:**
-   - GitHub issue or pull request tied to each job (simple for MVP).
-   - Reviewers comment with decisions: `/approve`, `/reject`, `/request-changes`.
-   - Webhooks parse comments and update job status.
+   - Trigger `.github/workflows/podcast-review-gate.yml` with the job ID, private manifest URL, private publishing packet URL, decision, and non-secret notes.
+   - GitHub pauses the job at environment `podcast-review` until an authorized reviewer approves it.
+   - The workflow uploads `review-manifest.json` as an Actions artifact for reviewer/operator audit.
 
 3. **Implement audit trail:**
    - Log each review action to Application Insights with reviewer, timestamp, job ID, and decision.
