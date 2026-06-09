@@ -144,6 +144,17 @@ def missing_cost_ledger_fields(ledger: dict[str, Any]) -> list[str]:
         ("privacy", "full_prompts_recorded"),
     ]
     missing = [".".join(path) for path in required_paths if _is_missing(_lookup(ledger, path))]
+    budget_money_paths = [
+        ("budget", "max_monthly_spend_usd"),
+        ("budget", "prior_monthly_spend_usd"),
+        ("budget", "projected_episode_cost_usd"),
+        ("budget", "projected_monthly_spend_usd"),
+    ]
+    for path in budget_money_paths:
+        if _is_missing_money(_lookup(ledger, path)):
+            dotted = ".".join(path)
+            if dotted not in missing:
+                missing.append(dotted)
     costs = ledger.get("costs")
     if isinstance(costs, dict):
         for category in COST_CATEGORIES:

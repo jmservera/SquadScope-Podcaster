@@ -114,6 +114,12 @@ def test_cost_gate_blocks_unknown_or_invalid_cost_values() -> None:
 
         assert "costs.tts.estimated_usd" in missing_cost_ledger_fields(ledger)
         assert cost_gate_blockers(ledger) == ["cost_ledger_incomplete"]
+        ledger["costs"]["tts"]["estimated_usd"] = "0.00"
+        ledger["budget"]["projected_monthly_spend_usd"] = invalid_money
+
+        assert "budget.projected_monthly_spend_usd" in missing_cost_ledger_fields(ledger)
+        assert cost_gate_blockers(ledger) == ["cost_ledger_incomplete"]
+        ledger["budget"]["projected_monthly_spend_usd"] = "0.00"
 
 
 def test_cost_gate_blocks_over_budget_without_override() -> None:
