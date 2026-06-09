@@ -103,7 +103,7 @@ def _source_artifact_line(item: object) -> str:
         return f"Source Artifact: {item}"
 
     role = item.get("role")
-    reference = item.get("url") or item.get("path") or "unspecified"
+    reference = item.get("url") or item.get("href") or item.get("uri") or item.get("path") or item.get("name") or "unspecified"
     sha256 = item.get("sha256")
     parts = [str(reference)]
     if isinstance(role, str) and role.strip():

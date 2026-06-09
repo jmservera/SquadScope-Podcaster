@@ -15,6 +15,8 @@ SOURCE_ARTIFACT_OBJECT_FIELDS = {
     "exists",
     "freshness",
     "generated_at",
+    "href",
+    "name",
     "path",
     "provenance",
     "role",
@@ -29,6 +31,7 @@ SOURCE_ARTIFACT_OBJECT_FIELDS = {
     "sources_requested",
     "sources_succeeded",
     "schema_checksum",
+    "uri",
     "url",
     "week",
 }
@@ -127,20 +130,21 @@ def _validate_source_artifacts(source_artifacts: list[Any]) -> list[str]:
 def _validate_source_artifact_object(label: str, artifact: dict[Any, Any]) -> list[str]:
     errors: list[str] = []
     if not artifact:
-        return [f"{label} must include path or url"]
+        return [f"{label} must include path, url, href, uri, or name"]
 
     unknown_fields = sorted(str(key) for key in artifact if isinstance(key, str) and key not in SOURCE_ARTIFACT_OBJECT_FIELDS)
     if unknown_fields:
         errors.append(f"{label} contains unsupported fields: {', '.join(unknown_fields)}")
 
-    path = artifact.get("path")
-    url = artifact.get("url")
-    if not _is_non_empty_string(path) and not _is_non_empty_string(url):
-        errors.append(f"{label} must include path or url")
-    if url is not None and (not isinstance(url, str) or urlparse(url).scheme not in {"http", "https"}):
-        errors.append(f"{label}.url must be an http or https URL")
+    reference_fields = ("path", "url", "href", "uri", "name")
+    if not any(_is_non_empty_string(artifact.get(field)) for field in reference_fields):
+        errors.append(f"{label} must include path, url, href, uri, or name")
+    for url_field in ("url", "href", "uri"):
+        value = artifact.get(url_field)
+        if value is not None and (not isinstance(value, str) or urlparse(value).scheme not in {"http", "https"}):
+            errors.append(f"{label}.{url_field} must be an http or https URL")
 
-    for string_field in ("role", "path", "week", "generated_at", "crawled_at", "source_status"):
+    for string_field in ("role", "path", "name", "week", "generated_at", "crawled_at", "source_status"):
         value = artifact.get(string_field)
         if value is not None and not isinstance(value, str):
             errors.append(f"{label}.{string_field} must be a string")
