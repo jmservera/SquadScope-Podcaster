@@ -60,6 +60,72 @@ def test_review_approval_records_actor_time_and_preserves_non_human_tts_gate(tmp
     assert reviewed["generation"]["audio_validation"]["status"] == "blocked"
 
 
+def test_review_approval_reinstates_provider_gate_when_manifest_only_had_human_review() -> None:
+    reviewed = apply_review_decision(
+        {
+            "job_id": "podcast-2026-W23-test",
+            "review": {"status": "pending", "audit_trail": [], "gate": {"status": "blocked"}},
+            "generation": {
+                "audio_mode": "placeholder",
+                "tts_provider": None,
+                "tts_synthesis": {"status": "blocked", "allowed": False, "blocked_by": ["human_review"]},
+                "audio_validation": {"status": "blocked", "ready": False},
+            },
+            "publishing": {"eligible": True, "packet_ready": True, "blocked_by": ["human_review"]},
+            "lifecycle": {"status": "review_pending", "transitions": []},
+        },
+        reviewer="leela",
+        reviewed_at="2026-06-08T22:00:00Z",
+        decision="approved",
+    )
+
+    tts_synthesis = reviewed["generation"]["tts_synthesis"]
+    assert tts_synthesis["allowed"] is False
+    assert tts_synthesis["status"] == "blocked"
+    assert tts_synthesis["blocked_by"] == ["provider_not_selected"]
+    assert reviewed["publishing"]["eligible"] is False
+    assert reviewed["publishing"]["packet_ready"] is False
+    assert reviewed["publishing"]["blocked_by"] == ["real_tts_not_implemented", "audio_validation_not_passed"]
+
+
+def test_review_approval_requires_provider_and_fallback_before_tts_is_allowed() -> None:
+    base_manifest = {
+        "job_id": "podcast-2026-W23-real-audio",
+        "review": {"status": "pending", "audit_trail": [], "gate": {"status": "blocked"}},
+        "generation": {
+            "tts_provider": "azure-speech",
+            "tts_synthesis": {
+                "status": "blocked",
+                "allowed": False,
+                "blocked_by": ["human_review", "provider_not_selected"],
+            },
+            "audio_validation": {"status": "passed", "ready": True},
+        },
+        "publishing": {"eligible": False, "packet_ready": False, "blocked_by": ["human_review"]},
+        "lifecycle": {"status": "review_pending", "transitions": []},
+    }
+
+    missing_fallback = apply_review_decision(
+        base_manifest,
+        reviewer="leela",
+        reviewed_at="2026-06-08T22:00:00Z",
+        decision="approved",
+    )
+    assert missing_fallback["generation"]["tts_synthesis"]["allowed"] is False
+    assert missing_fallback["generation"]["tts_synthesis"]["blocked_by"] == ["provider_not_selected"]
+
+    complete_provider_selection = json.loads(json.dumps(base_manifest))
+    complete_provider_selection["generation"]["tts_fallback_provider"] = "openai-tts"
+    reviewed = apply_review_decision(
+        complete_provider_selection,
+        reviewer="leela",
+        reviewed_at="2026-06-08T22:00:00Z",
+        decision="approved",
+    )
+    assert reviewed["generation"]["tts_synthesis"]["allowed"] is True
+    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == []
+
+
 def test_record_review_approval_cli_writes_reviewed_manifest(tmp_path: Path) -> None:
     manifest_path = tmp_path / "manifest.json"
     output_path = tmp_path / "reviewed.json"
