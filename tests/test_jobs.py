@@ -146,6 +146,7 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
             "README.txt",
             "MANIFEST.json",
             "REVIEW-CHECKLIST.md",
+            "PUBLISHING-GUIDE.txt",
             "script.txt",
             "claim-ledger.json",
             "COST-LEDGER.json",
@@ -160,8 +161,23 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
         assert manifest["job_id"] == result.response["job_id"]
         # Verify flat structure per editorial standards section 7.2
         assert manifest["review_status"] == "pending"
+        assert manifest["publishing"]["eligible"] is False
+        assert manifest["publishing"]["packet_ready"] is False
+        assert manifest["generation"]["audio_placeholder"] is True
+        assert manifest["generation"]["tts_synthesis"]["allowed"] is False
         cost_ledger = json.loads(packet.read("COST-LEDGER.json"))
         assert cost_ledger == manifest["cost_ledger"]
+        readme = packet.read("README.txt").decode("utf-8")
+        publishing_guide = packet.read("PUBLISHING-GUIDE.txt").decode("utf-8")
+        show_notes = packet.read("show-notes.md").decode("utf-8")
+        assert "Publication is blocked" in show_notes
+        assert "Publication blocker checklist" in readme
+        assert "PUBLICATION BLOCKED - PLACEHOLDER PACKET" in publishing_guide
+        assert "Do not upload the MP3" in publishing_guide
+        assert "PUBLISHING TO SPOTIFY" not in publishing_guide
+        assert "Click 'Upload'" not in publishing_guide
+        assert "<enclosure" not in publishing_guide
+        assert "Submit feed URL" not in publishing_guide
         checksums = _parse_checksums(packet.read("CHECKSUMS.txt").decode("utf-8"))
         assert set(checksums) == names - {"CHECKSUMS.txt"}
         for name, expected in checksums.items():
