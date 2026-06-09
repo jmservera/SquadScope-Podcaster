@@ -29,6 +29,7 @@ def generate_artifacts(
     expires_at: str | None = None,
     prior_monthly_episode_count: int = 0,
     prior_monthly_spend_usd: Decimal = Decimal("0.00"),
+    cost_override: dict[str, object] | None = None,
 ) -> list[GeneratedArtifact]:
     generated_at_str = created_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     if expires_at is None:
@@ -60,6 +61,7 @@ def generate_artifacts(
         staged_byte_length=sum(len(content) for content in pre_packet_bytes),
         prior_episode_count=prior_monthly_episode_count,
         prior_monthly_spend_usd=prior_monthly_spend_usd,
+        override=cost_override,
     )
     cost_ledger_json = json.dumps(cost_ledger, sort_keys=True, indent=2) + "\n"
     metadata = _metadata(job_id, payload, created_at, expires_at, cost_ledger)

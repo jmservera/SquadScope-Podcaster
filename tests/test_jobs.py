@@ -299,6 +299,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
         "source_artifacts": ["https://example.com/source.json"],
         "dry_run": False,
         "force": True,
+        "cost_override": {"recorded": False, "actor": None, "recorded_at": None},
         "callback": {"requested": False, "url_host": None, "secret_name_provided": False},
     }
     assert manifest["lifecycle"]["force"] is True
@@ -372,6 +373,53 @@ def test_non_dry_run_fails_closed_when_monthly_episode_limit_exceeded() -> None:
     assert result.response["errors"] == ["monthly podcast budget exceeded; explicit operator override required"]
     assert result.manifest["budget"]["status"] == "over_budget"
     assert not (artifact_root / "jobs" / str(result.manifest["job_id"])).exists()
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_non_dry_run_allows_explicit_operator_cost_override() -> None:
+    artifact_root = Path(".test-artifacts-budget-override")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+    storage.put_bytes(
+        monthly_ledger_path("2026-06"),
+        manifest_bytes(
+            {
+                "schema_version": "squadscope-podcaster-monthly-cost-ledger-v1",
+                "month": "2026-06",
+                "episodes": [
+                    {"job_id": f"existing-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
+                    for index in range(5)
+                ],
+            }
+        ),
+        "application/json; charset=utf-8",
+    )
+
+    result = run_generation_job(
+        {
+            "week": "2026-W29",
+            "article_url": "https://example.com/new-article",
+            "force": True,
+            "cost_override": {
+                "actor": "hermes",
+                "reason": "approved launch exception",
+                "recorded_at": "2026-06-09T11:00:00Z",
+            },
+        },
+        storage=storage,
+        now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
+    )
+
+    assert result.response["status"] == "accepted"
+    assert result.manifest["cost_ledger"]["budget"]["status"] == "override_recorded"
+    assert result.manifest["cost_ledger"]["budget"]["override"] == {
+        "actor": "hermes",
+        "reason": "approved launch exception",
+        "recorded_at": "2026-06-09T11:00:00Z",
+    }
+    monthly = json.loads((artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8"))
+    assert len(monthly["episodes"]) == 6
+    assert monthly["episodes"][-1]["budget_status"] == "override_recorded"
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 

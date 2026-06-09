@@ -46,10 +46,12 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     monthly_path = monthly_ledger_path(month)
     monthly_ledger = load_monthly_ledger(storage.get_bytes(monthly_path), month=month)
     prior_episode_count, prior_monthly_spend = monthly_budget_inputs(monthly_ledger, job_id=job_id)
+    cost_override = _cost_override(payload)
     budget = evaluate_monthly_guardrail(
         prior_episode_count=prior_episode_count,
         prior_monthly_spend_usd=prior_monthly_spend,
         projected_episode_cost_usd=USD_ZERO,
+        override=cost_override,
     )
     if not payload.get("dry_run") and budget["status"] == "over_budget":
         logging.warning(
@@ -82,6 +84,7 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
         expires_at,
         prior_monthly_episode_count=prior_episode_count,
         prior_monthly_spend_usd=prior_monthly_spend,
+        cost_override=cost_override,
     ):
         stored_artifact = storage.put_bytes(artifact.path, artifact.content, artifact.content_type)
         stored[artifact.path] = stored_artifact
@@ -191,6 +194,7 @@ def failed_response(errors: list[str], warnings: list[str] | None = None) -> dic
 def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     callback = payload.get("callback") if isinstance(payload.get("callback"), dict) else {}
     callback_url = callback.get("url") if isinstance(callback, dict) else None
+    cost_override = _cost_override(payload)
     return {
         "week": payload.get("week"),
         "article_url": payload.get("article_url"),
@@ -198,12 +202,31 @@ def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "source_artifacts": payload.get("source_artifacts", []),
         "dry_run": bool(payload.get("dry_run")),
         "force": bool(payload.get("force")),
+        "cost_override": {
+            "recorded": cost_override is not None,
+            "actor": cost_override.get("actor") if cost_override else None,
+            "recorded_at": cost_override.get("recorded_at") if cost_override else None,
+        },
         "callback": {
             "requested": bool(payload.get("callback")),
             "url_host": urlparse(callback_url).netloc if isinstance(callback_url, str) else None,
             "secret_name_provided": bool(callback.get("secret_name")) if isinstance(callback, dict) else False,
         },
     }
+
+
+def _cost_override(payload: dict[str, Any]) -> dict[str, Any] | None:
+    if payload.get("force") is not True:
+        return None
+    override = payload.get("cost_override")
+    if not isinstance(override, dict):
+        return None
+    actor = override.get("actor")
+    reason = override.get("reason")
+    recorded_at = override.get("recorded_at")
+    if all(isinstance(value, str) and bool(value.strip()) for value in (actor, reason, recorded_at)):
+        return {"actor": actor, "reason": reason, "recorded_at": recorded_at}
+    return None
 
 
 def _lifecycle_metadata(payload: dict[str, Any], created_at: str, status: str) -> dict[str, Any]:
