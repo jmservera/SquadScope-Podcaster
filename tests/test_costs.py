@@ -96,7 +96,7 @@ def test_cost_gate_blocks_missing_fields_and_unknown_budget_status() -> None:
     assert cost_gate_blockers(None) == ["cost_ledger_missing"]
 
 
-def test_cost_gate_blocks_unknown_cost_values() -> None:
+def test_cost_gate_blocks_unknown_or_invalid_cost_values() -> None:
     ledger = build_cost_ledger(
         week="2026-W23",
         month="2026-06",
@@ -108,10 +108,12 @@ def test_cost_gate_blocks_unknown_cost_values() -> None:
         audio_byte_length=256,
         staged_byte_length=4096,
     )
-    ledger["costs"]["tts"]["estimated_usd"] = "unknown"
 
-    assert "costs.tts.estimated_usd" in missing_cost_ledger_fields(ledger)
-    assert cost_gate_blockers(ledger) == ["cost_ledger_incomplete"]
+    for invalid_money in ("unknown", "NaN", "Infinity", "-0.01"):
+        ledger["costs"]["tts"]["estimated_usd"] = invalid_money
+
+        assert "costs.tts.estimated_usd" in missing_cost_ledger_fields(ledger)
+        assert cost_gate_blockers(ledger) == ["cost_ledger_incomplete"]
 
 
 def test_cost_gate_blocks_over_budget_without_override() -> None:

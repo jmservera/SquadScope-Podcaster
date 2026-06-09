@@ -324,7 +324,7 @@ def _is_missing_money(value: Any) -> bool:
     if _is_missing(value) or not isinstance(value, str):
         return True
     try:
-        Decimal(value)
+        amount = Decimal(value)
     except InvalidOperation:
         return True
-    return False
+    return not amount.is_finite() or amount < USD_ZERO
