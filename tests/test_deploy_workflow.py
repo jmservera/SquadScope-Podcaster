@@ -63,6 +63,17 @@ def test_deploy_workflow_does_not_emit_package_secrets() -> None:
     assert "no package SAS or storage key was emitted" in workflow
 
 
+def test_deploy_workflow_smokes_generate_without_printing_api_key() -> None:
+    workflow = _workflow_text()
+
+    assert "Smoke deployed generate endpoint" in workflow
+    assert "PODCASTER_GENERATE_URL: ${{ steps.deploy_bicep.outputs.endpoint }}" in workflow
+    assert "python scripts/smoke_generate.py" in workflow
+    assert "refusing to smoke with an empty key" in workflow
+    assert "API key was not printed" in workflow
+    assert "--api-key" not in workflow
+
+
 def test_deploy_workflow_excludes_local_and_secret_files_from_package() -> None:
     workflow = _workflow_text()
 
