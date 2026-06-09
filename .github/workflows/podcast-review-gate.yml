@@ -1,0 +1,119 @@
+name: Podcast Review Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Podcaster job ID to review'
+        required: true
+        type: string
+      manifest_url:
+        description: 'Private operator manifest URL from /api/generate'
+        required: true
+        type: string
+      publishing_packet_url:
+        description: 'Private operator publishing packet URL from /api/generate'
+        required: true
+        type: string
+      decision:
+        description: 'Human review decision'
+        required: true
+        default: 'approved'
+        type: choice
+        options: ['approved', 'changes_requested', 'rejected']
+      notes:
+        description: 'Non-secret review notes'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  record-review:
+    runs-on: ubuntu-latest
+    environment: podcast-review
+    steps:
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Validate private artifact references
+        env:
+          MANIFEST_URL: ${{ inputs.manifest_url }}
+          PACKET_URL: ${{ inputs.publishing_packet_url }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from urllib.parse import urlparse
+
+          for name in ("MANIFEST_URL", "PACKET_URL"):
+              value = os.environ[name]
+              parsed = urlparse(value)
+              if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                  raise SystemExit(f"{name} must be an http or https URL")
+              if parsed.username or parsed.password or parsed.query or parsed.fragment:
+                  raise SystemExit(f"{name} must not contain credentials, query strings, or fragments")
+          PY
+
+      - name: Record review decision
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          MANIFEST_URL: ${{ inputs.manifest_url }}
+          PACKET_URL: ${{ inputs.publishing_packet_url }}
+          DECISION: ${{ inputs.decision }}
+          REVIEW_NOTES: ${{ inputs.notes }}
+          REVIEWER: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          reviewed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = {
+              "schema_version": "squadscope-podcaster-review-v1",
+              "job_id": os.environ["JOB_ID"],
+              "status": "review_pending",
+              "manifest_url": os.environ["MANIFEST_URL"],
+              "publishing_packet_url": os.environ["PACKET_URL"],
+              "review": {
+                  "status": "pending",
+                  "required": True,
+                  "mechanism": "github_environment",
+                  "environment": "podcast-review",
+                  "workflow": ".github/workflows/podcast-review-gate.yml",
+                  "approved_by": None,
+                  "approved_at": None,
+                  "audit_trail": [],
+                  "gate": {"status": "blocked"},
+              },
+              "generation": {"tts_synthesis": {"status": "blocked", "allowed": False, "blocked_by": ["human_review"]}},
+              "publishing": {"eligible": False, "blocked_by": ["human_review", "real_tts_not_implemented"]},
+              "lifecycle": {"status": "review_pending", "transitions": []},
+          }
+          Path("review-manifest.input.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+          python scripts/record_review_approval.py \
+            --manifest review-manifest.input.json \
+            --output review-manifest.json \
+            --reviewer "$REVIEWER" \
+            --decision "$DECISION" \
+            --notes "$REVIEW_NOTES" \
+            --reviewed-at "$reviewed_at" \
+            --run-url "$RUN_URL"
+
+      - name: Upload review artifact
+        # actions/upload-artifact v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: podcast-review-${{ inputs.job_id }}
+          path: review-manifest.json
+          if-no-files-found: error
