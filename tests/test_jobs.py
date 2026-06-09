@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 from podcaster.generation import generate_artifacts, manifest_bytes
 from podcaster.jobs import build_job_id, run_generation_job
-from podcaster.storage import LocalStorageBackend, create_storage_backend
+from podcaster.storage import LocalStorageBackend, _managed_identity_resource, _token_expires_on, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
 
 
@@ -160,6 +160,17 @@ def test_local_storage_backend_stages_under_safe_project_relative_paths(monkeypa
     assert (artifact_root / "jobs" / "podcast-safe" / "manifest.json").read_bytes() == b"{}"
     assert not Path("manifest.json").exists()
     shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_managed_identity_scope_is_converted_to_resource() -> None:
+    assert _managed_identity_resource("https://storage.azure.com/.default") == "https://storage.azure.com"
+    assert _managed_identity_resource("https://storage.azure.com") == "https://storage.azure.com"
+
+
+def test_managed_identity_expiry_accepts_epoch_or_expires_in(monkeypatch) -> None:
+    assert _token_expires_on({"expires_on": "1800000000"}) == 1800000000
+    monkeypatch.setattr("podcaster.storage.time.time", lambda: 1000)
+    assert _token_expires_on({"expires_in": "60"}) == 1060
 
 
 def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog) -> None:

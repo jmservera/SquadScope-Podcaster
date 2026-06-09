@@ -77,6 +77,16 @@ Regression fixtures live under `tests/fixtures/`:
 - `podcaster_request_legacy_strings.json`
 - `podcaster_request_squadscope_objects.json`
 
+The deployed endpoint smoke check uses `tests/fixtures/podcaster_request_squadscope_objects.json` by default:
+
+```bash
+export PODCASTER_GENERATE_URL='https://<function-app-name>.azurewebsites.net/api/generate'
+export PODCASTER_API_KEY='<from secret manager>'
+python scripts/smoke_generate.py
+```
+
+The script verifies HTTP 202 plus non-empty `job_id` and `manifest_url` fields with `errors=[]`. It does not print the API key or raw response body, and it redacts URL query strings before writing output so SAS tokens or other URL credentials do not appear in logs.
+
 ## Response body
 
 ```json

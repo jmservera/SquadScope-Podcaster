@@ -52,6 +52,16 @@ curl -X POST http://localhost:7071/api/generate \
   -d '{"week":"2026-W23","article_url":"https://example.com/articles/week-23","dry_run":true}'
 ```
 
+Deployed smoke check:
+
+```bash
+export PODCASTER_GENERATE_URL='https://<function-app>.azurewebsites.net/api/generate'
+export PODCASTER_API_KEY='<from secret manager>'
+python scripts/smoke_generate.py
+```
+
+The smoke check sends the shared SquadScope object-shaped fixture and verifies HTTP 202, a non-empty `job_id`, a non-empty `manifest_url`, and `errors=[]`. It prints only a safe summary; URL query strings are redacted so API keys, SAS tokens, and other secrets are not exposed in logs.
+
 ## Deployment
 
 The deployment workflow is `.github/workflows/deploy-azure.yml`. It uses the GitHub environment named exactly `prod`, authenticates with GitHub OIDC via `azure/login`, deploys Bicep from `infra/main.bicep`, packages the Function App, deploys it, and prints only non-secret integration values.
