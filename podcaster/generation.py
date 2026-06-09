@@ -9,6 +9,7 @@ from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from podcaster.artifact_access import artifact_access_metadata
+from podcaster.audio import placeholder_audio_validation
 from podcaster.costs import build_cost_ledger
 
 
@@ -38,6 +39,7 @@ def generate_artifacts(
     transcript = _transcript(script)
     show_notes = _show_notes(payload, generated_at_str)
     audio_placeholder = _audio_placeholder(job_id, payload)
+    audio_validation = placeholder_audio_validation(byte_length=len(audio_placeholder), sha256=checksum(audio_placeholder)).to_manifest()
     claim_ledger = _claim_ledger(payload)
     review_checklist = _review_checklist(job_id, payload)
     rights = _rights_and_attribution()
@@ -64,7 +66,7 @@ def generate_artifacts(
         override=cost_override,
     )
     cost_ledger_json = json.dumps(cost_ledger, sort_keys=True, indent=2) + "\n"
-    metadata = _metadata(job_id, payload, created_at, expires_at, cost_ledger)
+    metadata = _metadata(job_id, payload, created_at, expires_at, cost_ledger, audio_validation)
     packet = _packet(
         script=script,
         transcript=transcript,
@@ -246,6 +248,7 @@ def _metadata(
     created_at: datetime,
     expires_at: str,
     cost_ledger: dict[str, object],
+    audio_validation: dict[str, object],
 ) -> dict[str, object]:
     created_ts = created_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -298,6 +301,7 @@ def _metadata(
                 "blocked_by": ["provider_not_selected"] if payload.get("dry_run") else ["human_review", "provider_not_selected"],
                 "dry_run_bypass_allowed": bool(payload.get("dry_run")),
             },
+            "audio_validation": audio_validation,
             "duration_seconds": None,
         },
         "tts_provider": None,
@@ -309,7 +313,7 @@ def _metadata(
             "packet_format": "squadscope-podcaster-packet-v1",
             "packet_ready": False,
             "eligible": False,
-            "blocked_by": ["human_review", "real_tts_not_implemented"],
+            "blocked_by": ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"],
             "readiness_checks": {
                 "cost_ledger_complete": bool(cost_ledger.get("readiness", {}).get("complete"))
                 if isinstance(cost_ledger.get("readiness"), dict)
@@ -431,7 +435,7 @@ def _publishing_guide() -> str:
             "  PUBLISHING GUIDE FOR PODCAST PLATFORMS",
             "===========================================",
             "",
-            "This packet is ready for manual publishing once editorial review is complete.",
+            "This packet is not ready for manual publishing until editorial review and audio validation pass.",
             "Choose your publishing platform below.",
             "",
             "---",

@@ -56,6 +56,9 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
         "blocked_by": ["human_review", "provider_not_selected"],
         "dry_run_bypass_allowed": False,
     }
+    assert result.manifest["generation"]["audio_validation"]["status"] == "blocked"
+    assert result.manifest["generation"]["audio_validation"]["ready"] is False
+    assert result.manifest["generation"]["audio_validation"]["metadata"]["content_type"] == "audio/mpeg"
     assert result.manifest["artifact_access"]["model"] == "private_operator_path"
     assert result.manifest["artifact_access"]["response_urls"] == {
         "publicly_accessible": False,
@@ -85,6 +88,7 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
         assert packet_manifest["review_status"] == "pending"
         assert packet_manifest["review"]["environment"] == "podcast-review"
         assert packet_manifest["review"]["gate"]["status"] == "blocked"
+        assert packet_manifest["generation"]["audio_validation"]["status"] == "blocked"
         assert packet_manifest["cost_ledger"]["budget"]["status"] == "within_budget"
         assert packet_manifest["publishing"]["packet_ready"] is False
         assert packet_manifest["publishing"]["readiness_checks"]["cost_ledger_complete"] is True
@@ -309,7 +313,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     }
     assert manifest["lifecycle"]["force"] is True
     assert manifest["lifecycle"]["transitions"][-1]["to"] == "review_pending"
-    assert manifest["publishing"]["blocked_by"] == ["human_review", "real_tts_not_implemented"]
+    assert manifest["publishing"]["blocked_by"] == ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"]
     assert manifest["review"]["artifacts_for_review"] == [
         "script.txt",
         "claim-ledger.json",

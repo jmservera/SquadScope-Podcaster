@@ -19,6 +19,7 @@ from podcaster.costs import (
     update_monthly_ledger,
 )
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
+from podcaster.audio import placeholder_audio_validation
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
@@ -104,6 +105,7 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     stored: dict[str, StoredArtifact] = {}
     checksums: dict[str, str] = {}
     cost_ledger: dict[str, Any] | None = None
+    audio_validation = None
     for artifact in generate_artifacts(
         job_id,
         payload,
@@ -113,9 +115,12 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
         prior_monthly_spend_usd=prior_monthly_spend,
         cost_override=cost_override,
     ):
+        artifact_checksum = checksum(artifact.content)
+        if artifact.path.endswith(".mp3"):
+            audio_validation = placeholder_audio_validation(byte_length=len(artifact.content), sha256=artifact_checksum)
         stored_artifact = storage.put_bytes(artifact.path, artifact.content, artifact.content_type)
         stored[artifact.path] = stored_artifact
-        checksums[artifact.path] = checksum(artifact.content)
+        checksums[artifact.path] = artifact_checksum
         if artifact.path.endswith("/cost-ledger.json"):
             loaded_cost_ledger = json.loads(artifact.content.decode("utf-8"))
             if not isinstance(loaded_cost_ledger, dict):
@@ -123,6 +128,8 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
             cost_ledger = loaded_cost_ledger
     if cost_ledger is None:
         raise RuntimeError("generated artifacts did not include cost-ledger.json")
+    if audio_validation is None:
+        audio_validation = placeholder_audio_validation(byte_length=0, sha256="")
 
     created_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     manifest_status = "dry_run" if payload.get("dry_run") else "review_pending"
@@ -148,12 +155,13 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
                 "blocked_by": ["human_review", "provider_not_selected"] if not payload.get("dry_run") else ["provider_not_selected"],
                 "dry_run_bypass_allowed": bool(payload.get("dry_run")),
             },
+            "audio_validation": audio_validation.to_manifest(),
         },
         "publishing": {
             "mode": "manual",
             "packet_ready": False,
             "eligible": False,
-            "blocked_by": ["human_review", "real_tts_not_implemented"],
+            "blocked_by": ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"],
             "readiness_checks": {
                 "cost_ledger_complete": bool(cost_ledger.get("readiness", {}).get("complete"))
                 if isinstance(cost_ledger.get("readiness"), dict)

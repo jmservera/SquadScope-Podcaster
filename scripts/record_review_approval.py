@@ -75,16 +75,20 @@ def apply_review_decision(
     generation = updated.setdefault("generation", {})
     tts_synthesis = generation.setdefault("tts_synthesis", {})
     cost_blockers = cost_gate_blockers(updated.get("cost_ledger"))
+    provider_selection_complete = _provider_selection_complete(updated)
+    provider_blockers = (
+        ["provider_privacy_review_required", "rai_security_signoff_required"]
+        if provider_selection_complete
+        else PROVIDER_TTS_BLOCKERS
+    )
     existing_blockers = [
         blocker
-        for blocker in tts_synthesis.get("blocked_by", PROVIDER_TTS_BLOCKERS)
-        if blocker != "human_review" and blocker not in cost_blockers
+        for blocker in _blocked_by(tts_synthesis)
+        if blocker != "human_review" and blocker not in cost_blockers and blocker not in PROVIDER_TTS_BLOCKERS
     ]
-    existing_blockers = [
-        *existing_blockers,
-        *[blocker for blocker in PROVIDER_TTS_BLOCKERS if blocker not in existing_blockers],
-    ]
-    remaining_blockers = [*existing_blockers, *cost_blockers]
+    remaining_blockers = existing_blockers
+    for blocker in [*provider_blockers, *cost_blockers]:
+        remaining_blockers = _append_blocker(remaining_blockers, blocker)
     if decision == APPROVED:
         tts_synthesis["status"] = "review_approved" if not remaining_blockers else "blocked"
         tts_synthesis["allowed"] = not remaining_blockers
@@ -95,12 +99,16 @@ def apply_review_decision(
         tts_synthesis["blocked_by"] = ["human_review", *remaining_blockers]
 
     publishing = updated.setdefault("publishing", {})
-    blocked_by = [reason for reason in publishing.get("blocked_by", []) if reason != "human_review"]
+    blocked_by = [reason for reason in _blocked_by(publishing) if reason != "human_review"]
     if decision != APPROVED and "human_review" not in blocked_by:
         blocked_by.insert(0, "human_review")
+    if _uses_placeholder_audio(updated):
+        blocked_by = _append_blocker(blocked_by, "real_tts_not_implemented")
+        blocked_by = _append_blocker(blocked_by, "audio_validation_not_passed")
+    elif not _audio_validation_ready(updated):
+        blocked_by = _append_blocker(blocked_by, "audio_validation_not_passed")
     for blocker in remaining_blockers:
-        if blocker not in blocked_by:
-            blocked_by.append(blocker)
+        blocked_by = _append_blocker(blocked_by, blocker)
     publishing["blocked_by"] = blocked_by
     publishing["eligible"] = False
     publishing["packet_ready"] = False
@@ -110,6 +118,65 @@ def apply_review_decision(
     readiness_checks.setdefault("real_audio_available", False)
 
     return updated
+
+
+def _blocked_by(section: dict[str, Any]) -> list[str]:
+    blockers = section.get("blocked_by", [])
+    if not isinstance(blockers, list):
+        return []
+    return [reason for reason in blockers if isinstance(reason, str) and reason]
+
+
+def _append_blocker(blockers: list[str], reason: str) -> list[str]:
+    if reason not in blockers:
+        blockers.append(reason)
+    return blockers
+
+
+def _provider_selection_complete(manifest: dict[str, Any]) -> bool:
+    generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else {}
+    tts_synthesis = generation.get("tts_synthesis") if isinstance(generation.get("tts_synthesis"), dict) else {}
+    provider_selection = generation.get("provider_selection") or tts_synthesis.get("provider_selection")
+    if isinstance(provider_selection, dict):
+        status = provider_selection.get("status")
+        if status in {"complete", "completed", "configured", "selected"}:
+            return True
+    if tts_synthesis.get("provider_selection_complete") is True or generation.get("provider_selection_complete") is True:
+        return True
+
+    provider = generation.get("tts_provider") or manifest.get("tts_provider")
+    fallback = (
+        generation.get("tts_fallback_provider")
+        or generation.get("fallback_tts_provider")
+        or manifest.get("tts_fallback_provider")
+        or manifest.get("fallback_tts_provider")
+    )
+    fallbacks = generation.get("tts_fallbacks") or manifest.get("tts_fallbacks")
+    has_fallback = _has_value(fallback) or (
+        isinstance(fallbacks, list) and any(_has_value(item) for item in fallbacks)
+    )
+    return _has_value(provider) and has_fallback
+
+
+def _uses_placeholder_audio(manifest: dict[str, Any]) -> bool:
+    generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else {}
+    return (
+        generation.get("audio_mode") == "placeholder"
+        or generation.get("audio_placeholder") is True
+        or manifest.get("audio_placeholder") is True
+    )
+
+
+def _audio_validation_ready(manifest: dict[str, Any]) -> bool:
+    generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else {}
+    validation = generation.get("audio_validation")
+    return isinstance(validation, dict) and validation.get("ready") is True and validation.get("status") == "passed"
+
+
+def _has_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    return value is not None
 
 
 def main() -> int:
