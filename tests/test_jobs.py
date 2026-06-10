@@ -214,7 +214,7 @@ def test_generation_outputs_are_deterministic_and_documented() -> None:
     assert "deterministic production-path placeholder" in script
     assert cost_ledger["budget"]["status"] == "within_budget"
     assert cost_ledger["costs"]["staging_storage"]["estimated_usd"] == "0.00"
-    assert "Title: SquadScope Podcast" in transcript
+    assert "Title: Claracle Podcast" in transcript
     assert "Original article](https://example.com/article)" in show_notes
     assert first[6].content.startswith(f"Audio placeholder for {job_id}".encode("utf-8"))
     assert first[7].content_type == "application/zip"
