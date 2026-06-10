@@ -52,6 +52,8 @@ HOST_B_LABEL = f"Host B ({HOST_B_VOICE})"
 # Per-field caps for sanitized article-derived text embedded in the script.
 _TOPIC_LIMIT = 160
 _POINT_LIMIT = 600
+_WEEK_LIMIT = 32
+_URL_LIMIT = 512
 
 
 @dataclass(frozen=True)
@@ -91,7 +93,7 @@ def sanitize_article(
     article for observability; they never change control flow.
     """
 
-    raw_blob_parts: list[str] = [title, summary]
+    raw_blob_parts: list[str] = [str(week), title, str(url), summary]
     clean_beats: list[DiscussionBeat] = []
     for beat in beats:
         topic = str(beat.get("topic", ""))
@@ -108,9 +110,9 @@ def sanitize_article(
     flags = flag_injection(" ".join(raw_blob_parts))
 
     return Article(
-        week=str(week).strip(),
+        week=neutralize(week, limit=_WEEK_LIMIT),
         title=neutralize(title, limit=_TOPIC_LIMIT),
-        url=str(url).strip(),
+        url=neutralize(url, limit=_URL_LIMIT),
         sha256=str(sha256).strip() or "computed-on-retrieval",
         summary=neutralize(summary, limit=_POINT_LIMIT),
         beats=tuple(clean_beats),
