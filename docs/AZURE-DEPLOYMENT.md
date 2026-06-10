@@ -424,6 +424,69 @@ az group exists --name podcaster-prod
 
 ---
 
+## Production TTS Infrastructure (Azure OpenAI)
+
+The production `/api/generate` path uses **Azure OpenAI** for the two-voice
+"Claracle" episode (host A = `fable`, host B = `alloy`), per the provider decision
+recorded in #4. These resources live in `infra/openai.bicep` and are deployed by the
+conditional `module openAi` in `infra/main.bicep`.
+
+### Opt-in by design
+
+The OpenAI account, model deployments, and role assignment are **off by default**
+(`deployOpenAi=false`). This keeps the core storage + Function App deployment green in
+regions/SKUs where the selected TTS model is unavailable. Enable it explicitly:
+
+```bash
+# From the Actions UI: Run workflow → Deploy Azure → deploy_openai = true
+# Or with the Azure CLI:
+az deployment group create \
+  --resource-group "$AZURE_RESOURCE_GROUP" \
+  --template-file infra/main.bicep \
+  --parameters deployOpenAi=true \
+  --parameters podcasterApiKey="$PODCASTER_API_KEY" \
+  --parameters location="$AZURE_LOCATION"
+```
+
+> **Region/model availability:** OpenAI TTS (`gpt-4o-mini-tts`, voices `fable`/`alloy`)
+> and the script model (`gpt-4o-mini`) are only available in some Azure regions. Before
+> enabling, confirm the configured `ttsModelName`/`ttsModelVersion` and
+> `chatModelName`/`chatModelVersion` are offered in your `AZURE_LOCATION`, or override
+> the model parameters. Deploying into an unsupported region will fail the run.
+
+### What gets provisioned
+
+| Resource | Purpose |
+|----------|---------|
+| `Microsoft.CognitiveServices/accounts` (kind `OpenAI`) | Azure OpenAI account with a custom subdomain for Entra ID auth |
+| TTS model deployment (`tts`) | OpenAI TTS model that provides the `fable`/`alloy` voices |
+| Chat model deployment (`chat`) | Writes the two-voice Claracle conversation script |
+| Role assignment (`Cognitive Services OpenAI User`) | Grants the Function App's managed identity data-plane access |
+
+The Function App receives `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_TTS_DEPLOYMENT`,
+`AZURE_OPENAI_CHAT_DEPLOYMENT`, `AZURE_OPENAI_TTS_VOICE_HOST_A/B`, and
+`AZURE_OPENAI_AUTH_MODE=managed_identity` as app settings.
+
+### Authentication & secrets
+
+- **Managed identity only.** The account sets `disableLocalAuth: true`; the Function App
+  authenticates with its system-assigned identity via the `Cognitive Services OpenAI User`
+  role. **No account key is created, read, stored in app settings, logged, or emitted as a
+  deployment output.**
+- Checkov `CKV_AZURE_134` (disable public network access) is intentionally deferred: the
+  Consumption (Y1) Function App reaches the account over the public endpoint and cannot use
+  VNet integration / private endpoints. Managed-identity-only auth remains enforced.
+
+### TTS stays blocked until editorial review
+
+Provisioning this infrastructure does **not** enable publishable audio. Non-dry-run TTS
+synthesis and any publication path remain blocked behind the human/editorial review gates
+(see `docs/editorial-standards.md` and the review-gate workflow). The deployed endpoint
+continues to return the reviewed placeholder packet until #60 wires the production
+generation path and a reviewer records an approved decision.
+
+---
+
 ## Cost Estimation
 
 ### Azure Resources (Monthly)

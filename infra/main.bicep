@@ -36,9 +36,82 @@ param packageContainerName string = 'function-packages'
 @description('Optional object ID of the GitHub Actions deployment service principal. When provided, it receives Storage Blob Data Contributor on the storage account for OIDC package uploads.')
 param deploymentPrincipalObjectId string = ''
 
+@description('Opt-in switch for the production Azure OpenAI TTS infrastructure (#30). Defaults to false so the storage + Function App deploy stays green in regions where the selected TTS model is unavailable. Set to true only in a region/SKU that supports the configured ttsModelName/chatModelName.')
+param deployOpenAi bool = false
+
+@description('Azure OpenAI (Cognitive Services) account name. Must be globally unique within its subdomain. Defaults follow the existing Function App naming convention.')
+@minLength(2)
+@maxLength(63)
+param openAiAccountName string = '${functionAppName}-openai'
+
+@description('Azure OpenAI account SKU.')
+param openAiSkuName string = 'S0'
+
+@description('OpenAI TTS model to deploy (provides the fable/alloy voices selected in #4). Availability is region-specific; pick a region that supports this model when deployOpenAi=true.')
+param ttsModelName string = 'gpt-4o-mini-tts'
+
+@description('Version of the OpenAI TTS model deployment.')
+param ttsModelVersion string = '2025-03-20'
+
+@description('Deployment (alias) name used by the Function App to reference the TTS model.')
+param ttsDeploymentName string = 'tts'
+
+@description('Provisioned capacity (thousands of tokens / requests per minute) for the TTS model deployment.')
+param ttsModelCapacity int = 1
+
+@description('OpenAI chat model used to write the two-voice Claracle script in the production generate path (#60).')
+param chatModelName string = 'gpt-4o-mini'
+
+@description('Version of the OpenAI chat model deployment.')
+param chatModelVersion string = '2024-07-18'
+
+@description('Deployment (alias) name used by the Function App to reference the chat model.')
+param chatDeploymentName string = 'chat'
+
+@description('Provisioned capacity (thousands of tokens per minute) for the chat model deployment.')
+param chatModelCapacity int = 10
+
+@description('TTS voice for host A of the Claracle conversation.')
+param ttsVoiceHostA string = 'fable'
+
+@description('TTS voice for host B of the Claracle conversation.')
+param ttsVoiceHostB string = 'alloy'
+
 var hostingPlanName = '${functionAppName}-plan'
 var hasDeploymentPrincipalObjectId = !empty(deploymentPrincipalObjectId)
 var storageDnsSuffix = environment().suffixes.storage
+var openAiCustomSubDomain = toLower(openAiAccountName)
+// Deterministic Azure OpenAI endpoint derived from the custom subdomain so the Function App
+// settings do not depend on the conditional OpenAI module (avoids a circular dependency).
+var openAiEndpoint = deployOpenAi ? 'https://${openAiCustomSubDomain}.openai.azure.com/' : ''
+// Function App reaches Azure OpenAI with its managed identity (Cognitive Services OpenAI User);
+// account keys are never written to Function App settings, logs, or deployment outputs.
+var openAiAppSettings = deployOpenAi ? [
+  {
+    name: 'AZURE_OPENAI_ENDPOINT'
+    value: openAiEndpoint
+  }
+  {
+    name: 'AZURE_OPENAI_TTS_DEPLOYMENT'
+    value: ttsDeploymentName
+  }
+  {
+    name: 'AZURE_OPENAI_CHAT_DEPLOYMENT'
+    value: chatDeploymentName
+  }
+  {
+    name: 'AZURE_OPENAI_TTS_VOICE_HOST_A'
+    value: ttsVoiceHostA
+  }
+  {
+    name: 'AZURE_OPENAI_TTS_VOICE_HOST_B'
+    value: ttsVoiceHostB
+  }
+  {
+    name: 'AZURE_OPENAI_AUTH_MODE'
+    value: 'managed_identity'
+  }
+] : []
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
@@ -119,7 +192,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     httpsOnly: true
     siteConfig: {
       linuxFxVersion: 'Python|3.11'
-      appSettings: [
+      appSettings: concat([
         {
           name: 'AzureWebJobsStorage__blobServiceUri'
           value: 'https://${storage.name}.blob.${storageDnsSuffix}'
@@ -168,7 +241,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'PODCASTER_STORAGE_CONTAINER'
           value: storageContainerName
         }
-      ]
+      ], openAiAppSettings)
     }
   }
 }
@@ -219,6 +292,27 @@ resource deploymentBlobDataContributor 'Microsoft.Authorization/roleAssignments@
   ]
 }
 
+// Production TTS provider (OpenAI, voices fable+alloy) selected in #4. Opt-in via deployOpenAi
+// so the core storage + Function App deploy stays green where the TTS model is unavailable.
+module openAi 'openai.bicep' = if (deployOpenAi) {
+  name: 'openai-tts'
+  params: {
+    location: location
+    openAiAccountName: openAiAccountName
+    openAiCustomSubDomain: openAiCustomSubDomain
+    openAiSkuName: openAiSkuName
+    ttsModelName: ttsModelName
+    ttsModelVersion: ttsModelVersion
+    ttsDeploymentName: ttsDeploymentName
+    ttsModelCapacity: ttsModelCapacity
+    chatModelName: chatModelName
+    chatModelVersion: chatModelVersion
+    chatDeploymentName: chatDeploymentName
+    chatModelCapacity: chatModelCapacity
+    functionAppPrincipalId: functionApp.identity.principalId
+  }
+}
+
 output endpoint string = 'https://${functionApp.properties.defaultHostName}/api/generate'
 output functionAppName string = functionApp.name
 output functionAppPrincipalId string = functionApp.identity.principalId
@@ -226,3 +320,8 @@ output artifactContainerResourceId string = artifactContainer.id
 output storageAccountName string = storage.name
 output storageContainerName string = storageContainerName
 output packageContainerName string = packageContainerName
+output openAiDeployed bool = deployOpenAi
+output openAiEndpoint string = openAiEndpoint
+output openAiAccountName string = deployOpenAi ? openAiAccountName : ''
+output ttsDeploymentName string = deployOpenAi ? ttsDeploymentName : ''
+output chatDeploymentName string = deployOpenAi ? chatDeploymentName : ''

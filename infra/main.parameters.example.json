@@ -5,6 +5,13 @@
     "location": { "value": "eastus" },
     "podcasterApiKey": { "value": "DO_NOT_COMMIT_REAL_KEYS" },
     "artifactBaseUrl": { "value": "https://example.invalid/podcaster-stub" },
-    "storageContainerName": { "value": "podcaster-artifacts" }
+    "storageContainerName": { "value": "podcaster-artifacts" },
+    "deployOpenAi": { "value": false },
+    "ttsModelName": { "value": "gpt-4o-mini-tts" },
+    "ttsModelVersion": { "value": "2025-03-20" },
+    "chatModelName": { "value": "gpt-4o-mini" },
+    "chatModelVersion": { "value": "2024-07-18" },
+    "ttsVoiceHostA": { "value": "fable" },
+    "ttsVoiceHostB": { "value": "alloy" }
   }
 }
