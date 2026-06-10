@@ -47,6 +47,23 @@ HOST_B_NAME = "Vera"
 # URL scheme. The full ``PODCAST_URL`` (with scheme) stays in written metadata.
 PODCAST_SPOKEN_SITE = "www.claracle.com"
 
+# Per-voice TTS *style* instructions (operator feedback, v3 / #34). These steer
+# newer Azure OpenAI speech models (e.g. gpt-4o-mini-tts) via the optional
+# ``instructions`` field to sharpen the enthusiasm contrast WITHOUT the hosts
+# self-labelling their personality on-mic. Theo (fable) is brighter/faster;
+# Vera (alloy) is drier/measured. If the deployed model ignores ``instructions``
+# the synthesis still succeeds (the request falls back without them), so the
+# contrast also lives in the dialogue's word choice and pacing.
+HOST_A_STYLE = (
+    "Speak with bright, high energy and genuine excitement, like an upbeat host "
+    "who loves this topic. Slightly faster pace, warm and animated, but natural — "
+    "never shouting or cartoonish."
+)
+HOST_B_STYLE = (
+    "Speak in a calm, dry, measured tone, like a seasoned analyst. Slower, even "
+    "pacing with understated delivery and subtle wit; thoughtful rather than excitable."
+)
+
 
 def generate_artifacts(
     job_id: str,

@@ -46,9 +46,12 @@ from podcaster.episode import (  # noqa: E402
 )
 from podcaster.generation import (  # noqa: E402
     HOST_A_NAME,
+    HOST_A_STYLE,
     HOST_B_NAME,
+    HOST_B_STYLE,
     PODCAST_SPOKEN_SITE,
 )
+from podcaster.music import get_stingers  # noqa: E402
 from podcaster.storage import (  # noqa: E402
     StorageBackend,
     create_storage_backend,
@@ -296,6 +299,12 @@ def main() -> int:
     os.environ.setdefault("AZURE_OPENAI_TTS_VOICE_HOST_A", "fable")
     os.environ.setdefault("AZURE_OPENAI_TTS_VOICE_HOST_B", "alloy")
     os.environ.setdefault("AZURE_OPENAI_AUTH_MODE", "managed_identity")
+    # Per-voice TTS style instructions sharpen the enthusiasm contrast on newer
+    # speech models (operator feedback, v3). Theo (fable) brighter/faster; Vera
+    # (alloy) drier/measured. Synthesis falls back automatically if the deployed
+    # model ignores the ``instructions`` field, so this never breaks the run.
+    os.environ.setdefault("AZURE_OPENAI_TTS_STYLE_HOST_A", HOST_A_STYLE)
+    os.environ.setdefault("AZURE_OPENAI_TTS_STYLE_HOST_B", HOST_B_STYLE)
     # Script model: the prior default (gpt-4o-mini) produced flat punchlines, so
     # per operator feedback (#72) we move the authoring model up to the more
     # capable gpt-4o. The modest cost increase is accepted; this is recorded in
@@ -319,21 +328,28 @@ def main() -> int:
         print(f"ERROR: synthesis blocked: {decision['blocked_by']}", file=sys.stderr)
         return 3
 
+    # Verified, royalty-free (CC0) intro/outro music stingers wrapped around the
+    # speech. Integrity + license are checked against the audio asset registry.
+    intro_asset, outro_asset = get_stingers()
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    mp3_path = out_dir / f"claracle-{article.week}-v2.mp3"
-    script_path = out_dir / f"claracle-{article.week}-v2-script.txt"
-    manifest_path = out_dir / f"claracle-{article.week}-v2-review-manifest.json"
+    mp3_path = out_dir / f"claracle-{article.week}-v3.mp3"
+    script_path = out_dir / f"claracle-{article.week}-v3-script.txt"
+    manifest_path = out_dir / f"claracle-{article.week}-v3-review-manifest.json"
 
     script_path.write_text(script, encoding="utf-8")
 
     print(f"Synthesizing {len(segments)} segments via Azure OpenAI TTS (deployment={config.tts_deployment})...")
+    print(f"Wrapping speech with CC0 music stingers (intro={intro_asset.path.name}, outro={outro_asset.path.name})...")
     episode = synthesize_episode(
         script,
         config,
         decision,
         mp3_path,
         token_provider=az_cli_token_provider,
+        intro_music=intro_asset.path,
+        outro_music=outro_asset.path,
     )
 
     duration = episode.validation.metadata.duration_seconds if episode.validation.metadata else 0.0
@@ -344,22 +360,48 @@ def main() -> int:
     expires_at = expiry.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     manifest = {
-        "schema": "podcaster.operator-review-episode/v2",
+        "schema": "podcaster.operator-review-episode/v3",
         "purpose": "operator review artifact; NOT published; publication stays human-gated",
         "podcast": "Claracle",
         "podcast_url": "https://www.claracle.com",
         "podcast_spoken_site": PODCAST_SPOKEN_SITE,
-        "version": "v2",
+        "version": "v3",
+        "supersedes": ["#73 (v2 script format)"],
+        "folds_in": ["#74 (artifact upload + user-delegation SAS)"],
+        "operator_feedback_addressed": [
+            "hosts no longer self-label their personality (name + AI disclosure only)",
+            "varied transitions; removed repeated crutch phrases",
+            "stronger enthusiasm contrast (word choice + per-voice TTS style instructions)",
+            "added CC0 intro/outro music stingers",
+            "length kept ~5 minutes",
+        ],
         "week": article.week,
         "title": article.title,
         "source_article_url": article.url,
         "source_article_sha256": article.sha256,
         "injection_flags": list(article.injection_flags),
         "hosts": {
-            "host_a": {"name": HOST_A_NAME, "voice": "fable", "persona": "enthusiast"},
-            "host_b": {"name": HOST_B_NAME, "voice": "alloy", "persona": "veteran"},
+            "host_a": {"name": HOST_A_NAME, "voice": "fable", "persona": "enthusiast", "tts_style": HOST_A_STYLE},
+            "host_b": {"name": HOST_B_NAME, "voice": "alloy", "persona": "veteran", "tts_style": HOST_B_STYLE},
         },
         "voices": {"host_a": "fable", "host_b": "alloy"},
+        "music": {
+            "policy": "CC0 / royalty-free / public-domain only; recorded in assets/audio/asset-registry.json",
+            "intro": {
+                "file": intro_asset.path.name,
+                "license": intro_asset.license,
+                "attribution": intro_asset.attribution,
+                "sha256": intro_asset.sha256,
+                "duration_seconds": intro_asset.duration_seconds,
+            },
+            "outro": {
+                "file": outro_asset.path.name,
+                "license": outro_asset.license,
+                "attribution": outro_asset.attribution,
+                "sha256": outro_asset.sha256,
+                "duration_seconds": outro_asset.duration_seconds,
+            },
+        },
         "script_model": {
             "deployment": config.chat_deployment,
             "rationale": (

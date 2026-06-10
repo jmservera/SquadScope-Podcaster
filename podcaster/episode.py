@@ -178,23 +178,26 @@ def build_episode_script(article: Article) -> str:
         ),
         _host_b(
             f"Before {HOST_A_NAME} short-circuits — one honest, important heads-up first: "
-            f"{AI_VOICE_DISCLOSURE} I'm {HOST_B_NAME}, the resident skeptic. I've watched a lot of "
-            f"\"this changes everything\" come and mostly go, so my job is to keep us honest. Every issue, "
-            f"the repo links, and the extended write-ups live at {PODCAST_SPOKEN_SITE}."
+            f"{AI_VOICE_DISCLOSURE} I'm {HOST_B_NAME}. Every issue, the repo links, and the "
+            f"extended write-ups live at {PODCAST_SPOKEN_SITE}."
         ),
         _host_a(
-            f"Skepticism noted and welcomed! Here's the frame I can't stop thinking about. {article.summary}"
+            f"Glad to have you with us! Here's the frame I can't stop thinking about. {article.summary}"
         ),
         _host_b(
-            f"Right — so the throughline this week is signal versus noise, and our whole job is to help "
-            f"you tell them apart. Let's get into it, and {HOST_A_NAME}, try to breathe between sentences."
+            f"So the throughline this week is signal versus noise, and our whole job is to help "
+            f"you tell them apart. Let's get into it — and {HOST_A_NAME}, try to breathe between sentences."
         ),
     ]
 
     # Segments: Theo (enthusiast) opens each story and hypes it; Vera (veteran)
     # tempers or validates the talking points. Tension is set up and paid off
-    # turn by turn, with a callback woven into the final segment.
+    # turn by turn, with a callback woven into the final segment. Lead-ins are
+    # drawn sequentially (never cycled) so no stock phrase repeats across the
+    # episode (operator feedback, v3).
     last_index = len(article.beats) - 1
+    enthusiast_turns = iter(_ENTHUSIAST_TURNS)
+    veteran_turns = iter(_VETERAN_TURNS)
     for index, beat in enumerate(article.beats):
         body.append("")
         opener = _ENTHUSIAST_HOOKS[index % len(_ENTHUSIAST_HOOKS)]
@@ -202,10 +205,10 @@ def build_episode_script(article: Article) -> str:
         for point_index, point in enumerate(beat.points):
             if point_index % 2 == 0:
                 reactor = _host_b
-                lead_in = _VETERAN_TURNS[(index + point_index) % len(_VETERAN_TURNS)]
+                lead_in = next(veteran_turns, _VETERAN_FALLBACK)
             else:
                 reactor = _host_a
-                lead_in = _ENTHUSIAST_TURNS[(index + point_index) % len(_ENTHUSIAST_TURNS)]
+                lead_in = next(enthusiast_turns, _ENTHUSIAST_FALLBACK)
             body.append(reactor(f"{lead_in} {point}"))
         if index == last_index:
             body.append(
@@ -237,30 +240,45 @@ def build_episode_script(article: Article) -> str:
     return "\n".join(header + body)
 
 
-# Enthusiast (Theo) hooks that open each story segment.
+# Enthusiast (Theo) hooks that open each story segment. Every entry is phrased
+# differently — no shared signature opener — so segment transitions never repeat
+# (operator feedback, v3). Sized to cover a typical multi-beat episode.
 _ENTHUSIAST_HOOKS = (
-    "Okay, the thing I cannot stop grinning about is this:",
-    "Buckle up, because this next one is so cool —",
-    "And here's where it gets genuinely exciting:",
-    "Now this one I have been waiting all week to talk about —",
-    "Alright, save the best tension for here:",
+    "Okay, first up, and I am genuinely fired up about this one:",
+    "Next, here's a project that made me put my coffee down:",
+    "Moving on — and this is where my week got really fun:",
+    "Now switch gears with me, because this next one is wild:",
+    "Alright, I saved a personal favorite for right about here:",
+    "And then there's this, which I keep re-reading just to be sure it's real:",
+    "One more that deserves the spotlight before we wrap:",
 )
 
-# Enthusiast (Theo) reaction lead-ins that hype a talking point.
+# Enthusiast (Theo) reaction lead-ins that hype a talking point. Each is distinct
+# and drawn sequentially; banned crutch phrases (e.g. "goosebumps", "the detail
+# I love") are deliberately absent.
 _ENTHUSIAST_TURNS = (
-    "Yes! And this is the detail I absolutely love:",
-    "See, this is the part that gives me goosebumps:",
-    "Totally — and building on that, here's the fun bit:",
-    "Right?! And don't sleep on this:",
+    "Oh, and this part is what really sells it for me —",
+    "Right, and watch how neatly this fits together —",
+    "Here's the bit that made me grin —",
+    "And honestly, this next piece is the clever twist —",
+    "See, this is where it goes from neat to genuinely useful —",
+    "And don't gloss over this, because it's the fun part —",
+    "What gets me is how practical this turns out to be —",
 )
+_ENTHUSIAST_FALLBACK = "And building on that —"
 
 # Veteran (Vera) reaction lead-ins that temper, validate, or add hard-won context.
+# Measured, dry, and each phrased differently.
 _VETERAN_TURNS = (
-    "Hold on, let's be precise about what's actually new here:",
-    "I'll be honest, I expected to roll my eyes — and then:",
-    "Now this one earns the hype, and here's what matters:",
-    "Sure, but here's the detail that decides whether this lasts:",
+    "Let me be precise about what's actually new here, though —",
+    "I came in ready to be unimpressed, and instead —",
+    "Credit where it's due; the part that holds up is —",
+    "Here's the caveat that decides whether this lasts —",
+    "Strip away the framing and what remains is —",
+    "I've seen this pattern before, so the real test is —",
+    "Fair, but the detail that actually matters is —",
 )
+_VETERAN_FALLBACK = "And the practical reality is —"
 
 
 def parse_script_segments(script: str) -> list[tuple[str, str]]:
@@ -335,13 +353,16 @@ def synthesize_episode(
     transport: Transport | None = None,
     runner=None,
     manual_duration_override: bool = True,
+    intro_music: Path | None = None,
+    outro_music: Path | None = None,
 ) -> EpisodeAudio:
     """Synthesize the two-voice script and stitch it into one validated MP3.
 
     Parses spoken segments, builds the fable/alloy voice plan, synthesizes each
     turn through the gated :func:`podcaster.tts.synthesize_two_voice` (fails
     closed when ``decision['allowed']`` is false), stitches and normalizes them
-    into ``output_path``, then runs the ffmpeg/ffprobe validation gate.
+    into ``output_path`` — optionally wrapping the speech with intro/outro music
+    stingers — then runs the ffmpeg/ffprobe validation gate.
     """
 
     segments = parse_script_segments(script)
@@ -358,7 +379,13 @@ def synthesize_episode(
     )
 
     output_path = Path(output_path)
-    stitch_segments(audio_segments, output_path, runner=runner)
+    stitch_segments(
+        audio_segments,
+        output_path,
+        runner=runner,
+        intro_music=intro_music,
+        outro_music=outro_music,
+    )
     data = output_path.read_bytes()
     digest = checksum(data)
     metadata = probe_audio(output_path, digest, runner=runner)

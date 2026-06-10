@@ -78,3 +78,41 @@ def test_parse_loudnorm_json_extracts_measured_values():
         "input_thresh": "-28.0",
         "target_offset": "-0.3",
     }
+
+
+def test_stitch_segments_wraps_speech_with_intro_and_outro_music(tmp_path):
+    intro = tmp_path / "intro.mp3"
+    outro = tmp_path / "outro.mp3"
+    intro.write_bytes(b"INTRO-STINGER")
+    outro.write_bytes(b"OUTRO-STINGER")
+    output_path = tmp_path / "episode.mp3"
+    measure_json = (
+        '{ "input_i" : "-17.4", "input_tp" : "-1.0", "input_lra" : "4.3", '
+        '"input_thresh" : "-27.6", "target_offset" : "0.2" }'
+    )
+
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if "print_format=json" in " ".join(command):
+            return _completed(stderr=measure_json)
+        if command[-1] == str(output_path):
+            output_path.write_bytes(b"ID3-final-mp3")
+        return _completed()
+
+    result = audio.stitch_segments(
+        [b"seg-a", b"seg-b"],
+        output_path,
+        runner=runner,
+        gap_seconds=0.3,
+        intro_music=intro,
+        outro_music=outro,
+    )
+
+    assert result == output_path
+    concat_cmd = " ".join(calls[0])
+    # intro + 2 speech + outro = 4 real inputs.
+    assert concat_cmd.count("-i ") == 4
+    # 4 inputs with 3 gaps between them concatenate to 7 parts.
+    assert "concat=n=7:v=0:a=1[out]" in concat_cmd

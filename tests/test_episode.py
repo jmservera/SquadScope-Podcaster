@@ -214,3 +214,41 @@ def test_synthesize_episode_fails_closed_when_decision_blocked(tmp_path):
             token_provider=lambda scope: pytest.fail("must not request token when blocked"),
             transport=lambda request: pytest.fail("must not synthesize when blocked"),
         )
+
+
+def test_hosts_do_not_self_label_their_personality():
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article).lower()
+    # Operator feedback v3: personality must come from the dialogue, not be announced.
+    for banned in (
+        "resident skeptic",
+        "keep us honest",
+        "my job is to keep",
+        "i'm the skeptic",
+        "i am the skeptic",
+        "i'm the enthusiast",
+    ):
+        assert banned not in script, f"host self-labels personality: {banned!r}"
+
+
+def test_no_repeated_crutch_phrases_and_unique_segment_transitions():
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article)
+    lowered = script.lower()
+    for crutch in ("goosebumps", "the thing i keep coming back to", "the detail i love"):
+        assert crutch not in lowered, f"repeated crutch phrase present: {crutch!r}"
+
+    # Every segment-opening transition (the enthusiast hook lines) must be distinct.
+    segments = episode.parse_script_segments(script)
+    openers = [
+        text
+        for _, text in segments
+        if any(text.startswith(hook.split(" ")[0]) for hook in episode._ENTHUSIAST_HOOKS)
+    ]
+    hook_lines = [
+        text
+        for _, text in segments
+        for hook in episode._ENTHUSIAST_HOOKS
+        if text.startswith(hook)
+    ]
+    assert len(hook_lines) == len(set(hook_lines)), "segment opener transitions repeat"
