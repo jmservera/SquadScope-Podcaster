@@ -282,6 +282,15 @@ def main() -> int:
         default=7,
         help="Lifetime (days) of the minted user-delegation SAS download URLs (default: 7).",
     )
+    parser.add_argument(
+        "--show-download-urls",
+        action="store_true",
+        help=(
+            "Print the live SAS download URLs to stdout. Off by default so the "
+            "secret URLs never land in captured logs (e.g. CI); when off, read "
+            "them from the gitignored local review manifest instead."
+        ),
+    )
     args = parser.parse_args()
 
     # Resolve TTS config from environment; allow this tool to default the
@@ -405,9 +414,14 @@ def main() -> int:
     print(f"  Est. cost:  ${cost_usd} ({billable_characters} chars)")
     if download_urls:
         print("-" * 72)
-        print(f"  Download SAS URLs (expire {expires_at}; SECRET — do not commit/forward):")
-        for key, url in download_urls.items():
-            print(f"    {key}: {url}")
+        if args.show_download_urls:
+            print(f"  Download SAS URLs (expire {expires_at}; SECRET — do not commit/forward):")
+            for key in download_urls:
+                print(f"    {key}: {download_urls[key]}")
+        else:
+            print(f"  Download SAS URLs minted ({len(download_urls)}; expire {expires_at}; SECRET).")
+            print(f"  Read them from the gitignored local manifest: {manifest_path.resolve()}")
+            print("  Re-run with --show-download-urls to print them (avoid in CI/captured logs).")
     elif not args.no_upload and upload_error is None:
         print("  Upload: completed (no signed SAS URL returned by storage backend)")
     print("=" * 72)
