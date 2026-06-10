@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from email.utils import formatdate
 from pathlib import Path
 from typing import Callable, Protocol
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
+
+# Method labels recorded in manifests so reviewers can tell signed,
+# time-limited download URLs apart from non-signed development locators.
+DOWNLOAD_METHOD_USER_DELEGATION_SAS = "azure_ad_user_delegation_sas"
+DOWNLOAD_METHOD_LOCAL_LOCATOR = "local_filesystem_locator"
 
 
 @dataclass(frozen=True)
@@ -19,6 +26,26 @@ class StoredArtifact:
     content_type: str
 
 
+@dataclass(frozen=True)
+class SignedDownloadUrl:
+    """A time-limited download URL for one stored artifact.
+
+    ``signed`` is true only when ``url`` carries a real, time-limited
+    credential (an Azure AD *user-delegation* SAS — never an account key). For
+    the local development backend the URL is an unsigned filesystem locator and
+    ``signed`` is false. ``url`` is secret when ``signed`` is true and must
+    never be logged or committed.
+    """
+
+    path: str
+    url: str
+    expires_at: str
+    method: str
+    signed: bool
+    https_only: bool
+    account_key_used: bool = False
+
+
 class StorageBackend(Protocol):
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         ...
@@ -27,6 +54,9 @@ class StorageBackend(Protocol):
         ...
 
     def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> StoredArtifact:
+        ...
+
+    def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
         ...
 
 
@@ -65,12 +95,34 @@ class LocalStorageBackend:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
         return StoredArtifact(path=safe_path, url=f"{self.base_url}/{safe_path}", size_bytes=len(updated), content_type=content_type)
 
+    def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
+        # Local development has no SAS service; the locator is unsigned and
+        # only meaningful to an operator with filesystem access.
+        safe_path = _safe_blob_path(path)
+        return SignedDownloadUrl(
+            path=safe_path,
+            url=f"{self.base_url}/{safe_path}",
+            expires_at=_format_sas_expiry(expiry),
+            method=DOWNLOAD_METHOD_LOCAL_LOCATOR,
+            signed=False,
+            https_only=self.base_url.lower().startswith("https://"),
+            account_key_used=False,
+        )
+
 
 class AzureBlobStorageBackend:
-    def __init__(self, account_url: str, container_name: str) -> None:
+    def __init__(
+        self,
+        account_url: str,
+        container_name: str,
+        *,
+        sas_command_runner: Callable[[list[str]], str] | None = None,
+    ) -> None:
         self._credential = ManagedIdentityTokenCredential()
         self._container_name = container_name
         self._account_url = normalize_artifact_base_url(account_url)
+        self._account_name = _account_name_from_url(self._account_url)
+        self._sas_command_runner = sas_command_runner or _az_sas_command_runner
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
@@ -172,6 +224,53 @@ class AzureBlobStorageBackend:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
             raise RuntimeError(f"blob read failed for {safe_path}: HTTP {exc.code} {detail}") from exc
 
+    def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
+        """Mint a read-only, time-limited *user-delegation* SAS download URL.
+
+        Uses the Azure CLI in managed-identity mode (``--auth-mode login
+        --as-user``) so the SAS is signed by an Azure AD user-delegation key —
+        **never** a storage account key. The returned ``url`` is a short-lived
+        secret: do not log or persist it in committed files.
+        """
+
+        safe_path = _safe_blob_path(path)
+        expiry_str = _format_sas_expiry(expiry)
+        command = [
+            "az",
+            "storage",
+            "blob",
+            "generate-sas",
+            "--account-name",
+            self._account_name,
+            "--auth-mode",
+            "login",
+            "--as-user",
+            "-c",
+            self._container_name,
+            "-n",
+            safe_path,
+            "--permissions",
+            "r",
+            "--expiry",
+            expiry_str,
+            "--https-only",
+            "--full-uri",
+            "-o",
+            "tsv",
+        ]
+        url = self._sas_command_runner(command).strip()
+        if not url or not url.lower().startswith("https://"):
+            raise RuntimeError(f"user-delegation SAS generation returned no https URL for {safe_path}")
+        return SignedDownloadUrl(
+            path=safe_path,
+            url=url,
+            expires_at=expiry_str,
+            method=DOWNLOAD_METHOD_USER_DELEGATION_SAS,
+            signed=True,
+            https_only=True,
+            account_key_used=False,
+        )
+
 
 def create_storage_backend() -> StorageBackend:
     account_url = os.environ.get("PODCASTER_STORAGE_ACCOUNT_URL")
@@ -250,3 +349,28 @@ def normalize_artifact_base_url(base_url: str) -> str:
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("artifact base URL must not contain credentials, query strings, or fragments")
     return base_url.rstrip("/")
+
+
+def _account_name_from_url(account_url: str) -> str:
+    host = urlparse(account_url).netloc
+    label = host.split(":", 1)[0].split(".", 1)[0]
+    if not label:
+        raise ValueError("could not derive storage account name from account URL")
+    return label
+
+
+def _format_sas_expiry(expiry: datetime) -> str:
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    return expiry.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _az_sas_command_runner(command: list[str]) -> str:
+    # The SAS value is returned on stdout and is a short-lived secret; it is
+    # never logged here. stderr is surfaced only on failure for diagnostics.
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()[:500]
+        raise RuntimeError(f"az SAS generation failed (exit {result.returncode}): {detail}")
+    return result.stdout
+
