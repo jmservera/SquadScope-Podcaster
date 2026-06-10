@@ -38,3 +38,11 @@ Lifecycle, review-gate, publishing readiness, and observability metadata live in
 ## Failure handling
 
 Validation errors return HTTP 400 with structured error messages. Authentication failures return HTTP 401. Generation failures return HTTP 500 with a job response with `status` set to `failed` and populated `errors`.
+
+## Production audio (ffmpeg) hosting
+
+The deployed Linux Consumption Function App cannot run `ffmpeg`/`ffprobe`, so the audio stitch + validation gate cannot execute in-process; `/api/generate` currently returns a non-publishable placeholder while real synthesis runs on hosts that have `ffmpeg`. The decision for the production audio path (split: thin Functions front door + a queue-triggered Azure Container Apps Job that owns `ffmpeg`) is recorded in [ADR 0001](adr/0001-production-audio-ffmpeg-hosting.md). Provisioning is gated on operator approval of Azure spend (#67).
+
+## Decision records
+
+- [ADR 0001 — Production hosting for audio synthesis + ffmpeg](adr/0001-production-audio-ffmpeg-hosting.md)
