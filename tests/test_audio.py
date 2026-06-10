@@ -149,6 +149,27 @@ def test_probe_audio_parses_ffprobe_and_loudness_output(tmp_path: Path) -> None:
     assert metadata.byte_length == len(b"fake-mp3")
 
 
+def test_probe_audio_falls_back_to_format_bitrate_when_stream_bitrate_missing(
+    tmp_path: Path,
+) -> None:
+    audio_file = tmp_path / "episode.mp3"
+    audio_file.write_bytes(b"fake-mp3")
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                '{"streams":[{"codec_name":"mp3","sample_rate":"44100","channels":1,"bit_rate":"N/A"}],"format":{"duration":"120.5","bit_rate":"96000"}}',
+                "",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "    I:         -16.1 LUFS\n")
+
+    metadata = probe_audio(audio_file, sha256="f" * 64, runner=runner)
+
+    assert metadata.bitrate_bps == 96000
+
+
 def test_missing_invalid_ffprobe_output_fails_closed(tmp_path: Path) -> None:
     audio_file = tmp_path / "episode.mp3"
     audio_file.write_bytes(b"fake-mp3")

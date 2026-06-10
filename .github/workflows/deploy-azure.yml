@@ -278,6 +278,16 @@ jobs:
           PY
 
       - name: Deploy package from private blob
+        env:
+          # Operator-selected production TTS config (#60). These point the deployed
+          # Function App at the live Azure OpenAI TTS account using managed identity
+          # (the account has local-auth disabled, so no key is needed or stored).
+          # Set as repo variables to override; defaults match the operator decision.
+          OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          OPENAI_TTS_DEPLOYMENT: ${{ vars.AZURE_OPENAI_TTS_DEPLOYMENT }}
+          OPENAI_TTS_VOICE_HOST_A: ${{ vars.AZURE_OPENAI_TTS_VOICE_HOST_A }}
+          OPENAI_TTS_VOICE_HOST_B: ${{ vars.AZURE_OPENAI_TTS_VOICE_HOST_B }}
+          OPENAI_AUTH_MODE: ${{ vars.AZURE_OPENAI_AUTH_MODE }}
         run: |
           set -euo pipefail
           set +x
@@ -317,6 +327,11 @@ jobs:
               "WEBSITE_RUN_FROM_PACKAGE=$package_url" \
               "WEBSITE_USE_MANAGED_IDENTITY=true" \
               "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned" \
+              "AZURE_OPENAI_ENDPOINT=${OPENAI_ENDPOINT:-https://podcaster-openai-bakeoff-20260609.openai.azure.com/}" \
+              "AZURE_OPENAI_TTS_DEPLOYMENT=${OPENAI_TTS_DEPLOYMENT:-tts-bakeoff}" \
+              "AZURE_OPENAI_TTS_VOICE_HOST_A=${OPENAI_TTS_VOICE_HOST_A:-fable}" \
+              "AZURE_OPENAI_TTS_VOICE_HOST_B=${OPENAI_TTS_VOICE_HOST_B:-alloy}" \
+              "AZURE_OPENAI_AUTH_MODE=${OPENAI_AUTH_MODE:-managed_identity}" \
             --output none
 
           az functionapp restart \
