@@ -25,6 +25,16 @@ SPEAKER_LABELS = {
 _SPEAKER_LINE_RE = re.compile(r"^(?P<label>[A-Z]{3,12}):\s?(?P<text>.*)$")
 _PATH_TOKEN_RE = re.compile(r"[^a-z0-9]+")
 
+# Operator-selected production text-to-speech config (#60). OpenAI TTS with
+# ``fable`` for host A (narrator) and ``alloy`` for host B (guest). This is the
+# single source of truth for the production voices the generation path consumes;
+# it supersedes the OpenAI-disabled bakeoff gate for *production* use. The
+# private bakeoff comparison candidate (see ``default_candidates``) stays
+# disabled to avoid unreviewed private spend during the #4/#41 spike.
+PRODUCTION_PROVIDER = "openai-tts"
+PRODUCTION_NARRATOR_VOICE = "fable"
+PRODUCTION_GUEST_VOICE = "alloy"
+
 
 @dataclass(frozen=True)
 class Segment:
@@ -43,6 +53,7 @@ class BakeoffCandidate:
     locale: str = "en-US"
     guest_voice: str | None = None
     enabled: bool = True
+    is_production: bool = False
     notes: str = ""
 
     def voice_for(self, role: str) -> str:
@@ -143,9 +154,33 @@ def default_candidates() -> list[BakeoffCandidate]:
             narrator_voice="alloy",
             guest_voice="verse",
             enabled=False,
-            notes="Conditional: enable only after privacy/retention review for #4.",
+            notes="Private bakeoff comparison sample only; stays disabled to avoid "
+            "unreviewed spend. The authoritative production voices are fable+alloy "
+            "via production_candidate() (operator decision #60).",
         ),
     ]
+
+
+def production_candidate() -> BakeoffCandidate:
+    """Operator-selected production TTS config for #60.
+
+    OpenAI TTS with ``fable`` for host A (narrator) and ``alloy`` for host B
+    (guest). This is the single source of truth for the production voices; the
+    generation path reads these constants so the manifest, cost ledger, and any
+    future synthesis stay consistent. It is enabled and marked ``is_production``
+    so it is never mistaken for a private bakeoff comparison sample.
+    """
+
+    return BakeoffCandidate(
+        provider=PRODUCTION_PROVIDER,
+        narrator_voice=PRODUCTION_NARRATOR_VOICE,
+        guest_voice=PRODUCTION_GUEST_VOICE,
+        enabled=True,
+        is_production=True,
+        notes="Operator-selected production config (#60): Claracle two-voice "
+        "conversation; AI-voice disclosure required in first 60s and show notes; "
+        "publication stays human-gated.",
+    )
 
 
 def _path_token(value: str) -> str:
