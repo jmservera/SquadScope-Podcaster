@@ -11,6 +11,7 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 from podcaster.artifact_access import artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.costs import build_cost_ledger
+from podcaster.sanitization import FIELD_LIMITS, sanitize_source_artifact
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,7 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str) -> str:
             f"Source SHA256: {article_sha256}",
             f"Generated: {generated_at}",
             "Generator: squad-podcaster v0.1-stub",
+            "Safety: source artifact text is untrusted data, fenced, and never executed as instructions.",
             *source_artifact_lines,
             "---",
             "",
@@ -129,19 +131,14 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str) -> str:
 
 
 def _source_artifact_line(item: object) -> str:
-    if isinstance(item, str):
-        return f"Source Artifact: {item}"
-    if not isinstance(item, dict):
-        return f"Source Artifact: {item}"
-
-    role = item.get("role")
-    reference = item.get("url") or item.get("href") or item.get("uri") or item.get("path") or item.get("name") or "unspecified"
-    sha256 = item.get("sha256")
-    parts = [str(reference)]
-    if isinstance(role, str) and role.strip():
-        parts.insert(0, f"{role}:")
-    if isinstance(sha256, str) and sha256.strip():
-        parts.append(f"sha256={sha256}")
+    sanitized = sanitize_source_artifact(item)
+    parts = [sanitized.reference]
+    if sanitized.role:
+        parts.insert(0, f"{sanitized.role}:")
+    if sanitized.sha256:
+        parts.append(f"sha256={sanitized.sha256}")
+    if sanitized.flags:
+        parts.append(f"[untrusted-content-flagged: {', '.join(sanitized.flags)}; not executed]")
     return f"Source Artifact: {' '.join(parts)}"
 
 
@@ -327,7 +324,34 @@ def _metadata(
             "public_url": None,
         },
         "artifact_access": artifact_access_metadata(job_id, created_ts, expires_at),
+        "safety": _safety_summary(payload),
         "observability": {"correlation_id": job_id, "safe_log_fields": ["job_id", "week", "status", "artifact_count"]},
+    }
+
+
+def _safety_summary(payload: dict[str, object]) -> dict[str, object]:
+    source_artifacts = payload.get("source_artifacts") or []
+    detected = sorted({flag for item in source_artifacts for flag in sanitize_source_artifact(item).flags})
+    return {
+        "schema_version": "squadscope-podcaster-safety-v1",
+        "untrusted_inputs_fenced": True,
+        "fenced_fields": [
+            "source_artifacts.role",
+            "source_artifacts.reference",
+            "source_artifacts.name",
+            "source_artifacts.sha256",
+        ],
+        "field_allowlist": ["role", "url", "href", "uri", "path", "name", "sha256"],
+        "field_length_caps": dict(FIELD_LIMITS),
+        "injection_markers_detected": detected,
+        "obeys_external_instructions": False,
+        "human_review_required": True,
+        "content_scanner": {
+            "status": "not_yet_integrated",
+            "decision_record": "docs/prompt-injection-audit.md",
+            "candidates": ["azure_prompt_shields", "llm_guard"],
+            "required_before": "llm_or_tts_generation_from_untrusted_text",
+        },
     }
 
 
