@@ -145,6 +145,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: 'python'
         }
         {
+          name: 'AzureWebJobsFeatureFlags'
+          value: 'EnableWorkerIndexing'
+        }
+        {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
           value: appInsights.properties.ConnectionString
         }
