@@ -160,8 +160,8 @@ research)" section below for citations and as-of dates).
 |----------|---------|------|---------|--------|-----------|--------|-------|
 | Azure AI Speech Standard/Neural voices via Speech SDK | TBD (human listening) | $15 / 1M chars (Neural); NeuralHD tier higher, exact price unverified | High — real-time <300 ms, 30+ regions, 200 TPS (to 1,000), Python SDK + REST | Commercial podcast OK, customer-owned output, no attribution; Microsoft DPA, per-region residency | Standard MP3/WAV; full SSML multi-voice (up to 50 `<voice>`); easy re-synthesis | Researched — audio pending | Preferred Azure-first candidate for two or more voices and per-segment SSML control |
 | Azure AI Speech batch synthesis | TBD (human listening) | Same per-char as real-time; not on F0 free tier | High for long-form async — 10–120 s job latency, no per-request 10-min cap, 25+ regions, no concurrent-job limit | Same as Azure Speech (Microsoft DPA, customer-owned); results retained 7 days default (max 31 via `timeToLiveInHours`) | Long-form MP3/WAV/OPUS/AAC/FLAC; full SSML multi-voice; queue/poll model | Researched — audio pending | Evaluate for long scripts and queue-style processing; not enough alone if MVP needs live multi-voice control |
-| Azure AI Speech HD / Azure OpenAI / Foundry voices | TBD (human listening) | NeuralHD tier; exact price unverified (JS-rendered pricing page) | HD: real-time <300 ms; OpenAI-voice: >500 ms. Limited regions (HD ~9; OpenAI-voice ~2–5) | Same Azure terms (DPA, customer-owned, no training); HD custom endpoint needs consent | Partial SSML only — `<phoneme>` unsupported on HD and OpenAI voices; `<prosody>`/`<emphasis>` limited | Conditional — researched | Evaluate only if available in target region and terms/retention reviewed; DragonHDOmni multi-talker is preview |
-| OpenAI `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts` (direct) | TBD (human listening) | tts-1 ~$15, tts-1-hd ~$30 / 1M chars (unverified — pricing page 403); gpt-4o-mini-tts token-based | Streaming, Python SDK + REST; **no Azure region routing** (OpenAI infra); SLA/rate limits unverified | Commercial OK **but mandatory AI-generated disclosure to listeners**; API data not trained on (since 2023-03-01); abuse logs ≤30 days, ZDR eligible | **No SSML, no multi-voice per call** — must stitch per-speaker calls client-side; `gpt-4o-mini-tts` `instructions` is partial style substitute | Conditional — researched | Evaluate only if legal/privacy terms, listener-disclosure, and retention controls fit the MVP |
+| Azure AI Speech HD / Azure OpenAI / Foundry voices | TBD (human listening) | NeuralHD ≈ $22 / 1M chars (secondary-source corroborated 2026-06-10; reported reduced from $30) | HD: real-time <300 ms; OpenAI-voice: >500 ms. Limited regions (HD ~9; OpenAI-voice ~2–5) | Same Azure terms (DPA, customer-owned, no training); HD custom endpoint needs consent | Partial SSML only — `<phoneme>` unsupported on HD and OpenAI voices; `<prosody>`/`<emphasis>` limited | Conditional — researched | Evaluate only if available in target region and terms/retention reviewed; DragonHDOmni multi-talker is preview |
+| OpenAI `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts` (direct) | TBD (human listening) | tts-1 ≈ $15, tts-1-hd ≈ $30 / 1M chars (secondary-source corroborated 2026-06-10; official page 403); gpt-4o-mini-tts token-based ≈ $0.015/min | Streaming, Python SDK + REST; **no Azure region routing** (OpenAI infra); SLA/rate limits unverified | Commercial OK **but mandatory AI-generated disclosure to listeners**; API data not trained on (since 2023-03-01); abuse logs ≤30 days, ZDR eligible | **No SSML, no multi-voice per call** — must stitch per-speaker calls client-side; `gpt-4o-mini-tts` `instructions` is partial style substitute | Conditional — researched | Evaluate only if legal/privacy terms, listener-disclosure, and retention controls fit the MVP |
 
 ---
 
@@ -180,11 +180,12 @@ scored here.
   `learn.microsoft.com/en-us/azure/ai-services/speech-service/text-to-speech` ("Billable characters").
   Free F0 tier: 0.5M chars/month.
 - **Azure Speech NeuralHD / HD voices:** separate higher tier exists (pricing-page footnote 4,
-  `azure.microsoft.com/en-us/pricing/details/speech/`); **exact price unverified** — pricing page is
-  JavaScript-rendered and not machine-fetchable today.
-- **OpenAI direct:** `tts-1` ~$15/1M, `tts-1-hd` ~$30/1M, `gpt-4o-mini-tts` token-based —
-  **all unverified** (`openai.com/api/pricing` returned HTTP 403). Verify at
-  `platform.openai.com/docs/pricing` before any decision.
+  `azure.microsoft.com/en-us/pricing/details/speech/`); **≈ $22 / 1M chars** per secondary-source
+  corroboration (2026-06-10; reported reduced from $30) — official JS-rendered pricing page still
+  not machine-fetchable, confirm before the decision gate.
+- **OpenAI direct:** `tts-1` ≈ $15/1M, `tts-1-hd` ≈ $30/1M, `gpt-4o-mini-tts` token-based
+  (≈ $0.015/min audio) — **secondary-source corroborated 2026-06-10** (`openai.com/api/pricing`
+  still HTTP 403). Confirm at `platform.openai.com/docs/pricing` before any decision.
 
 ### Data Retention / Training
 - **Azure Speech (prebuilt voices):** input text and output audio are **not stored** in Microsoft
@@ -232,11 +233,43 @@ scored here.
   per-segment calls stitched client-side; `gpt-4o-mini-tts` `instructions` is a partial style substitute.
 
 ### Unverified items to confirm before the decision gate
-- Azure NeuralHD / HD exact per-character price (JS-rendered pricing page).
-- OpenAI TTS pricing, per-request character limit, rate limits, SLA, and explicit output-ownership terms
-  (`openai.com` pages returned HTTP 403).
-- Azure AI Services exact SLA % (SLA PDF not machine-readable today; 99.9% is the commonly published figure).
-- Full Azure HD-voice supported/unsupported SSML element list.
+- ~~Azure NeuralHD / HD exact per-character price (JS-rendered pricing page).~~ — see 2026-06-10 verification update below.
+- ~~OpenAI TTS pricing (`openai.com` pages returned HTTP 403).~~ — see 2026-06-10 verification update below. OpenAI per-request character limit, rate limits, SLA, and explicit output-ownership terms **remain unverified** (official policy/limit pages still 403).
+- ~~Azure AI Services exact SLA %.~~ — see 2026-06-10 verification update below (99.9% confirmed via secondary sources; confirm the signed SLA PDF before the decision gate).
+- Full Azure HD-voice supported/unsupported SSML element list **remains unverified**.
+
+### 2026-06-10 verification update (secondary-source corroboration)
+
+The official OpenAI pricing/policy pages (HTTP 403) and the Azure Speech pricing page
+(JavaScript-rendered) are still not machine-fetchable. The figures below are **corroborated by
+independent secondary sources** and should be re-confirmed against the official pages by a human
+before the decision gate; they are **not** a substitute for the primary-source verification the gate
+requires.
+
+- **OpenAI TTS pricing** (as-of 2026-06-10):
+  - `tts-1` ≈ **$15 / 1M characters**; `tts-1-hd` ≈ **$30 / 1M characters**.
+  - `gpt-4o-mini-tts` is **token-based** (~$0.60 / 1M text-input tokens + ~$12 / 1M audio-output
+    tokens), ≈ **$0.015 / minute** of generated audio in typical use.
+  - Sources: `costgoat.com/pricing/openai-tts`, `cloudprice.net/models/openai-gpt-4o-mini-tts`,
+    `s-anand.net/blog/openai-tts-cost/`. Confirms the previously estimated tts-1 / tts-1-hd figures;
+    official `platform.openai.com/docs/pricing` confirmation still required.
+- **Azure Speech Neural HD price** (as-of 2026-06-10): ≈ **$22 / 1M characters** (reported reduced
+  from $30 in March 2026); Standard Neural remains $15 / 1M; Custom Neural ≈ $24 / 1M; F0 free tier
+  0.5M chars/month. Sources: `azurefeeds.com/2026/03/31/azure-speech-neural-hd-text-to-speech-recent-voice-updates/`,
+  `speechactors.com/article/microsoft-azure-pricing-and-plans`. Official JS-rendered
+  `azure.microsoft.com/en-us/pricing/details/speech/` confirmation still required.
+- **Azure AI Services SLA** (as-of 2026-06-10): **99.9%** monthly uptime for paid tiers (free F0
+  tier excluded), matching the previously assumed figure. Sources: `azurecharts.com/sla`,
+  `opsiocloud.com/knowledge-base/what-is-azure-sla/`. Confirm against the signed Microsoft SLA PDF
+  before the decision gate.
+
+**Decision-input impact:** With these corroborated numbers, **Azure Speech Standard Neural ($15/1M,
+99.9% SLA, full SSML multi-voice, customer-owned output, no listener-disclosure requirement)** remains
+the strongest non-audio candidate for the MVP primary, with **Azure Speech batch synthesis** as the
+long-form/fallback path. OpenAI direct stays a conditional candidate only (no SSML/multi-voice per
+call, mandatory AI-voice listener disclosure, unverified limits). **No provider is selected here** —
+the human listening naturalness/pronunciation/pacing pass and Hermes' compliance sign-off are still
+required before recording the choice in `docs/SECURITY.md`.
 
 > **No provider is selected by this research.** Selection still requires the human listening
 > naturalness/pronunciation/pacing scores (≥4.0 threshold), Hermes' security/compliance sign-off, and
