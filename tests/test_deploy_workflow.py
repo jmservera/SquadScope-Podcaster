@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
+HOST_JSON = ROOT / "host.json"
 
 
 def _workflow_text() -> str:
@@ -88,6 +90,48 @@ def test_deploy_workflow_excludes_local_and_secret_files_from_package() -> None:
         'path.suffix == ".pyc"',
     ):
         assert excluded in workflow
+
+
+def test_host_json_declares_extension_bundle_for_python_v2_indexing() -> None:
+    # Regression guard for the /api/generate HTTP 404 (PR #54, #51): the Python
+    # v2 (decorator) model only registers @app.route triggers when host.json
+    # declares the extension bundle. Without it the host serves no routes.
+    host = json.loads(HOST_JSON.read_text(encoding="utf-8"))
+
+    bundle = host.get("extensionBundle")
+    assert isinstance(bundle, dict), "host.json must declare an extensionBundle for Python v2 worker indexing"
+    assert bundle.get("id") == "Microsoft.Azure.Functions.ExtensionBundle"
+    assert bundle.get("version"), "host.json extensionBundle must pin a version range"
+
+
+def test_bicep_enables_python_v2_worker_indexing() -> None:
+    # Regression guard for the /api/generate HTTP 404 (PR #54, #51): the runtime
+    # only indexes @app.route-decorated functions when these app settings are
+    # present. Removing either one reintroduces the 404 on deploy.
+    bicep = BICEP.read_text(encoding="utf-8")
+
+    assert re.search(r"name:\s*'FUNCTIONS_WORKER_RUNTIME'\s*\n\s*value:\s*'python'", bicep), (
+        "infra/main.bicep must set FUNCTIONS_WORKER_RUNTIME=python"
+    )
+    assert re.search(
+        r"name:\s*'AzureWebJobsFeatureFlags'\s*\n\s*value:\s*'EnableWorkerIndexing'", bicep
+    ), "infra/main.bicep must set AzureWebJobsFeatureFlags=EnableWorkerIndexing for Python v2 indexing"
+
+
+def test_deploy_workflow_gates_smoke_on_function_indexing() -> None:
+    # Regression guard for the /api/generate HTTP 404 (PR #54, #51): the deploy
+    # must wait until the host registers the 'generate' trigger before the strict
+    # smoke, so an unindexed/unmounted package fails with a precise error instead
+    # of a misleading response-shape failure.
+    workflow = _workflow_text()
+
+    wait_index = workflow.find("Wait for Function App to index functions")
+    smoke_index = workflow.find("Smoke deployed generate endpoint")
+    assert wait_index != -1, "deploy-azure.yml must wait for the function host to index before smoke"
+    assert smoke_index != -1, "deploy-azure.yml must keep the smoke step"
+    assert wait_index < smoke_index, "indexing wait must run before the strict smoke step"
+    assert "az functionapp function list" in workflow
+    assert "AzureWebJobsFeatureFlags" in workflow
 
 
 def test_bicep_assigns_deploy_identity_storage_data_plane_role() -> None:
