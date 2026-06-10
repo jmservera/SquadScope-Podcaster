@@ -239,7 +239,9 @@ def probe_audio(path: Path, sha256: str, runner: CommandRunner | None = None) ->
     stream = _first_audio_stream(payload)
     file_size = path.stat().st_size
     duration_seconds = _float_field(payload.get("format", {}), "duration")
-    bitrate_bps = _int_field(stream, "bit_rate") or _int_field(payload.get("format", {}), "bit_rate")
+    bitrate_bps = _optional_int_field(stream, "bit_rate")
+    if bitrate_bps is None:
+        bitrate_bps = _int_field(payload.get("format", {}), "bit_rate")
     sample_rate_hz = _int_field(stream, "sample_rate")
     channels = _int_field(stream, "channels")
     codec_name = stream.get("codec_name")
@@ -370,6 +372,17 @@ def _int_field(payload: object, field: str) -> int:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     raise RuntimeError(f"ffprobe output did not include numeric {field}")
+
+
+def _optional_int_field(payload: object, field: str) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get(field)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 def _float_field(payload: object, field: str) -> float:
