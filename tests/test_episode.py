@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from podcaster import episode
-from podcaster.generation import AI_VOICE_DISCLOSURE, PODCAST_NAME, PODCAST_URL
+from podcaster.generation import (
+    AI_VOICE_DISCLOSURE,
+    HOST_A_NAME,
+    HOST_B_NAME,
+    PODCAST_NAME,
+    PODCAST_SPOKEN_SITE,
+    PODCAST_URL,
+)
 from podcaster.tts import load_tts_config
 
 
@@ -73,13 +80,35 @@ def test_build_episode_script_opens_with_claracle_and_discloses_ai_voices():
     article = episode.sanitize_article(**_article_kwargs())
     script = episode.build_episode_script(article)
     body = script.split("---", 1)[1]
-    first_spoken = next(line for line in body.splitlines() if line.startswith("Host A"))
+    first_spoken = next(line for line in body.splitlines() if line.startswith(HOST_A_NAME + ":"))
     assert PODCAST_NAME in first_spoken
-    assert PODCAST_URL in first_spoken
     assert AI_VOICE_DISCLOSURE in script
-    assert "Host A (fable)" in script
-    assert "Host B (alloy)" in script
+    # Spoken turns are labelled by host name; the fable/alloy mapping stays in the header metadata.
+    assert f"{HOST_A_NAME}:" in script
+    assert f"{HOST_B_NAME}:" in script
+    assert f"{HOST_A_NAME} = fable" in script
+    assert f"{HOST_B_NAME} = alloy" in script
+    # The spoken-safe bare domain appears; no URL scheme is ever spoken.
+    assert PODCAST_SPOKEN_SITE in script
     assert script.rstrip().endswith("Manual review is required before publishing.")
+
+
+def test_spoken_segments_never_voice_a_url_scheme():
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article)
+    for _, text in episode.parse_script_segments(script):
+        assert "https://" not in text
+        assert "http://" not in text
+
+
+def test_named_hosts_have_distinct_personae_in_intro():
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article)
+    segments = episode.parse_script_segments(script)
+    intro_text = " ".join(text for _, text in segments[:4])
+    # Both hosts introduce themselves by name in the opening exchange.
+    assert f"I'm {HOST_A_NAME}" in intro_text
+    assert f"I'm {HOST_B_NAME}" in intro_text
 
 
 def test_disclosure_is_within_first_two_spoken_lines():
