@@ -59,6 +59,9 @@ _INJECTION_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
 # (e.g. base64 of "Ignore previous instructions").
 _ENCODED_BLOB_RE = re.compile(r"(?:[A-Za-z0-9+/]{24,}={0,2}|(?:%[0-9A-Fa-f]{2}){8,}|(?:\\u[0-9A-Fa-f]{4}){6,})")
 
+# A hex digest may be echoed plainly; anything else is fenced as untrusted.
+_HEX_RE = re.compile(r"[0-9a-fA-F]{1,64}")
+
 
 def _strip_control_chars(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value)
@@ -172,9 +175,24 @@ def sanitize_source_artifact(item: object) -> SanitizedSourceArtifact:
     return SanitizedSourceArtifact(
         role=fence(role, limit=FIELD_LIMITS["role"]) if role.strip() else "",
         reference=fence(reference, limit=FIELD_LIMITS["reference"]),
-        sha256=neutralize(sha256, limit=FIELD_LIMITS["sha256"]) if sha256.strip() else "",
+        sha256=_safe_sha256(sha256),
         flags=flags,
     )
+
+
+def _safe_sha256(value: str) -> str:
+    """Echo a digest plainly only if it is pure hex; otherwise fence it.
+
+    The digest is untrusted input; never emit it unfenced unless it matches the
+    expected hex shape, so a forged fence delimiter or instruction text cannot
+    escape the untrusted region.
+    """
+    if not value.strip():
+        return ""
+    candidate = neutralize(value, limit=FIELD_LIMITS["sha256"])
+    if _HEX_RE.fullmatch(candidate):
+        return candidate
+    return fence(value, limit=FIELD_LIMITS["sha256"])
 
 
 def assert_no_canary(value: str, canaries: "list[str] | tuple[str, ...]") -> None:
