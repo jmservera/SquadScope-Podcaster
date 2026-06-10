@@ -13,6 +13,9 @@ if str(REPO_ROOT) not in sys.path:
 import scripts.tts_bakeoff_synthesize as cli  # noqa: E402
 from podcaster.tts_bakeoff import (  # noqa: E402
     BakeoffCandidate,
+    PRODUCTION_GUEST_VOICE,
+    PRODUCTION_NARRATOR_VOICE,
+    PRODUCTION_PROVIDER,
     SampleResult,
     build_manifest,
     build_plan,
@@ -20,6 +23,7 @@ from podcaster.tts_bakeoff import (  # noqa: E402
     default_candidates,
     escape_ssml_text,
     parse_segments,
+    production_candidate,
     redact_url,
     script_sha256,
 )
@@ -62,6 +66,33 @@ def test_build_plan_can_include_disabled():
     plan = build_plan(SCRIPT_TEXT, "2026-W23", include_disabled=True)
     providers = [spec.candidate.provider for spec in plan]
     assert "openai-tts" in providers
+
+
+def test_production_candidate_is_fable_alloy_openai():
+    candidate = production_candidate()
+    assert candidate.provider == PRODUCTION_PROVIDER == "openai-tts"
+    assert candidate.narrator_voice == PRODUCTION_NARRATOR_VOICE == "fable"  # host A
+    assert candidate.guest_voice == PRODUCTION_GUEST_VOICE == "alloy"  # host B
+    assert candidate.enabled is True
+    assert candidate.is_production is True
+    assert candidate.voice_for("narrator") == "fable"
+    assert candidate.voice_for("guest") == "alloy"
+
+
+def test_production_voices_match_generation_constants():
+    from podcaster import generation
+
+    candidate = production_candidate()
+    assert candidate.narrator_voice == generation.HOST_A_VOICE
+    assert candidate.guest_voice == generation.HOST_B_VOICE
+
+
+def test_production_candidate_excluded_from_bakeoff_comparison_plan():
+    # The private bakeoff comparison plan must never include the enabled
+    # production config, so the #4/#41 spike cannot trigger unreviewed
+    # production spend.
+    plan = build_plan(SCRIPT_TEXT, "2026-W23", include_disabled=True)
+    assert all(spec.candidate.is_production is False for spec in plan)
 
 
 def test_blob_paths_are_deterministic_and_safe():
