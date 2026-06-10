@@ -1,3 +1,4 @@
+// HOTFIX: isolate deploy/CI changes (branch squad/47-isolate-deploy-ci)
 targetScope = 'resourceGroup'
 
 @description('Azure region for all resources.')
@@ -216,6 +217,8 @@ resource deploymentBlobDataContributor 'Microsoft.Authorization/roleAssignments@
 
 output endpoint string = 'https://${functionApp.properties.defaultHostName}/api/generate'
 output functionAppName string = functionApp.name
+output functionAppPrincipalId string = functionApp.identity.principalId
+output artifactContainerResourceId string = artifactContainer.id
 output storageAccountName string = storage.name
 output storageContainerName string = storageContainerName
 output packageContainerName string = packageContainerName

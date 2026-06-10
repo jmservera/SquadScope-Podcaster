@@ -1,3 +1,4 @@
+# HOTFIX: isolate deploy/CI changes (branch squad/47-isolate-deploy-ci)
 name: Deploy Azure
 
 on:
