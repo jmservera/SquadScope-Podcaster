@@ -36,6 +36,17 @@ AI_VOICE_DISCLOSURE = (
     "Both hosts on this show are AI-generated synthetic voices, not human presenters."
 )
 
+# Named hosts with distinct on-mic personalities (operator feedback, #72). The
+# voice mapping is fixed and kept as metadata: Host A = ``fable`` = "Theo", the
+# enthusiast; Host B = ``alloy`` = "Vera", the veteran. Scripts/transcripts label
+# spoken turns by these names while the fable/alloy mapping stays in the header.
+HOST_A_NAME = "Theo"
+HOST_B_NAME = "Vera"
+
+# Spoken-safe site reference: hosts say the bare domain on-mic and never voice a
+# URL scheme. The full ``PODCAST_URL`` (with scheme) stays in written metadata.
+PODCAST_SPOKEN_SITE = "www.claracle.com"
+
 
 def generate_artifacts(
     job_id: str,

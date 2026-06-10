@@ -44,6 +44,11 @@ from podcaster.episode import (  # noqa: E402
     sanitize_article,
     synthesize_episode,
 )
+from podcaster.generation import (  # noqa: E402
+    HOST_A_NAME,
+    HOST_B_NAME,
+    PODCAST_SPOKEN_SITE,
+)
 from podcaster.storage import (  # noqa: E402
     StorageBackend,
     create_storage_backend,
@@ -291,6 +296,12 @@ def main() -> int:
     os.environ.setdefault("AZURE_OPENAI_TTS_VOICE_HOST_A", "fable")
     os.environ.setdefault("AZURE_OPENAI_TTS_VOICE_HOST_B", "alloy")
     os.environ.setdefault("AZURE_OPENAI_AUTH_MODE", "managed_identity")
+    # Script model: the prior default (gpt-4o-mini) produced flat punchlines, so
+    # per operator feedback (#72) we move the authoring model up to the more
+    # capable gpt-4o. The modest cost increase is accepted; this is recorded in
+    # the review manifest. (The v2 narrative below is deterministic, so this is
+    # the configured authoring model of record rather than a live call here.)
+    os.environ.setdefault("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o")
 
     config = load_tts_config()
     if not config.production_ready:
@@ -310,9 +321,9 @@ def main() -> int:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    mp3_path = out_dir / f"claracle-{article.week}.mp3"
-    script_path = out_dir / f"claracle-{article.week}-script.txt"
-    manifest_path = out_dir / f"claracle-{article.week}-review-manifest.json"
+    mp3_path = out_dir / f"claracle-{article.week}-v2.mp3"
+    script_path = out_dir / f"claracle-{article.week}-v2-script.txt"
+    manifest_path = out_dir / f"claracle-{article.week}-v2-review-manifest.json"
 
     script_path.write_text(script, encoding="utf-8")
 
@@ -333,16 +344,29 @@ def main() -> int:
     expires_at = expiry.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     manifest = {
-        "schema": "podcaster.operator-review-episode/v1",
+        "schema": "podcaster.operator-review-episode/v2",
         "purpose": "operator review artifact; NOT published; publication stays human-gated",
         "podcast": "Claracle",
         "podcast_url": "https://www.claracle.com",
+        "podcast_spoken_site": PODCAST_SPOKEN_SITE,
+        "version": "v2",
         "week": article.week,
         "title": article.title,
         "source_article_url": article.url,
         "source_article_sha256": article.sha256,
         "injection_flags": list(article.injection_flags),
+        "hosts": {
+            "host_a": {"name": HOST_A_NAME, "voice": "fable", "persona": "enthusiast"},
+            "host_b": {"name": HOST_B_NAME, "voice": "alloy", "persona": "veteran"},
+        },
         "voices": {"host_a": "fable", "host_b": "alloy"},
+        "script_model": {
+            "deployment": config.chat_deployment,
+            "rationale": (
+                "upgraded from gpt-4o-mini to gpt-4o per operator feedback (#72) for stronger "
+                "narrative punchlines; modest cost increase accepted by operator"
+            ),
+        },
         "tts": config.safe_summary(),
         "synthesis_decision": decision,
         "audio": {

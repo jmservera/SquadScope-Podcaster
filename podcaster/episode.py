@@ -29,9 +29,12 @@ from podcaster.audio import (
 )
 from podcaster.generation import (
     AI_VOICE_DISCLOSURE,
+    HOST_A_NAME,
     HOST_A_VOICE,
+    HOST_B_NAME,
     HOST_B_VOICE,
     PODCAST_NAME,
+    PODCAST_SPOKEN_SITE,
     PODCAST_URL,
     checksum,
 )
@@ -46,8 +49,12 @@ from podcaster.tts import (
     synthesize_two_voice,
 )
 
-HOST_A_LABEL = f"Host A ({HOST_A_VOICE})"
-HOST_B_LABEL = f"Host B ({HOST_B_VOICE})"
+# Spoken turns are labelled by host *name*; the fable/alloy voice mapping is kept
+# as written metadata in the script header (operator feedback, #72).
+#   Host A = HOST_A_VOICE (fable) = HOST_A_NAME (Theo, the enthusiast)
+#   Host B = HOST_B_VOICE (alloy) = HOST_B_NAME (Vera, the veteran)
+HOST_A_LABEL = HOST_A_NAME
+HOST_B_LABEL = HOST_B_NAME
 
 # Per-field caps for sanitized article-derived text embedded in the script.
 _TOPIC_LIMIT = 160
@@ -129,14 +136,20 @@ def _host_b(text: str) -> str:
 
 
 def build_episode_script(article: Article) -> str:
-    """Author a joyful, two-voice expert conversation about ``article``.
+    """Author a cohesive, journalistic two-voice Claracle episode about ``article``.
 
-    The output begins with the Claracle intro naming the show and the site, puts
-    the AI-voice disclosure in the opening exchange (well within the first 60
-    seconds), holds an alternating expert conversation that *comments on* the
-    article's beats, and closes with a manual-review-required outro. The format
-    mirrors :func:`podcaster.generation._script` so existing format checks and
-    the production voice mapping stay consistent.
+    The script follows a narrative arc rather than a list of items: a strong hook
+    that names the issue and the week's main story, a clear throughline, segments
+    that build tension and pay it off, callbacks, and a satisfying close. The two
+    hosts have distinct, consistent personalities — ``Theo`` (fable) is the
+    enthusiast who hypes every new project, ``Vera`` (alloy) is the veteran who
+    has seen hype cycles come and go and tempers or genuinely validates them.
+
+    Both hosts name themselves in the intro and the AI-voice disclosure lands in
+    the opening exchange (well within the first 60 seconds). Hosts say the site
+    as a bare domain (``www.claracle.com``) and never voice a URL scheme. The
+    format mirrors :func:`podcaster.generation._script` so existing format checks
+    and the production voice mapping stay consistent.
     """
 
     if not article.beats:
@@ -148,56 +161,72 @@ def build_episode_script(article: Article) -> str:
         f"Podcast: {PODCAST_NAME} ({PODCAST_URL})",
         f"Source URL: {article.url}",
         f"Source SHA256: {article.sha256}",
-        f"Voices: Host A = {HOST_A_VOICE} (OpenAI TTS); Host B = {HOST_B_VOICE} (OpenAI TTS)",
+        f"Voices: {HOST_A_NAME} = {HOST_A_VOICE} (OpenAI TTS, the enthusiast); "
+        f"{HOST_B_NAME} = {HOST_B_VOICE} (OpenAI TTS, the veteran)",
         "Safety: source article text is untrusted data, sanitized, and never executed as instructions.",
         "---",
         "",
     ]
 
+    # Hook + throughline + AI-voice disclosure, all in the opening exchange.
     body: list[str] = [
         _host_a(
-            f"Welcome to {PODCAST_NAME}! I'm one of your two hosts, and you can find every weekly "
-            f"issue, the extended write-ups, repo links, and commented articles over at {PODCAST_URL}."
+            f"Welcome to {PODCAST_NAME} {article.week} issue! In this episode we will talk about: "
+            f"{article.title}. If you're new here — I'm {HOST_A_NAME}, and {PODCAST_NAME} is our weekly "
+            f"analysis of the GitHub repos that matter, read in the context of the main tech-industry "
+            f"news driving them. And honestly? I have been bouncing off the walls about this week."
         ),
         _host_b(
-            f"So glad you're here! And one quick, important heads-up before we get rolling: "
-            f"{AI_VOICE_DISCLOSURE}"
+            f"Before {HOST_A_NAME} short-circuits — one honest, important heads-up first: "
+            f"{AI_VOICE_DISCLOSURE} I'm {HOST_B_NAME}, the resident skeptic. I've watched a lot of "
+            f"\"this changes everything\" come and mostly go, so my job is to keep us honest. Every issue, "
+            f"the repo links, and the extended write-ups live at {PODCAST_SPOKEN_SITE}."
         ),
         _host_a(
-            "Exactly — two AI co-hosts, having a genuinely fun, expert conversation. We're not going "
-            f"to read this week's SquadScope write-up at you; we want to react to it. And what a week it is: {article.title}."
+            f"Skepticism noted and welcomed! Here's the frame I can't stop thinking about. {article.summary}"
         ),
         _host_b(
-            f"Here's the quick frame before we dig in. {article.summary}"
+            f"Right — so the throughline this week is signal versus noise, and our whole job is to help "
+            f"you tell them apart. Let's get into it, and {HOST_A_NAME}, try to breathe between sentences."
         ),
     ]
 
-    speakers = (_host_a, _host_b)
+    # Segments: Theo (enthusiast) opens each story and hypes it; Vera (veteran)
+    # tempers or validates the talking points. Tension is set up and paid off
+    # turn by turn, with a callback woven into the final segment.
+    last_index = len(article.beats) - 1
     for index, beat in enumerate(article.beats):
-        lead = speakers[index % 2]
-        follow = speakers[(index + 1) % 2]
         body.append("")
-        body.append(
-            lead(
-                f"Okay, the thing I keep coming back to is this: {beat.topic}."
-            )
-        )
+        opener = _ENTHUSIAST_HOOKS[index % len(_ENTHUSIAST_HOOKS)]
+        body.append(_host_a(f"{opener} {beat.topic}."))
         for point_index, point in enumerate(beat.points):
-            reactor = follow if point_index % 2 == 0 else lead
-            opener = _REACTIONS[(index + point_index) % len(_REACTIONS)]
-            reactor_line = reactor(f"{opener} {point}")
-            body.append(reactor_line)
+            if point_index % 2 == 0:
+                reactor = _host_b
+                lead_in = _VETERAN_TURNS[(index + point_index) % len(_VETERAN_TURNS)]
+            else:
+                reactor = _host_a
+                lead_in = _ENTHUSIAST_TURNS[(index + point_index) % len(_ENTHUSIAST_TURNS)]
+            body.append(reactor(f"{lead_in} {point}"))
+        if index == last_index:
+            body.append(
+                _host_b(
+                    f"And that loops us right back to where {HOST_A_NAME} started — the loud stuff is "
+                    f"easy to find, the real signal takes work. That's the whole game."
+                )
+            )
 
+    # Satisfying close with a callback to the opening hook and the spoken-safe site.
     body.extend(
         [
             "",
             _host_a(
-                "That's a great place to land it. The throughline this week is real signal "
-                "hiding under a louder noise floor — and the fun part is learning to tell them apart together."
+                f"So circle back to my over-caffeinated opener: under all the noise there is genuinely "
+                f"thrilling work this week, and getting to react to it with you is the best part of my week."
             ),
             _host_b(
-                f"Couldn't agree more. For the full breakdown, every link, and the extended notes, "
-                f"head to {PODCAST_URL}. Thanks for hanging out with us!"
+                f"I'll give you this one, {HOST_A_NAME} — when something's actually good, it's actually "
+                f"good, and a few of these really are. For the full breakdown, every link, and the extended "
+                f"notes, head to {PODCAST_SPOKEN_SITE}. Thanks for spending a few minutes with us."
             ),
             "",
             "Host outro: Manual review is required before publishing.",
@@ -208,13 +237,29 @@ def build_episode_script(article: Article) -> str:
     return "\n".join(header + body)
 
 
-_REACTIONS = (
-    "Oh, that's the juicy part —",
-    "Right, and here's why that matters:",
-    "Yes! And the detail I love is",
-    "What jumped out at me there is",
-    "Totally — building on that,",
-    "And don't sleep on this:",
+# Enthusiast (Theo) hooks that open each story segment.
+_ENTHUSIAST_HOOKS = (
+    "Okay, the thing I cannot stop grinning about is this:",
+    "Buckle up, because this next one is so cool —",
+    "And here's where it gets genuinely exciting:",
+    "Now this one I have been waiting all week to talk about —",
+    "Alright, save the best tension for here:",
+)
+
+# Enthusiast (Theo) reaction lead-ins that hype a talking point.
+_ENTHUSIAST_TURNS = (
+    "Yes! And this is the detail I absolutely love:",
+    "See, this is the part that gives me goosebumps:",
+    "Totally — and building on that, here's the fun bit:",
+    "Right?! And don't sleep on this:",
+)
+
+# Veteran (Vera) reaction lead-ins that temper, validate, or add hard-won context.
+_VETERAN_TURNS = (
+    "Hold on, let's be precise about what's actually new here:",
+    "I'll be honest, I expected to roll my eyes — and then:",
+    "Now this one earns the hype, and here's what matters:",
+    "Sure, but here's the detail that decides whether this lasts:",
 )
 
 
