@@ -1,0 +1,45 @@
+SquadScope Podcaster — TTS Bakeoff Reviewed Test Script
+Version: 1
+Status: reviewed-for-bakeoff
+Speakers: NARRATOR (primary), GUEST (short alternate-speaker segment)
+Purpose: shared fair-comparison script for TTS provider bakeoff (issue #41, feeds #4).
+Notes: synthetic content approved for provider sharing. Contains no secrets, no private
+drafts, no personal data, and no real-person voice-cloning request. Lines are prefixed
+with a speaker label and a colon. Lines without a known label belong to the NARRATOR.
+
+NARRATOR: Welcome to SquadScope Podcaster, the weekly rundown where we turn one published
+SquadScope article into a short, clear narration. This is a test recording used only to
+compare text-to-speech providers, so the words you hear were written for evaluation.
+
+NARRATOR: Let us start with the acronyms our scripts use most often, because pronunciation
+of technical terms is part of the score. The pipeline relies on an API behind Azure
+Functions, ships through a CI/CD workflow on GitHub Actions, authenticates with OIDC,
+synthesizes audio with TTS, and shares files using a SAS link when access is appropriate.
+
+NARRATOR: Proper nouns matter too. Today we mention SquadScope, Podcaster, Azure, GitHub
+Actions, and OpenAI. A good voice keeps these names steady and natural across a full
+episode, not just on the first try.
+
+NARRATOR: Numbers and dates are the next challenge. This episode covers the ISO week
+2026-W23. Build reliability rose by 12.5 percent week over week. The estimated cost per
+episode is about 0.42 US dollars, and the longest synthesis in our test ran for 3 minutes
+and 7 seconds.
+
+NARRATOR: Pacing is judged on both short and long sentences. Here is a short one. It lands
+quickly. Here is a longer one, with several clauses strung together by commas, a couple of
+asides, and a closing thought, so that we can hear whether the voice keeps a comfortable
+breath pattern instead of rushing toward the period at the end.
+
+NARRATOR: We also include a direct quotation, so listen for a clear change in delivery.
+
+GUEST: "Good narration should sound like a person who understands the sentence, not a
+machine reading one word at a time," our reviewer noted, "and the difference is easiest to
+hear in a quote like this one."
+
+NARRATOR: Thank you. Back to the main thread. Comma-heavy lines, like this one, with a
+list of items such as quality, pronunciation, controllability, latency, cost, licensing,
+and privacy, are exactly where weaker voices tend to stumble.
+
+NARRATOR: That is the end of the shared test script. The same text is used for every
+candidate voice so the comparison stays fair. No generated audio from this script is ever
+committed to the repository; only human listening notes and redacted links are shared.

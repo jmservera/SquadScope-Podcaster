@@ -160,6 +160,52 @@ Record the exact script hash in the issue notes. Do not commit provider-generate
 
 ---
 
+## Sample Generation Tooling (issue #41)
+
+The shared reviewed test script and a sample-generation tool are committed so the
+bakeoff is reproducible. **No generated audio is committed** — only this input
+script, redacted manifests, and human listening notes are shared.
+
+- **Reviewed test script:** `docs/tts-bakeoff-test-script.txt`
+  - SHA-256: `54443424505ded64c9c498021030661bf559be040a2cdd8b644f2fc9e1d97290`
+  - Secret-free, two-speaker (`NARRATOR` / `GUEST`), covers acronyms, proper
+    nouns, numbers/dates, punctuation, and pacing per the evaluation criteria.
+- **Tool:** `scripts/tts_bakeoff_synthesize.py` (logic in `podcaster/tts_bakeoff.py`).
+
+Plan the run without contacting any provider (safe anywhere, no keys needed):
+
+```bash
+python scripts/tts_bakeoff_synthesize.py --week 2026-W23 --manifest-out out/bakeoff-manifest.json
+```
+
+Generate and store private samples (operator step; requires an authorized Azure
+Speech resource — see #30 for production infra, this stays bakeoff-only):
+
+```bash
+export AZURE_SPEECH_ENDPOINT="https://<region>.tts.speech.microsoft.com"
+export AZURE_SPEECH_KEY="<from Key Vault / app setting; never commit>"
+export PODCASTER_STORAGE_ACCOUNT_URL="https://<account>.blob.core.windows.net"
+python scripts/tts_bakeoff_synthesize.py --execute --week 2026-W23 \
+  --manifest-out out/bakeoff-manifest.json
+```
+
+Safety properties enforced by the tool and its tests:
+
+- Execute mode refuses to run (exit 3) and prints the exact missing variable
+  names if Azure Speech context is absent — no workarounds.
+- Script text is XML-escaped before SSML embedding (SSML/XXE injection guard).
+- The API key is read from the environment only and never printed; SAS query
+  strings are redacted from manifest URLs.
+- Audio is stored in the existing private storage account; samples are
+  bakeoff-only and must not be published.
+- Unreviewed providers (OpenAI/Foundry voices) ship disabled until Hermes
+  approves region availability and retention terms.
+
+Record each candidate's human listening notes against #4 using the template
+below.
+
+---
+
 ## Human Listening Notes Template
 
 Attach notes to #4 using this structure for each candidate. Do not include secrets, provider keys, raw SAS URLs, or generated audio checked into git.
