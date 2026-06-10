@@ -317,6 +317,48 @@ jobs:
 
           echo "Deployed Function App from private run-from-package blob using managed identity; no package SAS or storage key was emitted." >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Wait for Function App to index functions
+        env:
+          PODCASTER_GENERATE_URL: ${{ steps.deploy_bicep.outputs.endpoint }}
+        run: |
+          set -euo pipefail
+          set +x
+
+          # The Python v2 (decorator) model only serves routes once the host has
+          # mounted the run-from-package payload and indexed the worker. A cold
+          # start that also downloads the extension bundle can take several
+          # minutes, so poll the management plane until the 'generate' trigger is
+          # registered before running the strict smoke. This also diagnoses
+          # package-mount/indexing failures separately from response-shape issues.
+          indexed=0
+          for attempt in $(seq 1 24); do
+            functions=$(az functionapp function list \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$AZURE_FUNCTION_APP_NAME" \
+              --query "[].name" \
+              --output tsv 2>/dev/null || true)
+            if printf '%s\n' "$functions" | grep -qx "generate"; then
+              echo "Function host registered the 'generate' trigger after attempt $attempt."
+              indexed=1
+              break
+            fi
+            # Lightweight unauthenticated probe; 401/400 also prove the route is mounted.
+            status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PODCASTER_GENERATE_URL" \
+              -H 'content-type: application/json' --data '{}' --max-time 30 || echo "000")
+            if [ "$status" != "404" ] && [ "$status" != "000" ]; then
+              echo "Route '/api/generate' responded with HTTP $status (not 404) after attempt $attempt; treating as mounted."
+              indexed=1
+              break
+            fi
+            echo "Attempt $attempt: function host not serving /api/generate yet (probe HTTP $status); waiting 20s."
+            sleep 20
+          done
+
+          if [ "$indexed" -ne 1 ]; then
+            echo "::error::Function host never registered the 'generate' trigger; the run-from-package payload likely failed to mount or index. Check WEBSITE_RUN_FROM_PACKAGE managed-identity access and FUNCTIONS_WORKER_RUNTIME/AzureWebJobsFeatureFlags."
+            exit 1
+          fi
+
       - name: Smoke deployed generate endpoint
         env:
           PODCASTER_GENERATE_URL: ${{ steps.deploy_bicep.outputs.endpoint }}
@@ -329,12 +371,12 @@ jobs:
             exit 1
           fi
 
-          for attempt in 1 2 3 4 5 6; do
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
             if python scripts/smoke_generate.py; then
               echo "Smoke confirmed HTTP 202 generate readiness with non-empty job_id, manifest_url, and errors=[]; API key was not printed." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            if [ "$attempt" -eq 6 ]; then
+            if [ "$attempt" -eq 10 ]; then
               echo "::error::Deployed /api/generate smoke failed after restart."
               exit 1
             fi
