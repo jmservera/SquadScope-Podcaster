@@ -290,6 +290,48 @@ If `SQUADSCOPE_SYNC_TOKEN` is not configured, manually set up SquadScope. Manual
      -d '{"week":"2026-W23","article_url":"https://example.com"}'
    ```
 
+#### Step 5: Discover values automatically (recommended)
+
+Instead of looking up names by hand, use the helper to discover the deployed
+resources at the resource-group level and emit ready-to-run `gh` commands with
+the real resolved values:
+
+```bash
+# Defaults: resource group 'squadscope-podcaster',
+# SquadScope repo 'jmservera/SquadScope', Podcaster repo 'jmservera/SquadScope-Podcaster'
+scripts/get-podcaster-values.sh
+
+# Or target a specific resource group / repos
+scripts/get-podcaster-values.sh \
+  --resource-group squadscope-podcaster \
+  --squadscope-repo jmservera/SquadScope \
+  --podcaster-repo jmservera/SquadScope-Podcaster
+
+# Write the commands to a local (gitignored) file instead of stdout
+scripts/get-podcaster-values.sh --out ./podcaster-secrets.local.sh
+```
+
+It discovers the Function App (→ `/api/generate` URL), the Function App's
+`PODCASTER_API_KEY` app setting (the value SquadScope must send as
+`x-podcaster-api-key`), the storage account, and any Azure OpenAI / Cognitive
+Services account (endpoint + key for the `/api/generate` generation work in #60).
+It then prints, for review before you run them:
+
+```bash
+gh variable set PODCASTER_ENDPOINT --repo jmservera/SquadScope --body '<generate-url>'
+gh secret set   PODCASTER_API_KEY  --repo jmservera/SquadScope --body '<api-key>'
+gh variable set AZURE_OPENAI_ENDPOINT --repo jmservera/SquadScope-Podcaster --body '<endpoint>'
+gh secret set   AZURE_OPENAI_API_KEY  --repo jmservera/SquadScope-Podcaster --body '<key>'
+```
+
+**Safety:** this is a local operator tool. It prints secret values to your
+terminal only — it never writes them to a committed file, a CI log, or
+`$GITHUB_OUTPUT`, and it refuses to run inside GitHub Actions (unless
+`--force-ci` is passed). Requires `az` authenticated (`az login`) and `gh`
+authenticated to run the emitted commands. If you use `--out`, the file is
+created with owner-only permissions and contains real secrets — keep it out of
+git and delete it when done.
+
 ### Subsequent Deployments (Code Updates)
 
 #### Step 1: Update Code and Commit
