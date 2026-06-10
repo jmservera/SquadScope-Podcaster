@@ -39,7 +39,8 @@ cost / human-review gates or leaking secrets.
   image, no root/`apt` access. You can only run binaries you package into the
   deployment. A statically-linked `ffmpeg` *may* run but is fragile (codec/
   kernel-feature coupling, large package, manual update path) and unsupported.
-  - Consumption hard timeout: 5 min default, up to 60 min via `host.json`.
+  - Consumption hard timeout: 5 min default, up to 10 min via `host.json`
+    (longer timeouts require Premium/Dedicated).
   - Flex Consumption: no enforced timeout, but no duration guarantee
     (executions may be cancelled under platform pressure).
   - Full custom-container `ffmpeg` requires **Premium or Dedicated** plans,
@@ -61,7 +62,7 @@ cost / human-review gates or leaking secrets.
 - **Pros**: no new Azure resource; smallest infra change.
 - **Cons**: unsupported and brittle (codec coverage, glibc/kernel coupling,
   ~70–100 MB added to the package, manual security patching); still bounded by
-  the Consumption 60-min cap and Flex's no-guarantee cancellation; CPU/memory
+  the Consumption 10-min cap and Flex's no-guarantee cancellation; CPU/memory
   for two-pass `loudnorm` is constrained on Consumption. **Rejected** as a
   production path; acceptable only as a stopgap if needed.
 
