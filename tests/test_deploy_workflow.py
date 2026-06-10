@@ -141,3 +141,57 @@ def test_bicep_assigns_deploy_identity_storage_data_plane_role() -> None:
     assert "deploymentPrincipalObjectId" in bicep
     assert "deploymentBlobDataContributor" in bicep
     assert "ba92f5b4-2d11-453d-a403-e96b0029c9fe" in bicep
+
+
+OPENAI_MODULE = ROOT / "infra/openai.bicep"
+
+
+def test_openai_infra_is_opt_in_and_defaults_off() -> None:
+    # #30: the production Azure OpenAI TTS infrastructure must be opt-in so the core
+    # storage + Function App deploy stays green where the TTS model is unavailable.
+    bicep = BICEP.read_text(encoding="utf-8")
+
+    assert "param deployOpenAi bool = false" in bicep, (
+        "deployOpenAi must default to false to protect the green deploy"
+    )
+    assert re.search(r"module openAi 'openai\.bicep' = if \(deployOpenAi\)", bicep), (
+        "OpenAI resources must deploy conditionally via the openai.bicep module"
+    )
+
+
+def test_openai_module_uses_managed_identity_not_keys() -> None:
+    # #30 acceptance: managed identity / RBAC is preferred; account keys must never be
+    # written to Function App settings, logs, or deployment outputs.
+    module = OPENAI_MODULE.read_text(encoding="utf-8")
+    main = BICEP.read_text(encoding="utf-8")
+
+    assert "kind: 'OpenAI'" in module
+    assert "disableLocalAuth: true" in module, "OpenAI account must disable local (key) auth"
+    assert "type: 'SystemAssigned'" in module
+    # Cognitive Services OpenAI User role for the Function App managed identity.
+    assert "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd" in module
+    assert "listKeys" not in module and "listKeys" not in main, "must not read OpenAI account keys"
+    assert "AZURE_OPENAI_API_KEY" not in module and "AZURE_OPENAI_API_KEY" not in main, (
+        "OpenAI account keys must never be wired into infrastructure"
+    )
+
+
+def test_openai_module_deploys_fable_and_alloy_tts() -> None:
+    # #4 provider decision: OpenAI TTS with voices fable (host A) + alloy (host B).
+    main = BICEP.read_text(encoding="utf-8")
+
+    assert "param ttsVoiceHostA string = 'fable'" in main
+    assert "param ttsVoiceHostB string = 'alloy'" in main
+    assert "AZURE_OPENAI_TTS_DEPLOYMENT" in main
+    assert "AZURE_OPENAI_CHAT_DEPLOYMENT" in main
+    assert "AZURE_OPENAI_ENDPOINT" in main
+
+
+def test_deploy_workflow_threads_opt_in_openai_flag() -> None:
+    # The opt-in flag must be plumbed through workflow_dispatch into the bicep deploy,
+    # defaulting to false so unattended/normal deploys never provision OpenAI.
+    workflow = _workflow_text()
+
+    assert "deploy_openai:" in workflow
+    assert "DEPLOY_OPENAI: ${{ inputs.deploy_openai }}" in workflow
+    assert 'deployOpenAi="${DEPLOY_OPENAI:-false}"' in workflow

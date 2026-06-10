@@ -10,6 +10,12 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
+      deploy_openai:
+        description: 'Provision the production Azure OpenAI TTS infrastructure (#30). Only enable in a region/SKU that supports the configured TTS/chat models.'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 permissions:
   contents: read
@@ -149,6 +155,8 @@ jobs:
 
       - name: Deploy infrastructure
         id: deploy_bicep
+        env:
+          DEPLOY_OPENAI: ${{ inputs.deploy_openai }}
         run: |
           set -euo pipefail
           set +x
@@ -192,6 +200,7 @@ jobs:
             --parameters packageContainerName="$AZURE_PACKAGE_CONTAINER_NAME" \
             --parameters deploymentPrincipalObjectId="$deployment_principal_object_id" \
             --parameters podcasterApiKey="$PODCASTER_API_KEY" \
+            --parameters deployOpenAi="${DEPLOY_OPENAI:-false}" \
             --query properties.outputs.endpoint.value \
             --output tsv)
           echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
