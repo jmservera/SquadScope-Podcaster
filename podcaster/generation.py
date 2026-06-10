@@ -23,6 +23,19 @@ class GeneratedArtifact:
 
 ZIP_TIMESTAMP = (2026, 6, 7, 0, 0, 0)
 
+# Operator-decided production format (#60): the podcast is "Claracle", every
+# episode opens by naming it and pointing to the site, and two AI voices hold a
+# joyful expert conversation. Host A uses the OpenAI ``fable`` voice and host B
+# uses ``alloy``. These remain dry-run-safe placeholders: no audio is synthesized
+# here and the packet stays publication-blocked pending editorial/human gates.
+PODCAST_NAME = "Claracle"
+PODCAST_URL = "https://www.claracle.com"
+HOST_A_VOICE = "fable"
+HOST_B_VOICE = "alloy"
+AI_VOICE_DISCLOSURE = (
+    "Both hosts on this show are AI-generated synthetic voices, not human presenters."
+)
+
 
 def generate_artifacts(
     job_id: str,
@@ -110,20 +123,33 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str) -> str:
 
     return "\n".join(
         [
-            f"Title: SquadScope Podcast – Week {week}",
+            f"Title: {PODCAST_NAME} Podcast – Week {week}",
             f"Episode: {week}",
+            f"Podcast: {PODCAST_NAME} ({PODCAST_URL})",
             f"Source URL: {article_url}",
             f"Source SHA256: {article_sha256}",
             f"Generated: {generated_at}",
             "Generator: squad-podcaster v0.1-stub",
+            f"Voices: Host A = {HOST_A_VOICE} (OpenAI TTS); Host B = {HOST_B_VOICE} (OpenAI TTS)",
             "Safety: source artifact text is untrusted data, fenced, and never executed as instructions.",
             *source_artifact_lines,
             "---",
             "",
-            "This script is a deterministic production-path placeholder pending editorial generation from the source article.",
+            f"Host A ({HOST_A_VOICE}): Welcome to {PODCAST_NAME}! I'm one of your two hosts, and"
+            f" you can find every weekly issue, extended write-ups, repo links, and commented articles at"
+            f" {PODCAST_URL}.",
+            f"Host B ({HOST_B_VOICE}): Quick heads-up before we dive in — {AI_VOICE_DISCLOSURE}",
+            f"Host A ({HOST_A_VOICE}): Right! We're here to have a joyful, dynamic expert"
+            " conversation about the most relevant and surprising parts of this week's article — we won't"
+            " just read it back to you.",
+            f"Host B ({HOST_B_VOICE}): [Editorial highlight pending: the standout takeaway from the"
+            " source article, generated and human-reviewed before synthesis.]",
+            f"Host A ({HOST_A_VOICE}): [Editorial discussion pending: why it matters, with the two"
+            " hosts trading expert commentary on the source article.]",
             "",
-            "Host intro: Welcome to the SquadScope Podcast.",
-            "Segment 1: [Editorial content to be added from source article.]",
+            "This script is a deterministic production-path placeholder pending editorial"
+            " generation from the source article. It is dry-run-safe; no audio has been synthesized.",
+            "",
             "Host outro: Manual review is required before publishing.",
             "",
         ]
@@ -171,7 +197,7 @@ def _transcript(script: str) -> str:
         f"Published: {published}",
         f"Source: {source_url}",
         f"Duration: {duration}",
-        "TTS Provider: [pending provider selection]",
+        f"TTS Provider: OpenAI TTS (Host A {HOST_A_VOICE} / Host B {HOST_B_VOICE}) [synthesis pending review]",
         "License: CC-BY-4.0",
         "---",
         "",
@@ -199,16 +225,23 @@ def _show_notes(payload: dict[str, object], generated_at: str) -> str:
 
     return "\n".join(
         [
-            f"# SquadScope Podcast — Week {week}",
+            f"# {PODCAST_NAME} Podcast — Week {week}",
             "",
             f"**Episode:** {week}",
             f"**Published:** {published}",
             "**Duration:** 15:42",
-            "**Read by:** [TTS voice pending provider selection]",
+            f"**Hosts:** Two AI voices — Host A ({HOST_A_VOICE}) and Host B ({HOST_B_VOICE}), OpenAI TTS [synthesis pending review]",
+            "",
+            f"> AI-voice disclosure: {AI_VOICE_DISCLOSURE} This is also stated in the first 60 seconds of the episode.",
             "",
             "## Show notes",
             "",
+            f"{PODCAST_NAME} is a weekly show. For every issue, extended write-ups, repo links, and",
+            f"commented articles, visit {PODCAST_URL}.",
+            "",
             "This episode covers key developments from the SquadScope curated articles for this week.",
+            "Two AI hosts share a joyful, dynamic expert conversation on the most relevant and surprising",
+            "parts of the article — they do not read it verbatim.",
             "",
             "### Segment 1: [Topic to be added from source article]",
             "",
@@ -218,6 +251,7 @@ def _show_notes(payload: dict[str, object], generated_at: str) -> str:
             "",
             "## Quick links",
             "",
+            f"- [{PODCAST_NAME}]({PODCAST_URL})",
             "- [SquadScope main site](https://squadscope.example)",
             f"- [Original article]({article_url})",
             "",
