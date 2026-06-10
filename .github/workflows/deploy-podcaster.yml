@@ -1,0 +1,87 @@
+name: Deploy Podcaster Infra
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      resourceGroup:
+        description: 'Target resource group'
+        required: false
+        default: 'podcaster-rg'
+      location:
+        description: 'Azure location'
+        required: false
+        default: 'eastus'
+      storageAccountName:
+        description: 'Storage account name'
+        required: false
+        default: 'podcasterstorage'
+      functionAppName:
+        description: 'Function App name'
+        required: false
+        default: 'podcaster-func'
+      storageContainerName:
+        description: 'Storage container name'
+        required: false
+        default: 'podcast-files'
+      podcasterApiKey:
+        description: 'Optional Podcaster API key parameter'
+        required: false
+        default: ''
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    env:
+      RESOURCE_GROUP: ${{ github.event.inputs.resourceGroup }}
+      LOCATION: ${{ github.event.inputs.location }}
+      STORAGE_ACCOUNT: ${{ github.event.inputs.storageAccountName }}
+      FUNCTION_APP: ${{ github.event.inputs.functionAppName }}
+      STORAGE_CONTAINER: ${{ github.event.inputs.storageContainerName }}
+      PODCASTER_API_KEY: ${{ github.event.inputs.podcasterApiKey }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+
+      - name: Deploy Bicep
+        id: deploy_bicep
+        run: |
+          set -euo pipefail
+          RG="${RESOURCE_GROUP:-podcaster-rg}"
+          LOCATION="${LOCATION:-eastus}"
+          STORAGE_ACCOUNT="${STORAGE_ACCOUNT:-podcasterstorage}"
+          FUNCTION_APP="${FUNCTION_APP:-podcaster-func}"
+          STORAGE_CONTAINER="${STORAGE_CONTAINER:-podcast-files}"
+          PODCASTER_API_KEY="${PODCASTER_API_KEY:-}" 
+
+          echo "Using Resource Group: $RG"
+          DEPLOYMENT_NAME="podcaster-deploy-$(date +%s)"
+
+          mkdir -p artifact
+
+          echo "Running az deployment group create..."
+          az deployment group create \
+            -g "$RG" \
+            -f infra/main.bicep \
+            --name "$DEPLOYMENT_NAME" \
+            --parameters storageAccountName="$STORAGE_ACCOUNT" functionAppName="$FUNCTION_APP" podcasterApiKey="$PODCASTER_API_KEY" \
+            -o json > artifact/deployment-result.json
+
+          echo "Saving deployment outputs to artifact/deploy-outputs.json"
+          jq '{name: .name, properties: .properties}' artifact/deployment-result.json > artifact/deploy-outputs.json || cp artifact/deployment-result.json artifact/deploy-outputs.json
+
+      - name: Upload deployment outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: podcaster-deploy-outputs
+          path: artifact/deploy-outputs.json
