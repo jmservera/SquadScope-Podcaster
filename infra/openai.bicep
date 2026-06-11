@@ -45,6 +45,11 @@ param chatModelCapacity int = 10
 @description('Function App system-assigned principal that receives Cognitive Services OpenAI User.')
 param functionAppPrincipalId string
 
+@description('Optional synthesis job managed-identity principal that also receives Cognitive Services OpenAI User (#76). Empty when the audio job is not deployed.')
+param audioJobPrincipalId string = ''
+
+var hasAudioJobPrincipal = !empty(audioJobPrincipalId)
+
 resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   name: openAiAccountName
   location: location
@@ -109,6 +114,17 @@ resource openAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: openAiAccount
   properties: {
     principalId: functionAppPrincipalId
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// The synthesis ACA Job (#76) also reaches Azure OpenAI TTS with its own managed identity.
+resource audioJobOpenAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (hasAudioJobPrincipal) {
+  name: guid(openAiAccount.id, audioJobPrincipalId, 'Synthesis Job Cognitive Services OpenAI User')
+  scope: openAiAccount
+  properties: {
+    principalId: audioJobPrincipalId
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
     principalType: 'ServicePrincipal'
   }

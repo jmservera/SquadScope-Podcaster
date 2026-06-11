@@ -7,6 +7,7 @@
     "artifactBaseUrl": { "value": "https://example.invalid/podcaster-stub" },
     "storageContainerName": { "value": "podcaster-artifacts" },
     "deployOpenAi": { "value": false },
+    "deployAudioJob": { "value": false },
     "ttsModelName": { "value": "gpt-4o-mini-tts" },
     "ttsModelVersion": { "value": "2025-03-20" },
     "chatModelName": { "value": "gpt-4o-mini" },

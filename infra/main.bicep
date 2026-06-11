@@ -77,6 +77,27 @@ param ttsVoiceHostA string = 'fable'
 @description('TTS voice for host B of the Claracle conversation.')
 param ttsVoiceHostB string = 'alloy'
 
+@description('Opt-in switch for the production audio synthesis Azure Container Apps Job (#76, ADR 0001 Option C). Defaults to false so deploy stays a no-op until the operator approves the new Azure spend (#67). When true, provisions an ACA environment, a queue-triggered synthesis Job, the synthesis Storage Queue, and identity-only role assignments.')
+param deployAudioJob bool = false
+
+@description('Container Apps managed environment name for the synthesis job.')
+param containerAppsEnvName string = '${functionAppName}-cae'
+
+@description('Queue-triggered synthesis Container Apps Job name.')
+param synthesisJobName string = '${functionAppName}-synthesis'
+
+@description('User-assigned managed identity used by the synthesis job for identity-only data-plane access.')
+param synthesisJobIdentityName string = '${functionAppName}-synthesis-id'
+
+@description('Storage Queue carrying synthesis messages (job_id only; no secrets/PII).')
+param synthesisQueueName string = 'synthesis-jobs'
+
+@description('Synthesis container image (ffmpeg baked in, built by #77). Placeholder until the registry/image are approved.')
+param synthesisImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
+
+@description('Optional container registry login server for the synthesis image (#77). Empty until approved.')
+param containerRegistryServer string = ''
+
 var hostingPlanName = '${functionAppName}-plan'
 var hasDeploymentPrincipalObjectId = !empty(deploymentPrincipalObjectId)
 var storageDnsSuffix = environment().suffixes.storage
@@ -310,6 +331,32 @@ module openAi 'openai.bicep' = if (deployOpenAi) {
     chatDeploymentName: chatDeploymentName
     chatModelCapacity: chatModelCapacity
     functionAppPrincipalId: functionApp.identity.principalId
+    // Grant the synthesis job's identity Cognitive Services OpenAI User too, when both opt-ins are on.
+    audioJobPrincipalId: deployAudioJob ? aca!.outputs.jobIdentityPrincipalId : ''
+  }
+}
+
+// Production audio synthesis runner (ADR 0001, Option C): a queue-triggered ACA Job that owns
+// ffmpeg + heavy synthesis. Opt-in via deployAudioJob so deploy stays a no-op until the operator
+// approves the new Azure spend (#67). Kept in the deploy/infra lane, separate from squad upgrade.
+module aca 'aca.bicep' = if (deployAudioJob) {
+  name: 'audio-synthesis-job'
+  params: {
+    location: location
+    containerAppsEnvName: containerAppsEnvName
+    synthesisJobName: synthesisJobName
+    jobIdentityName: synthesisJobIdentityName
+    storageAccountName: storage.name
+    logAnalyticsWorkspaceName: workspace.name
+    synthesisQueueName: synthesisQueueName
+    storageContainerName: storageContainerName
+    synthesisImage: synthesisImage
+    containerRegistryServer: containerRegistryServer
+    openAiEndpoint: openAiEndpoint
+    ttsDeploymentName: deployOpenAi ? ttsDeploymentName : ''
+    chatDeploymentName: deployOpenAi ? chatDeploymentName : ''
+    ttsVoiceHostA: ttsVoiceHostA
+    ttsVoiceHostB: ttsVoiceHostB
   }
 }
 
@@ -325,3 +372,8 @@ output openAiEndpoint string = openAiEndpoint
 output openAiAccountName string = deployOpenAi ? openAiAccountName : ''
 output ttsDeploymentName string = deployOpenAi ? ttsDeploymentName : ''
 output chatDeploymentName string = deployOpenAi ? chatDeploymentName : ''
+output audioJobDeployed bool = deployAudioJob
+output synthesisJobName string = deployAudioJob ? aca!.outputs.jobName : ''
+output containerAppsEnvName string = deployAudioJob ? aca!.outputs.environmentName : ''
+output synthesisQueueName string = deployAudioJob ? aca!.outputs.queueName : ''
+output synthesisJobIdentityClientId string = deployAudioJob ? aca!.outputs.jobIdentityClientId : ''
