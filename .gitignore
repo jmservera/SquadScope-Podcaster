@@ -26,4 +26,4 @@ local.settings.json
 # Squad: SubSquad activation file (local to this machine)
 .squad-workstream
 .podcaster-artifacts/
-.test-artifacts/
+.test-artifacts*/
