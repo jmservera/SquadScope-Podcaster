@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -8,7 +7,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
-HOST_JSON = ROOT / "host.json"
 
 
 def _workflow_text() -> str:
@@ -28,147 +26,100 @@ def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:
 
     assert not re.search(rf"(?m)^{re.escape(indent)}(?!workflow_dispatch:)\w+:", body)
 
-def test_deploy_workflow_packages_run_from_private_blob_with_oidc() -> None:
+
+def test_deploy_workflow_uses_oidc_auth() -> None:
+    """ACA deploy authenticates via OIDC (id-token: write) and azure/login."""
     workflow = _workflow_text()
 
-    assert re.search(r"(?m)^  id-token: write$", workflow)
-    assert "azure/login@" in workflow
-    assert re.search(r"python-version:\s*['\"]?3\.11['\"]?", workflow)
-    assert re.search(
-        r"(?:python -m )?pip install\b[^\n]*--target[= ]['\"]?\.python_packages/lib/site-packages['\"]?[^\n]*-r requirements\.txt",
-        workflow,
+    assert re.search(r"(?m)^  id-token: write$", workflow), (
+        "deploy-azure.yml must request id-token: write for OIDC"
     )
-    assert 'zipfile.ZipFile("app.zip", "w", zipfile.ZIP_DEFLATED)' in workflow
-    assert 'Path("function_app.py")' in workflow
-    assert 'Path("host.json")' in workflow
-    assert 'Path("podcaster")' in workflow
-    assert 'Path(".python_packages")' in workflow
-
-    assert "az functionapp deployment source config-zip" not in workflow
-    assert "az webapp deploy" not in workflow
-    assert "az storage blob upload" in workflow
-    assert "--auth-mode login" in workflow
-    assert "az storage blob generate-sas" not in workflow
-    assert "--as-user" not in workflow
-    assert "WEBSITE_RUN_FROM_PACKAGE" in workflow
-    assert "WEBSITE_USE_MANAGED_IDENTITY=true" in workflow
-    assert "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned" in workflow
-    assert "az functionapp config appsettings set" in workflow
-    assert "az functionapp restart" in workflow
+    assert "azure/login@" in workflow, "deploy-azure.yml must use azure/login action"
 
 
-def test_deploy_workflow_does_not_emit_package_secrets() -> None:
+def test_deploy_workflow_deploys_bicep_infrastructure() -> None:
+    """ACA workflow deploys infra via az deployment group create with main.bicep."""
+    workflow = _workflow_text()
+
+    assert "az deployment group create" in workflow
+    assert "infra/main.bicep" in workflow
+    assert "deploymentPrincipalObjectId" in workflow
+
+
+def test_deploy_workflow_does_not_leak_secrets() -> None:
+    """No SAS tokens, account keys, or API keys should appear in workflow logs."""
     workflow = _workflow_text()
 
     assert "package_sas" not in workflow
-    assert "add-mask::$package_url" not in workflow
-    assert "no package SAS or storage key was emitted" in workflow
+    assert "az storage blob generate-sas" not in workflow
+    assert "--as-user" not in workflow
+    assert "AZURE_OPENAI_API_KEY" not in workflow
 
 
-def test_deploy_workflow_smokes_generate_without_printing_api_key() -> None:
+def test_deploy_workflow_no_function_app_remnants() -> None:
+    """ACA-only architecture must not reference Function App deployment steps."""
     workflow = _workflow_text()
 
-    assert "Smoke deployed generate endpoint" in workflow
-    assert "PODCASTER_GENERATE_URL: ${{ steps.deploy_bicep.outputs.endpoint }}" in workflow
-    assert "python scripts/smoke_generate.py" in workflow
-    assert "refusing to smoke with an empty key" in workflow
-    assert "API key was not printed" in workflow
-    assert "--api-key" not in workflow
+    assert "az functionapp" not in workflow
+    assert "WEBSITE_RUN_FROM_PACKAGE" not in workflow
+    assert "python-version" not in workflow or "actions/setup-python" not in workflow
+    assert "az webapp deploy" not in workflow
 
 
-def test_deploy_workflow_excludes_local_and_secret_files_from_package() -> None:
-    workflow = _workflow_text()
-
-    for excluded in (
-        '".git"',
-        '".github"',
-        '".venv"',
-        '".pytest_cache"',
-        '"__pycache__"',
-        '"local.settings.json"',
-        'path.name.startswith(".env")',
-        'path.suffix == ".pyc"',
-    ):
-        assert excluded in workflow
-
-
-def test_host_json_declares_extension_bundle_for_python_v2_indexing() -> None:
-    # Regression guard for the /api/generate HTTP 404 (PR #54, #51): the Python
-    # v2 (decorator) model only registers @app.route triggers when host.json
-    # declares the extension bundle. Without it the host serves no routes.
-    host = json.loads(HOST_JSON.read_text(encoding="utf-8"))
-
-    bundle = host.get("extensionBundle")
-    assert isinstance(bundle, dict), "host.json must declare an extensionBundle for Python v2 worker indexing"
-    assert bundle.get("id") == "Microsoft.Azure.Functions.ExtensionBundle"
-    assert bundle.get("version"), "host.json extensionBundle must pin a version range"
-
-
-def test_bicep_enables_python_v2_worker_indexing() -> None:
-    # Regression guard for the /api/generate HTTP 404 (PR #54, #51): the runtime
-    # only indexes @app.route-decorated functions when these app settings are
-    # present. Removing either one reintroduces the 404 on deploy.
+def test_bicep_references_aca_module() -> None:
+    """infra/main.bicep must deploy the ACA module as the primary compute."""
     bicep = BICEP.read_text(encoding="utf-8")
 
-    assert re.search(r"name:\s*'FUNCTIONS_WORKER_RUNTIME'\s*\n\s*value:\s*'python'", bicep), (
-        "infra/main.bicep must set FUNCTIONS_WORKER_RUNTIME=python"
+    assert re.search(r"module aca 'modules/aca\.bicep'", bicep), (
+        "infra/main.bicep must reference modules/aca.bicep"
     )
-    assert re.search(
-        r"name:\s*'AzureWebJobsFeatureFlags'\s*\n\s*value:\s*'EnableWorkerIndexing'", bicep
-    ), "infra/main.bicep must set AzureWebJobsFeatureFlags=EnableWorkerIndexing for Python v2 indexing"
+    assert "containerAppsEnvName" in bicep
+    assert "synthesisJobName" in bicep
 
 
-def test_deploy_workflow_gates_smoke_on_function_indexing() -> None:
-    # Regression guard for the /api/generate HTTP 404 (PR #54, #51): the deploy
-    # must wait until the host registers the 'generate' trigger before the strict
-    # smoke, so an unindexed/unmounted package fails with a precise error instead
-    # of a misleading response-shape failure.
-    workflow = _workflow_text()
+def test_bicep_no_function_app_remnants() -> None:
+    """ACA-only bicep must not contain Function App settings."""
+    bicep = BICEP.read_text(encoding="utf-8")
 
-    wait_index = workflow.find("Wait for Function App to index functions")
-    smoke_index = workflow.find("Smoke deployed generate endpoint")
-    assert wait_index != -1, "deploy-azure.yml must wait for the function host to index before smoke"
-    assert smoke_index != -1, "deploy-azure.yml must keep the smoke step"
-    assert wait_index < smoke_index, "indexing wait must run before the strict smoke step"
-    assert "az functionapp function list" in workflow
-    assert "AzureWebJobsFeatureFlags" in workflow
+    assert "FUNCTIONS_WORKER_RUNTIME" not in bicep
+    assert "AzureWebJobsFeatureFlags" not in bicep
+    assert "Microsoft.Web/sites" not in bicep
 
 
 def test_bicep_assigns_deploy_identity_storage_data_plane_role() -> None:
     bicep = BICEP.read_text(encoding="utf-8")
 
-    assert "param packageContainerName string = 'function-packages'" in bicep
     assert "deploymentPrincipalObjectId" in bicep
-    assert "deploymentBlobDataContributor" in bicep
+    # Storage Blob Data Contributor RBAC role GUID
     assert "ba92f5b4-2d11-453d-a403-e96b0029c9fe" in bicep
 
 
 OPENAI_MODULE = ROOT / "infra/modules/openai.bicep"
 
 
-def test_openai_infra_is_opt_in_and_defaults_off() -> None:
-    # #30: the production Azure OpenAI TTS infrastructure must be opt-in so the core
-    # storage + Function App deploy stays green where the TTS model is unavailable.
+def test_openai_module_always_deployed_in_aca_architecture() -> None:
+    # #109: In the ACA-only architecture, OpenAI is always deployed (not opt-in).
     bicep = BICEP.read_text(encoding="utf-8")
 
-    assert "param deployOpenAi bool = false" in bicep, (
-        "deployOpenAi must default to false to protect the green deploy"
+    assert re.search(r"module openAi 'modules/openai\.bicep' =", bicep), (
+        "infra/main.bicep must deploy the OpenAI module"
     )
-    assert re.search(r"module openAi 'modules/openai\.bicep' = if \(deployOpenAi\)", bicep), (
-        "OpenAI resources must deploy conditionally via the modules/openai.bicep module"
+    # It should NOT be conditional anymore
+    assert "if (deployOpenAi)" not in bicep, (
+        "OpenAI module should be unconditionally deployed in ACA-only architecture"
     )
 
 
 def test_openai_module_uses_managed_identity_not_keys() -> None:
     # #30 acceptance: managed identity / RBAC is preferred; account keys must never be
-    # written to Function App settings, logs, or deployment outputs.
+    # written to app settings, logs, or deployment outputs.
     module = OPENAI_MODULE.read_text(encoding="utf-8")
     main = BICEP.read_text(encoding="utf-8")
 
     assert "kind: 'OpenAI'" in module
     assert "disableLocalAuth: true" in module, "OpenAI account must disable local (key) auth"
     assert "type: 'SystemAssigned'" in module
-    # Cognitive Services OpenAI User role for the Function App managed identity.
+    # Cognitive Services OpenAI User role for the ACA job managed identity.
     assert "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd" in module
     assert "listKeys" not in module and "listKeys" not in main, "must not read OpenAI account keys"
     assert "AZURE_OPENAI_API_KEY" not in module and "AZURE_OPENAI_API_KEY" not in main, (
@@ -182,27 +133,29 @@ def test_openai_module_deploys_fable_and_alloy_tts() -> None:
 
     assert "param ttsVoiceHostA string = 'fable'" in main
     assert "param ttsVoiceHostB string = 'alloy'" in main
-    assert "AZURE_OPENAI_TTS_DEPLOYMENT" in main
-    assert "AZURE_OPENAI_CHAT_DEPLOYMENT" in main
-    assert "AZURE_OPENAI_ENDPOINT" in main
+
+
+def test_aca_module_receives_openai_config() -> None:
+    """ACA module must receive OpenAI endpoint and deployment names."""
+    aca_module = (ROOT / "infra/modules/aca.bicep").read_text(encoding="utf-8")
+
+    assert "AZURE_OPENAI_ENDPOINT" in aca_module
+    assert "AZURE_OPENAI_TTS_DEPLOYMENT" in aca_module
+    assert "AZURE_OPENAI_CHAT_DEPLOYMENT" in aca_module
 
 
 def test_deploy_workflow_threads_opt_in_openai_flag() -> None:
-    # The opt-in flag must be plumbed through workflow_dispatch into the bicep deploy,
-    # defaulting to false so unattended/normal deploys never provision OpenAI.
+    # The deploy_openai input exists in workflow_dispatch for future use.
     workflow = _workflow_text()
 
     assert "deploy_openai:" in workflow
-    assert "DEPLOY_OPENAI: ${{ inputs.deploy_openai }}" in workflow
-    assert 'deployOpenAi="${DEPLOY_OPENAI:-false}"' in workflow
 
 
 def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
     # Regression guard for the artifact retention contract (#89): the job manifest
     # and podcaster/artifact_access.py promise expires_at / retention.cleanup_after
     # with cleanup_owner "operator_or_storage_lifecycle_policy". Storage must
-    # actually enforce that so expired artifacts and stale deploy packages do not
-    # accumulate forever.
+    # actually enforce that so expired artifacts do not accumulate forever.
     bicep = BICEP.read_text(encoding="utf-8")
 
     assert "Microsoft.Storage/storageAccounts/managementPolicies@" in bicep, (
@@ -211,10 +164,9 @@ def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
     assert "param artifactRetentionDays int = 7" in bicep, (
         "artifact retention must default to the documented 7-day manifest expiry"
     )
-    assert "param packageRetentionDays int = 7" in bicep
     assert re.search(r"@minValue\(1\)\s*\n\s*@maxValue\(365\)\s*\n\s*param artifactRetentionDays", bicep)
 
-    # Both containers must be covered by delete rules tied to the retention params.
+    # Artifact container must be covered by delete rules tied to the retention param.
     # The artifacts rule targets auto-generated output prefixes (jobs/, bakeoff/) but must
     # NOT target the bare container, so operator review artifacts under review/ are retained (#93).
     assert "param autoExpireArtifactPrefixes array" in bicep, (
@@ -233,8 +185,4 @@ def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
     assert "prefixMatch: [\n          '${storageContainerName}/'" not in bicep and not re.search(
         r"prefixMatch:\s*\[\s*'\$\{storageContainerName\}/'\s*\]", bicep
     ), "artifacts rule must not match the whole container (would auto-delete review/ artifacts)"
-    assert re.search(r"prefixMatch:\s*\[\s*'\$\{packageContainerName\}/'", bicep), (
-        "deploy package container must be targeted by a lifecycle delete rule"
-    )
     assert "daysAfterModificationGreaterThan: artifactRetentionDays" in bicep
-    assert "daysAfterModificationGreaterThan: packageRetentionDays" in bicep

@@ -67,6 +67,10 @@ param ttsDeploymentName string = ''
 @description('Azure OpenAI chat deployment (alias) name.')
 param chatDeploymentName string = ''
 
+@secure()
+@description('Podcaster API key for auth.')
+param podcasterApiKey string = ''
+
 @description('TTS voice for host A.')
 param ttsVoiceHostA string = 'fable'
 
@@ -226,6 +230,10 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'AZURE_OPENAI_AUTH_MODE'
               value: 'managed_identity'
+            }
+            {
+              name: 'PODCASTER_API_KEY'
+              value: podcasterApiKey
             }
           ]
         }
