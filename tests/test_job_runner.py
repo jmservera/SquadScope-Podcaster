@@ -293,7 +293,7 @@ def _message(job_id: str = JOB_ID, message_id: str = "m1") -> QueueMessage:
     return QueueMessage(message_id=message_id, pop_receipt="pr", body=encode_synthesis_message(job_id), dequeue_count=1)
 
 
-def test_process_message_deletes_on_completion(monkeypatch):
+def test_process_message_deletes_on_completion(monkeypatch, caplog):
     _patch_audio(monkeypatch)
     _patch_tts_network(monkeypatch)
     storage = FakeStorage()
@@ -301,9 +301,14 @@ def test_process_message_deletes_on_completion(monkeypatch):
     queue = FakeQueue()
     msg = _message()
 
-    outcome = job_runner.process_message(msg, storage=storage, queue=queue, config=_production_config())
+    with caplog.at_level("INFO"):
+        outcome = job_runner.process_message(msg, storage=storage, queue=queue, config=_production_config())
     assert outcome.status == job_runner.STATUS_COMPLETED
     assert queue.deleted == ["m1"]
+    audit = " ".join(record.getMessage() for record in caplog.records if "synthesis audit" in record.getMessage())
+    assert "event=start" in audit
+    assert "event=success" in audit
+    assert JOB_ID in audit
 
 
 def test_process_message_deletes_on_skip(monkeypatch):
@@ -323,6 +328,22 @@ def test_process_message_leaves_message_on_transient_failure(monkeypatch):
     outcome = job_runner.process_message(_message(), storage=storage, queue=queue, config=_production_config())
     assert outcome.status == job_runner.STATUS_FAILED
     assert queue.deleted == []  # left for redelivery
+
+
+def test_process_message_deletes_after_retry_exhaustion(monkeypatch):
+    _patch_audio(monkeypatch)
+    storage = FakeStorage()  # no manifest staged -> transient until poison threshold
+    queue = FakeQueue()
+    msg = QueueMessage(
+        message_id="m-poison",
+        pop_receipt="pr",
+        body=encode_synthesis_message(JOB_ID),
+        dequeue_count=job_runner.MAX_DEQUEUE_COUNT,
+    )
+    outcome = job_runner.process_message(msg, storage=storage, queue=queue, config=_production_config())
+    assert outcome.status == job_runner.STATUS_FAILED
+    assert outcome.reason == job_runner.REASON_RETRY_EXHAUSTED
+    assert queue.deleted == ["m-poison"]
 
 
 def test_process_message_discards_poison_message():

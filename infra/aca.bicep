@@ -92,6 +92,16 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 }
 
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' existing = {
+  name: 'default'
+  parent: storage
+}
+
+resource artifactContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' existing = {
+  name: storageContainerName
+  parent: blobService
+}
+
 resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
   name: 'default'
   parent: storage
@@ -224,10 +234,10 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
   }
 }
 
-// Identity-only access to stage artifacts in the private blob container.
+// Identity-only access to stage artifacts in the private blob container only.
 resource jobBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, jobIdentity.id, 'Synthesis Job Storage Blob Data Contributor')
-  scope: storage
+  name: guid(artifactContainer.id, jobIdentity.id, 'Synthesis Job Storage Blob Data Contributor')
+  scope: artifactContainer
   properties: {
     principalId: jobIdentity.properties.principalId
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobDataContributorRoleId)
@@ -235,18 +245,15 @@ resource jobBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04
   }
 }
 
-// Identity-only access to read queue length (scaler) and process synthesis messages.
+// Identity-only access to read queue length (scaler) and process synthesis messages on the synthesis queue only.
 resource jobQueueDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, jobIdentity.id, 'Synthesis Job Storage Queue Data Contributor')
-  scope: storage
+  name: guid(synthesisQueue.id, jobIdentity.id, 'Synthesis Job Storage Queue Data Contributor')
+  scope: synthesisQueue
   properties: {
     principalId: jobIdentity.properties.principalId
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueDataContributorRoleId)
     principalType: 'ServicePrincipal'
   }
-  dependsOn: [
-    synthesisQueue
-  ]
 }
 
 output jobName string = synthesisJob.name
