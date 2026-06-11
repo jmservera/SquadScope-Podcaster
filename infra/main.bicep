@@ -1,8 +1,11 @@
-// HOTFIX: isolate deploy/CI changes (branch squad/47-isolate-deploy-ci)
+// Podcaster infrastructure — Azure Functions + Storage + OpenAI (TTS)
 targetScope = 'resourceGroup'
 
-@description('Azure region for all resources.')
-param location string = resourceGroup().location
+@description('Azure region for compute/storage resources (Function App, Storage, App Insights).')
+param location string = 'swedencentral'
+
+@description('Azure region for the OpenAI account (must support gpt-4o-mini-tts).')
+param openAiLocation string = 'eastus2'
 
 @description('Globally unique Storage Account name. Defaults to a deterministic safe name based on the resource group.')
 @minLength(3)
@@ -55,6 +58,9 @@ param deploymentPrincipalObjectId string = ''
 @description('Opt-in switch for the production Azure OpenAI TTS infrastructure (#30). Defaults to false so the storage + Function App deploy stays green in regions where the selected TTS model is unavailable. Set to true only in a region/SKU that supports the configured ttsModelName/chatModelName.')
 param deployOpenAi bool = false
 
+@description('Set to true on first deploy after the OpenAI account was soft-deleted (restores it). Set to false for normal operation.')
+param restoreOpenAi bool = false
+
 @description('Azure OpenAI (Cognitive Services) account name. Must be globally unique within its subdomain. Defaults follow the existing Function App naming convention.')
 @minLength(2)
 @maxLength(63)
@@ -72,6 +78,9 @@ param ttsModelVersion string = '2025-03-20'
 @description('Deployment (alias) name used by the Function App to reference the TTS model.')
 param ttsDeploymentName string = 'tts'
 
+@description('SKU tier for the TTS model deployment. gpt-4o-mini-tts requires GlobalStandard.')
+param ttsModelSkuName string = 'GlobalStandard'
+
 @description('Provisioned capacity (thousands of tokens / requests per minute) for the TTS model deployment.')
 param ttsModelCapacity int = 1
 
@@ -83,6 +92,9 @@ param chatModelVersion string = '2024-07-18'
 
 @description('Deployment (alias) name used by the Function App to reference the chat model.')
 param chatDeploymentName string = 'chat'
+
+@description('SKU tier for the chat model deployment.')
+param chatModelSkuName string = 'GlobalStandard'
 
 @description('Provisioned capacity (thousands of tokens per minute) for the chat model deployment.')
 param chatModelCapacity int = 10
@@ -395,17 +407,20 @@ resource deploymentBlobDataContributor 'Microsoft.Authorization/roleAssignments@
 module openAi 'modules/openai.bicep' = if (deployOpenAi) {
   name: 'openai-tts'
   params: {
-    location: location
+    location: openAiLocation
     openAiAccountName: openAiAccountName
     openAiCustomSubDomain: openAiCustomSubDomain
     openAiSkuName: openAiSkuName
+    restoreAccount: restoreOpenAi
     ttsModelName: ttsModelName
     ttsModelVersion: ttsModelVersion
     ttsDeploymentName: ttsDeploymentName
+    ttsModelSkuName: ttsModelSkuName
     ttsModelCapacity: ttsModelCapacity
     chatModelName: chatModelName
     chatModelVersion: chatModelVersion
     chatDeploymentName: chatDeploymentName
+    chatModelSkuName: chatModelSkuName
     chatModelCapacity: chatModelCapacity
     functionAppPrincipalId: functionApp.identity.principalId
     // Grant the synthesis job's identity Cognitive Services OpenAI User too, when both opt-ins are on.

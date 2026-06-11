@@ -132,7 +132,7 @@ synthesis stack (#76–#80). Tracked separately; do not bundle here.
 
 Do **not** execute autonomously. Each is irreversible or breaks live behaviour:
 
-- [ ] Delete/purge the manual bakeoff Azure OpenAI (`podcaster-openai-bakeoff-20260609`) — only after §3.B steps 1–2.
+- [x] Delete/purge the manual bakeoff Azure OpenAI (`podcaster-openai-bakeoff-20260609`) — ✅ deleted 2026-06-11; purge denied (insufficient perms, will auto-purge after retention). Replaced by `podcaster-squadscope-p-3f9a07d60de7-openai` in eastus2.
 - [ ] Any change to `squadscope-mi` — it holds **`Owner` on the RG**; removing it can sever RG operation. Operator must confirm whether it is still the working credential before touch.
 - [ ] Any teardown of the storage account, Function App, plan, App Insights, or Log Analytics — these are bicep-managed and **should be reconciled by redeploy, not deleted**. Deletion would drop review artifacts and break the green deploy.
 - [ ] Do not delete the EventGrid system topic / `StorageAntimalwareSubscription` — that disables Defender for Storage malware scanning.
@@ -204,14 +204,24 @@ verify-before-delete. **Outcome: BLOCKED at provisioning; nothing deleted.**
    window, so no manual deletion. ARM deployment history is small and healthy. The
    ACA job (`deploy_audio_job`) was **not** enabled (separate operator decision).
 
-### Required to unblock (operator decision)
+### Resolution (2026-06-11, later same day)
 
-Provision the bicep OpenAI in a region that offers `gpt-4o-mini-tts` (e.g.
-`eastus2`) — the OpenAI account can live in a different region from the RG — **or**
-change `ttsModelName`/`ttsModelVersion` to a TTS model available in `swedencentral`
-(`tts` / `tts-hd`, version `001`). After provisioning succeeds and the Function App
-is repointed (incl. the repo variables) and re-smoked green, the bakeoff can be
-deleted/purged per §3.B step 3.
+The blocker above was resolved by PRs #96/#100/#103/#105/#106: the OpenAI account
+was moved to eastus2 (supports `gpt-4o-mini-tts`), the bakeoff was deleted, and
+the deploy workflow now points to the Bicep-provisioned resource.
+
+## 7. Region migration — 2026-06-11
+
+- **OpenAI account moved to eastus2** (`podcaster-squadscope-p-3f9a07d60de7-openai`)
+  to support `gpt-4o-mini-tts` (GlobalStandard SKU). The subscription lacks
+  compute quota in eastus2, so Function App, Storage, App Insights, and Log
+  Analytics remain in swedencentral.
+- **Bakeoff retired**: `podcaster-openai-bakeoff-20260609` deleted (soft-delete;
+  purge pending auto-retention). Workflow defaults updated to point at the new
+  bicep-provisioned `tts` / `chat` deployments.
+- **Infra parameter**: new `openAiLocation` param (default `eastus2`) added to
+  `infra/main.bicep` so the OpenAI account can deploy to a different region
+  from the rest of the stack. PR #96.
 
 ## Constraints honoured
 

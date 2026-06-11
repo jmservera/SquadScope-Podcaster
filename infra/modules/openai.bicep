@@ -27,6 +27,9 @@ param ttsModelVersion string
 @description('Deployment (alias) name used by the Function App to reference the TTS model.')
 param ttsDeploymentName string
 
+@description('SKU tier for the TTS model deployment.')
+param ttsModelSkuName string = 'GlobalStandard'
+
 @description('Provisioned capacity for the TTS model deployment.')
 param ttsModelCapacity int = 1
 
@@ -39,6 +42,9 @@ param chatModelVersion string
 @description('Deployment (alias) name used by the Function App to reference the chat model.')
 param chatDeploymentName string
 
+@description('SKU tier for the chat model deployment.')
+param chatModelSkuName string = 'GlobalStandard'
+
 @description('Provisioned capacity for the chat model deployment.')
 param chatModelCapacity int = 10
 
@@ -47,6 +53,9 @@ param functionAppPrincipalId string
 
 @description('Optional synthesis job managed-identity principal that also receives Cognitive Services OpenAI User (#76). Empty when the audio job is not deployed.')
 param audioJobPrincipalId string = ''
+
+@description('Set to true to restore a soft-deleted account with the same name. Set to false for normal operation.')
+param restoreAccount bool = false
 
 var hasAudioJobPrincipal = !empty(audioJobPrincipalId)
 
@@ -63,6 +72,7 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   properties: {
     // customSubDomainName is required for Entra ID (managed identity) token auth.
     customSubDomainName: openAiCustomSubDomain
+    restore: restoreAccount
     // Function App authenticates with its managed identity only; account keys are disabled.
     disableLocalAuth: true
     publicNetworkAccess: 'Enabled'
@@ -76,7 +86,7 @@ resource ttsDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10
   parent: openAiAccount
   name: ttsDeploymentName
   sku: {
-    name: 'Standard'
+    name: ttsModelSkuName
     capacity: ttsModelCapacity
   }
   properties: {
@@ -92,7 +102,7 @@ resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-1
   parent: openAiAccount
   name: chatDeploymentName
   sku: {
-    name: 'Standard'
+    name: chatModelSkuName
     capacity: chatModelCapacity
   }
   properties: {
