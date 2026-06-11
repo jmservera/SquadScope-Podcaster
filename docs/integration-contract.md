@@ -162,6 +162,8 @@ The manifest and packet metadata include `artifact_access` with:
 
 Cleanup is owned by the operator or a storage lifecycle policy using `expires_at`/`cleanup_after`. Audit review uses the job manifest, review audit trail placeholders, Application Insights `correlation_id`, and Azure Storage diagnostics. Placeholder artifacts remain blocked from publication until human/editorial review and real TTS gates exist.
 
+The storage lifecycle policy (`infra/main.bicep`) auto-deletes only **auto-generated** outputs — the `jobs/` and `bakeoff/` prefixes — after `artifactRetentionDays` (7 days). Operator **review** artifacts under the `review/` prefix (including `review/v3/`) are intentionally **excluded** and retained indefinitely until the editorial gate signs off (#93). Azure blob lifecycle filters cannot express exclusions, so review artifacts are protected by omitting their prefix from `autoExpireArtifactPrefixes`. Retiring review artifacts is an explicit operator action, not an automatic expiry.
+
 ## Manifest and packet metadata
 
 The top-level response keys remain stable for SquadScope compatibility. Additional lifecycle details are stored in `manifest_url` and inside the publishing packet `MANIFEST.json`, including:

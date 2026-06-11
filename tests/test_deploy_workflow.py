@@ -215,9 +215,24 @@ def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
     assert re.search(r"@minValue\(1\)\s*\n\s*@maxValue\(365\)\s*\n\s*param artifactRetentionDays", bicep)
 
     # Both containers must be covered by delete rules tied to the retention params.
-    assert "prefixMatch: [\n          '${storageContainerName}/'" in bicep or re.search(
-        r"prefixMatch:\s*\[\s*'\$\{storageContainerName\}/'", bicep
-    ), "artifacts container must be targeted by a lifecycle delete rule"
+    # The artifacts rule targets auto-generated output prefixes (jobs/, bakeoff/) but must
+    # NOT target the bare container, so operator review artifacts under review/ are retained (#93).
+    assert "param autoExpireArtifactPrefixes array" in bicep, (
+        "auto-expire prefixes must be parametrised so review/ can be excluded"
+    )
+    assert re.search(
+        r"prefixMatch:\s*\[for prefix in autoExpireArtifactPrefixes: '\$\{storageContainerName\}/\$\{prefix\}'\]",
+        bicep,
+    ), "artifacts lifecycle rule must target the parametrised auto-expire prefixes"
+    assert "'jobs/'" in bicep and "'bakeoff/'" in bicep, (
+        "auto-expire prefixes must cover generated job and bakeoff outputs"
+    )
+    assert "'review/'" not in bicep, (
+        "operator review artifacts (review/) must not be subject to lifecycle auto-delete (#93)"
+    )
+    assert "prefixMatch: [\n          '${storageContainerName}/'" not in bicep and not re.search(
+        r"prefixMatch:\s*\[\s*'\$\{storageContainerName\}/'\s*\]", bicep
+    ), "artifacts rule must not match the whole container (would auto-delete review/ artifacts)"
     assert re.search(r"prefixMatch:\s*\[\s*'\$\{packageContainerName\}/'", bicep), (
         "deploy package container must be targeted by a lifecycle delete rule"
     )
