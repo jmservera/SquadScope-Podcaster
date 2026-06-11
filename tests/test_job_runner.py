@@ -179,7 +179,7 @@ def test_run_synthesis_completes_and_never_makes_publishable(monkeypatch):
     _stage(storage, _base_manifest(), _two_voice_script())
 
     outcome = job_runner.run_synthesis(
-        JOB_ID, storage, _production_config(), transport=lambda request: b"segment-bytes"
+        JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=lambda request: b"segment-bytes"
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
@@ -211,7 +211,7 @@ def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
     with caplog.at_level("INFO"):
-        job_runner.run_synthesis(JOB_ID, storage, _production_config(), transport=lambda request: b"bytes")
+        job_runner.run_synthesis(JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=lambda request: b"bytes")
     combined = " ".join(record.getMessage() for record in caplog.records)
     assert "openai.azure.com" not in combined  # full endpoint never logged
     assert "Bearer" not in combined
@@ -270,7 +270,7 @@ def test_run_synthesis_failure_does_not_make_publishable(monkeypatch):
         raise RuntimeError("tts endpoint unreachable")
 
     with pytest.raises(job_runner.TransientSynthesisError):
-        job_runner.run_synthesis(JOB_ID, storage, _production_config(), transport=failing_transport)
+        job_runner.run_synthesis(JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=failing_transport)
 
     manifest = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode("utf-8"))
     assert manifest["publishing"]["eligible"] is False
