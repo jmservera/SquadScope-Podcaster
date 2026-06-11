@@ -33,6 +33,12 @@ param storageContainerName string = 'podcaster-artifacts'
 @description('Private blob container used by GitHub Actions to stage Function App run-from-package ZIPs.')
 param packageContainerName string = 'function-packages'
 
+@description('Blob prefixes (relative to the artifacts container) holding auto-generated outputs that are safe to auto-expire. Operator review artifacts under "review/" are intentionally omitted so the editorial review gate inputs (#93) are retained until sign-off.')
+param autoExpireArtifactPrefixes array = [
+  'jobs/'
+  'bakeoff/'
+]
+
 @description('Days after which generated podcaster artifacts are auto-deleted by the Storage lifecycle policy. Matches the documented 7-day manifest expiry (expires_at / retention.cleanup_after).')
 @minValue(1)
 @maxValue(365)
@@ -179,6 +185,9 @@ resource packageContainer 'Microsoft.Storage/storageAccounts/blobServices/contai
 
 // Auto-delete expired artifacts and stale deploy packages so the documented manifest
 // retention contract (expires_at / cleanup_after) is enforced by storage, not just declared.
+// The artifacts rule only targets auto-generated output prefixes (jobs/, bakeoff/). Operator
+// review artifacts under "review/" are intentionally excluded (#93): Azure lifecycle filters
+// cannot express exclusions, so the review gate inputs are protected by omitting their prefix.
 resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
   name: '${storage.name}/default'
   properties: {
@@ -193,9 +202,7 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
               blobTypes: [
                 'blockBlob'
               ]
-              prefixMatch: [
-                '${storageContainerName}/'
-              ]
+              prefixMatch: [for prefix in autoExpireArtifactPrefixes: '${storageContainerName}/${prefix}']
             }
             actions: {
               baseBlob: {
