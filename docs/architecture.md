@@ -14,13 +14,24 @@ SquadScope Podcaster is a sister repository and service. SquadScope remains resp
 6. A human reviews the packet and manually publishes to Spotify or a podcast host.
 7. SquadScope can link to the final public podcast URL later; it does not host or embed audio initially.
 
-## Azure resources
+## Azure resources (ACA-only architecture, #109/#112)
 
-- Resource group supplied by deployment workflow.
-- Storage Account for Function host state and podcast artifact staging.
-- Linux Function App running Python.
-- System-assigned managed identity for blob storage writes (active when `PODCASTER_STORAGE_ACCOUNT_URL` is configured).
-- Log Analytics workspace and Application Insights.
+All resources deploy to **eastus2** (required for `gpt-4o-mini-tts` model availability).
+
+| Resource | Purpose |
+|----------|---------|
+| Storage Account | Artifact staging (`podcaster-artifacts` container) + synthesis queue |
+| Azure OpenAI (Cognitive Services) | TTS (`gpt-4o-mini-tts`, deployment `tts`) + chat (`gpt-4o-mini`, deployment `chat`) |
+| Container Apps Environment | Hosts the synthesis job |
+| Container Apps Job (queue-triggered) | Runs the full episode pipeline: script → TTS → ffmpeg stitch → validate → stage |
+| User-assigned Managed Identity | Identity-only auth to Storage (Blob + Queue) and Azure OpenAI (no keys) |
+| Log Analytics + Application Insights | Observability |
+
+The Function App was removed in PR #112. The ACA Job is now the **sole compute resource** — it scales to zero when idle and processes synthesis messages from the Storage Queue.
+
+### Region rationale
+
+`eastus2` was chosen because it is the only region where `gpt-4o-mini-tts` (GlobalStandard) is available AND Container Apps are supported. All resources are co-located to minimize latency.
 
 ## API design
 
@@ -39,9 +50,19 @@ Lifecycle, review-gate, publishing readiness, and observability metadata live in
 
 Validation errors return HTTP 400 with structured error messages. Authentication failures return HTTP 401. Generation failures return HTTP 500 with a job response with `status` set to `failed` and populated `errors`.
 
-## Production audio (ffmpeg) hosting
+## Production audio pipeline
 
-The deployed Linux Consumption Function App cannot run `ffmpeg`/`ffprobe`, so the audio stitch + validation gate cannot execute in-process; `/api/generate` currently returns a non-publishable placeholder while real synthesis runs on hosts that have `ffmpeg`. The decision for the production audio path (split: thin Functions front door + a queue-triggered Azure Container Apps Job that owns `ffmpeg`) is recorded in [ADR 0001](adr/0001-production-audio-ffmpeg-hosting.md). Provisioning is gated on operator approval of Azure spend (#67).
+The ACA synthesis job runs the full episode pipeline in a container with `ffmpeg` baked in:
+
+1. A queue message (containing only `job_id`) triggers the job.
+2. The job reads the staged manifest/script from Blob Storage.
+3. Azure OpenAI TTS synthesizes each script segment (two-voice: fable/alloy).
+4. `ffmpeg` stitches segments + intro/outro CC0 music stingers into one MP3.
+5. `ffprobe` validates loudness, duration, and format.
+6. The validated MP3 + updated manifest are staged back to Blob Storage.
+7. Publication remains **human-gated** — the job never marks an episode eligible for public release.
+
+The decision for this architecture is recorded in [ADR 0001](adr/0001-production-audio-ffmpeg-hosting.md).
 
 ## Decision records
 
