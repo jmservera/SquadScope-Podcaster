@@ -6,7 +6,7 @@ This is a one-shot operator tool, not part of the public publishing path. It:
    SquadScope weekly article (default: 2026-W24).
 2. Authors the joyful two-voice Claracle conversation script (fable + alloy)
    with the Claracle intro and the AI-voice disclosure in the first exchange.
-3. Synthesizes real audio via the Azure OpenAI ``tts-bakeoff`` deployment using
+3. Synthesizes real audio via the Azure OpenAI ``tts`` deployment using
    a managed-identity / Azure AD bearer token (the account has local-auth
    disabled), stitches the per-voice turns, and runs the ffmpeg validation gate.
 4. STAGES the MP3, script, and a review manifest under an output directory and
