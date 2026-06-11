@@ -69,6 +69,8 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   properties: {
     // customSubDomainName is required for Entra ID (managed identity) token auth.
     customSubDomainName: openAiCustomSubDomain
+    // Restore the account if it was soft-deleted (region migration).
+    restore: true
     // Function App authenticates with its managed identity only; account keys are disabled.
     disableLocalAuth: true
     publicNetworkAccess: 'Enabled'
