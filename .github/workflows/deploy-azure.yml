@@ -146,12 +146,17 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Create resource group
+      - name: Ensure resource group exists
         run: |
-          az group create \
-            --name "$AZURE_RESOURCE_GROUP" \
-            --location "$AZURE_LOCATION" \
-            --output none
+          # Create the RG only if it does not exist; never attempt to change
+          # the location of an existing RG (ARM rejects that).  Resources
+          # inside the RG are deployed to $AZURE_LOCATION regardless of RG metadata.
+          if ! az group show --name "$AZURE_RESOURCE_GROUP" --output none 2>/dev/null; then
+            az group create \
+              --name "$AZURE_RESOURCE_GROUP" \
+              --location "$AZURE_LOCATION" \
+              --output none
+          fi
 
       - name: Deploy infrastructure
         id: deploy_bicep
