@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from podcaster.costs import (
@@ -21,6 +21,7 @@ from podcaster.costs import (
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
+from podcaster.queue import enqueue_synthesis_job
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
 
@@ -45,7 +46,7 @@ def build_job_id(payload: dict[str, Any]) -> str:
     return f"podcast-{safe_week}-{digest}"
 
 
-def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None = None, now: datetime | None = None) -> JobResult:
+def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None = None, now: datetime | None = None, enqueue: Callable[[str], bool] | None = None) -> JobResult:
     current = now or datetime.now(timezone.utc)
     expires_at = (current + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     job_id = build_job_id(payload)
@@ -209,6 +210,9 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
         len(stored) + 1,
     )
 
+    if not payload.get("dry_run"):
+        _enqueue_synthesis(job_id, enqueue)
+
     response = _response_from_artifacts(
         job_id=job_id,
         status="dry_run" if payload.get("dry_run") else "accepted",
@@ -228,6 +232,21 @@ def failed_response(errors: list[str], warnings: list[str] | None = None) -> dic
             strict=True,
         )
     )
+
+
+def _enqueue_synthesis(job_id: str, enqueue: Callable[[str], bool] | None) -> None:
+    """Best-effort enqueue of the synthesis message once gates have passed.
+
+    Failures (including an unconfigured queue) never break the stable async 202
+    contract: the request is already staged and the placeholder/publication block
+    remains in force until the ACA Job is provisioned.
+    """
+
+    send = enqueue or enqueue_synthesis_job
+    try:
+        send(job_id)
+    except Exception:
+        logging.exception("synthesis enqueue failed job_id=%s; continuing with staged placeholder", job_id)
 
 
 def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:

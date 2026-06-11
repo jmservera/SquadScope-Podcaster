@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 from dataclasses import dataclass
 from email.utils import formatdate
@@ -23,6 +24,7 @@ from typing import Protocol
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
+from xml.sax.saxutils import escape
 
 from podcaster.storage import (
     ManagedIdentityTokenCredential,
@@ -51,6 +53,11 @@ class QueueBackend(Protocol):
         ...
 
     def delete_message(self, message: QueueMessage) -> None:
+        ...
+
+
+class QueueProducer(Protocol):
+    def send_message(self, body: str) -> None:
         ...
 
 
@@ -150,6 +157,19 @@ class AzureStorageQueueBackend:
         with urlopen(request, timeout=30):
             return
 
+    def send_message(self, body: str) -> None:
+        document = f"<QueueMessage><MessageText>{escape(body)}</MessageText></QueueMessage>"
+        headers = self._headers()
+        headers["Content-Type"] = "application/xml"
+        request = Request(
+            f"{self._queue_url}/messages",
+            data=document.encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        with urlopen(request, timeout=30):
+            return
+
 
 def _parse_messages(payload: bytes) -> list[QueueMessage]:
     root = ElementTree.fromstring(payload)
@@ -178,3 +198,25 @@ def create_queue_backend() -> QueueBackend | None:
     if not queue_url:
         return None
     return AzureStorageQueueBackend(queue_url, queue_name)
+
+
+def enqueue_synthesis_job(job_id: str, *, producer: QueueProducer | None = None) -> bool:
+    """Enqueue a synthesis message for ``job_id`` on the synthesis queue.
+
+    Returns ``True`` when a message was sent. Returns ``False`` (without raising)
+    when the synthesis queue is not configured — until the ACA Job (#76/#77/#78)
+    is approved and provisioned, ``/api/generate`` keeps returning the
+    deterministic placeholder with no behaviour regression.
+
+    Only ``job_id`` is placed on the wire — never secrets or PII.
+    """
+
+    backend = producer
+    if backend is None:
+        backend = create_queue_backend()
+    if backend is None:
+        logging.info("synthesis queue not configured; skipping enqueue job_id=%s", job_id)
+        return False
+    backend.send_message(encode_synthesis_message(job_id))
+    logging.info("enqueued synthesis job_id=%s", job_id)
+    return True
