@@ -206,7 +206,6 @@ jobs:
             --parameters deploymentPrincipalObjectId="$deployment_principal_object_id" \
             --parameters podcasterApiKey="$PODCASTER_API_KEY" \
             --parameters deployOpenAi="${DEPLOY_OPENAI:-false}" \
-            --parameters openAiLocation="${AZURE_LOCATION}" \
             --query properties.outputs.endpoint.value \
             --output tsv)
           echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
