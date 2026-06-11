@@ -327,8 +327,8 @@ jobs:
               "WEBSITE_RUN_FROM_PACKAGE=$package_url" \
               "WEBSITE_USE_MANAGED_IDENTITY=true" \
               "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned" \
-              "AZURE_OPENAI_ENDPOINT=${OPENAI_ENDPOINT:-https://podcaster-openai-bakeoff-20260609.openai.azure.com/}" \
-              "AZURE_OPENAI_TTS_DEPLOYMENT=${OPENAI_TTS_DEPLOYMENT:-tts-bakeoff}" \
+              "AZURE_OPENAI_ENDPOINT=${OPENAI_ENDPOINT:-}" \
+              "AZURE_OPENAI_TTS_DEPLOYMENT=${OPENAI_TTS_DEPLOYMENT:-tts}" \
               "AZURE_OPENAI_TTS_VOICE_HOST_A=${OPENAI_TTS_VOICE_HOST_A:-fable}" \
               "AZURE_OPENAI_TTS_VOICE_HOST_B=${OPENAI_TTS_VOICE_HOST_B:-alloy}" \
               "AZURE_OPENAI_AUTH_MODE=${OPENAI_AUTH_MODE:-managed_identity}" \

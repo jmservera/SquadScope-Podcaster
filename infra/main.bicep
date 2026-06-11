@@ -1,8 +1,8 @@
 // HOTFIX: isolate deploy/CI changes (branch squad/47-isolate-deploy-ci)
 targetScope = 'resourceGroup'
 
-@description('Azure region for all resources.')
-param location string = resourceGroup().location
+@description('Azure region for all resources. Defaults to eastus2 which supports gpt-4o-mini-tts.')
+param location string = 'eastus2'
 
 @description('Globally unique Storage Account name. Defaults to a deterministic safe name based on the resource group.')
 @minLength(3)
