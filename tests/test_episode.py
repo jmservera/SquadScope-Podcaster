@@ -34,7 +34,7 @@ def _production_config():
     return load_tts_config(
         {
             "AZURE_OPENAI_ENDPOINT": "https://podcaster-openai.openai.azure.com/",
-            "AZURE_OPENAI_TTS_DEPLOYMENT": "tts-bakeoff",
+            "AZURE_OPENAI_TTS_DEPLOYMENT": "tts",
             "AZURE_OPENAI_TTS_VOICE_HOST_A": "fable",
             "AZURE_OPENAI_TTS_VOICE_HOST_B": "alloy",
             "AZURE_OPENAI_AUTH_MODE": "managed_identity",
