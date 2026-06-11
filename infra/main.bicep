@@ -90,7 +90,7 @@ param ttsVoiceHostB string = 'alloy'
 param containerAppsEnvName string = '${baseName}-cae'
 
 @description('Queue-triggered synthesis Container Apps Job name.')
-param synthesisJobName string = '${baseName}-synthesis'
+param synthesisJobName string = '${baseName}-synth'
 
 @description('User-assigned managed identity used by the synthesis job.')
 param synthesisJobIdentityName string = '${baseName}-synthesis-id'
