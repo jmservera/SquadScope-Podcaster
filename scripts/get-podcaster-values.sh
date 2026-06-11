@@ -5,6 +5,11 @@
 # Discover the deployed Podcaster Azure resources at the resource-group level and
 # emit ready-to-run `gh secret set` commands with the real resolved values.
 #
+# Architecture: ACA-only (Container Apps Job + Storage + Azure OpenAI).
+# There is no Function App or public HTTP endpoint; SquadScope triggers synthesis
+# via the Storage Queue (synthesis-jobs) and the PODCASTER_API_KEY is used for
+# queue-message auth validation inside the ACA job.
+#
 # The operator only needs to provide a resource group name (defaults to the
 # deployed `squadscope-podcaster`); everything else is discovered via `az`.
 #
@@ -77,41 +82,23 @@ az_query() {
 
 printf 'Discovering Podcaster resources in resource group: %s\n' "$RESOURCE_GROUP" >&2
 
-# --- Function App -----------------------------------------------------------
-FUNCTION_APP_NAME="$(az_query "[0].name" functionapp list --resource-group "$RESOURCE_GROUP")"
-[ -n "$FUNCTION_APP_NAME" ] || die "No Function App (Microsoft.Web/sites, kind functionapp) found in '$RESOURCE_GROUP'."
-
-FUNCTION_HOSTNAME="$(az_query "defaultHostName" functionapp show --resource-group "$RESOURCE_GROUP" --name "$FUNCTION_APP_NAME")"
-[ -n "$FUNCTION_HOSTNAME" ] || die "Could not resolve defaultHostName for Function App '$FUNCTION_APP_NAME'."
-GENERATE_URL="https://${FUNCTION_HOSTNAME}/api/generate"
-
-# The Function App authenticates callers by comparing the x-podcaster-api-key
-# header against its PODCASTER_API_KEY app setting (see podcaster/validation.py).
-# That same value is what SquadScope must send, so read it back from app settings.
-PODCASTER_API_KEY="$(az_query "[?name=='PODCASTER_API_KEY'].value | [0]" \
-  functionapp config appsettings list --resource-group "$RESOURCE_GROUP" --name "$FUNCTION_APP_NAME")"
-if [ -z "$PODCASTER_API_KEY" ]; then
-  err "PODCASTER_API_KEY app setting not found on '$FUNCTION_APP_NAME'; falling back to the host function key."
-  PODCASTER_API_KEY="$(az_query "functionKeys.default" \
-    functionapp keys list --resource-group "$RESOURCE_GROUP" --name "$FUNCTION_APP_NAME")"
-fi
-[ -n "$PODCASTER_API_KEY" ] || die "Could not resolve a Podcaster API key for '$FUNCTION_APP_NAME'."
-
 # --- Storage account --------------------------------------------------------
 STORAGE_ACCOUNT_NAME="$(az_query "[0].name" storage account list --resource-group "$RESOURCE_GROUP")"
 STORAGE_BLOB_ENDPOINT=""
+STORAGE_QUEUE_ENDPOINT=""
 if [ -n "$STORAGE_ACCOUNT_NAME" ]; then
   STORAGE_BLOB_ENDPOINT="$(az_query "primaryEndpoints.blob" \
     storage account show --resource-group "$RESOURCE_GROUP" --name "$STORAGE_ACCOUNT_NAME")"
+  STORAGE_QUEUE_ENDPOINT="$(az_query "primaryEndpoints.queue" \
+    storage account show --resource-group "$RESOURCE_GROUP" --name "$STORAGE_ACCOUNT_NAME")"
 else
-  err "No storage account found in '$RESOURCE_GROUP' (continuing)."
+  err "No storage account found in '$RESOURCE_GROUP'."
 fi
 
-# --- Azure OpenAI / Cognitive Services (for #60 generation wiring) -----------
+# --- Azure OpenAI / Cognitive Services --------------------------------------
 OPENAI_ACCOUNT_NAME="$(az_query "[?kind=='OpenAI'].name | [0]" \
   cognitiveservices account list --resource-group "$RESOURCE_GROUP")"
 if [ -z "$OPENAI_ACCOUNT_NAME" ]; then
-  # Fall back to the first cognitive services account of any kind.
   OPENAI_ACCOUNT_NAME="$(az_query "[0].name" cognitiveservices account list --resource-group "$RESOURCE_GROUP")"
 fi
 OPENAI_ENDPOINT=""
@@ -122,7 +109,26 @@ if [ -n "$OPENAI_ACCOUNT_NAME" ]; then
   OPENAI_API_KEY="$(az_query "key1" \
     cognitiveservices account keys list --resource-group "$RESOURCE_GROUP" --name "$OPENAI_ACCOUNT_NAME")"
 else
-  err "No Azure OpenAI / Cognitive Services account found in '$RESOURCE_GROUP' (skipping #60 secrets)."
+  err "No Azure OpenAI / Cognitive Services account found in '$RESOURCE_GROUP' (skipping OpenAI secrets)."
+fi
+
+# --- Container Apps Job (synthesis) -----------------------------------------
+ACA_JOB_NAME="$(az_query "[0].name" containerapp job list --resource-group "$RESOURCE_GROUP" 2>/dev/null)"
+if [ -z "$ACA_JOB_NAME" ]; then
+  err "No Container Apps Job found in '$RESOURCE_GROUP' (continuing)."
+fi
+
+# --- Podcaster API key (read from ACA job env if available) -----------------
+PODCASTER_API_KEY=""
+if [ -n "$ACA_JOB_NAME" ]; then
+  PODCASTER_API_KEY="$(az containerapp job show \
+    --resource-group "$RESOURCE_GROUP" --name "$ACA_JOB_NAME" \
+    --query "properties.template.containers[0].env[?name=='PODCASTER_API_KEY'].value | [0]" \
+    --output tsv 2>/dev/null || true)"
+fi
+if [ -z "$PODCASTER_API_KEY" ]; then
+  err "Could not discover PODCASTER_API_KEY from ACA job env. It is set during deployment from the GitHub secret."
+  err "If you need to rotate it, update the PODCASTER_API_KEY secret in the 'prod' environment and re-deploy."
 fi
 
 # --- Emit gh secret set commands -------------------------------------------
@@ -130,25 +136,34 @@ emit() {
   cat <<EMIT
 # ---------------------------------------------------------------------------
 # Discovered in resource group: ${RESOURCE_GROUP}
-#   Function App:    ${FUNCTION_APP_NAME}
-#   Generate URL:    ${GENERATE_URL}
 #   Storage account: ${STORAGE_ACCOUNT_NAME:-<none>}${STORAGE_BLOB_ENDPOINT:+ (${STORAGE_BLOB_ENDPOINT})}
-#   Azure OpenAI:    ${OPENAI_ACCOUNT_NAME:-<none>}
+#   Queue endpoint:  ${STORAGE_QUEUE_ENDPOINT:-<none>}
+#   Azure OpenAI:    ${OPENAI_ACCOUNT_NAME:-<none>}${OPENAI_ENDPOINT:+ (${OPENAI_ENDPOINT})}
+#   ACA Job:         ${ACA_JOB_NAME:-<none>}
 #
 # Review each command, then run it from a trusted local shell with the GitHub
 # CLI authenticated (gh auth status). Values below are REAL secrets.
 # ---------------------------------------------------------------------------
+EMIT
+
+  if [ -n "$PODCASTER_API_KEY" ]; then
+    cat <<EMIT
 
 # SquadScope caller secrets (repo: ${SQUADSCOPE_REPO}) — matches docs/integration-contract.md
-# Endpoint URL is non-sensitive and stored as a repo variable; the API key is a secret.
-gh variable set PODCASTER_ENDPOINT --repo ${SQUADSCOPE_REPO} --body '${GENERATE_URL}'
 gh secret set PODCASTER_API_KEY --repo ${SQUADSCOPE_REPO} --body '${PODCASTER_API_KEY}'
 EMIT
+  fi
+
+  if [ -n "$STORAGE_QUEUE_ENDPOINT" ]; then
+    cat <<EMIT
+gh variable set PODCASTER_QUEUE_ENDPOINT --repo ${SQUADSCOPE_REPO} --body '${STORAGE_QUEUE_ENDPOINT}'
+EMIT
+  fi
 
   if [ -n "$OPENAI_ENDPOINT" ] && [ -n "$OPENAI_API_KEY" ]; then
     cat <<EMIT
 
-# Podcaster service secrets (repo: ${PODCASTER_REPO}) — Azure OpenAI for /api/generate (#60)
+# Podcaster service secrets (repo: ${PODCASTER_REPO}) — Azure OpenAI for synthesis
 gh variable set AZURE_OPENAI_ENDPOINT --repo ${PODCASTER_REPO} --body '${OPENAI_ENDPOINT}'
 gh secret set AZURE_OPENAI_API_KEY --repo ${PODCASTER_REPO} --body '${OPENAI_API_KEY}'
 EMIT
