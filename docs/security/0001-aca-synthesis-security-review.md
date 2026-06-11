@@ -2,7 +2,7 @@
 
 - Issue: #80 (#67 follow-up 5/5)
 - ADR: `docs/adr/0001-production-audio-ffmpeg-hosting.md` Option C
-- Review scope: `infra/aca.bicep`, `infra/main.bicep`, `infra/openai.bicep`, `podcaster/job_runner.py`, `podcaster/queue.py`, `podcaster/storage.py`, `podcaster/tts.py`, `podcaster/jobs.py`, `podcaster/artifact_access.py`, `podcaster/sanitization.py`, and `function_app.py`.
+- Review scope: `infra/modules/aca.bicep`, `infra/main.bicep`, `infra/modules/openai.bicep`, `podcaster/job_runner.py`, `podcaster/queue.py`, `podcaster/storage.py`, `podcaster/tts.py`, `podcaster/jobs.py`, `podcaster/artifact_access.py`, `podcaster/sanitization.py`, and `function_app.py`.
 
 ## Threat notes
 
@@ -23,7 +23,7 @@ Notes: `APPLICATIONINSIGHTS_CONNECTION_STRING` and the Container Apps Log Analyt
 
 | Principal | Role | Scope in template | Justification | Status |
 | --- | --- | --- | --- | --- |
-| ACA synthesis user-assigned managed identity | Cognitive Services OpenAI User | Azure OpenAI account (`openAiAccount`) | Allows TTS data-plane calls without account keys; no management-plane grant. | Verified statically in `infra/openai.bicep`; live assignment requires operator confirmation. |
+| ACA synthesis user-assigned managed identity | Cognitive Services OpenAI User | Azure OpenAI account (`openAiAccount`) | Allows TTS data-plane calls without account keys; no management-plane grant. | Verified statically in `infra/modules/openai.bicep`; live assignment requires operator confirmation. |
 | ACA synthesis user-assigned managed identity | Storage Blob Data Contributor | Artifacts container (`artifactContainer`) | Allows reading/staging/updating job artifacts and manifests in the private artifact container only. | Tightened from storage-account scope in this change; live assignment requires operator confirmation. |
 | ACA synthesis user-assigned managed identity | Storage Queue Data Contributor | Synthesis queue (`synthesisQueue`) | Allows KEDA queue-length checks and runner get/delete/send operations on the synthesis queue only. | Tightened from storage-account scope in this change; live assignment requires operator confirmation. |
 | Function App system identity | Storage Queue Data Contributor | Storage account | Existing enqueue path grant. It is not RG/subscription-wide, but broader than a single queue; consider a future least-privilege follow-up once function queue dependencies are separated. | Reviewed, unchanged to avoid touching deploy/smoke path. |

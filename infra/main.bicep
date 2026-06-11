@@ -315,7 +315,7 @@ resource deploymentBlobDataContributor 'Microsoft.Authorization/roleAssignments@
 
 // Production TTS provider (OpenAI, voices fable+alloy) selected in #4. Opt-in via deployOpenAi
 // so the core storage + Function App deploy stays green where the TTS model is unavailable.
-module openAi 'openai.bicep' = if (deployOpenAi) {
+module openAi 'modules/openai.bicep' = if (deployOpenAi) {
   name: 'openai-tts'
   params: {
     location: location
@@ -339,7 +339,7 @@ module openAi 'openai.bicep' = if (deployOpenAi) {
 // Production audio synthesis runner (ADR 0001, Option C): a queue-triggered ACA Job that owns
 // ffmpeg + heavy synthesis. Opt-in via deployAudioJob so deploy stays a no-op until the operator
 // approves the new Azure spend (#67). Kept in the deploy/infra lane, separate from squad upgrade.
-module aca 'aca.bicep' = if (deployAudioJob) {
+module aca 'modules/aca.bicep' = if (deployAudioJob) {
   name: 'audio-synthesis-job'
   params: {
     location: location
