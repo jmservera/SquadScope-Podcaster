@@ -149,8 +149,9 @@ jobs:
       - name: Ensure resource group exists
         run: |
           # Create the RG only if it does not exist; never attempt to change
-          # the location of an existing RG (ARM rejects that).  Resources
-          # inside the RG are deployed to $AZURE_LOCATION regardless of RG metadata.
+          # the location of an existing RG (ARM rejects that).  Most resources
+          # default to resourceGroup().location; $AZURE_LOCATION controls only
+          # the OpenAI account region (eastus2 for gpt-4o-mini-tts).
           if ! az group show --name "$AZURE_RESOURCE_GROUP" --output none 2>/dev/null; then
             az group create \
               --name "$AZURE_RESOURCE_GROUP" \
@@ -199,13 +200,13 @@ jobs:
           endpoint=$(az deployment group create \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
-            --parameters location="$AZURE_LOCATION" \
             --parameters functionAppName="$AZURE_FUNCTION_APP_NAME" \
             --parameters storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
             --parameters packageContainerName="$AZURE_PACKAGE_CONTAINER_NAME" \
             --parameters deploymentPrincipalObjectId="$deployment_principal_object_id" \
             --parameters podcasterApiKey="$PODCASTER_API_KEY" \
             --parameters deployOpenAi="${DEPLOY_OPENAI:-false}" \
+            --parameters openAiLocation="${AZURE_LOCATION}" \
             --query properties.outputs.endpoint.value \
             --output tsv)
           echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
