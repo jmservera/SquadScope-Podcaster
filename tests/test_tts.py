@@ -159,7 +159,7 @@ def test_synthesize_turn_builds_request_without_leaking_token(caplog):
     assert audio == b"ID3-fake-mp3-bytes"
     assert captured["url"] == (
         "https://podcaster-openai.openai.azure.com/openai/deployments/tts/audio/speech"
-        "?api-version=2025-03-01-preview"
+        "?api-version=2024-12-01-preview"
     )
     assert captured["body"] == {
         "model": "tts",
