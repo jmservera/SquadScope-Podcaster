@@ -33,6 +33,16 @@ param storageContainerName string = 'podcaster-artifacts'
 @description('Private blob container used by GitHub Actions to stage Function App run-from-package ZIPs.')
 param packageContainerName string = 'function-packages'
 
+@description('Days after which generated podcaster artifacts are auto-deleted by the Storage lifecycle policy. Matches the documented 7-day manifest expiry (expires_at / retention.cleanup_after).')
+@minValue(1)
+@maxValue(365)
+param artifactRetentionDays int = 7
+
+@description('Days after which stale run-from-package deploy ZIPs are auto-deleted by the Storage lifecycle policy. Old packages are not needed once a newer deploy supersedes them.')
+@minValue(1)
+@maxValue(365)
+param packageRetentionDays int = 7
+
 @description('Optional object ID of the GitHub Actions deployment service principal. When provided, it receives Storage Blob Data Contributor on the storage account for OIDC package uploads.')
 param deploymentPrincipalObjectId string = ''
 
@@ -165,6 +175,66 @@ resource packageContainer 'Microsoft.Storage/storageAccounts/blobServices/contai
   properties: {
     publicAccess: 'None'
   }
+}
+
+// Auto-delete expired artifacts and stale deploy packages so the documented manifest
+// retention contract (expires_at / cleanup_after) is enforced by storage, not just declared.
+resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
+  name: '${storage.name}/default'
+  properties: {
+    policy: {
+      rules: [
+        {
+          name: 'expire-artifacts'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              blobTypes: [
+                'blockBlob'
+              ]
+              prefixMatch: [
+                '${storageContainerName}/'
+              ]
+            }
+            actions: {
+              baseBlob: {
+                delete: {
+                  daysAfterModificationGreaterThan: artifactRetentionDays
+                }
+              }
+            }
+          }
+        }
+        {
+          name: 'expire-deploy-packages'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              blobTypes: [
+                'blockBlob'
+              ]
+              prefixMatch: [
+                '${packageContainerName}/'
+              ]
+            }
+            actions: {
+              baseBlob: {
+                delete: {
+                  daysAfterModificationGreaterThan: packageRetentionDays
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+  dependsOn: [
+    artifactContainer
+    packageContainer
+  ]
 }
 
 resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -370,6 +440,8 @@ output artifactContainerResourceId string = artifactContainer.id
 output storageAccountName string = storage.name
 output storageContainerName string = storageContainerName
 output packageContainerName string = packageContainerName
+output artifactRetentionDays int = artifactRetentionDays
+output packageRetentionDays int = packageRetentionDays
 output openAiDeployed bool = deployOpenAi
 output openAiEndpoint string = openAiEndpoint
 output openAiAccountName string = deployOpenAi ? openAiAccountName : ''
