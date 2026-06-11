@@ -27,6 +27,9 @@ param ttsModelVersion string
 @description('Deployment (alias) name used by the Function App to reference the TTS model.')
 param ttsDeploymentName string
 
+@description('SKU tier for the TTS model deployment.')
+param ttsModelSkuName string = 'GlobalStandard'
+
 @description('Provisioned capacity for the TTS model deployment.')
 param ttsModelCapacity int = 1
 
@@ -38,6 +41,9 @@ param chatModelVersion string
 
 @description('Deployment (alias) name used by the Function App to reference the chat model.')
 param chatDeploymentName string
+
+@description('SKU tier for the chat model deployment.')
+param chatModelSkuName string = 'GlobalStandard'
 
 @description('Provisioned capacity for the chat model deployment.')
 param chatModelCapacity int = 10
@@ -76,7 +82,7 @@ resource ttsDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10
   parent: openAiAccount
   name: ttsDeploymentName
   sku: {
-    name: 'Standard'
+    name: ttsModelSkuName
     capacity: ttsModelCapacity
   }
   properties: {
@@ -92,7 +98,7 @@ resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-1
   parent: openAiAccount
   name: chatDeploymentName
   sku: {
-    name: 'Standard'
+    name: chatModelSkuName
     capacity: chatModelCapacity
   }
   properties: {
