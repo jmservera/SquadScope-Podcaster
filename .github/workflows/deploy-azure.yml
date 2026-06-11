@@ -1,25 +1,19 @@
-# HOTFIX: isolate deploy/CI changes (branch squad/47-isolate-deploy-ci)
+# ACA-only architecture deploy (#109)
 name: Deploy Azure
 
 on:
   workflow_dispatch:
     inputs:
       sync_squadscope:
-        description: 'Sync endpoint variable and API key secret to jmservera/SquadScope when SQUADSCOPE_SYNC_TOKEN is configured'
+        description: 'Sync API key secret to jmservera/SquadScope when SQUADSCOPE_SYNC_TOKEN is configured'
         required: false
         default: 'false'
         type: choice
         options: ['false', 'true']
       deploy_openai:
-        description: 'Provision the production Azure OpenAI TTS infrastructure (#30). Only enable in a region/SKU that supports the configured TTS/chat models.'
+        description: 'Provision the production Azure OpenAI TTS infrastructure (#30).'
         required: false
-        default: 'false'
-        type: choice
-        options: ['false', 'true']
-      restore_openai:
-        description: 'Set to true to restore a soft-deleted OpenAI account (first deploy after deletion).'
-        required: false
-        default: 'false'
+        default: 'true'
         type: choice
         options: ['false', 'true']
 
@@ -37,11 +31,7 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-      AZURE_FUNCTION_APP_NAME: ${{ vars.AZURE_FUNCTION_APP_NAME }}
       AZURE_STORAGE_ACCOUNT_NAME: ${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
-      AZURE_PACKAGE_CONTAINER_NAME: function-packages
-    outputs:
-      endpoint: ${{ steps.deploy_bicep.outputs.endpoint }}
     steps:
       - name: Checkout
         # actions/checkout v6.0.3
@@ -83,7 +73,7 @@ jobs:
             exit 1
           fi
 
-          echo "Required configuration present for GitHub environment prod. Optional app/storage names and API key may be derived."
+          echo "Required configuration present for GitHub environment prod."
 
       - name: Resolve deployment names and API key
         env:
@@ -94,15 +84,6 @@ jobs:
 
           suffix=$(printf '%s' "${AZURE_SUBSCRIPTION_ID}:${AZURE_RESOURCE_GROUP}" | sha256sum | cut -c1-12)
 
-          function_prefix=$(printf '%s' "$AZURE_RESOURCE_GROUP" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')
-          if [ -z "$function_prefix" ]; then
-            function_prefix="podcaster"
-          fi
-          function_prefix=$(printf '%s' "$function_prefix" | cut -c1-12)
-          default_function_app_name="podcaster-${function_prefix}-${suffix}"
-
           storage_prefix=$(printf '%s' "$AZURE_RESOURCE_GROUP" \
             | tr '[:upper:]' '[:lower:]' \
             | sed -E 's/[^a-z0-9]+//g' \
@@ -112,13 +93,8 @@ jobs:
           fi
           default_storage_account_name="${storage_prefix}${suffix}"
 
-          function_app_name="${AZURE_FUNCTION_APP_NAME:-$default_function_app_name}"
           storage_account_name="${AZURE_STORAGE_ACCOUNT_NAME:-$default_storage_account_name}"
 
-          if ! [[ "$function_app_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,33}[a-zA-Z0-9]$ ]]; then
-            echo "::error::AZURE_FUNCTION_APP_NAME must be 2-35 characters, alphanumeric or hyphen, and start/end with alphanumeric. This keeps derived Azure resource names within service limits."
-            exit 1
-          fi
           if ! [[ "$storage_account_name" =~ ^[a-z0-9]{3,24}$ ]]; then
             echo "::error::AZURE_STORAGE_ACCOUNT_NAME must be 3-24 lowercase alphanumeric characters."
             exit 1
@@ -130,17 +106,15 @@ jobs:
           else
             podcaster_api_key=$(openssl rand -hex 32)
             api_key_source="generated during this deployment"
-            echo "::warning::PODCASTER_API_KEY is not configured in GitHub environment prod; generated a deployment key. Use sync_squadscope=true during this run or set a stable secret and redeploy for manual handoff."
+            echo "::warning::PODCASTER_API_KEY is not configured in GitHub environment prod; generated a deployment key."
           fi
           echo "::add-mask::$podcaster_api_key"
 
           {
-            echo "AZURE_FUNCTION_APP_NAME=$function_app_name"
             echo "AZURE_STORAGE_ACCOUNT_NAME=$storage_account_name"
             echo "PODCASTER_API_KEY=$podcaster_api_key"
           } >> "$GITHUB_ENV"
 
-          echo "Using Function App name: $function_app_name"
           echo "Using Storage Account name: $storage_account_name"
           echo "API key source: $api_key_source; value not printed."
 
@@ -154,10 +128,6 @@ jobs:
 
       - name: Ensure resource group exists
         run: |
-          # Create the RG only if it does not exist; never attempt to change
-          # the location of an existing RG (ARM rejects that).  Most resources
-          # default to resourceGroup().location; $AZURE_LOCATION controls only
-          # the OpenAI account region (eastus2 for gpt-4o-mini-tts).
           if ! az group show --name "$AZURE_RESOURCE_GROUP" --output none 2>/dev/null; then
             az group create \
               --name "$AZURE_RESOURCE_GROUP" \
@@ -167,9 +137,6 @@ jobs:
 
       - name: Deploy infrastructure
         id: deploy_bicep
-        env:
-          DEPLOY_OPENAI: ${{ inputs.deploy_openai }}
-          RESTORE_OPENAI: ${{ inputs.restore_openai }}
         run: |
           set -euo pipefail
           set +x
@@ -200,239 +167,24 @@ jobs:
           fi
 
           if [ -z "$deployment_principal_object_id" ]; then
-            echo "::error::Could not resolve the Azure deployment service principal object ID for storage data-plane role assignment."
+            echo "::error::Could not resolve the Azure deployment service principal object ID."
             exit 1
           fi
 
-          endpoint=$(az deployment group create \
+          az deployment group create \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
-            --parameters functionAppName="$AZURE_FUNCTION_APP_NAME" \
             --parameters storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
-            --parameters packageContainerName="$AZURE_PACKAGE_CONTAINER_NAME" \
             --parameters deploymentPrincipalObjectId="$deployment_principal_object_id" \
             --parameters podcasterApiKey="$PODCASTER_API_KEY" \
-            --parameters deployOpenAi="${DEPLOY_OPENAI:-false}" \
-            --parameters restoreOpenAi="${RESTORE_OPENAI:-false}" \
-            --query properties.outputs.endpoint.value \
-            --output tsv)
-          echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
-          echo "### Podcaster integration" >> "$GITHUB_STEP_SUMMARY"
-          echo "Endpoint: \`$endpoint\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "API key: configured as a Function App setting; not printed." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Set up Python
-        # actions/setup-python v6.2.0
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies for package
-        run: |
-          set -euo pipefail
-          rm -rf .python_packages app.zip
-          python -m pip install --upgrade pip
-          python -m pip install --target=".python_packages/lib/site-packages" -r requirements.txt
-
-      - name: Build Function App package
-        run: |
-          set -euo pipefail
-          rm -f app.zip
-          python - <<'PY'
-          from pathlib import Path
-          import sys
-          import zipfile
-
-          roots = [
-              Path("function_app.py"),
-              Path("host.json"),
-              Path("podcaster"),
-              Path(".python_packages"),
-          ]
-          required = {
-              "function_app.py",
-              "host.json",
-              "podcaster/__init__.py",
-              ".python_packages/lib/site-packages/azure/functions/__init__.py",
-          }
-          forbidden_dirs = {".git", ".github", ".venv", ".pytest_cache", "__pycache__"}
-          forbidden_names = {"local.settings.json"}
-
-          def excluded(path: Path) -> bool:
-              return (
-                  any(part in forbidden_dirs for part in path.parts)
-                  or path.name in forbidden_names
-                  or path.name.startswith(".env")
-                  or path.suffix == ".pyc"
-              )
-
-          with zipfile.ZipFile("app.zip", "w", zipfile.ZIP_DEFLATED) as archive:
-              for root in roots:
-                  paths = [root] if root.is_file() else sorted(path for path in root.rglob("*") if path.is_file())
-                  for path in paths:
-                      if not excluded(path):
-                          archive.write(path, path.as_posix())
-
-          with zipfile.ZipFile("app.zip") as archive:
-              names = set(archive.namelist())
-              missing = sorted(required - names)
-              forbidden = sorted(
-                  name for name in names
-                  if any(part in forbidden_dirs for part in Path(name).parts)
-                  or "/__pycache__/" in name
-                  or Path(name).name in forbidden_names
-                  or Path(name).name.startswith(".env")
-                  or name.endswith(".pyc")
-              )
-          if missing:
-              sys.exit(f"Package missing required files: {', '.join(missing)}")
-          if forbidden:
-              sys.exit(f"Package contains forbidden files: {', '.join(forbidden[:5])}")
-          PY
-
-      - name: Deploy package from private blob
-        env:
-          # Operator-selected production TTS config (#60). These point the deployed
-          # Function App at the live Azure OpenAI TTS account using managed identity
-          # (the account has local-auth disabled, so no key is needed or stored).
-          # Set as repo variables to override; defaults match the operator decision.
-          OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
-          OPENAI_TTS_DEPLOYMENT: ${{ vars.AZURE_OPENAI_TTS_DEPLOYMENT }}
-          OPENAI_TTS_VOICE_HOST_A: ${{ vars.AZURE_OPENAI_TTS_VOICE_HOST_A }}
-          OPENAI_TTS_VOICE_HOST_B: ${{ vars.AZURE_OPENAI_TTS_VOICE_HOST_B }}
-          OPENAI_AUTH_MODE: ${{ vars.AZURE_OPENAI_AUTH_MODE }}
-        run: |
-          set -euo pipefail
-          set +x
-
-          package_blob_name="function-app/${GITHUB_SHA}-${GITHUB_RUN_ID}.zip"
-          storage_blob_endpoint=$(az storage account show \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$AZURE_STORAGE_ACCOUNT_NAME" \
-            --query primaryEndpoints.blob \
-            --output tsv)
-          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-            if az storage blob upload \
-              --account-name "$AZURE_STORAGE_ACCOUNT_NAME" \
-              --container-name "$AZURE_PACKAGE_CONTAINER_NAME" \
-              --name "$package_blob_name" \
-              --file app.zip \
-              --overwrite true \
-              --auth-mode login \
-              --only-show-errors \
-              --output none; then
-              break
-            fi
-            if [ "$attempt" -eq 15 ]; then
-              echo "::error::Package upload failed. Ensure the deploy identity has Storage Blob Data Contributor on the storage account."
-              exit 1
-            fi
-            echo "Package upload is waiting for Azure RBAC data-plane propagation; retrying in 30 seconds."
-            sleep 30
-          done
-
-          package_url="${storage_blob_endpoint}${AZURE_PACKAGE_CONTAINER_NAME}/${package_blob_name}"
-
-          # Build app settings array; only override OpenAI endpoint if
-          # explicitly provided (Bicep already sets it from the deployed resource).
-          app_settings=(
-            "WEBSITE_RUN_FROM_PACKAGE=$package_url"
-            "WEBSITE_USE_MANAGED_IDENTITY=true"
-            "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned"
-            "AZURE_OPENAI_TTS_DEPLOYMENT=${OPENAI_TTS_DEPLOYMENT:-tts}"
-            "AZURE_OPENAI_TTS_VOICE_HOST_A=${OPENAI_TTS_VOICE_HOST_A:-fable}"
-            "AZURE_OPENAI_TTS_VOICE_HOST_B=${OPENAI_TTS_VOICE_HOST_B:-alloy}"
-            "AZURE_OPENAI_AUTH_MODE=${OPENAI_AUTH_MODE:-managed_identity}"
-          )
-          if [ -n "${OPENAI_ENDPOINT:-}" ]; then
-            app_settings+=("AZURE_OPENAI_ENDPOINT=$OPENAI_ENDPOINT")
-          fi
-
-          az functionapp config appsettings set \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$AZURE_FUNCTION_APP_NAME" \
-            --settings "${app_settings[@]}" \
             --output none
-
-          az functionapp restart \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$AZURE_FUNCTION_APP_NAME" \
-            --output none
-
-          echo "Deployed Function App from private run-from-package blob using managed identity; no package SAS or storage key was emitted." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Wait for Function App to index functions
-        env:
-          PODCASTER_GENERATE_URL: ${{ steps.deploy_bicep.outputs.endpoint }}
-        run: |
-          set -euo pipefail
-          set +x
-
-          # The Python v2 (decorator) model only serves routes once the host has
-          # mounted the run-from-package payload and indexed the worker. A cold
-          # start that also downloads the extension bundle can take several
-          # minutes, so poll the management plane until the 'generate' trigger is
-          # registered before running the strict smoke. This also diagnoses
-          # package-mount/indexing failures separately from response-shape issues.
-          indexed=0
-          for attempt in $(seq 1 24); do
-            functions=$(az functionapp function list \
-              --resource-group "$AZURE_RESOURCE_GROUP" \
-              --name "$AZURE_FUNCTION_APP_NAME" \
-              --query "[].name" \
-              --output tsv 2>/dev/null || true)
-            if printf '%s\n' "$functions" | grep -qx "generate"; then
-              echo "Function host registered the 'generate' trigger after attempt $attempt."
-              indexed=1
-              break
-            fi
-            # Lightweight unauthenticated probe; 401/400 also prove the route is mounted.
-            status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PODCASTER_GENERATE_URL" \
-              -H 'content-type: application/json' --data '{}' --max-time 30 || echo "000")
-            if [ "$status" != "404" ] && [ "$status" != "000" ]; then
-              echo "Route '/api/generate' responded with HTTP $status (not 404) after attempt $attempt; treating as mounted."
-              indexed=1
-              break
-            fi
-            echo "Attempt $attempt: function host not serving /api/generate yet (probe HTTP $status); waiting 20s."
-            sleep 20
-          done
-
-          if [ "$indexed" -ne 1 ]; then
-            echo "::error::Function host never registered the 'generate' trigger; the run-from-package payload likely failed to mount or index. Check WEBSITE_RUN_FROM_PACKAGE managed-identity access and FUNCTIONS_WORKER_RUNTIME/AzureWebJobsFeatureFlags."
-            exit 1
-          fi
-
-      - name: Smoke deployed generate endpoint
-        env:
-          PODCASTER_GENERATE_URL: ${{ steps.deploy_bicep.outputs.endpoint }}
-        run: |
-          set -euo pipefail
-          set +x
-
-          if [ -z "${PODCASTER_API_KEY:-}" ]; then
-            echo "::error::Podcaster API key was not resolved; refusing to smoke with an empty key."
-            exit 1
-          fi
-
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if python scripts/smoke_generate.py; then
-              echo "Smoke confirmed HTTP 202 generate readiness with non-empty job_id, manifest_url, and errors=[]; API key was not printed." >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            if [ "$attempt" -eq 10 ]; then
-              echo "::error::Deployed /api/generate smoke failed after restart."
-              exit 1
-            fi
-            echo "Smoke endpoint is not ready yet; retrying in 20 seconds."
-            sleep 20
-          done
+          echo "### ACA-only Podcaster infrastructure deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Region: $AZURE_LOCATION" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Optionally sync values to SquadScope
         if: ${{ inputs.sync_squadscope == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.SQUADSCOPE_SYNC_TOKEN }}
-          ENDPOINT: ${{ steps.deploy_bicep.outputs.endpoint }}
         run: |
           set -euo pipefail
           set +x
@@ -444,6 +196,5 @@ jobs:
             echo "::error::Podcaster API key was not resolved; refusing to sync an empty secret."
             exit 1
           fi
-          gh variable set PODCASTER_ENDPOINT --repo jmservera/SquadScope --body "$ENDPOINT"
           printf '%s' "$PODCASTER_API_KEY" | gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope
-          echo "Synced PODCASTER_ENDPOINT variable and PODCASTER_API_KEY secret to jmservera/SquadScope." >> "$GITHUB_STEP_SUMMARY"
+          echo "Synced PODCASTER_API_KEY secret to jmservera/SquadScope." >> "$GITHUB_STEP_SUMMARY"
