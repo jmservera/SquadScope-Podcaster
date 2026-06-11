@@ -132,7 +132,7 @@ synthesis stack (#76–#80). Tracked separately; do not bundle here.
 
 Do **not** execute autonomously. Each is irreversible or breaks live behaviour:
 
-- [ ] Delete/purge the manual bakeoff Azure OpenAI (`podcaster-openai-bakeoff-20260609`) — only after §3.B steps 1–2.
+- [x] Delete/purge the manual bakeoff Azure OpenAI (`podcaster-openai-bakeoff-20260609`) — ✅ deleted 2026-06-11; purge denied (insufficient perms, will auto-purge after retention). Replaced by `podcaster-squadscope-p-3f9a07d60de7-openai` in eastus2.
 - [ ] Any change to `squadscope-mi` — it holds **`Owner` on the RG**; removing it can sever RG operation. Operator must confirm whether it is still the working credential before touch.
 - [ ] Any teardown of the storage account, Function App, plan, App Insights, or Log Analytics — these are bicep-managed and **should be reconciled by redeploy, not deleted**. Deletion would drop review artifacts and break the green deploy.
 - [ ] Do not delete the EventGrid system topic / `StorageAntimalwareSubscription` — that disables Defender for Storage malware scanning.
@@ -146,6 +146,19 @@ Do **not** execute autonomously. Each is irreversible or breaks live behaviour:
 - Confirm with the operator whether `squadscope-mi` (RG `Owner`) is still needed;
   if it is the human/automation working identity, document it as intentional in
   the architecture notes rather than treating it as a cleanup candidate.
+
+## 6. Region migration — 2026-06-11
+
+- **OpenAI account moved to eastus2** (`podcaster-squadscope-p-3f9a07d60de7-openai`)
+  to support `gpt-4o-mini-tts` (GlobalStandard SKU). The subscription lacks
+  compute quota in eastus2, so Function App, Storage, App Insights, and Log
+  Analytics remain in swedencentral.
+- **Bakeoff retired**: `podcaster-openai-bakeoff-20260609` deleted (soft-delete;
+  purge pending auto-retention). Workflow defaults updated to point at the new
+  bicep-provisioned `tts` / `chat` deployments.
+- **Infra parameter**: new `openAiLocation` param (default `eastus2`) added to
+  `infra/main.bicep` so the OpenAI account can deploy to a different region
+  from the rest of the stack. PR #96.
 
 ## Constraints honoured
 
