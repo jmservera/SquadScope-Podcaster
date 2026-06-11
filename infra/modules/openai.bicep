@@ -24,7 +24,7 @@ param ttsModelName string
 @description('Version of the OpenAI TTS model deployment.')
 param ttsModelVersion string
 
-@description('Deployment (alias) name used by the Function App to reference the TTS model.')
+@description('Deployment (alias) name for the TTS model.')
 param ttsDeploymentName string
 
 @description('SKU tier for the TTS model deployment.')
@@ -39,7 +39,7 @@ param chatModelName string
 @description('Version of the OpenAI chat model deployment.')
 param chatModelVersion string
 
-@description('Deployment (alias) name used by the Function App to reference the chat model.')
+@description('Deployment (alias) name for the chat model.')
 param chatDeploymentName string
 
 @description('SKU tier for the chat model deployment.')
@@ -48,8 +48,8 @@ param chatModelSkuName string = 'GlobalStandard'
 @description('Provisioned capacity for the chat model deployment.')
 param chatModelCapacity int = 10
 
-@description('Function App system-assigned principal that receives Cognitive Services OpenAI User.')
-param functionAppPrincipalId string
+@description('Synthesis job managed-identity principal that receives Cognitive Services OpenAI User.')
+param synthesisJobPrincipalId string
 
 @description('Optional synthesis job managed-identity principal that also receives Cognitive Services OpenAI User (#76). Empty when the audio job is not deployed.')
 param audioJobPrincipalId string = ''
@@ -73,7 +73,7 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
     // customSubDomainName is required for Entra ID (managed identity) token auth.
     customSubDomainName: openAiCustomSubDomain
     restore: restoreAccount
-    // Function App authenticates with its managed identity only; account keys are disabled.
+    // ACA job authenticates with its managed identity only; account keys are disabled.
     disableLocalAuth: true
     publicNetworkAccess: 'Enabled'
     networkAcls: {
@@ -118,12 +118,12 @@ resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-1
   ]
 }
 
-// Function App reaches Azure OpenAI with its managed identity instead of an account key.
+// Synthesis job reaches Azure OpenAI with its managed identity instead of an account key.
 resource openAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(openAiAccount.id, functionAppPrincipalId, 'Cognitive Services OpenAI User')
+  name: guid(openAiAccount.id, synthesisJobPrincipalId, 'Cognitive Services OpenAI User')
   scope: openAiAccount
   properties: {
-    principalId: functionAppPrincipalId
+    principalId: synthesisJobPrincipalId
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
     principalType: 'ServicePrincipal'
   }

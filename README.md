@@ -2,23 +2,24 @@
 
 SquadScope Podcaster is a sister project to `jmservera/SquadScope`. It receives a post-publish article URL or artifact reference, creates a podcast-generation job, stages generated artifacts (locally or in Azure Blob Storage), and returns links that SquadScope can display or use in follow-up automation.
 
-This scaffold intentionally does not generate real audio yet. The Azure Functions API validates the integration contract, stages deterministic production-path placeholder artifacts (with 7-day expiry), and returns stable artifact URLs so SquadScope can integrate without affecting its existing publishing process.
-
 ## Architecture
 
+- **Compute:** Azure Container Apps Job (queue-triggered, scales to zero). The container image bakes in ffmpeg for audio stitching and validation.
 - **Caller:** SquadScope GitHub Actions or backend automation after article publication.
-- **API:** Python Azure Functions HTTP endpoint at `/api/generate`.
+- **Pipeline:** Script generation (GPT-4o-mini) → TTS synthesis (gpt-4o-mini-tts, voices fable + alloy) → ffmpeg stitch → audio validation → artifact staging.
 - **Auth:** API key supplied in `x-podcaster-api-key`. The key must be stored as a GitHub secret in SquadScope and must never be logged.
-- **Storage:** Azure Blob Storage stages manifests, transcripts, show notes, audio placeholders, and publishing packets; local development falls back to `.podcaster-artifacts/`.
+- **Storage:** Azure Blob Storage stages manifests, transcripts, show notes, audio, and publishing packets; local development falls back to `.podcaster-artifacts/`.
 - **Observability:** Application Insights and Log Analytics collect platform telemetry; job manifests carry a safe correlation ID and log metadata only.
 - **Publishing:** Spotify/podcast-host publishing is manual for the initial release. Future automation requires research and validation.
+
+See `docs/architecture.md` for the full system design.
 
 ## Local development
 
 Requirements:
 
 - Python 3.11+
-- Optional: Azure Functions Core Tools for local function hosting
+- ffmpeg (for audio stitching/validation)
 
 Setup:
 
@@ -28,20 +29,19 @@ python -m venv .venv
 pip install -r requirements.txt
 pip install -e .
 pytest
-python -m compileall podcaster function_app.py
+python -m compileall podcaster
 ```
 
-Run locally with Azure Functions Core Tools:
+Run the synthesis job locally:
 
 ```bash
-export PODCASTER_API_KEY=local-dev-key
-# Optional: override local artifact staging path/base URL. Defaults shown.
-export PODCASTER_LOCAL_STORAGE_PATH=.podcaster-artifacts
-export PODCASTER_ARTIFACT_BASE_URL=https://example.invalid/podcaster-stub
-func start
+cp .env.sample .env
+# Edit .env with your Azure OpenAI endpoint and storage account details.
+# Authenticate: az login (for managed identity, set AZURE_CLIENT_ID).
+python -m podcaster.job_runner
 ```
 
-Without Azure storage settings, generated manifests, script drafts, transcripts, show notes, publishing packets, and audio placeholders are written under `.podcaster-artifacts/jobs/<job_id>/`. The ZIP packet is byte-stable for the same inputs and timestamp. In Azure, set `PODCASTER_STORAGE_ACCOUNT_URL` and `PODCASTER_STORAGE_CONTAINER`; the Function App uses managed identity for blob writes. Returned artifact URLs are private operator paths, not public publishing links, and must not include SAS tokens, query strings, or embedded credentials.
+Without Azure storage settings, generated manifests, script drafts, transcripts, show notes, publishing packets, and audio are written under `.podcaster-artifacts/jobs/<job_id>/`. In Azure, set `PODCASTER_STORAGE_ACCOUNT_URL` and `PODCASTER_STORAGE_CONTAINER`; the ACA job uses managed identity for blob writes. Returned artifact URLs are private operator paths, not public publishing links, and must not include SAS tokens, query strings, or embedded credentials.
 
 ## Human review gate
 
@@ -59,7 +59,7 @@ curl -X POST http://localhost:7071/api/generate \
 Deployed smoke check:
 
 ```bash
-export PODCASTER_GENERATE_URL='https://<function-app>.azurewebsites.net/api/generate'
+export PODCASTER_GENERATE_URL='https://<aca-endpoint>/api/generate'
 export PODCASTER_API_KEY='<from secret manager>'
 python scripts/smoke_generate.py
 ```
@@ -68,19 +68,18 @@ The smoke check sends the shared SquadScope object-shaped fixture and verifies H
 
 ## Deployment
 
-The deployment workflow is `.github/workflows/deploy-azure.yml`. It uses the GitHub environment named exactly `prod`, authenticates with GitHub OIDC via `azure/login`, deploys Bicep from `infra/main.bicep`, packages the Function App, deploys it, and prints only non-secret integration values.
+The deployment workflow is `.github/workflows/deploy-azure.yml`. It uses the GitHub environment named exactly `prod`, authenticates with GitHub OIDC via `azure/login`, deploys Bicep from `infra/main.bicep` (ACA + Storage + OpenAI), and prints only non-secret integration values.
 
 Required `prod` environment variables:
 
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
 - `AZURE_SUBSCRIPTION_ID`
-- `AZURE_LOCATION` (for example, `eastus`)
+- `AZURE_LOCATION` (e.g., `eastus2`)
 - `AZURE_RESOURCE_GROUP`
 
 Optional `prod` environment variables:
 
-- `AZURE_FUNCTION_APP_NAME` - override the deterministic default Function App name.
 - `AZURE_STORAGE_ACCOUNT_NAME` - override the deterministic default Storage Account name.
 
 Optional `prod` environment secret:
@@ -93,10 +92,8 @@ Optional `prod` environment secret for syncing integration values to SquadScope:
 
 ## Integration contract
 
-SquadScope calls:
+SquadScope enqueues a synthesis request (or calls `/api/generate` if an HTTP front-door is deployed):
 
-- Endpoint: `https://<function-app>.azurewebsites.net/api/generate`
-- Method: `POST`
 - Auth header: `x-podcaster-api-key: <secret>`
 - Body fields: `week`, `article_url`, optional `article_sha256`, `source_artifacts`, `dry_run`, `force`, `callback`
 
