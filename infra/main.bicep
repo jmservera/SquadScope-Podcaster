@@ -358,6 +358,9 @@ module aca 'aca.bicep' = if (deployAudioJob) {
     ttsVoiceHostA: ttsVoiceHostA
     ttsVoiceHostB: ttsVoiceHostB
   }
+  dependsOn: [
+    artifactContainer
+  ]
 }
 
 output endpoint string = 'https://${functionApp.properties.defaultHostName}/api/generate'
