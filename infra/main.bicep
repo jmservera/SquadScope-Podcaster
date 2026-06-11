@@ -243,7 +243,7 @@ module openAi 'modules/openai.bicep' = {
     chatDeploymentName: chatDeploymentName
     chatModelSkuName: chatModelSkuName
     chatModelCapacity: chatModelCapacity
-    functionAppPrincipalId: aca.outputs.jobIdentityPrincipalId
+    synthesisJobPrincipalId: aca.outputs.jobIdentityPrincipalId
     audioJobPrincipalId: ''
   }
 }
