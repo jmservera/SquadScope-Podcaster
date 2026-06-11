@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from podcaster import audio
+
+_has_ffmpeg = shutil.which("ffmpeg") is not None
 
 
 def _completed(stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
@@ -196,6 +199,7 @@ def test_stitch_segments_builds_music_mix_filtergraph_when_mix_spec_is_provided(
     assert "amix=inputs=3:normalize=0:duration=longest[out]" in mix_cmd
 
 
+@pytest.mark.skipif(not _has_ffmpeg, reason="ffmpeg not installed")
 def test_stitch_segments_with_mix_spec_extends_program_duration(tmp_path):
     def make_mp3(path: Path, *, duration: float, frequency: int) -> bytes:
         subprocess.run(
