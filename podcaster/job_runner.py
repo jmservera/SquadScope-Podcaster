@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from podcaster.config import PodcastConfig
 from podcaster.episode import (
     operator_review_decision,
     parse_script_segments,
@@ -147,6 +148,8 @@ def run_synthesis(
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_TTS_NOT_CONFIGURED)
 
     mp3_blob_path = _mp3_artifact_path(manifest, job_id)
+    request_podcast_config = _request_podcast_config(manifest)
+    podcast_config = PodcastConfig.from_payload(request_podcast_config) if request_podcast_config else None
     try:
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / f"{job_id}.mp3"
@@ -155,6 +158,7 @@ def run_synthesis(
                 config,
                 decision,
                 output_path,
+                podcast_config=podcast_config,
                 token_provider=token_provider,
                 transport=transport,
                 runner=runner,
@@ -207,6 +211,16 @@ def run_synthesis(
         segment_count=episode_audio.segment_count,
         validation_status=episode_audio.validation.status,
     )
+
+
+def _request_podcast_config(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return None
+    podcast_config = request.get("podcast_config")
+    if not isinstance(podcast_config, dict):
+        return None
+    return {"podcast_config": podcast_config}
 
 
 def process_message(

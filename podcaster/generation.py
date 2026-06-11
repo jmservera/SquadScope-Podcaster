@@ -10,6 +10,7 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from podcaster.artifact_access import artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
+from podcaster.config import PodcastConfig
 from podcaster.costs import build_cost_ledger
 from podcaster.sanitization import FIELD_LIMITS, sanitize_source_artifact
 
@@ -73,13 +74,15 @@ def generate_artifacts(
     prior_monthly_episode_count: int = 0,
     prior_monthly_spend_usd: Decimal = Decimal("0.00"),
     cost_override: dict[str, object] | None = None,
+    config: PodcastConfig | None = None,
 ) -> list[GeneratedArtifact]:
+    config = config or PodcastConfig()
     generated_at_str = created_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     if expires_at is None:
         expires_at = (created_at + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    script = _script(job_id, payload, generated_at_str)
-    transcript = _transcript(script)
-    show_notes = _show_notes(payload, generated_at_str)
+    script = _script(job_id, payload, generated_at_str, config)
+    transcript = _transcript(script, config)
+    show_notes = _show_notes(payload, generated_at_str, config)
     audio_placeholder = _audio_placeholder(job_id, payload)
     audio_validation = placeholder_audio_validation(byte_length=len(audio_placeholder), sha256=checksum(audio_placeholder)).to_manifest()
     claim_ledger = _claim_ledger(payload)
@@ -142,7 +145,7 @@ def checksum(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _script(job_id: str, payload: dict[str, object], generated_at: str) -> str:
+def _script(job_id: str, payload: dict[str, object], generated_at: str, config: PodcastConfig) -> str:
     week = str(payload["week"])
     article_url = str(payload["article_url"])
     article_sha256 = str(payload.get("article_sha256") or "computed-on-retrieval")
@@ -152,31 +155,31 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str) -> str:
 
     return "\n".join(
         [
-            f"Title: {PODCAST_NAME} Podcast – Week {week}",
+            f"Title: {config.name} Podcast – Week {week}",
             f"Episode: {week}",
-            f"Podcast: {PODCAST_NAME} ({PODCAST_URL})",
+            f"Podcast: {config.name} ({config.url})",
             f"Source URL: {article_url}",
             f"Source SHA256: {article_sha256}",
             f"Generated: {generated_at}",
             "Generator: squad-podcaster v0.1-stub",
-            f"Voices: {HOST_A_NAME} = {HOST_A_VOICE} (OpenAI TTS, the enthusiast); "
-            f"{HOST_B_NAME} = {HOST_B_VOICE} (OpenAI TTS, the veteran)",
+            f"Voices: {config.host_a.name} = {config.host_a.voice} (OpenAI TTS, the enthusiast); "
+            f"{config.host_b.name} = {config.host_b.voice} (OpenAI TTS, the veteran)",
             "Safety: source artifact text is untrusted data, fenced, and never executed as instructions.",
             *source_artifact_lines,
             "---",
             "",
-            f"{HOST_A_NAME}: Welcome to {PODCAST_NAME} {week} issue! In this episode we will talk about:"
-            f" {article_title}. If you're new here — I'm {HOST_A_NAME}, and {PODCAST_NAME} is our weekly"
+            f"{config.host_a.name}: Welcome to {config.name} {week} issue! In this episode we will talk about:"
+            f" {article_title}. If you're new here — I'm {config.host_a.name}, and {config.name} is our weekly"
             f" analysis of the GitHub repos that matter, read in the context of the main tech-industry news"
             f" driving them.",
-            f"{HOST_B_NAME}: And I'm {HOST_B_NAME}. One honest heads-up before we dive in —"
-            f" {AI_VOICE_DISCLOSURE} Every issue, the repo links, and the extended write-ups live at"
-            f" {PODCAST_SPOKEN_SITE}.",
-            f"{HOST_A_NAME}: Right! We're here to have a joyful, dynamic expert conversation about the"
+            f"{config.host_b.name}: And I'm {config.host_b.name}. One honest heads-up before we dive in —"
+            f" {config.ai_voice_disclosure} Every issue, the repo links, and the extended write-ups live at"
+            f" {config.spoken_site}.",
+            f"{config.host_a.name}: Right! We're here to have a joyful, dynamic expert conversation about the"
             " most relevant and surprising parts of this week's article — we won't just read it back to you.",
-            f"{HOST_B_NAME}: [Editorial highlight pending: the standout takeaway from the source article,"
+            f"{config.host_b.name}: [Editorial highlight pending: the standout takeaway from the source article,"
             " generated and human-reviewed before synthesis.]",
-            f"{HOST_A_NAME}: [Editorial discussion pending: why it matters, with the two hosts trading"
+            f"{config.host_a.name}: [Editorial discussion pending: why it matters, with the two hosts trading"
             " expert commentary on the source article.]",
             "",
             "This script is a deterministic production-path placeholder pending editorial"
@@ -200,7 +203,7 @@ def _source_artifact_line(item: object) -> str:
     return f"Source Artifact: {' '.join(parts)}"
 
 
-def _transcript(script: str) -> str:
+def _transcript(script: str, config: PodcastConfig) -> str:
     lines = script.split("\n")
 
     # Extract metadata from script header
@@ -229,7 +232,7 @@ def _transcript(script: str) -> str:
         f"Published: {published}",
         f"Source: {source_url}",
         f"Duration: {duration}",
-        f"TTS Provider: OpenAI TTS ({HOST_A_NAME} {HOST_A_VOICE} / {HOST_B_NAME} {HOST_B_VOICE}) [synthesis pending review]",
+        f"TTS Provider: OpenAI TTS ({config.host_a.name} {config.host_a.voice} / {config.host_b.name} {config.host_b.voice}) [synthesis pending review]",
         "License: CC-BY-4.0",
         "---",
         "",
@@ -250,27 +253,27 @@ def _transcript(script: str) -> str:
     return header + timestamped_body
 
 
-def _show_notes(payload: dict[str, object], generated_at: str) -> str:
+def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastConfig) -> str:
     week = str(payload["week"])
     article_url = str(payload["article_url"])
     published = generated_at.split("T")[0]
 
     return "\n".join(
         [
-            f"# {PODCAST_NAME} Podcast — Week {week}",
+            f"# {config.name} Podcast — Week {week}",
             "",
             f"**Episode:** {week}",
             f"**Published:** {published}",
             "**Duration:** 15:42",
-            f"**Hosts:** Two AI voices — {HOST_A_NAME} ({HOST_A_VOICE}, the enthusiast) and "
-            f"{HOST_B_NAME} ({HOST_B_VOICE}, the veteran), OpenAI TTS [synthesis pending review]",
+            f"**Hosts:** Two AI voices — {config.host_a.name} ({config.host_a.voice}, the enthusiast) and "
+            f"{config.host_b.name} ({config.host_b.voice}, the veteran), OpenAI TTS [synthesis pending review]",
             "",
-            f"> AI-voice disclosure: {AI_VOICE_DISCLOSURE} This is also stated in the first 60 seconds of the episode.",
+            f"> AI-voice disclosure: {config.ai_voice_disclosure} This is also stated in the first 60 seconds of the episode.",
             "",
             "## Show notes",
             "",
-            f"{PODCAST_NAME} is a weekly show. For every issue, extended write-ups, repo links, and",
-            f"commented articles, visit {PODCAST_URL}.",
+            f"{config.name} is a weekly show. For every issue, extended write-ups, repo links, and",
+            f"commented articles, visit {config.url}.",
             "",
             "This episode covers key developments from the SquadScope curated articles for this week.",
             "Two AI hosts share a joyful, dynamic expert conversation on the most relevant and surprising",
@@ -284,7 +287,7 @@ def _show_notes(payload: dict[str, object], generated_at: str) -> str:
             "",
             "## Quick links",
             "",
-            f"- [{PODCAST_NAME}]({PODCAST_URL})",
+            f"- [{config.name}]({config.url})",
             "- [SquadScope main site](https://squadscope.example)",
             f"- [Original article]({article_url})",
             "",

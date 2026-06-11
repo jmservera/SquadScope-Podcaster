@@ -20,6 +20,7 @@ from podcaster.costs import (
 )
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
+from podcaster.config import PodcastConfig
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.queue import enqueue_synthesis_job
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
@@ -46,10 +47,17 @@ def build_job_id(payload: dict[str, Any]) -> str:
     return f"podcast-{safe_week}-{digest}"
 
 
-def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None = None, now: datetime | None = None, enqueue: Callable[[str], bool] | None = None) -> JobResult:
+def run_generation_job(
+    payload: dict[str, Any],
+    storage: StorageBackend | None = None,
+    now: datetime | None = None,
+    enqueue: Callable[[str], bool] | None = None,
+    validation_warnings: list[str] | None = None,
+) -> JobResult:
     current = now or datetime.now(timezone.utc)
     expires_at = (current + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     job_id = build_job_id(payload)
+    podcast_config = PodcastConfig.from_payload(payload)
     storage = storage or create_storage_backend()
     month = current.strftime("%Y-%m")
     monthly_path = monthly_ledger_path(month)
@@ -96,6 +104,7 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
     prior_monthly_spend = budget_context["prior_monthly_spend"]
 
     warnings = [
+        *(validation_warnings or []),
         "audio is a deterministic placeholder pending TTS implementation",
         "human review is required before publishing",
         "artifact URLs are private operator paths, not public publishing links",
@@ -115,6 +124,7 @@ def run_generation_job(payload: dict[str, Any], storage: StorageBackend | None =
         prior_monthly_episode_count=prior_episode_count,
         prior_monthly_spend_usd=prior_monthly_spend,
         cost_override=cost_override,
+        config=podcast_config,
     ):
         artifact_checksum = checksum(artifact.content)
         if artifact.path.endswith(".mp3"):
@@ -253,7 +263,7 @@ def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     callback = payload.get("callback") if isinstance(payload.get("callback"), dict) else {}
     callback_url = callback.get("url") if isinstance(callback, dict) else None
     cost_override = _cost_override(payload)
-    return {
+    request = {
         "week": payload.get("week"),
         "article_url": payload.get("article_url"),
         "article_sha256": payload.get("article_sha256"),
@@ -271,6 +281,9 @@ def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
             "secret_name_provided": bool(callback.get("secret_name")) if isinstance(callback, dict) else False,
         },
     }
+    if isinstance(payload.get("podcast_config"), dict):
+        request["podcast_config"] = payload["podcast_config"]
+    return request
 
 
 def _cost_override(payload: dict[str, Any]) -> dict[str, Any] | None:

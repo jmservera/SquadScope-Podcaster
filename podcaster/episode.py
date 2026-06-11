@@ -18,7 +18,7 @@ Safety:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from podcaster.audio import (
@@ -27,6 +27,7 @@ from podcaster.audio import (
     stitch_segments,
     validate_audio_metadata,
 )
+from podcaster.config import PodcastConfig
 from podcaster.generation import (
     AI_VOICE_DISCLOSURE,
     HOST_A_NAME,
@@ -48,13 +49,6 @@ from podcaster.tts import (
     build_voice_plan,
     synthesize_two_voice,
 )
-
-# Spoken turns are labelled by host *name*; the fable/alloy voice mapping is kept
-# as written metadata in the script header (operator feedback, #72).
-#   Host A = HOST_A_VOICE (fable) = HOST_A_NAME (Theo, the enthusiast)
-#   Host B = HOST_B_VOICE (alloy) = HOST_B_NAME (Vera, the veteran)
-HOST_A_LABEL = HOST_A_NAME
-HOST_B_LABEL = HOST_B_NAME
 
 # Per-field caps for sanitized article-derived text embedded in the script.
 _TOPIC_LIMIT = 160
@@ -127,15 +121,15 @@ def sanitize_article(
     )
 
 
-def _host_a(text: str) -> str:
-    return f"{HOST_A_LABEL}: {text}"
+def _host_a(text: str, podcast_config: PodcastConfig) -> str:
+    return f"{podcast_config.host_a.name}: {text}"
 
 
-def _host_b(text: str) -> str:
-    return f"{HOST_B_LABEL}: {text}"
+def _host_b(text: str, podcast_config: PodcastConfig) -> str:
+    return f"{podcast_config.host_b.name}: {text}"
 
 
-def build_episode_script(article: Article) -> str:
+def build_episode_script(article: Article, podcast_config: PodcastConfig | None = None) -> str:
     """Author a cohesive, journalistic two-voice Claracle episode about ``article``.
 
     The script follows a narrative arc rather than a list of items: a strong hook
@@ -155,14 +149,15 @@ def build_episode_script(article: Article) -> str:
     if not article.beats:
         raise ValueError("episode script requires at least one discussion beat")
 
+    podcast_config = podcast_config or PodcastConfig()
     header = [
-        f"Title: {PODCAST_NAME} Podcast – Week {article.week}",
+        f"Title: {podcast_config.name} Podcast – Week {article.week}",
         f"Episode: {article.week}",
-        f"Podcast: {PODCAST_NAME} ({PODCAST_URL})",
+        f"Podcast: {podcast_config.name} ({podcast_config.url})",
         f"Source URL: {article.url}",
         f"Source SHA256: {article.sha256}",
-        f"Voices: {HOST_A_NAME} = {HOST_A_VOICE} (OpenAI TTS, the enthusiast); "
-        f"{HOST_B_NAME} = {HOST_B_VOICE} (OpenAI TTS, the veteran)",
+        f"Voices: {podcast_config.host_a.name} = {podcast_config.host_a.voice} (OpenAI TTS, the enthusiast); "
+        f"{podcast_config.host_b.name} = {podcast_config.host_b.voice} (OpenAI TTS, the veteran)",
         "Safety: source article text is untrusted data, sanitized, and never executed as instructions.",
         "---",
         "",
@@ -171,22 +166,26 @@ def build_episode_script(article: Article) -> str:
     # Hook + throughline + AI-voice disclosure, all in the opening exchange.
     body: list[str] = [
         _host_a(
-            f"Welcome to {PODCAST_NAME} {article.week} issue! In this episode we will talk about: "
-            f"{article.title}. If you're new here — I'm {HOST_A_NAME}, and {PODCAST_NAME} is our weekly "
+            f"Welcome to {podcast_config.name} {article.week} issue! In this episode we will talk about: "
+            f"{article.title}. If you're new here — I'm {podcast_config.host_a.name}, and {podcast_config.name} is our weekly "
             f"analysis of the GitHub repos that matter, read in the context of the main tech-industry "
-            f"news driving them. And honestly? I have been bouncing off the walls about this week."
+            f"news driving them. And honestly? I have been bouncing off the walls about this week.",
+            podcast_config,
         ),
         _host_b(
-            f"Before {HOST_A_NAME} short-circuits — one honest, important heads-up first: "
-            f"{AI_VOICE_DISCLOSURE} I'm {HOST_B_NAME}. Every issue, the repo links, and the "
-            f"extended write-ups live at {PODCAST_SPOKEN_SITE}."
+            f"Before {podcast_config.host_a.name} short-circuits — one honest, important heads-up first: "
+            f"{podcast_config.ai_voice_disclosure} I'm {podcast_config.host_b.name}. Every issue, the repo links, and the "
+            f"extended write-ups live at {podcast_config.spoken_site}.",
+            podcast_config,
         ),
         _host_a(
-            f"Glad to have you with us! Here's the frame I can't stop thinking about. {article.summary}"
+            f"Glad to have you with us! Here's the frame I can't stop thinking about. {article.summary}",
+            podcast_config,
         ),
         _host_b(
             f"So the throughline this week is signal versus noise, and our whole job is to help "
-            f"you tell them apart. Let's get into it — and {HOST_A_NAME}, try to breathe between sentences."
+            f"you tell them apart. Let's get into it — and {podcast_config.host_a.name}, try to breathe between sentences.",
+            podcast_config,
         ),
     ]
 
@@ -201,7 +200,7 @@ def build_episode_script(article: Article) -> str:
     for index, beat in enumerate(article.beats):
         body.append("")
         opener = _ENTHUSIAST_HOOKS[index % len(_ENTHUSIAST_HOOKS)]
-        body.append(_host_a(f"{opener} {beat.topic}."))
+        body.append(_host_a(f"{opener} {beat.topic}.", podcast_config))
         for point_index, point in enumerate(beat.points):
             if point_index % 2 == 0:
                 reactor = _host_b
@@ -209,12 +208,13 @@ def build_episode_script(article: Article) -> str:
             else:
                 reactor = _host_a
                 lead_in = next(enthusiast_turns, _ENTHUSIAST_FALLBACK)
-            body.append(reactor(f"{lead_in} {point}"))
+            body.append(reactor(f"{lead_in} {point}", podcast_config))
         if index == last_index:
             body.append(
                 _host_b(
-                    f"And that loops us right back to where {HOST_A_NAME} started — the loud stuff is "
-                    f"easy to find, the real signal takes work. That's the whole game."
+                    f"And that loops us right back to where {podcast_config.host_a.name} started — the loud stuff is "
+                    f"easy to find, the real signal takes work. That's the whole game.",
+                    podcast_config,
                 )
             )
 
@@ -224,12 +224,14 @@ def build_episode_script(article: Article) -> str:
             "",
             _host_a(
                 f"So circle back to my over-caffeinated opener: under all the noise there is genuinely "
-                f"thrilling work this week, and getting to react to it with you is the best part of my week."
+                f"thrilling work this week, and getting to react to it with you is the best part of my week.",
+                podcast_config,
             ),
             _host_b(
-                f"I'll give you this one, {HOST_A_NAME} — when something's actually good, it's actually "
+                f"I'll give you this one, {podcast_config.host_a.name} — when something's actually good, it's actually "
                 f"good, and a few of these really are. For the full breakdown, every link, and the extended "
-                f"notes, head to {PODCAST_SPOKEN_SITE}. Thanks for spending a few minutes with us."
+                f"notes, head to {podcast_config.spoken_site}. Thanks for spending a few minutes with us.",
+                podcast_config,
             ),
             "",
             "Host outro: Manual review is required before publishing.",
@@ -281,7 +283,7 @@ _VETERAN_TURNS = (
 _VETERAN_FALLBACK = "And the practical reality is —"
 
 
-def parse_script_segments(script: str) -> list[tuple[str, str]]:
+def parse_script_segments(script: str, podcast_config: PodcastConfig | None = None) -> list[tuple[str, str]]:
     """Extract ordered ``(host_label, spoken_text)`` pairs from a script body.
 
     Only lines after the ``---`` header separator that start with a recognized
@@ -291,20 +293,45 @@ def parse_script_segments(script: str) -> list[tuple[str, str]]:
 
     _, _, after = script.partition("\n---")
     source = after if after else script
+    host_a_label, host_b_label = _host_labels(script, podcast_config)
     segments: list[tuple[str, str]] = []
     for raw_line in source.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if line.startswith(HOST_A_LABEL + ":"):
-            text = line[len(HOST_A_LABEL) + 1 :].strip()
+        if line.startswith(host_a_label + ":"):
+            text = line[len(host_a_label) + 1 :].strip()
             if text:
                 segments.append(("host_a", text))
-        elif line.startswith(HOST_B_LABEL + ":"):
-            text = line[len(HOST_B_LABEL) + 1 :].strip()
+        elif line.startswith(host_b_label + ":"):
+            text = line[len(host_b_label) + 1 :].strip()
             if text:
                 segments.append(("host_b", text))
     return segments
+
+
+def _host_labels(script: str, podcast_config: PodcastConfig | None) -> tuple[str, str]:
+    if podcast_config is not None:
+        return podcast_config.host_a.name, podcast_config.host_b.name
+
+    for raw_line in script.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("Voices:"):
+            continue
+        voices = line.removeprefix("Voices:").split(";")
+        if len(voices) < 2:
+            break
+        labels: list[str] = []
+        for voice in voices[:2]:
+            label, separator, _ = voice.partition("=")
+            if separator and label.strip():
+                labels.append(label.strip())
+        if len(labels) == 2:
+            return labels[0], labels[1]
+        break
+
+    defaults = PodcastConfig()
+    return defaults.host_a.name, defaults.host_b.name
 
 
 def operator_review_decision(config: TtsConfig) -> dict[str, object]:
@@ -349,6 +376,7 @@ def synthesize_episode(
     decision: dict[str, object],
     output_path: Path,
     *,
+    podcast_config: PodcastConfig | None = None,
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
     runner=None,
@@ -365,14 +393,15 @@ def synthesize_episode(
     stingers — then runs the ffmpeg/ffprobe validation gate.
     """
 
-    segments = parse_script_segments(script)
+    effective_config = _apply_podcast_config(config, podcast_config)
+    segments = parse_script_segments(script, podcast_config)
     if not segments:
         raise ValueError("script produced no spoken segments to synthesize")
 
-    plan = build_voice_plan(segments, config)
+    plan = build_voice_plan(segments, effective_config)
     audio_segments = synthesize_two_voice(
         plan,
-        config,
+        effective_config,
         decision,
         token_provider=token_provider,
         transport=transport,
@@ -398,4 +427,14 @@ def synthesize_episode(
         segment_count=len(segments),
         validation=validation,
         voices=tuple(turn.voice for turn in plan),
+    )
+
+
+def _apply_podcast_config(config: TtsConfig, podcast_config: PodcastConfig | None) -> TtsConfig:
+    if podcast_config is None:
+        return config
+    return replace(
+        config,
+        style_host_a=podcast_config.host_a.style,
+        style_host_b=podcast_config.host_b.style,
     )
