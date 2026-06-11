@@ -52,6 +52,11 @@ from podcaster.generation import (  # noqa: E402
     PODCAST_SPOKEN_SITE,
 )
 from podcaster.music import get_stingers  # noqa: E402
+from podcaster.packaging import (  # noqa: E402
+    build_publishing_packet,
+    generate_show_notes,
+    generate_transcript,
+)
 from podcaster.storage import (  # noqa: E402
     StorageBackend,
     create_storage_backend,
@@ -299,6 +304,11 @@ def main() -> int:
             "them from the gitignored local review manifest instead."
         ),
     )
+    parser.add_argument(
+        "--packet",
+        action="store_true",
+        help="Also generate the full publishing packet ZIP alongside the review artifacts.",
+    )
     args = parser.parse_args()
 
     # Resolve TTS config from environment.
@@ -469,11 +479,34 @@ def main() -> int:
 
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
+    # Generate publishing packet if requested.
+    packet_path: Path | None = None
+    if args.packet:
+        transcript_text = generate_transcript(script, week=article.week, duration_seconds=duration)
+        show_notes_text = generate_show_notes(
+            week=article.week,
+            title=article.title,
+            article_url=article.url,
+        )
+        packet_bytes = build_publishing_packet(
+            week=article.week,
+            job_id=f"podcast-{article.week}-review",
+            script=script,
+            transcript=transcript_text,
+            show_notes=show_notes_text,
+            audio_mp3=mp3_path.read_bytes(),
+            manifest=manifest,
+        )
+        packet_path = out_dir / f"claracle-{article.week}-v3-packet.zip"
+        packet_path.write_bytes(packet_bytes)
+
     print("=" * 72)
     print(f"Episode staged (review-only, not published):")
     print(f"  MP3:        {mp3_path.resolve()}")
     print(f"  Script:     {script_path.resolve()}")
     print(f"  Manifest:   {manifest_path.resolve()}")
+    if packet_path:
+        print(f"  Packet:     {packet_path.resolve()}")
     print(f"  Duration:   {duration:.1f}s")
     print(f"  Segments:   {episode.segment_count}")
     print(f"  Size:       {episode.byte_length} bytes")
