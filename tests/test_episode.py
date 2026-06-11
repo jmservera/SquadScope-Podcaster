@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from podcaster import episode
+from podcaster.audio import MusicMixSpec
 from podcaster.generation import (
     AI_VOICE_DISCLOSURE,
     HOST_A_NAME,
@@ -214,6 +215,60 @@ def test_synthesize_episode_fails_closed_when_decision_blocked(tmp_path):
             token_provider=lambda scope: pytest.fail("must not request token when blocked"),
             transport=lambda request: pytest.fail("must not synthesize when blocked"),
         )
+
+
+def test_synthesize_episode_enables_default_music_mix_when_stingers_are_supplied(tmp_path, monkeypatch):
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article)
+    config = _production_config()
+    decision = episode.operator_review_decision(config)
+    output_path = tmp_path / "episode.mp3"
+    intro_music = tmp_path / "intro.mp3"
+    outro_music = tmp_path / "outro.mp3"
+    intro_music.write_bytes(b"intro")
+    outro_music.write_bytes(b"outro")
+
+    stitch_kwargs: dict[str, object] = {}
+
+    def fake_transport(request):
+        return b"fake-mp3-segment-bytes"
+
+    def fake_stitch(segments, out, runner=None, **kwargs):
+        stitch_kwargs.update(kwargs)
+        Path(out).write_bytes(b"stitched-mp3")
+        return Path(out)
+
+    def fake_probe(path, sha256, runner=None):
+        from podcaster.audio import AudioMetadata
+
+        return AudioMetadata(
+            duration_seconds=300.0,
+            loudness_lufs=-16.0,
+            sample_rate_hz=44100,
+            bitrate_bps=96000,
+            channels=1,
+            content_type="audio/mpeg",
+            byte_length=Path(path).stat().st_size,
+            sha256=sha256,
+        )
+
+    monkeypatch.setattr(episode, "stitch_segments", fake_stitch)
+    monkeypatch.setattr(episode, "probe_audio", fake_probe)
+
+    episode.synthesize_episode(
+        script,
+        config,
+        decision,
+        output_path,
+        token_provider=lambda scope: "token",
+        transport=fake_transport,
+        intro_music=intro_music,
+        outro_music=outro_music,
+    )
+
+    assert stitch_kwargs["intro_music"] == intro_music
+    assert stitch_kwargs["outro_music"] == outro_music
+    assert isinstance(stitch_kwargs["mix_spec"], MusicMixSpec)
 
 
 def test_hosts_do_not_self_label_their_personality():

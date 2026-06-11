@@ -23,6 +23,7 @@ from pathlib import Path
 
 from podcaster.audio import (
     AudioValidationResult,
+    MusicMixSpec,
     probe_audio,
     stitch_segments,
     validate_audio_metadata,
@@ -433,6 +434,7 @@ def synthesize_episode(
         runner=runner,
         intro_music=intro_music,
         outro_music=outro_music,
+        mix_spec=MusicMixSpec() if (intro_music or outro_music) else None,
     )
     data = output_path.read_bytes()
     digest = checksum(data)
