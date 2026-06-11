@@ -301,10 +301,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Resolve TTS config from environment; allow this tool to default the
-    # operator-selected production values so a first episode can be produced now.
-    os.environ.setdefault("AZURE_OPENAI_ENDPOINT", "https://podcaster-openai-bakeoff-20260609.openai.azure.com/")
-    os.environ.setdefault("AZURE_OPENAI_TTS_DEPLOYMENT", "tts-bakeoff")
+    # Resolve TTS config from environment.
+    # AZURE_OPENAI_ENDPOINT must be set explicitly (Bicep provisions the resource;
+    # the deploy workflow propagates the endpoint to app settings).
+    if not os.environ.get("AZURE_OPENAI_ENDPOINT"):
+        parser.error(
+            "AZURE_OPENAI_ENDPOINT is not set. "
+            "Set it to the Bicep-provisioned OpenAI endpoint for your environment."
+        )
+    os.environ.setdefault("AZURE_OPENAI_TTS_DEPLOYMENT", "tts")
     os.environ.setdefault("AZURE_OPENAI_TTS_VOICE_HOST_A", "fable")
     os.environ.setdefault("AZURE_OPENAI_TTS_VOICE_HOST_B", "alloy")
     os.environ.setdefault("AZURE_OPENAI_AUTH_MODE", "managed_identity")
