@@ -148,6 +148,10 @@ jobs:
 
       - name: Ensure resource group exists
         run: |
+          # Create the RG only if it does not exist; never attempt to change
+          # the location of an existing RG (ARM rejects that).  Most resources
+          # default to resourceGroup().location; $AZURE_LOCATION controls only
+          # the OpenAI account region (eastus2 for gpt-4o-mini-tts).
           if ! az group show --name "$AZURE_RESOURCE_GROUP" --output none 2>/dev/null; then
             az group create \
               --name "$AZURE_RESOURCE_GROUP" \
@@ -196,7 +200,6 @@ jobs:
           endpoint=$(az deployment group create \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
-            --parameters location="$AZURE_LOCATION" \
             --parameters functionAppName="$AZURE_FUNCTION_APP_NAME" \
             --parameters storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
             --parameters packageContainerName="$AZURE_PACKAGE_CONTAINER_NAME" \
@@ -329,8 +332,8 @@ jobs:
               "WEBSITE_RUN_FROM_PACKAGE=$package_url" \
               "WEBSITE_USE_MANAGED_IDENTITY=true" \
               "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned" \
-              "AZURE_OPENAI_ENDPOINT=${OPENAI_ENDPOINT:-https://podcaster-openai-bakeoff-20260609.openai.azure.com/}" \
-              "AZURE_OPENAI_TTS_DEPLOYMENT=${OPENAI_TTS_DEPLOYMENT:-tts-bakeoff}" \
+              "AZURE_OPENAI_ENDPOINT=${OPENAI_ENDPOINT:-}" \
+              "AZURE_OPENAI_TTS_DEPLOYMENT=${OPENAI_TTS_DEPLOYMENT:-tts}" \
               "AZURE_OPENAI_TTS_VOICE_HOST_A=${OPENAI_TTS_VOICE_HOST_A:-fable}" \
               "AZURE_OPENAI_TTS_VOICE_HOST_B=${OPENAI_TTS_VOICE_HOST_B:-alloy}" \
               "AZURE_OPENAI_AUTH_MODE=${OPENAI_AUTH_MODE:-managed_identity}" \
