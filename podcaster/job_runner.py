@@ -51,6 +51,9 @@ STATUS_FAILED = "failed"
 REASON_ALREADY_SYNTHESIZED = "already_synthesized"
 REASON_NOT_TWO_VOICE = "script_not_two_voice_format"
 REASON_TTS_NOT_CONFIGURED = "tts_not_configured"
+REASON_RETRY_EXHAUSTED = "retry_exhausted"
+
+MAX_DEQUEUE_COUNT = 5
 
 
 @dataclass(frozen=True)
@@ -217,8 +220,10 @@ def process_message(
     """Process one queue message: synthesize, then delete on a terminal outcome.
 
     Completed and skipped outcomes delete the message (work is done / not
-    retryable). Transient failures leave the message for redelivery. A message
-    that cannot yield a ``job_id`` is poison and is deleted after logging.
+    retryable). Transient failures leave the message for redelivery until
+    ``MAX_DEQUEUE_COUNT`` is reached, then the message is treated as poison and
+    deleted. A message that cannot yield a ``job_id`` is poison and is deleted
+    after logging.
     """
 
     try:
@@ -237,9 +242,29 @@ def process_message(
         job_id,
         message.dequeue_count,
     )
+    logger.info(
+        "synthesis audit event=start job_id=%s message_id=%s dequeue_count=%s",
+        job_id,
+        message.message_id,
+        message.dequeue_count,
+    )
     try:
         outcome = run_synthesis(job_id, storage, config, now=now)
     except TransientSynthesisError:
+        if message.dequeue_count >= MAX_DEQUEUE_COUNT:
+            logger.error(
+                "synthesis audit event=failure job_id=%s reason=%s dequeue_count=%s terminal=true",
+                job_id,
+                REASON_RETRY_EXHAUSTED,
+                message.dequeue_count,
+            )
+            queue.delete_message(message)
+            return SynthesisOutcome(job_id, STATUS_FAILED, reason=REASON_RETRY_EXHAUSTED)
+        logger.warning(
+            "synthesis audit event=failure job_id=%s reason=transient dequeue_count=%s terminal=false",
+            job_id,
+            message.dequeue_count,
+        )
         logger.warning(
             "leaving synthesis message for retry job_id=%s dequeue_count=%s",
             job_id,
@@ -247,6 +272,13 @@ def process_message(
         )
         return SynthesisOutcome(job_id, STATUS_FAILED, reason="transient")
 
+    logger.info(
+        "synthesis audit event=%s job_id=%s status=%s reason=%s terminal=true",
+        "success" if outcome.status == STATUS_COMPLETED else "skipped",
+        job_id,
+        outcome.status,
+        outcome.reason,
+    )
     queue.delete_message(message)
     return outcome
 
