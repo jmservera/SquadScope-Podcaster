@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from podcaster import episode
-from podcaster.generation import AI_VOICE_DISCLOSURE, PODCAST_NAME, PODCAST_URL
+from podcaster.generation import (
+    AI_VOICE_DISCLOSURE,
+    HOST_A_NAME,
+    HOST_B_NAME,
+    PODCAST_NAME,
+    PODCAST_SPOKEN_SITE,
+    PODCAST_URL,
+)
 from podcaster.tts import load_tts_config
 
 
@@ -73,13 +80,35 @@ def test_build_episode_script_opens_with_claracle_and_discloses_ai_voices():
     article = episode.sanitize_article(**_article_kwargs())
     script = episode.build_episode_script(article)
     body = script.split("---", 1)[1]
-    first_spoken = next(line for line in body.splitlines() if line.startswith("Host A"))
+    first_spoken = next(line for line in body.splitlines() if line.startswith(HOST_A_NAME + ":"))
     assert PODCAST_NAME in first_spoken
-    assert PODCAST_URL in first_spoken
     assert AI_VOICE_DISCLOSURE in script
-    assert "Host A (fable)" in script
-    assert "Host B (alloy)" in script
+    # Spoken turns are labelled by host name; the fable/alloy mapping stays in the header metadata.
+    assert f"{HOST_A_NAME}:" in script
+    assert f"{HOST_B_NAME}:" in script
+    assert f"{HOST_A_NAME} = fable" in script
+    assert f"{HOST_B_NAME} = alloy" in script
+    # The spoken-safe bare domain appears; no URL scheme is ever spoken.
+    assert PODCAST_SPOKEN_SITE in script
     assert script.rstrip().endswith("Manual review is required before publishing.")
+
+
+def test_spoken_segments_never_voice_a_url_scheme():
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article)
+    for _, text in episode.parse_script_segments(script):
+        assert "https://" not in text
+        assert "http://" not in text
+
+
+def test_named_hosts_have_distinct_personae_in_intro():
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article)
+    segments = episode.parse_script_segments(script)
+    intro_text = " ".join(text for _, text in segments[:4])
+    # Both hosts introduce themselves by name in the opening exchange.
+    assert f"I'm {HOST_A_NAME}" in intro_text
+    assert f"I'm {HOST_B_NAME}" in intro_text
 
 
 def test_disclosure_is_within_first_two_spoken_lines():
@@ -185,3 +214,41 @@ def test_synthesize_episode_fails_closed_when_decision_blocked(tmp_path):
             token_provider=lambda scope: pytest.fail("must not request token when blocked"),
             transport=lambda request: pytest.fail("must not synthesize when blocked"),
         )
+
+
+def test_hosts_do_not_self_label_their_personality():
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article).lower()
+    # Operator feedback v3: personality must come from the dialogue, not be announced.
+    for banned in (
+        "resident skeptic",
+        "keep us honest",
+        "my job is to keep",
+        "i'm the skeptic",
+        "i am the skeptic",
+        "i'm the enthusiast",
+    ):
+        assert banned not in script, f"host self-labels personality: {banned!r}"
+
+
+def test_no_repeated_crutch_phrases_and_unique_segment_transitions():
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article)
+    lowered = script.lower()
+    for crutch in ("goosebumps", "the thing i keep coming back to", "the detail i love"):
+        assert crutch not in lowered, f"repeated crutch phrase present: {crutch!r}"
+
+    # Every segment-opening transition (the enthusiast hook lines) must be distinct.
+    segments = episode.parse_script_segments(script)
+    openers = [
+        text
+        for _, text in segments
+        if any(text.startswith(hook.split(" ")[0]) for hook in episode._ENTHUSIAST_HOOKS)
+    ]
+    hook_lines = [
+        text
+        for _, text in segments
+        for hook in episode._ENTHUSIAST_HOOKS
+        if text.startswith(hook)
+    ]
+    assert len(hook_lines) == len(set(hook_lines)), "segment opener transitions repeat"

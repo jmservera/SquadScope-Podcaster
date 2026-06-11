@@ -89,6 +89,8 @@ def stitch_segments(
     runner: CommandRunner | None = None,
     *,
     gap_seconds: float = 0.35,
+    intro_music: Path | None = None,
+    outro_music: Path | None = None,
 ) -> Path:
     """Concatenate per-voice MP3 segments into one normalized episode MP3.
 
@@ -97,10 +99,27 @@ def stitch_segments(
     turns, then re-encoded to the publication target format (mono, 44.1 kHz,
     96 kbps, loudness-normalized to -16 LUFS) so the output passes the audio
     validation gate. Returns ``output_path``.
+
+    When ``intro_music`` and/or ``outro_music`` MP3 paths are supplied, they are
+    concatenated as short stingers before and after the speech body
+    (intro stinger -> speech -> outro stinger), separated from the speech by the
+    same gentle gap. The stingers are expected to carry their own baked-in
+    fade in/out; the whole program is loudness-normalized together so levels are
+    consistent.
     """
 
     if not segments:
         raise ValueError("cannot stitch an empty list of audio segments")
+
+    intro_bytes = Path(intro_music).read_bytes() if intro_music else None
+    outro_bytes = Path(outro_music).read_bytes() if outro_music else None
+    ordered: list[bytes] = []
+    if intro_bytes:
+        ordered.append(intro_bytes)
+    ordered.extend(segments)
+    if outro_bytes:
+        ordered.append(outro_bytes)
+    segments = ordered
 
     runner = runner or _run_command
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -56,6 +56,8 @@ class TtsConfig:
     voice_host_b: str | None
     auth_mode: str | None
     api_version: str = DEFAULT_API_VERSION
+    style_host_a: str | None = None
+    style_host_b: str | None = None
 
     @property
     def production_ready(self) -> bool:
@@ -85,6 +87,14 @@ class TtsConfig:
             return self.voice_host_b
         return self.voice_host_a
 
+    def style_for(self, role: str) -> str | None:
+        """Return the optional TTS style instruction for a speaker role."""
+
+        normalized = _normalize_role(role)
+        if normalized == HOST_B_ROLE:
+            return self.style_host_b
+        return self.style_host_a
+
     def safe_summary(self) -> dict[str, object]:
         """Secret-safe configuration summary for manifests/logs.
 
@@ -105,6 +115,10 @@ class TtsConfig:
                 HOST_A_ROLE: self.voice_host_a,
                 HOST_B_ROLE: self.voice_host_b,
             },
+            "styles_configured": {
+                HOST_A_ROLE: bool(self.style_host_a),
+                HOST_B_ROLE: bool(self.style_host_b),
+            },
         }
 
 
@@ -116,6 +130,7 @@ class VoiceTurn:
     voice: str
     deployment: str
     text: str
+    style: str | None = None
 
 
 def load_tts_config(env: Mapping[str, str] | None = None) -> TtsConfig:
@@ -138,6 +153,8 @@ def load_tts_config(env: Mapping[str, str] | None = None) -> TtsConfig:
         voice_host_b=_clean(env.get("AZURE_OPENAI_TTS_VOICE_HOST_B")),
         auth_mode=_clean(env.get("AZURE_OPENAI_AUTH_MODE")),
         api_version=_clean(env.get("AZURE_OPENAI_TTS_API_VERSION")) or DEFAULT_API_VERSION,
+        style_host_a=_clean(env.get("AZURE_OPENAI_TTS_STYLE_HOST_A")),
+        style_host_b=_clean(env.get("AZURE_OPENAI_TTS_STYLE_HOST_B")),
     )
 
 
@@ -204,6 +221,7 @@ def build_voice_plan(
                 voice=str(voice),
                 deployment=config.tts_deployment,
                 text=text,
+                style=config.style_for(role),
             )
         )
     return plan
@@ -235,30 +253,48 @@ def synthesize_turn(
 
     base = config.endpoint if config.endpoint.endswith("/") else f"{config.endpoint}/"
     url = f"{base}openai/deployments/{config.tts_deployment}/audio/speech?api-version={config.api_version}"
-    body = json.dumps(
-        {
+
+    def _request(include_style: bool) -> Request:
+        payload: dict[str, object] = {
             "model": config.tts_deployment,
             "input": turn.text,
             "voice": turn.voice,
             "response_format": RESPONSE_FORMAT,
         }
-    ).encode("utf-8")
-    request = Request(
-        url,
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-    )
+        # The ``instructions`` field steers tone/style on newer speech models.
+        # Older models reject it, so we retry without it on failure (below).
+        if include_style and turn.style:
+            payload["instructions"] = turn.style
+        return Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
+
+    has_style = bool(turn.style)
     logging.info(
-        "synthesizing tts turn deployment=%s voice=%s input_chars=%s",
+        "synthesizing tts turn deployment=%s voice=%s input_chars=%s styled=%s",
         config.tts_deployment,
         turn.voice,
         len(turn.text),
+        has_style,
     )
-    audio = transport(request)
+    try:
+        audio = transport(_request(include_style=has_style))
+    except Exception as exc:  # noqa: BLE001 - degrade gracefully if style unsupported
+        if not has_style:
+            raise
+        logging.warning(
+            "tts style instructions rejected (deployment=%s voice=%s); retrying without style: %s",
+            config.tts_deployment,
+            turn.voice,
+            type(exc).__name__,
+        )
+        audio = transport(_request(include_style=False))
     if not isinstance(audio, bytes) or not audio:
         raise RuntimeError("tts synthesis returned empty audio")
     return audio

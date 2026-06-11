@@ -206,3 +206,54 @@ def test_synthesize_two_voice_runs_each_turn_when_allowed():
     )
     assert audio == [b"audio", b"audio"]
     assert calls == ["fable", "alloy"]
+
+
+def _styled_config() -> TtsConfig:
+    env = _production_env()
+    env["AZURE_OPENAI_TTS_STYLE_HOST_A"] = "bright and energetic"
+    env["AZURE_OPENAI_TTS_STYLE_HOST_B"] = "dry and measured"
+    return load_tts_config(env)
+
+
+def test_build_voice_plan_assigns_per_host_style():
+    config = _styled_config()
+    plan = build_voice_plan([("host_a", "hi"), ("host_b", "yo")], config)
+    assert plan[0].style == "bright and energetic"
+    assert plan[1].style == "dry and measured"
+
+
+def test_synthesize_turn_includes_style_instructions_when_configured():
+    config = _styled_config()
+    plan = build_voice_plan([("host_a", "Hello.")], config)
+    captured: dict[str, object] = {}
+
+    def fake_transport(request):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return b"audio"
+
+    synthesize_turn(plan[0], config, token_provider=lambda s: "t", transport=fake_transport)
+    assert captured["body"]["instructions"] == "bright and energetic"
+
+
+def test_synthesize_turn_falls_back_without_style_when_instructions_rejected():
+    config = _styled_config()
+    plan = build_voice_plan([("host_a", "Hello.")], config)
+    bodies: list[dict] = []
+
+    def fake_transport(request):
+        body = json.loads(request.data.decode("utf-8"))
+        bodies.append(body)
+        if "instructions" in body:
+            raise RuntimeError("model does not support instructions")
+        return b"audio"
+
+    audio = synthesize_turn(plan[0], config, token_provider=lambda s: "t", transport=fake_transport)
+    assert audio == b"audio"
+    # First attempt carried style; the retry dropped it and succeeded.
+    assert "instructions" in bodies[0]
+    assert "instructions" not in bodies[1]
+
+
+def test_styles_summary_flags_configuration_without_exposing_text():
+    summary = _styled_config().safe_summary()
+    assert summary["styles_configured"] == {HOST_A_ROLE: True, HOST_B_ROLE: True}
