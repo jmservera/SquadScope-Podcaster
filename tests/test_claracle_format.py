@@ -4,9 +4,12 @@ from datetime import datetime, timezone
 
 from podcaster.generation import (
     AI_VOICE_DISCLOSURE,
+    HOST_A_NAME,
     HOST_A_VOICE,
+    HOST_B_NAME,
     HOST_B_VOICE,
     PODCAST_NAME,
+    PODCAST_SPOKEN_SITE,
     PODCAST_URL,
     generate_artifacts,
 )
@@ -36,17 +39,29 @@ def test_operator_voice_constants_are_fable_and_alloy() -> None:
 def test_script_opens_naming_claracle_with_site_link() -> None:
     script = _artifact("script.txt")
     body = script.split("---", 1)[1]
-    first_spoken = next(line for line in body.splitlines() if line.startswith("Host A"))
+    first_spoken = next(line for line in body.splitlines() if line.startswith(HOST_A_NAME + ":"))
     assert PODCAST_NAME in first_spoken
-    assert PODCAST_URL in first_spoken
+    # Operator feedback (#72): name the issue/week up front and introduce the host.
+    assert "issue!" in first_spoken
+    assert f"I'm {HOST_A_NAME}" in first_spoken
 
 
-def test_script_is_two_voice_with_fable_and_alloy() -> None:
+def test_spoken_body_uses_bare_domain_not_url_scheme() -> None:
+    # Operator feedback (#72.3): never voice a URL scheme on-mic; written metadata
+    # may still carry the full ``PODCAST_URL``.
     script = _artifact("script.txt")
-    assert f"Host A ({HOST_A_VOICE})" in script
-    assert f"Host B ({HOST_B_VOICE})" in script
-    assert f"Host A = {HOST_A_VOICE}" in script
-    assert f"Host B = {HOST_B_VOICE}" in script
+    body = script.split("---", 1)[1]
+    assert PODCAST_SPOKEN_SITE in body
+    assert "https://" not in body
+    assert PODCAST_URL not in body
+
+
+def test_script_is_two_voice_with_named_hosts_and_fable_alloy() -> None:
+    script = _artifact("script.txt")
+    assert f"{HOST_A_NAME}:" in script
+    assert f"{HOST_B_NAME}:" in script
+    assert f"{HOST_A_NAME} = {HOST_A_VOICE}" in script
+    assert f"{HOST_B_NAME} = {HOST_B_VOICE}" in script
 
 
 def test_ai_voice_disclosure_appears_within_first_60_seconds() -> None:

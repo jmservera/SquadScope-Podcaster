@@ -146,6 +146,7 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str) -> str:
     week = str(payload["week"])
     article_url = str(payload["article_url"])
     article_sha256 = str(payload.get("article_sha256") or "computed-on-retrieval")
+    article_title = str(payload.get("article_title") or "[main article title pending editorial selection]")
     source_artifacts = payload.get("source_artifacts") or []
     source_artifact_lines = [_source_artifact_line(item) for item in source_artifacts] or ["Source Artifact: none supplied"]
 
@@ -158,22 +159,25 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str) -> str:
             f"Source SHA256: {article_sha256}",
             f"Generated: {generated_at}",
             "Generator: squad-podcaster v0.1-stub",
-            f"Voices: Host A = {HOST_A_VOICE} (OpenAI TTS); Host B = {HOST_B_VOICE} (OpenAI TTS)",
+            f"Voices: {HOST_A_NAME} = {HOST_A_VOICE} (OpenAI TTS, the enthusiast); "
+            f"{HOST_B_NAME} = {HOST_B_VOICE} (OpenAI TTS, the veteran)",
             "Safety: source artifact text is untrusted data, fenced, and never executed as instructions.",
             *source_artifact_lines,
             "---",
             "",
-            f"Host A ({HOST_A_VOICE}): Welcome to {PODCAST_NAME}! I'm one of your two hosts, and"
-            f" you can find every weekly issue, extended write-ups, repo links, and commented articles at"
-            f" {PODCAST_URL}.",
-            f"Host B ({HOST_B_VOICE}): Quick heads-up before we dive in — {AI_VOICE_DISCLOSURE}",
-            f"Host A ({HOST_A_VOICE}): Right! We're here to have a joyful, dynamic expert"
-            " conversation about the most relevant and surprising parts of this week's article — we won't"
-            " just read it back to you.",
-            f"Host B ({HOST_B_VOICE}): [Editorial highlight pending: the standout takeaway from the"
-            " source article, generated and human-reviewed before synthesis.]",
-            f"Host A ({HOST_A_VOICE}): [Editorial discussion pending: why it matters, with the two"
-            " hosts trading expert commentary on the source article.]",
+            f"{HOST_A_NAME}: Welcome to {PODCAST_NAME} {week} issue! In this episode we will talk about:"
+            f" {article_title}. If you're new here — I'm {HOST_A_NAME}, and {PODCAST_NAME} is our weekly"
+            f" analysis of the GitHub repos that matter, read in the context of the main tech-industry news"
+            f" driving them.",
+            f"{HOST_B_NAME}: And I'm {HOST_B_NAME}. One honest heads-up before we dive in —"
+            f" {AI_VOICE_DISCLOSURE} Every issue, the repo links, and the extended write-ups live at"
+            f" {PODCAST_SPOKEN_SITE}.",
+            f"{HOST_A_NAME}: Right! We're here to have a joyful, dynamic expert conversation about the"
+            " most relevant and surprising parts of this week's article — we won't just read it back to you.",
+            f"{HOST_B_NAME}: [Editorial highlight pending: the standout takeaway from the source article,"
+            " generated and human-reviewed before synthesis.]",
+            f"{HOST_A_NAME}: [Editorial discussion pending: why it matters, with the two hosts trading"
+            " expert commentary on the source article.]",
             "",
             "This script is a deterministic production-path placeholder pending editorial"
             " generation from the source article. It is dry-run-safe; no audio has been synthesized.",
@@ -225,7 +229,7 @@ def _transcript(script: str) -> str:
         f"Published: {published}",
         f"Source: {source_url}",
         f"Duration: {duration}",
-        f"TTS Provider: OpenAI TTS (Host A {HOST_A_VOICE} / Host B {HOST_B_VOICE}) [synthesis pending review]",
+        f"TTS Provider: OpenAI TTS ({HOST_A_NAME} {HOST_A_VOICE} / {HOST_B_NAME} {HOST_B_VOICE}) [synthesis pending review]",
         "License: CC-BY-4.0",
         "---",
         "",
@@ -258,7 +262,8 @@ def _show_notes(payload: dict[str, object], generated_at: str) -> str:
             f"**Episode:** {week}",
             f"**Published:** {published}",
             "**Duration:** 15:42",
-            f"**Hosts:** Two AI voices — Host A ({HOST_A_VOICE}) and Host B ({HOST_B_VOICE}), OpenAI TTS [synthesis pending review]",
+            f"**Hosts:** Two AI voices — {HOST_A_NAME} ({HOST_A_VOICE}, the enthusiast) and "
+            f"{HOST_B_NAME} ({HOST_B_VOICE}, the veteran), OpenAI TTS [synthesis pending review]",
             "",
             f"> AI-voice disclosure: {AI_VOICE_DISCLOSURE} This is also stated in the first 60 seconds of the episode.",
             "",
