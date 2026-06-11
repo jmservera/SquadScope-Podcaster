@@ -30,7 +30,7 @@ from podcaster.storage import ManagedIdentityTokenCredential
 PROVIDER = "openai-tts"
 AUTH_MODE_MANAGED_IDENTITY = "managed_identity"
 OPENAI_SCOPE = "https://cognitiveservices.azure.com/.default"
-DEFAULT_API_VERSION = "2025-03-01-preview"
+DEFAULT_API_VERSION = "2024-12-01-preview"
 RESPONSE_FORMAT = "mp3"
 RESPONSE_CONTENT_TYPE = "audio/mpeg"
 
