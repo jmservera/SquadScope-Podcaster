@@ -195,3 +195,31 @@ def test_deploy_workflow_threads_opt_in_openai_flag() -> None:
     assert "deploy_openai:" in workflow
     assert "DEPLOY_OPENAI: ${{ inputs.deploy_openai }}" in workflow
     assert 'deployOpenAi="${DEPLOY_OPENAI:-false}"' in workflow
+
+
+def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
+    # Regression guard for the artifact retention contract (#89): the job manifest
+    # and podcaster/artifact_access.py promise expires_at / retention.cleanup_after
+    # with cleanup_owner "operator_or_storage_lifecycle_policy". Storage must
+    # actually enforce that so expired artifacts and stale deploy packages do not
+    # accumulate forever.
+    bicep = BICEP.read_text(encoding="utf-8")
+
+    assert "Microsoft.Storage/storageAccounts/managementPolicies@" in bicep, (
+        "infra/main.bicep must provision a Storage management (lifecycle) policy"
+    )
+    assert "param artifactRetentionDays int = 7" in bicep, (
+        "artifact retention must default to the documented 7-day manifest expiry"
+    )
+    assert "param packageRetentionDays int = 7" in bicep
+    assert re.search(r"@minValue\(1\)\s*\n\s*@maxValue\(365\)\s*\n\s*param artifactRetentionDays", bicep)
+
+    # Both containers must be covered by delete rules tied to the retention params.
+    assert "prefixMatch: [\n          '${storageContainerName}/'" in bicep or re.search(
+        r"prefixMatch:\s*\[\s*'\$\{storageContainerName\}/'", bicep
+    ), "artifacts container must be targeted by a lifecycle delete rule"
+    assert re.search(r"prefixMatch:\s*\[\s*'\$\{packageContainerName\}/'", bicep), (
+        "deploy package container must be targeted by a lifecycle delete rule"
+    )
+    assert "daysAfterModificationGreaterThan: artifactRetentionDays" in bicep
+    assert "daysAfterModificationGreaterThan: packageRetentionDays" in bicep
