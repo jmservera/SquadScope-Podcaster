@@ -58,6 +58,9 @@ param deploymentPrincipalObjectId string = ''
 @description('Opt-in switch for the production Azure OpenAI TTS infrastructure (#30). Defaults to false so the storage + Function App deploy stays green in regions where the selected TTS model is unavailable. Set to true only in a region/SKU that supports the configured ttsModelName/chatModelName.')
 param deployOpenAi bool = false
 
+@description('Set to true on first deploy after the OpenAI account was soft-deleted (restores it). Set to false for normal operation.')
+param restoreOpenAi bool = false
+
 @description('Azure OpenAI (Cognitive Services) account name. Must be globally unique within its subdomain. Defaults follow the existing Function App naming convention.')
 @minLength(2)
 @maxLength(63)
@@ -408,6 +411,7 @@ module openAi 'modules/openai.bicep' = if (deployOpenAi) {
     openAiAccountName: openAiAccountName
     openAiCustomSubDomain: openAiCustomSubDomain
     openAiSkuName: openAiSkuName
+    restoreAccount: restoreOpenAi
     ttsModelName: ttsModelName
     ttsModelVersion: ttsModelVersion
     ttsDeploymentName: ttsDeploymentName
