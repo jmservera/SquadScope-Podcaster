@@ -72,6 +72,9 @@ param ttsModelVersion string = '2025-03-20'
 @description('Deployment (alias) name used by the Function App to reference the TTS model.')
 param ttsDeploymentName string = 'tts'
 
+@description('SKU tier for the TTS model deployment. gpt-4o-mini-tts requires GlobalStandard.')
+param ttsModelSkuName string = 'GlobalStandard'
+
 @description('Provisioned capacity (thousands of tokens / requests per minute) for the TTS model deployment.')
 param ttsModelCapacity int = 1
 
@@ -83,6 +86,9 @@ param chatModelVersion string = '2024-07-18'
 
 @description('Deployment (alias) name used by the Function App to reference the chat model.')
 param chatDeploymentName string = 'chat'
+
+@description('SKU tier for the chat model deployment.')
+param chatModelSkuName string = 'GlobalStandard'
 
 @description('Provisioned capacity (thousands of tokens per minute) for the chat model deployment.')
 param chatModelCapacity int = 10
@@ -402,10 +408,12 @@ module openAi 'modules/openai.bicep' = if (deployOpenAi) {
     ttsModelName: ttsModelName
     ttsModelVersion: ttsModelVersion
     ttsDeploymentName: ttsDeploymentName
+    ttsModelSkuName: ttsModelSkuName
     ttsModelCapacity: ttsModelCapacity
     chatModelName: chatModelName
     chatModelVersion: chatModelVersion
     chatDeploymentName: chatDeploymentName
+    chatModelSkuName: chatModelSkuName
     chatModelCapacity: chatModelCapacity
     functionAppPrincipalId: functionApp.identity.principalId
     // Grant the synthesis job's identity Cognitive Services OpenAI User too, when both opt-ins are on.
