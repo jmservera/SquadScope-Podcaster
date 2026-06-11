@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "squadscope-podcaster"
 version = "0.1.0"
-description = "Azure Functions API scaffold for SquadScope podcast generation."
+description = "ACA-based podcast generation service for SquadScope."
 requires-python = ">=3.11"
-dependencies = ["azure-functions>=1.20,<2", "azure-identity>=1.17,<2", "azure-storage-blob>=12.20,<13"]
+dependencies = ["azure-identity>=1.17,<2", "azure-storage-blob>=12.20,<13"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]

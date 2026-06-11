@@ -34,10 +34,10 @@ jobs:
 
       - name: Run Checkov
         run: |
-          # Keep the scan gating on new findings while deferring the current Consumption-plan baseline.
+          # Keep the scan gating on new findings while deferring the current ACA-only baseline.
           # CKV_AZURE_134 (Cognitive Services public network access) is deferred because the
-          # Consumption (Y1) Function App reaches Azure OpenAI over the public endpoint; the account
-          # still enforces managed-identity-only auth (disableLocalAuth) and a system-assigned identity.
+          # ACA synthesis job reaches Azure OpenAI over the public endpoint; the account
+          # still enforces managed-identity-only auth (disableLocalAuth) via user-assigned identity.
           checkov --directory infra --framework bicep \
             --skip-check CKV_AZURE_35,CKV_AZURE_43,CKV_AZURE_206,CKV_AZURE_225,CKV_AZURE_15,CKV_AZURE_212,CKV_AZURE_78,CKV_AZURE_213,CKV_AZURE_222,CKV_AZURE_67,CKV_AZURE_18,CKV_AZURE_17,CKV_AZURE_59,CKV_AZURE_134
 
@@ -66,7 +66,7 @@ jobs:
         run: pytest
 
       - name: Compile Python
-        run: python -m compileall podcaster function_app.py
+        run: python -m compileall podcaster
 
   synthesis-image:
     # Build + scan the ffmpeg synthesis-runner image on PRs (ADR 0001, #77).
