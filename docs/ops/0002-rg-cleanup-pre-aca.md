@@ -147,6 +147,72 @@ Do **not** execute autonomously. Each is irreversible or breaks live behaviour:
   if it is the human/automation working identity, document it as intentional in
   the architecture notes rather than treating it as a cleanup candidate.
 
+## 6. Execution log — approved #92 cleanup attempt (2026-06-11)
+
+Executed by the Podcaster squad under operator approval ("ensure the Podcaster
+deployment is working and get rid of the unused resources"). Preserve-first,
+verify-before-delete. **Outcome: BLOCKED at provisioning; nothing deleted.**
+
+1. **Deployment health — CONFIRMED.** Latest `Deploy Azure` on `main`
+   ([run 27344966830](https://github.com/jmservera/SquadScope-Podcaster/actions/runs/27344966830))
+   succeeded; `Deploy infrastructure`, `Wait for Function App to index functions`,
+   and `Smoke deployed generate endpoint` all green (HTTP 202 with non-empty
+   `job_id`/`manifest_url`, `errors=[]`). The prior 3+ runs also succeeded. The
+   deployment works.
+
+2. **Review artifacts — RETAINED (verified live).** All seven
+   `podcaster-artifacts/review/` blobs are present (script/v2/v3 + mp3s). The
+   storage lifecycle policy's `expire-artifacts` rule matches only
+   `podcaster-artifacts/jobs/` and `podcaster-artifacts/bakeoff/` (7 days); the
+   `review/` prefix is **not** matched, so the #93/#94 retention is in effect and
+   the review episodes are safe.
+
+3. **Provision bicep-managed OpenAI — BLOCKED (region/model gap). STOPPED; did
+   NOT run `deploy_openai=true`.** Pre-flight `az cognitiveservices model list`
+   shows the configured TTS model is **not offered in `swedencentral`**:
+   - `gpt-4o-mini-tts` (bicep default `ttsModelName`, version `2025-03-20`):
+     **0 results in `swedencentral`**. Of the regions checked, only `eastus2`
+     offers it. swedencentral exposes only legacy `tts` / `tts-hd` (version `001`).
+   - `gpt-4o-mini` (chat, `2024-07-18`): available in swedencentral. ✓
+   - The manual bakeoff does **not** prove `gpt-4o-mini-tts` availability — its
+     deployment `tts-bakeoff` uses model `tts` version `001` (the legacy TTS
+     model), which is a different model from the bicep-configured
+     `gpt-4o-mini-tts`.
+
+   Running `deploy_openai=true` as-is would fail on the `ttsDeployment`
+   (`modules/openai.bicep`) and leave a partially-provisioned OpenAI account in
+   the RG (a new orphan). Per the approved guard ("if the deploy fails on
+   model/region/quota, STOP and report; do not delete anything"), provisioning was
+   not attempted. This realises the risk flagged in §3.B / #30 / #60.
+
+4. **Repoint + verify — NOT REACHED.** No bicep OpenAI exists, so the Function App
+   `AZURE_OPENAI_ENDPOINT` remains the bakeoff
+   (`https://podcaster-openai-bakeoff-20260609.openai.azure.com/`,
+   `AZURE_OPENAI_TTS_DEPLOYMENT=tts-bakeoff`). Note: even after provisioning, the
+   repo variables `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_TTS_DEPLOYMENT` (consumed
+   by the deploy workflow's app-settings step) must be repointed to the bicep
+   account/`tts` deployment, otherwise that step re-clobbers the endpoint back to
+   the bakeoff. Tracked for the unblock work.
+
+5. **Delete the bakeoff — NOT DONE (correct).** `podcaster-openai-bakeoff-20260609`
+   is still the live OpenAI endpoint and has no working replacement, so it remains
+   in use and was **not** deleted.
+
+6. **Sweep for other unused resources — none found.** RG inventory unchanged from
+   §1; every resource is KEEP. `function-packages/` blobs are auto-expired by the
+   `expire-deploy-packages` lifecycle rule (7 days) — none currently exceed the
+   window, so no manual deletion. ARM deployment history is small and healthy. The
+   ACA job (`deploy_audio_job`) was **not** enabled (separate operator decision).
+
+### Required to unblock (operator decision)
+
+Provision the bicep OpenAI in a region that offers `gpt-4o-mini-tts` (e.g.
+`eastus2`) — the OpenAI account can live in a different region from the RG — **or**
+change `ttsModelName`/`ttsModelVersion` to a TTS model available in `swedencentral`
+(`tts` / `tts-hd`, version `001`). After provisioning succeeds and the Function App
+is repointed (incl. the repo variables) and re-smoked green, the bakeoff can be
+deleted/purged per §3.B step 3.
+
 ## Constraints honoured
 
 - No resource deleted by the agent. No secrets printed (identity-only `az`,
