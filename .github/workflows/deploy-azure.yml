@@ -16,6 +16,12 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
+      restore_openai:
+        description: 'Set to true to restore a soft-deleted OpenAI account (first deploy after deletion).'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 permissions:
   contents: read
@@ -163,6 +169,7 @@ jobs:
         id: deploy_bicep
         env:
           DEPLOY_OPENAI: ${{ inputs.deploy_openai }}
+          RESTORE_OPENAI: ${{ inputs.restore_openai }}
         run: |
           set -euo pipefail
           set +x
@@ -206,6 +213,7 @@ jobs:
             --parameters deploymentPrincipalObjectId="$deployment_principal_object_id" \
             --parameters podcasterApiKey="$PODCASTER_API_KEY" \
             --parameters deployOpenAi="${DEPLOY_OPENAI:-false}" \
+            --parameters restoreOpenAi="${RESTORE_OPENAI:-false}" \
             --query properties.outputs.endpoint.value \
             --output tsv)
           echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
