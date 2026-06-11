@@ -75,6 +75,8 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
     networkAcls: {
       defaultAction: 'Allow'
     }
+    // Restore the account if it was soft-deleted (e.g. after a failed deployment).
+    restore: true
   }
 }
 
