@@ -53,10 +53,11 @@ jobs:
 
       - name: Resolve image reference
         if: steps.gate.outputs.approved == 'true'
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag }}"
-          tag="${tag:-${GITHUB_SHA::12}}"
+          tag="${INPUT_TAG:-${GITHUB_SHA::12}}"
           echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${tag}" >> "$GITHUB_ENV"
 
       - name: Build synthesis image
