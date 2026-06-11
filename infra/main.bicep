@@ -1,11 +1,8 @@
-// HOTFIX: isolate deploy/CI changes (branch squad/47-isolate-deploy-ci)
+// Podcaster infrastructure — Azure Functions + Storage + OpenAI (TTS)
 targetScope = 'resourceGroup'
 
-@description('Azure region for all resources (except OpenAI, see openAiLocation).')
-param location string = resourceGroup().location
-
-@description('Azure region for the OpenAI account. Defaults to eastus2 which supports gpt-4o-mini-tts. May differ from the main location when the subscription lacks compute quota in the OpenAI-capable region.')
-param openAiLocation string = 'eastus2'
+@description('Azure region for all resources. Use a region that supports gpt-4o-mini-tts (e.g. eastus2).')
+param location string = 'eastus2'
 
 @description('Globally unique Storage Account name. Defaults to a deterministic safe name based on the resource group.')
 @minLength(3)
@@ -404,7 +401,7 @@ resource deploymentBlobDataContributor 'Microsoft.Authorization/roleAssignments@
 module openAi 'modules/openai.bicep' = if (deployOpenAi) {
   name: 'openai-tts'
   params: {
-    location: openAiLocation
+    location: location
     openAiAccountName: openAiAccountName
     openAiCustomSubDomain: openAiCustomSubDomain
     openAiSkuName: openAiSkuName
