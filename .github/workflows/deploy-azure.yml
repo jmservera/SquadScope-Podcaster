@@ -333,18 +333,25 @@ jobs:
 
           package_url="${storage_blob_endpoint}${AZURE_PACKAGE_CONTAINER_NAME}/${package_blob_name}"
 
+          # Build app settings array; only override OpenAI endpoint if
+          # explicitly provided (Bicep already sets it from the deployed resource).
+          app_settings=(
+            "WEBSITE_RUN_FROM_PACKAGE=$package_url"
+            "WEBSITE_USE_MANAGED_IDENTITY=true"
+            "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned"
+            "AZURE_OPENAI_TTS_DEPLOYMENT=${OPENAI_TTS_DEPLOYMENT:-tts}"
+            "AZURE_OPENAI_TTS_VOICE_HOST_A=${OPENAI_TTS_VOICE_HOST_A:-fable}"
+            "AZURE_OPENAI_TTS_VOICE_HOST_B=${OPENAI_TTS_VOICE_HOST_B:-alloy}"
+            "AZURE_OPENAI_AUTH_MODE=${OPENAI_AUTH_MODE:-managed_identity}"
+          )
+          if [ -n "${OPENAI_ENDPOINT:-}" ]; then
+            app_settings+=("AZURE_OPENAI_ENDPOINT=$OPENAI_ENDPOINT")
+          fi
+
           az functionapp config appsettings set \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$AZURE_FUNCTION_APP_NAME" \
-            --settings \
-              "WEBSITE_RUN_FROM_PACKAGE=$package_url" \
-              "WEBSITE_USE_MANAGED_IDENTITY=true" \
-              "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned" \
-              "AZURE_OPENAI_ENDPOINT=${OPENAI_ENDPOINT:-}" \
-              "AZURE_OPENAI_TTS_DEPLOYMENT=${OPENAI_TTS_DEPLOYMENT:-tts}" \
-              "AZURE_OPENAI_TTS_VOICE_HOST_A=${OPENAI_TTS_VOICE_HOST_A:-fable}" \
-              "AZURE_OPENAI_TTS_VOICE_HOST_B=${OPENAI_TTS_VOICE_HOST_B:-alloy}" \
-              "AZURE_OPENAI_AUTH_MODE=${OPENAI_AUTH_MODE:-managed_identity}" \
+            --settings "${app_settings[@]}" \
             --output none
 
           az functionapp restart \
