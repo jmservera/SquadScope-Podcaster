@@ -1,8 +1,11 @@
 // Podcaster infrastructure — Azure Functions + Storage + OpenAI (TTS)
 targetScope = 'resourceGroup'
 
-@description('Azure region for all resources. Use a region that supports gpt-4o-mini-tts (e.g. eastus2).')
-param location string = 'eastus2'
+@description('Azure region for compute/storage resources (Function App, Storage, App Insights).')
+param location string = 'swedencentral'
+
+@description('Azure region for the OpenAI account (must support gpt-4o-mini-tts).')
+param openAiLocation string = 'eastus2'
 
 @description('Globally unique Storage Account name. Defaults to a deterministic safe name based on the resource group.')
 @minLength(3)
@@ -401,7 +404,7 @@ resource deploymentBlobDataContributor 'Microsoft.Authorization/roleAssignments@
 module openAi 'modules/openai.bicep' = if (deployOpenAi) {
   name: 'openai-tts'
   params: {
-    location: location
+    location: openAiLocation
     openAiAccountName: openAiAccountName
     openAiCustomSubDomain: openAiCustomSubDomain
     openAiSkuName: openAiSkuName
