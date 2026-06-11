@@ -470,7 +470,7 @@ az group exists --name podcaster-prod
 
 The production `/api/generate` path uses **Azure OpenAI** for the two-voice
 "Claracle" episode (host A = `fable`, host B = `alloy`), per the provider decision
-recorded in #4. These resources live in `infra/openai.bicep` and are deployed by the
+recorded in #4. These resources live in `infra/modules/openai.bicep` and are deployed by the
 conditional `module openAi` in `infra/main.bicep`.
 
 ### Opt-in by design

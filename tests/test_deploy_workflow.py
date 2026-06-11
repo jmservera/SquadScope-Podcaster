@@ -143,7 +143,7 @@ def test_bicep_assigns_deploy_identity_storage_data_plane_role() -> None:
     assert "ba92f5b4-2d11-453d-a403-e96b0029c9fe" in bicep
 
 
-OPENAI_MODULE = ROOT / "infra/openai.bicep"
+OPENAI_MODULE = ROOT / "infra/modules/openai.bicep"
 
 
 def test_openai_infra_is_opt_in_and_defaults_off() -> None:
@@ -154,8 +154,8 @@ def test_openai_infra_is_opt_in_and_defaults_off() -> None:
     assert "param deployOpenAi bool = false" in bicep, (
         "deployOpenAi must default to false to protect the green deploy"
     )
-    assert re.search(r"module openAi 'openai\.bicep' = if \(deployOpenAi\)", bicep), (
-        "OpenAI resources must deploy conditionally via the openai.bicep module"
+    assert re.search(r"module openAi 'modules/openai\.bicep' = if \(deployOpenAi\)", bicep), (
+        "OpenAI resources must deploy conditionally via the modules/openai.bicep module"
     )
 
 
