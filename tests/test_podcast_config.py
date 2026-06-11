@@ -157,3 +157,53 @@ def test_validate_payload_warns_on_unknown_podcast_config_fields() -> None:
     assert validation.errors == []
     assert "podcast_config contains unsupported fields: extra" in validation.warnings
     assert "podcast_config.host_a contains unsupported fields: accent" in validation.warnings
+
+
+def test_podcast_config_style_guide_from_payload() -> None:
+    guide_text = "## Segment Structure\nCold Open → Signal → Noise Check → Gap"
+    config = PodcastConfig.from_payload({"podcast_config": {"style_guide": guide_text}})
+    assert config.style_guide == guide_text
+
+
+def test_podcast_config_style_guide_defaults_empty() -> None:
+    config = PodcastConfig()
+    assert config.style_guide == ""
+
+
+def test_podcast_config_style_guide_strips_whitespace() -> None:
+    config = PodcastConfig.from_payload({"podcast_config": {"style_guide": "  guide text  \n"}})
+    assert config.style_guide == "guide text"
+
+
+def test_podcast_config_style_guide_non_string_ignored() -> None:
+    config = PodcastConfig.from_payload({"podcast_config": {"style_guide": 42}})
+    assert config.style_guide == ""
+
+
+def test_build_style_guide_prompt_empty_when_no_guide() -> None:
+    config = PodcastConfig()
+    assert episode.build_style_guide_prompt(config) == ""
+
+
+def test_build_style_guide_prompt_wraps_guide_text() -> None:
+    guide = "Format: Cold Open → Signal → Outro"
+    config = PodcastConfig.from_payload({"podcast_config": {"style_guide": guide}})
+    prompt = episode.build_style_guide_prompt(config)
+    assert "Editorial Style Guide" in prompt
+    assert guide in prompt
+    assert "End of Style Guide" in prompt
+
+
+def test_build_episode_script_includes_style_guide_marker() -> None:
+    guide = "Phrasing principles: be specific, cite numbers"
+    config = PodcastConfig.from_payload({"podcast_config": {"style_guide": guide}})
+    article = episode.sanitize_article(
+        week="2026-W24",
+        title="Test",
+        url="https://example.com",
+        sha256="abc123",
+        summary="Summary text.",
+        beats=[{"topic": "topic one", "points": ["point"]}],
+    )
+    script = episode.build_episode_script(article, podcast_config=config)
+    assert "Style-Guide: included" in script

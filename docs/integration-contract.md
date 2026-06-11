@@ -60,6 +60,8 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 - `dry_run` (optional boolean): Validate and generate draft/stub artifacts only.
 - `force` (optional boolean): Regenerate even if prior artifacts exist.
 - `callback` (optional object): Future callback target. The `secret_name` names a secret, not the secret value.
+- `podcast_config` (optional object): Override podcast identity and style. Includes sub-fields `name`, `url`, `spoken_site`, `ai_voice_disclosure`, `host_a`, `host_b`, and `style_guide`.
+- `podcast_config.style_guide` (optional string): Full text of the editorial style guide (segment structure, tone, phrasing principles). Passed from SquadScope's `docs/editorial-style-guide.md`. When present, it is included as context for script generation (#116).
 
 ### `source_artifacts` compatibility
 
