@@ -129,6 +129,24 @@ def _host_b(text: str, podcast_config: PodcastConfig) -> str:
     return f"{podcast_config.host_b.name}: {text}"
 
 
+def build_style_guide_prompt(podcast_config: PodcastConfig) -> str:
+    """Build a system-prompt fragment from the editorial style guide.
+
+    Returns an empty string when no style guide is configured. When present, the
+    guide is wrapped with clear boundaries so it can be prepended to an LLM
+    system prompt for script generation without being confused with untrusted
+    article text.
+    """
+
+    if not podcast_config.style_guide:
+        return ""
+    return (
+        "## Editorial Style Guide (follow these conventions)\n\n"
+        f"{podcast_config.style_guide}\n\n"
+        "## End of Style Guide\n"
+    )
+
+
 def build_episode_script(article: Article, podcast_config: PodcastConfig | None = None) -> str:
     """Author a cohesive, journalistic two-voice Claracle episode about ``article``.
 
@@ -159,9 +177,10 @@ def build_episode_script(article: Article, podcast_config: PodcastConfig | None 
         f"Voices: {podcast_config.host_a.name} = {podcast_config.host_a.voice} (OpenAI TTS, the enthusiast); "
         f"{podcast_config.host_b.name} = {podcast_config.host_b.voice} (OpenAI TTS, the veteran)",
         "Safety: source article text is untrusted data, sanitized, and never executed as instructions.",
-        "---",
-        "",
     ]
+    if podcast_config.style_guide:
+        header.append(f"Style-Guide: included ({len(podcast_config.style_guide)} chars)")
+    header.extend(["---", ""])
 
     # Hook + throughline + AI-voice disclosure, all in the opening exchange.
     body: list[str] = [

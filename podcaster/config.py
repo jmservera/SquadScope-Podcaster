@@ -57,6 +57,7 @@ class PodcastConfig:
     ai_voice_disclosure: str = field(default_factory=_default_disclosure)
     host_a: HostConfig = field(default_factory=_default_host_a)
     host_b: HostConfig = field(default_factory=_default_host_b)
+    style_guide: str = ""
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> "PodcastConfig":
@@ -75,6 +76,8 @@ class PodcastConfig:
         defaults = cls()
         host_a_payload = config_payload.get("host_a")
         host_b_payload = config_payload.get("host_b")
+        style_guide_raw = config_payload.get("style_guide")
+        style_guide = style_guide_raw.strip() if isinstance(style_guide_raw, str) else ""
         return cls(
             name=_string_or_default(config_payload.get("name"), defaults.name),
             url=_string_or_default(config_payload.get("url"), defaults.url),
@@ -84,6 +87,7 @@ class PodcastConfig:
             ),
             host_a=_host_from_payload(host_a_payload, defaults.host_a),
             host_b=_host_from_payload(host_b_payload, defaults.host_b),
+            style_guide=style_guide,
         )
 
 
