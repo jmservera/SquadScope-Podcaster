@@ -51,7 +51,7 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
 }
 
 resource synthesisPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (hasSynthesisPull) {
-  name: guid(registry.id, synthesisPullPrincipalId, 'AcrPull')
+  name: guid(subscription().subscriptionId, resourceGroup().id, registryName, synthesisPullPrincipalId, acrPullRoleId)
   scope: registry
   properties: {
     principalId: synthesisPullPrincipalId
@@ -61,7 +61,7 @@ resource synthesisPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' 
 }
 
 resource pushRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (hasPush) {
-  name: guid(registry.id, pushPrincipalId, 'AcrPush')
+  name: guid(subscription().subscriptionId, resourceGroup().id, registryName, pushPrincipalId, acrPushRoleId)
   scope: registry
   properties: {
     principalId: pushPrincipalId

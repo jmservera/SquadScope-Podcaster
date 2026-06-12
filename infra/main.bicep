@@ -310,5 +310,5 @@ output synthesisJobName string = aca.outputs.jobName
 output containerAppsEnvName string = aca.outputs.environmentName
 output synthesisQueueName string = aca.outputs.queueName
 output synthesisJobIdentityClientId string = aca.outputs.jobIdentityClientId
-output apiAppFqdn string = deployApiApp ? api.outputs.apiAppFqdn : ''
-output acrLoginServer string = deployAcr ? acr.outputs.loginServer : ''
+output apiAppFqdn string = deployApiApp ? api!.outputs.apiAppFqdn : ''
+output acrLoginServer string = deployAcr ? acr!.outputs.loginServer : ''
