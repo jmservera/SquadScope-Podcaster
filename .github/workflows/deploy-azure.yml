@@ -32,8 +32,8 @@ jobs:
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_STORAGE_ACCOUNT_NAME: ${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
-      SYNTHESIS_IMAGE: ${{ vars.SYNTHESIS_IMAGE_REGISTRY }}/${{ vars.SYNTHESIS_IMAGE_REPOSITORY || 'podcaster-synthesis' }}:latest
-      API_IMAGE: ${{ vars.SYNTHESIS_IMAGE_REGISTRY }}/${{ vars.API_IMAGE_REPOSITORY || 'podcaster-api' }}:latest
+      SYNTHESIS_IMAGE: ${{ vars.SYNTHESIS_IMAGE_REGISTRY }}/${{ vars.SYNTHESIS_IMAGE_REPOSITORY || 'podcaster-synthesis' }}
+      API_IMAGE: ${{ vars.SYNTHESIS_IMAGE_REGISTRY }}/${{ vars.API_IMAGE_REPOSITORY || 'podcaster-api' }}
     steps:
       - name: Checkout
         # actions/checkout v6.0.3
@@ -180,8 +180,8 @@ jobs:
             --parameters deploymentPrincipalObjectId="$deployment_principal_object_id" \
             --parameters podcasterApiKey="$PODCASTER_API_KEY" \
             --parameters deployApiApp=true \
-            --parameters synthesisImage="${SYNTHESIS_IMAGE}" \
-            --parameters apiImage="${API_IMAGE}" \
+            --parameters synthesisImage="${SYNTHESIS_IMAGE}:${GITHUB_SHA::12}" \
+            --parameters apiImage="${API_IMAGE}:${GITHUB_SHA::12}" \
             --output none
           echo "### ACA-only Podcaster infrastructure deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "Region: $AZURE_LOCATION" >> "$GITHUB_STEP_SUMMARY"
