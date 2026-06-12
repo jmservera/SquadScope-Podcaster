@@ -1,6 +1,12 @@
 name: Publish API image
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'podcaster/**'
+      - 'Containerfile.api'
+      - 'requirements.txt'
   workflow_dispatch:
     inputs:
       tag:
@@ -20,3 +26,14 @@ jobs:
       image_repository: ${{ vars.API_IMAGE_REPOSITORY || 'podcaster-api' }}
       tag: ${{ inputs.tag }}
     secrets: inherit
+
+  deploy:
+    needs: publish
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/reusable-deploy-azure.yml
+    with:
+      api_image: ${{ needs.publish.outputs.image_ref || '' }}
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write

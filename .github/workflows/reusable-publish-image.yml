@@ -105,4 +105,8 @@ jobs:
           set -euo pipefail
           az acr login --name "${REGISTRY%%.*}"
           docker push "$IMAGE_REF"
-          echo "Pushed $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
+          # Always update :latest so the deploy workflow picks up the current code.
+          latest_ref="${REGISTRY}/${IMAGE_REPOSITORY}:latest"
+          docker tag "$IMAGE_REF" "$latest_ref"
+          docker push "$latest_ref"
+          echo "Pushed $IMAGE_REF + $latest_ref" >> "$GITHUB_STEP_SUMMARY"
