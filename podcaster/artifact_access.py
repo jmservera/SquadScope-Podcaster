@@ -23,7 +23,7 @@ def artifact_access_metadata(job_id: str, created_at: str, expires_at: str) -> d
         },
         "operator_access": {
             "method": "Azure RBAC or local filesystem access",
-            "azure_identity": "Function App managed identity writes artifacts; operators read with explicitly granted storage permissions.",
+            "azure_identity": "ACA managed identity writes artifacts; operators read with explicitly granted storage permissions.",
             "local_development": "PODCASTER_ARTIFACT_BASE_URL is a development locator only, not a public distribution URL.",
         },
         "retention": {
