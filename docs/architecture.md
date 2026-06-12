@@ -22,17 +22,18 @@ All resources deploy to **eastus2** (required for `gpt-4o-mini-tts` model availa
 |----------|---------|
 | Storage Account | Artifact staging (`podcaster-artifacts` container) + synthesis queue |
 | Azure OpenAI (Cognitive Services) | TTS (`gpt-4o-mini-tts`, deployment `tts`) + chat (`gpt-4o-mini`, deployment `chat`) |
+| Azure Container Registry (Basic) | Hosts the synthesis + API container images (#129) |
 | Container Apps Environment | Hosts the API app and synthesis job |
 | Container Apps App (HTTP ingress) | Thin `/api/generate` front door: validates, stages, enqueues (#131) |
 | Container Apps Job (queue-triggered) | Runs the full episode pipeline: script → TTS → ffmpeg stitch → validate → stage |
-| User-assigned Managed Identity | Identity-only auth to Storage (Blob + Queue) and Azure OpenAI (no keys) |
+| User-assigned Managed Identity | Identity-only auth to Storage (Blob + Queue), Azure OpenAI, and ACR (AcrPull) |
 | Log Analytics + Application Insights | Observability |
 
-The Function App was removed in PR #112. The architecture now has two ACA workloads sharing one Container Apps Environment:
+The architecture has two ACA workloads sharing one Container Apps Environment:
 - **API App** — lightweight HTTP ingress (scale-to-zero, no ffmpeg) that accepts requests and enqueues synthesis messages.
 - **Synthesis Job** — queue-triggered, ffmpeg-backed job that produces the full episode audio.
 
-Both are gated behind container registry approval (#129) for real image deployment.
+Both pull images from the private ACR using the managed identity (AcrPull role).
 
 ### Region rationale
 
