@@ -76,7 +76,7 @@ Rationale:
   and a new dependency with no active prompt to protect. The deterministic
   placeholder is fully covered by the structural fencing above.
 - **Azure Prompt Shields** is the primary choice when generation goes live: it
-  is a managed Azure service (consistent with the Function App's Azure-native
+  is a managed Azure service (consistent with the ACA-only Azure-native
   posture and managed identity), covers user-prompt and document/indirect
   attacks, and needs no extra model hosting. Cost/quota and a dedicated
   resource are a coordinator/Hermes decision at integration time.

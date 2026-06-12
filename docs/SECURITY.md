@@ -9,8 +9,8 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
 - **`PODCASTER_API_KEY`** (GitHub repository secret, Azure app setting)
   - The bearer token for cross-repo callers to authenticate requests.
   - Optionally stored as a GitHub secret in this repository for stable deployment/rotation.
-  - If the secret is absent, the deploy workflow generates a 256-bit key during deployment, masks it immediately, and sets it only as an Azure Function App app setting.
-  - Transmitted to Azure as a secure parameter and configured as a Function App setting.
+  - If the secret is absent, the deploy workflow generates a 256-bit key during deployment, masks it immediately, and passes it as a secure Bicep parameter to the ACA environment.
+  - Transmitted to Azure as a secure parameter and configured as an ACA Job secret.
   - Never logged, echoed, printed to outputs, or included in workflow summaries.
   - **Rotating:** Generate a new key, update GitHub/SquadScope secrets, re-deploy via `deploy-azure.yml`. If using generated-per-deploy keys, run the optional SquadScope sync during the same deployment.
 
@@ -27,12 +27,12 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
   - Example: `https://podcaster-app.azurewebsites.net/api/generate`
   
 - **`PODCASTER_API_KEY`** (secret in SquadScope)
-  - The same API key configured in the Podcaster Function App.
+  - The same API key configured in the Podcaster ACA synthesis job.
   - Must be read from GitHub secrets, never hard-coded or committed.
 
 ### Auth Bootstrap Decision
 
-- **Current release:** keep `x-podcaster-api-key` for compatibility and bootstrap safely. If a stable `PODCASTER_API_KEY` secret is unavailable, deployment generates a high-entropy key, masks it, and writes it only to the Function App app setting.
+- **Current release:** keep `x-podcaster-api-key` for compatibility and bootstrap safely. If a stable `PODCASTER_API_KEY` secret is unavailable, deployment generates a high-entropy key, masks it, and passes it only as a secure ACA Job environment secret.
 - **Handoff:** prefer `sync_squadscope=true` with the gated `SQUADSCOPE_SYNC_TOKEN` during the same run, or pre-create a stable key and store it in both repositories. Do not print generated keys for manual copy/paste.
 - **Future hardening:** migrate SquadScope caller authentication to Azure federated identity/OIDC or EasyAuth while accepting the API-key header during a compatibility window.
 
@@ -48,36 +48,34 @@ A second Azure federated identity is **not** useful for writing GitHub secrets o
 
 ### Azure Resource Access (Deployment Only)
 
-- **Function host storage**: `AzureWebJobsStorage` uses identity-based service URI settings, not an account-key connection string.
+- **ACA Job storage**: The synthesis job uses a user-assigned managed identity to access the Storage Account for artifact writes and queue reads.
   - No Storage Account key is committed, printed, or passed through workflow logs.
-  - The Function App's system-assigned managed identity receives storage data-plane roles required by the Functions host.
+  - The ACA Job's user-assigned managed identity receives Storage Blob Data Contributor and Queue Data Contributor roles.
 
-- **Function package deployment**: GitHub Actions uploads `app.zip` to a private blob container using OIDC/Entra auth.
-  - The deploy identity receives `Storage Blob Data Contributor` on the Storage Account for package upload.
-  - `WEBSITE_RUN_FROM_PACKAGE` is set to a private blob URL with managed-identity package access, not a bearer SAS URL.
-  - Storage Account keys and unsupported zipdeploy/config-zip paths are not used.
+- **Container image deployment**: The ACA Job references a container image from an approved registry (ACR or ghcr.io).
+  - The deploy identity receives `Storage Blob Data Contributor` on the Storage Account for workflow artifact uploads.
+  - No Storage Account keys are used in the deployment path.
 
 - **`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`**: OIDC federation credentials for GitHub Actions.
   - Stored as repository variables (not secrets—these are non-sensitive in OIDC flow).
   - GitHub Actions exchanges these for a short-lived Azure access token; the token is never committed.
 
-### Durable GitHub Actions Package Deployment Gate
+### Durable GitHub Actions Deployment Gate
 
-The production deploy workflow must use the working OIDC + private blob package path. `az functionapp deployment source config-zip` and `az webapp deploy --type zip` are not approved for this environment.
+The production deploy workflow uses OIDC/Entra for all Azure authentication. Bicep deploys infrastructure; the ACA Job pulls its container image from the configured registry.
 
 - **GitHub Actions permissions:** minimum workflow token permissions are:
   - `contents: read` for checkout and packaging source code.
   - `id-token: write` for Azure OIDC login.
   - No `actions`, `checks`, `deployments`, `issues`, `packages`, or `pull-requests` permissions unless a later step explicitly proves need. Optional SquadScope sync must continue to use the separate tightly scoped `SQUADSCOPE_SYNC_TOKEN`, not broaden `GITHUB_TOKEN`.
 - **Azure deploy identity:** use Entra/OIDC only; no Azure client secrets and no Storage Account keys.
-  - Management-plane rights must cover the existing deployment needs: create/update the target resource group resources, deploy Bicep, update Function App settings, and restart the Function App.
+  - Management-plane rights must cover the existing deployment needs: create/update the target resource group resources and deploy Bicep.
   - If the workflow creates role assignments from Bicep, the identity also needs role-assignment rights at the target scope (for example Owner/User Access Administrator during bootstrap, then reduce after roles exist).
-  - Data-plane access to the package container requires `Storage Blob Data Contributor` or narrower equivalent at the storage account/container scope so the workflow can upload package blobs.
-- **Run-from-package managed identity:** `WEBSITE_RUN_FROM_PACKAGE` uses a private blob URL without a SAS query string. `WEBSITE_USE_MANAGED_IDENTITY=true` and `WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned` make the Function App use its managed identity to read the package.
-  - The Function App identity must have blob read access to the package container or storage account. Current Bicep grants Storage Blob Data Owner on the account for host/artifact needs, which also permits package reads.
+  - Data-plane access requires `Storage Blob Data Contributor` at the storage account scope for workflow artifact operations.
+- **ACA Job managed identity:** The synthesis job uses a user-assigned managed identity for all data-plane access (Storage, Queue, Azure OpenAI).
   - Use HTTPS only and keep Storage public blob access disabled.
-  - Disable shell tracing around package deployment, use Azure CLI `--output none` where possible, and never write bearer credentials to step summaries, artifacts, PR comments, or logs.
-- **Merge blocker:** any final workflow that prints SAS/API keys, uses Storage Account keys for deployment, omits data-plane RBAC for package upload/read, or retains the unsupported zip deployment commands is blocked.
+  - Disable shell tracing around deployments, use Azure CLI `--output none` where possible, and never write bearer credentials to step summaries, artifacts, PR comments, or logs.
+- **Merge blocker:** any final workflow that prints SAS/API keys, uses Storage Account keys for deployment, or omits data-plane RBAC is blocked.
 
 ## Logging & Observability Policy
 
@@ -112,9 +110,9 @@ The production deploy workflow must use the working OIDC + private blob package 
 **Current phase (local artifact staging):** The service stages deterministic placeholder artifacts under `jobs/<job_id>/`. Local runs use filesystem-backed storage when `PODCASTER_STORAGE_ACCOUNT_URL` is not configured; no Azure credentials or live TTS provider are required.
 
 **Azure deployment path:**
-- Podcaster Function App uses **managed identity** to access the Storage Account when Azure storage settings are configured.
-- The Bicep template assigns Storage Blob Data Owner plus Queue/Table Data Contributor roles to the Function App's system-assigned managed identity for identity-based Functions host storage and artifact writes.
-- The deploy workflow stages Function App ZIP packages in a separate private `function-packages` container via Entra-authenticated blob upload, then configures managed-identity package reads for `WEBSITE_RUN_FROM_PACKAGE`.
+- The ACA synthesis job uses a **user-assigned managed identity** to access the Storage Account.
+- The Bicep template assigns Storage Blob Data Contributor plus Queue Data Contributor roles to the ACA Job's user-assigned managed identity for artifact writes and queue processing.
+- The ACA Job pulls its container image from the configured registry at startup; no ZIP package deployment is used.
 - **Returned URLs must be short-lived SAS URLs or private URLs brokered by managed identity**, never public storage URLs.
 - The Storage Account has `allowBlobPublicAccess: false` to enforce private-by-default.
 
@@ -129,7 +127,7 @@ The production deploy workflow must use the working OIDC + private blob package 
 
 - **Private:** Only SquadScope and authorized reviewers access artifacts.
 - **No public listing:** The Storage Account does not enable public blob enumeration.
-- **Managed identity only:** The Function App uses its assigned identity to read/write blobs; no shared keys are used in application code.
+- **Managed identity only:** The ACA synthesis job uses its user-assigned managed identity to read/write blobs; no shared keys are used in application code.
 
 ## Human Review Gate — Security Requirements
 
@@ -267,7 +265,7 @@ Podcaster stages generated artifacts in private Azure Blob Storage or local file
 - placeholder audio today; future generated MP3/WAV only after TTS gates pass
 - artifact hashes, sizes, content types, lifecycle status, review status, and audit trail metadata
 
-Access semantics are private operator paths, not public publishing URLs. Blob public access remains disabled; deployed access uses the Function App managed identity and operator-granted Azure Storage permissions. Returned artifact URLs must not contain SAS tokens, query strings, fragments, API keys, or storage keys unless a later documented access model intentionally introduces bounded signed URLs.
+Access semantics are private operator paths, not public publishing URLs. Blob public access remains disabled; deployed access uses the ACA Job's managed identity and operator-granted Azure Storage permissions. Returned artifact URLs must not contain SAS tokens, query strings, fragments, API keys, or storage keys unless a later documented access model intentionally introduces bounded signed URLs.
 
 Retention is 7 days from job creation via the `expires_at` and `cleanup_after` metadata. Until automated lifecycle cleanup is deployed, operators are responsible for deleting expired artifacts or enabling a storage lifecycle policy that honors that retention. Audit trail evidence comes from the job manifest, review manifest, Application Insights correlation ID, GitHub Actions review run, and Azure Storage diagnostics when enabled.
 
@@ -314,7 +312,7 @@ Before relying on auto-sync, SquadScope engineers must manually verify:
 - [ ] **Azure subscription exists** with Contributor or equivalent access.
 - [ ] **Resource group name decided** (e.g., `podcaster-prod`). If it doesn't exist, the deploy workflow creates it.
 - [ ] **Location confirmed** (e.g., `eastus`). Must be a valid Azure region.
-- [ ] **Function App name is globally unique** (Azure enforces global uniqueness for `.azurewebsites.net`). The workflow derives a deterministic default; set `AZURE_FUNCTION_APP_NAME` only to override a collision or naming preference. Overrides must be 2–35 characters so derived Azure resource names also stay within service limits.
+- [ ] **ACA Job name and Container Apps environment** are derived deterministically by the Bicep template. The workflow derives defaults; set `baseName` only to override naming preferences.
 - [ ] **Storage Account name is globally unique and lowercase** (Azure storage names must be 3–24 characters, lowercase letters and digits only). The workflow derives a deterministic default; set `AZURE_STORAGE_ACCOUNT_NAME` only to override a collision or naming preference.
 - [ ] **Avoid naming conflicts:** If Azure reports a global name conflict, set the relevant override variable and re-deploy.
 
@@ -378,18 +376,13 @@ SQUADSCOPE_SYNC_TOKEN=<fine-grained-personal-access-token>
    gh workflow run deploy-azure.yml -R jmservera/SquadScope-Podcaster
    ```
 3. **Monitor the workflow run:**
-   - Should create the resource group, storage account, Function App, App Insights, and Log Analytics workspace.
-   - Should print the endpoint URL (e.g., `Endpoint: https://podcaster-app-prod.azurewebsites.net/api/generate`).
+   - Should create the resource group, storage account, ACA environment, synthesis job, App Insights, Log Analytics, and OpenAI account.
    - Should never print the API key.
 4. **Verify the deployment:**
    ```bash
-   az functionapp list --resource-group podcaster-prod
-   curl -X POST https://podcaster-app-prod.azurewebsites.net/api/generate \
-     -H 'content-type: application/json' \
-     -H 'x-podcaster-api-key: <your-api-key>' \
-     -d '{"week":"2026-W23","article_url":"https://example.com"}'
+   az containerapp job list --resource-group squadscope-podcaster --output table
    ```
-   - Should return HTTP 202 with the stable response shape and deterministic placeholder artifact URLs (real TTS is not implemented).
+   - Should show the synthesis job in a provisioned state.
 
 ### Re-Deploy (After Code Changes)
 
@@ -401,7 +394,7 @@ SQUADSCOPE_SYNC_TOKEN=<fine-grained-personal-access-token>
 3. **The workflow will:**
    - Pull the latest code.
    - Re-deploy the Bicep template (idempotent; updates existing resources).
-   - Re-package and deploy the Function App code.
+   - Update the ACA Job configuration if the container image or environment changed.
    - Print the endpoint (no changes if names/locations are the same).
 
 ### Destroy Resources (If Needed)
@@ -422,8 +415,8 @@ Use this checklist before marking a release as ready for SquadScope consumption:
 - [ ] No secrets appear in workflow logs, summaries, or artifacts.
 - [ ] The deploy workflow validates required variables before proceeding and does not require optional app/storage names or a pre-existing API key.
 - [ ] OIDC federation is configured and working (no long-lived Azure credentials stored).
-- [ ] Function package deployment uses private run-from-package blob upload with `--auth-mode login` and managed-identity package reads; no package SAS URL or storage key is emitted.
-- [ ] The Function App is deployed with HTTPS-only and `minimumTlsVersion: TLS1_2`.
+- [ ] Container image deployment uses a private registry with managed-identity or token-based pull; no image SAS or storage key is emitted.
+- [ ] The ACA Job is deployed with HTTPS-only ingress disabled (queue-triggered, no public endpoint).
 
 ### 2. API Security ✓
 
@@ -442,7 +435,7 @@ Use this checklist before marking a release as ready for SquadScope consumption:
 ### 4. Artifact Staging ✓
 
 - [ ] The Storage Account has `allowBlobPublicAccess: false`.
-- [ ] The Function App's system-assigned managed identity has Storage Blob Data Owner plus Queue/Table Data Contributor roles.
+- [ ] The ACA Job's user-assigned managed identity has Storage Blob Data Contributor plus Queue Data Contributor roles.
 - [ ] Returned artifact URLs follow the documented private operator path model and do not contain credentials, query strings, or fragments.
 - [ ] Lifecycle management, cleanup job, or an operator cleanup process deletes expired artifacts after 7 days.
 

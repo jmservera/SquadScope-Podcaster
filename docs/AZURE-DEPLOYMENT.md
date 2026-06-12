@@ -125,7 +125,7 @@ Go to **Settings > Environments > prod > Environment secrets** and optionally cr
 PODCASTER_API_KEY=<randomly-generated-key-at-least-32-characters>
 ```
 
-If `PODCASTER_API_KEY` is absent, the deploy workflow generates a 256-bit key with OpenSSL, masks it immediately, and sets it as the Function App app setting without printing it. That generated value is not recoverable from logs; use `sync_squadscope=true` with `SQUADSCOPE_SYNC_TOKEN` during that deployment to push it to SquadScope, or set your own `PODCASTER_API_KEY` secret before deploying when manual handoff/rotation is required.
+If `PODCASTER_API_KEY` is absent, the deploy workflow generates a 256-bit key with OpenSSL, masks it immediately, and passes it to the ACA environment without printing it. That generated value is not recoverable from logs; use `sync_squadscope=true` with `SQUADSCOPE_SYNC_TOKEN` during that deployment to push it to SquadScope, or set your own `PODCASTER_API_KEY` secret before deploying when manual handoff/rotation is required.
 
 **Manual generation:** Use a secure random generator:
 ```bash
