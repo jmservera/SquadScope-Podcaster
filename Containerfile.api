@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+#
+# Lightweight HTTP API image for the /api/generate endpoint (#131).
+# This is the thin front door that validates requests, stages artifacts,
+# enqueues synthesis messages, and returns the 202 contract response.
+#
+# Unlike the synthesis runner (Containerfile), this image does NOT need ffmpeg
+# — it only handles HTTP and Storage operations. Kept lean for fast cold starts.
+#
+# Identity-only at runtime: uses managed identity for Blob + Queue access.
+FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
+
+# Apply security upgrades to the pinned base.
+RUN apt-get update \
+    && apt-get -y upgrade \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Non-root runtime user.
+RUN groupadd --system api \
+    && useradd --system --gid api --home-dir /app --shell /usr/sbin/nologin api
+
+COPY requirements.txt ./
+RUN python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip uninstall -y pip setuptools wheel
+
+# Application code.
+COPY podcaster ./podcaster
+
+USER api
+
+EXPOSE 8000
+
+ENTRYPOINT ["python", "-m", "podcaster.api"]

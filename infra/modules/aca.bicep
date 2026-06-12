@@ -266,6 +266,7 @@ resource jobQueueDataContributor 'Microsoft.Authorization/roleAssignments@2022-0
 
 output jobName string = synthesisJob.name
 output environmentName string = managedEnv.name
+output environmentId string = managedEnv.id
 output queueName string = synthesisQueueName
 output jobIdentityName string = jobIdentity.name
 output jobIdentityPrincipalId string = jobIdentity.properties.principalId
