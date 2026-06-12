@@ -352,6 +352,10 @@ Podcaster uses a **queue-triggered Azure Container Apps Job** as the sole comput
 
 The container image is published via the `synthesis-image-publish.yml` workflow.
 
+### HTTP API App
+
+The **API App** is a lightweight HTTP ingress ACA App that handles `POST /api/generate` requests. It validates, stages artifacts, enqueues synthesis messages, and returns the 202 contract response. Its image (built from `Containerfile.api`) is published via the `api-image-publish.yml` workflow. Both publish workflows are gated on the same operator approval (#129).
+
 ### Sync to SquadScope (Optional, After First Deploy)
 
 If `SQUADSCOPE_SYNC_TOKEN` is configured, you can automate the sync:
