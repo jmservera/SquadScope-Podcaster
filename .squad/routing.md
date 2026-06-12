@@ -39,3 +39,13 @@ How to decide who handles what.
 5. **"Team, ..." → fan-out.** Spawn all relevant agents in parallel as `mode: "background"`.
 6. **Protect the contract.** Any change to the `/api/generate` response shape routes through Leela (scope) and Fry (regression test); Hermes reviews anything touching secrets or permissions.
 7. **Never block SquadScope publishing.** Work that could affect the sister project's publishing pipeline is out of scope — flag it to Leela.
+
+## Squad Upgrade Payload Isolation
+
+When platform-only Squad upgrade payload work is needed, keep it on its own branch/PR and route it with this sequence:
+
+1. **Ralph gate:** hold the platform branch until Podcaster deploy/product dependency PRs are green and ready to merge.
+2. **Scope isolation:** exclude deploy/product files from the platform PR; include only workflow/platform payload files.
+3. **Primary review:** request **Bender** for workflow/platform mechanics.
+4. **Security/access review:** request **Hermes** whenever permissions, secrets, MCP config, or automation access are touched.
+5. **PR scope log:** include a concise inventory of new/changed workflows, templates, skills, MCP config, memory, and casting files in the PR body.
