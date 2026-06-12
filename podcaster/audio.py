@@ -439,8 +439,8 @@ def _intro_music_end_seconds(
 ) -> float:
     """Calculate when intro music should end.
 
-    New envelope: after last intro segment ends, fade UP to 100% over 2s,
-    hold for intro_post_gap_seconds, then fade to 0 over 1s.
+    Envelope: after last intro segment ends, fade from 10% to 0% over
+    intro_post_gap_seconds. No fade-up, no musical break.
     """
     segment_starts, _ = _segment_timeline(segment_durations, gap_seconds)
     last_ducked_index = mix_spec.intro_speech_segments_under_music - 1
@@ -448,11 +448,8 @@ def _intro_music_end_seconds(
     duck_end_in_speech = segment_starts[last_ducked_index] + segment_durations[last_ducked_index]
     # Absolute time of duck end
     duck_end = mix_spec.intro_full_volume_seconds + duck_end_in_speech
-    # After duck: fade up (2s) + hold (intro_post_gap_seconds) + fade out (1s)
-    fade_up_duration = mix_spec.intro_fade_duration_seconds
-    hold_duration = mix_spec.intro_post_gap_seconds
-    fade_out_duration = 1.0
-    return duck_end + fade_up_duration + hold_duration + fade_out_duration
+    # After duck: just fade out from 10% to 0%
+    return duck_end + mix_spec.intro_post_gap_seconds
 
 
 def _intro_volume_expression(
@@ -466,9 +463,7 @@ def _intro_volume_expression(
     - 0 to intro_pre_voice_seconds: full volume (1.0)
     - intro_pre_voice_seconds to intro_full_volume_seconds: fade down to speech_duck_gain
     - intro_full_volume_seconds through end of last ducked segment: hold at speech_duck_gain
-    - duck_end to duck_end + fade_duration: fade UP to 1.0
-    - fade_up_end to fade_up_end + intro_post_gap_seconds: hold at 1.0
-    - hold_end to hold_end + 1s: fade to 0
+    - duck_end to duck_end + intro_post_gap_seconds: fade from speech_duck_gain to 0
     """
     segment_starts, _ = _segment_timeline(segment_durations, gap_seconds)
     last_ducked_index = mix_spec.intro_speech_segments_under_music - 1
@@ -478,10 +473,8 @@ def _intro_volume_expression(
     duck_start = mix_spec.intro_pre_voice_seconds
     duck_reached = mix_spec.intro_full_volume_seconds  # fade down complete, voice starts
     duck_end = duck_reached + duck_end_in_speech  # last intro segment ends
-    fade_up_duration = mix_spec.intro_fade_duration_seconds
-    fade_up_end = duck_end + fade_up_duration  # back at 100%
-    hold_end = fade_up_end + mix_spec.intro_post_gap_seconds  # musical moment over
-    fade_out_end = hold_end + 1.0  # fade to silence
+    fade_out_duration = mix_spec.intro_post_gap_seconds
+    fade_out_end = duck_end + fade_out_duration  # fade to silence
 
     duck_gain = mix_spec.speech_duck_gain
     fade_down_duration = duck_reached - duck_start
@@ -490,16 +483,18 @@ def _intro_volume_expression(
     if fade_down_duration <= 0:
         fade_down_duration = 0.001
 
+    # Guard against zero fade-out duration
+    if fade_out_duration <= 0:
+        fade_out_duration = 0.001
+
     return (
         f"if(lt(t,{_ffmpeg_number(duck_start)}),1,"
         f"if(lt(t,{_ffmpeg_number(duck_reached)}),"
         f"1-(1-{_ffmpeg_number(duck_gain)})*(t-{_ffmpeg_number(duck_start)})/{_ffmpeg_number(fade_down_duration)},"
         f"if(lt(t,{_ffmpeg_number(duck_end)}),{_ffmpeg_number(duck_gain)},"
-        f"if(lt(t,{_ffmpeg_number(fade_up_end)}),"
-        f"{_ffmpeg_number(duck_gain)}+(1-{_ffmpeg_number(duck_gain)})*(t-{_ffmpeg_number(duck_end)})/{_ffmpeg_number(fade_up_duration)},"
-        f"if(lt(t,{_ffmpeg_number(hold_end)}),1,"
         f"if(lt(t,{_ffmpeg_number(fade_out_end)}),"
-        f"1-(t-{_ffmpeg_number(hold_end)})/1,0))))))"
+        f"{_ffmpeg_number(duck_gain)}*(1-(t-{_ffmpeg_number(duck_end)})/{_ffmpeg_number(fade_out_duration)}),"
+        f"0))))"
     )
 
 

@@ -194,7 +194,7 @@ def test_stitch_segments_builds_music_mix_filtergraph_when_mix_spec_is_provided(
     # calls[3] = concat ffmpeg, calls[4] = outro ffprobe, calls[5] = mix ffmpeg
     mix_cmd = " ".join(calls[5])
     assert "adelay=10000:all=1" in mix_cmd
-    assert "atrim=end=17.8" in mix_cmd
+    assert "atrim=end=14.8" in mix_cmd
     assert "apad=whole_dur" not in mix_cmd
     assert "volume='if(lt(t,8)" in mix_cmd
     assert ":eval=frame" in mix_cmd
