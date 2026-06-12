@@ -195,6 +195,7 @@ def test_stitch_segments_builds_music_mix_filtergraph_when_mix_spec_is_provided(
     mix_cmd = " ".join(calls[5])
     assert "adelay=10000:all=1" in mix_cmd
     assert "atrim=end=16.8" in mix_cmd
+    assert "apad=whole_dur" not in mix_cmd
     assert "volume='if(lt(t,10)" in mix_cmd
     assert "[speech][intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]" in mix_cmd
     # Outro offset clamped: min(75, max(0, 1.25-0.5))=0.75

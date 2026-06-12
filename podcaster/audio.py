@@ -131,9 +131,9 @@ def stitch_segments(
     validation gate. Returns ``output_path``.
 
     When ``mix_spec`` is not provided, any supplied ``intro_music`` and/or
-    ``outro_music`` are concatenated as simple stingers before and after the
-    speech body (intro stinger -> speech -> outro stinger), separated from the
-    same gentle gap for backward compatibility.
+    ``outro_music`` are concatenated before and after the speech body
+    (intro music -> speech -> outro music), separated by the same gentle gap
+    for backward compatibility.
 
     When ``mix_spec`` is provided, intro/outro music is mixed on a timeline:
     the intro can play ahead of speech, duck under the opening segments, and

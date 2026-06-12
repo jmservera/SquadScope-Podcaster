@@ -410,8 +410,8 @@ def synthesize_episode(
     Parses spoken segments, builds the fable/alloy voice plan, synthesizes each
     turn through the gated :func:`podcaster.tts.synthesize_two_voice` (fails
     closed when ``decision['allowed']`` is false), stitches and normalizes them
-    into ``output_path`` — optionally wrapping the speech with intro/outro music
-    stingers — then runs the ffmpeg/ffprobe validation gate.
+    into ``output_path`` — optionally mixing the bundled intro/outro music bed
+    around the speech — then runs the ffmpeg/ffprobe validation gate.
     """
 
     effective_config = _apply_podcast_config(config, podcast_config)
