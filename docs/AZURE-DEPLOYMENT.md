@@ -36,7 +36,8 @@ The Bicep template (`infra/main.bicep`) deploys:
 |----------|---------|
 | Storage Account | Artifact staging (`podcaster-artifacts` container) + synthesis queue |
 | Azure OpenAI (Cognitive Services) | TTS (`gpt-4o-mini-tts`, deployment `tts`) + chat (`gpt-4o-mini`, deployment `chat`) |
-| Container Apps Environment | Hosts the synthesis job |
+| Container Apps Environment | Hosts the API app and synthesis job |
+| Container Apps App (HTTP ingress) | Thin `/api/generate` front door: validates, stages, enqueues (#131). Gated behind `deployApiApp` + container registry approval (#129). |
 | Container Apps Job (queue-triggered) | Full episode pipeline: script → TTS → ffmpeg stitch → validate → stage |
 | User-assigned Managed Identity | Identity-only auth to Storage (Blob + Queue) and Azure OpenAI (no keys) |
 | Log Analytics + Application Insights | Observability |
