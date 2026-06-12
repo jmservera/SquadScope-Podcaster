@@ -261,14 +261,11 @@ _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 # Track name → file path mapping. Names are normalized to lowercase with
 # spaces replaced by hyphens.
 _MUSIC_DIR = _ASSETS_DIR / "music"
-_STINGER_DIR = _ASSETS_DIR / "audio"
-
-
 def _resolve_music_paths(config: MusicMixConfig) -> tuple[Path | None, Path | None]:
     """Resolve intro and outro music file paths from bundled assets.
 
     Returns (intro_music, outro_music) paths if the track file exists,
-    or (None, None) if no track is configured or files are missing.
+    or (None, None) if no track is configured or the bundled file is missing.
     """
     if not config.track:
         return None, None
@@ -278,11 +275,6 @@ def _resolve_music_paths(config: MusicMixConfig) -> tuple[Path | None, Path | No
     track_path = _MUSIC_DIR / track_filename
 
     if not track_path.is_file():
-        # Try stinger files as fallback
-        intro = _STINGER_DIR / "intro_stinger.mp3"
-        outro = _STINGER_DIR / "outro_stinger.mp3"
-        if intro.is_file() and outro.is_file():
-            return intro, outro
         return None, None
 
     # Use the full track for both intro and outro (mix_spec controls fading)

@@ -131,9 +131,9 @@ def stitch_segments(
     validation gate. Returns ``output_path``.
 
     When ``mix_spec`` is not provided, any supplied ``intro_music`` and/or
-    ``outro_music`` are concatenated as simple stingers before and after the
-    speech body (intro stinger -> speech -> outro stinger), separated from the
-    same gentle gap for backward compatibility.
+    ``outro_music`` are concatenated before and after the speech body
+    (intro music -> speech -> outro music), separated by the same gentle gap
+    for backward compatibility.
 
     When ``mix_spec`` is provided, intro/outro music is mixed on a timeline:
     the intro can play ahead of speech, duck under the opening segments, and
@@ -300,7 +300,6 @@ def _mix_music_with_speech(
 ) -> None:
     inputs = ["-i", str(speech_path)]
     filters = [f"[0:a]aresample=44100,aformat=channel_layouts=mono[speechsrc]"]
-    mix_inputs: list[str] = []
     speech_delay_seconds = mix_spec.intro_full_volume_seconds if intro_music else 0.0
     if speech_delay_seconds > 0:
         filters.append(
@@ -308,7 +307,7 @@ def _mix_music_with_speech(
         )
     else:
         filters.append("[speechsrc]anull[speech]")
-    mix_inputs.append("[speech]")
+    current_mix = "[speech]"
 
     segment_starts, segment_total_duration = _segment_timeline(segment_durations, gap_seconds)
 
@@ -317,10 +316,13 @@ def _mix_music_with_speech(
         intro_end = _intro_music_end_seconds(segment_durations, gap_seconds, mix_spec)
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
-            f"apad=whole_dur={_ffmpeg_number(intro_end)},atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
+            f"atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
             f"volume='{_intro_volume_expression(segment_durations, gap_seconds, mix_spec)}'[intro]"
         )
-        mix_inputs.append("[intro]")
+        filters.append(
+            f"{current_mix}[intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]"
+        )
+        current_mix = "[speech_with_intro]"
         next_input_index += 1
         inputs.extend(["-i", str(intro_music)])
 
@@ -335,18 +337,16 @@ def _mix_music_with_speech(
             f"volume='{_outro_volume_expression(outro_speech_overlap_seconds, mix_spec)}',"
             f"adelay={_ffmpeg_milliseconds(outro_delay_seconds)}:all=1[outro]"
         )
-        mix_inputs.append("[outro]")
+        filters.append(
+            f"{current_mix}[outro]amix=inputs=2:normalize=0:duration=longest:weights='1 1'[out]"
+        )
+        current_mix = "[out]"
         next_input_index += 1
         inputs.extend(["-i", str(outro_music)])
 
-    amix_weights = " ".join("1" for _ in mix_inputs)
-    filter_complex = ";".join(
-        filters
-        + [
-            "".join(mix_inputs)
-            + f"amix=inputs={len(mix_inputs)}:normalize=0:duration=longest:weights='{amix_weights}'[out]"
-        ]
-    )
+    if current_mix != "[out]":
+        filters.append(f"{current_mix}anull[out]")
+    filter_complex = ";".join(filters)
     runner(
         [
             "ffmpeg",

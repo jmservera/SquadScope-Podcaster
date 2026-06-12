@@ -51,7 +51,7 @@ from podcaster.generation import (  # noqa: E402
     HOST_B_STYLE,
     PODCAST_SPOKEN_SITE,
 )
-from podcaster.music import get_stingers  # noqa: E402
+from podcaster.music import get_asset  # noqa: E402
 from podcaster.packaging import (  # noqa: E402
     build_publishing_packet,
     generate_show_notes,
@@ -352,9 +352,9 @@ def main() -> int:
         print(f"ERROR: synthesis blocked: {decision['blocked_by']}", file=sys.stderr)
         return 3
 
-    # Verified, royalty-free (CC0) intro/outro music stingers wrapped around the
-    # speech. Integrity + license are checked against the audio asset registry.
-    intro_asset, outro_asset = get_stingers()
+    # Use the bundled Summer Sport bed for both the intro and outro mix windows.
+    intro_asset = get_asset("intro")
+    outro_asset = get_asset("outro")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -365,7 +365,7 @@ def main() -> int:
     script_path.write_text(script, encoding="utf-8")
 
     print(f"Synthesizing {len(segments)} segments via Azure OpenAI TTS (deployment={config.tts_deployment})...")
-    print(f"Wrapping speech with CC0 music stingers (intro={intro_asset.path.name}, outro={outro_asset.path.name})...")
+    print(f"Mixing Summer Sport under the episode (intro={intro_asset.path.name}, outro={outro_asset.path.name})...")
     episode = synthesize_episode(
         script,
         config,
@@ -396,7 +396,7 @@ def main() -> int:
             "hosts no longer self-label their personality (name + AI disclosure only)",
             "varied transitions; removed repeated crutch phrases",
             "stronger enthusiasm contrast (word choice + per-voice TTS style instructions)",
-            "added CC0 intro/outro music stingers",
+            "replaced the placeholder stingers with the Summer Sport music bed",
             "length kept ~5 minutes",
         ],
         "week": article.week,
@@ -410,7 +410,7 @@ def main() -> int:
         },
         "voices": {"host_a": "fable", "host_b": "alloy"},
         "music": {
-            "policy": "CC0 / royalty-free / public-domain only; recorded in assets/audio/asset-registry.json",
+            "policy": "Summer Sport is reused for both intro and outro; publish with the attribution in assets/music/ATTRIBUTION.md",
             "intro": {
                 "file": intro_asset.path.name,
                 "license": intro_asset.license,

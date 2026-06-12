@@ -1,31 +1,29 @@
-"""Locate and verify the bundled, royalty-free episode music stingers.
-
-Audio assets follow the same attribution discipline as image assets: every
-bundled track is recorded in :data:`assets/audio/asset-registry.json` with its
-source, license, and attribution, and may only be CC0 / royalty-free /
-public-domain. This module loads that registry, resolves the intro/outro stinger
-paths, and verifies each file against its recorded SHA-256 so a swapped or
-corrupted asset fails closed rather than shipping silently.
-"""
+"""Resolve the bundled Summer Sport music bed for intro and outro playback."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ASSET_DIR = REPO_ROOT / "assets" / "audio"
-REGISTRY_PATH = ASSET_DIR / "asset-registry.json"
+ASSET_DIR = REPO_ROOT / "assets" / "music"
+TRACK_PATH = ASSET_DIR / "summer-sport.mp3"
+ATTRIBUTION_PATH = ASSET_DIR / "ATTRIBUTION.md"
 
-ALLOWED_LICENSES = frozenset({"CC0-1.0", "public-domain", "royalty-free-with-attribution"})
+TRACK_LICENSE = "CC-BY-SA-3.0"
+TRACK_ATTRIBUTION = (
+    "Summer Sport by AudioCoffee | https://www.audiocoffee.net/ | "
+    "Music promoted by https://www.chosic.com/free-music/all/ | "
+    "https://creativecommons.org/licenses/by-sa/3.0/"
+)
+TRACK_DURATION_SECONDS = 105.0
+
+ALLOWED_LICENSES = frozenset({TRACK_LICENSE})
 
 
 @dataclass(frozen=True)
 class MusicAsset:
-    """One registered, license-checked audio asset."""
-
     id: str
     path: Path
     license: str
@@ -34,69 +32,62 @@ class MusicAsset:
     sha256: str
 
 
-def load_registry() -> dict:
-    if not REGISTRY_PATH.exists():
-        raise FileNotFoundError(
-            f"audio asset registry not found at {REGISTRY_PATH}; run scripts/generate_stingers.py"
-        )
-    return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-
-
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def load_registry() -> dict[str, object]:
+    """Return the bundled music metadata for intro/outro roles."""
+
+    assets = [
+        {
+            "id": asset_id,
+            "file": TRACK_PATH.name,
+            "role": asset_id,
+            "license": TRACK_LICENSE,
+            "attribution": TRACK_ATTRIBUTION,
+            "duration_seconds": TRACK_DURATION_SECONDS,
+            "third_party_material": True,
+        }
+        for asset_id in ("intro", "outro")
+    ]
+    return {
+        "schema_version": "squadscope-podcaster-music-assets-v1",
+        "purpose": "Bundled episode music metadata for the Summer Sport intro/outro bed.",
+        "attribution_path": str(ATTRIBUTION_PATH.relative_to(REPO_ROOT)),
+        "assets": assets,
+    }
+
+
 def get_asset(asset_id: str, *, verify: bool = True) -> MusicAsset:
-    """Resolve a registered audio asset by id, verifying license and integrity.
+    """Resolve the Summer Sport music file for the requested intro/outro role."""
 
-    Raises if the asset is missing, its license is not allowed, or (when
-    ``verify``) the on-disk SHA-256 does not match the registry.
-    """
-
-    registry = load_registry()
-    for entry in registry.get("assets", []):
-        if entry.get("id") != asset_id:
-            continue
-        license_id = str(entry.get("license", ""))
-        if license_id not in ALLOWED_LICENSES:
-            raise ValueError(
-                f"audio asset '{asset_id}' license '{license_id}' is not in the allowed set; "
-                "only CC0 / royalty-free / public-domain assets may be bundled"
-            )
-        path = ASSET_DIR / str(entry.get("file", ""))
-        if not path.exists():
-            raise FileNotFoundError(f"audio asset file missing: {path}")
-        recorded = str(entry.get("sha256", ""))
-        if verify and recorded and _sha256(path) != recorded:
-            raise ValueError(
-                f"audio asset '{asset_id}' failed integrity check; on-disk SHA-256 does not "
-                "match the registry (re-run scripts/generate_stingers.py or restore the file)"
-            )
-        return MusicAsset(
-            id=asset_id,
-            path=path,
-            license=license_id,
-            attribution=str(entry.get("attribution", "")),
-            duration_seconds=float(entry.get("duration_seconds", 0.0)),
-            sha256=recorded,
-        )
-    raise KeyError(f"audio asset '{asset_id}' is not registered in {REGISTRY_PATH}")
+    if asset_id not in {"intro", "outro"}:
+        raise KeyError(f"unknown music asset '{asset_id}'")
+    if not TRACK_PATH.exists():
+        raise FileNotFoundError(f"music asset file missing: {TRACK_PATH}")
+    if verify and not ATTRIBUTION_PATH.exists():
+        raise FileNotFoundError(f"music attribution file missing: {ATTRIBUTION_PATH}")
+    return MusicAsset(
+        id=asset_id,
+        path=TRACK_PATH,
+        license=TRACK_LICENSE,
+        attribution=TRACK_ATTRIBUTION,
+        duration_seconds=TRACK_DURATION_SECONDS,
+        sha256=_sha256(TRACK_PATH),
+    )
 
 
 def get_stingers(*, verify: bool = True) -> tuple[MusicAsset, MusicAsset]:
-    """Return the ``(intro, outro)`` stinger assets, verified against the registry."""
+    """Return the intro/outro music assets for compatibility with existing callers."""
 
     return get_asset("intro", verify=verify), get_asset("outro", verify=verify)
 
 
 def attribution_lines() -> list[str]:
-    """Human-readable attribution lines for every registered audio asset."""
+    """Human-readable attribution lines for the bundled Summer Sport track."""
 
-    registry = load_registry()
-    lines: list[str] = []
-    for entry in registry.get("assets", []):
-        lines.append(
-            f"{entry.get('file')}: {entry.get('attribution')} "
-            f"(license: {entry.get('license')}, {entry.get('license_url', '')})"
-        )
-    return lines
+    return [
+        f"{entry['role']}: {entry['file']} — {entry['attribution']} (license: {entry['license']})"
+        for entry in load_registry()["assets"]
+    ]

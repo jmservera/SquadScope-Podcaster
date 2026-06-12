@@ -217,7 +217,7 @@ def test_synthesize_episode_fails_closed_when_decision_blocked(tmp_path):
         )
 
 
-def test_synthesize_episode_enables_default_music_mix_when_stingers_are_supplied(tmp_path, monkeypatch):
+def test_synthesize_episode_enables_default_music_mix_when_intro_and_outro_music_are_supplied(tmp_path, monkeypatch):
     article = episode.sanitize_article(**_article_kwargs())
     script = episode.build_episode_script(article)
     config = _production_config()

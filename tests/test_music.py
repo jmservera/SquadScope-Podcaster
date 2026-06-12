@@ -12,40 +12,42 @@ if str(REPO_ROOT) not in sys.path:
 from podcaster import music  # noqa: E402
 
 
-def test_registry_exists_and_only_allows_clear_licenses():
+def test_registry_maps_intro_and_outro_to_summer_sport():
     registry = music.load_registry()
-    assert registry["assets"], "registry must list audio assets"
-    for entry in registry["assets"]:
-        assert entry["license"] in music.ALLOWED_LICENSES
-        assert entry["attribution"]
-        assert entry["third_party_material"] is False
+    assert registry["assets"], "registry must list bundled music assets"
+    roles = {entry["role"]: entry for entry in registry["assets"]}
+    assert roles["intro"]["file"] == "summer-sport.mp3"
+    assert roles["outro"]["file"] == "summer-sport.mp3"
+    assert roles["intro"]["license"] in music.ALLOWED_LICENSES
+    assert roles["outro"]["license"] in music.ALLOWED_LICENSES
 
 
-def test_get_stingers_returns_verified_intro_and_outro():
+def test_get_stingers_returns_same_music_file_for_both_roles():
     intro, outro = music.get_stingers()
     assert intro.id == "intro"
     assert outro.id == "outro"
-    for asset in (intro, outro):
-        assert asset.path.exists()
-        assert asset.path.suffix == ".mp3"
-        assert asset.license in music.ALLOWED_LICENSES
-        assert 2.0 <= asset.duration_seconds <= 6.0
+    assert intro.path == outro.path == music.TRACK_PATH
+    assert intro.path.exists()
+    assert intro.path.suffix == ".mp3"
+    assert intro.license in music.ALLOWED_LICENSES
+    assert intro.duration_seconds >= 100.0
+    assert intro.sha256 == outro.sha256
 
 
-def test_get_asset_fails_closed_on_integrity_mismatch(tmp_path, monkeypatch):
-    # Point the asset dir at a copy with a tampered file but the original sha.
-    real_intro = music.get_asset("intro")
-    tampered_dir = tmp_path / "audio"
-    tampered_dir.mkdir()
-    (tampered_dir / real_intro.path.name).write_bytes(b"tampered")
-    registry = music.load_registry()
-    monkeypatch.setattr(music, "ASSET_DIR", tampered_dir)
-    monkeypatch.setattr(music, "load_registry", lambda: registry)
-    with pytest.raises(ValueError):
+def test_get_asset_requires_known_role():
+    with pytest.raises(KeyError):
+        music.get_asset("bridge")
+
+
+def test_get_asset_fails_when_track_is_missing(tmp_path, monkeypatch):
+    missing_track = tmp_path / "missing.mp3"
+    monkeypatch.setattr(music, "TRACK_PATH", missing_track)
+    with pytest.raises(FileNotFoundError):
         music.get_asset("intro")
 
 
 def test_attribution_lines_cover_every_asset():
     lines = music.attribution_lines()
     assert len(lines) == len(music.load_registry()["assets"])
+    assert all("summer-sport.mp3" in line for line in lines)
     assert all("license:" in line for line in lines)
