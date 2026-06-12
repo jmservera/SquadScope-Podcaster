@@ -112,6 +112,8 @@ FORMAT RULES (you MUST follow these exactly):
             extras.append(
                 f"CLOSING: Reference the source article link for listeners who want the full text: {directions.source_article_link}"
             )
+        if directions.sign_off:
+            extras.append(f"SIGN-OFF STYLE: End the episode with this approach: {directions.sign_off}")
         if extras:
             base += "\nADDITIONAL DIRECTIONS:\n" + "\n".join(f"- {e}" for e in extras) + "\n"
 

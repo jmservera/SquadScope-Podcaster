@@ -141,6 +141,7 @@ class ScriptDirections:
     ai_disclosure_cue: str = ""
     corrections_path: str = ""
     source_article_link: str = ""
+    sign_off: str = ""
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> "ScriptDirections":
@@ -162,6 +163,7 @@ class ScriptDirections:
             ai_disclosure_cue=_safe_str(opening.get("ai_disclosure")),
             corrections_path=_safe_str(closing.get("corrections_path")),
             source_article_link=_safe_str(closing.get("source_article_link")),
+            sign_off=_safe_str(closing.get("sign_off")),
         )
 
     @property
@@ -175,6 +177,7 @@ class ScriptDirections:
             or self.ai_disclosure_cue
             or self.corrections_path
             or self.source_article_link
+            or self.sign_off
         )
 
 
@@ -239,9 +242,19 @@ class MusicMixConfig:
         kwargs: dict[str, Any] = {}
         if self.intro_full_volume_seconds != 10.0:
             kwargs["intro_full_volume_seconds"] = self.intro_full_volume_seconds
+        # intro_fade_down_under may carry a numeric segment count (e.g. "2")
+        if self.intro_fade_down_under:
+            segments = _parse_segment_count(self.intro_fade_down_under)
+            if segments is not None:
+                kwargs["intro_speech_segments_under_music"] = segments
         # outro_start_position is a time string like "1:15" → convert to seconds
         if self.outro_start_position:
             kwargs["outro_start_offset_seconds"] = _parse_time_offset(self.outro_start_position)
+        # outro_fade_up_during may carry a duration in seconds (e.g. "5")
+        if self.outro_fade_up_during:
+            fade_secs = _parse_fade_duration(self.outro_fade_up_during)
+            if fade_secs is not None:
+                kwargs["outro_fade_in_seconds"] = fade_secs
         return kwargs
 
 
@@ -267,3 +280,56 @@ def _parse_time_offset(value: str) -> float:
         return float(parts[0])
     except (ValueError, IndexError):
         return 75.0
+
+
+def _parse_segment_count(value: str) -> int | None:
+    """Parse a segment count from intro_fade_down_under.
+
+    Accepts plain integers (e.g. "2") or descriptive text with a leading digit
+    (e.g. "2 segments"). Returns None when the value is purely descriptive and
+    cannot be interpreted as a numeric segment count.
+    """
+    stripped = value.strip()
+    # Try extracting a leading integer
+    digits = ""
+    for ch in stripped:
+        if ch.isdigit():
+            digits += ch
+        else:
+            break
+    if digits:
+        n = int(digits)
+        if n > 0:
+            return n
+    return None
+
+
+def _parse_fade_duration(value: str) -> float | None:
+    """Parse a fade duration in seconds from outro_fade_up_during.
+
+    Accepts plain numbers (e.g. "5", "3.5") or descriptive text with a leading
+    number. Returns None when the value cannot be interpreted numerically.
+    """
+    stripped = value.strip()
+    # Try parsing as a plain float first
+    try:
+        secs = float(stripped)
+        if secs > 0:
+            return secs
+    except ValueError:
+        pass
+    # Try extracting a leading number
+    num_str = ""
+    for ch in stripped:
+        if ch.isdigit() or ch == ".":
+            num_str += ch
+        else:
+            break
+    if num_str:
+        try:
+            secs = float(num_str)
+            if secs > 0:
+                return secs
+        except ValueError:
+            pass
+    return None

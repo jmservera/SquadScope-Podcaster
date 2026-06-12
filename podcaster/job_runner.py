@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from podcaster.audio import MusicMixSpec
-from podcaster.config import MusicMixConfig, PodcastConfig
+from podcaster.config import MusicMixConfig, PodcastConfig, ScriptDirections
 from podcaster.episode import (
     operator_review_decision,
     parse_script_segments,
@@ -153,6 +153,7 @@ def run_synthesis(
     podcast_config = PodcastConfig.from_payload(request_podcast_config) if request_podcast_config else None
     music_mix_config = _request_music_mix(manifest)
     mix_spec = _build_mix_spec(music_mix_config)
+    intro_music, outro_music = _resolve_music_paths(music_mix_config)
     try:
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / f"{job_id}.mp3"
@@ -165,6 +166,8 @@ def run_synthesis(
                 token_provider=token_provider,
                 transport=transport,
                 runner=runner,
+                intro_music=intro_music,
+                outro_music=outro_music,
                 music_mix_spec=mix_spec,
             )
             audio_bytes = output_path.read_bytes()
@@ -242,6 +245,46 @@ def _build_mix_spec(config: MusicMixConfig) -> MusicMixSpec | None:
     if not config.has_track:
         return None
     return MusicMixSpec(**config.to_mix_spec_kwargs())
+
+
+# Known music track assets keyed by canonical name (case-insensitive lookup).
+_MUSIC_TRACKS: dict[str, str] = {
+    "summer sport": "assets/music/summer-sport.mp3",
+    "summer-sport": "assets/music/summer-sport.mp3",
+}
+
+
+def _resolve_music_paths(config: MusicMixConfig) -> tuple[Path | None, Path | None]:
+    """Resolve the music track to intro/outro file paths.
+
+    Returns ``(intro_music, outro_music)`` — both point to the same resolved
+    track file. Returns ``(None, None)`` when no track is configured or the
+    asset cannot be found on disk.
+    """
+
+    if not config.has_track:
+        return None, None
+
+    # Resolve track name to asset path
+    track_key = config.track.strip().lower()
+    relative_path = _MUSIC_TRACKS.get(track_key)
+
+    if relative_path is None:
+        # Try as a literal relative path
+        candidate = Path(config.track)
+        if candidate.exists():
+            return candidate, candidate
+        logger.warning("music track not found track=%s", config.track)
+        return None, None
+
+    # Resolve relative to the package root (one level up from podcaster/)
+    package_root = Path(__file__).resolve().parent.parent
+    track_path = package_root / relative_path
+    if not track_path.exists():
+        logger.warning("music asset missing path=%s", track_path)
+        return None, None
+
+    return track_path, track_path
 
 
 def process_message(
