@@ -153,6 +153,17 @@ def run_synthesis(
     podcast_config = PodcastConfig.from_payload(request_podcast_config) if request_podcast_config else None
     music_mix_config = _request_music_mix(manifest)
     mix_spec = _build_mix_spec(music_mix_config)
+    # TODO(#169): music_mix_config may specify a track name but no intro_music/outro_music
+    # file paths are resolved or passed to synthesize_episode(). Until file resolution
+    # is implemented, music mixing is effectively a no-op. Log a warning so callers
+    # know the track was requested but not applied.
+    if mix_spec:
+        logger.warning(
+            "music_mix_config specifies track=%r but no music file paths are available; "
+            "music mixing will be skipped for job_id=%s",
+            music_mix_config.track,
+            job_id,
+        )
     try:
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / f"{job_id}.mp3"

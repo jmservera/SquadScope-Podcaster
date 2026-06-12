@@ -283,7 +283,10 @@ class TestSystemPromptWithDirections:
         )
         prompt = _build_system_prompt(PodcastConfig(), directions)
         assert "ADDITIONAL DIRECTIONS" in prompt
-        assert "TARGET FORMAT: Two-host, 8-10 minutes." in prompt
+        # format replaces rule 8 instead of appearing in ADDITIONAL DIRECTIONS
+        assert "8. Two-host, 8-10 minutes." in prompt
+        assert "12-18 dialogue exchanges" not in prompt
+        assert "TARGET FORMAT" not in prompt
         assert "TONE: Conversational, not performative." in prompt
         assert "Cold Open, The Signal, Outro" in prompt
         assert "40% of repos have zero tests" in prompt
