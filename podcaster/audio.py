@@ -19,6 +19,7 @@ TARGET_LOUDNESS_LUFS = -16.0
 LOUDNESS_TOLERANCE_LUFS = 1.0
 MAX_DURATION_SECONDS = 10 * 60
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+OUTRO_SPEECH_DUCK_GAIN = 0.15
 
 
 class CommandRunner(Protocol):
@@ -316,7 +317,7 @@ def _mix_music_with_speech(
         intro_end = _intro_music_end_seconds(segment_durations, gap_seconds, mix_spec)
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
-            f"atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
+            f"apad=whole_dur={_ffmpeg_number(intro_end)},atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
             f"volume='{_intro_volume_expression(segment_durations, gap_seconds, mix_spec)}'[intro]"
         )
         mix_inputs.append("[intro]")
@@ -326,17 +327,26 @@ def _mix_music_with_speech(
     if outro_music:
         outro_start_segment = len(segment_durations) - mix_spec.outro_speech_segments_with_music
         outro_delay_seconds = speech_delay_seconds + segment_starts[outro_start_segment]
+        speech_end_seconds = speech_delay_seconds + segment_total_duration
+        outro_speech_overlap_seconds = max(0.0, speech_end_seconds - outro_delay_seconds)
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
             f"atrim=start={_ffmpeg_number(mix_spec.outro_start_offset_seconds)},asetpts=PTS-STARTPTS,"
-            f"afade=t=in:st=0:d={_ffmpeg_number(mix_spec.outro_fade_in_seconds)},"
+            f"volume='{_outro_volume_expression(outro_speech_overlap_seconds, mix_spec)}',"
             f"adelay={_ffmpeg_milliseconds(outro_delay_seconds)}:all=1[outro]"
         )
         mix_inputs.append("[outro]")
         next_input_index += 1
         inputs.extend(["-i", str(outro_music)])
 
-    filter_complex = ";".join(filters + ["".join(mix_inputs) + f"amix=inputs={len(mix_inputs)}:normalize=0:duration=longest[out]"])
+    amix_weights = " ".join("1" for _ in mix_inputs)
+    filter_complex = ";".join(
+        filters
+        + [
+            "".join(mix_inputs)
+            + f"amix=inputs={len(mix_inputs)}:normalize=0:duration=longest:weights='{amix_weights}'[out]"
+        ]
+    )
     runner(
         [
             "ffmpeg",
@@ -438,6 +448,20 @@ def _intro_volume_expression(
 
 def _db_to_gain(db: float) -> float:
     return 10 ** (db / 20)
+
+
+def _outro_volume_expression(outro_speech_overlap_seconds: float, mix_spec: MusicMixSpec) -> str:
+    if outro_speech_overlap_seconds <= 0:
+        return "1"
+
+    fade_start = _ffmpeg_number(outro_speech_overlap_seconds)
+    fade_end = _ffmpeg_number(outro_speech_overlap_seconds + mix_spec.outro_fade_in_seconds)
+    duck_gain = _ffmpeg_number(OUTRO_SPEECH_DUCK_GAIN)
+    return (
+        f"if(lt(t,{fade_start}),{duck_gain},"
+        f"if(lt(t,{fade_end}),"
+        f"{duck_gain}+(1-{duck_gain})*(t-{fade_start})/{_ffmpeg_number(mix_spec.outro_fade_in_seconds)},1))"
+    )
 
 
 def _ffmpeg_number(value: float) -> str:
