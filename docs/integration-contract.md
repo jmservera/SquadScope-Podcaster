@@ -46,6 +46,15 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
   ],
   "dry_run": false,
   "force": false,
+  "script_directions": {
+    "opening_cues": { "cold_open": "One stat that surprised you this week." },
+    "episode_style": { "format": "Two-host conversational podcast, 8-10 minutes, 1200-1700 words." }
+  },
+  "music_mix": {
+    "track": "Summer Sport",
+    "intro": { "full_volume_seconds": 10 },
+    "outro": { "start_position": "0:00", "play_to_end": true }
+  },
   "callback": {
     "url": "https://example.com/podcaster-callback",
     "secret_name": "PODCASTER_CALLBACK_SECRET"
@@ -66,6 +75,21 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 - `callback` (optional object): Future callback target. The `secret_name` names a secret, not the secret value.
 - `podcast_config` (optional object): Override podcast identity and style. Includes sub-fields `name`, `url`, `spoken_site`, `ai_voice_disclosure`, `host_a`, `host_b`, and `style_guide`.
 - `podcast_config.style_guide` (optional string): Full text of the editorial style guide (segment structure, tone, phrasing principles). Passed from SquadScope's `docs/editorial-style-guide.md`. When present, it is included as context for script generation (#116).
+- `script_directions` (optional object): Guides LLM script generation with episode structure and cues. All sub-fields are optional:
+  - `opening_cues.cold_open` (string): Prompt for a cold-open hook.
+  - `opening_cues.ai_disclosure` (string): AI voice disclosure phrasing cue.
+  - `closing_cues.corrections_path` (string): URL for listener corrections.
+  - `closing_cues.source_article_link` (string): Source article link for outro.
+  - `episode_style.format` (string): Episode format description (e.g., "Two-host conversational podcast, 8-10 minutes").
+  - `episode_style.tone` (string): Tone guidance for the LLM.
+  - `episode_style.segment_order` (array of strings): Ordered segment names.
+- `music_mix` (optional object, also accepted nested under `script_directions`): Controls intro/outro music mixing. When absent, the default bundled music track plays with default timing:
+  - `track` (string): Music track name (e.g., "Summer Sport"). Resolved to `assets/music/<slug>.mp3`.
+  - `intro.full_volume_seconds` (number, default 10): Seconds of full-volume intro music before fading under speech.
+  - `intro.fade_down_under` (string): Duration expression for the intro duck-under fade.
+  - `outro.start_position` (string): Timestamp or duration expression for the outro start offset.
+  - `outro.fade_up_during` (string): Duration expression for the outro fade-up.
+  - `outro.play_to_end` (boolean, default true): Whether the outro plays to end of track.
 
 ### `source_artifacts` compatibility
 
