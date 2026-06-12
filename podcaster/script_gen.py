@@ -103,7 +103,10 @@ FORMAT RULES (you MUST follow these exactly):
             # so the script length matches the requested format instead of the default.
             base = base.replace(
                 "8. Aim for 12-18 dialogue exchanges total (6-9 per host).",
-                f"8. {style.format}",
+                f"8. LENGTH REQUIREMENT (CRITICAL): {style.format} "
+                "Write AT LEAST 30 dialogue exchanges. "
+                "Each exchange should be 2-4 sentences. "
+                "A script under 1200 words is TOO SHORT — keep going until you hit the target.",
             )
         if style.tone:
             extras.append(f"TONE: {style.tone}")

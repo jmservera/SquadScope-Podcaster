@@ -284,7 +284,8 @@ class TestSystemPromptWithDirections:
         prompt = _build_system_prompt(PodcastConfig(), directions)
         assert "ADDITIONAL DIRECTIONS" in prompt
         # format replaces rule 8 instead of appearing in ADDITIONAL DIRECTIONS
-        assert "8. Two-host, 8-10 minutes." in prompt
+        assert "LENGTH REQUIREMENT (CRITICAL): Two-host, 8-10 minutes." in prompt
+        assert "AT LEAST 30 dialogue exchanges" in prompt
         assert "12-18 dialogue exchanges" not in prompt
         assert "TARGET FORMAT" not in prompt
         assert "TONE: Conversational, not performative." in prompt
