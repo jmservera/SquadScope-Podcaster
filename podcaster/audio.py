@@ -317,7 +317,7 @@ def _mix_music_with_speech(
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
             f"atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
-            f"volume='{_intro_volume_expression(segment_durations, gap_seconds, mix_spec)}'[intro]"
+            f"volume='{_intro_volume_expression(segment_durations, gap_seconds, mix_spec)}':eval=frame[intro]"
         )
         filters.append(
             f"{current_mix}[intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]"
@@ -345,7 +345,7 @@ def _mix_music_with_speech(
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
             f"{outro_trim}"
-            f"volume='{_outro_volume_expression(outro_speech_overlap_seconds, mix_spec)}',"
+            f"volume='{_outro_volume_expression(outro_speech_overlap_seconds, mix_spec)}':eval=frame,"
             f"adelay={_ffmpeg_milliseconds(outro_delay_seconds)}:all=1[outro]"
         )
         filters.append(
