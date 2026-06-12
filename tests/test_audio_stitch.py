@@ -193,10 +193,21 @@ def test_stitch_segments_builds_music_mix_filtergraph_when_mix_spec_is_provided(
     assert [command[0] for command in calls[:3]] == ["ffprobe", "ffprobe", "ffprobe"]
     mix_cmd = " ".join(calls[4])
     assert "adelay=10000:all=1" in mix_cmd
+    assert "apad=whole_dur=16.8" in mix_cmd
     assert "volume='if(lt(t,10)" in mix_cmd
     assert "atrim=start=75" in mix_cmd
-    assert "afade=t=in:st=0:d=5" in mix_cmd
-    assert "amix=inputs=3:normalize=0:duration=longest[out]" in mix_cmd
+    assert "volume='if(lt(t,2.8),0.15," in mix_cmd
+    assert "amix=inputs=3:normalize=0:duration=longest:weights='1 1 1'[out]" in mix_cmd
+
+
+def test_outro_volume_expression_holds_duck_then_ramps_to_full_volume():
+    expression = audio._outro_volume_expression(2.8, audio.MusicMixSpec())
+
+    assert expression == "if(lt(t,2.8),0.15,if(lt(t,7.8),0.15+(1-0.15)*(t-2.8)/5,1))"
+
+
+def test_outro_volume_expression_returns_full_volume_when_no_speech_overlap():
+    assert audio._outro_volume_expression(0.0, audio.MusicMixSpec()) == "1"
 
 
 @pytest.mark.skipif(not _has_ffmpeg, reason="ffmpeg not installed")
