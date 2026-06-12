@@ -5,15 +5,15 @@ This module is intentionally *dry-run-safe and publication-blocked*:
 * It only describes and authorizes real text-to-speech synthesis; it never
   synthesizes audio unless an explicit gating decision allows it
   (production config present, not a dry run, and recorded human review).
-* It authenticates with the Function App managed identity using the same
+* It authenticates with the ACA managed identity using the same
   IMDS-based token pattern as :mod:`podcaster.storage`, so the runtime package
   stays minimal and account keys are never read, logged, or required.
 * It never logs tokens, account keys, full endpoints, or untrusted script text.
 
 The voices follow the operator decision in #60: ``fable`` for host A and
 ``alloy`` for host B of the Claracle conversation. The endpoint, deployments,
-and voices are read from the Function App settings emitted by ``infra`` when
-``deployOpenAi=true`` (see ``infra/main.bicep``).
+and voices are read from the Container App environment variables emitted by
+``infra`` (see ``infra/main.bicep`` and ``infra/modules/aca.bicep``).
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ Transport = Callable[[Request], bytes]
 
 @dataclass(frozen=True)
 class TtsConfig:
-    """Resolved Azure OpenAI TTS configuration from Function App settings."""
+    """Resolved Azure OpenAI TTS configuration from Container App settings."""
 
     endpoint: str | None
     tts_deployment: str | None
