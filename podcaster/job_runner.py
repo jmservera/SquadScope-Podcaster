@@ -153,17 +153,15 @@ def run_synthesis(
     podcast_config = PodcastConfig.from_payload(request_podcast_config) if request_podcast_config else None
     music_mix_config = _request_music_mix(manifest)
     mix_spec = _build_mix_spec(music_mix_config)
-    # TODO(#169): music_mix_config may specify a track name but no intro_music/outro_music
-    # file paths are resolved or passed to synthesize_episode(). Until file resolution
-    # is implemented, music mixing is effectively a no-op. Log a warning so callers
-    # know the track was requested but not applied.
-    if mix_spec:
+    intro_music, outro_music = _resolve_music_paths(music_mix_config)
+    if mix_spec and not intro_music:
         logger.warning(
-            "music_mix_config specifies track=%r but no music file paths are available; "
+            "music_mix_config specifies track=%r but music file not found at expected path; "
             "music mixing will be skipped for job_id=%s",
             music_mix_config.track,
             job_id,
         )
+        mix_spec = None
     try:
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / f"{job_id}.mp3"
@@ -176,6 +174,8 @@ def run_synthesis(
                 token_provider=token_provider,
                 transport=transport,
                 runner=runner,
+                intro_music=intro_music,
+                outro_music=outro_music,
                 music_mix_spec=mix_spec,
             )
             audio_bytes = output_path.read_bytes()
@@ -253,6 +253,40 @@ def _build_mix_spec(config: MusicMixConfig) -> MusicMixSpec | None:
     if not config.has_track:
         return None
     return MusicMixSpec(**config.to_mix_spec_kwargs())
+
+
+# Bundled assets directory (relative to package root in the container image).
+_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+
+# Track name → file path mapping. Names are normalized to lowercase with
+# spaces replaced by hyphens.
+_MUSIC_DIR = _ASSETS_DIR / "music"
+_STINGER_DIR = _ASSETS_DIR / "audio"
+
+
+def _resolve_music_paths(config: MusicMixConfig) -> tuple[Path | None, Path | None]:
+    """Resolve intro and outro music file paths from bundled assets.
+
+    Returns (intro_music, outro_music) paths if the track file exists,
+    or (None, None) if no track is configured or files are missing.
+    """
+    if not config.track:
+        return None, None
+
+    # Normalize track name to filename: "Summer Sport" → "summer-sport.mp3"
+    track_filename = config.track.lower().replace(" ", "-") + ".mp3"
+    track_path = _MUSIC_DIR / track_filename
+
+    if not track_path.is_file():
+        # Try stinger files as fallback
+        intro = _STINGER_DIR / "intro_stinger.mp3"
+        outro = _STINGER_DIR / "outro_stinger.mp3"
+        if intro.is_file() and outro.is_file():
+            return intro, outro
+        return None, None
+
+    # Use the full track for both intro and outro (mix_spec controls fading)
+    return track_path, track_path
 
 
 def process_message(
