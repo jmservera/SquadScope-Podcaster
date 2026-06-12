@@ -22,7 +22,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: production
+    environment: prod
     env:
       REGISTRY: ${{ vars.SYNTHESIS_IMAGE_REGISTRY }}
       IMAGE_REPOSITORY: ${{ vars.API_IMAGE_REPOSITORY || 'podcaster-api' }}
