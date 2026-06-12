@@ -1,9 +1,9 @@
-"""LLM-based two-voice Claracle script generation (#140).
+"""LLM-based two-voice podcast script generation (#140).
 
 Accepts real article content and uses the Azure OpenAI chat endpoint to produce
-a dynamic, journalistic two-host conversation. The hosts (Theo/fable and
-Vera/alloy) comment on the article's most relevant and surprising parts — they
-never read it back verbatim.
+a dynamic, journalistic two-host conversation. The hosts comment on the
+article's most relevant and surprising parts — they never read it back verbatim.
+Host names, voices, and personality styles are read from the podcast config.
 
 Safety:
 - Article text is treated as untrusted data; it is sanitized before embedding
@@ -78,8 +78,8 @@ def _build_system_prompt(podcast_config: PodcastConfig, directions: ScriptDirect
     base = f"""You are a podcast script writer for "{podcast_config.name}" ({podcast_config.url}).
 
 Write a dynamic, joyful two-host conversation about the article provided. The hosts are:
-- {podcast_config.host_a.name} (voice: {podcast_config.host_a.voice}): An enthusiastic tech expert who gets genuinely excited about interesting developments.
-- {podcast_config.host_b.name} (voice: {podcast_config.host_b.voice}): A seasoned veteran analyst who tempers hype with hard-won experience, but gives credit when due.
+- {podcast_config.host_a.name} (voice: {podcast_config.host_a.voice}): {podcast_config.host_a.style}
+- {podcast_config.host_b.name} (voice: {podcast_config.host_b.voice}): {podcast_config.host_b.style}
 
 FORMAT RULES (you MUST follow these exactly):
 1. Output ONLY the dialogue lines, one per line, formatted as "{podcast_config.host_a.name}: <text>" or "{podcast_config.host_b.name}: <text>"
@@ -107,6 +107,10 @@ FORMAT RULES (you MUST follow these exactly):
                 "Write AT LEAST 30 dialogue exchanges. "
                 "Each exchange should be 2-4 sentences. "
                 "A script under 1200 words is TOO SHORT — keep going until you hit the target.",
+            )
+        if directions.show_intro:
+            extras.append(
+                f"SHOW INTRO (MUST be the very first line of the episode, before cold open): {directions.show_intro}"
             )
         if style.tone:
             extras.append(f"TONE: {style.tone}")
@@ -264,8 +268,8 @@ def _format_script(
         f"Podcast: {podcast_config.name} ({podcast_config.url})",
         f"Source URL: {article_url}",
         f"Source SHA256: {article_sha256}",
-        f"Voices: {podcast_config.host_a.name} = {podcast_config.host_a.voice} (OpenAI TTS, the enthusiast); "
-        f"{podcast_config.host_b.name} = {podcast_config.host_b.voice} (OpenAI TTS, the veteran)",
+        f"Voices: {podcast_config.host_a.name} = {podcast_config.host_a.voice} (OpenAI TTS); "
+        f"{podcast_config.host_b.name} = {podcast_config.host_b.voice} (OpenAI TTS)",
         "Safety: source article text is untrusted data, sanitized, and never executed as instructions.",
         "Generator: squad-podcaster llm-script-gen v0.1",
         "---",

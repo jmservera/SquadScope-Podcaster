@@ -154,15 +154,14 @@ def build_episode_script(article: Article, podcast_config: PodcastConfig | None 
     The script follows a narrative arc rather than a list of items: a strong hook
     that names the issue and the week's main story, a clear throughline, segments
     that build tension and pay it off, callbacks, and a satisfying close. The two
-    hosts have distinct, consistent personalities — ``Theo`` (fable) is the
-    enthusiast who hypes every new project, ``Vera`` (alloy) is the veteran who
-    has seen hype cycles come and go and tempers or genuinely validates them.
+    hosts have distinct personalities defined by their ``style`` field in the
+    podcast config.
 
     Both hosts name themselves in the intro and the AI-voice disclosure lands in
     the opening exchange (well within the first 60 seconds). Hosts say the site
-    as a bare domain (``www.claracle.com``) and never voice a URL scheme. The
-    format mirrors :func:`podcaster.generation._script` so existing format checks
-    and the production voice mapping stay consistent.
+    as the configured ``spoken_site`` and never voice a URL scheme. The format
+    mirrors :func:`podcaster.generation._script` so existing format checks and
+    the production voice mapping stay consistent.
     """
 
     if not article.beats:
@@ -175,8 +174,8 @@ def build_episode_script(article: Article, podcast_config: PodcastConfig | None 
         f"Podcast: {podcast_config.name} ({podcast_config.url})",
         f"Source URL: {article.url}",
         f"Source SHA256: {article.sha256}",
-        f"Voices: {podcast_config.host_a.name} = {podcast_config.host_a.voice} (OpenAI TTS, the enthusiast); "
-        f"{podcast_config.host_b.name} = {podcast_config.host_b.voice} (OpenAI TTS, the veteran)",
+        f"Voices: {podcast_config.host_a.name} = {podcast_config.host_a.voice} (OpenAI TTS); "
+        f"{podcast_config.host_b.name} = {podcast_config.host_b.voice} (OpenAI TTS)",
         "Safety: source article text is untrusted data, sanitized, and never executed as instructions.",
     ]
     if podcast_config.style_guide:
@@ -209,26 +208,18 @@ def build_episode_script(article: Article, podcast_config: PodcastConfig | None 
         ),
     ]
 
-    # Segments: Theo (enthusiast) opens each story and hypes it; Vera (veteran)
-    # tempers or validates the talking points. Tension is set up and paid off
-    # turn by turn, with a callback woven into the final segment. Lead-ins are
-    # drawn sequentially (never cycled) so no stock phrase repeats across the
-    # episode (operator feedback, v3).
+    # Segments: Host A opens each story; Host B responds. They alternate
+    # on talking points. Tension is set up and paid off turn by turn, with a
+    # callback woven into the final segment.
     last_index = len(article.beats) - 1
-    enthusiast_turns = iter(_ENTHUSIAST_TURNS)
-    veteran_turns = iter(_VETERAN_TURNS)
     for index, beat in enumerate(article.beats):
         body.append("")
-        opener = _ENTHUSIAST_HOOKS[index % len(_ENTHUSIAST_HOOKS)]
-        body.append(_host_a(f"{opener} {beat.topic}.", podcast_config))
+        body.append(_host_a(f"{beat.topic}.", podcast_config))
         for point_index, point in enumerate(beat.points):
             if point_index % 2 == 0:
-                reactor = _host_b
-                lead_in = next(veteran_turns, _VETERAN_FALLBACK)
+                body.append(_host_b(point, podcast_config))
             else:
-                reactor = _host_a
-                lead_in = next(enthusiast_turns, _ENTHUSIAST_FALLBACK)
-            body.append(reactor(f"{lead_in} {point}", podcast_config))
+                body.append(_host_a(point, podcast_config))
         if index == last_index:
             body.append(
                 _host_b(
@@ -260,47 +251,6 @@ def build_episode_script(article: Article, podcast_config: PodcastConfig | None 
     )
 
     return "\n".join(header + body)
-
-
-# Enthusiast (Theo) hooks that open each story segment. Every entry is phrased
-# differently — no shared signature opener — so segment transitions never repeat
-# (operator feedback, v3). Sized to cover a typical multi-beat episode.
-_ENTHUSIAST_HOOKS = (
-    "Okay, first up, and I am genuinely fired up about this one:",
-    "Next, here's a project that made me put my coffee down:",
-    "Moving on — and this is where my week got really fun:",
-    "Now switch gears with me, because this next one is wild:",
-    "Alright, I saved a personal favorite for right about here:",
-    "And then there's this, which I keep re-reading just to be sure it's real:",
-    "One more that deserves the spotlight before we wrap:",
-)
-
-# Enthusiast (Theo) reaction lead-ins that hype a talking point. Each is distinct
-# and drawn sequentially; banned crutch phrases (e.g. "goosebumps", "the detail
-# I love") are deliberately absent.
-_ENTHUSIAST_TURNS = (
-    "Oh, and this part is what really sells it for me —",
-    "Right, and watch how neatly this fits together —",
-    "Here's the bit that made me grin —",
-    "And honestly, this next piece is the clever twist —",
-    "See, this is where it goes from neat to genuinely useful —",
-    "And don't gloss over this, because it's the fun part —",
-    "What gets me is how practical this turns out to be —",
-)
-_ENTHUSIAST_FALLBACK = "And building on that —"
-
-# Veteran (Vera) reaction lead-ins that temper, validate, or add hard-won context.
-# Measured, dry, and each phrased differently.
-_VETERAN_TURNS = (
-    "Let me be precise about what's actually new here, though —",
-    "I came in ready to be unimpressed, and instead —",
-    "Credit where it's due; the part that holds up is —",
-    "Here's the caveat that decides whether this lasts —",
-    "Strip away the framing and what remains is —",
-    "I've seen this pattern before, so the real test is —",
-    "Fair, but the detail that actually matters is —",
-)
-_VETERAN_FALLBACK = "And the practical reality is —"
 
 
 def parse_script_segments(script: str, podcast_config: PodcastConfig | None = None) -> list[tuple[str, str]]:

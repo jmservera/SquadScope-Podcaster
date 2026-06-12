@@ -38,8 +38,8 @@ AI_VOICE_DISCLOSURE = (
 )
 
 # Named hosts with distinct on-mic personalities (operator feedback, #72). The
-# voice mapping is fixed and kept as metadata: Host A = ``fable`` = "Theo", the
-# enthusiast; Host B = ``alloy`` = "Vera", the veteran. Scripts/transcripts label
+# voice mapping is fixed and kept as metadata: Host A = ``fable`` = "Theo";
+# Host B = ``alloy`` = "Vera". Scripts/transcripts label
 # spoken turns by these names while the fable/alloy mapping stays in the header.
 HOST_A_NAME = "Theo"
 HOST_B_NAME = "Vera"
@@ -162,8 +162,8 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str, config: 
             f"Source SHA256: {article_sha256}",
             f"Generated: {generated_at}",
             "Generator: squad-podcaster v0.1-stub",
-            f"Voices: {config.host_a.name} = {config.host_a.voice} (OpenAI TTS, the enthusiast); "
-            f"{config.host_b.name} = {config.host_b.voice} (OpenAI TTS, the veteran)",
+            f"Voices: {config.host_a.name} = {config.host_a.voice} (OpenAI TTS); "
+            f"{config.host_b.name} = {config.host_b.voice} (OpenAI TTS)",
             "Safety: source artifact text is untrusted data, fenced, and never executed as instructions.",
             *source_artifact_lines,
             "---",
@@ -265,8 +265,8 @@ def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastCo
             f"**Episode:** {week}",
             f"**Published:** {published}",
             "**Duration:** 15:42",
-            f"**Hosts:** Two AI voices — {config.host_a.name} ({config.host_a.voice}, the enthusiast) and "
-            f"{config.host_b.name} ({config.host_b.voice}, the veteran), OpenAI TTS [synthesis pending review]",
+            f"**Hosts:** Two AI voices — {config.host_a.name} ({config.host_a.voice}) and "
+            f"{config.host_b.name} ({config.host_b.voice}), OpenAI TTS [synthesis pending review]",
             "",
             f"> AI-voice disclosure: {config.ai_voice_disclosure} This is also stated in the first 60 seconds of the episode.",
             "",

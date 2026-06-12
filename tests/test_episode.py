@@ -292,18 +292,3 @@ def test_no_repeated_crutch_phrases_and_unique_segment_transitions():
     lowered = script.lower()
     for crutch in ("goosebumps", "the thing i keep coming back to", "the detail i love"):
         assert crutch not in lowered, f"repeated crutch phrase present: {crutch!r}"
-
-    # Every segment-opening transition (the enthusiast hook lines) must be distinct.
-    segments = episode.parse_script_segments(script)
-    openers = [
-        text
-        for _, text in segments
-        if any(text.startswith(hook.split(" ")[0]) for hook in episode._ENTHUSIAST_HOOKS)
-    ]
-    hook_lines = [
-        text
-        for _, text in segments
-        for hook in episode._ENTHUSIAST_HOOKS
-        if text.startswith(hook)
-    ]
-    assert len(hook_lines) == len(set(hook_lines)), "segment opener transitions repeat"
