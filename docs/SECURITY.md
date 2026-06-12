@@ -24,7 +24,7 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
 
 - **`PODCASTER_ENDPOINT`** (variable in SquadScope)
   - The URL of the `/api/generate` endpoint, non-sensitive and read-safe to store as a variable.
-  - Example: `https://podcaster-app.azurewebsites.net/api/generate`
+  - Example: `https://<aca-app-fqdn>/api/generate` (ACA App with HTTP ingress, see #131)
   
 - **`PODCASTER_API_KEY`** (secret in SquadScope)
   - The same API key configured in the Podcaster ACA synthesis job.
@@ -284,7 +284,7 @@ Podcaster owns provider disclosure, TTS privacy, artifact staging, and operator 
 ### SquadScope Setup (After First Deploy)
 
 1. **In SquadScope repository settings:**
-   - Create or update the `PODCASTER_ENDPOINT` variable with the deploy output (e.g., `https://podcaster-app.azurewebsites.net/api/generate`).
+   - Create or update the `PODCASTER_ENDPOINT` variable with the deploy output (e.g., `https://<aca-app-fqdn>/api/generate`).
    - Create or update the `PODCASTER_API_KEY` secret with the same key used in Podcaster.
 
 2. **Verify variable and secret are present before enabling automation:**
@@ -418,7 +418,7 @@ Use this checklist before marking a release as ready for SquadScope consumption:
 - [ ] Container image deployment uses a private registry with managed-identity or token-based pull; no image SAS or storage key is emitted.
 - [ ] The ACA Job is deployed with HTTPS-only ingress disabled (queue-triggered, no public endpoint).
 
-### 2. API Security ✓
+### 2. API Security (pending #131 — HTTP ingress ACA App)
 
 - [ ] The `/api/generate` endpoint requires the `x-podcaster-api-key` header.
 - [ ] Invalid or missing API keys return HTTP 401 with no hint about valid keys.

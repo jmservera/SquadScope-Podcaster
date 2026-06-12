@@ -1,8 +1,8 @@
 // Production audio synthesis runner (ADR 0001, Option C) for #67/#76.
 // A queue-triggered Azure Container Apps Job runs the ffmpeg-backed synthesis pipeline
-// (episode.py) out-of-band from the thin Functions HTTP front door. Kept in a dedicated
-// module so main.bicep can deploy it conditionally (behind deployAudioJob) while the
-// resources here stay unconditional for static analysis (Checkov), mirroring modules/openai.bicep.
+// (episode.py). The HTTP API front door (#131) will be a separate ACA App with ingress.
+// Kept in a dedicated module so main.bicep stays readable while the resources here are
+// unconditional for static analysis (Checkov), mirroring modules/openai.bicep.
 //
 // Identity-only data plane: the job authenticates to Storage (Blob + Queue) and Azure
 // OpenAI TTS with a user-assigned managed identity. No keys or connection strings are

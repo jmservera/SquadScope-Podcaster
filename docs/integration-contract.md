@@ -2,8 +2,8 @@
 
 ## Endpoint
 
-- Production URL: `https://<function-app-name>.azurewebsites.net/api/generate`
-- Local URL: `http://localhost:7071/api/generate`
+- Production URL: `https://<aca-app-fqdn>/api/generate` (ACA App with HTTP ingress, see #131)
+- Local URL: `http://localhost:8000/api/generate`
 - Method: `POST`
 - Content type: `application/json`
 
@@ -85,7 +85,7 @@ Regression fixtures live under `tests/fixtures/`:
 The deployed endpoint smoke check uses `tests/fixtures/podcaster_request_squadscope_objects.json` by default:
 
 ```bash
-export PODCASTER_GENERATE_URL='https://<function-app-name>.azurewebsites.net/api/generate'
+export PODCASTER_GENERATE_URL='https://<aca-app-fqdn>/api/generate'
 export PODCASTER_API_KEY='<from secret manager>'
 python scripts/smoke_generate.py
 ```

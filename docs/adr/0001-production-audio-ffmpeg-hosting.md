@@ -130,12 +130,23 @@ until the human-review gate records approval.
 ## Follow-up (created as focused issues, blocked on operator approval)
 
 1. Bicep: ACA managed environment + queue-triggered Job + managed-identity role
-   assignments (Bender).
+   assignments (Bender). ✅ Done (#112).
 2. Containerfile + CI build/scan/push for the synthesis image with `ffmpeg`
-   baked in (Bender).
+   baked in (Bender). ✅ Done (#77). Push gated on registry approval (#129).
 3. Job runner entrypoint that consumes the queue message and invokes the
-   existing `episode.py` pipeline; manifest status updates (Bender).
+   existing `episode.py` pipeline; manifest status updates (Bender). ✅ Done.
 4. Wire `/api/generate` to enqueue the synthesis message behind the existing
-   gates; async response-shape regression tests (Fry).
+   gates; async response-shape regression tests (Fry). **Open** — the Function
+   App was fully removed in PR #112 (ACA-only migration). A replacement HTTP
+   ingress ACA App is needed to restore the `/api/generate` endpoint (#131).
 5. Secrets/identity/audit review for the job's data-plane access and queue
-   permissions (Hermes).
+   permissions (Hermes). ✅ Done (security review in `docs/security/`).
+
+## Architecture evolution (2026-06-11)
+
+PR #112 migrated to a fully ACA-only architecture, removing the Function App
+entirely. The original Option C "split" (Function App front door + ACA Job) was
+simplified to ACA-only because the operator decided against maintaining the
+Function App for a single-endpoint workload. The HTTP front door still needs to
+be restored as an ACA App with HTTP ingress (#131) before the integration
+contract with SquadScope is functional end-to-end.

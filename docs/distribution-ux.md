@@ -253,7 +253,7 @@ Before an operator can publish, they must have:
 When Podcaster is deployed, the following values must be shared with SquadScope (as GitHub variables or secrets):
 
 **Non-secret (can be logged):**
-- `PODCASTER_ENDPOINT`: The production URL (e.g., `https://podcaster-prod.azurewebsites.net`)
+- `PODCASTER_ENDPOINT`: The production URL (e.g., `https://<aca-app-fqdn>/api/generate`)
 
 **Secret (must not be logged):**
 - `PODCASTER_API_KEY`: The API key for authentication
