@@ -301,12 +301,19 @@ def _managed_identity_resource(scope: str) -> str:
 def _request_managed_identity_token(resource: str) -> dict[str, object]:
     app_service_endpoint = os.environ.get("IDENTITY_ENDPOINT")
     app_service_header = os.environ.get("IDENTITY_HEADER")
+    client_id = os.environ.get("AZURE_CLIENT_ID")
     if app_service_endpoint and app_service_header:
-        query = urlencode({"api-version": "2019-08-01", "resource": resource})
+        params: dict[str, str] = {"api-version": "2019-08-01", "resource": resource}
+        if client_id:
+            params["client_id"] = client_id
+        query = urlencode(params)
         separator = "&" if "?" in app_service_endpoint else "?"
         request = Request(f"{app_service_endpoint}{separator}{query}", headers={"X-IDENTITY-HEADER": app_service_header})
     else:
-        query = urlencode({"api-version": "2018-02-01", "resource": resource})
+        params = {"api-version": "2018-02-01", "resource": resource}
+        if client_id:
+            params["client_id"] = client_id
+        query = urlencode(params)
         request = Request(
             f"http://169.254.169.254/metadata/identity/oauth2/token?{query}",
             headers={"Metadata": "true"},
