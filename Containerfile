@@ -47,6 +47,9 @@ RUN python -m pip install --no-cache-dir -r requirements.txt \
 # Application code (synthesis pipeline is reused unchanged from podcaster/).
 COPY podcaster ./podcaster
 
+# Bundle music assets for intro/outro mixing.
+COPY assets ./assets
+
 USER synth
 
 # Consume the synthesis queue and drive the existing episode.py pipeline.
