@@ -191,16 +191,16 @@ def test_stitch_segments_builds_music_mix_filtergraph_when_mix_spec_is_provided(
     )
 
     assert [command[0] for command in calls[:3]] == ["ffprobe", "ffprobe", "ffprobe"]
-    # calls[3] = concat ffmpeg, calls[4] = intro ffprobe, calls[5] = outro ffprobe, calls[6] = mix ffmpeg
-    mix_cmd = " ".join(calls[6])
+    # calls[3] = concat ffmpeg, calls[4] = outro ffprobe, calls[5] = mix ffmpeg
+    mix_cmd = " ".join(calls[5])
     assert "adelay=10000:all=1" in mix_cmd
-    # Intro stinger (1.25s) is shorter than intro_end so no apad; trimmed to stinger length
-    assert "atrim=end=1.25" in mix_cmd
+    assert "atrim=end=16.8" in mix_cmd
     assert "volume='if(lt(t,10)" in mix_cmd
-    # Outro offset clamped: min(75, max(0, 1.25-1.0))=0.25
-    assert "atrim=start=0.25" in mix_cmd
+    assert "[speech][intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]" in mix_cmd
+    # Outro offset clamped: min(75, max(0, 1.25-0.5))=0.75
+    assert "atrim=start=0.75" in mix_cmd
     assert "volume='if(lt(t,2.8),0.15," in mix_cmd
-    assert "amix=inputs=3:normalize=0:duration=longest:weights='1 1 1'[out]" in mix_cmd
+    assert "[speech_with_intro][outro]amix=inputs=2:normalize=0:duration=longest:weights='1 1'[out]" in mix_cmd
 
 
 def test_outro_volume_expression_holds_duck_then_ramps_to_full_volume():

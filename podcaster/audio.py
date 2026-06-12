@@ -300,7 +300,6 @@ def _mix_music_with_speech(
 ) -> None:
     inputs = ["-i", str(speech_path)]
     filters = [f"[0:a]aresample=44100,aformat=channel_layouts=mono[speechsrc]"]
-    mix_inputs: list[str] = []
     speech_delay_seconds = mix_spec.intro_full_volume_seconds if intro_music else 0.0
     if speech_delay_seconds > 0:
         filters.append(
@@ -308,26 +307,22 @@ def _mix_music_with_speech(
         )
     else:
         filters.append("[speechsrc]anull[speech]")
-    mix_inputs.append("[speech]")
+    current_mix = "[speech]"
 
     segment_starts, segment_total_duration = _segment_timeline(segment_durations, gap_seconds)
 
     next_input_index = 1
     if intro_music:
         intro_end = _intro_music_end_seconds(segment_durations, gap_seconds, mix_spec)
-        intro_duration = _probe_duration_seconds(intro_music, runner)
-        # If the intro music is shorter than the desired end, don't pad with silence.
-        # Just let it play naturally for its duration — speech is already delayed.
-        if intro_duration < intro_end:
-            intro_trim = f"atrim=end={_ffmpeg_number(intro_duration)},asetpts=PTS-STARTPTS,"
-        else:
-            intro_trim = f"atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
-            f"{intro_trim}"
+            f"atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
             f"volume='{_intro_volume_expression(segment_durations, gap_seconds, mix_spec)}'[intro]"
         )
-        mix_inputs.append("[intro]")
+        filters.append(
+            f"{current_mix}[intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]"
+        )
+        current_mix = "[speech_with_intro]"
         next_input_index += 1
         inputs.extend(["-i", str(intro_music)])
 
@@ -340,7 +335,7 @@ def _mix_music_with_speech(
         outro_duration = _probe_duration_seconds(outro_music, runner)
         effective_outro_offset = min(
             mix_spec.outro_start_offset_seconds,
-            max(0.0, outro_duration - 1.0),
+            max(0.0, outro_duration - 0.5),
         )
         outro_trim = (
             f"atrim=start={_ffmpeg_number(effective_outro_offset)},asetpts=PTS-STARTPTS,"
@@ -353,18 +348,16 @@ def _mix_music_with_speech(
             f"volume='{_outro_volume_expression(outro_speech_overlap_seconds, mix_spec)}',"
             f"adelay={_ffmpeg_milliseconds(outro_delay_seconds)}:all=1[outro]"
         )
-        mix_inputs.append("[outro]")
+        filters.append(
+            f"{current_mix}[outro]amix=inputs=2:normalize=0:duration=longest:weights='1 1'[out]"
+        )
+        current_mix = "[out]"
         next_input_index += 1
         inputs.extend(["-i", str(outro_music)])
 
-    amix_weights = " ".join("1" for _ in mix_inputs)
-    filter_complex = ";".join(
-        filters
-        + [
-            "".join(mix_inputs)
-            + f"amix=inputs={len(mix_inputs)}:normalize=0:duration=longest:weights='{amix_weights}'[out]"
-        ]
-    )
+    if current_mix != "[out]":
+        filters.append(f"{current_mix}anull[out]")
+    filter_complex = ";".join(filters)
     runner(
         [
             "ffmpeg",
