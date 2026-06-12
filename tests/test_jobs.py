@@ -321,6 +321,8 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
         "week": "2026-W23",
         "article_url": "https://example.com/article",
         "article_sha256": "b" * 64,
+        "article_title": None,
+        "article_content_provided": False,
         "source_artifacts": ["https://example.com/source.json"],
         "dry_run": False,
         "force": True,
@@ -664,3 +666,100 @@ def _parse_checksums(content: str) -> dict[str, str]:
         digest, name = line.split("  ", 1)
         parsed[name] = digest
     return parsed
+
+
+def test_llm_script_generation_replaces_placeholder_when_article_content_provided(monkeypatch) -> None:
+    """When article_content is present and chat endpoint is configured, the LLM script is used."""
+    import json as _json
+    from urllib.request import Request
+
+    artifact_root = Path(".test-artifacts-llm-gen")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    # Configure the chat endpoint via environment
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini")
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "managed_identity")
+
+    # Mock the managed identity token and HTTP transport
+    fake_dialogue = "Theo: Welcome to Claracle! Let's dive into AI.\nVera: Both hosts on this show are AI-generated synthetic voices, not human presenters. Let's go."
+
+    def fake_transport(request: Request) -> bytes:
+        return _json.dumps({"choices": [{"message": {"content": fake_dialogue}}]}).encode()
+
+    def fake_token_provider(scope: str) -> str:
+        return "fake-token"
+
+    # Patch the script_gen module to use our fakes
+    from podcaster import script_gen
+    monkeypatch.setattr(script_gen, "_default_transport", fake_transport)
+    monkeypatch.setattr(script_gen.ManagedIdentityTokenCredential, "get_token", staticmethod(fake_token_provider))
+
+    result = run_generation_job(
+        {
+            "week": "2026-W24",
+            "article_url": "https://example.com/ai-article",
+            "article_title": "AI Revolution",
+            "article_content": "This article discusses the latest AI developments in June 2026.",
+        },
+        storage=storage,
+        now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.response["status"] == "accepted"
+    assert result.manifest["generation"]["engine"] == "llm-script-gen"
+    assert result.manifest["generation"]["deterministic"] is False
+
+    # The script artifact should contain the LLM-generated dialogue
+    job_id = result.response["job_id"]
+    script_file = artifact_root / "jobs" / job_id / "script.txt"
+    script_content = script_file.read_text()
+    assert "Theo: Welcome to Claracle!" in script_content
+    assert "AI-generated synthetic voices" in script_content
+    assert "---" in script_content  # Header separator present
+
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_llm_script_generation_falls_back_on_failure(monkeypatch) -> None:
+    """When LLM call fails, falls back to deterministic placeholder."""
+    from urllib.request import Request
+
+    artifact_root = Path(".test-artifacts-llm-fallback")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini")
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "managed_identity")
+
+    def failing_transport(request: Request) -> bytes:
+        raise RuntimeError("LLM endpoint unavailable")
+
+    def fake_token_provider(scope: str) -> str:
+        return "fake-token"
+
+    from podcaster import script_gen
+    monkeypatch.setattr(script_gen, "_default_transport", failing_transport)
+    monkeypatch.setattr(script_gen.ManagedIdentityTokenCredential, "get_token", staticmethod(fake_token_provider))
+
+    result = run_generation_job(
+        {
+            "week": "2026-W24",
+            "article_url": "https://example.com/ai-article",
+            "article_title": "AI Revolution",
+            "article_content": "Some article content here.",
+        },
+        storage=storage,
+        now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc),
+    )
+
+    # Falls back to placeholder
+    assert result.response["status"] == "accepted"
+    assert result.manifest["generation"]["engine"] == "local-deterministic-placeholder"
+    assert result.manifest["generation"]["deterministic"] is True
+    assert any("LLM script generation failed" in w for w in result.response["warnings"])
+
+    shutil.rmtree(artifact_root, ignore_errors=True)
+

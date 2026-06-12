@@ -137,6 +137,17 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
         if secret_name is not None and not isinstance(secret_name, str):
             errors.append("callback.secret_name must be a string")
 
+    article_title = payload.get("article_title")
+    if article_title is not None and not isinstance(article_title, str):
+        errors.append("article_title must be a string")
+
+    article_content = payload.get("article_content")
+    if article_content is not None:
+        if not isinstance(article_content, str):
+            errors.append("article_content must be a string")
+        elif len(article_content) < 50:
+            warnings.append("article_content is very short; script quality may be limited")
+
     podcast_config = payload.get("podcast_config")
     if podcast_config is not None:
         podcast_config_errors, podcast_config_warnings = _validate_podcast_config(podcast_config)
