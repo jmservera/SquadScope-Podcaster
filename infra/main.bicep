@@ -104,8 +104,8 @@ param synthesisImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
 @description('Optional container registry login server for the synthesis image.')
 param containerRegistryServer string = ''
 
-@description('Deploy the HTTP API app for /api/generate (#131). Gated on container registry approval.')
-param deployApiApp bool = false
+@description('Deploy the HTTP API app for /api/generate (#131).')
+param deployApiApp bool = true
 
 @description('HTTP API container image (#131).')
 param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
