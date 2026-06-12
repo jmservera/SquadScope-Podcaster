@@ -65,7 +65,7 @@
 ## Project Context
 
 - **Owner:** jmservera
-- **Stack:** Python 3.11 · Azure Functions (HTTP) · Bicep · GitHub Actions (OIDC) · Azure Blob Storage · App Insights / Log Analytics · pytest
-- **Description:** Sister service to `jmservera/SquadScope` that turns a published article into podcast-production artifacts (script, transcript, show notes, audio, publishing packet) and returns links; audio is future work and the initial API returns deterministic stubs.
+- **Stack:** Python 3.11 · Azure Container Apps (ACA) · Azure OpenAI (gpt-4o-mini-tts) · Bicep · GitHub Actions (OIDC) · Azure Blob Storage · ACR · App Insights / Log Analytics · pytest
+- **Description:** Sister service to `jmservera/SquadScope` that turns a published article into podcast-production artifacts (script, transcript, show notes, audio, publishing packet) and returns links. Full pipeline operational: LLM script gen → TTS synthesis (fable + alloy) → ffmpeg audio assembly → review gate → manual publishing packet.
 - **Created:** 2026-06-07
 - **Universe:** Futurama
