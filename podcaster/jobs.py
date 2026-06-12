@@ -21,7 +21,7 @@ from podcaster.costs import (
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.claim_extraction import claims_to_ledger_json, extract_claims
-from podcaster.config import PodcastConfig
+from podcaster.config import PodcastConfig, ScriptDirections
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.queue import enqueue_synthesis_job
 from podcaster.script_gen import ScriptGenConfig, generate_script
@@ -118,6 +118,7 @@ def run_generation_job(
     llm_script: str | None = None
     llm_claims_json: str | None = None
     llm_generation_engine = "local-deterministic-placeholder"
+    script_directions = ScriptDirections.from_payload(payload)
     if payload.get("article_content") and isinstance(payload["article_content"], str):
         script_config = ScriptGenConfig.from_env()
         if script_config.ready:
@@ -130,6 +131,7 @@ def run_generation_job(
                     article_sha256=str(payload.get("article_sha256") or ""),
                     config=script_config,
                     podcast_config=podcast_config,
+                    script_directions=script_directions,
                 )
                 llm_generation_engine = "llm-script-gen"
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)

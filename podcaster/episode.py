@@ -403,6 +403,7 @@ def synthesize_episode(
     manual_duration_override: bool = True,
     intro_music: Path | None = None,
     outro_music: Path | None = None,
+    music_mix_spec: MusicMixSpec | None = None,
 ) -> EpisodeAudio:
     """Synthesize the two-voice script and stitch it into one validated MP3.
 
@@ -428,13 +429,15 @@ def synthesize_episode(
     )
 
     output_path = Path(output_path)
+    # Use provided mix_spec; fall back to default when music paths are given without one.
+    effective_mix_spec = music_mix_spec or (MusicMixSpec() if (intro_music or outro_music) else None)
     stitch_segments(
         audio_segments,
         output_path,
         runner=runner,
         intro_music=intro_music,
         outro_music=outro_music,
-        mix_spec=MusicMixSpec() if (intro_music or outro_music) else None,
+        mix_spec=effective_mix_spec,
     )
     data = output_path.read_bytes()
     digest = checksum(data)
