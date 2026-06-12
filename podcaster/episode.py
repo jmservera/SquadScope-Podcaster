@@ -18,6 +18,7 @@ Safety:
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from podcaster.generation import (
     PODCAST_URL,
     checksum,
 )
+from podcaster.hooks import HostHooks, _GENERIC_HOOKS
 from podcaster.sanitization import flag_injection, neutralize
 from podcaster.tts import (
     AUTH_MODE_MANAGED_IDENTITY,
@@ -148,7 +150,11 @@ def build_style_guide_prompt(podcast_config: PodcastConfig) -> str:
     )
 
 
-def build_episode_script(article: Article, podcast_config: PodcastConfig | None = None) -> str:
+def build_episode_script(
+    article: Article,
+    podcast_config: PodcastConfig | None = None,
+    hooks: HostHooks | None = None,
+) -> str:
     """Author a cohesive, journalistic two-voice Claracle episode about ``article``.
 
     The script follows a narrative arc rather than a list of items: a strong hook
@@ -162,12 +168,19 @@ def build_episode_script(article: Article, podcast_config: PodcastConfig | None 
     as the configured ``spoken_site`` and never voice a URL scheme. The format
     mirrors :func:`podcaster.generation._script` so existing format checks and
     the production voice mapping stay consistent.
+
+    If ``hooks`` is provided, generated conversational lead-ins are woven into
+    segment openings for natural variety.
     """
 
     if not article.beats:
         raise ValueError("episode script requires at least one discussion beat")
 
     podcast_config = podcast_config or PodcastConfig()
+    host_a_hooks = list(hooks.host_a) if hooks else list(_GENERIC_HOOKS)
+    host_b_hooks = list(hooks.host_b) if hooks else list(_GENERIC_HOOKS)
+    random.shuffle(host_a_hooks)
+    random.shuffle(host_b_hooks)
     header = [
         f"Title: {podcast_config.name} Podcast – Week {article.week}",
         f"Episode: {article.week}",
@@ -214,10 +227,17 @@ def build_episode_script(article: Article, podcast_config: PodcastConfig | None 
     last_index = len(article.beats) - 1
     for index, beat in enumerate(article.beats):
         body.append("")
-        body.append(_host_a(f"{beat.topic}.", podcast_config))
+        # Use a generated hook as a lead-in for Host A's topic introduction
+        hook = host_a_hooks[index % len(host_a_hooks)]
+        body.append(_host_a(f"{hook} {beat.topic}.", podcast_config))
         for point_index, point in enumerate(beat.points):
             if point_index % 2 == 0:
-                body.append(_host_b(point, podcast_config))
+                # Occasionally lead Host B's response with a hook
+                if point_index == 0 and host_b_hooks:
+                    b_hook = host_b_hooks[index % len(host_b_hooks)]
+                    body.append(_host_b(f"{b_hook} {point}", podcast_config))
+                else:
+                    body.append(_host_b(point, podcast_config))
             else:
                 body.append(_host_a(point, podcast_config))
         if index == last_index:
