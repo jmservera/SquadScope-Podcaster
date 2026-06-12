@@ -20,6 +20,7 @@ from podcaster.costs import (
 )
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
+from podcaster.claim_extraction import claims_to_ledger_json, extract_claims
 from podcaster.config import PodcastConfig
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.queue import enqueue_synthesis_job
@@ -112,8 +113,10 @@ def run_generation_job(
     if payload.get("callback"):
         warnings.append("callback accepted by contract but not invoked yet")
 
-    # When article_content is provided, attempt LLM script generation (#140).
+    # When article_content is provided, attempt LLM script generation (#140)
+    # and claim extraction (#141).
     llm_script: str | None = None
+    llm_claims_json: str | None = None
     llm_generation_engine = "local-deterministic-placeholder"
     if payload.get("article_content") and isinstance(payload["article_content"], str):
         script_config = ScriptGenConfig.from_env()
@@ -134,6 +137,19 @@ def run_generation_job(
                 logging.exception("LLM script generation failed job_id=%s; falling back to placeholder", job_id)
                 warnings.append("LLM script generation failed; using placeholder script")
                 llm_script = None
+            # Extract claims from article content (#141)
+            try:
+                claims = extract_claims(
+                    article_content=payload["article_content"],
+                    article_url=str(payload["article_url"]),
+                    config=script_config,
+                )
+                if claims:
+                    llm_claims_json = claims_to_ledger_json(claims)
+                    logging.info("podcaster job extracted %d claims job_id=%s", len(claims), job_id)
+            except Exception:
+                logging.exception("claim extraction failed job_id=%s; using stub ledger", job_id)
+                warnings.append("claim extraction failed; using stub claim ledger")
         else:
             warnings.append("article_content provided but chat endpoint not configured; using placeholder script")
     if llm_script is None:
@@ -157,6 +173,10 @@ def run_generation_job(
         if llm_script and artifact.path.endswith("/script.txt"):
             from podcaster.generation import GeneratedArtifact
             artifact = GeneratedArtifact(artifact.path, llm_script.encode("utf-8"), artifact.content_type)
+        # Replace the stub claim ledger with LLM-extracted claims if available.
+        if llm_claims_json and artifact.path.endswith("/claim-ledger.json"):
+            from podcaster.generation import GeneratedArtifact
+            artifact = GeneratedArtifact(artifact.path, llm_claims_json.encode("utf-8"), artifact.content_type)
         artifact_checksum = checksum(artifact.content)
         if artifact.path.endswith(".mp3"):
             audio_validation = placeholder_audio_validation(byte_length=len(artifact.content), sha256=artifact_checksum)
