@@ -282,6 +282,8 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     podcasterApiKey: podcasterApiKey
     apiImage: apiImage
     containerRegistryServer: acrLoginServer
+    openAiEndpoint: openAiEndpoint
+    chatDeploymentName: chatDeploymentName
   }
   dependsOn: [
     artifactContainer
