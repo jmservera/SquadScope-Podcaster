@@ -121,6 +121,15 @@ Top-level job metadata. Evolves through lifecycle transitions.
 }
 ```
 
+> **Synthesis lifecycle:** The manifest above shows the *initial* staged state.
+> After `/api/generate` returns HTTP 202, the ACA synthesis job picks up the
+> queued message and produces real two-voice audio (Azure OpenAI `gpt-4o-mini-tts`,
+> fable + alloy). On completion the manifest is updated in-place:
+> `generation.audio_mode` → `"synthesized"`, `generation.tts_provider` →
+> `"openai-tts"`, `publishing.blocked_by` removes `"real_tts_not_implemented"`,
+> and the MP3 artifact is replaced with the synthesized episode. Publication
+> remains blocked by `"human_review"` until editorial sign-off.
+
 ### claim-ledger.json
 
 Array of factual claims extracted from the source article.

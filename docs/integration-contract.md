@@ -177,7 +177,8 @@ The top-level response keys remain stable for SquadScope compatibility. Addition
 - `schema_version`
 - `lifecycle.status`, `revision`, `force`, and deterministic transition timestamps
 - `review.status`, blocked gate checks, and empty audit trail placeholders
-- `generation.engine=local-deterministic-placeholder` (without `article_content`) or `llm-script-gen` (with `article_content` and configured chat endpoint), `deterministic=true/false` accordingly, and no paid/live TTS provider
+- `generation.engine=local-deterministic-placeholder` (without `article_content`) or `llm-script-gen` (with `article_content` and configured chat endpoint), `deterministic=true/false` accordingly
+- Initial response stages placeholder audio; the ACA synthesis job runs asynchronously and replaces it with real two-voice TTS (Azure OpenAI `gpt-4o-mini-tts`, voices fable + alloy). The manifest is updated in-place when synthesis completes.
 - `publishing.mode=manual`, `eligible=false`, and blockers until human review and real audio exist
 - `artifact_access.model=private_operator_path`, retention/cleanup timestamps, and audit correlation metadata
 - artifact `content_type`, `size_bytes`, and `sha256`
