@@ -321,8 +321,14 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
 
     import json
 
-    with urlopen(request, timeout=10) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+        raise RuntimeError(
+            f"managed identity token request failed: HTTP {exc.code} {exc.reason}; {detail}"
+        ) from exc
     if not isinstance(payload, dict):
         raise RuntimeError("managed identity token response was not a JSON object")
     return payload
