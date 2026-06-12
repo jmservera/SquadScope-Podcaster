@@ -118,3 +118,37 @@ jobs:
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
+
+      - name: Build API image
+        run: docker build -f Containerfile.api -t podcaster-api:ci .
+
+      - name: Verify API image runs as non-root and imports the server
+        run: |
+          uid="$(docker run --rm --entrypoint id podcaster-api:ci -u)"
+          if [ "$uid" = "0" ]; then
+            echo "::error::API image must not run as root (uid=$uid)"
+            exit 1
+          fi
+          docker run --rm --entrypoint python podcaster-api:ci \
+            -c "import podcaster.api, podcaster.validation, podcaster.jobs"
+
+      - name: Scan API image for vulnerabilities (Trivy)
+        # aquasecurity/trivy-action v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: podcaster-api:ci
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Scan Containerfile.api for misconfiguration (Trivy config)
+        # aquasecurity/trivy-action v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: config
+          scan-ref: Containerfile.api
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
