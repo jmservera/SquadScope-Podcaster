@@ -36,10 +36,11 @@ The Bicep template (`infra/main.bicep`) deploys:
 |----------|---------|
 | Storage Account | Artifact staging (`podcaster-artifacts` container) + synthesis queue |
 | Azure OpenAI (Cognitive Services) | TTS (`gpt-4o-mini-tts`, deployment `tts`) + chat (`gpt-4o-mini`, deployment `chat`) |
+| Azure Container Registry (Basic) | Hosts synthesis + API container images. Managed identity pull (AcrPull). |
 | Container Apps Environment | Hosts the API app and synthesis job |
-| Container Apps App (HTTP ingress) | Thin `/api/generate` front door: validates, stages, enqueues (#131). Gated behind `deployApiApp` + container registry approval (#129). |
+| Container Apps App (HTTP ingress) | Thin `/api/generate` front door: validates, stages, enqueues (#131). Gated behind `deployApiApp`. |
 | Container Apps Job (queue-triggered) | Full episode pipeline: script → TTS → ffmpeg stitch → validate → stage |
-| User-assigned Managed Identity | Identity-only auth to Storage (Blob + Queue) and Azure OpenAI (no keys) |
+| User-assigned Managed Identity | Identity-only auth to Storage (Blob + Queue), Azure OpenAI, and ACR (no keys) |
 | Log Analytics + Application Insights | Observability |
 
 All resources are co-located in eastus2 to minimize latency.

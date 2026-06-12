@@ -113,9 +113,18 @@ param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 @description('API app name.')
 param apiAppName string = '${baseName}-api'
 
+@description('Deploy an Azure Container Registry for synthesis/API images (#129).')
+param deployAcr bool = true
+
+@description('ACR name (alphanumeric only). Defaults to a deterministic name based on the RG.')
+@minLength(5)
+@maxLength(50)
+param acrName string = 'podcaster${uniqueString(resourceGroup().id)}'
+
 var hasDeploymentPrincipalObjectId = !empty(deploymentPrincipalObjectId)
 var openAiCustomSubDomain = toLower(openAiAccountName)
 var openAiEndpoint = 'https://${openAiCustomSubDomain}.openai.azure.com/'
+var acrLoginServer = deployAcr ? '${toLower(acrName)}.azurecr.io' : containerRegistryServer
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
@@ -221,7 +230,7 @@ module aca 'modules/aca.bicep' = {
     synthesisQueueName: synthesisQueueName
     storageContainerName: storageContainerName
     synthesisImage: synthesisImage
-    containerRegistryServer: containerRegistryServer
+    containerRegistryServer: acrLoginServer
     openAiEndpoint: openAiEndpoint
     ttsDeploymentName: ttsDeploymentName
     chatDeploymentName: chatDeploymentName
@@ -272,11 +281,22 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     synthesisQueueName: synthesisQueueName
     podcasterApiKey: podcasterApiKey
     apiImage: apiImage
-    containerRegistryServer: containerRegistryServer
+    containerRegistryServer: acrLoginServer
   }
   dependsOn: [
     artifactContainer
   ]
+}
+
+// Azure Container Registry for synthesis + API images (#129). Operator approved ACR.
+module acr 'modules/acr.bicep' = if (deployAcr) {
+  name: 'container-registry'
+  params: {
+    location: location
+    registryName: acrName
+    synthesisPullPrincipalId: aca.outputs.jobIdentityPrincipalId
+    pushPrincipalId: deploymentPrincipalObjectId
+  }
 }
 
 output storageAccountName string = storage.name
@@ -291,3 +311,4 @@ output containerAppsEnvName string = aca.outputs.environmentName
 output synthesisQueueName string = aca.outputs.queueName
 output synthesisJobIdentityClientId string = aca.outputs.jobIdentityClientId
 output apiAppFqdn string = deployApiApp ? api.outputs.apiAppFqdn : ''
+output acrLoginServer string = deployAcr ? acr.outputs.loginServer : ''
