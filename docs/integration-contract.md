@@ -24,6 +24,8 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
   "week": "2026-W23",
   "article_url": "https://squadscope.example/articles/2026-w23",
   "article_sha256": "optional-lowercase-hex-sha256",
+  "article_title": "This Week in Tech: AI and Open Source",
+  "article_content": "Full article text here (optional — enables LLM script generation)",
   "source_artifacts": [
     "https://example.blob.core.windows.net/artifacts/source.json",
     {
@@ -56,6 +58,8 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 - `week` (required string): Issue or ISO week identifier.
 - `article_url` (required string): Published article URL from SquadScope.
 - `article_sha256` (optional string): SHA-256 digest of article artifact/content.
+- `article_title` (optional string): Article title for script generation context.
+- `article_content` (optional string): Full article text. When provided and the Azure OpenAI chat endpoint is configured, the system generates a dynamic LLM-based script and extracts real claims from the article instead of producing deterministic placeholders.
 - `source_artifacts` (optional array): Supporting artifact references. For backward compatibility, each item may be either a string reference or an object reference emitted by SquadScope publish manifests.
 - `dry_run` (optional boolean): Validate and generate draft/stub artifacts only.
 - `force` (optional boolean): Regenerate even if prior artifacts exist.
@@ -173,7 +177,7 @@ The top-level response keys remain stable for SquadScope compatibility. Addition
 - `schema_version`
 - `lifecycle.status`, `revision`, `force`, and deterministic transition timestamps
 - `review.status`, blocked gate checks, and empty audit trail placeholders
-- `generation.engine=local-deterministic-placeholder`, `deterministic=true`, and no paid/live TTS provider
+- `generation.engine=local-deterministic-placeholder` (without `article_content`) or `llm-script-gen` (with `article_content` and configured chat endpoint), `deterministic=true/false` accordingly, and no paid/live TTS provider
 - `publishing.mode=manual`, `eligible=false`, and blockers until human review and real audio exist
 - `artifact_access.model=private_operator_path`, retention/cleanup timestamps, and audit correlation metadata
 - artifact `content_type`, `size_bytes`, and `sha256`
