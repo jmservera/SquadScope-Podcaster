@@ -76,6 +76,15 @@ class PodcastConfig:
         defaults = cls()
         host_a_payload = config_payload.get("host_a")
         host_b_payload = config_payload.get("host_b")
+
+        # Support "hosts" array format: first element → host_a, second → host_b
+        hosts_array = config_payload.get("hosts")
+        if isinstance(hosts_array, (list, tuple)) and len(hosts_array) >= 1:
+            if host_a_payload is None:
+                host_a_payload = hosts_array[0]
+            if host_b_payload is None and len(hosts_array) >= 2:
+                host_b_payload = hosts_array[1]
+
         style_guide_raw = config_payload.get("style_guide")
         style_guide = style_guide_raw.strip() if isinstance(style_guide_raw, str) else ""
         return cls(
@@ -137,6 +146,7 @@ class ScriptDirections:
     """
 
     episode_style: EpisodeStyle = field(default_factory=EpisodeStyle)
+    show_intro: str = ""
     cold_open: str = ""
     ai_disclosure_cue: str = ""
     corrections_path: str = ""
@@ -158,6 +168,7 @@ class ScriptDirections:
 
         return cls(
             episode_style=episode_style,
+            show_intro=_safe_str(opening.get("show_intro")),
             cold_open=_safe_str(opening.get("cold_open")),
             ai_disclosure_cue=_safe_str(opening.get("ai_disclosure")),
             corrections_path=_safe_str(closing.get("corrections_path")),
@@ -171,6 +182,7 @@ class ScriptDirections:
             self.episode_style.format
             or self.episode_style.tone
             or self.episode_style.segment_order
+            or self.show_intro
             or self.cold_open
             or self.ai_disclosure_cue
             or self.corrections_path
