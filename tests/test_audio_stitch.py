@@ -194,21 +194,22 @@ def test_stitch_segments_builds_music_mix_filtergraph_when_mix_spec_is_provided(
     # calls[3] = concat ffmpeg, calls[4] = outro ffprobe, calls[5] = mix ffmpeg
     mix_cmd = " ".join(calls[5])
     assert "adelay=10000:all=1" in mix_cmd
-    assert "atrim=end=16.8" in mix_cmd
+    assert "atrim=end=17.8" in mix_cmd
     assert "apad=whole_dur" not in mix_cmd
-    assert "volume='if(lt(t,10)" in mix_cmd
+    assert "volume='if(lt(t,8)" in mix_cmd
     assert ":eval=frame" in mix_cmd
     assert "[speech][intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]" in mix_cmd
     # Outro offset clamped: min(75, max(0, 1.25-0.5))=0.75
     assert "atrim=start=0.75" in mix_cmd
-    assert "volume='if(lt(t,2.8),0.15," in mix_cmd
+    assert "volume='if(lt(t,2.8),0.1*t/2.8" in mix_cmd
     assert "[speech_with_intro][outro]amix=inputs=2:normalize=0:duration=longest:weights='1 1'[out]" in mix_cmd
 
 
 def test_outro_volume_expression_holds_duck_then_ramps_to_full_volume():
     expression = audio._outro_volume_expression(2.8, audio.MusicMixSpec())
 
-    assert expression == "if(lt(t,2.8),0.15,if(lt(t,7.8),0.15+(1-0.15)*(t-2.8)/5,1))"
+    # New envelope: fade from 0 to 0.1 over min(3.0, 2.8)=2.8s, then ramp to 1.0
+    assert expression == "if(lt(t,2.8),0.1*t/2.8,if(lt(t,2.8),0.1,if(lt(t,7.8),0.1+(1-0.1)*(t-2.8)/5,1)))"
 
 
 def test_outro_volume_expression_returns_full_volume_when_no_speech_overlap():
