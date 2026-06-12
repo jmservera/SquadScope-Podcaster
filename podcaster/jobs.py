@@ -23,6 +23,7 @@ from podcaster.audio import placeholder_audio_validation
 from podcaster.config import PodcastConfig
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.queue import enqueue_synthesis_job
+from podcaster.script_gen import ScriptGenConfig, generate_script
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
 
@@ -105,12 +106,38 @@ def run_generation_job(
 
     warnings = [
         *(validation_warnings or []),
-        "audio is a deterministic placeholder pending TTS implementation",
         "human review is required before publishing",
         "artifact URLs are private operator paths, not public publishing links",
     ]
     if payload.get("callback"):
         warnings.append("callback accepted by contract but not invoked yet")
+
+    # When article_content is provided, attempt LLM script generation (#140).
+    llm_script: str | None = None
+    llm_generation_engine = "local-deterministic-placeholder"
+    if payload.get("article_content") and isinstance(payload["article_content"], str):
+        script_config = ScriptGenConfig.from_env()
+        if script_config.ready:
+            try:
+                llm_script = generate_script(
+                    week=str(payload["week"]),
+                    article_title=str(payload.get("article_title") or ""),
+                    article_url=str(payload["article_url"]),
+                    article_content=payload["article_content"],
+                    article_sha256=str(payload.get("article_sha256") or ""),
+                    config=script_config,
+                    podcast_config=podcast_config,
+                )
+                llm_generation_engine = "llm-script-gen"
+                logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
+            except Exception:
+                logging.exception("LLM script generation failed job_id=%s; falling back to placeholder", job_id)
+                warnings.append("LLM script generation failed; using placeholder script")
+                llm_script = None
+        else:
+            warnings.append("article_content provided but chat endpoint not configured; using placeholder script")
+    if llm_script is None:
+        warnings.append("audio is a deterministic placeholder pending TTS implementation")
 
     stored: dict[str, StoredArtifact] = {}
     checksums: dict[str, str] = {}
@@ -126,6 +153,10 @@ def run_generation_job(
         cost_override=cost_override,
         config=podcast_config,
     ):
+        # Replace the deterministic script with the LLM-generated one if available.
+        if llm_script and artifact.path.endswith("/script.txt"):
+            from podcaster.generation import GeneratedArtifact
+            artifact = GeneratedArtifact(artifact.path, llm_script.encode("utf-8"), artifact.content_type)
         artifact_checksum = checksum(artifact.content)
         if artifact.path.endswith(".mp3"):
             audio_validation = placeholder_audio_validation(byte_length=len(artifact.content), sha256=artifact_checksum)
@@ -155,8 +186,8 @@ def run_generation_job(
         "review": _review_metadata(payload),
         "cost_ledger": cost_ledger,
         "generation": {
-            "engine": "local-deterministic-placeholder",
-            "deterministic": True,
+            "engine": llm_generation_engine,
+            "deterministic": llm_script is None,
             "audio_mode": "placeholder",
             "tts_provider": None,
             "tts_voice": None,
@@ -267,6 +298,8 @@ def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "week": payload.get("week"),
         "article_url": payload.get("article_url"),
         "article_sha256": payload.get("article_sha256"),
+        "article_title": payload.get("article_title"),
+        "article_content_provided": bool(payload.get("article_content")),
         "source_artifacts": payload.get("source_artifacts", []),
         "dry_run": bool(payload.get("dry_run")),
         "force": bool(payload.get("force")),
