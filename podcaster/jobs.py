@@ -338,6 +338,8 @@ def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if isinstance(payload.get("podcast_config"), dict):
         request["podcast_config"] = payload["podcast_config"]
+    if isinstance(payload.get("script_directions"), dict):
+        request["script_directions"] = payload["script_directions"]
     return request
 
 

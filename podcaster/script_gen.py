@@ -99,7 +99,12 @@ FORMAT RULES (you MUST follow these exactly):
         extras: list[str] = []
         style = directions.episode_style
         if style.format:
-            extras.append(f"TARGET FORMAT: {style.format}")
+            # Replace rule 8 (dialogue exchange count) with the target format
+            # so the script length matches the requested format instead of the default.
+            base = base.replace(
+                "8. Aim for 12-18 dialogue exchanges total (6-9 per host).",
+                f"8. {style.format}",
+            )
         if style.tone:
             extras.append(f"TONE: {style.tone}")
         if style.segment_order:
