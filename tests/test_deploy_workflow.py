@@ -6,11 +6,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/deploy-azure.yml"
+REUSABLE_WORKFLOW = ROOT / ".github/workflows/reusable-deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
 
 
 def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
+
+
+def _reusable_workflow_text() -> str:
+    return REUSABLE_WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:
@@ -28,18 +33,29 @@ def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:
 
 
 def test_deploy_workflow_uses_oidc_auth() -> None:
-    """ACA deploy authenticates via OIDC (id-token: write) and azure/login."""
+    """Wrapper workflow must request OIDC and forward to the reusable deploy."""
     workflow = _workflow_text()
 
     assert re.search(r"(?m)^  id-token: write$", workflow), (
         "deploy-azure.yml must request id-token: write for OIDC"
     )
-    assert "azure/login@" in workflow, "deploy-azure.yml must use azure/login action"
+    assert "uses: ./.github/workflows/reusable-deploy-azure.yml" in workflow
+    assert "secrets: inherit" in workflow
 
 
-def test_deploy_workflow_deploys_bicep_infrastructure() -> None:
-    """ACA workflow deploys infra via az deployment group create with main.bicep."""
-    workflow = _workflow_text()
+def test_reusable_deploy_workflow_uses_oidc_auth() -> None:
+    """Reusable ACA deploy authenticates via OIDC (id-token: write) and azure/login."""
+    workflow = _reusable_workflow_text()
+
+    assert re.search(r"(?m)^  id-token: write$", workflow), (
+        "reusable-deploy-azure.yml must request id-token: write for OIDC"
+    )
+    assert "azure/login@" in workflow, "reusable-deploy-azure.yml must use azure/login action"
+
+
+def test_reusable_deploy_workflow_deploys_bicep_infrastructure() -> None:
+    """Reusable ACA workflow deploys infra via az deployment group create with main.bicep."""
+    workflow = _reusable_workflow_text()
 
     assert "az deployment group create" in workflow
     assert "infra/main.bicep" in workflow
@@ -48,7 +64,7 @@ def test_deploy_workflow_deploys_bicep_infrastructure() -> None:
 
 def test_deploy_workflow_does_not_leak_secrets() -> None:
     """No SAS tokens, account keys, or API keys should appear in workflow logs."""
-    workflow = _workflow_text()
+    workflow = _workflow_text() + "\n" + _reusable_workflow_text()
 
     assert "package_sas" not in workflow
     assert "az storage blob generate-sas" not in workflow
@@ -58,7 +74,7 @@ def test_deploy_workflow_does_not_leak_secrets() -> None:
 
 def test_deploy_workflow_no_function_app_remnants() -> None:
     """ACA-only architecture must not reference Function App deployment steps."""
-    workflow = _workflow_text()
+    workflow = _workflow_text() + "\n" + _reusable_workflow_text()
 
     assert "az functionapp" not in workflow
     assert "WEBSITE_RUN_FROM_PACKAGE" not in workflow
@@ -146,9 +162,26 @@ def test_aca_module_receives_openai_config() -> None:
 
 def test_deploy_workflow_threads_opt_in_openai_flag() -> None:
     # The deploy_openai input exists in workflow_dispatch for future use.
-    workflow = _workflow_text()
+    workflow = _workflow_text() + "\n" + _reusable_workflow_text()
 
     assert "deploy_openai:" in workflow
+
+
+def test_reusable_deploy_workflow_has_prod_environment_concurrency_and_output() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert re.search(r"(?m)^    environment: prod$", workflow)
+    assert re.search(r"(?m)^    concurrency:\n^      group: prod-deploy\n^      cancel-in-progress: false$", workflow)
+    assert "api_app_fqdn:" in workflow
+    assert "id: get_fqdn" in workflow
+    assert '--query "properties.configuration.ingress.fqdn"' in workflow
+
+
+def test_reusable_deploy_workflow_accepts_image_overrides() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert "inputs.synthesis_image || format('{0}/{1}:latest'" in workflow
+    assert "inputs.api_image || format('{0}/{1}:latest'" in workflow
 
 
 def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
