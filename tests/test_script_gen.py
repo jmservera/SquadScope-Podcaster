@@ -266,3 +266,65 @@ class TestFormatScript:
         assert "---" in script
         assert "Theo: Hello!" in script
         assert "Manual review is required before publishing" in script
+
+
+class TestSystemPromptWithDirections:
+    def test_directions_appended_to_prompt(self):
+        from podcaster.config import EpisodeStyle, ScriptDirections
+
+        directions = ScriptDirections(
+            episode_style=EpisodeStyle(
+                format="Two-host, 8-10 minutes.",
+                tone="Conversational, not performative.",
+                segment_order=("Cold Open", "The Signal", "Outro"),
+            ),
+            cold_open="Did you know 40% of repos have zero tests?",
+            source_article_link="https://example.com/full",
+        )
+        prompt = _build_system_prompt(PodcastConfig(), directions)
+        assert "ADDITIONAL DIRECTIONS" in prompt
+        assert "TARGET FORMAT: Two-host, 8-10 minutes." in prompt
+        assert "TONE: Conversational, not performative." in prompt
+        assert "Cold Open, The Signal, Outro" in prompt
+        assert "40% of repos have zero tests" in prompt
+        assert "https://example.com/full" in prompt
+
+    def test_no_directions_no_extras(self):
+        prompt = _build_system_prompt(PodcastConfig(), None)
+        assert "ADDITIONAL DIRECTIONS" not in prompt
+
+    def test_empty_directions_no_extras(self):
+        from podcaster.config import ScriptDirections
+
+        prompt = _build_system_prompt(PodcastConfig(), ScriptDirections())
+        assert "ADDITIONAL DIRECTIONS" not in prompt
+
+    def test_generate_script_passes_directions(self):
+        """generate_script should pass script_directions through to system prompt."""
+        import json
+        from podcaster.config import EpisodeStyle, ScriptDirections
+
+        directions = ScriptDirections(
+            episode_style=EpisodeStyle(tone="Playful and quirky"),
+        )
+        config = _mock_config()
+        captured: list[Request] = []
+
+        def capture_transport(request: Request) -> bytes:
+            captured.append(request)
+            return json.dumps({"choices": [{"message": {"content": "Theo: Hey!\nVera: Hey!"}}]}).encode()
+
+        generate_script(
+            week="2026-W24",
+            article_title="Test",
+            article_url="https://example.com",
+            article_content="Some content here.",
+            config=config,
+            script_directions=directions,
+            token_provider=_fake_token_provider,
+            transport=capture_transport,
+        )
+
+        body = json.loads(captured[0].data)
+        system_msg = body["messages"][0]["content"]
+        assert "Playful and quirky" in system_msg
