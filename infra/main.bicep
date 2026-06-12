@@ -104,6 +104,15 @@ param synthesisImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
 @description('Optional container registry login server for the synthesis image.')
 param containerRegistryServer string = ''
 
+@description('Deploy the HTTP API app for /api/generate (#131). Gated on container registry approval.')
+param deployApiApp bool = false
+
+@description('HTTP API container image (#131).')
+param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
+
+@description('API app name.')
+param apiAppName string = '${baseName}-api'
+
 var hasDeploymentPrincipalObjectId = !empty(deploymentPrincipalObjectId)
 var openAiCustomSubDomain = toLower(openAiAccountName)
 var openAiEndpoint = 'https://${openAiCustomSubDomain}.openai.azure.com/'
@@ -248,6 +257,28 @@ module openAi 'modules/openai.bicep' = {
   }
 }
 
+// HTTP API front door for /api/generate (#131) — validates requests, stages artifacts,
+// enqueues synthesis. Gated behind deployApiApp until the container registry is approved (#129).
+module api 'modules/api.bicep' = if (deployApiApp) {
+  name: 'http-api-app'
+  params: {
+    location: location
+    containerAppsEnvId: aca.outputs.environmentId
+    apiAppName: apiAppName
+    identityId: aca.outputs.jobIdentityResourceId
+    identityClientId: aca.outputs.jobIdentityClientId
+    storageAccountName: storage.name
+    storageContainerName: storageContainerName
+    synthesisQueueName: synthesisQueueName
+    podcasterApiKey: podcasterApiKey
+    apiImage: apiImage
+    containerRegistryServer: containerRegistryServer
+  }
+  dependsOn: [
+    artifactContainer
+  ]
+}
+
 output storageAccountName string = storage.name
 output storageContainerName string = storageContainerName
 output artifactRetentionDays int = artifactRetentionDays
@@ -259,3 +290,4 @@ output synthesisJobName string = aca.outputs.jobName
 output containerAppsEnvName string = aca.outputs.environmentName
 output synthesisQueueName string = aca.outputs.queueName
 output synthesisJobIdentityClientId string = aca.outputs.jobIdentityClientId
+output apiAppFqdn string = deployApiApp ? api.outputs.apiAppFqdn : ''
