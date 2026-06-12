@@ -315,9 +315,16 @@ def _mix_music_with_speech(
     next_input_index = 1
     if intro_music:
         intro_end = _intro_music_end_seconds(segment_durations, gap_seconds, mix_spec)
+        intro_duration = _probe_duration_seconds(intro_music, runner)
+        # If the intro music is shorter than the desired end, don't pad with silence.
+        # Just let it play naturally for its duration — speech is already delayed.
+        if intro_duration < intro_end:
+            intro_trim = f"atrim=end={_ffmpeg_number(intro_duration)},asetpts=PTS-STARTPTS,"
+        else:
+            intro_trim = f"atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
-            f"apad=whole_dur={_ffmpeg_number(intro_end)},atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
+            f"{intro_trim}"
             f"volume='{_intro_volume_expression(segment_durations, gap_seconds, mix_spec)}'[intro]"
         )
         mix_inputs.append("[intro]")
@@ -329,9 +336,20 @@ def _mix_music_with_speech(
         outro_delay_seconds = speech_delay_seconds + segment_starts[outro_start_segment]
         speech_end_seconds = speech_delay_seconds + segment_total_duration
         outro_speech_overlap_seconds = max(0.0, speech_end_seconds - outro_delay_seconds)
+        # Clamp outro_start_offset to avoid trimming past the end of a short file
+        outro_duration = _probe_duration_seconds(outro_music, runner)
+        effective_outro_offset = min(
+            mix_spec.outro_start_offset_seconds,
+            max(0.0, outro_duration - 1.0),
+        )
+        outro_trim = (
+            f"atrim=start={_ffmpeg_number(effective_outro_offset)},asetpts=PTS-STARTPTS,"
+            if effective_outro_offset > 0
+            else "asetpts=PTS-STARTPTS,"
+        )
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
-            f"atrim=start={_ffmpeg_number(mix_spec.outro_start_offset_seconds)},asetpts=PTS-STARTPTS,"
+            f"{outro_trim}"
             f"volume='{_outro_volume_expression(outro_speech_overlap_seconds, mix_spec)}',"
             f"adelay={_ffmpeg_milliseconds(outro_delay_seconds)}:all=1[outro]"
         )
