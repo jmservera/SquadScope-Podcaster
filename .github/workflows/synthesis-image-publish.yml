@@ -1,19 +1,10 @@
-# Publish the ffmpeg synthesis-runner image to a container registry.
-#
-# This is the *push* lane for #77 / ADR 0001 follow-up 2/5. It stays inert
-# until the operator approves registry spend (#67): the job no-ops unless the
-# repository variables SYNTHESIS_IMAGE_PUBLISH_APPROVED == 'true' and
-# SYNTHESIS_IMAGE_REGISTRY (the ACR login server, e.g. myacr.azurecr.io) are
-# both set. Build + vulnerability scan run on every PR via ci.yml; this lane
-# adds only registry authentication and push, so no registry cost is incurred
-# before approval.
 name: Publish synthesis image
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Image tag to publish (defaults to the commit SHA).
+        description: Image tag to publish (defaults to commit SHA).
         required: false
         type: string
 
@@ -23,72 +14,9 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
-    environment: prod
-    env:
-      REGISTRY: ${{ vars.SYNTHESIS_IMAGE_REGISTRY }}
-      IMAGE_REPOSITORY: ${{ vars.SYNTHESIS_IMAGE_REPOSITORY || 'podcaster-synthesis' }}
-    steps:
-      - name: Gate on operator approval of registry spend
-        run: |
-          set -euo pipefail
-          if [ "${{ vars.SYNTHESIS_IMAGE_PUBLISH_APPROVED }}" != "true" ]; then
-            echo "::notice::Registry publish not approved (SYNTHESIS_IMAGE_PUBLISH_APPROVED != 'true'); skipping push. See #77/#67."
-            echo "approved=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ -z "${REGISTRY:-}" ]; then
-            echo "::error::SYNTHESIS_IMAGE_REGISTRY is not set; cannot push. Set the ACR login server variable after registry approval."
-            exit 1
-          fi
-          echo "approved=true" >> "$GITHUB_OUTPUT"
-        id: gate
-
-      - name: Checkout
-        if: steps.gate.outputs.approved == 'true'
-        # actions/checkout v6.0.3
-        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
-        with:
-          persist-credentials: false
-
-      - name: Resolve image reference
-        if: steps.gate.outputs.approved == 'true'
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          tag="${INPUT_TAG:-${GITHUB_SHA::12}}"
-          echo "IMAGE_REF=${REGISTRY}/${IMAGE_REPOSITORY}:${tag}" >> "$GITHUB_ENV"
-
-      - name: Build synthesis image
-        if: steps.gate.outputs.approved == 'true'
-        run: docker build -f Containerfile -t "$IMAGE_REF" .
-
-      - name: Scan image before push (Trivy)
-        if: steps.gate.outputs.approved == 'true'
-        # aquasecurity/trivy-action v0.36.0
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
-        with:
-          image-ref: ${{ env.IMAGE_REF }}
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
-
-      - name: Azure login (OIDC)
-        if: steps.gate.outputs.approved == 'true'
-        # azure/login v3.0.0
-        uses: azure/login@93381592711f247e165c389ebb30b596c84cdc48
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Push image to registry
-        if: steps.gate.outputs.approved == 'true'
-        run: |
-          set -euo pipefail
-          az acr login --name "${REGISTRY%%.*}"
-          docker push "$IMAGE_REF"
-          echo "Pushed $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
+    uses: ./.github/workflows/reusable-publish-image.yml
+    with:
+      dockerfile: Containerfile
+      image_repository: ${{ vars.SYNTHESIS_IMAGE_REPOSITORY || 'podcaster-synthesis' }}
+      tag: ${{ inputs.tag }}
+    secrets: inherit

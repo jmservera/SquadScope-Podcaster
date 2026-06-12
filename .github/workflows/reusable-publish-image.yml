@@ -1,0 +1,108 @@
+name: Reusable publish image
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        description: Path to Dockerfile, e.g. Containerfile or Containerfile.api
+        required: true
+        type: string
+      image_repository:
+        description: Repository name in ACR, e.g. podcaster-api
+        required: true
+        type: string
+      tag:
+        description: Image tag. Defaults to first 12 chars of SHA
+        required: false
+        type: string
+    outputs:
+      image_ref:
+        description: Full pushed image reference including tag
+        value: ${{ jobs.publish.outputs.image_ref }}
+      image_tag:
+        description: The resolved tag used
+        value: ${{ jobs.publish.outputs.image_tag }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: prod
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    env:
+      REGISTRY: ${{ vars.SYNTHESIS_IMAGE_REGISTRY }}
+      IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+    steps:
+      - name: Gate on operator approval of registry spend
+        id: gate
+        run: |
+          set -euo pipefail
+          if [ "${{ vars.SYNTHESIS_IMAGE_PUBLISH_APPROVED }}" != "true" ]; then
+            echo "::notice::Registry publish not approved (SYNTHESIS_IMAGE_PUBLISH_APPROVED != 'true'); skipping push."
+            echo "approved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${REGISTRY:-}" ]; then
+            echo "::error::SYNTHESIS_IMAGE_REGISTRY is not set; cannot push. Set the ACR login server variable after registry approval."
+            exit 1
+          fi
+          echo "approved=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.gate.outputs.approved == 'true'
+        # actions/checkout v6.0.3
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
+        with:
+          persist-credentials: false
+
+      - name: Resolve image reference
+        if: steps.gate.outputs.approved == 'true'
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${GITHUB_SHA::12}}"
+          image_ref="${REGISTRY}/${IMAGE_REPOSITORY}:${tag}"
+          echo "IMAGE_TAG=${tag}" >> "$GITHUB_ENV"
+          echo "IMAGE_REF=${image_ref}" >> "$GITHUB_ENV"
+          echo "image_tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        if: steps.gate.outputs.approved == 'true'
+        run: docker build -f "${{ inputs.dockerfile }}" -t "$IMAGE_REF" .
+
+      - name: Scan image before push (Trivy)
+        if: steps.gate.outputs.approved == 'true'
+        # aquasecurity/trivy-action v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Azure login (OIDC)
+        if: steps.gate.outputs.approved == 'true'
+        # azure/login v3.0.0
+        uses: azure/login@93381592711f247e165c389ebb30b596c84cdc48
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Push image to registry
+        if: steps.gate.outputs.approved == 'true'
+        run: |
+          set -euo pipefail
+          az acr login --name "${REGISTRY%%.*}"
+          docker push "$IMAGE_REF"
+          echo "Pushed $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
