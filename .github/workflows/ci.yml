@@ -1,4 +1,4 @@
-# HOTFIX: isolate deploy/CI changes (branch squad/47-isolate-deploy-ci)
+# CI: lint infrastructure, run tests, build + scan container images.
 name: CI
 
 on:
