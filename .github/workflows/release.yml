@@ -1,0 +1,136 @@
+# Unified release: CI → infra → parallel image publish → promote ACA → smoke test
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (defaults to first 12 chars of commit SHA)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: prod-release
+  cancel-in-progress: false
+
+jobs:
+  # Step 1: Run full CI suite
+  ci:
+    uses: ./.github/workflows/reusable-ci.yml
+    permissions:
+      contents: read
+
+  # Step 2: Prepare the canonical image tag
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Resolve image tag
+        id: tag
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            tag="${GITHUB_SHA::12}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "### Release tag: \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Step 3: Deploy/reconcile infrastructure (ensures ACR, ACA env, storage exist)
+  infra:
+    needs: [ci]
+    uses: ./.github/workflows/reusable-deploy-azure.yml
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit
+
+  # Step 4a: Publish synthesis image
+  publish-synthesis:
+    needs: [ci, prepare, infra]
+    uses: ./.github/workflows/reusable-publish-image.yml
+    with:
+      dockerfile: Containerfile
+      image_repository: ${{ vars.SYNTHESIS_IMAGE_REPOSITORY || 'podcaster-synthesis' }}
+      tag: ${{ needs.prepare.outputs.image_tag }}
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit
+
+  # Step 4b: Publish API image (parallel with synthesis)
+  publish-api:
+    needs: [ci, prepare, infra]
+    uses: ./.github/workflows/reusable-publish-image.yml
+    with:
+      dockerfile: Containerfile.api
+      image_repository: ${{ vars.API_IMAGE_REPOSITORY || 'podcaster-api' }}
+      tag: ${{ needs.prepare.outputs.image_tag }}
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit
+
+  # Step 5: Promote ACA to exact pushed image refs
+  promote:
+    needs: [publish-synthesis, publish-api]
+    uses: ./.github/workflows/reusable-deploy-azure.yml
+    with:
+      synthesis_image: ${{ needs.publish-synthesis.outputs.image_ref }}
+      api_image: ${{ needs.publish-api.outputs.image_ref }}
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit
+
+  # Step 6: Smoke test the deployed API
+  smoke-test:
+    needs: [publish-synthesis, publish-api, promote]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for rollout
+        run: sleep 30
+
+      - name: Health check
+        env:
+          API_FQDN: ${{ needs.promote.outputs.api_app_fqdn }}
+        run: |
+          set -euo pipefail
+          if [ -z "$API_FQDN" ]; then
+            echo "::warning::API FQDN not available — skipping smoke test"
+            exit 0
+          fi
+          url="https://${API_FQDN}/healthz"
+          echo "Checking $url ..."
+          for i in 1 2 3 4 5; do
+            status=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo "000")
+            echo "  Attempt $i: HTTP $status"
+            if [ "$status" = "200" ]; then
+              echo "### ✅ Smoke test passed" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Smoke test failed after 5 attempts"
+          echo "### ❌ Smoke test failed" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Release summary
+        env:
+          SYNTHESIS_REF: ${{ needs.publish-synthesis.outputs.image_ref }}
+          API_REF: ${{ needs.publish-api.outputs.image_ref }}
+          API_FQDN: ${{ needs.promote.outputs.api_app_fqdn }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### 🚀 Release deployed
+          | Image | Ref |
+          |-------|-----|
+          | Synthesis | \`$SYNTHESIS_REF\` |
+          | API | \`$API_REF\` |
+          
+          **Endpoint:** https://${API_FQDN}/api/generate
+          EOF
