@@ -1111,11 +1111,54 @@ Wave 1/2/3 local increment covers:
 
 Approved to commit Wave 1/2/3 local increment as a single cohesive release. No Azure deployment. Review gate remains a human step before any public publishing.
 
+---
 
+# 2026-06-13: NEVER bypass branch rulesets
 
+- **Date:** 2026-06-13
+- **Agent:** Operator directive (jmservera)
+- **Status:** Active — permanent rule
 
-### 2026-06-13: NEVER bypass branch rulesets
-- All changes MUST go through branch + PR. No direct pushes to main.
-- Agents must create a feature branch and open a PR, even for cleanup/docs/trivial changes.
-- Never disable, bypass, or work around branch protection rulesets.
-- Operator directive — no exceptions.
+## Decision
+
+All changes MUST go through branch + PR. No direct pushes to main. Agents must create a feature branch and open a PR, even for cleanup/docs/trivial changes. Never disable, bypass, or work around branch protection rulesets. No exceptions.
+
+---
+
+# 2026-06-13: Security review — Spotify publish module (#182)
+
+- **Date:** 2026-06-13
+- **Agent:** Hermes (Security)
+- **Status:** Blocking — production auto-publish NOT approved
+
+## Decision
+
+Verdict: 🔴 — Do not enable production auto-publish until the implementation lands and receives a second security review.
+
+Review scope: `feat/spotify-publish-182` does not contain `podcaster/publish.py`. This review covers `architecture.md` + upstream `spotifyconnector==0.8.2` behavior only.
+
+## Key Findings
+
+| # | Severity | Finding |
+|---|----------|---------|
+| 1 | High | Implementation missing — secret handling, dry-run enforcement, response parsing unverifiable. |
+| 2 | High | `spotifyconnector` logs sensitive auth material (Bearer tokens, auth codes) at TRACE/DEBUG level. |
+| 3 | High | Unofficial cookie-based auth (`sp_dc`/`sp_key`) = account-takeover risk if leaked. |
+| 4 | Medium | Caller-controlled base URL could weaken TLS guarantees. |
+| 5 | Medium | Bearer token cached in memory — must not leak through exceptions/logs. |
+| 6 | Medium | Supply-chain risk — small third-party package, single PyPI owner, unofficial API. |
+| 7 | Medium | Dry-run behavior cannot be verified (no implementation). |
+| 8 | Medium | Upstream HTML/regex parsing is brittle; failures may be noisy. |
+| 9 | Low | `SPOTIFY_SHOW_ID` is public metadata, not a secret. |
+| 10 | Low | Input validation for publish fields not reviewable yet. |
+
+## Recommendations
+
+1. Do not enable production auto-publish until implementation exists and is security-reviewed.
+2. Prefer a tiny in-repo adapter or vendored fork for cookie→Bearer exchange.
+3. Force HTTPS; hardcode allowed Spotify hosts.
+4. Sanitize every failure path at the publish boundary.
+5. Dry-run must be network-dark (no auth exchange, no upload).
+6. Add security tests (no secrets in logs, dry-run = zero HTTP calls, reject non-HTTPS, sanitized error responses).
+7. Use `SPOTIFY_SHOW_ID` as non-secret config; keep only `SP_DC`/`SP_KEY` in secret stores.
+
