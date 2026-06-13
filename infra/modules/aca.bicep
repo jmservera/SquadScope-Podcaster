@@ -252,11 +252,10 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
 // Storage Blob Data Contributor at account level — container-scoped RBAC is unreliable
 // for data-plane calls via IMDS tokens in ACA. Account scope is still least-privilege
 // relative to the subscription/RG.
-// NOTE: if upgrading from a previous deployment that had container/queue-scoped roles,
-// those old role assignments remain in place (ARM/Bicep won't auto-remove them). Run a
-// one-time cleanup: az role assignment delete --ids <old-container-scoped-id>
+// GUID uses (scope, principalId, roleDefinitionId) for ARM idempotency — the triple that
+// ARM enforces uniqueness on, so redeployments don't fail with RoleAssignmentExists.
 resource jobBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, jobIdentity.id, 'Synthesis Job Storage Blob Data Contributor')
+  name: guid(storage.id, jobIdentity.id, blobDataContributorRoleId)
   scope: storage
   properties: {
     principalId: jobIdentity.properties.principalId
@@ -267,7 +266,7 @@ resource jobBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04
 
 // Storage Queue Data Contributor at account level — same reasoning as blob above.
 resource jobQueueDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, jobIdentity.id, 'Synthesis Job Storage Queue Data Contributor')
+  name: guid(storage.id, jobIdentity.id, queueDataContributorRoleId)
   scope: storage
   properties: {
     principalId: jobIdentity.properties.principalId

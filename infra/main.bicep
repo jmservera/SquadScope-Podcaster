@@ -211,7 +211,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 }
 
 resource deploymentBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (hasDeploymentPrincipalObjectId) {
-  name: guid(storage.id, deploymentPrincipalObjectId, 'Deployment Storage Blob Data Contributor')
+  name: guid(storage.id, deploymentPrincipalObjectId, 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
   scope: storage
   properties: {
     principalId: deploymentPrincipalObjectId
