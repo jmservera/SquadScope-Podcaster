@@ -6,19 +6,19 @@ Issue: #5
 
 This research item is now implemented for Podcaster's Spotify-hosted publishing path.
 
-Podcaster now uses the `spotifyconnector` OSS library against the unofficial Spotify for Creators API to publish episodes automatically. The merged implementation landed in PR #183 as `podcaster/publish.py` and is opt-in, runs after generation plus validation, and degrades gracefully so episode generation still succeeds if Spotify publishing is disabled or fails.
+Podcaster now has a custom `podcaster/publish.py` implementation for the unofficial Spotify for Creators API. It was informed by the same reverse-engineering work documented in the `spotifyconnector` ecosystem, but the shipped code uses direct `requests` calls rather than that library. The module is opt-in and standalone today: it is available for future pipeline integration or manual/operator invocation, but it is not yet wired into `podcaster/jobs.py`.
 
 ## Direct Spotify upload API
 
-Podcaster now publishes to Spotify for Creators through the unofficial reverse-engineered API exposed by the `spotifyconnector` library.
+Podcaster now publishes to Spotify for Creators through a custom client in `podcaster/publish.py` that talks directly to the unofficial reverse-engineered API.
 
-- **Library:** `spotifyconnector` (`higuchiki/spotify-for-creators-api`)
-- **Authentication:** operator-supplied `SP_DC` + `SP_KEY` browser cookies are exchanged for a Bearer JWT
+- **Implementation:** custom `requests.Session` workflow, informed by prior reverse-engineering references such as `spotifyconnector` / `higuchiki/spotify-for-creators-api`
+- **Authentication:** operator-supplied `SP_DC` + `SP_KEY` browser cookies are attached directly to the session (`sp_dc` / `sp_key`) and used against the Spotify for Creators endpoints; `verify_spotify_auth()` validates them by calling the `legacyIds` endpoint
 - **Show targeting:** the Spotify show ID is stored as `SPOTIFY_SHOW_ID` in GitHub and Azure Container App secrets/configuration
 - **Execution model:** publishing is enabled only when `SPOTIFY_PUBLISH_ENABLED=true`
 - **Pipeline:** resolve IDs → create episode → signed Google Cloud Storage upload → process upload → set metadata → publish
-- **Implementation details:** requests require `?isMumsCompatible=true`; mutation flows require Spotify `Origin`/`Referer` headers; upload finalization uses `uploadType: "default"` rather than `"audio"`
-- **Failure handling:** if publish fails, the generation workflow still returns its normal artifact/result payload
+- **Implementation details:** requests require `?isMumsCompatible=true`; mutation flows require Spotify `Origin`/`Referer` headers; upload finalization uses `uploadType: "default"` rather than `"audio"`; scheduled publishing is already supported via the module's `publish_on` parameter
+- **Failure handling:** `publish_episode()` always returns a structured `PublishResult` instead of raising, but the generation workflow currently does not invoke this module
 
 The public Spotify Web API still does not document podcast episode upload or publish endpoints. This implementation therefore depends on an unofficial API surface and should be treated as operationally fragile compared with official host/RSS integrations.
 
@@ -26,7 +26,7 @@ The public Spotify Web API still does not document podcast episode upload or pub
 
 ### Implemented path: Spotify for Creators auto-publish
 
-The current implementation performs Spotify publication after episode generation and validation complete. It is intentionally not part of the core generation step and does not block the operator from receiving a completed episode package if Spotify publishing is unavailable.
+The current implementation is a standalone post-generation publishing module. It is designed to be called after generation/review validation is complete, but `podcaster/jobs.py` does not invoke it yet. That means operators still receive the normal episode package through the existing manual flow, while `podcaster/publish.py` is available for future integration or manual invocation.
 
 ### Still-valid alternative: podcast host API plus RSS
 
@@ -38,7 +38,7 @@ Podcaster could theoretically generate and host an RSS feed, but that would turn
 
 ## Manual MVP process
 
-Manual upload remains the fallback when `SPOTIFY_PUBLISH_ENABLED` is unset/false or when Spotify auto-publish fails. In that case, the operator uses the generated publishing packet and uploads the episode through Spotify for Creators manually.
+Manual upload remains the current primary MVP process because the publish module is not yet wired into the generation pipeline. Operators use the generated publishing packet and upload the episode through Spotify for Creators manually. Once the standalone publish module is integrated, manual upload can remain a fallback for disabled automation, auth expiry, or other Spotify-side failures.
 
 ## Platform constraints
 
@@ -59,8 +59,7 @@ Remaining work:
 
 1. Add an operator-friendly cookie rotation mechanism for `SP_DC` and `SP_KEY`.
 2. Add monitoring and alerting for publish failures or repeated auth expiry.
-3. Add episode scheduling support; the current implementation publishes immediately.
-4. Evaluate whether a future official host/RSS integration should replace the unofficial Spotify-specific path.
+3. Evaluate whether a future official host/RSS integration should replace the unofficial Spotify-specific path.
 
 ## Sources reviewed
 
