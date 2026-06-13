@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -111,6 +112,14 @@ def _build_session(sp_dc: str, sp_key: str) -> requests.Session:
     return session
 
 
+def _safe_url(url: str) -> str:
+    """Strip query parameters from a URL to avoid leaking signed tokens in logs."""
+    parsed = urlparse(url)
+    if parsed.query or parsed.fragment:
+        return urlunparse(parsed._replace(query="[REDACTED]", fragment=""))
+    return url
+
+
 def _retry_request(
     session: requests.Session,
     method: str,
@@ -119,6 +128,7 @@ def _retry_request(
 ) -> requests.Response:
     """Execute an HTTP request with exponential backoff retry."""
     last_exc: Exception | None = None
+    log_url = _safe_url(url)
     for attempt in range(_MAX_RETRIES):
         try:
             resp = session.request(method, url, **kwargs)
@@ -131,7 +141,7 @@ def _retry_request(
                 logger.warning(
                     "Spotify API %s %s failed (attempt %d/%d): %s — retrying in %.1fs",
                     method,
-                    url,
+                    log_url,
                     attempt + 1,
                     _MAX_RETRIES,
                     exc,
@@ -139,7 +149,7 @@ def _retry_request(
                 )
                 time.sleep(wait)
     raise SpotifyPublishError(
-        f"Spotify API {method} {url} failed after {_MAX_RETRIES} attempts"
+        f"Spotify API {method} {log_url} failed after {_MAX_RETRIES} attempts"
     ) from last_exc
 
 

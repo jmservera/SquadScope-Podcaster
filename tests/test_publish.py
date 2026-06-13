@@ -243,3 +243,22 @@ def _mock_resp_with_headers(headers: dict) -> MagicMock:
     resp.headers = headers
     resp.raise_for_status = MagicMock()
     return resp
+
+
+class TestSafeUrl:
+    """Verify signed URL redaction to prevent token leakage in logs."""
+
+    def test_strips_query_params(self):
+        from podcaster.publish import _safe_url
+
+        url = "https://storage.googleapis.com/bucket/ep.mp3?X-Goog-Signature=abc&X-Goog-Credential=xyz"
+        result = _safe_url(url)
+        assert "X-Goog-Signature" not in result
+        assert "[REDACTED]" in result
+        assert result.startswith("https://storage.googleapis.com/bucket/ep.mp3")
+
+    def test_plain_url_unchanged(self):
+        from podcaster.publish import _safe_url
+
+        url = "https://creators.spotify.com/api/v1/shows"
+        assert _safe_url(url) == url
