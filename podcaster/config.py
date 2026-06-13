@@ -109,18 +109,20 @@ class SpotifyPublishConfig:
     publish_mode: str = "draft"
 
     @classmethod
-    def from_payload(cls, data: Mapping[str, Any] | None) -> "SpotifyPublishConfig":
-        """Build from an optional ``spotify_publish`` payload object."""
+    def from_payload(cls, data: Mapping[str, Any] | None) -> "SpotifyPublishConfig | None":
+        """Build from an optional ``spotify_publish`` payload object.
+
+        Returns None when the payload does not contain a ``spotify_publish``
+        section, preserving the caller's existing publish behaviour (immediate).
+        """
 
         if data is None:
-            return cls()
+            return None
 
-        config_payload: object = data
-        if "spotify_publish" in data:
-            config_payload = data.get("spotify_publish")
+        config_payload: object = data.get("spotify_publish") if "spotify_publish" in data else None
 
         if not isinstance(config_payload, Mapping):
-            return cls()
+            return None
 
         defaults = cls()
         return cls(

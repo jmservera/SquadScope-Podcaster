@@ -397,9 +397,7 @@ def _safe_resolve_description(
             article_summary=article_summary,
         )
     except (IndexError, KeyError, ValueError) as exc:
-        logger.warning("Spotify publish description template failed; using article summary: %s", exc)
-        if article_summary:
-            return f"<p>{article_summary}</p>"
+        logger.warning("Spotify publish description template failed; using fallback: %s", exc)
         return fallback
 
 
@@ -470,14 +468,15 @@ def _resolve_publish_inputs(
             fallback=week,
         )
 
-    publish_mode = spotify_publish_config.publish_mode.strip().lower()
+    publish_mode_raw = spotify_publish_config.publish_mode.strip()
+    publish_mode = publish_mode_raw.lower()
     if publish_mode == "draft":
         return resolved_title, resolved_description, resolved_season, resolved_episode, "draft", None
     if publish_mode == "immediate":
         return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None
 
     try:
-        parsed_publish_on = datetime.fromisoformat(spotify_publish_config.publish_mode.replace("Z", "+00:00"))
+        parsed_publish_on = datetime.fromisoformat(publish_mode_raw.replace("Z", "+00:00"))
         if parsed_publish_on.tzinfo is None:
             parsed_publish_on = parsed_publish_on.replace(tzinfo=timezone.utc)
         return (
