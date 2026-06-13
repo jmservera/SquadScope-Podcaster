@@ -77,6 +77,9 @@ param ttsVoiceHostA string = 'fable'
 @description('TTS voice for host B.')
 param ttsVoiceHostB string = 'alloy'
 
+@description('Spotify show ID for auto-publish (#182). Empty disables publishing in the container.')
+param spotifyShowId string = ''
+
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
 
@@ -234,6 +237,10 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'PODCASTER_API_KEY'
               value: podcasterApiKey
+            }
+            {
+              name: 'SPOTIFY_SHOW_ID'
+              value: spotifyShowId
             }
           ]
         }

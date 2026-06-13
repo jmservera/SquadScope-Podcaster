@@ -45,6 +45,9 @@ param openAiEndpoint string = ''
 @description('Chat model deployment name for LLM script generation.')
 param chatDeploymentName string = ''
 
+@description('Spotify show ID for auto-publish (#182). Empty disables publishing.')
+param spotifyShowId string = ''
+
 @description('vCPU allocated to the API app.')
 param appCpu string = '0.25'
 
@@ -137,6 +140,10 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'AZURE_OPENAI_AUTH_MODE'
               value: 'managed_identity'
+            }
+            {
+              name: 'SPOTIFY_SHOW_ID'
+              value: spotifyShowId
             }
           ]
         }

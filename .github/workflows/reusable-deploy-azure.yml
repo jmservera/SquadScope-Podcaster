@@ -95,6 +95,7 @@ jobs:
       - name: Resolve deployment names and API key
         env:
           PODCASTER_API_KEY_SECRET: ${{ secrets.PODCASTER_API_KEY }}
+          SPOTIFY_SHOW_ID_SECRET: ${{ secrets.SPOTIFY_SHOW_ID }}
         run: |
           set -euo pipefail
           set +x
@@ -130,6 +131,7 @@ jobs:
           {
             echo "AZURE_STORAGE_ACCOUNT_NAME=$storage_account_name"
             echo "PODCASTER_API_KEY=$podcaster_api_key"
+            echo "SPOTIFY_SHOW_ID=${SPOTIFY_SHOW_ID_SECRET:-}"
           } >> "$GITHUB_ENV"
 
           echo "Using Storage Account name: $storage_account_name"
@@ -235,6 +237,7 @@ jobs:
             --parameters deployApiApp=true \
             --parameters synthesisImage="${SYNTHESIS_IMAGE}" \
             --parameters apiImage="${API_IMAGE}" \
+            --parameters spotifyShowId="${SPOTIFY_SHOW_ID:-}" \
             --output none
           echo "### ACA-only Podcaster infrastructure deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "Region: $AZURE_LOCATION" >> "$GITHUB_STEP_SUMMARY"
