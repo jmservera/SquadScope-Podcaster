@@ -375,7 +375,7 @@ It is opt-in:
 
 - `SPOTIFY_PUBLISH_ENABLED=true`
 
-The repository includes the open-source `spotifyconnector` dependency, and the current publishing module implements the same unofficial Spotify for Creators flow directly with browser session cookies:
+The repository includes the open-source `spotifyconnector` dependency, and the current publishing module implements the same unofficial Spotify for Creators flow by exchanging browser cookies for a short-lived Bearer token against Spotify Accounts, then calling the internal `api-v5.anchor.fm` REST API:
 
 - `SP_DC`
 - `SP_KEY`

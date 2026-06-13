@@ -5,9 +5,9 @@ unofficial internal API. Publication is opt-in (``SPOTIFY_PUBLISH_ENABLED=true``
 and **never blocks** the generation pipeline — publish failures are logged and
 reported but do not fail the overall episode workflow.
 
-Authentication uses browser session cookies (``SP_DC`` + ``SP_KEY``), which
-expire periodically. The module provides a health-check function to verify
-auth status without side effects.
+Authentication uses browser session cookies (``SP_DC`` + ``SP_KEY``) to obtain
+a short-lived Bearer token via ``spotifyconnector``. The module provides a
+health-check function to verify auth status without side effects.
 
 Security:
 - Cookies are read from environment variables, never logged or committed.
@@ -29,11 +29,14 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 from podcaster.config import SpotifyPublishConfig
+from spotifyconnector import SpotifyConnector
 
 logger = logging.getLogger(__name__)
 
 # Spotify for Creators internal API base
-_BASE_URL = "https://creators.spotify.com/api"
+_BASE_URL = "https://api-v5.anchor.fm"
+_SPOTIFY_CLIENT_ID = "05a1371ee5194c27860b3ff3ff3979d2"
+_SPOTIFY_CONNECTOR_BASE_URL = "https://generic.wg.spotify.com/podcasters/v0"
 
 # Required headers for mutation requests
 _MUTATION_HEADERS = {
@@ -98,20 +101,51 @@ def _get_credentials() -> tuple[str, str, str]:
     return show_id, sp_dc, sp_key
 
 
-def _build_session(sp_dc: str, sp_key: str) -> requests.Session:
-    """Build a requests session with Spotify auth cookies."""
+def _build_session(sp_dc: str, sp_key: str, show_id: str) -> requests.Session:
+    """Build a requests session with Spotify bearer auth."""
     session = requests.Session()
-    session.cookies.set("sp_dc", sp_dc, domain=".spotify.com")
-    session.cookies.set("sp_key", sp_key, domain=".spotify.com")
+    bearer = _request_bearer_token(sp_dc, sp_key, show_id)
     session.headers.update(
         {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json",
+            "Authorization": f"Bearer {bearer}",
         }
     )
     return session
+
+
+def _mums_params(**kwargs: str) -> dict[str, str]:
+    return {**kwargs, "isMumsCompatible": "true"}
+
+
+def _request_bearer_token(sp_dc: str, sp_key: str, show_id: str) -> str:
+    """Exchange browser cookies for a short-lived Spotify bearer token."""
+    connector = SpotifyConnector(
+        base_url=_SPOTIFY_CONNECTOR_BASE_URL,
+        client_id=_SPOTIFY_CLIENT_ID,
+        podcast_id=show_id,
+        sp_dc=sp_dc,
+        sp_key=sp_key,
+    )
+    try:
+        connector._authenticate()
+    except Exception as exc:
+        message = str(exc)
+        if "login required" in message.lower() or "credentials" in message.lower():
+            raise SpotifyPublishError(
+                "Spotify cookies expired — operator must refresh SP_DC/SP_KEY."
+            ) from exc
+        raise SpotifyPublishError(
+            "Failed to exchange Spotify cookies for bearer token."
+        ) from exc
+
+    bearer = connector._bearer or ""
+    if not bearer:
+        raise SpotifyPublishError("Spotify auth flow returned no bearer token.")
+    return bearer
 
 
 def _safe_url(url: str) -> str:
@@ -186,16 +220,24 @@ def verify_spotify_auth() -> tuple[bool, str]:
     if _is_dry_run():
         return True, "Dry-run mode — credentials present, skipping live check."
 
-    session = _build_session(sp_dc, sp_key)
     try:
-        url = f"{_BASE_URL}/v3/shows/{show_id}/legacyIds?isMumsCompatible=true"
-        resp = session.get(url, timeout=10)
+        session = _build_session(sp_dc, sp_key, show_id)
+        url = f"{_BASE_URL}/v3/shows/{show_id}/legacyIds"
+        resp = session.get(url, params=_mums_params(), timeout=10)
         if resp.status_code == 200:
-            return True, "Spotify auth valid."
+            try:
+                data = resp.json()
+            except ValueError:
+                return False, "Spotify auth invalid — legacyIds response is not valid JSON."
+            if data.get("stationId") and data.get("userId"):
+                return True, "Spotify auth valid."
+            return False, "Spotify auth invalid — legacyIds response missing IDs."
         elif resp.status_code == 401:
             return False, "Spotify cookies expired — operator must refresh SP_DC/SP_KEY."
         else:
             return False, f"Unexpected status {resp.status_code} from Spotify."
+    except SpotifyPublishError as exc:
+        return False, str(exc)
     except requests.RequestException as exc:
         return False, f"Spotify connectivity error: {exc}"
 
@@ -204,8 +246,8 @@ def _resolve_legacy_ids(
     session: requests.Session, show_id: str
 ) -> tuple[str, str]:
     """Step 1: Resolve show_id to stationId + userId."""
-    url = f"{_BASE_URL}/v3/shows/{show_id}/legacyIds?isMumsCompatible=true"
-    resp = _retry_request(session, "GET", url, timeout=15)
+    url = f"{_BASE_URL}/v3/shows/{show_id}/legacyIds"
+    resp = _retry_request(session, "GET", url, params=_mums_params(), timeout=15)
     data = resp.json()
     station_id = str(data["stationId"])
     user_id = str(data["userId"])
@@ -215,30 +257,41 @@ def _resolve_legacy_ids(
 
 def _create_episode(session: requests.Session, station_id: str) -> int:
     """Step 2: Create a draft episode, returns anchorId."""
-    url = f"{_BASE_URL}/v3/stations/{station_id}/episodes?isMumsCompatible=true"
+    url = f"{_BASE_URL}/v3/stations/{station_id}/episodes"
     resp = _retry_request(
         session,
         "POST",
         url,
         headers=_MUTATION_HEADERS,
-        json={},
+        params=_mums_params(),
+        json={"hourOffset": 0},
         timeout=15,
     )
     data = resp.json()
-    anchor_id = int(data["id"])
+    anchor_id = int(data.get("episodeId") or data["id"])
     logger.info("Created draft episode anchorId=%d", anchor_id)
     return anchor_id
 
 
-def _get_upload_url(session: requests.Session, anchor_id: int) -> tuple[str, str]:
+def _get_upload_url(
+    session: requests.Session,
+    anchor_id: int,
+    *,
+    filename: str,
+    content_type: str,
+) -> tuple[str, str]:
     """Step 3: Get a signed upload URL. Returns (signed_url, upload_id)."""
-    url = (
-        f"{_BASE_URL}/v3/episodes/{anchor_id}/upload/signedUrl"
-        f"?isMumsCompatible=true"
+    url = f"{_BASE_URL}/v3/episodes/{anchor_id}/upload/signedUrl"
+    resp = _retry_request(
+        session,
+        "GET",
+        url,
+        params=_mums_params(filename=filename, type=content_type),
+        timeout=15,
     )
-    resp = _retry_request(session, "GET", url, timeout=15)
     data = resp.json()
-    return data["signedUrl"], str(data["uploadId"])
+    upload_id = data.get("uploadId") or data["requestUuid"]
+    return data.get("signedUrl") or data["url"], str(upload_id)
 
 
 def _upload_audio(
@@ -248,7 +301,11 @@ def _upload_audio(
     *,
     content_type: str,
 ) -> str:
-    """Step 4: Upload audio to GCS, returns ETag (stripped of quotes)."""
+    """Step 4: Upload audio to GCS, returns ETag (stripped of quotes).
+
+    Strips the Authorization header to avoid leaking the Spotify bearer
+    token to the external GCS upload host.
+    """
     resp = _retry_request(
         session,
         "PUT",
@@ -256,6 +313,7 @@ def _upload_audio(
         data=audio_data,
         headers={
             "Content-Type": content_type,
+            "Authorization": None,
             **_MUTATION_HEADERS,
         },
         timeout=120,
@@ -266,29 +324,49 @@ def _upload_audio(
 
 
 def _process_upload(
-    session: requests.Session, upload_id: str, etag: str
+    session: requests.Session,
+    upload_id: str,
+    etag: str,
+    *,
+    anchor_id: int,
+    station_id: str,
+    user_id: str,
+    filename: str,
 ) -> None:
     """Step 5: Trigger processing and poll until complete."""
-    url = (
-        f"{_BASE_URL}/v3/upload/{upload_id}/process_upload"
-        f"?isMumsCompatible=true"
-    )
+    url = f"{_BASE_URL}/v3/upload/{upload_id}/process_upload"
     _retry_request(
         session,
         "POST",
         url,
         headers=_MUTATION_HEADERS,
-        json={"uploadType": "default", "etag": etag},
+        params=_mums_params(),
+        json={
+            "userId": int(user_id),
+            "uploadType": "default",
+            "origin": "episode-media:upload",
+            "caption": filename,
+            "isExtractedFromVideo": False,
+            "isMultipartUpload": True,
+            "parts": [{"partNumber": 1, "etag": etag}],
+            "uploadId": upload_id,
+            "episodeId": anchor_id,
+            "stationId": int(station_id),
+        },
         timeout=30,
     )
 
     # Poll for completion
-    status_url = (
-        f"{_BASE_URL}/v3/upload/{upload_id}?isMumsCompatible=true"
-    )
+    status_url = f"{_BASE_URL}/v3/upload/media/{upload_id}"
     for attempt in range(_POLL_MAX_ATTEMPTS):
         time.sleep(_POLL_INTERVAL)
-        resp = _retry_request(session, "GET", status_url, timeout=15)
+        resp = _retry_request(
+            session,
+            "GET",
+            status_url,
+            params=_mums_params(includeMediaValidation="true"),
+            timeout=15,
+        )
         data = resp.json()
         status = data.get("status", "")
         if status == "completed":
@@ -308,23 +386,32 @@ def _process_upload(
 def _set_metadata(
     session: requests.Session,
     anchor_id: int,
+    user_id: str,
     title: str,
     description: str,
+    publish_behavior: str,
+    publish_on: datetime | None,
     season_number: int | None = None,
     episode_number: int | None = None,
     episode_type: str = "full",
     explicit: bool = False,
 ) -> None:
     """Step 6: Set episode metadata."""
-    url = (
-        f"{_BASE_URL}/v3/episodes/{anchor_id}/update?isMumsCompatible=true"
-    )
+    url = f"{_BASE_URL}/v3/episodes/{anchor_id}/update"
     payload: dict[str, Any] = {
+        "userId": int(user_id),
         "title": title,
         "description": description,
         "episodeType": episode_type,
-        "explicit": explicit,
+        "isPublished": publish_behavior == "immediate",
+        "podcastEpisodeIsExplicit": explicit,
     }
+    if publish_behavior == "scheduled" and publish_on is not None:
+        publish_on_utc = publish_on.astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        payload["publishOn"] = publish_on_utc
+        payload["wizardDraftedToPublishOn"] = publish_on_utc
     if season_number is not None:
         payload["seasonNumber"] = season_number
     if episode_number is not None:
@@ -334,6 +421,7 @@ def _set_metadata(
         "POST",
         url,
         headers=_MUTATION_HEADERS,
+        params=_mums_params(),
         json=payload,
         timeout=15,
     )
@@ -398,7 +486,7 @@ def _resolve_publish_inputs(
     article_summary: str | None,
 ) -> tuple[str, str, int | None, int | None, str, datetime | None, str]:
     if spotify_publish_config is None:
-        return title, description, None, None, "immediate", publish_on, "wav"
+        return title, description, None, None, "immediate", None, "wav"
 
     resolved_title = spotify_publish_config.title or title
     resolved_description = spotify_publish_config.description or description
@@ -566,38 +654,51 @@ def publish_episode(
         )
 
     try:
-        session = _build_session(sp_dc, sp_key)
+        session = _build_session(sp_dc, sp_key, show_id)
 
         # Step 1: Resolve IDs
-        station_id, _user_id = _resolve_legacy_ids(session, show_id)
+        station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         # Step 2: Create draft episode
         anchor_id = _create_episode(session, station_id)
 
         # Step 3: Get upload URL
-        signed_url, upload_id = _get_upload_url(session, anchor_id)
+        signed_url, upload_id = _get_upload_url(
+            session,
+            anchor_id,
+            filename=upload_path.name,
+            content_type=content_type,
+        )
 
         # Step 4: Upload audio
         audio_data = upload_path.read_bytes()
         etag = _upload_audio(session, signed_url, audio_data, content_type=content_type)
 
         # Step 5: Process upload
-        _process_upload(session, upload_id, etag)
+        _process_upload(
+            session,
+            upload_id,
+            etag,
+            anchor_id=anchor_id,
+            station_id=station_id,
+            user_id=user_id,
+            filename=upload_path.name,
+        )
 
         # Step 6: Set metadata
         _set_metadata(
             session,
             anchor_id,
+            user_id,
             title=resolved_title,
             description=resolved_description,
+            publish_behavior=publish_behavior,
+            publish_on=resolved_publish_on,
             season_number=season_number,
             episode_number=episode_number,
             episode_type=episode_type,
             explicit=explicit,
         )
-
-        if publish_behavior != "draft":
-            _publish_episode_live(session, anchor_id, publish_on=resolved_publish_on)
 
         status = "draft" if publish_behavior == "draft" else ("scheduled" if resolved_publish_on else "published")
         logger.info(
