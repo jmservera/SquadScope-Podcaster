@@ -52,7 +52,7 @@ Config-driven podcast generation engine. Receives article content and editorial 
 7. audio.py stitches segments + mixes intro/outro music (ffmpeg, eval=frame volume expressions)
 8. Validation pass (duration, file size, format checks)
 9. Artifacts stored to Azure Blob Storage
-10. (Planned) publish.py auto-publishes to Spotify
+10. publish.py auto-publishes to Spotify (opt-in, non-blocking on failure)
 
 ## API Contract
 ### Config Contract (received via API payload)
