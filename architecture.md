@@ -27,7 +27,7 @@ Config-driven podcast generation engine. Receives article content and editorial 
   - queue.py — Azure Storage Queue client
   - storage.py — Blob/local storage abstraction
   - validation.py — Request auth + validation
-  - publish.py — (planned) Spotify for Creators auto-publish
+  - publish.py — Spotify for Creators auto-publish (draft mode, scheduling, metadata)
   - costs.py — Monthly budget/ledger guardrails
   - sanitization.py — Prompt injection neutralization
   - claim_extraction.py — Claim ledger from articles
