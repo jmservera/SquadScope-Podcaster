@@ -73,8 +73,18 @@ echo "  ✅ GitHub secrets updated"
 
 echo ""
 echo "☁️  Updating Azure Container App secrets..."
+
+container_app="$CONTAINER_APP"
+if [[ -z "$container_app" || "$container_app" == "${RESOURCE_GROUP}-api" ]]; then
+    container_app="$(az containerapp list --resource-group "$RESOURCE_GROUP" --query "[?ends_with(name,'-api')].name | [0]" --output tsv 2>/dev/null || true)"
+fi
+if [[ -z "$container_app" ]]; then
+    echo "❌ Could not determine Container App name in resource group '$RESOURCE_GROUP'. Set CONTAINER_APP explicitly (e.g. podcaster-<suffix>-api)."
+    exit 1
+fi
+
 az containerapp secret set \
-    --name "$CONTAINER_APP" \
+    --name "$container_app" \
     --resource-group "$RESOURCE_GROUP" \
     --secrets "sp-dc=$SP_DC" "sp-key=$SP_KEY" \
     --output none
@@ -84,7 +94,7 @@ echo "  ✅ Azure secrets updated"
 echo ""
 echo "🔄 Updating Container App env vars to reference secrets..."
 az containerapp update \
-    --name "$CONTAINER_APP" \
+    --name "$container_app" \
     --resource-group "$RESOURCE_GROUP" \
     --set-env-vars "SP_DC=secretref:sp-dc" "SP_KEY=secretref:sp-key" \
     --output none
