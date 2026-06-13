@@ -100,6 +100,64 @@ class PodcastConfig:
         )
 
 
+@dataclass(frozen=True)
+class SpotifyPublishConfig:
+    title_template: str = "{article_title}"
+    description_template: str = "<p>{article_summary}</p>"
+    season_number: str | int = "{year}"
+    episode_number: str | int = "{week}"
+    publish_mode: str = "draft"
+
+    @classmethod
+    def from_payload(cls, data: Mapping[str, Any] | None) -> "SpotifyPublishConfig | None":
+        """Build from an optional ``spotify_publish`` payload object.
+
+        Returns None when the payload does not contain a ``spotify_publish``
+        section, preserving the caller's existing publish behaviour (immediate).
+        """
+
+        if data is None:
+            return None
+
+        config_payload: object = data.get("spotify_publish") if "spotify_publish" in data else None
+
+        if not isinstance(config_payload, Mapping):
+            return None
+
+        defaults = cls()
+        return cls(
+            title_template=_string_or_default(config_payload.get("title_template"), defaults.title_template),
+            description_template=_string_or_default(
+                config_payload.get("description_template"), defaults.description_template
+            ),
+            season_number=_string_or_int_or_default(config_payload.get("season_number"), defaults.season_number),
+            episode_number=_string_or_int_or_default(
+                config_payload.get("episode_number"), defaults.episode_number
+            ),
+            publish_mode=_string_or_default(config_payload.get("publish_mode"), defaults.publish_mode),
+        )
+
+    def resolve_title(self, year: int, week: int, article_title: str) -> str:
+        return self.title_template.format(year=year, week=week, article_title=article_title)
+
+    def resolve_description(self, year: int, week: int, article_title: str, article_summary: str) -> str:
+        return self.description_template.format(
+            year=year, week=week, article_title=article_title, article_summary=article_summary
+        )
+
+    def resolve_season(self, year: int, week: int) -> int:
+        val = self.season_number
+        if isinstance(val, int):
+            return val
+        return int(str(val).format(year=year, week=week))
+
+    def resolve_episode(self, year: int, week: int) -> int:
+        val = self.episode_number
+        if isinstance(val, int):
+            return val
+        return int(str(val).format(year=year, week=week))
+
+
 def _host_from_payload(payload: object, defaults: HostConfig) -> HostConfig:
     if not isinstance(payload, Mapping):
         return defaults
@@ -261,6 +319,14 @@ def _safe_str(value: object) -> str:
     if isinstance(value, str):
         return value.strip()
     return ""
+
+
+def _string_or_int_or_default(value: object, default: str | int) -> str | int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
 
 
 def _safe_float(value: object, default: float) -> float:
