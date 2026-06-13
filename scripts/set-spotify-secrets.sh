@@ -6,9 +6,12 @@
 # Reads SP_DC and SP_KEY from an .env file (default: .env in repo root).
 # Requires: gh CLI (authenticated), az CLI (logged in)
 
-set +x
 set -euo pipefail
+set +x 2>/dev/null || true
 
+command -v gh >/dev/null 2>&1 || { echo "❌ 'gh' CLI not found on PATH (install GitHub CLI)"; exit 1; }
+command -v az >/dev/null 2>&1 || { echo "❌ 'az' CLI not found on PATH (install Azure CLI)"; exit 1; }
+az account show --output none 2>/dev/null || { echo "❌ Not logged in to Azure. Run: az login"; exit 1; }
 REPO="jmservera/SquadScope-Podcaster"
 RESOURCE_GROUP="squadscope-podcaster"
 CONTAINER_APP="${RESOURCE_GROUP}-api"
@@ -39,9 +42,12 @@ echo "📄 Reading from: $ENV_FILE"
 SP_DC=""
 SP_KEY=""
 while IFS='=' read -r key value; do
-    # Skip comments and empty lines
+    # Trim leading/trailing whitespace (and tolerate CRLF)
+    key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
     [[ -z "$key" || "$key" =~ ^# ]] && continue
-    # Trim whitespace and quotes
+    value="${value%$'\r'}"
+    value="${value#"${value%%[![:space:]]*}"}"; value="${value%"${value##*[![:space:]]}"}"
+    # Trim quotes
     value="${value#\"}"
     value="${value%\"}"
     value="${value#\'}"
@@ -61,14 +67,24 @@ echo "  ✅ SP_DC and SP_KEY loaded"
 
 echo ""
 echo "📦 Updating GitHub repo secrets..."
-echo "$SP_DC" | gh secret set SP_DC --repo "$REPO"
-echo "$SP_KEY" | gh secret set SP_KEY --repo "$REPO"
+printf '%s' "$SP_DC" | gh secret set SP_DC --repo "$REPO"
+printf '%s' "$SP_KEY" | gh secret set SP_KEY --repo "$REPO"
 echo "  ✅ GitHub secrets updated"
 
 echo ""
 echo "☁️  Updating Azure Container App secrets..."
+
+container_app="$CONTAINER_APP"
+if [[ -z "$container_app" || "$container_app" == "${RESOURCE_GROUP}-api" ]]; then
+    container_app="$(az containerapp list --resource-group "$RESOURCE_GROUP" --query "[?ends_with(name,'-api')].name | [0]" --output tsv 2>/dev/null || true)"
+fi
+if [[ -z "$container_app" ]]; then
+    echo "❌ Could not determine Container App name in resource group '$RESOURCE_GROUP'. Set CONTAINER_APP explicitly (e.g. podcaster-<suffix>-api)."
+    exit 1
+fi
+
 az containerapp secret set \
-    --name "$CONTAINER_APP" \
+    --name "$container_app" \
     --resource-group "$RESOURCE_GROUP" \
     --secrets "sp-dc=$SP_DC" "sp-key=$SP_KEY" \
     --output none
@@ -78,7 +94,7 @@ echo "  ✅ Azure secrets updated"
 echo ""
 echo "🔄 Updating Container App env vars to reference secrets..."
 az containerapp update \
-    --name "$CONTAINER_APP" \
+    --name "$container_app" \
     --resource-group "$RESOURCE_GROUP" \
     --set-env-vars "SP_DC=secretref:sp-dc" "SP_KEY=secretref:sp-key" \
     --output none
