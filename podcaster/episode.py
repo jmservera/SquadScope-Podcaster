@@ -26,8 +26,8 @@ from podcaster.audio import (
     AudioValidationResult,
     MusicMixSpec,
     probe_audio,
-    stitch_segments,
-    validate_audio_metadata,
+    render_distribution_audio,
+    validate_audio_outputs,
 )
 from podcaster.config import PodcastConfig
 from podcaster.generation import (
@@ -353,8 +353,11 @@ class EpisodeAudio:
     """Result of synthesizing and validating one episode's audio."""
 
     output_path: Path
+    wav_output_path: Path
     sha256: str
+    wav_sha256: str
     byte_length: int
+    wav_byte_length: int
     segment_count: int
     validation: AudioValidationResult
     voices: tuple[str, ...] = field(default_factory=tuple)
@@ -375,13 +378,12 @@ def synthesize_episode(
     outro_music: Path | None = None,
     music_mix_spec: MusicMixSpec | None = None,
 ) -> EpisodeAudio:
-    """Synthesize the two-voice script and stitch it into one validated MP3.
+    """Synthesize the two-voice script into validated WAV and MP3 artifacts.
 
     Parses spoken segments, builds the fable/alloy voice plan, synthesizes each
     turn through the gated :func:`podcaster.tts.synthesize_two_voice` (fails
-    closed when ``decision['allowed']`` is false), stitches and normalizes them
-    into ``output_path`` — optionally mixing the bundled intro/outro music bed
-    around the speech — then runs the ffmpeg/ffprobe validation gate.
+    closed when ``decision['allowed']`` is false), renders a normalized WAV for
+    Spotify upload plus a 192 kbps MP3 for distribution, and validates both.
     """
 
     effective_config = _apply_podcast_config(config, podcast_config)
@@ -399,10 +401,12 @@ def synthesize_episode(
     )
 
     output_path = Path(output_path)
+    wav_output_path = output_path.with_suffix(".wav")
     # Use provided mix_spec; fall back to default when music paths are given without one.
     effective_mix_spec = music_mix_spec or (MusicMixSpec() if (intro_music or outro_music) else None)
-    stitch_segments(
+    render_distribution_audio(
         audio_segments,
+        wav_output_path,
         output_path,
         runner=runner,
         intro_music=intro_music,
@@ -411,14 +415,22 @@ def synthesize_episode(
         segment_extension=effective_config.audio_extension,
     )
     data = output_path.read_bytes()
+    wav_data = wav_output_path.read_bytes()
     digest = checksum(data)
-    metadata = probe_audio(output_path, digest, runner=runner)
-    validation = validate_audio_metadata(metadata, manual_duration_override=manual_duration_override)
+    wav_digest = checksum(wav_data)
+    metadata = {
+        "mp3": probe_audio(output_path, digest, runner=runner),
+        "wav": probe_audio(wav_output_path, wav_digest, runner=runner),
+    }
+    validation = validate_audio_outputs(metadata, manual_duration_override=manual_duration_override)
 
     return EpisodeAudio(
         output_path=output_path,
+        wav_output_path=wav_output_path,
         sha256=digest,
+        wav_sha256=wav_digest,
         byte_length=len(data),
+        wav_byte_length=len(wav_data),
         segment_count=len(segments),
         validation=validation,
         voices=tuple(turn.voice for turn in plan),

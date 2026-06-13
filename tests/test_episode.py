@@ -164,27 +164,40 @@ def test_synthesize_episode_orchestrates_synth_stitch_validate(tmp_path, monkeyp
     def fake_transport(request):
         return b"fake-mp3-segment-bytes"
 
-    def fake_stitch(segments, out, runner=None, **kwargs):
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
         synth_calls["segment_count"] = len(segments)
         synth_calls["segment_extension"] = kwargs.get("segment_extension")
+        Path(wav_out).write_bytes(b"RIFFfake-wav")
         Path(out).write_bytes(b"stitched-mp3")
-        return Path(out)
+        return Path(wav_out), Path(out)
 
     def fake_probe(path, sha256, runner=None):
         from podcaster.audio import AudioMetadata
 
+        if str(path).endswith(".wav"):
+            return AudioMetadata(
+                duration_seconds=300.0,
+                loudness_lufs=-16.0,
+                sample_rate_hz=44100,
+                bitrate_bps=705600,
+                channels=1,
+                content_type="audio/wav",
+                byte_length=Path(path).stat().st_size,
+                sha256=sha256,
+                codec_name="pcm_s16le",
+            )
         return AudioMetadata(
             duration_seconds=300.0,
             loudness_lufs=-16.0,
             sample_rate_hz=44100,
-            bitrate_bps=96000,
+            bitrate_bps=192000,
             channels=1,
             content_type="audio/mpeg",
             byte_length=Path(path).stat().st_size,
             sha256=sha256,
         )
 
-    monkeypatch.setattr(episode, "stitch_segments", fake_stitch)
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
     monkeypatch.setattr(episode, "probe_audio", fake_probe)
 
     result = episode.synthesize_episode(
@@ -201,6 +214,7 @@ def test_synthesize_episode_orchestrates_synth_stitch_validate(tmp_path, monkeyp
     assert synth_calls["segment_extension"] == ".wav"
     assert set(result.voices) == {"fable", "alloy"}
     assert output_path.read_bytes() == b"stitched-mp3"
+    assert result.wav_output_path.read_bytes() == b"RIFFfake-wav"
 
 
 def test_synthesize_episode_fails_closed_when_decision_blocked(tmp_path):
@@ -235,26 +249,39 @@ def test_synthesize_episode_enables_default_music_mix_when_intro_and_outro_music
     def fake_transport(request):
         return b"fake-mp3-segment-bytes"
 
-    def fake_stitch(segments, out, runner=None, **kwargs):
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
         stitch_kwargs.update(kwargs)
+        Path(wav_out).write_bytes(b"RIFFfake-wav")
         Path(out).write_bytes(b"stitched-mp3")
-        return Path(out)
+        return Path(wav_out), Path(out)
 
     def fake_probe(path, sha256, runner=None):
         from podcaster.audio import AudioMetadata
 
+        if str(path).endswith(".wav"):
+            return AudioMetadata(
+                duration_seconds=300.0,
+                loudness_lufs=-16.0,
+                sample_rate_hz=44100,
+                bitrate_bps=705600,
+                channels=1,
+                content_type="audio/wav",
+                byte_length=Path(path).stat().st_size,
+                sha256=sha256,
+                codec_name="pcm_s16le",
+            )
         return AudioMetadata(
             duration_seconds=300.0,
             loudness_lufs=-16.0,
             sample_rate_hz=44100,
-            bitrate_bps=96000,
+            bitrate_bps=192000,
             channels=1,
             content_type="audio/mpeg",
             byte_length=Path(path).stat().st_size,
             sha256=sha256,
         )
 
-    monkeypatch.setattr(episode, "stitch_segments", fake_stitch)
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
     monkeypatch.setattr(episode, "probe_audio", fake_probe)
 
     episode.synthesize_episode(

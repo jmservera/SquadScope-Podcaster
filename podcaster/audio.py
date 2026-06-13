@@ -4,22 +4,23 @@ import json
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
 
-TARGET_CONTENT_TYPE = "audio/mpeg"
 TARGET_SAMPLE_RATE_HZ = 44_100
 TARGET_CHANNELS = 1
-MIN_BITRATE_BPS = 64_000
-MAX_BITRATE_BPS = 96_000
+TARGET_MP3_CONTENT_TYPE = "audio/mpeg"
+TARGET_WAV_CONTENT_TYPE = "audio/wav"
+TARGET_MP3_BITRATE_BPS = 192_000
 TARGET_LOUDNESS_LUFS = -16.0
 LOUDNESS_TOLERANCE_LUFS = 1.0
 MAX_DURATION_SECONDS = 10 * 60
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 OUTRO_SPEECH_DUCK_GAIN = 0.10
+TARGET_CONTENT_TYPE = TARGET_MP3_CONTENT_TYPE
 
 
 class CommandRunner(Protocol):
@@ -37,6 +38,7 @@ class AudioMetadata:
     content_type: str
     byte_length: int
     sha256: str
+    codec_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -47,9 +49,10 @@ class AudioValidationResult:
     warnings: list[str]
     metadata: AudioMetadata | None
     constraints: dict[str, object]
+    artifact_results: dict[str, "AudioValidationResult"] = field(default_factory=dict)
 
     def to_manifest(self) -> dict[str, object]:
-        return {
+        manifest = {
             "schema_version": "squadscope-podcaster-audio-validation-v1",
             "status": self.status,
             "ready": self.ready,
@@ -58,6 +61,11 @@ class AudioValidationResult:
             "constraints": self.constraints,
             "metadata": _metadata_to_manifest(self.metadata),
         }
+        if self.artifact_results:
+            manifest["artifacts"] = {
+                name: result.to_manifest() for name, result in sorted(self.artifact_results.items())
+            }
+        return manifest
 
 
 @dataclass(frozen=True)
@@ -116,7 +124,7 @@ def normalize_audio(input_path: Path, output_path: Path, runner: CommandRunner |
             "-codec:a",
             "libmp3lame",
             "-b:a",
-            f"{MAX_BITRATE_BPS // 1000}k",
+            f"{TARGET_MP3_BITRATE_BPS // 1000}k",
             "-af",
             "loudnorm=I=-16:TP=-1.5:LRA=11",
             str(output_path),
@@ -124,9 +132,10 @@ def normalize_audio(input_path: Path, output_path: Path, runner: CommandRunner |
     )
 
 
-def stitch_segments(
+def render_distribution_audio(
     segments: list[bytes],
-    output_path: Path,
+    wav_output_path: Path,
+    mp3_output_path: Path,
     runner: CommandRunner | None = None,
     *,
     gap_seconds: float = 0.35,
@@ -134,37 +143,12 @@ def stitch_segments(
     outro_music: Path | None = None,
     mix_spec: MusicMixSpec | None = None,
     segment_extension: str = ".mp3",
-) -> Path:
-    """Concatenate per-voice audio segments into one normalized episode MP3.
-
-    Each ``segments`` entry is the audio bytes for a single synthesized turn (one
-    host voice). They are concatenated in order with a short silent gap between
-    turns, then re-encoded to the publication target format (mono, 44.1 kHz,
-    96 kbps, loudness-normalized to -16 LUFS) so the output passes the audio
-    validation gate. Returns ``output_path``.
-
-    When ``mix_spec`` is not provided, any supplied ``intro_music`` and/or
-    ``outro_music`` are concatenated before and after the speech body
-    (intro music -> speech -> outro music), separated by the same gentle gap
-    for backward compatibility.
-
-    When ``mix_spec`` is provided, intro/outro music is mixed on a timeline:
-    the intro can play ahead of speech, duck under the opening segments, and
-    fade away; the outro can fade in under the closing segments and continue
-    after speech finishes. The final program still goes through the same
-    two-pass loudness normalization.
-    """
-
-    if not segments:
-        raise ValueError("cannot stitch an empty list of audio segments")
-    for segment in segments:
-        if not isinstance(segment, bytes) or not segment:
-            raise ValueError("each audio segment must be non-empty bytes")
-
+) -> tuple[Path, Path]:
     runner = runner or _run_command
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    wav_output_path.parent.mkdir(parents=True, exist_ok=True)
+    mp3_output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    tmp_dir = output_path.parent / f".stitch-{output_path.stem}-{uuid4().hex}"
+    tmp_dir = wav_output_path.parent / f".render-{wav_output_path.stem}-{uuid4().hex}"
     tmp_dir.mkdir(parents=True, exist_ok=False)
     try:
         segment_paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
@@ -185,27 +169,79 @@ def stitch_segments(
                 outro_music=outro_music,
                 mix_spec=mix_spec,
             )
-            _two_pass_loudnorm(mixed_intermediate, output_path, runner)
-            return output_path
+            _two_pass_loudnorm_wav(mixed_intermediate, wav_output_path, runner)
+        else:
+            ordered_paths: list[Path] = []
+            if intro_music:
+                ordered_paths.append(Path(intro_music))
+            ordered_paths.extend(segment_paths)
+            if outro_music:
+                ordered_paths.append(Path(outro_music))
+            intermediate = tmp_dir / "episode.wav"
+            _concat_audio_files(ordered_paths, intermediate, runner, gap_seconds=gap_seconds)
+            _two_pass_loudnorm_wav(intermediate, wav_output_path, runner)
 
-        ordered_paths: list[Path] = []
-        if intro_music:
-            ordered_paths.append(Path(intro_music))
-        ordered_paths.extend(segment_paths)
-        if outro_music:
-            ordered_paths.append(Path(outro_music))
-        intermediate = tmp_dir / "episode.wav"
-        _concat_audio_files(ordered_paths, intermediate, runner, gap_seconds=gap_seconds)
-        _two_pass_loudnorm(intermediate, output_path, runner)
+        _encode_distribution_mp3(wav_output_path, mp3_output_path, runner)
+        return wav_output_path, mp3_output_path
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def stitch_segments(
+    segments: list[bytes],
+    output_path: Path,
+    runner: CommandRunner | None = None,
+    *,
+    gap_seconds: float = 0.35,
+    intro_music: Path | None = None,
+    outro_music: Path | None = None,
+    mix_spec: MusicMixSpec | None = None,
+    segment_extension: str = ".mp3",
+) -> Path:
+    """Concatenate per-voice audio segments into one normalized episode MP3.
+
+    Each ``segments`` entry is the audio bytes for a single synthesized turn (one
+    host voice). They are concatenated in order with a short silent gap between
+    turns, then re-encoded to the publication target format (mono, 44.1 kHz,
+    192 kbps, loudness-normalized to -16 LUFS) so the output passes the audio
+    validation gate. Returns ``output_path``.
+
+    When ``mix_spec`` is not provided, any supplied ``intro_music`` and/or
+    ``outro_music`` are concatenated before and after the speech body
+    (intro music -> speech -> outro music), separated by the same gentle gap
+    for backward compatibility.
+
+    When ``mix_spec`` is provided, intro/outro music is mixed on a timeline:
+    the intro can play ahead of speech, duck under the opening segments, and
+    fade away; the outro can fade in under the closing segments and continue
+    after speech finishes. The final program still goes through the same
+    two-pass loudness normalization.
+    """
+
+    if not segments:
+        raise ValueError("cannot stitch an empty list of audio segments")
+    for segment in segments:
+        if not isinstance(segment, bytes) or not segment:
+            raise ValueError("each audio segment must be non-empty bytes")
+
+    render_distribution_audio(
+        segments,
+        output_path.with_suffix(".wav"),
+        output_path,
+        runner=runner,
+        gap_seconds=gap_seconds,
+        intro_music=intro_music,
+        outro_music=outro_music,
+        mix_spec=mix_spec,
+        segment_extension=segment_extension,
+    )
     return output_path
 
 
 _LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
 
 
-def _two_pass_loudnorm(input_path: Path, output_path: Path, runner: CommandRunner) -> None:
+def _two_pass_loudnorm_wav(input_path: Path, output_path: Path, runner: CommandRunner) -> None:
     measure = runner(
         [
             "ffmpeg",
@@ -245,9 +281,28 @@ def _two_pass_loudnorm(input_path: Path, output_path: Path, runner: CommandRunne
             "-ar",
             str(TARGET_SAMPLE_RATE_HZ),
             "-codec:a",
+            "pcm_s16le",
+            str(output_path),
+        ]
+    )
+
+
+def _encode_distribution_mp3(input_path: Path, output_path: Path, runner: CommandRunner) -> None:
+    runner(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            "-i",
+            str(input_path),
+            "-ac",
+            str(TARGET_CHANNELS),
+            "-ar",
+            str(TARGET_SAMPLE_RATE_HZ),
+            "-codec:a",
             "libmp3lame",
             "-b:a",
-            f"{MAX_BITRATE_BPS // 1000}k",
+            f"{TARGET_MP3_BITRATE_BPS // 1000}k",
             str(output_path),
         ]
     )
@@ -571,7 +626,7 @@ def probe_audio(path: Path, sha256: str, runner: CommandRunner | None = None) ->
             "-select_streams",
             "a:0",
             "-show_entries",
-            "format=duration,bit_rate:stream=codec_name,sample_rate,channels,bit_rate",
+            "format=duration,bit_rate,format_name:stream=codec_name,sample_rate,channels,bit_rate",
             "-of",
             "json",
             str(path),
@@ -586,8 +641,9 @@ def probe_audio(path: Path, sha256: str, runner: CommandRunner | None = None) ->
         bitrate_bps = _int_field(payload.get("format", {}), "bit_rate")
     sample_rate_hz = _int_field(stream, "sample_rate")
     channels = _int_field(stream, "channels")
-    codec_name = stream.get("codec_name")
-    content_type = TARGET_CONTENT_TYPE if codec_name == "mp3" else f"audio/{codec_name or 'unknown'}"
+    codec_name = str(stream.get("codec_name") or "") or None
+    format_name = str(payload.get("format", {}).get("format_name") or "")
+    content_type = _content_type_for_audio(format_name, codec_name)
     return AudioMetadata(
         duration_seconds=duration_seconds,
         loudness_lufs=measure_loudness(path, runner=runner),
@@ -595,6 +651,7 @@ def probe_audio(path: Path, sha256: str, runner: CommandRunner | None = None) ->
         bitrate_bps=bitrate_bps,
         channels=channels,
         content_type=content_type,
+        codec_name=codec_name,
         byte_length=file_size,
         sha256=sha256,
     )
@@ -622,18 +679,26 @@ def measure_loudness(path: Path, runner: CommandRunner | None = None) -> float |
     return float(matches[-1])
 
 
-def validate_audio_metadata(metadata: AudioMetadata, *, manual_duration_override: bool = False) -> AudioValidationResult:
+def validate_audio_metadata(
+    metadata: AudioMetadata,
+    *,
+    expected_format: str = "mp3",
+    manual_duration_override: bool = False,
+) -> AudioValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
+    profile = _audio_profile(expected_format)
 
-    if metadata.content_type != TARGET_CONTENT_TYPE:
-        errors.append("audio must be audio/mpeg")
+    if metadata.content_type != profile["content_type"]:
+        errors.append(f"audio must be {profile['content_type']}")
     if metadata.sample_rate_hz != TARGET_SAMPLE_RATE_HZ:
         errors.append("audio sample rate must be 44100 Hz")
     if metadata.channels != TARGET_CHANNELS:
         errors.append("audio must be mono")
-    if not (MIN_BITRATE_BPS <= metadata.bitrate_bps <= MAX_BITRATE_BPS):
-        errors.append("audio bitrate must be between 64000 and 96000 bps")
+    if profile["format"] == "mp3" and metadata.bitrate_bps != TARGET_MP3_BITRATE_BPS:
+        errors.append(f"audio bitrate must be {TARGET_MP3_BITRATE_BPS} bps")
+    if profile["format"] == "wav" and not str(metadata.codec_name or "").startswith("pcm_"):
+        errors.append("audio WAV must use PCM encoding")
     if metadata.duration_seconds > MAX_DURATION_SECONDS and not manual_duration_override:
         errors.append("audio duration must not exceed 10 minutes without manual override")
     if metadata.byte_length > MAX_FILE_SIZE_BYTES:
@@ -651,7 +716,43 @@ def validate_audio_metadata(metadata: AudioMetadata, *, manual_duration_override
         errors=errors,
         warnings=warnings,
         metadata=metadata,
-        constraints=_constraints(),
+        constraints=_constraints(profile["format"]),
+    )
+
+
+def validate_audio_outputs(
+    artifacts: dict[str, AudioMetadata],
+    *,
+    manual_duration_override: bool = False,
+) -> AudioValidationResult:
+    results: dict[str, AudioValidationResult] = {}
+    errors: list[str] = []
+    warnings: list[str] = []
+    for fmt in ("wav", "mp3"):
+        metadata = artifacts.get(fmt)
+        if metadata is None:
+            errors.append(f"{fmt} artifact is missing")
+            continue
+        result = validate_audio_metadata(
+            metadata,
+            expected_format=fmt,
+            manual_duration_override=manual_duration_override,
+        )
+        results[fmt] = result
+        errors.extend(f"{fmt}: {error}" for error in result.errors)
+        warnings.extend(f"{fmt}: {warning}" for warning in result.warnings)
+
+    return AudioValidationResult(
+        status="passed" if not errors else "failed",
+        ready=not errors,
+        errors=errors,
+        warnings=warnings,
+        metadata=results.get("mp3", results.get("wav")).metadata if results else None,
+        constraints={
+            "required_formats": ["wav", "mp3"],
+            "profiles": {name: _constraints(name) for name in ("wav", "mp3")},
+        },
+        artifact_results=results,
     )
 
 
@@ -668,10 +769,11 @@ def placeholder_audio_validation(*, byte_length: int, sha256: str) -> AudioValid
             bitrate_bps=0,
             channels=0,
             content_type=TARGET_CONTENT_TYPE,
+            codec_name=None,
             byte_length=byte_length,
             sha256=sha256,
         ),
-        constraints=_constraints(),
+        constraints=_constraints("mp3"),
     )
 
 
@@ -682,7 +784,7 @@ def invalid_ffmpeg_result(error: str) -> AudioValidationResult:
         errors=[error],
         warnings=[],
         metadata=None,
-        constraints=_constraints(),
+        constraints=_constraints("mp3"),
     )
 
 
@@ -738,16 +840,38 @@ def _float_field(payload: object, field: str) -> float:
     raise RuntimeError(f"ffprobe output did not include numeric {field}")
 
 
-def _constraints() -> dict[str, object]:
-    return {
-        "content_type": TARGET_CONTENT_TYPE,
+def _constraints(expected_format: str) -> dict[str, object]:
+    profile = _audio_profile(expected_format)
+    constraints = {
+        "format": profile["format"],
+        "content_type": profile["content_type"],
         "sample_rate_hz": TARGET_SAMPLE_RATE_HZ,
         "channels": TARGET_CHANNELS,
-        "bitrate_bps": {"min": MIN_BITRATE_BPS, "max": MAX_BITRATE_BPS},
         "loudness_lufs": {"target": TARGET_LOUDNESS_LUFS, "tolerance": LOUDNESS_TOLERANCE_LUFS},
         "max_duration_seconds": MAX_DURATION_SECONDS,
         "max_file_size_bytes": MAX_FILE_SIZE_BYTES,
     }
+    if profile["format"] == "mp3":
+        constraints["bitrate_bps"] = {"min": TARGET_MP3_BITRATE_BPS, "max": TARGET_MP3_BITRATE_BPS}
+    if profile["format"] == "wav":
+        constraints["codec_name_prefix"] = "pcm_"
+    return constraints
+
+
+def _audio_profile(expected_format: str) -> dict[str, str]:
+    normalized = str(expected_format or "mp3").strip().lower()
+    if normalized == "wav":
+        return {"format": "wav", "content_type": TARGET_WAV_CONTENT_TYPE}
+    return {"format": "mp3", "content_type": TARGET_MP3_CONTENT_TYPE}
+
+
+def _content_type_for_audio(format_name: str, codec_name: str | None) -> str:
+    normalized_formats = {part.strip().lower() for part in format_name.split(",") if part.strip()}
+    if "wav" in normalized_formats:
+        return TARGET_WAV_CONTENT_TYPE
+    if "mp3" in normalized_formats or codec_name == "mp3":
+        return TARGET_MP3_CONTENT_TYPE
+    return f"audio/{codec_name or 'unknown'}"
 
 
 def _metadata_to_manifest(metadata: AudioMetadata | None) -> dict[str, object] | None:
@@ -760,6 +884,7 @@ def _metadata_to_manifest(metadata: AudioMetadata | None) -> dict[str, object] |
         "bitrate_bps": metadata.bitrate_bps,
         "channels": metadata.channels,
         "content_type": metadata.content_type,
+        "codec_name": metadata.codec_name,
         "byte_length": metadata.byte_length,
         "sha256": metadata.sha256,
     }

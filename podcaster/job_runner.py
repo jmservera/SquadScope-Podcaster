@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from podcaster.audio import MusicMixSpec
-from podcaster.config import MusicMixConfig, PodcastConfig
+from podcaster.config import MusicMixConfig, PodcastConfig, SpotifyPublishConfig
 from podcaster.episode import (
     operator_review_decision,
     parse_script_segments,
@@ -149,8 +149,14 @@ def run_synthesis(
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_TTS_NOT_CONFIGURED)
 
     mp3_blob_path = _mp3_artifact_path(manifest, job_id)
+    wav_blob_path = _wav_artifact_path(manifest, job_id)
     request_podcast_config = _request_podcast_config(manifest)
     podcast_config = PodcastConfig.from_payload(request_podcast_config) if request_podcast_config else None
+    request_spotify_publish = _request_spotify_publish(manifest)
+    spotify_publish_config = (
+        SpotifyPublishConfig.from_payload(request_spotify_publish) if request_spotify_publish else None
+    )
+    upload_format = spotify_publish_config.upload_format if spotify_publish_config else "wav"
     music_mix_config = _request_music_mix(manifest)
     mix_spec = _build_mix_spec(music_mix_config)
     intro_music, outro_music = _resolve_music_paths(music_mix_config)
@@ -178,7 +184,8 @@ def run_synthesis(
                 outro_music=outro_music,
                 music_mix_spec=mix_spec,
             )
-            audio_bytes = output_path.read_bytes()
+            mp3_bytes = output_path.read_bytes()
+            wav_bytes = episode_audio.wav_output_path.read_bytes()
     except Exception as exc:
         logger.exception("synthesis failed job_id=%s error=%s", job_id, type(exc).__name__)
         _record_runner_state(
@@ -188,8 +195,9 @@ def run_synthesis(
         )
         raise TransientSynthesisError(f"synthesis failed for job_id={job_id}") from exc
 
-    stored = storage.put_bytes(mp3_blob_path, audio_bytes, "audio/mpeg")
-    audio_sha256 = checksum(audio_bytes)
+    stored_mp3 = storage.put_bytes(mp3_blob_path, mp3_bytes, "audio/mpeg")
+    stored_wav = storage.put_bytes(wav_blob_path, wav_bytes, "audio/wav")
+    audio_sha256 = checksum(mp3_bytes)
     voices = sorted({voice for voice in episode_audio.voices if voice})
 
     def _apply(content: bytes | None) -> bytes:
@@ -199,9 +207,15 @@ def run_synthesis(
         _apply_completion(
             document,
             job_id=job_id,
-            audio_path=stored.path,
-            audio_sha256=audio_sha256,
-            audio_size=stored.size_bytes,
+            mp3_path=stored_mp3.path,
+            mp3_url=stored_mp3.url,
+            mp3_sha256=episode_audio.sha256,
+            mp3_size=stored_mp3.size_bytes,
+            wav_path=stored_wav.path,
+            wav_url=stored_wav.url,
+            wav_sha256=episode_audio.wav_sha256,
+            wav_size=stored_wav.size_bytes,
+            upload_format=upload_format,
             segment_count=episode_audio.segment_count,
             voices=voices,
             validation=episode_audio.validation.to_manifest(),
@@ -245,6 +259,16 @@ def _request_music_mix(manifest: dict[str, Any]) -> MusicMixConfig:
     if not isinstance(request, dict):
         return MusicMixConfig()
     return MusicMixConfig.from_payload(request)
+
+
+def _request_spotify_publish(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return None
+    spotify_publish = request.get("spotify_publish")
+    if not isinstance(spotify_publish, dict):
+        return None
+    return {"spotify_publish": spotify_publish}
 
 
 def _build_mix_spec(config: MusicMixConfig) -> MusicMixSpec | None:
@@ -413,13 +437,28 @@ def _mp3_artifact_path(manifest: dict[str, Any], job_id: str) -> str:
     return f"jobs/{job_id}/audio/{job_id}.mp3"
 
 
+def _wav_artifact_path(manifest: dict[str, Any], job_id: str) -> str:
+    artifacts = manifest.get("artifacts")
+    if isinstance(artifacts, dict):
+        for path in artifacts:
+            if isinstance(path, str) and path.endswith(".wav"):
+                return path
+    return f"jobs/{job_id}/audio/{job_id}.wav"
+
+
 def _apply_completion(
     manifest: dict[str, Any],
     *,
     job_id: str,
-    audio_path: str,
-    audio_sha256: str,
-    audio_size: int,
+    mp3_path: str,
+    mp3_url: str,
+    mp3_sha256: str,
+    mp3_size: int,
+    wav_path: str,
+    wav_url: str,
+    wav_sha256: str,
+    wav_size: int,
+    upload_format: str,
     segment_count: int,
     voices: list[str],
     validation: dict[str, Any],
@@ -452,19 +491,35 @@ def _apply_completion(
         "provider": PROVIDER,
         "config": config_summary,
         "audio": {
-            "path": audio_path,
-            "sha256": audio_sha256,
-            "size_bytes": audio_size,
+            "path": mp3_path,
+            "sha256": mp3_sha256,
+            "size_bytes": mp3_size,
+            "upload_format": upload_format,
+            "artifacts": {
+                "mp3": {"path": mp3_path, "sha256": mp3_sha256, "size_bytes": mp3_size},
+                "wav": {"path": wav_path, "sha256": wav_sha256, "size_bytes": wav_size},
+            },
         },
     }
 
     artifacts = manifest.get("artifacts")
-    if isinstance(artifacts, dict) and isinstance(artifacts.get(audio_path), dict):
-        entry = artifacts[audio_path]
-        entry["sha256"] = audio_sha256
-        entry["size_bytes"] = audio_size
-        entry["content_type"] = "audio/mpeg"
-        entry["publicly_accessible"] = False
+    if isinstance(artifacts, dict):
+        mp3_entry = artifacts.setdefault(mp3_path, {})
+        if isinstance(mp3_entry, dict):
+            mp3_entry["url"] = mp3_url
+            mp3_entry["sha256"] = mp3_sha256
+            mp3_entry["size_bytes"] = mp3_size
+            mp3_entry["content_type"] = "audio/mpeg"
+            mp3_entry["publicly_accessible"] = False
+        wav_entry = artifacts.setdefault(wav_path, {})
+        if isinstance(wav_entry, dict):
+            wav_entry["url"] = wav_url
+            wav_entry["sha256"] = wav_sha256
+            wav_entry["size_bytes"] = wav_size
+            wav_entry["content_type"] = "audio/wav"
+            wav_entry["publicly_accessible"] = False
+            if isinstance(mp3_entry, dict) and mp3_entry.get("access_model") is not None:
+                wav_entry.setdefault("access_model", mp3_entry["access_model"])
 
     publishing = manifest.setdefault("publishing", {})
     if isinstance(publishing, dict):

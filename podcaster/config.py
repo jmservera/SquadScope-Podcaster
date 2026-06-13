@@ -8,6 +8,8 @@ from typing import Any, Mapping, Sequence
 logger = logging.getLogger(__name__)
 MAX_SPOTIFY_TITLE_CHARS = 200
 MAX_SPOTIFY_DESCRIPTION_CHARS = 4_000
+DEFAULT_SPOTIFY_UPLOAD_FORMAT = "wav"
+_SPOTIFY_UPLOAD_FORMATS = frozenset({"wav", "mp3"})
 _VOID_HTML_TAGS = frozenset(
     {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 )
@@ -213,6 +215,7 @@ class SpotifyPublishConfig:
     season_number: str | int = "{year}"
     episode_number: str | int = "{week}"
     publish_mode: str = "draft"
+    upload_format: str = DEFAULT_SPOTIFY_UPLOAD_FORMAT
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "title", _truncate_with_warning("title", self.title, MAX_SPOTIFY_TITLE_CHARS))
@@ -221,6 +224,7 @@ class SpotifyPublishConfig:
             "description",
             _truncate_html_with_warning("description", self.description, MAX_SPOTIFY_DESCRIPTION_CHARS),
         )
+        object.__setattr__(self, "upload_format", _normalize_upload_format(self.upload_format))
 
     @classmethod
     def from_payload(cls, data: Mapping[str, Any] | None) -> "SpotifyPublishConfig | None":
@@ -247,6 +251,7 @@ class SpotifyPublishConfig:
                 config_payload.get("episode_number"), defaults.episode_number
             ),
             publish_mode=_string_or_default(config_payload.get("publish_mode"), defaults.publish_mode),
+            upload_format=_string_or_default(config_payload.get("upload_format"), defaults.upload_format),
         )
 
     def resolve_season(self, year: int, week: int) -> int:
@@ -285,6 +290,18 @@ def _truncate_html_with_warning(field_name: str, value: str, limit: int) -> str:
         return value
     logger.warning("Spotify publish %s exceeded %d chars; truncating.", field_name, limit)
     return truncate_html(value, limit)
+
+
+def _normalize_upload_format(value: str) -> str:
+    normalized = str(value or DEFAULT_SPOTIFY_UPLOAD_FORMAT).strip().lower()
+    if normalized in _SPOTIFY_UPLOAD_FORMATS:
+        return normalized
+    logger.warning(
+        "Spotify publish upload_format %r is unsupported; defaulting to %s.",
+        value,
+        DEFAULT_SPOTIFY_UPLOAD_FORMAT,
+    )
+    return DEFAULT_SPOTIFY_UPLOAD_FORMAT
 
 
 # --- Script Directions ---

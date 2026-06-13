@@ -19,7 +19,7 @@ def test_valid_audio_metadata_passes() -> None:
             duration_seconds=599.0,
             loudness_lufs=-16.2,
             sample_rate_hz=44100,
-            bitrate_bps=96000,
+            bitrate_bps=192000,
             channels=1,
             content_type="audio/mpeg",
             byte_length=9_000_000,
@@ -59,7 +59,7 @@ def test_overlong_audio_with_override_records_warning() -> None:
             duration_seconds=601.0,
             loudness_lufs=-16.0,
             sample_rate_hz=44100,
-            bitrate_bps=64000,
+            bitrate_bps=192000,
             channels=1,
             content_type="audio/mpeg",
             byte_length=1_000_000,
@@ -90,7 +90,7 @@ def test_invalid_audio_metadata_reports_all_constraint_failures() -> None:
     assert "audio must be audio/mpeg" in result.errors
     assert "audio sample rate must be 44100 Hz" in result.errors
     assert "audio must be mono" in result.errors
-    assert "audio bitrate must be between 64000 and 96000 bps" in result.errors
+    assert "audio bitrate must be 192000 bps" in result.errors
     assert "audio loudness must be near -16 LUFS" in result.errors
 
 
@@ -120,7 +120,7 @@ def test_normalize_audio_invokes_ffmpeg_with_mvp_constraints(tmp_path: Path) -> 
     assert "-ar" in command
     assert command[command.index("-ar") + 1] == "44100"
     assert "-b:a" in command
-    assert command[command.index("-b:a") + 1] == "96k"
+    assert command[command.index("-b:a") + 1] == "192k"
     assert command[-1].endswith("episode.mp3")
 
 
