@@ -1113,7 +1113,7 @@ Approved to commit Wave 1/2/3 local increment as a single cohesive release. No A
 
 ---
 
-### 2026-06-13: NEVER bypass branch rulesets
+# 2026-06-13: NEVER bypass branch rulesets
 
 - **Date:** 2026-06-13
 - **Agent:** Operator directive (jmservera)
@@ -1125,7 +1125,7 @@ All changes MUST go through branch + PR. No direct pushes to main. Agents must c
 
 ---
 
-### 2026-06-13: Security review — Spotify publish module (#182)
+# 2026-06-13: Security review — Spotify publish module (#182)
 
 - **Date:** 2026-06-13
 - **Agent:** Hermes (Security)
