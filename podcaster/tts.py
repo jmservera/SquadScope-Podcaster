@@ -31,8 +31,11 @@ PROVIDER = "openai-tts"
 AUTH_MODE_MANAGED_IDENTITY = "managed_identity"
 OPENAI_SCOPE = "https://cognitiveservices.azure.com/.default"
 DEFAULT_API_VERSION = "2024-12-01-preview"
-RESPONSE_FORMAT = "mp3"
-RESPONSE_CONTENT_TYPE = "audio/mpeg"
+DEFAULT_RESPONSE_FORMAT = "wav"
+_RESPONSE_CONTENT_TYPES = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+}
 
 HOST_A_ROLE = "host_a"
 HOST_B_ROLE = "host_b"
@@ -58,6 +61,7 @@ class TtsConfig:
     api_version: str = DEFAULT_API_VERSION
     style_host_a: str | None = None
     style_host_b: str | None = None
+    response_format: str = DEFAULT_RESPONSE_FORMAT
 
     @property
     def production_ready(self) -> bool:
@@ -95,6 +99,14 @@ class TtsConfig:
             return self.style_host_b
         return self.style_host_a
 
+    @property
+    def audio_extension(self) -> str:
+        return f".{self.response_format}"
+
+    @property
+    def audio_content_type(self) -> str:
+        return _RESPONSE_CONTENT_TYPES.get(self.response_format, "application/octet-stream")
+
     def safe_summary(self) -> dict[str, object]:
         """Secret-safe configuration summary for manifests/logs.
 
@@ -111,6 +123,7 @@ class TtsConfig:
             "tts_deployment": self.tts_deployment,
             "chat_deployment": self.chat_deployment,
             "api_version": self.api_version,
+            "response_format": self.response_format,
             "voices": {
                 HOST_A_ROLE: self.voice_host_a,
                 HOST_B_ROLE: self.voice_host_b,
@@ -155,6 +168,7 @@ def load_tts_config(env: Mapping[str, str] | None = None) -> TtsConfig:
         api_version=_clean(env.get("AZURE_OPENAI_TTS_API_VERSION")) or DEFAULT_API_VERSION,
         style_host_a=_clean(env.get("AZURE_OPENAI_TTS_STYLE_HOST_A")),
         style_host_b=_clean(env.get("AZURE_OPENAI_TTS_STYLE_HOST_B")),
+        response_format=_response_format(_clean(env.get("AZURE_OPENAI_TTS_FORMAT"))),
     )
 
 
@@ -234,7 +248,7 @@ def synthesize_turn(
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
 ) -> bytes:
-    """Synthesize a single turn to MP3 bytes using the managed identity.
+    """Synthesize a single turn to audio bytes using the managed identity.
 
     Network and credential access are injectable for testing. This function
     never logs the bearer token, the full endpoint URL, or the (untrusted)
@@ -259,7 +273,7 @@ def synthesize_turn(
             "model": config.tts_deployment,
             "input": turn.text,
             "voice": turn.voice,
-            "response_format": RESPONSE_FORMAT,
+            "response_format": config.response_format,
         }
         # The ``instructions`` field steers tone/style on newer speech models.
         # Older models reject it, so we retry without it on failure (below).
@@ -277,11 +291,12 @@ def synthesize_turn(
 
     has_style = bool(turn.style)
     logging.info(
-        "synthesizing tts turn deployment=%s voice=%s input_chars=%s styled=%s",
+        "synthesizing tts turn deployment=%s voice=%s input_chars=%s styled=%s format=%s",
         config.tts_deployment,
         turn.voice,
         len(turn.text),
         has_style,
+        config.response_format,
     )
     try:
         audio = transport(_request(include_style=has_style))
@@ -345,3 +360,15 @@ def _clean(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _response_format(value: str | None) -> str:
+    normalized = (value or DEFAULT_RESPONSE_FORMAT).strip().lower()
+    if normalized in _RESPONSE_CONTENT_TYPES:
+        return normalized
+    logging.warning(
+        "Unsupported AZURE_OPENAI_TTS_FORMAT=%r; defaulting to %s.",
+        value,
+        DEFAULT_RESPONSE_FORMAT,
+    )
+    return DEFAULT_RESPONSE_FORMAT

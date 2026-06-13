@@ -166,6 +166,7 @@ def test_synthesize_episode_orchestrates_synth_stitch_validate(tmp_path, monkeyp
 
     def fake_stitch(segments, out, runner=None, **kwargs):
         synth_calls["segment_count"] = len(segments)
+        synth_calls["segment_extension"] = kwargs.get("segment_extension")
         Path(out).write_bytes(b"stitched-mp3")
         return Path(out)
 
@@ -197,6 +198,7 @@ def test_synthesize_episode_orchestrates_synth_stitch_validate(tmp_path, monkeyp
 
     assert result.validation.ready is True
     assert result.segment_count == synth_calls["segment_count"]
+    assert synth_calls["segment_extension"] == ".wav"
     assert set(result.voices) == {"fable", "alloy"}
     assert output_path.read_bytes() == b"stitched-mp3"
 

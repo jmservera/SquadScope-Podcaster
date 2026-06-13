@@ -133,10 +133,11 @@ def stitch_segments(
     intro_music: Path | None = None,
     outro_music: Path | None = None,
     mix_spec: MusicMixSpec | None = None,
+    segment_extension: str = ".mp3",
 ) -> Path:
-    """Concatenate per-voice MP3 segments into one normalized episode MP3.
+    """Concatenate per-voice audio segments into one normalized episode MP3.
 
-    Each ``segments`` entry is the MP3 bytes for a single synthesized turn (one
+    Each ``segments`` entry is the audio bytes for a single synthesized turn (one
     host voice). They are concatenated in order with a short silent gap between
     turns, then re-encoded to the publication target format (mono, 44.1 kHz,
     96 kbps, loudness-normalized to -16 LUFS) so the output passes the audio
@@ -166,7 +167,7 @@ def stitch_segments(
     tmp_dir = output_path.parent / f".stitch-{output_path.stem}-{uuid4().hex}"
     tmp_dir.mkdir(parents=True, exist_ok=False)
     try:
-        segment_paths = _write_segments(tmp_dir, segments)
+        segment_paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
 
         if mix_spec is not None and (intro_music or outro_music):
             _validate_mix_spec_for_segments(mix_spec, len(segment_paths), intro_music=intro_music, outro_music=outro_music)
@@ -252,13 +253,21 @@ def _two_pass_loudnorm(input_path: Path, output_path: Path, runner: CommandRunne
     )
 
 
-def _write_segments(tmp_dir: Path, segments: list[bytes]) -> list[Path]:
+def _write_segments(tmp_dir: Path, segments: list[bytes], *, segment_extension: str = ".mp3") -> list[Path]:
+    normalized_extension = _normalize_segment_extension(segment_extension)
     segment_paths: list[Path] = []
     for position, segment in enumerate(segments):
-        segment_path = tmp_dir / f"segment-{position:03d}.mp3"
+        segment_path = tmp_dir / f"segment-{position:03d}{normalized_extension}"
         segment_path.write_bytes(segment)
         segment_paths.append(segment_path)
     return segment_paths
+
+
+def _normalize_segment_extension(segment_extension: str) -> str:
+    stripped = str(segment_extension or "").strip().lower()
+    if not stripped:
+        return ".mp3"
+    return stripped if stripped.startswith(".") else f".{stripped}"
 
 
 def _concat_audio_files(

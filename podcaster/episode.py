@@ -408,6 +408,7 @@ def synthesize_episode(
         intro_music=intro_music,
         outro_music=outro_music,
         mix_spec=effective_mix_spec,
+        segment_extension=effective_config.audio_extension,
     )
     data = output_path.read_bytes()
     digest = checksum(data)

@@ -47,6 +47,8 @@ def test_load_config_reads_all_settings_and_is_production_ready():
     assert config.voice_host_a == "fable"
     assert config.voice_host_b == "alloy"
     assert config.auth_mode == AUTH_MODE_MANAGED_IDENTITY
+    assert config.response_format == "wav"
+    assert config.audio_extension == ".wav"
     assert config.production_ready is True
 
 
@@ -71,6 +73,14 @@ def test_local_auth_mode_is_not_production_ready():
     assert load_tts_config(env).production_ready is False
 
 
+def test_load_config_allows_custom_tts_format():
+    env = _production_env()
+    env["AZURE_OPENAI_TTS_FORMAT"] = "mp3"
+    config = load_tts_config(env)
+    assert config.response_format == "mp3"
+    assert config.audio_extension == ".mp3"
+
+
 def test_voice_for_maps_hosts_to_fable_and_alloy():
     config = _production_config()
     assert config.voice_for("host_a") == "fable"
@@ -85,6 +95,7 @@ def test_safe_summary_never_exposes_full_endpoint_or_secrets():
     assert summary["provider"] == PROVIDER
     assert summary["endpoint_configured"] is True
     assert summary["endpoint_host"] == "podcaster-openai.openai.azure.com"
+    assert summary["response_format"] == "wav"
     assert summary["voices"] == {HOST_A_ROLE: "fable", HOST_B_ROLE: "alloy"}
     serialized = json.dumps(summary)
     assert "openai.azure.com/" not in serialized.replace("podcaster-openai.openai.azure.com", "")
@@ -146,7 +157,7 @@ def test_synthesize_turn_builds_request_without_leaking_token(caplog):
         captured["url"] = request.full_url
         captured["body"] = json.loads(request.data.decode("utf-8"))
         captured["auth"] = request.headers.get("Authorization")
-        return b"ID3-fake-mp3-bytes"
+        return b"RIFFfake-wav-bytes"
 
     with caplog.at_level("INFO"):
         audio = synthesize_turn(
@@ -156,7 +167,7 @@ def test_synthesize_turn_builds_request_without_leaking_token(caplog):
             transport=fake_transport,
         )
 
-    assert audio == b"ID3-fake-mp3-bytes"
+    assert audio == b"RIFFfake-wav-bytes"
     assert captured["url"] == (
         "https://podcaster-openai.openai.azure.com/openai/deployments/tts/audio/speech"
         "?api-version=2024-12-01-preview"
@@ -165,7 +176,7 @@ def test_synthesize_turn_builds_request_without_leaking_token(caplog):
         "model": "tts",
         "input": "Hello from Claracle.",
         "voice": "fable",
-        "response_format": "mp3",
+        "response_format": "wav",
     }
     assert captured["auth"] == "Bearer secret-token-value"
     # The secret token and untrusted input text must never reach the logs.

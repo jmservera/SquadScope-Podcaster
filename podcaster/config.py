@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Any, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 MAX_SPOTIFY_TITLE_CHARS = 200
 MAX_SPOTIFY_DESCRIPTION_CHARS = 4_000
+_VOID_HTML_TAGS = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+)
 
 
 def _generation_defaults():
@@ -45,6 +49,103 @@ def _string_or_default(value: object, default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
+
+
+class _HTMLTruncator(HTMLParser):
+    def __init__(self, max_length: int) -> None:
+        super().__init__(convert_charrefs=False)
+        self.max_length = max_length
+        self.parts: list[str] = []
+        self.open_tags: list[str] = []
+        self.current_length = 0
+        self.truncated = False
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        self._append_tag(self.get_starttag_text(), tag, push=True)
+
+    def handle_startendtag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        self._append_tag(self.get_starttag_text(), tag, push=False)
+
+    def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
+        normalized = tag.lower()
+        if self.truncated or normalized not in self.open_tags:
+            return
+
+        closings: list[str] = []
+        while self.open_tags:
+            open_tag = self.open_tags.pop()
+            closings.append(f"</{open_tag}>")
+            if open_tag == normalized:
+                break
+
+        for closing in closings:
+            self._append(closing)
+
+    def handle_data(self, data: str) -> None:
+        self._append_text(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self._append_text(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self._append_text(f"&#{name};")
+
+    def handle_comment(self, data: str) -> None:
+        self._append_text(f"<!--{data}-->")
+
+    def _append_tag(self, raw_tag: str | None, tag: str, *, push: bool) -> None:
+        if self.truncated or not raw_tag:
+            return
+
+        normalized = tag.lower()
+        budget = self._closing_budget(extra_tag=normalized if push else None)
+        if self.current_length + len(raw_tag) + budget > self.max_length:
+            self.truncated = True
+            return
+
+        self._append(raw_tag)
+        if push and normalized not in _VOID_HTML_TAGS:
+            self.open_tags.append(normalized)
+
+    def _append_text(self, text: str) -> None:
+        if self.truncated or not text:
+            return
+
+        available = self.max_length - self.current_length - self._closing_budget()
+        if available <= 0:
+            self.truncated = True
+            return
+
+        piece = text[:available]
+        if piece:
+            self._append(piece)
+        if len(piece) < len(text):
+            self.truncated = True
+
+    def _closing_budget(self, *, extra_tag: str | None = None) -> int:
+        budget = sum(len(f"</{tag}>") for tag in self.open_tags)
+        if extra_tag and extra_tag not in _VOID_HTML_TAGS:
+            budget += len(f"</{extra_tag}>")
+        return budget
+
+    def _append(self, text: str) -> None:
+        self.parts.append(text)
+        self.current_length += len(text)
+
+    def finish(self) -> str:
+        for tag in reversed(self.open_tags):
+            self._append(f"</{tag}>")
+        return "".join(self.parts)
+
+
+def truncate_html(html_str: str, max_length: int) -> str:
+    if len(html_str) <= max_length:
+        return html_str
+
+    truncator = _HTMLTruncator(max_length)
+    truncator.feed(html_str)
+    truncator.close()
+    return truncator.finish()
 
 
 @dataclass(frozen=True)
@@ -118,7 +219,7 @@ class SpotifyPublishConfig:
         object.__setattr__(
             self,
             "description",
-            _truncate_with_warning("description", self.description, MAX_SPOTIFY_DESCRIPTION_CHARS),
+            _truncate_html_with_warning("description", self.description, MAX_SPOTIFY_DESCRIPTION_CHARS),
         )
 
     @classmethod
@@ -177,6 +278,13 @@ def _truncate_with_warning(field_name: str, value: str, limit: int) -> str:
         return value
     logger.warning("Spotify publish %s exceeded %d chars; truncating.", field_name, limit)
     return value[:limit]
+
+
+def _truncate_html_with_warning(field_name: str, value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    logger.warning("Spotify publish %s exceeded %d chars; truncating.", field_name, limit)
+    return truncate_html(value, limit)
 
 
 # --- Script Directions ---

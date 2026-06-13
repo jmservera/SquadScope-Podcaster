@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from podcaster.config import SpotifyPublishConfig
+from podcaster.config import SpotifyPublishConfig, truncate_html
 from podcaster.publish import (
     PublishResult,
     SpotifyPublishError,
@@ -50,6 +51,40 @@ def mp3_file(tmp_path):
     # Minimal MP3 header (not valid audio, but good for testing upload)
     f.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 1000)
     return f
+
+
+class _BalancedHtmlParser(HTMLParser):
+    _void_tags = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.stack: list[str] = []
+        self.errors: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        if tag not in self._void_tags:
+            self.stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
+        if not self.stack or self.stack[-1] != tag:
+            self.errors.append(tag)
+            return
+        self.stack.pop()
 
 
 class TestEnabled:
@@ -132,13 +167,38 @@ class TestPublishEpisode:
         caplog.set_level("WARNING")
         config = SpotifyPublishConfig(
             title="T" * 250,
-            description="D" * 5000,
+            description="<p><strong>" + ("D" * 5000) + "</strong></p>",
         )
 
         assert config.title == "T" * 200
-        assert config.description == "D" * 4000
+        assert len(config.description) <= 4000
+        assert config.description.endswith("</strong></p>")
         assert "Spotify publish title exceeded 200 chars; truncating." in caplog.text
         assert "Spotify publish description exceeded 4000 chars; truncating." in caplog.text
+
+    def test_truncate_html_closes_nested_tags(self):
+        truncated = truncate_html("<p><strong>" + ("Signal " * 1000) + "</strong></p>", 120)
+        parser = _BalancedHtmlParser()
+        parser.feed(truncated)
+        parser.close()
+
+        assert len(truncated) <= 120
+        assert truncated.endswith("</strong></p>")
+        assert parser.errors == []
+        assert parser.stack == []
+
+    def test_truncate_html_drops_partial_trailing_tag(self):
+        html = "<p>" + ("x" * 3988) + '<a href="https://example.com/really/long/link">link</a></p>'
+        truncated = truncate_html(html, 4000)
+        parser = _BalancedHtmlParser()
+        parser.feed(truncated)
+        parser.close()
+
+        assert len(truncated) <= 4000
+        assert truncated.endswith("</p>")
+        assert "<a href" not in truncated
+        assert parser.errors == []
+        assert parser.stack == []
 
     def test_returns_failed_when_disabled(self, mp3_file):
         result = publish_episode(mp3_file, "Test", "<p>desc</p>")
