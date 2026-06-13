@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Any, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
+MAX_SPOTIFY_TITLE_CHARS = 200
+MAX_SPOTIFY_DESCRIPTION_CHARS = 4_000
+DEFAULT_SPOTIFY_UPLOAD_FORMAT = "wav"
+_SPOTIFY_UPLOAD_FORMATS = frozenset({"wav", "mp3"})
+_VOID_HTML_TAGS = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+)
 
 
 def _generation_defaults():
@@ -40,6 +51,103 @@ def _string_or_default(value: object, default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
+
+
+class _HTMLTruncator(HTMLParser):
+    def __init__(self, max_length: int) -> None:
+        super().__init__(convert_charrefs=False)
+        self.max_length = max_length
+        self.parts: list[str] = []
+        self.open_tags: list[str] = []
+        self.current_length = 0
+        self.truncated = False
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        self._append_tag(self.get_starttag_text(), tag, push=True)
+
+    def handle_startendtag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        self._append_tag(self.get_starttag_text(), tag, push=False)
+
+    def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
+        normalized = tag.lower()
+        if self.truncated or normalized not in self.open_tags:
+            return
+
+        closings: list[str] = []
+        while self.open_tags:
+            open_tag = self.open_tags.pop()
+            closings.append(f"</{open_tag}>")
+            if open_tag == normalized:
+                break
+
+        for closing in closings:
+            self._append(closing)
+
+    def handle_data(self, data: str) -> None:
+        self._append_text(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self._append_text(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self._append_text(f"&#{name};")
+
+    def handle_comment(self, data: str) -> None:
+        self._append_text(f"<!--{data}-->")
+
+    def _append_tag(self, raw_tag: str | None, tag: str, *, push: bool) -> None:
+        if self.truncated or not raw_tag:
+            return
+
+        normalized = tag.lower()
+        budget = self._closing_budget(extra_tag=normalized if push else None)
+        if self.current_length + len(raw_tag) + budget > self.max_length:
+            self.truncated = True
+            return
+
+        self._append(raw_tag)
+        if push and normalized not in _VOID_HTML_TAGS:
+            self.open_tags.append(normalized)
+
+    def _append_text(self, text: str) -> None:
+        if self.truncated or not text:
+            return
+
+        available = self.max_length - self.current_length - self._closing_budget()
+        if available <= 0:
+            self.truncated = True
+            return
+
+        piece = text[:available]
+        if piece:
+            self._append(piece)
+        if len(piece) < len(text):
+            self.truncated = True
+
+    def _closing_budget(self, *, extra_tag: str | None = None) -> int:
+        budget = sum(len(f"</{tag}>") for tag in self.open_tags)
+        if extra_tag and extra_tag not in _VOID_HTML_TAGS:
+            budget += len(f"</{extra_tag}>")
+        return budget
+
+    def _append(self, text: str) -> None:
+        self.parts.append(text)
+        self.current_length += len(text)
+
+    def finish(self) -> str:
+        for tag in reversed(self.open_tags):
+            self._append(f"</{tag}>")
+        return "".join(self.parts)
+
+
+def truncate_html(html_str: str, max_length: int) -> str:
+    if len(html_str) <= max_length:
+        return html_str
+
+    truncator = _HTMLTruncator(max_length)
+    truncator.feed(html_str)
+    truncator.close()
+    return truncator.finish()
 
 
 @dataclass(frozen=True)
@@ -102,11 +210,21 @@ class PodcastConfig:
 
 @dataclass(frozen=True)
 class SpotifyPublishConfig:
-    title_template: str = "{article_title}"
-    description_template: str = "<p>{article_summary}</p>"
+    title: str = ""
+    description: str = ""
     season_number: str | int = "{year}"
     episode_number: str | int = "{week}"
     publish_mode: str = "draft"
+    upload_format: str = DEFAULT_SPOTIFY_UPLOAD_FORMAT
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "title", _truncate_with_warning("title", self.title, MAX_SPOTIFY_TITLE_CHARS))
+        object.__setattr__(
+            self,
+            "description",
+            _truncate_html_with_warning("description", self.description, MAX_SPOTIFY_DESCRIPTION_CHARS),
+        )
+        object.__setattr__(self, "upload_format", _normalize_upload_format(self.upload_format))
 
     @classmethod
     def from_payload(cls, data: Mapping[str, Any] | None) -> "SpotifyPublishConfig | None":
@@ -126,23 +244,14 @@ class SpotifyPublishConfig:
 
         defaults = cls()
         return cls(
-            title_template=_string_or_default(config_payload.get("title_template"), defaults.title_template),
-            description_template=_string_or_default(
-                config_payload.get("description_template"), defaults.description_template
-            ),
+            title=_string_or_default(config_payload.get("title"), defaults.title),
+            description=_string_or_default(config_payload.get("description"), defaults.description),
             season_number=_string_or_int_or_default(config_payload.get("season_number"), defaults.season_number),
             episode_number=_string_or_int_or_default(
                 config_payload.get("episode_number"), defaults.episode_number
             ),
             publish_mode=_string_or_default(config_payload.get("publish_mode"), defaults.publish_mode),
-        )
-
-    def resolve_title(self, year: int, week: int, article_title: str) -> str:
-        return self.title_template.format(year=year, week=week, article_title=article_title)
-
-    def resolve_description(self, year: int, week: int, article_title: str, article_summary: str) -> str:
-        return self.description_template.format(
-            year=year, week=week, article_title=article_title, article_summary=article_summary
+            upload_format=_string_or_default(config_payload.get("upload_format"), defaults.upload_format),
         )
 
     def resolve_season(self, year: int, week: int) -> int:
@@ -167,6 +276,32 @@ def _host_from_payload(payload: object, defaults: HostConfig) -> HostConfig:
         voice=_string_or_default(payload.get("voice"), defaults.voice),
         style=_string_or_default(payload.get("style"), defaults.style),
     )
+
+
+def _truncate_with_warning(field_name: str, value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    logger.warning("Spotify publish %s exceeded %d chars; truncating.", field_name, limit)
+    return value[:limit]
+
+
+def _truncate_html_with_warning(field_name: str, value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    logger.warning("Spotify publish %s exceeded %d chars; truncating.", field_name, limit)
+    return truncate_html(value, limit)
+
+
+def _normalize_upload_format(value: str) -> str:
+    normalized = str(value or DEFAULT_SPOTIFY_UPLOAD_FORMAT).strip().lower()
+    if normalized in _SPOTIFY_UPLOAD_FORMATS:
+        return normalized
+    logger.warning(
+        "Spotify publish upload_format %r is unsupported; defaulting to %s.",
+        value,
+        DEFAULT_SPOTIFY_UPLOAD_FORMAT,
+    )
+    return DEFAULT_SPOTIFY_UPLOAD_FORMAT
 
 
 # --- Script Directions ---

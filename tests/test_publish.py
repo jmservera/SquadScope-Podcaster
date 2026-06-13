@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from podcaster.config import SpotifyPublishConfig
+from podcaster.config import SpotifyPublishConfig, truncate_html
 from podcaster.publish import (
     PublishResult,
     SpotifyPublishError,
@@ -50,6 +51,47 @@ def mp3_file(tmp_path):
     # Minimal MP3 header (not valid audio, but good for testing upload)
     f.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 1000)
     return f
+
+
+@pytest.fixture
+def wav_file(tmp_path):
+    f = tmp_path / "episode.wav"
+    f.write_bytes(b"RIFF" + b"\x00" * 1000)
+    return f
+
+
+class _BalancedHtmlParser(HTMLParser):
+    _void_tags = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.stack: list[str] = []
+        self.errors: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        if tag not in self._void_tags:
+            self.stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
+        if not self.stack or self.stack[-1] != tag:
+            self.errors.append(tag)
+            return
+        self.stack.pop()
 
 
 class TestEnabled:
@@ -114,46 +156,88 @@ class TestPublishEpisode:
         config = SpotifyPublishConfig.from_payload(
             {
                 "spotify_publish": {
-                    "title_template": "{year}-W{week}: {article_title}",
-                    "description_template": "<p>{article_summary}</p><p>Credits</p>",
+                    "title": "2026-W24: Signal",
+                    "description": "<p>Summary</p><p>Credits</p>",
                     "season_number": "{year}",
                     "episode_number": "{week}",
                     "publish_mode": "draft",
+                    "upload_format": "wav",
                 }
             }
         )
 
-        assert config.resolve_title(2026, 24, "Signal") == "2026-W24: Signal"
-        assert config.resolve_description(2026, 24, "Signal", "Summary") == "<p>Summary</p><p>Credits</p>"
+        assert config.title == "2026-W24: Signal"
+        assert config.description == "<p>Summary</p><p>Credits</p>"
         assert config.resolve_season(2026, 24) == 2026
         assert config.resolve_episode(2026, 24) == 24
+        assert config.upload_format == "wav"
 
-    def test_returns_failed_when_disabled(self, mp3_file):
-        result = publish_episode(mp3_file, "Test", "<p>desc</p>")
+    def test_spotify_publish_config_truncates_with_warning(self, caplog):
+        caplog.set_level("WARNING")
+        config = SpotifyPublishConfig(
+            title="T" * 250,
+            description="<p><strong>" + ("D" * 5000) + "</strong></p>",
+        )
+
+        assert config.title == "T" * 200
+        assert len(config.description) <= 4000
+        assert config.description.endswith("</strong></p>")
+        assert "Spotify publish title exceeded 200 chars; truncating." in caplog.text
+        assert "Spotify publish description exceeded 4000 chars; truncating." in caplog.text
+
+    def test_truncate_html_closes_nested_tags(self):
+        truncated = truncate_html("<p><strong>" + ("Signal " * 1000) + "</strong></p>", 120)
+        parser = _BalancedHtmlParser()
+        parser.feed(truncated)
+        parser.close()
+
+        assert len(truncated) <= 120
+        assert truncated.endswith("</strong></p>")
+        assert parser.errors == []
+        assert parser.stack == []
+
+    def test_truncate_html_drops_partial_trailing_tag(self):
+        html = "<p>" + ("x" * 3988) + '<a href="https://example.com/really/long/link">link</a></p>'
+        truncated = truncate_html(html, 4000)
+        parser = _BalancedHtmlParser()
+        parser.feed(truncated)
+        parser.close()
+
+        assert len(truncated) <= 4000
+        assert truncated.endswith("</p>")
+        assert "<a href" not in truncated
+        assert parser.errors == []
+        assert parser.stack == []
+
+    def test_returns_failed_when_disabled(self, mp3_file, wav_file):
+        result = publish_episode(mp3_file, "Test", "<p>desc</p>", wav_path=wav_file)
         assert result.status == "failed"
         assert "disabled" in result.error
 
-    def test_returns_failed_missing_creds(self, mp3_file, monkeypatch):
+    def test_returns_failed_missing_creds(self, mp3_file, wav_file, monkeypatch):
         monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
-        result = publish_episode(mp3_file, "Test", "<p>desc</p>")
+        result = publish_episode(mp3_file, "Test", "<p>desc</p>", wav_path=wav_file)
         assert result.status == "failed"
         assert "Missing" in result.error
 
-    def test_dry_run_mode(self, mp3_file, spotify_env, monkeypatch):
+    def test_dry_run_mode(self, mp3_file, wav_file, spotify_env, monkeypatch):
         monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
-        result = publish_episode(mp3_file, "Test Episode", "<p>desc</p>")
+        result = publish_episode(mp3_file, "Test Episode", "<p>desc</p>", wav_path=wav_file)
         assert result.status == "published"
         assert result.dry_run is True
         assert result.details["title"] == "Test Episode"
+        assert result.details["upload_format"] == "wav"
+        assert result.details["upload_path"] == str(wav_file)
 
-    def test_mp3_not_found(self, spotify_env, tmp_path):
-        missing = tmp_path / "missing.mp3"
-        result = publish_episode(missing, "Test", "<p>desc</p>")
+    def test_wav_not_found_when_wav_upload_selected(self, spotify_env, tmp_path):
+        missing_mp3 = tmp_path / "missing.mp3"
+        missing_wav = tmp_path / "missing.wav"
+        result = publish_episode(missing_mp3, "Test", "<p>desc</p>", wav_path=missing_wav)
         assert result.status == "failed"
         assert "not found" in result.error
 
     @patch("podcaster.publish._build_session")
-    def test_full_publish_success(self, mock_build, mp3_file, spotify_env):
+    def test_full_publish_success(self, mock_build, mp3_file, wav_file, spotify_env):
         mock_session = MagicMock()
         mock_build.return_value = mock_session
 
@@ -208,13 +292,16 @@ class TestPublishEpisode:
             publish_resp,
         ]
 
-        result = publish_episode(mp3_file, "Claracle W24", "<p>Episode notes</p>")
+        result = publish_episode(mp3_file, "Claracle W24", "<p>Episode notes</p>", wav_path=wav_file)
         assert result.status == "published"
         assert result.anchor_episode_id == 12345
         assert result.error is None
+        upload_call = mock_session.request.call_args_list[3]
+        assert upload_call.kwargs["headers"]["Content-Type"] == "audio/wav"
+        assert upload_call.kwargs["data"] == wav_file.read_bytes()
 
     @patch("podcaster.publish._build_session")
-    def test_scheduled_mode_passes_date(self, mock_build, mp3_file, spotify_env):
+    def test_scheduled_mode_passes_date(self, mock_build, mp3_file, wav_file, spotify_env):
         mock_session = MagicMock()
         mock_build.return_value = mock_session
 
@@ -231,11 +318,12 @@ class TestPublishEpisode:
         mock_session.request.side_effect = responses
 
         publish_config = SpotifyPublishConfig(
-            title_template="{year}-W{week}: {article_title}",
-            description_template="<p>{article_summary}</p>",
+            title="2026-W25: Scheduled Ep",
+            description="<p>desc</p>",
             season_number="{year}",
             episode_number="{week}",
             publish_mode="2026-06-20T09:00:00Z",
+            upload_format="wav",
         )
         result = publish_episode(
             mp3_file,
@@ -244,8 +332,7 @@ class TestPublishEpisode:
             spotify_publish_config=publish_config,
             year=2026,
             week=25,
-            article_title="Scheduled Ep",
-            article_summary="desc",
+            wav_path=wav_file,
         )
         assert result.status == "scheduled"
         assert result.anchor_episode_id == 999
@@ -257,7 +344,7 @@ class TestPublishEpisode:
         assert metadata_call.kwargs["json"]["episodeNumber"] == 25
 
     @patch("podcaster.publish._build_session")
-    def test_draft_mode_does_not_publish(self, mock_build, mp3_file, spotify_env):
+    def test_draft_mode_does_not_publish(self, mock_build, mp3_file, wav_file, spotify_env):
         mock_session = MagicMock()
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
@@ -275,16 +362,16 @@ class TestPublishEpisode:
             "Fallback Title",
             "<p>Fallback desc</p>",
             spotify_publish_config=SpotifyPublishConfig(
-                title_template="{year}-W{week}: {article_title}",
-                description_template="<p>{article_summary}</p><p>Credits</p>",
+                title="2026-W24: Signal",
+                description="<p>Summary</p><p>Credits</p>",
                 season_number="{year}",
                 episode_number="{week}",
                 publish_mode="draft",
+                upload_format="wav",
             ),
             year=2026,
             week=24,
-            article_title="Signal",
-            article_summary="Summary",
+            wav_path=wav_file,
         )
 
         assert result.status == "draft"
@@ -297,7 +384,7 @@ class TestPublishEpisode:
         assert metadata_call.kwargs["json"]["episodeNumber"] == 24
 
     @patch("podcaster.publish._build_session")
-    def test_missing_config_fallback(self, mock_build, mp3_file, spotify_env):
+    def test_missing_config_fallback(self, mock_build, mp3_file, wav_file, spotify_env):
         mock_session = MagicMock()
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
@@ -311,7 +398,7 @@ class TestPublishEpisode:
             _mock_json_resp({}),
         ]
 
-        result = publish_episode(mp3_file, "Original Title", "<p>Original desc</p>")
+        result = publish_episode(mp3_file, "Original Title", "<p>Original desc</p>", wav_path=wav_file)
 
         assert result.status == "published"
         metadata_call = mock_session.request.call_args_list[-2]
@@ -321,7 +408,7 @@ class TestPublishEpisode:
         assert publish_call.kwargs["json"] == {}
 
     @patch("podcaster.publish._build_session")
-    def test_api_error_graceful(self, mock_build, mp3_file, spotify_env):
+    def test_api_error_graceful(self, mock_build, mp3_file, wav_file, spotify_env):
         """Publish errors are caught — never raises."""
         mock_session = MagicMock()
         mock_build.return_value = mock_session
@@ -330,9 +417,37 @@ class TestPublishEpisode:
 
         mock_session.request.side_effect = req.ConnectionError("network down")
 
-        result = publish_episode(mp3_file, "Fail", "<p>x</p>")
+        result = publish_episode(mp3_file, "Fail", "<p>x</p>", wav_path=wav_file)
         assert result.status == "failed"
         assert "failed after" in result.error
+
+    @patch("podcaster.publish._build_session")
+    def test_mp3_upload_format_is_supported(self, mock_build, mp3_file, wav_file, spotify_env):
+        mock_session = MagicMock()
+        mock_build.return_value = mock_session
+        mock_session.request.side_effect = [
+            _mock_json_resp({"stationId": "s1", "userId": "u1"}),
+            _mock_json_resp({"id": 999}),
+            _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
+            _mock_resp_with_headers({"ETag": '"e1"'}),
+            _mock_json_resp({}),
+            _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
+            _mock_json_resp({}),
+        ]
+
+        result = publish_episode(
+            mp3_file,
+            "Original Title",
+            "<p>Original desc</p>",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="immediate", upload_format="mp3"),
+            wav_path=wav_file,
+        )
+
+        assert result.status == "published"
+        upload_call = mock_session.request.call_args_list[3]
+        assert upload_call.kwargs["headers"]["Content-Type"] == "audio/mpeg"
+        assert upload_call.kwargs["data"] == mp3_file.read_bytes()
 
 
 # -- Helpers --

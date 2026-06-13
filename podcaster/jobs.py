@@ -340,6 +340,8 @@ def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         request["podcast_config"] = payload["podcast_config"]
     if isinstance(payload.get("script_directions"), dict):
         request["script_directions"] = payload["script_directions"]
+    if isinstance(payload.get("spotify_publish"), dict):
+        request["spotify_publish"] = payload["spotify_publish"]
     return request
 
 
@@ -424,7 +426,7 @@ def _response_from_artifacts(
                 status,
                 manifest_url,
                 find(".mp3"),
-                None,
+                find(".wav"),
                 find("transcript.txt"),
                 find("show-notes.md"),
                 find(".zip"),

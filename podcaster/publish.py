@@ -241,21 +241,27 @@ def _get_upload_url(session: requests.Session, anchor_id: int) -> tuple[str, str
     return data["signedUrl"], str(data["uploadId"])
 
 
-def _upload_audio(session: requests.Session, signed_url: str, mp3_data: bytes) -> str:
-    """Step 4: Upload MP3 to GCS, returns ETag (stripped of quotes)."""
+def _upload_audio(
+    session: requests.Session,
+    signed_url: str,
+    audio_data: bytes,
+    *,
+    content_type: str,
+) -> str:
+    """Step 4: Upload audio to GCS, returns ETag (stripped of quotes)."""
     resp = _retry_request(
         session,
         "PUT",
         signed_url,
-        data=mp3_data,
+        data=audio_data,
         headers={
-            "Content-Type": "audio/mpeg",
+            "Content-Type": content_type,
             **_MUTATION_HEADERS,
         },
         timeout=120,
     )
     etag = resp.headers.get("ETag", "").strip('"')
-    logger.info("Uploaded audio (%d bytes), ETag=%s", len(mp3_data), etag)
+    logger.info("Uploaded audio (%d bytes, %s), ETag=%s", len(audio_data), content_type, etag)
     return etag
 
 
@@ -365,42 +371,6 @@ def _publish_episode_live(
     )
 
 
-def _safe_resolve_title(
-    config: SpotifyPublishConfig,
-    *,
-    year: int,
-    week: int,
-    article_title: str,
-    fallback: str,
-) -> str:
-    try:
-        return config.resolve_title(year=year, week=week, article_title=article_title)
-    except (IndexError, KeyError, ValueError) as exc:
-        logger.warning("Spotify publish title template failed; using article title: %s", exc)
-        return article_title or fallback
-
-
-def _safe_resolve_description(
-    config: SpotifyPublishConfig,
-    *,
-    year: int,
-    week: int,
-    article_title: str,
-    article_summary: str,
-    fallback: str,
-) -> str:
-    try:
-        return config.resolve_description(
-            year=year,
-            week=week,
-            article_title=article_title,
-            article_summary=article_summary,
-        )
-    except (IndexError, KeyError, ValueError) as exc:
-        logger.warning("Spotify publish description template failed; using fallback: %s", exc)
-        return fallback
-
-
 def _safe_resolve_number(
     label: str,
     resolver,
@@ -426,33 +396,16 @@ def _resolve_publish_inputs(
     week: int | None,
     article_title: str | None,
     article_summary: str | None,
-) -> tuple[str, str, int | None, int | None, str, datetime | None]:
+) -> tuple[str, str, int | None, int | None, str, datetime | None, str]:
     if spotify_publish_config is None:
-        return title, description, None, None, "immediate", publish_on
+        return title, description, None, None, "immediate", publish_on, "wav"
 
-    resolved_title = title
-    resolved_description = description
+    resolved_title = spotify_publish_config.title or title
+    resolved_description = spotify_publish_config.description or description
     resolved_season: int | None = None
     resolved_episode: int | None = None
 
     if year is not None and week is not None:
-        raw_title = article_title or title
-        raw_summary = article_summary or ""
-        resolved_title = _safe_resolve_title(
-            spotify_publish_config,
-            year=year,
-            week=week,
-            article_title=raw_title,
-            fallback=title,
-        )
-        resolved_description = _safe_resolve_description(
-            spotify_publish_config,
-            year=year,
-            week=week,
-            article_title=raw_title,
-            article_summary=raw_summary,
-            fallback=description,
-        )
         resolved_season = _safe_resolve_number(
             "season",
             spotify_publish_config.resolve_season,
@@ -471,9 +424,9 @@ def _resolve_publish_inputs(
     publish_mode_raw = spotify_publish_config.publish_mode.strip()
     publish_mode = publish_mode_raw.lower()
     if publish_mode == "draft":
-        return resolved_title, resolved_description, resolved_season, resolved_episode, "draft", None
+        return resolved_title, resolved_description, resolved_season, resolved_episode, "draft", None, spotify_publish_config.upload_format
     if publish_mode == "immediate":
-        return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None
+        return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None, spotify_publish_config.upload_format
 
     try:
         parsed_publish_on = datetime.fromisoformat(publish_mode_raw.replace("Z", "+00:00"))
@@ -486,9 +439,14 @@ def _resolve_publish_inputs(
             resolved_episode,
             "scheduled",
             parsed_publish_on,
+            spotify_publish_config.upload_format,
         )
     except ValueError as exc:
-        logger.warning("Spotify publish_mode %r is invalid; using fallback publish behavior: %s", spotify_publish_config.publish_mode, exc)
+        logger.warning(
+            "Spotify publish_mode %r is invalid; using fallback publish behavior: %s",
+            spotify_publish_config.publish_mode,
+            exc,
+        )
         if publish_on is not None:
             return (
                 resolved_title,
@@ -497,8 +455,9 @@ def _resolve_publish_inputs(
                 resolved_episode,
                 "scheduled",
                 publish_on,
+                spotify_publish_config.upload_format,
             )
-        return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None
+        return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None, spotify_publish_config.upload_format
 
 
 def publish_episode(
@@ -516,6 +475,8 @@ def publish_episode(
     week: int | None = None,
     article_title: str | None = None,
     article_summary: str | None = None,
+    *,
+    wav_path: Path | None = None,
 ) -> PublishResult:
     """Publish an episode to Spotify for Creators.
 
@@ -524,7 +485,7 @@ def publish_episode(
     This ensures publish failures never break the generation pipeline.
 
     Args:
-        mp3_path: Path to the MP3 file to upload.
+        mp3_path: Path to the distribution MP3 artifact.
         title: Episode title.
         description: Episode description (HTML format).
         show_id: Spotify show ID (defaults to SPOTIFY_SHOW_ID env).
@@ -538,6 +499,7 @@ def publish_episode(
         week: Episode ISO week context for config template resolution.
         article_title: Source article title for config template resolution.
         article_summary: Source article summary for config template resolution.
+        wav_path: Optional WAV artifact path for Spotify upload.
 
     Returns:
         PublishResult with status and any error details.
@@ -548,7 +510,7 @@ def publish_episode(
             error="Spotify publishing disabled (SPOTIFY_PUBLISH_ENABLED != true).",
         )
 
-    resolved_title, resolved_description, season_number, episode_number, publish_behavior, resolved_publish_on = (
+    resolved_title, resolved_description, season_number, episode_number, publish_behavior, resolved_publish_on, upload_format = (
         _resolve_publish_inputs(
             title,
             description,
@@ -572,18 +534,35 @@ def publish_episode(
 
     # Dry-run mode
     if _is_dry_run():
-        logger.info("DRY RUN: Would publish %s as '%s' (%s)", mp3_path, resolved_title, publish_behavior)
+        selected_path = wav_path if upload_format == "wav" else mp3_path
+        logger.info(
+            "DRY RUN: Would publish %s as '%s' (%s, format=%s)",
+            selected_path,
+            resolved_title,
+            publish_behavior,
+            upload_format,
+        )
         return PublishResult(
             anchor_episode_id=None,
             status="draft" if publish_behavior == "draft" else ("scheduled" if resolved_publish_on else "published"),
             dry_run=True,
-            details={"title": resolved_title, "mp3_path": str(mp3_path), "publish_behavior": publish_behavior},
+            details={
+                "title": resolved_title,
+                "mp3_path": str(mp3_path),
+                "wav_path": str(wav_path) if wav_path else None,
+                "upload_path": str(selected_path) if selected_path else None,
+                "upload_format": upload_format,
+                "publish_behavior": publish_behavior,
+            },
         )
 
-    # Validate MP3 exists
-    if not mp3_path.exists():
+    upload_path = wav_path if upload_format == "wav" else mp3_path
+    content_type = "audio/wav" if upload_format == "wav" else "audio/mpeg"
+    format_label = "WAV" if upload_format == "wav" else "MP3"
+
+    if upload_path is None or not upload_path.exists():
         return PublishResult(
-            status="failed", error=f"MP3 file not found: {mp3_path}"
+            status="failed", error=f"{format_label} file not found: {upload_path}"
         )
 
     try:
@@ -599,8 +578,8 @@ def publish_episode(
         signed_url, upload_id = _get_upload_url(session, anchor_id)
 
         # Step 4: Upload audio
-        mp3_data = mp3_path.read_bytes()
-        etag = _upload_audio(session, signed_url, mp3_data)
+        audio_data = upload_path.read_bytes()
+        etag = _upload_audio(session, signed_url, audio_data, content_type=content_type)
 
         # Step 5: Process upload
         _process_upload(session, upload_id, etag)

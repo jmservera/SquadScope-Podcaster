@@ -48,8 +48,8 @@ def test_stitch_segments_runs_concat_then_two_pass_loudnorm(tmp_path):
     result = audio.stitch_segments([b"seg-a", b"seg-b", b"seg-c"], output_path, runner=runner, gap_seconds=0.3)
 
     assert result == output_path
-    # Three passes: concat, loudnorm measure, loudnorm apply.
-    assert len(calls) == 3
+    # Four passes: concat, loudnorm measure, loudnorm apply-to-wav, MP3 encode.
+    assert len(calls) == 4
     concat_cmd = " ".join(calls[0])
     # Three real inputs, with two silent gaps between them, concatenated to 5 parts.
     assert concat_cmd.count("-i ") == 3
@@ -60,7 +60,27 @@ def test_stitch_segments_runs_concat_then_two_pass_loudnorm(tmp_path):
     applied = " ".join(calls[2])
     assert "measured_I=-17.4" in applied
     assert "offset=0.2" in applied
-    assert "libmp3lame" in applied
+    assert "pcm_s16le" in applied
+    encoded = " ".join(calls[3])
+    assert "libmp3lame" in encoded
+    assert "192k" in encoded
+
+
+def test_stitch_segments_uses_requested_segment_extension(tmp_path):
+    calls: list[list[str]] = []
+    output_path = tmp_path / "episode.mp3"
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[-1] == str(output_path):
+            output_path.write_bytes(b"ID3-final-mp3")
+        return _completed(stderr='{ "input_i" : "-17.4", "input_tp" : "-1.0", "input_lra" : "4.3", "input_thresh" : "-27.6", "target_offset" : "0.2" }')
+
+    audio.stitch_segments([b"RIFFseg-a", b"RIFFseg-b"], output_path, runner=runner, segment_extension=".wav")
+
+    concat_cmd = " ".join(calls[0])
+    assert "segment-000.wav" in concat_cmd
+    assert "segment-001.wav" in concat_cmd
 
 
 def test_parse_loudnorm_json_handles_missing_block():
@@ -151,7 +171,7 @@ def test_stitch_segments_with_mix_spec_keeps_backward_compatible_concat_when_non
         mix_spec=None,
     )
 
-    assert [command[0] for command in calls] == ["ffmpeg", "ffmpeg", "ffmpeg"]
+    assert [command[0] for command in calls] == ["ffmpeg", "ffmpeg", "ffmpeg", "ffmpeg"]
     concat_cmd = " ".join(calls[0])
     assert concat_cmd.count("-i ") == 4
     assert "concat=n=7:v=0:a=1[out]" in concat_cmd
@@ -235,7 +255,7 @@ def test_stitch_segments_with_mix_spec_extends_program_duration(tmp_path):
                 "-codec:a",
                 "libmp3lame",
                 "-b:a",
-                "96k",
+                "192k",
                 str(path),
             ],
             check=True,

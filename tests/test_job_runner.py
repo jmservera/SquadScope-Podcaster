@@ -88,6 +88,7 @@ def _placeholder_script() -> str:
 
 def _base_manifest(status: str = "review_pending") -> dict:
     mp3_path = f"jobs/{JOB_ID}/audio/{JOB_ID}.mp3"
+    wav_path = f"jobs/{JOB_ID}/audio/{JOB_ID}.wav"
     return {
         "schema_version": "squadscope-podcaster-job-v1",
         "job_id": JOB_ID,
@@ -110,6 +111,7 @@ def _base_manifest(status: str = "review_pending") -> dict:
         "lifecycle": {"status": status, "revision": 1, "transitions": [{"at": "t0", "to": "review_pending", "reason": "artifacts_staged"}]},
         "artifacts": {
             mp3_path: {"url": f"https://test.invalid/{mp3_path}", "publicly_accessible": False, "size_bytes": 1, "content_type": "audio/mpeg", "sha256": "0" * 64},
+            wav_path: {"url": f"https://test.invalid/{wav_path}", "publicly_accessible": False, "size_bytes": 1, "content_type": "audio/wav", "sha256": "0" * 64},
         },
     }
 
@@ -120,25 +122,38 @@ def _stage(storage: FakeStorage, manifest: dict, script: str) -> None:
 
 
 def _patch_audio(monkeypatch) -> None:
-    def fake_stitch(segments, out, runner=None, **kwargs):
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
+        Path(wav_out).write_bytes(b"stitched-wav-bytes")
         Path(out).write_bytes(b"stitched-mp3-bytes")
-        return Path(out)
+        return Path(wav_out), Path(out)
 
     def fake_probe(path, sha256, runner=None):
         from podcaster.audio import AudioMetadata
 
+        if str(path).endswith(".wav"):
+            return AudioMetadata(
+                duration_seconds=300.0,
+                loudness_lufs=-16.0,
+                sample_rate_hz=44100,
+                bitrate_bps=705600,
+                channels=1,
+                content_type="audio/wav",
+                byte_length=Path(path).stat().st_size,
+                sha256=sha256,
+                codec_name="pcm_s16le",
+            )
         return AudioMetadata(
             duration_seconds=300.0,
             loudness_lufs=-16.0,
             sample_rate_hz=44100,
-            bitrate_bps=96000,
+            bitrate_bps=192000,
             channels=1,
             content_type="audio/mpeg",
             byte_length=Path(path).stat().st_size,
             sha256=sha256,
         )
 
-    monkeypatch.setattr(episode, "stitch_segments", fake_stitch)
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
     monkeypatch.setattr(episode, "probe_audio", fake_probe)
 
 
@@ -194,8 +209,12 @@ def test_run_synthesis_completes_and_never_makes_publishable(monkeypatch):
     assert gen["synthesis_runner"]["job_id"] == JOB_ID
     # Audio bytes were staged and the manifest artifact checksum updated.
     mp3_path = gen["synthesis_runner"]["audio"]["path"]
+    wav_path = gen["synthesis_runner"]["audio"]["artifacts"]["wav"]["path"]
     assert storage.get_bytes(mp3_path) == b"stitched-mp3-bytes"
+    assert storage.get_bytes(wav_path) == b"stitched-wav-bytes"
     assert manifest["artifacts"][mp3_path]["sha256"] == gen["synthesis_runner"]["audio"]["sha256"]
+    assert manifest["artifacts"][wav_path]["sha256"] == gen["synthesis_runner"]["audio"]["artifacts"]["wav"]["sha256"]
+    assert gen["synthesis_runner"]["audio"]["upload_format"] == "wav"
 
     pub = manifest["publishing"]
     # Human-review gate is preserved: never publication-eligible from the runner.
@@ -278,6 +297,7 @@ def test_run_synthesis_failure_does_not_make_publishable(monkeypatch):
     assert manifest["generation"]["synthesis_runner"]["status"] == "failed"
     # No real audio was staged on failure.
     assert storage.get_bytes(f"jobs/{JOB_ID}/audio/{JOB_ID}.mp3") is None
+    assert storage.get_bytes(f"jobs/{JOB_ID}/audio/{JOB_ID}.wav") is None
 
 
 def test_run_synthesis_missing_manifest_is_transient():
