@@ -7,7 +7,11 @@
 # Requires: gh CLI (authenticated), az CLI (logged in)
 
 set -euo pipefail
+set +x 2>/dev/null || true
 
+command -v gh >/dev/null 2>&1 || { echo "❌ 'gh' CLI not found on PATH (install GitHub CLI)"; exit 1; }
+command -v az >/dev/null 2>&1 || { echo "❌ 'az' CLI not found on PATH (install Azure CLI)"; exit 1; }
+az account show --output none 2>/dev/null || { echo "❌ Not logged in to Azure. Run: az login"; exit 1; }
 REPO="jmservera/SquadScope-Podcaster"
 RESOURCE_GROUP="squadscope-podcaster"
 CONTAINER_APP="${RESOURCE_GROUP}-api"
