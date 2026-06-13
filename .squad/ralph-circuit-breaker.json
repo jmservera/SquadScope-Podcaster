@@ -4,6 +4,6 @@
   "cooldownMinutes": 2,
   "consecutiveFailures": 0,
   "consecutiveSuccesses": 0,
-  "lastRateLimitRemaining": 4959,
+  "lastRateLimitRemaining": 4882,
   "lastRateLimitTotal": 5000
 }

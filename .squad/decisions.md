@@ -1114,8 +1114,36 @@ Approved to commit Wave 1/2/3 local increment as a single cohesive release. No A
 
 
 
-### 2026-06-13: NEVER bypass branch rulesets
-- All changes MUST go through branch + PR. No direct pushes to main.
-- Agents must create a feature branch and open a PR, even for cleanup/docs/trivial changes.
-- Never disable, bypass, or work around branch protection rulesets.
-- Operator directive — no exceptions.
+### Verdict: 🔴
+
+Review scope note: `feat/spotify-publish-182` currently matches `main` and does **not** contain `podcaster/publish.py`. This review therefore covers the current repository state (`architecture.md`) plus upstream `spotifyconnector==0.8.2` behavior. I cannot approve production use until the actual publish implementation exists and is reviewed.
+
+### Findings
+
+| # | Severity | Finding | Recommendation |
+|---|----------|---------|----------------|
+| 1 | High | **Implementation missing on the reviewed branch.** `podcaster/publish.py` is absent, so secret handling, dry-run enforcement, response parsing, and exception propagation cannot be verified. | Do not enable auto-publish until the implementation lands and receives a second security review. |
+| 2 | High | **`spotifyconnector` logs highly sensitive auth material when verbose logging is enabled.** Upstream `spotifyconnector/connector.py` logs `response.text`, parsed HTML, `auth_code`, and the Bearer token at TRACE level, and logs full response headers/body on non-OK API responses. | Never enable TRACE/DEBUG for this package in production. Wrap or fork the auth exchange so cookies, auth codes, Bearer JWTs, headers, and bodies are redacted before logging. Prefer a minimal in-repo adapter over direct package logging. |
+| 3 | High | **Unofficial cookie-based auth has account-takeover impact if leaked.** `sp_dc` and `sp_key` are browser session secrets, not scoped API credentials. Leakage would expose the operator’s Spotify for Creators session, not just a single publish action. | Treat `SP_DC` and `SP_KEY` as tier-0 secrets: store only in GitHub/Azure secret stores, mask aggressively, never print them, and rotate immediately after any suspected exposure. Use a dedicated low-privilege Spotify account if policy allows. |
+| 4 | Medium | **TLS is used upstream, but caller-controlled API base URL can weaken transport guarantees.** Upstream auth calls are hardcoded to `https://accounts.spotify.com`; however `SpotifyConnector.base_url` is caller-supplied, so a careless implementation could point API calls at `http://...`. | Hardcode or validate `https://` for every Spotify endpoint. Reject any non-HTTPS base URL at startup. Do not allow env/config overrides to switch to HTTP. |
+| 5 | Medium | **Bearer token is cached in process memory.** Upstream stores `_bearer` and `_bearer_expires` in memory and refreshes on expiry/401. I found no disk persistence in the package, which is good, but memory-resident tokens still must not leak through exceptions or logs. | Keep token cache in memory only; never serialize it to files, queues, manifests, or job responses. On failure, surface sanitized errors only. |
+| 6 | Medium | **Package trust / supply-chain risk is non-trivial.** `spotifyconnector` is a small third-party package maintained outside Spotify, published by a single PyPI owner, uses an unofficial API, and its 0.8.2 runtime dependencies include `myst-parser[docs]`, which appears unnecessary for production auth use. | Pin exact version **and hashes**, vendor or fork the minimal auth logic if this feature proceeds, and monitor upstream releases/breakage. Prefer reducing the trusted code path to the smallest auditable module possible. |
+| 7 | Medium | **Dry-run behavior cannot be verified.** The repo currently defines `SPOTIFY_PUBLISH_DRY_RUN` only in documentation; there is no implementation proving that dry-run skips *all* outbound network calls, including token exchange. | Require dry-run to short-circuit before constructing `SpotifyConnector` or issuing any HTTP request. Add tests asserting zero calls to Spotify in dry-run mode. |
+| 8 | Medium | **Unexpected-response handling is unverified, and upstream parsing is brittle.** Upstream auth scrapes HTML/JS with regex and YAML parsing. If Spotify changes the page shape, failures may be noisy or confusing. | Catch upstream exceptions at the publish boundary and replace them with sanitized, operator-safe errors that include no headers, bodies, cookies, JWTs, or local paths. Add contract tests for malformed/changed responses. |
+| 9 | Low | **`SPOTIFY_SHOW_ID` is not a secret.** A podcast/show identifier is public metadata, unlike `SP_DC` / `SP_KEY`. | Store `SPOTIFY_SHOW_ID` as a normal GitHub Actions/Azure configuration variable, not a secret. Keep only auth cookies in secret stores. |
+| 10 | Low | **Input validation for publish fields is not reviewable yet.** Without `publish.py`, I cannot verify path handling for MP3 input or safe encoding of title/description. | When implementation lands, validate `mp3_path` against expected artifact roots, avoid shell interpolation, and send title/description as JSON payload fields only. |
+
+### Recommendations for operator
+
+1. **Do not enable production auto-publish yet.** The implementation is not present on the reviewed branch.
+2. If the feature proceeds, **prefer a tiny in-repo adapter or vendored fork** for cookie→Bearer exchange instead of importing the full package with verbose logging behavior.
+3. **Force HTTPS** and hardcode allowed Spotify hosts (`accounts.spotify.com`, `podcasters.spotify.com` / `creators.spotify.com`, and the exact API host actually used).
+4. **Sanitize every failure path** at the publish boundary; never bubble raw `spotifyconnector` exceptions to API responses, logs, step summaries, or job manifests.
+5. **Dry-run must be network-dark**: no auth exchange, no upload, no metadata fetch.
+6. **Add security tests** before rollout:
+   - no cookies/JWTs in logs or exception strings
+   - dry-run makes zero HTTP calls
+   - non-HTTPS URLs are rejected
+   - malformed Spotify responses return sanitized errors
+7. **Use `SPOTIFY_SHOW_ID` as non-secret config**; keep only `SP_DC` and `SP_KEY` in GitHub/Azure secrets.
+
