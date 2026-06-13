@@ -113,6 +113,9 @@ param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 @description('API app name.')
 param apiAppName string = '${baseName}-api'
 
+@description('Spotify show ID for auto-publish (#182). Empty disables publishing.')
+param spotifyShowId string = ''
+
 @description('Deploy an Azure Container Registry for synthesis/API images (#129).')
 param deployAcr bool = true
 
@@ -237,6 +240,7 @@ module aca 'modules/aca.bicep' = {
     ttsVoiceHostA: ttsVoiceHostA
     ttsVoiceHostB: ttsVoiceHostB
     podcasterApiKey: podcasterApiKey
+    spotifyShowId: spotifyShowId
   }
   dependsOn: [
     artifactContainer
@@ -284,6 +288,7 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     containerRegistryServer: acrLoginServer
     openAiEndpoint: openAiEndpoint
     chatDeploymentName: chatDeploymentName
+    spotifyShowId: spotifyShowId
   }
   dependsOn: [
     artifactContainer
