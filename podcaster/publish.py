@@ -118,7 +118,7 @@ def _build_session(sp_dc: str, sp_key: str, show_id: str) -> requests.Session:
 
 
 def _mums_params(**kwargs: str) -> dict[str, str]:
-    return {"isMumsCompatible": "true", **kwargs}
+    return {**kwargs, "isMumsCompatible": "true"}
 
 
 def _request_bearer_token(sp_dc: str, sp_key: str, show_id: str) -> str:
@@ -301,7 +301,11 @@ def _upload_audio(
     *,
     content_type: str,
 ) -> str:
-    """Step 4: Upload audio to GCS, returns ETag (stripped of quotes)."""
+    """Step 4: Upload audio to GCS, returns ETag (stripped of quotes).
+
+    Strips the Authorization header to avoid leaking the Spotify bearer
+    token to the external GCS upload host.
+    """
     resp = _retry_request(
         session,
         "PUT",
@@ -309,6 +313,7 @@ def _upload_audio(
         data=audio_data,
         headers={
             "Content-Type": content_type,
+            "Authorization": None,
             **_MUTATION_HEADERS,
         },
         timeout=120,
