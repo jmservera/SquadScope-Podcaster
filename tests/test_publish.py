@@ -114,8 +114,8 @@ class TestPublishEpisode:
         config = SpotifyPublishConfig.from_payload(
             {
                 "spotify_publish": {
-                    "title_template": "{year}-W{week}: {article_title}",
-                    "description_template": "<p>{article_summary}</p><p>Credits</p>",
+                    "title": "2026-W24: Signal",
+                    "description": "<p>Summary</p><p>Credits</p>",
                     "season_number": "{year}",
                     "episode_number": "{week}",
                     "publish_mode": "draft",
@@ -123,10 +123,22 @@ class TestPublishEpisode:
             }
         )
 
-        assert config.resolve_title(2026, 24, "Signal") == "2026-W24: Signal"
-        assert config.resolve_description(2026, 24, "Signal", "Summary") == "<p>Summary</p><p>Credits</p>"
+        assert config.title == "2026-W24: Signal"
+        assert config.description == "<p>Summary</p><p>Credits</p>"
         assert config.resolve_season(2026, 24) == 2026
         assert config.resolve_episode(2026, 24) == 24
+
+    def test_spotify_publish_config_truncates_with_warning(self, caplog):
+        caplog.set_level("WARNING")
+        config = SpotifyPublishConfig(
+            title="T" * 250,
+            description="D" * 5000,
+        )
+
+        assert config.title == "T" * 200
+        assert config.description == "D" * 4000
+        assert "Spotify publish title exceeded 200 chars; truncating." in caplog.text
+        assert "Spotify publish description exceeded 4000 chars; truncating." in caplog.text
 
     def test_returns_failed_when_disabled(self, mp3_file):
         result = publish_episode(mp3_file, "Test", "<p>desc</p>")
@@ -231,8 +243,8 @@ class TestPublishEpisode:
         mock_session.request.side_effect = responses
 
         publish_config = SpotifyPublishConfig(
-            title_template="{year}-W{week}: {article_title}",
-            description_template="<p>{article_summary}</p>",
+            title="2026-W25: Scheduled Ep",
+            description="<p>desc</p>",
             season_number="{year}",
             episode_number="{week}",
             publish_mode="2026-06-20T09:00:00Z",
@@ -244,8 +256,6 @@ class TestPublishEpisode:
             spotify_publish_config=publish_config,
             year=2026,
             week=25,
-            article_title="Scheduled Ep",
-            article_summary="desc",
         )
         assert result.status == "scheduled"
         assert result.anchor_episode_id == 999
@@ -275,16 +285,14 @@ class TestPublishEpisode:
             "Fallback Title",
             "<p>Fallback desc</p>",
             spotify_publish_config=SpotifyPublishConfig(
-                title_template="{year}-W{week}: {article_title}",
-                description_template="<p>{article_summary}</p><p>Credits</p>",
+                title="2026-W24: Signal",
+                description="<p>Summary</p><p>Credits</p>",
                 season_number="{year}",
                 episode_number="{week}",
                 publish_mode="draft",
             ),
             year=2026,
             week=24,
-            article_title="Signal",
-            article_summary="Summary",
         )
 
         assert result.status == "draft"

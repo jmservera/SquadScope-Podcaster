@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
+MAX_SPOTIFY_TITLE_CHARS = 200
+MAX_SPOTIFY_DESCRIPTION_CHARS = 4_000
 
 
 def _generation_defaults():
@@ -102,11 +107,19 @@ class PodcastConfig:
 
 @dataclass(frozen=True)
 class SpotifyPublishConfig:
-    title_template: str = "{article_title}"
-    description_template: str = "<p>{article_summary}</p>"
+    title: str = ""
+    description: str = ""
     season_number: str | int = "{year}"
     episode_number: str | int = "{week}"
     publish_mode: str = "draft"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "title", _truncate_with_warning("title", self.title, MAX_SPOTIFY_TITLE_CHARS))
+        object.__setattr__(
+            self,
+            "description",
+            _truncate_with_warning("description", self.description, MAX_SPOTIFY_DESCRIPTION_CHARS),
+        )
 
     @classmethod
     def from_payload(cls, data: Mapping[str, Any] | None) -> "SpotifyPublishConfig | None":
@@ -126,23 +139,13 @@ class SpotifyPublishConfig:
 
         defaults = cls()
         return cls(
-            title_template=_string_or_default(config_payload.get("title_template"), defaults.title_template),
-            description_template=_string_or_default(
-                config_payload.get("description_template"), defaults.description_template
-            ),
+            title=_string_or_default(config_payload.get("title"), defaults.title),
+            description=_string_or_default(config_payload.get("description"), defaults.description),
             season_number=_string_or_int_or_default(config_payload.get("season_number"), defaults.season_number),
             episode_number=_string_or_int_or_default(
                 config_payload.get("episode_number"), defaults.episode_number
             ),
             publish_mode=_string_or_default(config_payload.get("publish_mode"), defaults.publish_mode),
-        )
-
-    def resolve_title(self, year: int, week: int, article_title: str) -> str:
-        return self.title_template.format(year=year, week=week, article_title=article_title)
-
-    def resolve_description(self, year: int, week: int, article_title: str, article_summary: str) -> str:
-        return self.description_template.format(
-            year=year, week=week, article_title=article_title, article_summary=article_summary
         )
 
     def resolve_season(self, year: int, week: int) -> int:
@@ -167,6 +170,13 @@ def _host_from_payload(payload: object, defaults: HostConfig) -> HostConfig:
         voice=_string_or_default(payload.get("voice"), defaults.voice),
         style=_string_or_default(payload.get("style"), defaults.style),
     )
+
+
+def _truncate_with_warning(field_name: str, value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    logger.warning("Spotify publish %s exceeded %d chars; truncating.", field_name, limit)
+    return value[:limit]
 
 
 # --- Script Directions ---

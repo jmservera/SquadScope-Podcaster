@@ -365,42 +365,6 @@ def _publish_episode_live(
     )
 
 
-def _safe_resolve_title(
-    config: SpotifyPublishConfig,
-    *,
-    year: int,
-    week: int,
-    article_title: str,
-    fallback: str,
-) -> str:
-    try:
-        return config.resolve_title(year=year, week=week, article_title=article_title)
-    except (IndexError, KeyError, ValueError) as exc:
-        logger.warning("Spotify publish title template failed; using article title: %s", exc)
-        return article_title or fallback
-
-
-def _safe_resolve_description(
-    config: SpotifyPublishConfig,
-    *,
-    year: int,
-    week: int,
-    article_title: str,
-    article_summary: str,
-    fallback: str,
-) -> str:
-    try:
-        return config.resolve_description(
-            year=year,
-            week=week,
-            article_title=article_title,
-            article_summary=article_summary,
-        )
-    except (IndexError, KeyError, ValueError) as exc:
-        logger.warning("Spotify publish description template failed; using fallback: %s", exc)
-        return fallback
-
-
 def _safe_resolve_number(
     label: str,
     resolver,
@@ -430,29 +394,12 @@ def _resolve_publish_inputs(
     if spotify_publish_config is None:
         return title, description, None, None, "immediate", publish_on
 
-    resolved_title = title
-    resolved_description = description
+    resolved_title = spotify_publish_config.title or title
+    resolved_description = spotify_publish_config.description or description
     resolved_season: int | None = None
     resolved_episode: int | None = None
 
     if year is not None and week is not None:
-        raw_title = article_title or title
-        raw_summary = article_summary or ""
-        resolved_title = _safe_resolve_title(
-            spotify_publish_config,
-            year=year,
-            week=week,
-            article_title=raw_title,
-            fallback=title,
-        )
-        resolved_description = _safe_resolve_description(
-            spotify_publish_config,
-            year=year,
-            week=week,
-            article_title=raw_title,
-            article_summary=raw_summary,
-            fallback=description,
-        )
         resolved_season = _safe_resolve_number(
             "season",
             spotify_publish_config.resolve_season,
