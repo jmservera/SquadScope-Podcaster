@@ -116,3 +116,4 @@ Artifact access uses a private/operator-only model for the initial release: resp
 - Store or sync the same API key as `PODCASTER_API_KEY` in `jmservera/SquadScope` for caller authentication.
 - Use GitHub Actions masking and avoid shell tracing around secret operations.
 - The API does not echo received API keys or include them in logs or responses.
+- To refresh Spotify publish cookies interactively, run `pip install -r requirements-scripts.txt && playwright install chromium`, then `python scripts/extract-spotify-cookies.py`. After it writes `.env`, run `./scripts/set-spotify-secrets.sh`.
