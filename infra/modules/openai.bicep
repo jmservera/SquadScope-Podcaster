@@ -120,7 +120,7 @@ resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-1
 
 // Synthesis job reaches Azure OpenAI with its managed identity instead of an account key.
 resource openAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(openAiAccount.id, synthesisJobPrincipalId, 'Cognitive Services OpenAI User')
+  name: guid(openAiAccount.id, synthesisJobPrincipalId, '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
   scope: openAiAccount
   properties: {
     principalId: synthesisJobPrincipalId
@@ -131,7 +131,7 @@ resource openAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 // The synthesis ACA Job (#76) also reaches Azure OpenAI TTS with its own managed identity.
 resource audioJobOpenAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (hasAudioJobPrincipal) {
-  name: guid(openAiAccount.id, audioJobPrincipalId, 'Synthesis Job Cognitive Services OpenAI User')
+  name: guid(openAiAccount.id, audioJobPrincipalId, '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
   scope: openAiAccount
   properties: {
     principalId: audioJobPrincipalId
