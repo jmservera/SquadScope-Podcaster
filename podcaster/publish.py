@@ -138,13 +138,18 @@ def _retry_request(
             last_exc = exc
             if attempt < _MAX_RETRIES - 1:
                 wait = _RETRY_BACKOFF_BASE ** attempt
+                # Sanitize exception message — requests embeds full URLs
+                # (including signed query params) in its error strings.
+                safe_reason = type(exc).__name__
+                if exc.response is not None:
+                    safe_reason += f" (HTTP {exc.response.status_code})"
                 logger.warning(
                     "Spotify API %s %s failed (attempt %d/%d): %s — retrying in %.1fs",
                     method,
                     log_url,
                     attempt + 1,
                     _MAX_RETRIES,
-                    exc,
+                    safe_reason,
                     wait,
                 )
                 time.sleep(wait)
