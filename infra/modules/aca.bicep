@@ -249,10 +249,15 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
   }
 }
 
-// Identity-only access to stage artifacts in the private blob container only.
+// Storage Blob Data Contributor at account level — container-scoped RBAC is unreliable
+// for data-plane calls via IMDS tokens in ACA. Account scope is still least-privilege
+// relative to the subscription/RG.
+// NOTE: if upgrading from a previous deployment that had container/queue-scoped roles,
+// those old role assignments remain in place (ARM/Bicep won't auto-remove them). Run a
+// one-time cleanup: az role assignment delete --ids <old-container-scoped-id>
 resource jobBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(artifactContainer.id, jobIdentity.id, 'Synthesis Job Storage Blob Data Contributor')
-  scope: artifactContainer
+  name: guid(storage.id, jobIdentity.id, 'Synthesis Job Storage Blob Data Contributor')
+  scope: storage
   properties: {
     principalId: jobIdentity.properties.principalId
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobDataContributorRoleId)
@@ -260,10 +265,10 @@ resource jobBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04
   }
 }
 
-// Identity-only access to read queue length (scaler) and process synthesis messages on the synthesis queue only.
+// Storage Queue Data Contributor at account level — same reasoning as blob above.
 resource jobQueueDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(synthesisQueue.id, jobIdentity.id, 'Synthesis Job Storage Queue Data Contributor')
-  scope: synthesisQueue
+  name: guid(storage.id, jobIdentity.id, 'Synthesis Job Storage Queue Data Contributor')
+  scope: storage
   properties: {
     principalId: jobIdentity.properties.principalId
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueDataContributorRoleId)

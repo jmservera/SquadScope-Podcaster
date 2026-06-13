@@ -217,3 +217,6 @@ Keep the `/api/generate` v1 request backward compatible: `source_artifacts` acce
 - Unknown object fields remain rejected so future contract drift is visible in tests.
 - The top-level `/api/generate` response shape remains unchanged.
 
+### 2026-06-13: Branch rulesets directive (moved to decisions.md)
+Archived here as cross-reference only. Active directive lives in decisions.md.
+
