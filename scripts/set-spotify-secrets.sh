@@ -42,9 +42,12 @@ echo "📄 Reading from: $ENV_FILE"
 SP_DC=""
 SP_KEY=""
 while IFS='=' read -r key value; do
-    # Skip comments and empty lines
+    # Trim leading/trailing whitespace (and tolerate CRLF)
+    key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
     [[ -z "$key" || "$key" =~ ^# ]] && continue
-    # Trim whitespace and quotes
+    value="${value%$'\r'}"
+    value="${value#"${value%%[![:space:]]*}"}"; value="${value%"${value##*[![:space:]]}"}"
+    # Trim quotes
     value="${value#\"}"
     value="${value%\"}"
     value="${value#\'}"
