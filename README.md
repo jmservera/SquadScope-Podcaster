@@ -1,12 +1,12 @@
 # SquadScope Podcaster
 
-SquadScope Podcaster is a platform-agnostic podcast generation engine that receives article content and episode configuration via API, then turns that source material into a reviewable two-host conversational episode package.
+SquadScope Podcaster is a platform-agnostic podcast generation engine that receives an article URL (and optionally article content) plus episode configuration via API, then turns that source material into a reviewable two-host conversational episode package.
 
 Instead of reading an article aloud, the engine asks two contrasting hosts to discuss it like experts: one can bring energy and momentum while the other adds calm analysis and skepticism. That personality contrast is a core part of the format and gives the final episode a natural back-and-forth rather than a narrated summary.
 
 At a glance, the pipeline is: LLM script generation → TTS voice synthesis → music mixing → validation. The service stages the job, generates or prepares the dialogue, synthesizes each host voice, mixes intro/outro music, validates the finished audio, and packages the results for review or downstream publishing.
 
-The output is a polished MP3 episode plus the supporting artifact set: transcript, show notes, manifest, and related review metadata. Any caller that can send the required article inputs and configuration can use the engine; it is not tied to a specific upstream platform.
+The output is a polished MP3 episode plus a supporting artifact set including the transcript, show notes, manifest, publishing packet, and related review metadata. Any caller that can send the required article inputs and configuration can use the engine; it is not tied to a specific upstream platform.
 
 For a project-focused explanation of the generation engine itself, see [`docs/how-it-works.md`](docs/how-it-works.md).
 
