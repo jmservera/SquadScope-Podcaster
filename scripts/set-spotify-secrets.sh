@@ -60,8 +60,8 @@ echo "  ✅ SP_DC and SP_KEY loaded"
 
 echo ""
 echo "📦 Updating GitHub repo secrets..."
-echo "$SP_DC" | gh secret set SP_DC --repo "$REPO"
-echo "$SP_KEY" | gh secret set SP_KEY --repo "$REPO"
+printf '%s' "$SP_DC" | gh secret set SP_DC --repo "$REPO"
+printf '%s' "$SP_KEY" | gh secret set SP_KEY --repo "$REPO"
 echo "  ✅ GitHub secrets updated"
 
 echo ""
