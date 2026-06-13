@@ -2,6 +2,8 @@
 
 SquadScope Podcaster is a sister project to `jmservera/SquadScope`. It receives a post-publish article URL or artifact reference, creates a podcast-generation job, stages generated artifacts (locally or in Azure Blob Storage), and returns links that SquadScope can display or use in follow-up automation.
 
+For a project-focused explanation of the generation engine itself, see [`docs/how-it-works.md`](docs/how-it-works.md).
+
 ## Architecture
 
 - **Compute:** Azure Container Apps Job (queue-triggered, scales to zero). The container image bakes in ffmpeg for audio stitching and validation.
