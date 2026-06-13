@@ -217,16 +217,6 @@ Keep the `/api/generate` v1 request backward compatible: `source_artifacts` acce
 - Unknown object fields remain rejected so future contract drift is visible in tests.
 - The top-level `/api/generate` response shape remains unchanged.
 
-### 2026-06-13: NEVER bypass branch rulesets
-- All changes MUST go through branch + PR. No direct pushes to main.
-- Agents must create a feature branch and open a PR, even for cleanup/docs/trivial changes.
-- Never disable, bypass, or work around branch protection rulesets.
-- Operator directive — no exceptions.
-
-### 2026-06-13T15:54:00Z: NEVER disable or bypass branch rulesets
-**By:** jmservera (operator directive)
-**What:** Never disable, bypass, or work around branch protection rulesets. All changes MUST go through a branch + PR workflow. Pushing directly to main is forbidden, even for cleanup, docs, or trivial changes. Agents must always create a feature branch and open a PR.
-**Why:** Operator found that a dispatched agent bypassed the ruleset to push directly to main. This must never happen again.
-
-## Security Review: Issue #182 — Spotify Publish Module
+### 2026-06-13: Branch rulesets directive (moved to decisions.md)
+Archived here as cross-reference only. Active directive lives in decisions.md.
 
