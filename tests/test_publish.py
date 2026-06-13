@@ -128,27 +128,40 @@ class TestVerifyAuth:
         assert valid
         assert "Dry-run" in msg
 
-    @patch("podcaster.publish.requests.Session")
-    def test_valid_auth(self, mock_session_cls, spotify_env):
+    @patch("podcaster.publish._build_session")
+    def test_valid_auth(self, mock_build_session, spotify_env):
         mock_session = MagicMock()
-        mock_session_cls.return_value = mock_session
+        mock_build_session.return_value = mock_session
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.json.return_value = {"stationId": "1", "userId": "2"}
         mock_session.get.return_value = mock_resp
         valid, msg = verify_spotify_auth()
         assert valid
         assert "valid" in msg.lower()
 
-    @patch("podcaster.publish.requests.Session")
-    def test_expired_cookies(self, mock_session_cls, spotify_env):
+    @patch("podcaster.publish._build_session")
+    def test_expired_cookies(self, mock_build_session, spotify_env):
         mock_session = MagicMock()
-        mock_session_cls.return_value = mock_session
+        mock_build_session.return_value = mock_session
         mock_resp = MagicMock()
         mock_resp.status_code = 401
         mock_session.get.return_value = mock_resp
         valid, msg = verify_spotify_auth()
         assert not valid
         assert "expired" in msg.lower()
+
+    @patch("podcaster.publish._build_session")
+    def test_missing_ids_is_invalid_auth(self, mock_build_session, spotify_env):
+        mock_session = MagicMock()
+        mock_build_session.return_value = mock_session
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}
+        mock_session.get.return_value = mock_resp
+        valid, msg = verify_spotify_auth()
+        assert not valid
+        assert "missing ids" in msg.lower()
 
 
 class TestPublishEpisode:
@@ -243,19 +256,19 @@ class TestPublishEpisode:
 
         # Step 1: resolve IDs
         resolve_resp = MagicMock()
-        resolve_resp.json.return_value = {"stationId": "station-1", "userId": "user-1"}
+        resolve_resp.json.return_value = {"stationId": "1", "userId": "2"}
         resolve_resp.raise_for_status = MagicMock()
 
         # Step 2: create episode
         create_resp = MagicMock()
-        create_resp.json.return_value = {"id": 12345}
+        create_resp.json.return_value = {"episodeId": 12345}
         create_resp.raise_for_status = MagicMock()
 
         # Step 3: get upload URL
         upload_url_resp = MagicMock()
         upload_url_resp.json.return_value = {
             "signedUrl": "https://gcs.example.com/upload",
-            "uploadId": "upload-abc",
+            "requestUuid": "upload-abc",
         }
         upload_url_resp.raise_for_status = MagicMock()
 
@@ -277,10 +290,6 @@ class TestPublishEpisode:
         meta_resp.raise_for_status = MagicMock()
 
         # Step 7: publish
-        publish_resp = MagicMock()
-        publish_resp.raise_for_status = MagicMock()
-
-        # Wire up responses in order
         mock_session.request.side_effect = [
             resolve_resp,
             create_resp,
@@ -289,7 +298,6 @@ class TestPublishEpisode:
             process_resp,
             poll_resp,
             meta_resp,
-            publish_resp,
         ]
 
         result = publish_episode(mp3_file, "Claracle W24", "<p>Episode notes</p>", wav_path=wav_file)
@@ -299,6 +307,16 @@ class TestPublishEpisode:
         upload_call = mock_session.request.call_args_list[3]
         assert upload_call.kwargs["headers"]["Content-Type"] == "audio/wav"
         assert upload_call.kwargs["data"] == wav_file.read_bytes()
+        signed_url_call = mock_session.request.call_args_list[2]
+        assert signed_url_call.kwargs["params"]["filename"] == wav_file.name
+        assert signed_url_call.kwargs["params"]["type"] == "audio/wav"
+        process_call = mock_session.request.call_args_list[4]
+        assert process_call.kwargs["json"]["episodeId"] == 12345
+        assert process_call.kwargs["json"]["stationId"] == 1
+        assert process_call.kwargs["json"]["userId"] == 2
+        metadata_call = mock_session.request.call_args_list[-1]
+        assert metadata_call.kwargs["json"]["isPublished"] is True
+        assert metadata_call.kwargs["json"]["podcastEpisodeIsExplicit"] is False
 
     @patch("podcaster.publish._build_session")
     def test_scheduled_mode_passes_date(self, mock_build, mp3_file, wav_file, spotify_env):
@@ -306,13 +324,12 @@ class TestPublishEpisode:
         mock_build.return_value = mock_session
 
         responses = [
-            _mock_json_resp({"stationId": "s1", "userId": "u1"}),
-            _mock_json_resp({"id": 999}),
+            _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_json_resp({"episodeId": 999}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
-            _mock_json_resp({}),
             _mock_json_resp({}),
         ]
         mock_session.request.side_effect = responses
@@ -336,20 +353,21 @@ class TestPublishEpisode:
         )
         assert result.status == "scheduled"
         assert result.anchor_episode_id == 999
-        publish_call = mock_session.request.call_args_list[-1]
-        assert publish_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00Z"
-        metadata_call = mock_session.request.call_args_list[-2]
+        metadata_call = mock_session.request.call_args_list[-1]
         assert metadata_call.kwargs["json"]["title"] == "2026-W25: Scheduled Ep"
         assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
         assert metadata_call.kwargs["json"]["episodeNumber"] == 25
+        assert metadata_call.kwargs["json"]["isPublished"] is False
+        assert metadata_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00.000Z"
+        assert metadata_call.kwargs["json"]["wizardDraftedToPublishOn"] == "2026-06-20T09:00:00.000Z"
 
     @patch("podcaster.publish._build_session")
     def test_draft_mode_does_not_publish(self, mock_build, mp3_file, wav_file, spotify_env):
         mock_session = MagicMock()
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
-            _mock_json_resp({"stationId": "s1", "userId": "u1"}),
-            _mock_json_resp({"id": 999}),
+            _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_json_resp({"episodeId": 999}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
@@ -382,30 +400,29 @@ class TestPublishEpisode:
         assert metadata_call.kwargs["json"]["description"] == "<p>Summary</p><p>Credits</p>"
         assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
         assert metadata_call.kwargs["json"]["episodeNumber"] == 24
+        assert metadata_call.kwargs["json"]["isPublished"] is False
 
     @patch("podcaster.publish._build_session")
     def test_missing_config_fallback(self, mock_build, mp3_file, wav_file, spotify_env):
         mock_session = MagicMock()
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
-            _mock_json_resp({"stationId": "s1", "userId": "u1"}),
+            _mock_json_resp({"stationId": "1", "userId": "2"}),
             _mock_json_resp({"id": 321}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
         ]
 
         result = publish_episode(mp3_file, "Original Title", "<p>Original desc</p>", wav_path=wav_file)
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-2]
+        metadata_call = mock_session.request.call_args_list[-1]
         assert metadata_call.kwargs["json"]["title"] == "Original Title"
         assert "seasonNumber" not in metadata_call.kwargs["json"]
-        publish_call = mock_session.request.call_args_list[-1]
-        assert publish_call.kwargs["json"] == {}
+        assert metadata_call.kwargs["json"]["isPublished"] is True
 
     @patch("podcaster.publish._build_session")
     def test_api_error_graceful(self, mock_build, mp3_file, wav_file, spotify_env):
@@ -426,13 +443,12 @@ class TestPublishEpisode:
         mock_session = MagicMock()
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
-            _mock_json_resp({"stationId": "s1", "userId": "u1"}),
-            _mock_json_resp({"id": 999}),
+            _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_json_resp({"episodeId": 999}),
             _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
-            _mock_json_resp({}),
             _mock_json_resp({}),
         ]
 

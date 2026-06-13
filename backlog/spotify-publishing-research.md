@@ -13,11 +13,11 @@ Podcaster now has a custom `podcaster/publish.py` implementation for the unoffic
 Podcaster now publishes to Spotify for Creators through a custom client in `podcaster/publish.py` that talks directly to the unofficial reverse-engineered API.
 
 - **Implementation:** custom `requests.Session` workflow, informed by prior reverse-engineering references such as `spotifyconnector` / `higuchiki/spotify-for-creators-api`
-- **Authentication:** operator-supplied `SP_DC` + `SP_KEY` browser cookies are attached directly to the session (`sp_dc` / `sp_key`) and used against the Spotify for Creators endpoints; `verify_spotify_auth()` validates them by calling the `legacyIds` endpoint
+- **Authentication:** operator-supplied `SP_DC` + `SP_KEY` browser cookies are exchanged for a short-lived Bearer token via Spotify Accounts OAuth, then used against the internal `api-v5.anchor.fm` endpoints; `verify_spotify_auth()` validates them by calling the `legacyIds` endpoint
 - **Show targeting:** the Spotify show ID is stored as `SPOTIFY_SHOW_ID` in GitHub and Azure Container App secrets/configuration
 - **Execution model:** publishing is enabled only when `SPOTIFY_PUBLISH_ENABLED=true`
 - **Pipeline:** resolve IDs → create episode → signed Google Cloud Storage upload → process upload → set metadata → publish
-- **Implementation details:** requests require `?isMumsCompatible=true`; mutation flows require Spotify `Origin`/`Referer` headers; upload finalization uses `uploadType: "default"` rather than `"audio"`; scheduled publishing is already supported via the module's `publish_on` parameter
+- **Implementation details:** requests require `?isMumsCompatible=true`; mutation flows require Spotify `Origin`/`Referer` headers; signed upload URLs now require `filename` + URL-encoded MIME `type`; upload processing uses `/v3/upload/media/{upload_id}` polling with multipart metadata; scheduled publishing is supported via the metadata update payload
 - **Failure handling:** `publish_episode()` always returns a structured `PublishResult` instead of raising, but the generation workflow currently does not invoke this module
 
 The public Spotify Web API still does not document podcast episode upload or publish endpoints. This implementation therefore depends on an unofficial API surface and should be treated as operationally fragile compared with official host/RSS integrations.
