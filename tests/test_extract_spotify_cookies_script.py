@@ -39,4 +39,5 @@ def test_is_dashboard_url_detects_spotify_dashboard_paths() -> None:
     assert MODULE.is_dashboard_url("https://creators.spotify.com/pod/dashboard")
     assert MODULE.is_dashboard_url("https://creators.spotify.com/pod/show/123")
     assert not MODULE.is_dashboard_url("https://creators.spotify.com/")
+    assert not MODULE.is_dashboard_url("https://notcreators.spotify.com/pod/dashboard")
     assert not MODULE.is_dashboard_url("https://example.com/pod/dashboard")

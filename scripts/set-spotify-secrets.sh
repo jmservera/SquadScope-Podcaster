@@ -6,6 +6,7 @@
 # Reads SP_DC and SP_KEY from an .env file (default: .env in repo root).
 # Requires: gh CLI (authenticated), az CLI (logged in)
 
+set +x
 set -euo pipefail
 
 REPO="jmservera/SquadScope-Podcaster"

@@ -53,8 +53,9 @@ def collect_spotify_cookies(context) -> dict[str, str]:
 
 def is_dashboard_url(url: str) -> bool:
     parsed = urlsplit(url)
+    hostname = parsed.hostname or ""
     path = parsed.path.rstrip("/")
-    if not parsed.netloc.endswith("creators.spotify.com"):
+    if hostname != "creators.spotify.com" and not hostname.endswith(".creators.spotify.com"):
         return False
     if path in ("", "/"):
         return False
