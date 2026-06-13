@@ -5,9 +5,9 @@ unofficial internal API. Publication is opt-in (``SPOTIFY_PUBLISH_ENABLED=true``
 and **never blocks** the generation pipeline — publish failures are logged and
 reported but do not fail the overall episode workflow.
 
-Authentication uses browser session cookies (``SP_DC`` + ``SP_KEY``), which
-expire periodically. The module provides a health-check function to verify
-auth status without side effects.
+Authentication uses browser session cookies (``SP_DC`` + ``SP_KEY``) to obtain
+a short-lived Bearer token via ``spotifyconnector``. The module provides a
+health-check function to verify auth status without side effects.
 
 Security:
 - Cookies are read from environment variables, never logged or committed.
@@ -17,13 +17,9 @@ Security:
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import logging
 import os
-import secrets
 import re
-import string
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -33,14 +29,14 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 from podcaster.config import SpotifyPublishConfig
+from spotifyconnector import SpotifyConnector
 
 logger = logging.getLogger(__name__)
 
 # Spotify for Creators internal API base
 _BASE_URL = "https://api-v5.anchor.fm"
 _SPOTIFY_CLIENT_ID = "05a1371ee5194c27860b3ff3ff3979d2"
-_SPOTIFY_REDIRECT_URI = "https://podcasters.spotify.com"
-_SPOTIFY_AUTH_SCOPE = "streaming ugc-image-upload user-read-email user-read-private"
+_SPOTIFY_CONNECTOR_BASE_URL = "https://generic.wg.spotify.com/podcasters/v0"
 
 # Required headers for mutation requests
 _MUTATION_HEADERS = {
@@ -105,12 +101,10 @@ def _get_credentials() -> tuple[str, str, str]:
     return show_id, sp_dc, sp_key
 
 
-def _build_session(sp_dc: str, sp_key: str) -> requests.Session:
+def _build_session(sp_dc: str, sp_key: str, show_id: str) -> requests.Session:
     """Build a requests session with Spotify bearer auth."""
     session = requests.Session()
-    session.cookies.set("sp_dc", sp_dc, domain=".spotify.com")
-    session.cookies.set("sp_key", sp_key, domain=".spotify.com")
-    bearer = _request_bearer_token(sp_dc, sp_key)
+    bearer = _request_bearer_token(sp_dc, sp_key, show_id)
     session.headers.update(
         {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -127,79 +121,28 @@ def _mums_params(**kwargs: str) -> dict[str, str]:
     return {"isMumsCompatible": "true", **kwargs}
 
 
-def _random_auth_string(length: int) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
-
-
-def _request_bearer_token(sp_dc: str, sp_key: str) -> str:
+def _request_bearer_token(sp_dc: str, sp_key: str, show_id: str) -> str:
     """Exchange browser cookies for a short-lived Spotify bearer token."""
-    state = _random_auth_string(32)
-    verifier = _random_auth_string(64)
-    challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode("utf-8")).digest()
-    ).decode("utf-8").rstrip("=")
-
-    try:
-        auth_resp = requests.get(
-            "https://accounts.spotify.com/oauth2/v2/auth",
-            params={
-                "response_type": "code",
-                "client_id": _SPOTIFY_CLIENT_ID,
-                "scope": _SPOTIFY_AUTH_SCOPE,
-                "redirect_uri": _SPOTIFY_REDIRECT_URI,
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-                "state": state,
-                "response_mode": "web_message",
-                "prompt": "none",
-            },
-            cookies={"sp_dc": sp_dc, "sp_key": sp_key},
-            timeout=60,
-        )
-        auth_resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise SpotifyPublishError("Failed to contact Spotify auth endpoint.") from exc
-
-    html = auth_resp.text
-    if "login_required" in html:
-        raise SpotifyPublishError(
-            "Spotify cookies expired — operator must refresh SP_DC/SP_KEY."
-        )
-
-    auth_match = re.search(
-        r"const authorizationResponse = (.*?);",
-        html,
-        re.DOTALL,
+    connector = SpotifyConnector(
+        base_url=_SPOTIFY_CONNECTOR_BASE_URL,
+        client_id=_SPOTIFY_CLIENT_ID,
+        podcast_id=show_id,
+        sp_dc=sp_dc,
+        sp_key=sp_key,
     )
-    if auth_match is None:
-        raise SpotifyPublishError("Spotify auth flow changed — authorization response missing.")
-
-    auth_blob = auth_match.group(1)
-    code_match = re.search(r'"code"\s*:\s*"([^"]+)"', auth_blob)
-    state_match = re.search(r'"state"\s*:\s*"([^"]+)"', auth_blob)
-    if code_match is None or state_match is None:
-        raise SpotifyPublishError("Spotify auth flow changed — authorization code missing.")
-    if state_match.group(1) != state:
-        raise SpotifyPublishError("Spotify auth flow returned an unexpected state value.")
-
     try:
-        token_resp = requests.post(
-            "https://accounts.spotify.com/api/token",
-            data={
-                "grant_type": "authorization_code",
-                "client_id": _SPOTIFY_CLIENT_ID,
-                "code": code_match.group(1),
-                "redirect_uri": _SPOTIFY_REDIRECT_URI,
-                "code_verifier": verifier,
-            },
-            timeout=60,
-        )
-        token_resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise SpotifyPublishError("Failed to exchange Spotify auth code for bearer token.") from exc
+        connector._authenticate()
+    except Exception as exc:
+        message = str(exc)
+        if "login required" in message.lower() or "credentials" in message.lower():
+            raise SpotifyPublishError(
+                "Spotify cookies expired — operator must refresh SP_DC/SP_KEY."
+            ) from exc
+        raise SpotifyPublishError(
+            "Failed to exchange Spotify cookies for bearer token."
+        ) from exc
 
-    bearer = token_resp.json().get("access_token", "")
+    bearer = connector._bearer or ""
     if not bearer:
         raise SpotifyPublishError("Spotify auth flow returned no bearer token.")
     return bearer
@@ -277,8 +220,8 @@ def verify_spotify_auth() -> tuple[bool, str]:
     if _is_dry_run():
         return True, "Dry-run mode — credentials present, skipping live check."
 
-    session = _build_session(sp_dc, sp_key)
     try:
+        session = _build_session(sp_dc, sp_key, show_id)
         url = f"{_BASE_URL}/v3/shows/{show_id}/legacyIds"
         resp = session.get(url, params=_mums_params(), timeout=10)
         if resp.status_code == 200:
@@ -318,7 +261,7 @@ def _create_episode(session: requests.Session, station_id: str) -> int:
         url,
         headers=_MUTATION_HEADERS,
         params=_mums_params(),
-        json={},
+        json={"hourOffset": 0},
         timeout=15,
     )
     data = resp.json()
@@ -703,7 +646,7 @@ def publish_episode(
         )
 
     try:
-        session = _build_session(sp_dc, sp_key)
+        session = _build_session(sp_dc, sp_key, show_id)
 
         # Step 1: Resolve IDs
         station_id, user_id = _resolve_legacy_ids(session, show_id)

@@ -15,6 +15,7 @@ from podcaster.config import SpotifyPublishConfig, truncate_html
 from podcaster.publish import (
     PublishResult,
     SpotifyPublishError,
+    _build_session,
     _is_dry_run,
     _is_enabled,
     publish_episode,
@@ -164,6 +165,26 @@ class TestVerifyAuth:
         assert "missing ids" in msg.lower()
 
 
+class TestBuildSession:
+    @patch("podcaster.publish.SpotifyConnector")
+    def test_build_session_uses_spotifyconnector_bearer(self, mock_connector_cls):
+        mock_connector = MagicMock()
+        mock_connector._bearer = "test-bearer"
+        mock_connector_cls.return_value = mock_connector
+
+        session = _build_session("cookie-dc", "cookie-key", "show-123")
+
+        mock_connector_cls.assert_called_once_with(
+            base_url="https://generic.wg.spotify.com/podcasters/v0",
+            client_id="05a1371ee5194c27860b3ff3ff3979d2",
+            podcast_id="show-123",
+            sp_dc="cookie-dc",
+            sp_key="cookie-key",
+        )
+        mock_connector._authenticate.assert_called_once_with()
+        assert session.headers["Authorization"] == "Bearer test-bearer"
+
+
 class TestPublishEpisode:
     def test_spotify_publish_config_resolution(self):
         config = SpotifyPublishConfig.from_payload(
@@ -304,6 +325,8 @@ class TestPublishEpisode:
         assert result.status == "published"
         assert result.anchor_episode_id == 12345
         assert result.error is None
+        create_call = mock_session.request.call_args_list[1]
+        assert create_call.kwargs["json"] == {"hourOffset": 0}
         upload_call = mock_session.request.call_args_list[3]
         assert upload_call.kwargs["headers"]["Content-Type"] == "audio/wav"
         assert upload_call.kwargs["data"] == wav_file.read_bytes()
@@ -315,6 +338,7 @@ class TestPublishEpisode:
         assert process_call.kwargs["json"]["stationId"] == 1
         assert process_call.kwargs["json"]["userId"] == 2
         metadata_call = mock_session.request.call_args_list[-1]
+        assert metadata_call.kwargs["json"]["userId"] == 2
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert metadata_call.kwargs["json"]["podcastEpisodeIsExplicit"] is False
 
