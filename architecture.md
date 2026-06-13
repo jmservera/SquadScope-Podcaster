@@ -1,0 +1,101 @@
+# Architecture
+
+## Overview
+Podcast generation engine for Claracle (www.claracle.com). Receives weekly article + editorial config from SquadScope, generates a full podcast episode with music mixing.
+
+## Tech Stack
+- Python >=3.11
+- Azure Container Apps (synthesis job + API app)
+- Azure OpenAI (TTS: gpt-4o-mini-tts, Chat: gpt-4o-mini)
+- Azure Blob Storage + Storage Queue
+- Bicep IaC (infra/)
+- GitHub Actions CI/CD
+- ffmpeg for audio mixing
+
+## Directory Structure
+- podcaster/ — Core application modules
+  - api.py — HTTP API (POST /api/generate, GET /healthz)
+  - job_runner.py — ACA queue consumer, runs synthesis
+  - jobs.py — Job orchestration, budget checks, artifact staging
+  - config.py — SquadScope config parsing (PodcastConfig, ScriptDirections, MusicMixConfig)
+  - script_gen.py — LLM script generation
+  - hooks.py — LLM-generated conversational hooks from host personalities
+  - episode.py — Episode assembly + synthesis orchestration
+  - audio.py — ffmpeg audio stitching, music mixing, loudness normalization
+  - music.py — Bundled music asset registry
+  - tts.py — Azure OpenAI TTS client
+  - queue.py — Azure Storage Queue client
+  - storage.py — Blob/local storage abstraction
+  - validation.py — Request auth + validation
+  - publish.py — (planned) Spotify for Creators auto-publish
+  - costs.py — Monthly budget/ledger guardrails
+  - sanitization.py — Prompt injection neutralization
+  - claim_extraction.py — Claim ledger from articles
+- infra/ — Bicep templates
+  - main.bicep — Main deployment orchestrator
+  - modules/aca.bicep — Container App synthesis job
+  - modules/api.bicep — Container App API
+  - modules/openai.bicep — Azure OpenAI provisioning
+  - modules/acr.bicep — Container Registry
+- tests/ — pytest suite (comprehensive)
+- scripts/ — Helper/dev scripts
+- assets/music/ — Bundled audio bed (summer-sport.mp3)
+- docs/ — Integration contract, operations docs
+
+## Pipeline Flow
+1. SquadScope sends POST /api/generate with article + config
+2. validation.py authenticates and validates request
+3. jobs.py stages artifacts, runs budget checks, generates script via LLM
+4. hooks.py generates personality-matched conversational hooks via LLM
+5. Job enqueued to Azure Storage Queue
+6. job_runner.py dequeues, runs TTS synthesis per turn via Azure OpenAI
+7. audio.py stitches segments + mixes intro/outro music (ffmpeg, eval=frame volume expressions)
+8. Validation pass (duration, file size, format checks)
+9. Artifacts stored to Azure Blob Storage
+10. (Planned) publish.py auto-publishes to Spotify
+
+## Shared Interfaces (with SquadScope)
+### Config Contract (consumed from SquadScope)
+SquadScope's config/podcast.json is the source of truth. Podcaster parses it into:
+- PodcastConfig: name, url, spoken_site, ai_voice_disclosure, host_a, host_b (name/voice/style), style_guide
+- ScriptDirections: episode_style (format/tone/segment_order), show_intro, cold_open, ai_disclosure_cue, corrections_path
+- MusicMixConfig: track, intro params (full_volume_seconds, pre_voice_fade, etc.), outro params (start_position, fade_in, play_to_end)
+
+### Handoff Payload (received from SquadScope)
+Required: week, article_url
+Optional: article_content, article_title, article_sha256, source_artifacts, podcast_config, script_directions, music_mix, dry_run, force, callback
+
+### Response Contract
+Returns: job_id, status, manifest_url, mp3_url, transcript_url, show_notes_url, warnings, errors
+
+## Audio Mixing Architecture
+- Music track: assets/music/summer-sport.mp3 (105s, used for both intro and outro)
+- Intro: Full vol 0-8s → fade to 10% → duck under speech → fade to 0% after intros
+- Outro: atrim from 75s, fade in 0%→10% under farewell → ramp to 100% after voices end
+- CRITICAL: eval=frame on all volume filters with time expressions
+- Voice guardrail: music NEVER exceeds 10% when voice is playing
+- 2-input amix chain (not N-input) to avoid amplitude dilution
+
+## Azure Infrastructure
+- Resource Group: squadscope-podcaster
+- Container App: podcaster-yqabcnkm2junu-api
+- OpenAI: podcaster-yqabcnkm2junu-openai (deployments: tts, chat)
+- Storage: squadscopepo3f9a07d60de7
+- Auth: Managed Identity (DefaultAzureCredential)
+
+## Environment Variables
+Required:
+- AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_TTS_DEPLOYMENT, AZURE_OPENAI_CHAT_DEPLOYMENT
+- AZURE_OPENAI_AUTH_MODE (managed_identity)
+- PODCASTER_API_KEY
+- SPOTIFY_SHOW_ID (for publish module)
+Optional:
+- AZURE_OPENAI_TTS_VOICE_HOST_A/B, AZURE_OPENAI_TTS_STYLE_HOST_A/B
+- PODCASTER_STORAGE_ACCOUNT_URL, PODCASTER_STORAGE_QUEUE_URL
+- SPOTIFY_PUBLISH_ENABLED, SPOTIFY_PUBLISH_DRY_RUN, SP_DC, SP_KEY
+
+## Key Commands
+- Run tests: pytest tests/ -q
+- Local pipeline: python scripts/run_full_pipeline.py
+- Start API: python -m podcaster.api
+- Deploy: .github/workflows/deploy-azure.yml
