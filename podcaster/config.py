@@ -116,7 +116,7 @@ def _host_from_payload(payload: object, defaults: HostConfig) -> HostConfig:
 
 @dataclass(frozen=True)
 class EpisodeStyle:
-    """LLM-facing episode structure/tone constraints from SquadScope config."""
+    """LLM-facing episode structure/tone constraints from caller config."""
 
     format: str = ""
     tone: str = ""
@@ -139,7 +139,7 @@ class EpisodeStyle:
 
 @dataclass(frozen=True)
 class ScriptDirections:
-    """Parsed ``script_directions`` from the SquadScope payload.
+    """Parsed ``script_directions`` from the caller payload.
 
     Guides LLM script generation: episode structure, opening/closing cues, tone.
     All fields are optional; absent values do not change the default prompt.
@@ -195,7 +195,7 @@ class ScriptDirections:
 
 @dataclass(frozen=True)
 class MusicMixConfig:
-    """Parsed ``music_mix`` spec from the SquadScope payload.
+    """Parsed ``music_mix`` spec from the caller payload.
 
     Maps onto :class:`podcaster.audio.MusicMixSpec` for audio stitching. Fields
     use the same naming as ``MusicMixSpec`` attributes where applicable. Track

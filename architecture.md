@@ -1,7 +1,7 @@
 # Architecture
 
 ## Overview
-Podcast generation engine for Claracle (www.claracle.com). Receives weekly article + editorial config from SquadScope, generates a full podcast episode with music mixing.
+Config-driven podcast generation engine. Receives article content and editorial configuration via API from any caller.
 
 ## Tech Stack
 - Python >=3.11
@@ -17,7 +17,7 @@ Podcast generation engine for Claracle (www.claracle.com). Receives weekly artic
   - api.py — HTTP API (POST /api/generate, GET /healthz)
   - job_runner.py — ACA queue consumer, runs synthesis
   - jobs.py — Job orchestration, budget checks, artifact staging
-  - config.py — SquadScope config parsing (PodcastConfig, ScriptDirections, MusicMixConfig)
+  - config.py — API payload config parsing (PodcastConfig, ScriptDirections, MusicMixConfig)
   - script_gen.py — LLM script generation
   - hooks.py — LLM-generated conversational hooks from host personalities
   - episode.py — Episode assembly + synthesis orchestration
@@ -43,7 +43,7 @@ Podcast generation engine for Claracle (www.claracle.com). Receives weekly artic
 - docs/ — Integration contract, operations docs
 
 ## Pipeline Flow
-1. SquadScope sends POST /api/generate with article + config
+1. Caller sends POST /api/generate with article + config
 2. validation.py authenticates and validates request
 3. jobs.py stages artifacts, runs budget checks, generates script via LLM
 4. hooks.py generates personality-matched conversational hooks via LLM
@@ -54,14 +54,14 @@ Podcast generation engine for Claracle (www.claracle.com). Receives weekly artic
 9. Artifacts stored to Azure Blob Storage
 10. (Planned) publish.py auto-publishes to Spotify
 
-## Shared Interfaces (with SquadScope)
-### Config Contract (consumed from SquadScope)
-SquadScope's config/podcast.json is the source of truth. Podcaster parses it into:
+## API Contract
+### Config Contract (received via API payload)
+The caller provides config in the API payload. See dataclass definitions below:
 - PodcastConfig: name, url, spoken_site, ai_voice_disclosure, host_a, host_b (name/voice/style), style_guide
 - ScriptDirections: episode_style (format/tone/segment_order), show_intro, cold_open, ai_disclosure_cue, corrections_path
 - MusicMixConfig: track, intro params (full_volume_seconds, pre_voice_fade, etc.), outro params (start_position, fade_in, play_to_end)
 
-### Handoff Payload (received from SquadScope)
+### Handoff Payload (received from caller)
 Required: week, article_url
 Optional: article_content, article_title, article_sha256, source_artifacts, podcast_config, script_directions, music_mix, dry_run, force, callback
 

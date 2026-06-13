@@ -22,5 +22,6 @@ See `.squad/team.md` for the full team composition (Futurama universe). Key memb
 - **Amy** — Frontend/Integration
 
 ## Related Repositories
-- [SquadScope](https://github.com/jmservera/SquadScope) — Main observatory (produces config/podcast.json consumed by this repo)
-- [SquadScope-Coordinator](https://github.com/jmservera/SquadScope-Coordinator) — Orchestration layer
+This engine is currently used by SquadScope/Claracle but is designed to be platform-agnostic.
+- [SquadScope](https://github.com/jmservera/SquadScope) — Current caller/integration platform
+- [SquadScope-Coordinator](https://github.com/jmservera/SquadScope-Coordinator) — Current orchestration layer

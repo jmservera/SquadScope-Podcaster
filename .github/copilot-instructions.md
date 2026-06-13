@@ -13,18 +13,17 @@ Always use `--agent squad` when running Copilot CLI on this repository.
 ## Key Conventions
 - All application code is in `podcaster/` (Python >=3.11)
 - Infrastructure is Bicep in `infra/`
-- Config is received from SquadScope (never hardcoded in this repo)
+- Config is received via API payload from the caller (never hardcoded in this repo)
 - Host personalities, show intro, episode style — all from config, not code
 - audio.py uses eval=frame on ALL ffmpeg volume filters with time expressions
 - Music never exceeds 10% volume when voice is playing
 - Tests: pytest tests/ must pass before merge
 - CI must be correct, not just green
 
-## Cross-Repo Impact
-This repo CONSUMES config from SquadScope:
-- SquadScope's `config/podcast.json` defines all editorial direction
-- Changes to PodcastConfig/ScriptDirections/MusicMixConfig dataclasses in config.py must stay compatible with SquadScope's JSON
-- If new config fields are needed, coordinate with SquadScope repo to add them to config/podcast.json
+## API Configuration
+This repo receives configuration via the API payload. The config schema (PodcastConfig, ScriptDirections, MusicMixConfig) is defined in `config.py`.
+- Changes to these dataclasses must stay compatible with the caller's config payload
+- If new config fields are needed, coordinate with the calling platform's config
 
 ## Critical Technical Notes
 - ffmpeg volume filter: ALWAYS use eval=frame with time-based expressions
@@ -36,4 +35,4 @@ This repo CONSUMES config from SquadScope:
 ## Testing
 - Run `pytest tests/ -q` (297+ tests)
 - CI: `.github/workflows/ci.yml`
-- Smoke: podcaster-handoff-smoke (from SquadScope repo)
+- Smoke coverage is the caller's responsibility

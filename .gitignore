@@ -25,6 +25,10 @@ local.settings.json
 .squad/.scratch/
 # Squad: SubSquad activation file (local to this machine)
 .squad-workstream
+
+# Operator-local content (not part of the engine)
+*-article.md
+podcast-config.json
 .podcaster-artifacts/
 .test-artifacts*/
 
