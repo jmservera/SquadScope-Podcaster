@@ -28,6 +28,7 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
+from podcaster.config import SpotifyPublishConfig
 
 logger = logging.getLogger(__name__)
 
@@ -303,11 +304,12 @@ def _set_metadata(
     anchor_id: int,
     title: str,
     description: str,
-    publish_on: datetime | None = None,
+    season_number: int | None = None,
+    episode_number: int | None = None,
     episode_type: str = "full",
     explicit: bool = False,
 ) -> None:
-    """Step 6: Set episode metadata and schedule/publish."""
+    """Step 6: Set episode metadata."""
     url = (
         f"{_BASE_URL}/v3/episodes/{anchor_id}/update?isMumsCompatible=true"
     )
@@ -317,6 +319,33 @@ def _set_metadata(
         "episodeType": episode_type,
         "explicit": explicit,
     }
+    if season_number is not None:
+        payload["seasonNumber"] = season_number
+    if episode_number is not None:
+        payload["episodeNumber"] = episode_number
+    _retry_request(
+        session,
+        "POST",
+        url,
+        headers=_MUTATION_HEADERS,
+        json=payload,
+        timeout=15,
+    )
+    logger.info(
+        "Metadata set for episode %d: %s",
+        anchor_id,
+        title,
+    )
+
+
+def _publish_episode_live(
+    session: requests.Session,
+    anchor_id: int,
+    publish_on: datetime | None = None,
+) -> None:
+    """Step 7: Publish or schedule an episode."""
+    url = f"{_BASE_URL}/v3/episodes/{anchor_id}/publish?isMumsCompatible=true"
+    payload: dict[str, Any] = {}
     if publish_on:
         payload["publishOn"] = publish_on.astimezone(timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
@@ -330,11 +359,147 @@ def _set_metadata(
         timeout=15,
     )
     logger.info(
-        "Metadata set for episode %d: %s (publish=%s)",
+        "Episode %d publish requested (%s)",
         anchor_id,
-        title,
         publish_on or "immediate",
     )
+
+
+def _safe_resolve_title(
+    config: SpotifyPublishConfig,
+    *,
+    year: int,
+    week: int,
+    article_title: str,
+    fallback: str,
+) -> str:
+    try:
+        return config.resolve_title(year=year, week=week, article_title=article_title)
+    except (IndexError, KeyError, ValueError) as exc:
+        logger.warning("Spotify publish title template failed; using article title: %s", exc)
+        return article_title or fallback
+
+
+def _safe_resolve_description(
+    config: SpotifyPublishConfig,
+    *,
+    year: int,
+    week: int,
+    article_title: str,
+    article_summary: str,
+    fallback: str,
+) -> str:
+    try:
+        return config.resolve_description(
+            year=year,
+            week=week,
+            article_title=article_title,
+            article_summary=article_summary,
+        )
+    except (IndexError, KeyError, ValueError) as exc:
+        logger.warning("Spotify publish description template failed; using article summary: %s", exc)
+        if article_summary:
+            return f"<p>{article_summary}</p>"
+        return fallback
+
+
+def _safe_resolve_number(
+    label: str,
+    resolver,
+    *,
+    year: int,
+    week: int,
+    fallback: int | None,
+) -> int | None:
+    try:
+        return int(resolver(year=year, week=week))
+    except (TypeError, ValueError, IndexError, KeyError) as exc:
+        logger.warning("Spotify publish %s template failed; using fallback: %s", label, exc)
+        return fallback
+
+
+def _resolve_publish_inputs(
+    title: str,
+    description: str,
+    publish_on: datetime | None,
+    spotify_publish_config: SpotifyPublishConfig | None,
+    *,
+    year: int | None,
+    week: int | None,
+    article_title: str | None,
+    article_summary: str | None,
+) -> tuple[str, str, int | None, int | None, str, datetime | None]:
+    if spotify_publish_config is None:
+        return title, description, None, None, "immediate", publish_on
+
+    resolved_title = title
+    resolved_description = description
+    resolved_season: int | None = None
+    resolved_episode: int | None = None
+
+    if year is not None and week is not None:
+        raw_title = article_title or title
+        raw_summary = article_summary or ""
+        resolved_title = _safe_resolve_title(
+            spotify_publish_config,
+            year=year,
+            week=week,
+            article_title=raw_title,
+            fallback=title,
+        )
+        resolved_description = _safe_resolve_description(
+            spotify_publish_config,
+            year=year,
+            week=week,
+            article_title=raw_title,
+            article_summary=raw_summary,
+            fallback=description,
+        )
+        resolved_season = _safe_resolve_number(
+            "season",
+            spotify_publish_config.resolve_season,
+            year=year,
+            week=week,
+            fallback=year,
+        )
+        resolved_episode = _safe_resolve_number(
+            "episode",
+            spotify_publish_config.resolve_episode,
+            year=year,
+            week=week,
+            fallback=week,
+        )
+
+    publish_mode = spotify_publish_config.publish_mode.strip().lower()
+    if publish_mode == "draft":
+        return resolved_title, resolved_description, resolved_season, resolved_episode, "draft", None
+    if publish_mode == "immediate":
+        return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None
+
+    try:
+        parsed_publish_on = datetime.fromisoformat(spotify_publish_config.publish_mode.replace("Z", "+00:00"))
+        if parsed_publish_on.tzinfo is None:
+            parsed_publish_on = parsed_publish_on.replace(tzinfo=timezone.utc)
+        return (
+            resolved_title,
+            resolved_description,
+            resolved_season,
+            resolved_episode,
+            "scheduled",
+            parsed_publish_on,
+        )
+    except ValueError as exc:
+        logger.warning("Spotify publish_mode %r is invalid; using fallback publish behavior: %s", spotify_publish_config.publish_mode, exc)
+        if publish_on is not None:
+            return (
+                resolved_title,
+                resolved_description,
+                resolved_season,
+                resolved_episode,
+                "scheduled",
+                publish_on,
+            )
+        return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None
 
 
 def publish_episode(
@@ -347,6 +512,11 @@ def publish_episode(
     publish_on: datetime | None = None,
     episode_type: str = "full",
     explicit: bool = False,
+    spotify_publish_config: SpotifyPublishConfig | None = None,
+    year: int | None = None,
+    week: int | None = None,
+    article_title: str | None = None,
+    article_summary: str | None = None,
 ) -> PublishResult:
     """Publish an episode to Spotify for Creators.
 
@@ -364,6 +534,11 @@ def publish_episode(
         publish_on: Schedule for this datetime (None = immediate).
         episode_type: "full", "trailer", or "bonus".
         explicit: Whether the episode has explicit content.
+        spotify_publish_config: Optional Spotify metadata/publish config.
+        year: Episode year context for config template resolution.
+        week: Episode ISO week context for config template resolution.
+        article_title: Source article title for config template resolution.
+        article_summary: Source article summary for config template resolution.
 
     Returns:
         PublishResult with status and any error details.
@@ -373,6 +548,19 @@ def publish_episode(
             status="failed",
             error="Spotify publishing disabled (SPOTIFY_PUBLISH_ENABLED != true).",
         )
+
+    resolved_title, resolved_description, season_number, episode_number, publish_behavior, resolved_publish_on = (
+        _resolve_publish_inputs(
+            title,
+            description,
+            publish_on,
+            spotify_publish_config,
+            year=year,
+            week=week,
+            article_title=article_title,
+            article_summary=article_summary,
+        )
+    )
 
     # Resolve credentials
     try:
@@ -385,12 +573,12 @@ def publish_episode(
 
     # Dry-run mode
     if _is_dry_run():
-        logger.info("DRY RUN: Would publish %s as '%s'", mp3_path, title)
+        logger.info("DRY RUN: Would publish %s as '%s' (%s)", mp3_path, resolved_title, publish_behavior)
         return PublishResult(
             anchor_episode_id=None,
-            status="draft",
+            status="draft" if publish_behavior == "draft" else ("scheduled" if resolved_publish_on else "published"),
             dry_run=True,
-            details={"title": title, "mp3_path": str(mp3_path)},
+            details={"title": resolved_title, "mp3_path": str(mp3_path), "publish_behavior": publish_behavior},
         )
 
     # Validate MP3 exists
@@ -422,14 +610,18 @@ def publish_episode(
         _set_metadata(
             session,
             anchor_id,
-            title=title,
-            description=description,
-            publish_on=publish_on,
+            title=resolved_title,
+            description=resolved_description,
+            season_number=season_number,
+            episode_number=episode_number,
             episode_type=episode_type,
             explicit=explicit,
         )
 
-        status = "scheduled" if publish_on else "published"
+        if publish_behavior != "draft":
+            _publish_episode_live(session, anchor_id, publish_on=resolved_publish_on)
+
+        status = "draft" if publish_behavior == "draft" else ("scheduled" if resolved_publish_on else "published")
         logger.info(
             "Episode published to Spotify: anchorId=%d status=%s",
             anchor_id,

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from podcaster.config import SpotifyPublishConfig
 from podcaster.publish import (
     PublishResult,
     SpotifyPublishError,
@@ -109,6 +110,24 @@ class TestVerifyAuth:
 
 
 class TestPublishEpisode:
+    def test_spotify_publish_config_resolution(self):
+        config = SpotifyPublishConfig.from_payload(
+            {
+                "spotify_publish": {
+                    "title_template": "{year}-W{week}: {article_title}",
+                    "description_template": "<p>{article_summary}</p><p>Credits</p>",
+                    "season_number": "{year}",
+                    "episode_number": "{week}",
+                    "publish_mode": "draft",
+                }
+            }
+        )
+
+        assert config.resolve_title(2026, 24, "Signal") == "2026-W24: Signal"
+        assert config.resolve_description(2026, 24, "Signal", "Summary") == "<p>Summary</p><p>Credits</p>"
+        assert config.resolve_season(2026, 24) == 2026
+        assert config.resolve_episode(2026, 24) == 24
+
     def test_returns_failed_when_disabled(self, mp3_file):
         result = publish_episode(mp3_file, "Test", "<p>desc</p>")
         assert result.status == "failed"
@@ -123,7 +142,7 @@ class TestPublishEpisode:
     def test_dry_run_mode(self, mp3_file, spotify_env, monkeypatch):
         monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
         result = publish_episode(mp3_file, "Test Episode", "<p>desc</p>")
-        assert result.status == "draft"
+        assert result.status == "published"
         assert result.dry_run is True
         assert result.details["title"] == "Test Episode"
 
@@ -173,6 +192,10 @@ class TestPublishEpisode:
         meta_resp = MagicMock()
         meta_resp.raise_for_status = MagicMock()
 
+        # Step 7: publish
+        publish_resp = MagicMock()
+        publish_resp.raise_for_status = MagicMock()
+
         # Wire up responses in order
         mock_session.request.side_effect = [
             resolve_resp,
@@ -182,6 +205,7 @@ class TestPublishEpisode:
             process_resp,
             poll_resp,
             meta_resp,
+            publish_resp,
         ]
 
         result = publish_episode(mp3_file, "Claracle W24", "<p>Episode notes</p>")
@@ -190,7 +214,7 @@ class TestPublishEpisode:
         assert result.error is None
 
     @patch("podcaster.publish._build_session")
-    def test_scheduled_publish(self, mock_build, mp3_file, spotify_env):
+    def test_scheduled_mode_passes_date(self, mock_build, mp3_file, spotify_env):
         mock_session = MagicMock()
         mock_build.return_value = mock_session
 
@@ -202,15 +226,99 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
+            _mock_json_resp({}),
         ]
         mock_session.request.side_effect = responses
 
-        publish_time = datetime(2026, 6, 20, 9, 0, 0, tzinfo=timezone.utc)
+        publish_config = SpotifyPublishConfig(
+            title_template="{year}-W{week}: {article_title}",
+            description_template="<p>{article_summary}</p>",
+            season_number="{year}",
+            episode_number="{week}",
+            publish_mode="2026-06-20T09:00:00Z",
+        )
         result = publish_episode(
-            mp3_file, "Scheduled Ep", "<p>desc</p>", publish_on=publish_time
+            mp3_file,
+            "Scheduled Ep",
+            "<p>desc</p>",
+            spotify_publish_config=publish_config,
+            year=2026,
+            week=25,
+            article_title="Scheduled Ep",
+            article_summary="desc",
         )
         assert result.status == "scheduled"
         assert result.anchor_episode_id == 999
+        publish_call = mock_session.request.call_args_list[-1]
+        assert publish_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00Z"
+        metadata_call = mock_session.request.call_args_list[-2]
+        assert metadata_call.kwargs["json"]["title"] == "2026-W25: Scheduled Ep"
+        assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
+        assert metadata_call.kwargs["json"]["episodeNumber"] == 25
+
+    @patch("podcaster.publish._build_session")
+    def test_draft_mode_does_not_publish(self, mock_build, mp3_file, spotify_env):
+        mock_session = MagicMock()
+        mock_build.return_value = mock_session
+        mock_session.request.side_effect = [
+            _mock_json_resp({"stationId": "s1", "userId": "u1"}),
+            _mock_json_resp({"id": 999}),
+            _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
+            _mock_resp_with_headers({"ETag": '"e1"'}),
+            _mock_json_resp({}),
+            _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
+        ]
+
+        result = publish_episode(
+            mp3_file,
+            "Fallback Title",
+            "<p>Fallback desc</p>",
+            spotify_publish_config=SpotifyPublishConfig(
+                title_template="{year}-W{week}: {article_title}",
+                description_template="<p>{article_summary}</p><p>Credits</p>",
+                season_number="{year}",
+                episode_number="{week}",
+                publish_mode="draft",
+            ),
+            year=2026,
+            week=24,
+            article_title="Signal",
+            article_summary="Summary",
+        )
+
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 999
+        assert mock_session.request.call_count == 7
+        metadata_call = mock_session.request.call_args_list[-1]
+        assert metadata_call.kwargs["json"]["title"] == "2026-W24: Signal"
+        assert metadata_call.kwargs["json"]["description"] == "<p>Summary</p><p>Credits</p>"
+        assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
+        assert metadata_call.kwargs["json"]["episodeNumber"] == 24
+
+    @patch("podcaster.publish._build_session")
+    def test_missing_config_fallback(self, mock_build, mp3_file, spotify_env):
+        mock_session = MagicMock()
+        mock_build.return_value = mock_session
+        mock_session.request.side_effect = [
+            _mock_json_resp({"stationId": "s1", "userId": "u1"}),
+            _mock_json_resp({"id": 321}),
+            _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
+            _mock_resp_with_headers({"ETag": '"e1"'}),
+            _mock_json_resp({}),
+            _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
+            _mock_json_resp({}),
+        ]
+
+        result = publish_episode(mp3_file, "Original Title", "<p>Original desc</p>")
+
+        assert result.status == "published"
+        metadata_call = mock_session.request.call_args_list[-2]
+        assert metadata_call.kwargs["json"]["title"] == "Original Title"
+        assert "seasonNumber" not in metadata_call.kwargs["json"]
+        publish_call = mock_session.request.call_args_list[-1]
+        assert publish_call.kwargs["json"] == {}
 
     @patch("podcaster.publish._build_session")
     def test_api_error_graceful(self, mock_build, mp3_file, spotify_env):
