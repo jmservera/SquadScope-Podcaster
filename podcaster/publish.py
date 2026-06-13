@@ -225,7 +225,10 @@ def verify_spotify_auth() -> tuple[bool, str]:
         url = f"{_BASE_URL}/v3/shows/{show_id}/legacyIds"
         resp = session.get(url, params=_mums_params(), timeout=10)
         if resp.status_code == 200:
-            data = resp.json()
+            try:
+                data = resp.json()
+            except ValueError:
+                return False, "Spotify auth invalid — legacyIds response is not valid JSON."
             if data.get("stationId") and data.get("userId"):
                 return True, "Spotify auth valid."
             return False, "Spotify auth invalid — legacyIds response missing IDs."
@@ -478,7 +481,7 @@ def _resolve_publish_inputs(
     article_summary: str | None,
 ) -> tuple[str, str, int | None, int | None, str, datetime | None, str]:
     if spotify_publish_config is None:
-        return title, description, None, None, "immediate", publish_on, "wav"
+        return title, description, None, None, "immediate", None, "wav"
 
     resolved_title = spotify_publish_config.title or title
     resolved_description = spotify_publish_config.description or description

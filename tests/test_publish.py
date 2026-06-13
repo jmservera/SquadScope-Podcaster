@@ -164,6 +164,29 @@ class TestVerifyAuth:
         assert not valid
         assert "missing ids" in msg.lower()
 
+    @patch("podcaster.publish._build_session")
+    def test_build_session_error_returns_invalid_auth(self, mock_build_session, spotify_env):
+        mock_build_session.side_effect = SpotifyPublishError("bad session")
+
+        valid, msg = verify_spotify_auth()
+
+        assert not valid
+        assert msg == "bad session"
+
+    @patch("podcaster.publish._build_session")
+    def test_non_json_success_response_is_invalid_auth(self, mock_build_session, spotify_env):
+        mock_session = MagicMock()
+        mock_build_session.return_value = mock_session
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.side_effect = ValueError("not json")
+        mock_session.get.return_value = mock_resp
+
+        valid, msg = verify_spotify_auth()
+
+        assert not valid
+        assert "not valid json" in msg.lower()
+
 
 class TestBuildSession:
     @patch("podcaster.publish.SpotifyConnector")
@@ -447,6 +470,34 @@ class TestPublishEpisode:
         assert metadata_call.kwargs["json"]["title"] == "Original Title"
         assert "seasonNumber" not in metadata_call.kwargs["json"]
         assert metadata_call.kwargs["json"]["isPublished"] is True
+
+    @patch("podcaster.publish._build_session")
+    def test_missing_config_ignores_publish_on(self, mock_build, mp3_file, wav_file, spotify_env):
+        mock_session = MagicMock()
+        mock_build.return_value = mock_session
+        mock_session.request.side_effect = [
+            _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_json_resp({"id": 321}),
+            _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
+            _mock_resp_with_headers({"ETag": '"e1"'}),
+            _mock_json_resp({}),
+            _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
+        ]
+
+        result = publish_episode(
+            mp3_file,
+            "Original Title",
+            "<p>Original desc</p>",
+            publish_on=datetime(2026, 6, 20, 9, 0, tzinfo=timezone.utc),
+            wav_path=wav_file,
+        )
+
+        assert result.status == "published"
+        metadata_call = mock_session.request.call_args_list[-1]
+        assert metadata_call.kwargs["json"]["isPublished"] is True
+        assert "publishOn" not in metadata_call.kwargs["json"]
+        assert "wizardDraftedToPublishOn" not in metadata_call.kwargs["json"]
 
     @patch("podcaster.publish._build_session")
     def test_api_error_graceful(self, mock_build, mp3_file, wav_file, spotify_env):
