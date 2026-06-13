@@ -1113,3 +1113,9 @@ Approved to commit Wave 1/2/3 local increment as a single cohesive release. No A
 
 
 
+
+### 2026-06-13: NEVER bypass branch rulesets
+- All changes MUST go through branch + PR. No direct pushes to main.
+- Agents must create a feature branch and open a PR, even for cleanup/docs/trivial changes.
+- Never disable, bypass, or work around branch protection rulesets.
+- Operator directive — no exceptions.
