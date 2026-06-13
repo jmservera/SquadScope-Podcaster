@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -120,13 +121,27 @@ def _safe_url(url: str) -> str:
     return url
 
 
+def _is_retryable(exc: requests.RequestException) -> bool:
+    """Return True only for transient failures safe to retry."""
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return exc.response.status_code in {408, 429, 500, 502, 503, 504}
+    return False
+
+
 def _retry_request(
     session: requests.Session,
     method: str,
     url: str,
     **kwargs: Any,
 ) -> requests.Response:
-    """Execute an HTTP request with exponential backoff retry."""
+    """Execute an HTTP request with exponential backoff retry.
+
+    Only retries on transient errors (5xx, 408, 429, timeouts, connection
+    errors). Client errors (4xx) are raised immediately to avoid duplicating
+    state-mutating requests.
+    """
     last_exc: Exception | None = None
     log_url = _safe_url(url)
     for attempt in range(_MAX_RETRIES):
@@ -136,25 +151,24 @@ def _retry_request(
             return resp
         except requests.RequestException as exc:
             last_exc = exc
-            if attempt < _MAX_RETRIES - 1:
-                wait = _RETRY_BACKOFF_BASE ** attempt
-                # Sanitize exception message — requests embeds full URLs
-                # (including signed query params) in its error strings.
-                safe_reason = type(exc).__name__
-                if exc.response is not None:
-                    safe_reason += f" (HTTP {exc.response.status_code})"
-                logger.warning(
-                    "Spotify API %s %s failed (attempt %d/%d): %s — retrying in %.1fs",
-                    method,
-                    log_url,
-                    attempt + 1,
-                    _MAX_RETRIES,
-                    safe_reason,
-                    wait,
-                )
-                time.sleep(wait)
+            if not _is_retryable(exc) or attempt >= _MAX_RETRIES - 1:
+                break
+            wait = _RETRY_BACKOFF_BASE ** attempt
+            safe_reason = type(exc).__name__
+            if exc.response is not None:
+                safe_reason += f" (HTTP {exc.response.status_code})"
+            logger.warning(
+                "Spotify API %s %s failed (attempt %d/%d): %s — retrying in %.1fs",
+                method,
+                log_url,
+                attempt + 1,
+                _MAX_RETRIES,
+                safe_reason,
+                wait,
+            )
+            time.sleep(wait)
     raise SpotifyPublishError(
-        f"Spotify API {method} {log_url} failed after {_MAX_RETRIES} attempts"
+        f"Spotify API {method} {log_url} failed after {attempt + 1} attempt(s)"
     ) from last_exc
 
 
@@ -431,5 +445,6 @@ def publish_episode(
         logger.error("Spotify publish failed: %s", exc)
         return PublishResult(status="failed", error=str(exc))
     except Exception as exc:
-        logger.error("Unexpected error during Spotify publish: %s", exc)
-        return PublishResult(status="failed", error=f"Unexpected: {exc}")
+        safe_msg = re.sub(r"https?://\S+", lambda m: _safe_url(m.group()), str(exc))
+        logger.error("Unexpected error during Spotify publish: %s", safe_msg)
+        return PublishResult(status="failed", error=f"Unexpected: {safe_msg}")
