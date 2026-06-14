@@ -149,15 +149,22 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  name: 'default'
+  parent: storage
+}
+
 resource artifactContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
-  name: '${storage.name}/default/${storageContainerName}'
+  name: storageContainerName
+  parent: blobService
   properties: {
     publicAccess: 'None'
   }
 }
 
 resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
-  name: '${storage.name}/default'
+  name: 'default'
+  parent: storage
   properties: {
     policy: {
       rules: [
