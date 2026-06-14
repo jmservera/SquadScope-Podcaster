@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
-from podcaster.config import SpotifyPublishConfig
+from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig
 from spotifyconnector import SpotifyConnector
 
 logger = logging.getLogger(__name__)
@@ -551,7 +551,7 @@ def _resolve_publish_inputs(
 def inject_timestamps_into_description(
     description: str,
     timestamps_html: str,
-    max_length: int = 4_000,
+    max_length: int | None = None,
 ) -> str:
     """Append timestamps HTML to the episode description if within char limit.
 
@@ -559,10 +559,11 @@ def inject_timestamps_into_description(
     description is returned unchanged (timestamps are dropped rather than
     truncating the description body).
     """
+    limit = max_length if max_length is not None else MAX_SPOTIFY_DESCRIPTION_CHARS
     if not timestamps_html:
         return description
     combined = f"{description}{timestamps_html}"
-    if len(combined) > max_length:
+    if len(combined) > limit:
         return description
     return combined
 

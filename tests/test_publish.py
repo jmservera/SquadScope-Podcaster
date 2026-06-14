@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from podcaster.config import SpotifyPublishConfig, truncate_html
+from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig, truncate_html
 from podcaster.publish import (
     PublishResult,
     SpotifyPublishError,
@@ -237,7 +237,7 @@ class TestPublishEpisode:
         )
 
         assert config.title == "T" * 200
-        assert len(config.description) <= 4000
+        assert len(config.description) <= MAX_SPOTIFY_DESCRIPTION_CHARS
         assert config.description.endswith("</strong></p>")
         assert "Spotify publish title exceeded 200 chars; truncating." in caplog.text
         assert "Spotify publish description exceeded 4000 chars; truncating." in caplog.text
@@ -255,12 +255,12 @@ class TestPublishEpisode:
 
     def test_truncate_html_drops_partial_trailing_tag(self):
         html = "<p>" + ("x" * 3988) + '<a href="https://example.com/really/long/link">link</a></p>'
-        truncated = truncate_html(html, 4000)
+        truncated = truncate_html(html, MAX_SPOTIFY_DESCRIPTION_CHARS)
         parser = _BalancedHtmlParser()
         parser.feed(truncated)
         parser.close()
 
-        assert len(truncated) <= 4000
+        assert len(truncated) <= MAX_SPOTIFY_DESCRIPTION_CHARS
         assert truncated.endswith("</p>")
         assert "<a href" not in truncated
         assert parser.errors == []
@@ -500,6 +500,35 @@ class TestPublishEpisode:
         assert "wizardDraftedToPublishOn" not in metadata_call.kwargs["json"]
 
     @patch("podcaster.publish._build_session")
+    def test_appends_timestamps_when_within_limit(self, mock_build, mp3_file, wav_file, spotify_env):
+        mock_session = MagicMock()
+        mock_build.return_value = mock_session
+        mock_session.request.side_effect = [
+            _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_json_resp({"id": 321}),
+            _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
+            _mock_resp_with_headers({"ETag": '"e1"'}),
+            _mock_json_resp({}),
+            _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
+        ]
+
+        description = "<p>Episode notes</p>"
+        timestamps_html = "<p>Timestamps:</p><p>00:00 Intro<br/>01:30 Main</p>"
+
+        result = publish_episode(
+            mp3_file,
+            "Original Title",
+            description,
+            wav_path=wav_file,
+            timestamps_html=timestamps_html,
+        )
+
+        assert result.status == "published"
+        metadata_call = mock_session.request.call_args_list[-1]
+        assert metadata_call.kwargs["json"]["description"] == description + timestamps_html
+
+    @patch("podcaster.publish._build_session")
     def test_api_error_graceful(self, mock_build, mp3_file, wav_file, spotify_env):
         """Publish errors are caught — never raises."""
         mock_session = MagicMock()
@@ -539,6 +568,18 @@ class TestPublishEpisode:
         upload_call = mock_session.request.call_args_list[3]
         assert upload_call.kwargs["headers"]["Content-Type"] == "audio/mpeg"
         assert upload_call.kwargs["data"] == mp3_file.read_bytes()
+
+    def test_timestamps_html_included_in_dry_run(self, mp3_file, wav_file, spotify_env, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
+        result = publish_episode(
+            mp3_file,
+            "Test",
+            "<p>Base desc</p>",
+            wav_path=wav_file,
+            timestamps_html="<p>Timestamps:</p><p>00:00 Intro</p>",
+        )
+        assert result.status == "published"
+        assert result.dry_run is True
 
 
 # -- Helpers --
