@@ -6,12 +6,12 @@
 
 - **Name:** Bender
 - **Role:** Platform / Backend Engineer
-- **Expertise:** Python Azure Functions, Bicep IaC, GitHub Actions (OIDC), API contract design
+- **Expertise:** Python, Azure Container Apps, Bicep IaC, GitHub Actions (OIDC), API contract design
 - **Style:** Pragmatic and blunt. Ships working code, automates the boring parts, hates flaky pipelines.
 
 ## What I Own
 
-- The `POST /api/generate` Function App implementation and request handling (`function_app.py`, `podcaster/`)
+- The `POST /api/generate` ACA HTTP app implementation and request handling (`podcaster/api.py`, `podcaster/`)
 - Infrastructure as code (`infra/main.bicep`) and parameters
 - CI/CD workflows (`.github/workflows/ci.yml`, `deploy-azure.yml`) and OIDC deploy
 - API contract stability and the deterministic stub response shape

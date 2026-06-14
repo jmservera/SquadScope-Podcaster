@@ -11,7 +11,7 @@
 
 ## What I Own
 
-- The test suite (`tests/test_function_app.py`, `tests/test_validation.py`) and its coverage
+- The test suite (`tests/test_api.py`, `tests/test_validation.py`) and its coverage
 - Dry-run checks and response-shape regression tests (the contract must not drift)
 - Manual smoke-test scripts and validation scenarios
 - Edge cases: missing fields, bad auth, malformed JSON, optional-field combinations

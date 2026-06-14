@@ -43,7 +43,7 @@ A second Azure federated identity is **not** useful for writing GitHub secrets o
 - Azure app registration or user-assigned managed identity dedicated to the SquadScope caller.
 - Federated credential subject: `repo:jmservera/SquadScope:environment:prod` (or the exact protected environment/branch used by the caller).
 - Audience: `api://AzureADTokenExchange`.
-- Permissions: no subscription Contributor/Owner and no Storage roles; grant only the app role or Function/App Service authentication audience needed to invoke `/api/generate`.
+- Permissions: no subscription Contributor/Owner and no Storage roles; grant only the app role or ACA authentication audience needed to invoke `/api/generate`.
 - Compatibility: keep `x-podcaster-api-key` until SquadScope has deployed and verified OIDC token acquisition and Podcaster validates it without logging token contents.
 
 ### Azure Resource Access (Deployment Only)
@@ -331,7 +331,6 @@ AZURE_RESOURCE_GROUP=podcaster-prod
 Optional overrides:
 
 ```text
-AZURE_FUNCTION_APP_NAME=podcaster-app-prod
 AZURE_STORAGE_ACCOUNT_NAME=podcasterstg
 ```
 

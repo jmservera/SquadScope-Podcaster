@@ -52,7 +52,7 @@ Example job ID: `podcast-2026-W23-abc12345` (based on week and randomness).
 1. **Add container references:** Create named containers (`manifests`, `transcripts`, `show-notes`, `audio`, `packets`) or use prefixed paths within a single `artifacts` container.
 2. **Implement SAS URL generation:** Use Azure SDK `generate_blob_sas` (or equivalent) with 7-day expiration and read-only permissions.
 3. **Return SAS URLs:** Modify the `/api/generate` response handler to return SAS URLs instead of stubs.
-4. **Implement cleanup:** Add a Timer-triggered Function App or Azure Automation runbook to delete expired blobs daily.
+4. **Implement cleanup:** Lifecycle policy auto-deletes expired blobs (already configured in `infra/main.bicep`).
 5. **Add logging:** Log blob upload, SAS generation, and cleanup operations to Application Insights.
 6. **Test:** Verify that SAS URLs work, expire after 7 days, and cannot be used after expiration.
 
