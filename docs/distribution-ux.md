@@ -238,6 +238,36 @@ The following are explicitly research/future work:
 4. Spotify receives the episode through RSS ingestion.
 5. Response fields such as `"publication_urls"` are added only after contract review and human approval gates.
 
+## Interactive Features (Polls & Q&A)
+
+Spotify for Creators supports interactive polls and Q&A on episodes, which boost
+engagement and algorithmic visibility. However, **no public API exists** for
+creating these programmatically (researched 2026-06-14).
+
+### Current status
+
+- Spotify does not currently expose public endpoints for creating episode polls or Q&A prompts
+- The available public documentation does not provide a supported programmatic publish path for these interactive elements
+- Browser automation (Playwright) could theoretically automate the UI but the
+  poll/Q&A creation flow has not been reverse-engineered or verified stable
+
+### Manual workflow (recommended)
+
+After an episode is published through the current manual publish flow (or any
+future approved publish workflow):
+
+1. Open [Spotify for Creators](https://creators.spotify.com) → Episodes → select the episode
+2. Click "Interactivity" → create a **Poll** with 2–4 options from the week's topics
+3. Optionally add a **Q&A** prompt (e.g., "What tech topic should we cover next?")
+4. Publish the interactive element (it becomes visible to listeners immediately)
+
+### Future automation path
+
+If Spotify releases a public API for interactive features, or if a supported
+automation path is later validated, implement this as an optional post-publish
+step with graceful degradation. Until then, interactive elements remain a
+manual operator task and should never block episode publication.
+
 ## Documentation Checklist for Operators
 
 Before an operator can publish, they must have:
