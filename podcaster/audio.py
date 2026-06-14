@@ -485,6 +485,26 @@ def _probe_duration_seconds(path: Path, runner: CommandRunner) -> float:
         raise RuntimeError(f"ffprobe did not return a numeric duration for {path}") from exc
 
 
+def probe_segment_durations(
+    segments: list[bytes],
+    runner: CommandRunner | None = None,
+    *,
+    segment_extension: str = ".mp3",
+) -> list[float]:
+    """Probe the duration (seconds) of each audio segment.
+
+    Writes segments to a temp dir, probes each with ffprobe, and cleans up.
+    Returns a list of durations parallel to the input segments.
+    """
+    import tempfile
+
+    runner = runner or _run_command
+    with tempfile.TemporaryDirectory(prefix="probe-seg-") as tmp:
+        tmp_dir = Path(tmp)
+        paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
+        return [_probe_duration_seconds(p, runner) for p in paths]
+
+
 def _segment_timeline(segment_durations: list[float], gap_seconds: float) -> tuple[list[float], float]:
     starts: list[float] = []
     current = 0.0
@@ -494,6 +514,17 @@ def _segment_timeline(segment_durations: list[float], gap_seconds: float) -> tup
         if gap_seconds > 0 and index < len(segment_durations) - 1:
             current += gap_seconds
     return starts, current
+
+
+def compute_segment_timeline(
+    segment_durations: list[float], gap_seconds: float = 0.35
+) -> tuple[list[float], float]:
+    """Public wrapper for segment timeline calculation.
+
+    Returns (start_times, total_duration) where start_times[i] is the
+    start second of segment i in the assembled audio.
+    """
+    return _segment_timeline(segment_durations, gap_seconds)
 
 
 def _intro_music_end_seconds(

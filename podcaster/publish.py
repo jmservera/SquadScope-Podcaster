@@ -548,6 +548,25 @@ def _resolve_publish_inputs(
         return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None, spotify_publish_config.upload_format
 
 
+def inject_timestamps_into_description(
+    description: str,
+    timestamps_html: str,
+    max_length: int = 4_000,
+) -> str:
+    """Append timestamps HTML to the episode description if within char limit.
+
+    If the combined description would exceed ``max_length``, the original
+    description is returned unchanged (timestamps are dropped rather than
+    truncating the description body).
+    """
+    if not timestamps_html:
+        return description
+    combined = f"{description}{timestamps_html}"
+    if len(combined) > max_length:
+        return description
+    return combined
+
+
 def publish_episode(
     mp3_path: Path,
     title: str,
