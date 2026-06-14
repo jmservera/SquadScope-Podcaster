@@ -6,10 +6,10 @@ Implement Azure Blob Storage staging for manifests, transcripts, show notes, MP3
 
 ### Access Control
 
-- ✓ **Already implemented:** Storage Account has `allowBlobPublicAccess: false` (see `infra/main.bicep` line 35).
-- ✓ **Already implemented:** Function App has system-assigned managed identity with `Storage Blob Data Contributor` role (see `infra/main.bicep` lines 79–80, 117–125).
-- **To implement:** The Function App code uses Azure SDK to construct short-lived SAS URLs or private URLs brokered by managed identity.
-- **To implement:** Returned URLs in the response are SAS URLs with 7-day expiration, not public static URLs.
+- ✓ **Already implemented:** Storage Account has `allowBlobPublicAccess: false` and `allowSharedKeyAccess: false` (see `infra/main.bicep`).
+- ✓ **Already implemented:** ACA synthesis job has a user-assigned managed identity with `Storage Blob Data Contributor` role (see `infra/modules/aca.bicep`).
+- ✓ **Already implemented:** Artifact URLs use private operator paths (see `podcaster/artifact_access.py`).
+- ✓ **Already implemented:** Lifecycle policy auto-deletes artifacts after configurable retention (see `infra/main.bicep`).
 
 ### Retention Policy
 

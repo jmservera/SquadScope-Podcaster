@@ -6,7 +6,7 @@ Issue: #5
 
 This research item is now implemented for Podcaster's Spotify-hosted publishing path.
 
-Podcaster now has a custom `podcaster/publish.py` implementation for the unofficial Spotify for Creators API. It uses `spotifyconnector` only for Bearer-token authentication, then performs the endpoint workflow with direct `requests` calls. The module is opt-in and standalone today: it is available for future pipeline integration or manual/operator invocation, but it is not yet wired into `podcaster/jobs.py`.
+Podcaster now has a custom `podcaster/publish.py` implementation for the unofficial Spotify for Creators API. It uses `spotifyconnector` only for Bearer-token authentication, then performs the endpoint workflow with direct `requests` calls. The module is opt-in and integrated into the synthesis pipeline via `podcaster/job_runner.py` (consuming `spotify_publish` config from the request payload, per #190/#191).
 
 ## Direct Spotify upload API
 
