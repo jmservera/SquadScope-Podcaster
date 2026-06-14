@@ -1,5 +1,7 @@
 # Ops Record 0002 — RG cleanup + redeploy plan before the ACA stack
 
+> **⚠️ Historical record.** This pre-ACA cleanup plan has been executed. The resource group now runs ACA-only infrastructure in eastus2 (see `infra/main.bicep`). Retained for audit trail.
+
 - **Issue:** [#91](https://github.com/jmservera/SquadScope-Podcaster/issues/91)
 - **Owner:** Bender (deploy/Azure) · Support: Hermes (identity/permissions/artifact-access)
 - **Resource group:** `squadscope-podcaster` (sub `99d2c976-…`, `swedencentral`)

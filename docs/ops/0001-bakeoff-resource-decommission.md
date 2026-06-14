@@ -1,5 +1,7 @@
 # Ops Record 0001 — Bakeoff Azure resource decommission
 
+> **⚠️ Historical record.** The bakeoff resources described here have been decommissioned. The production stack now uses bicep-managed Azure OpenAI in eastus2 (see `infra/main.bicep`). Retained for audit trail.
+
 - **Issue:** [#68](https://github.com/jmservera/SquadScope-Podcaster/issues/68)
 - **Owner:** Bender (deploy/Azure) · Support: Hermes (secrets/permissions)
 - **Resource group:** `squadscope-podcaster` (sub `99d2c976-…`, `swedencentral`)
