@@ -143,6 +143,7 @@ def render_distribution_audio(
     outro_music: Path | None = None,
     mix_spec: MusicMixSpec | None = None,
     segment_extension: str = ".mp3",
+    segment_durations_out: list[float] | None = None,
 ) -> tuple[Path, Path]:
     runner = runner or _run_command
     wav_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,10 +153,16 @@ def render_distribution_audio(
     tmp_dir.mkdir(parents=True, exist_ok=False)
     try:
         segment_paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
+        segment_durations = None
+        if segment_durations_out is not None and not (mix_spec is not None and (intro_music or outro_music)):
+            segment_durations = [_probe_duration_seconds(path, runner) for path in segment_paths]
+            segment_durations_out.extend(segment_durations)
 
         if mix_spec is not None and (intro_music or outro_music):
             _validate_mix_spec_for_segments(mix_spec, len(segment_paths), intro_music=intro_music, outro_music=outro_music)
             segment_durations = [_probe_duration_seconds(path, runner) for path in segment_paths]
+            if segment_durations_out is not None:
+                segment_durations_out.extend(segment_durations)
             speech_intermediate = tmp_dir / "speech.wav"
             _concat_audio_files(segment_paths, speech_intermediate, runner, gap_seconds=gap_seconds)
             mixed_intermediate = tmp_dir / "episode.wav"
@@ -485,7 +492,33 @@ def _probe_duration_seconds(path: Path, runner: CommandRunner) -> float:
         raise RuntimeError(f"ffprobe did not return a numeric duration for {path}") from exc
 
 
+def probe_segment_durations(
+    segments: list[bytes],
+    runner: CommandRunner | None = None,
+    *,
+    segment_extension: str = ".mp3",
+) -> list[float]:
+    """Probe the duration (seconds) of each audio segment.
+
+    Writes segments to a temp dir, probes each with ffprobe, and cleans up.
+    Returns a list of durations parallel to the input segments.
+    """
+    import tempfile
+
+    runner = runner or _run_command
+    with tempfile.TemporaryDirectory(prefix="probe-seg-") as tmp:
+        tmp_dir = Path(tmp)
+        paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
+        return [_probe_duration_seconds(p, runner) for p in paths]
+
+
 def _segment_timeline(segment_durations: list[float], gap_seconds: float) -> tuple[list[float], float]:
+    if gap_seconds < 0:
+        raise ValueError("gap_seconds must be non-negative")
+    for duration in segment_durations:
+        if duration < 0:
+            raise ValueError("segment durations must be non-negative")
+
     starts: list[float] = []
     current = 0.0
     for index, duration in enumerate(segment_durations):
@@ -494,6 +527,17 @@ def _segment_timeline(segment_durations: list[float], gap_seconds: float) -> tup
         if gap_seconds > 0 and index < len(segment_durations) - 1:
             current += gap_seconds
     return starts, current
+
+
+def compute_segment_timeline(
+    segment_durations: list[float], gap_seconds: float = 0.35
+) -> tuple[list[float], float]:
+    """Public wrapper for segment timeline calculation.
+
+    Returns (start_times, total_duration) where start_times[i] is the
+    start second of segment i in the assembled audio.
+    """
+    return _segment_timeline(segment_durations, gap_seconds)
 
 
 def _intro_music_end_seconds(

@@ -3,9 +3,12 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from podcaster.audio import (
     AudioMetadata,
     MAX_FILE_SIZE_BYTES,
+    compute_segment_timeline,
     normalize_audio,
     placeholder_audio_validation,
     probe_audio,
@@ -183,3 +186,17 @@ def test_missing_invalid_ffprobe_output_fails_closed(tmp_path: Path) -> None:
         assert "did not include an audio stream" in str(exc)
     else:
         raise AssertionError("invalid ffprobe output should fail closed")
+
+
+@pytest.mark.parametrize(
+    ("durations", "gap_seconds"),
+    [
+        ([-0.1, 1.0], 0.35),
+        ([1.0, 2.0], -0.35),
+    ],
+)
+def test_compute_segment_timeline_rejects_negative_values(
+    durations: list[float], gap_seconds: float
+) -> None:
+    with pytest.raises(ValueError):
+        compute_segment_timeline(durations, gap_seconds)

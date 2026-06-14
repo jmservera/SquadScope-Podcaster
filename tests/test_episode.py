@@ -300,6 +300,69 @@ def test_synthesize_episode_enables_default_music_mix_when_intro_and_outro_music
     assert isinstance(stitch_kwargs["mix_spec"], MusicMixSpec)
 
 
+def test_synthesize_episode_reuses_rendered_segment_durations_for_timestamps(tmp_path, monkeypatch):
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article)
+    config = _production_config()
+    decision = episode.operator_review_decision(config)
+    output_path = tmp_path / "episode.mp3"
+
+    def fake_transport(request):
+        return b"fake-mp3-segment-bytes"
+
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
+        kwargs["segment_durations_out"].extend([1.0] * len(segments))
+        Path(wav_out).write_bytes(b"RIFFfake-wav")
+        Path(out).write_bytes(b"stitched-mp3")
+        return Path(wav_out), Path(out)
+
+    def fake_probe(path, sha256, runner=None):
+        from podcaster.audio import AudioMetadata
+
+        if str(path).endswith(".wav"):
+            return AudioMetadata(
+                duration_seconds=300.0,
+                loudness_lufs=-16.0,
+                sample_rate_hz=44100,
+                bitrate_bps=705600,
+                channels=1,
+                content_type="audio/wav",
+                byte_length=Path(path).stat().st_size,
+                sha256=sha256,
+                codec_name="pcm_s16le",
+            )
+        return AudioMetadata(
+            duration_seconds=300.0,
+            loudness_lufs=-16.0,
+            sample_rate_hz=44100,
+            bitrate_bps=192000,
+            channels=1,
+            content_type="audio/mpeg",
+            byte_length=Path(path).stat().st_size,
+            sha256=sha256,
+        )
+
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
+    monkeypatch.setattr(episode, "probe_audio", fake_probe)
+
+    result = episode.synthesize_episode(
+        script,
+        config,
+        decision,
+        output_path,
+        token_provider=lambda scope: "token",
+        transport=fake_transport,
+    )
+
+    assert [timestamp.name for timestamp in result.timestamps] == [
+        "Intro",
+        "agent skills go vertical",
+        "hardware crossover",
+        "Outro",
+    ]
+    assert [timestamp.start_seconds for timestamp in result.timestamps] == pytest.approx([0.0, 5.4, 9.45, 13.5])
+
+
 def test_hosts_do_not_self_label_their_personality():
     article = episode.sanitize_article(**_article_kwargs())
     script = episode.build_episode_script(article).lower()

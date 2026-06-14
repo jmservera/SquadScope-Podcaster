@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
-from podcaster.config import SpotifyPublishConfig
+from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig
 from spotifyconnector import SpotifyConnector
 
 logger = logging.getLogger(__name__)
@@ -548,6 +548,26 @@ def _resolve_publish_inputs(
         return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None, spotify_publish_config.upload_format
 
 
+def inject_timestamps_into_description(
+    description: str,
+    timestamps_html: str,
+    max_length: int | None = None,
+) -> str:
+    """Append timestamps HTML to the episode description if within char limit.
+
+    If the combined description would exceed ``max_length``, the original
+    description is returned unchanged (timestamps are dropped rather than
+    truncating the description body).
+    """
+    limit = max_length if max_length is not None else MAX_SPOTIFY_DESCRIPTION_CHARS
+    if not timestamps_html:
+        return description
+    combined = f"{description}{timestamps_html}"
+    if len(combined) > limit:
+        return description
+    return combined
+
+
 def publish_episode(
     mp3_path: Path,
     title: str,
@@ -565,6 +585,7 @@ def publish_episode(
     article_summary: str | None = None,
     *,
     wav_path: Path | None = None,
+    timestamps_html: str = "",
 ) -> PublishResult:
     """Publish an episode to Spotify for Creators.
 
@@ -588,6 +609,8 @@ def publish_episode(
         article_title: Source article title for config template resolution.
         article_summary: Source article summary for config template resolution.
         wav_path: Optional WAV artifact path for Spotify upload.
+        timestamps_html: Pre-formatted HTML timestamps block to append to
+            the episode description (from :func:`~podcaster.episode.format_timestamps_html`).
 
     Returns:
         PublishResult with status and any error details.
@@ -610,6 +633,12 @@ def publish_episode(
             article_summary=article_summary,
         )
     )
+
+    # Append timestamps to description if provided and within Spotify's limit
+    if timestamps_html:
+        resolved_description = inject_timestamps_into_description(
+            resolved_description, timestamps_html
+        )
 
     # Resolve credentials
     try:
