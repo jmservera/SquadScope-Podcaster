@@ -515,11 +515,15 @@ def compute_section_timestamps(
     segment_durations: list[float],
     section_labels: list[str],
     gap_seconds: float = 0.35,
+    speech_offset_seconds: float = 0.0,
 ) -> list[SectionTimestamp]:
     """Compute de-duplicated section timestamps from segment timing.
 
     Returns one :class:`SectionTimestamp` per unique consecutive section,
     using the start time of the first segment in that section.
+
+    ``speech_offset_seconds`` accounts for any delay before speech starts
+    (e.g., intro music full-volume period) so timestamps match the final mix.
     """
     if not segment_durations or not section_labels:
         return []
@@ -530,7 +534,9 @@ def compute_section_timestamps(
 
     for i, label in enumerate(section_labels[: len(starts)]):
         if label != prev_label:
-            timestamps.append(SectionTimestamp(name=label, start_seconds=starts[i]))
+            timestamps.append(SectionTimestamp(
+                name=label, start_seconds=starts[i] + speech_offset_seconds
+            ))
             prev_label = label
 
     return timestamps
@@ -549,10 +555,12 @@ def format_timestamps_block(timestamps: list[SectionTimestamp]) -> str:
 
 def format_timestamps_html(timestamps: list[SectionTimestamp]) -> str:
     """Format timestamps as HTML for Spotify episode descriptions."""
+    import html as html_mod
+
     if not timestamps:
         return ""
     lines = "<br/>".join(
-        f"{ts.formatted} {ts.name}" for ts in timestamps
+        f"{ts.formatted} {html_mod.escape(ts.name)}" for ts in timestamps
     )
     return f"<p>Timestamps:</p><p>{lines}</p>"
 
@@ -638,12 +646,17 @@ def synthesize_episode(
     from podcaster.audio import probe_segment_durations
 
     section_labels = label_script_sections(script, segments, podcast_config)
+    # Account for intro music delay so timestamps match the final mixed audio
+    speech_offset = effective_mix_spec.intro_full_volume_seconds if intro_music else 0.0
     try:
         durations = probe_segment_durations(
             audio_segments, runner=runner, segment_extension=effective_config.audio_extension
         )
         section_timestamps = tuple(
-            compute_section_timestamps(durations, section_labels, gap_seconds=0.35)
+            compute_section_timestamps(
+                durations, section_labels, gap_seconds=0.35,
+                speech_offset_seconds=speech_offset,
+            )
         )
     except (RuntimeError, OSError):
         section_timestamps = ()

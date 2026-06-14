@@ -115,6 +115,10 @@ class TestLabelScriptSections:
         # Last 2 should be Outro
         assert labels[-1] == "Outro"
         assert labels[-2] == "Outro"
+        # Middle labels should contain both beat topics
+        middle = labels[4:-2]
+        assert any("First Topic" in lbl for lbl in middle), f"Expected 'First Topic' in middle labels: {middle}"
+        assert any("Second Topic" in lbl for lbl in middle), f"Expected 'Second Topic' in middle labels: {middle}"
 
     def test_too_few_segments(self):
         labels = label_script_sections("", [("host_a", "hi"), ("host_b", "hey")])
@@ -146,6 +150,28 @@ class TestFormatTimestamps:
 
     def test_format_html_empty(self):
         assert format_timestamps_html([]) == ""
+
+    def test_format_html_escapes_special_chars(self):
+        timestamps = [
+            SectionTimestamp(name="<script>alert('xss')</script>", start_seconds=0.0),
+            SectionTimestamp(name="Tom & Jerry", start_seconds=60.0),
+        ]
+        html = format_timestamps_html(timestamps)
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+        assert "Tom &amp; Jerry" in html
+
+
+class TestComputeSectionTimestampsWithOffset:
+    def test_speech_offset_shifts_all_timestamps(self):
+        durations = [3.0, 3.0, 4.0]
+        labels = ["Intro", "Main", "Outro"]
+        timestamps = compute_section_timestamps(
+            durations, labels, gap_seconds=0.0, speech_offset_seconds=10.0
+        )
+        assert timestamps[0].start_seconds == 10.0
+        assert timestamps[1].start_seconds == 13.0
+        assert timestamps[2].start_seconds == 16.0
 
 
 class TestInjectTimestampsIntoDescription:
