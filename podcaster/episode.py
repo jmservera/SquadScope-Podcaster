@@ -487,7 +487,7 @@ def _find_beat_boundaries(
                 beat_queue.pop(0)
 
     # If we couldn't find all beats, distribute evenly
-    if not beat_start_indices:
+    if len(beat_start_indices) < len(beats) // 2 + 1:
         chunk = max(1, len(middle_segments) // max(1, len(beats)))
         labels: list[str] = []
         for idx, seg in enumerate(middle_segments):

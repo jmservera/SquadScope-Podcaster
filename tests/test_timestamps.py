@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from podcaster.audio import compute_segment_timeline
 from podcaster.config import PodcastConfig
 from podcaster.episode import (
