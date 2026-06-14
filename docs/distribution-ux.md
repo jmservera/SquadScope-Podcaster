@@ -246,14 +246,15 @@ creating these programmatically (researched 2026-06-14).
 
 ### Current status
 
-- `getPollForEpisode` is available as a read-only GraphQL query (internal API)
-- No `createPoll` or `createQandA` mutation is documented or publicly supported
+- Spotify does not currently expose public endpoints for creating episode polls or Q&A prompts
+- The available public documentation does not provide a supported programmatic publish path for these interactive elements
 - Browser automation (Playwright) could theoretically automate the UI but the
   poll/Q&A creation flow has not been reverse-engineered or verified stable
 
 ### Manual workflow (recommended)
 
-After an episode is published via the automated pipeline:
+After an episode is published through the current manual publish flow (or any
+future approved publish workflow):
 
 1. Open [Spotify for Creators](https://creators.spotify.com) → Episodes → select the episode
 2. Click "Interactivity" → create a **Poll** with 2–4 options from the week's topics
@@ -262,9 +263,10 @@ After an episode is published via the automated pipeline:
 
 ### Future automation path
 
-If Spotify releases a public API for interactive features, or if the internal
-GraphQL mutations are reliably captured, implement as an optional post-publish
-step with graceful degradation (never blocks the publish pipeline).
+If Spotify releases a public API for interactive features, or if a supported
+automation path is later validated, implement this as an optional post-publish
+step with graceful degradation. Until then, interactive elements remain a
+manual operator task and should never block episode publication.
 
 ## Documentation Checklist for Operators
 
