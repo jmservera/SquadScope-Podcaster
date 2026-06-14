@@ -99,15 +99,6 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 }
 
-resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' existing = {
-  name: 'default'
-  parent: storage
-}
-
-resource artifactContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' existing = {
-  name: storageContainerName
-  parent: blobService
-}
 
 resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
   name: 'default'
