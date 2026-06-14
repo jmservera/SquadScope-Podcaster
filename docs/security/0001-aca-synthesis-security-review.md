@@ -2,7 +2,7 @@
 
 - Issue: #80 (#67 follow-up 5/5)
 - ADR: `docs/adr/0001-production-audio-ffmpeg-hosting.md` Option C
-- Review scope: `infra/modules/aca.bicep`, `infra/main.bicep`, `infra/modules/openai.bicep`, `podcaster/job_runner.py`, `podcaster/queue.py`, `podcaster/storage.py`, `podcaster/tts.py`, `podcaster/jobs.py`, `podcaster/artifact_access.py`, `podcaster/sanitization.py`, and `function_app.py`.
+- Review scope: `infra/modules/aca.bicep`, `infra/main.bicep`, `infra/modules/openai.bicep`, `podcaster/job_runner.py`, `podcaster/queue.py`, `podcaster/storage.py`, `podcaster/tts.py`, `podcaster/jobs.py`, `podcaster/artifact_access.py`, `podcaster/sanitization.py`, `podcaster/api.py` (ACA HTTP app, replaced the former `function_app.py`), and `infra/modules/api.bicep`.
 
 ## Threat notes
 

@@ -1,6 +1,6 @@
 # ADR 0001: Production hosting for audio synthesis + ffmpeg
 
-- Status: Proposed (awaiting operator decision on Azure spend)
+- Status: **Superseded** — ACA-only architecture adopted (PR #112 removed Function App; #109 confirmed ACA as primary compute)
 - Date: 2026-06-10
 - Owner: Bender (API / Functions / Bicep / CI / deploy)
 - Issue: #67
