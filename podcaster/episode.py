@@ -498,13 +498,12 @@ def _find_beat_boundaries(
     # Assign labels based on detected boundaries
     labels = []
     boundary_iter = iter(enumerate(beat_start_indices))
-    current_beat_idx, current_start = next(boundary_iter)
+    current_beat_idx, _ = next(boundary_iter)
     next_entry = next(boundary_iter, None)
 
     for i in range(len(middle_segments)):
         if next_entry is not None and i >= next_entry[1]:
             current_beat_idx = next_entry[0]
-            current_start = next_entry[1]
             next_entry = next(boundary_iter, None)
         labels.append(beats[current_beat_idx] if current_beat_idx < len(beats) else beats[-1])
 
@@ -622,6 +621,7 @@ def synthesize_episode(
     wav_output_path = output_path.with_suffix(".wav")
     # Use provided mix_spec; fall back to default when music paths are given without one.
     effective_mix_spec = music_mix_spec or (MusicMixSpec() if (intro_music or outro_music) else None)
+    segment_durations: list[float] = []
     render_distribution_audio(
         audio_segments,
         wav_output_path,
@@ -631,6 +631,7 @@ def synthesize_episode(
         outro_music=outro_music,
         mix_spec=effective_mix_spec,
         segment_extension=effective_config.audio_extension,
+        segment_durations_out=segment_durations,
     )
     data = output_path.read_bytes()
     wav_data = wav_output_path.read_bytes()
@@ -642,19 +643,13 @@ def synthesize_episode(
     }
     validation = validate_audio_outputs(metadata, manual_duration_override=manual_duration_override)
 
-    # Compute section timestamps from segment durations
-    from podcaster.audio import probe_segment_durations
-
     section_labels = label_script_sections(script, segments, podcast_config)
     # Account for intro music delay so timestamps match the final mixed audio
     speech_offset = effective_mix_spec.intro_full_volume_seconds if intro_music else 0.0
     try:
-        durations = probe_segment_durations(
-            audio_segments, runner=runner, segment_extension=effective_config.audio_extension
-        )
         section_timestamps = tuple(
             compute_section_timestamps(
-                durations, section_labels, gap_seconds=0.35,
+                segment_durations, section_labels, gap_seconds=0.35,
                 speech_offset_seconds=speech_offset,
             )
         )
