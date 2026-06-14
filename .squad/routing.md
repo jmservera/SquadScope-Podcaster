@@ -6,7 +6,7 @@ How to decide who handles what.
 
 | Work Type | Route To | Examples |
 |-----------|----------|----------|
-| API, Azure Functions, Bicep, CI/CD, secrets automation | Bender | `function_app.py`, `infra/main.bicep`, deploy workflow, contract wiring |
+| API, ACA, Bicep, CI/CD, secrets automation | Bender | `podcaster/api.py`, `infra/main.bicep`, deploy workflow, contract wiring |
 | Script, transcript, show notes, TTS-ready copy | Farnsworth | Episode scripts, prompts, transcript standards, TTS bakeoff criteria |
 | Secrets, logging policy, permissions, threat model | Hermes | API-key handling, workflow permission scoping, release safety checklist |
 | SquadScope integration UX, publishing packet, distribution research | Amy | Link-only integration, packet usability, Spotify/host research framing |
