@@ -58,7 +58,7 @@ Non-dry-run TTS synthesis is blocked until a human records approval through `.gi
 Example request:
 
 ```bash
-curl -X POST http://localhost:7071/api/generate \
+curl -X POST http://localhost:8000/api/generate \
   -H 'content-type: application/json' \
   -H 'x-podcaster-api-key: local-dev-key' \
   -d '{"week":"2026-W23","article_url":"https://example.com/articles/week-23","dry_run":true}'
