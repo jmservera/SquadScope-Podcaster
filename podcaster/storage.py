@@ -346,7 +346,11 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
                     exc.close()
                 time.sleep(delay)
                 continue
-            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+            finally:
+                if exc.fp:
+                    exc.close()
             raise RuntimeError(
                 f"managed identity token request failed: HTTP {exc.code} {exc.reason}; {detail}"
             ) from exc
