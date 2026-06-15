@@ -18,9 +18,12 @@ Safety:
 
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from podcaster.audio import (
     AudioValidationResult,
@@ -673,8 +676,28 @@ def synthesize_episode(
 def _apply_podcast_config(config: TtsConfig, podcast_config: PodcastConfig | None) -> TtsConfig:
     if podcast_config is None:
         return config
-    return replace(
-        config,
-        style_host_a=podcast_config.host_a.style,
-        style_host_b=podcast_config.host_b.style,
-    )
+
+    overrides: dict[str, str | None] = {
+        "style_host_a": podcast_config.host_a.style,
+        "style_host_b": podcast_config.host_b.style,
+    }
+
+    # Voice override: podcast_config is the source of truth; env vars are fallback.
+    if podcast_config.host_a.voice:
+        if podcast_config.host_a.voice != config.voice_host_a:
+            log.info(
+                "podcast_config overrides voice_host_a: %s -> %s",
+                config.voice_host_a,
+                podcast_config.host_a.voice,
+            )
+        overrides["voice_host_a"] = podcast_config.host_a.voice
+    if podcast_config.host_b.voice:
+        if podcast_config.host_b.voice != config.voice_host_b:
+            log.info(
+                "podcast_config overrides voice_host_b: %s -> %s",
+                config.voice_host_b,
+                podcast_config.host_b.voice,
+            )
+        overrides["voice_host_b"] = podcast_config.host_b.voice
+
+    return replace(config, **overrides)
