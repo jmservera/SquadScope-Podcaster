@@ -419,8 +419,8 @@ def main() -> int:
     if os.environ.get("PODCASTER_STORAGE_ACCOUNT_URL"):
         try:
             ManagedIdentityTokenCredential().get_token("https://storage.azure.com/.default")
-        except Exception as exc:  # noqa: BLE001 - health check should not crash the runner
-            logger.error("managed identity token startup health check failed: %s", exc)
+        except Exception:  # noqa: BLE001 - health check should not crash the runner
+            logger.exception("managed identity token startup health check failed")
             return 3
     outcomes = drain(queue, storage, config)
     completed = sum(1 for outcome in outcomes if outcome.status == STATUS_COMPLETED)
