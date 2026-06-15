@@ -157,6 +157,26 @@ def run_synthesis(
     wav_blob_path = _wav_artifact_path(manifest, job_id)
     request_podcast_config = _request_podcast_config(manifest)
     podcast_config = PodcastConfig.from_payload(request_podcast_config) if request_podcast_config else None
+
+    # Warn on voice config drift between request payload and environment.
+    if podcast_config is not None:
+        if config.voice_host_a and podcast_config.host_a.voice != config.voice_host_a:
+            logger.warning(
+                "voice config drift: podcast_config.host_a.voice=%r but env VOICE_HOST_A=%r "
+                "(job_id=%s) — check ACA env vars match the caller config",
+                podcast_config.host_a.voice,
+                config.voice_host_a,
+                job_id,
+            )
+        if config.voice_host_b and podcast_config.host_b.voice != config.voice_host_b:
+            logger.warning(
+                "voice config drift: podcast_config.host_b.voice=%r but env VOICE_HOST_B=%r "
+                "(job_id=%s) — check ACA env vars match the caller config",
+                podcast_config.host_b.voice,
+                config.voice_host_b,
+                job_id,
+            )
+
     request_spotify_publish = _request_spotify_publish(manifest)
     spotify_publish_config = (
         SpotifyPublishConfig.from_payload(request_spotify_publish) if request_spotify_publish else None
