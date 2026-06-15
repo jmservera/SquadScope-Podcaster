@@ -408,7 +408,7 @@ def main() -> int:
     config = load_tts_config()
     try:
         ManagedIdentityTokenCredential().get_token("https://storage.azure.com/.default")
-    except RuntimeError as exc:
+    except Exception as exc:  # noqa: BLE001 - health check should not crash the runner
         logger.error("managed identity token startup health check failed: %s", exc)
         return 3
     outcomes = drain(queue, storage, config)
