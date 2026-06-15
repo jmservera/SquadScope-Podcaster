@@ -148,6 +148,13 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
         elif len(article_content) < 50:
             warnings.append("article_content is very short; script quality may be limited")
 
+    breaking_news = payload.get("breaking_news")
+    if breaking_news is not None:
+        if not isinstance(breaking_news, str) or not breaking_news.strip():
+            errors.append("breaking_news must be a non-empty string")
+        elif len(breaking_news) > 5000:
+            errors.append("breaking_news must not exceed 5000 characters")
+
     podcast_config = payload.get("podcast_config")
     if podcast_config is not None:
         podcast_config_errors, podcast_config_warnings = _validate_podcast_config(podcast_config)

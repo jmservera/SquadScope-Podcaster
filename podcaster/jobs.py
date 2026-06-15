@@ -134,6 +134,7 @@ def run_generation_job(
                     config=script_config,
                     podcast_config=podcast_config,
                     script_directions=script_directions,
+                    breaking_news=payload.get("breaking_news") or None,
                 )
                 llm_generation_engine = "llm-script-gen"
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
