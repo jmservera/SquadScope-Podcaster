@@ -29,7 +29,11 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig
-from spotifyconnector import SpotifyConnector
+
+try:
+    from spotifyconnector import SpotifyConnector
+except ModuleNotFoundError:  # pragma: no cover - exercised via monkeypatch in tests
+    SpotifyConnector = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +127,10 @@ def _mums_params(**kwargs: str) -> dict[str, str]:
 
 def _request_bearer_token(sp_dc: str, sp_key: str, show_id: str) -> str:
     """Exchange browser cookies for a short-lived Spotify bearer token."""
+    if SpotifyConnector is None:
+        raise SpotifyPublishError(
+            "spotifyconnector is not installed. Install requirements.txt to enable Spotify publishing."
+        )
     connector = SpotifyConnector(
         base_url=_SPOTIFY_CONNECTOR_BASE_URL,
         client_id=_SPOTIFY_CLIENT_ID,
@@ -728,6 +736,8 @@ def publish_episode(
             episode_type=episode_type,
             explicit=explicit,
         )
+        if publish_behavior != "draft":
+            _publish_episode_live(session, anchor_id, resolved_publish_on)
 
         status = "draft" if publish_behavior == "draft" else ("scheduled" if resolved_publish_on else "published")
         logger.info(

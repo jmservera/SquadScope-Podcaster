@@ -131,6 +131,8 @@ def test_enqueue_failure_does_not_break_202_contract() -> None:
 
     assert result.response["status"] == "accepted"
     assert result.response["errors"] == []
+    assert "synthesis enqueue failed; job remains staged until synthesis is replayed" in result.response["warnings"]
+    assert result.manifest["generation"]["synthesis_queue"]["status"] == "failed"
 
 
 def test_enqueue_synthesis_job_carries_only_job_id_and_no_secret(caplog) -> None:

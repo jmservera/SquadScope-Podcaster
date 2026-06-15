@@ -86,7 +86,7 @@ def _placeholder_script() -> str:
     )
 
 
-def _base_manifest(status: str = "review_pending") -> dict:
+def _base_manifest(status: str = "accepted") -> dict:
     mp3_path = f"jobs/{JOB_ID}/audio/{JOB_ID}.mp3"
     wav_path = f"jobs/{JOB_ID}/audio/{JOB_ID}.wav"
     return {
@@ -98,17 +98,21 @@ def _base_manifest(status: str = "review_pending") -> dict:
             "audio_mode": "placeholder",
             "tts_provider": None,
             "tts_voice": None,
-            "tts_synthesis": {"status": "blocked", "allowed": False, "blocked_by": ["human_review", "provider_not_selected"]},
+            "tts_synthesis": {"status": "queued", "allowed": True, "blocked_by": []},
             "audio_validation": {"status": "placeholder", "ready": False},
         },
         "publishing": {
-            "mode": "manual",
+            "mode": "review_gate",
             "eligible": False,
-            "blocked_by": ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"],
-            "readiness_checks": {"editorial_review_complete": False, "real_audio_available": False},
+            "blocked_by": ["human_review", "synthesis_not_completed", "audio_validation_not_passed"],
+            "readiness_checks": {
+                "editorial_review_complete": False,
+                "real_audio_available": False,
+                "audio_validation_passed": False,
+            },
             "public_url": None,
         },
-        "lifecycle": {"status": status, "revision": 1, "transitions": [{"at": "t0", "to": "review_pending", "reason": "artifacts_staged"}]},
+        "lifecycle": {"status": status, "revision": 1, "transitions": [{"at": "t0", "to": "accepted", "reason": "request_validated"}]},
         "artifacts": {
             mp3_path: {"url": f"https://test.invalid/{mp3_path}", "publicly_accessible": False, "size_bytes": 1, "content_type": "audio/mpeg", "sha256": "0" * 64},
             wav_path: {"url": f"https://test.invalid/{wav_path}", "publicly_accessible": False, "size_bytes": 1, "content_type": "audio/wav", "sha256": "0" * 64},
@@ -215,14 +219,17 @@ def test_run_synthesis_completes_and_never_makes_publishable(monkeypatch):
     assert manifest["artifacts"][mp3_path]["sha256"] == gen["synthesis_runner"]["audio"]["sha256"]
     assert manifest["artifacts"][wav_path]["sha256"] == gen["synthesis_runner"]["audio"]["artifacts"]["wav"]["sha256"]
     assert gen["synthesis_runner"]["audio"]["upload_format"] == "wav"
+    assert manifest["status"] == "synthesized_review_ready"
 
     pub = manifest["publishing"]
     # Human-review gate is preserved: never publication-eligible from the runner.
     assert pub["eligible"] is False
+    assert pub["packet_ready"] is True
     assert "human_review" in pub["blocked_by"]
-    assert "real_tts_not_implemented" not in pub["blocked_by"]
+    assert "synthesis_not_completed" not in pub["blocked_by"]
     assert pub["readiness_checks"]["real_audio_available"] is True
     assert pub["readiness_checks"]["editorial_review_complete"] is False
+    assert pub["readiness_checks"]["audio_validation_passed"] is True
 
 
 def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
@@ -234,6 +241,27 @@ def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
     combined = " ".join(record.getMessage() for record in caplog.records)
     assert "openai.azure.com" not in combined  # full endpoint never logged
     assert "Bearer" not in combined
+
+
+def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
+    _patch_audio(monkeypatch)
+    storage = FakeStorage()
+    _stage(storage, _base_manifest(), _two_voice_script())
+    called: list[str] = []
+
+    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: True)
+    monkeypatch.setattr(
+        job_runner,
+        "auto_publish_job",
+        lambda job_id, storage=None, now=None: called.append(job_id) or type("Result", (), {"manifest": {"status": "published"}})(),
+    )
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=lambda request: b"segment-bytes"
+    )
+
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    assert called == [JOB_ID]
 
 
 # --- idempotency & skip paths ---------------------------------------------
@@ -292,6 +320,7 @@ def test_run_synthesis_failure_does_not_make_publishable(monkeypatch):
         job_runner.run_synthesis(JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=failing_transport)
 
     manifest = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode("utf-8"))
+    assert manifest["status"] == "synthesis_failed"
     assert manifest["publishing"]["eligible"] is False
     assert manifest["publishing"]["readiness_checks"]["real_audio_available"] is False
     assert manifest["generation"]["synthesis_runner"]["status"] == "failed"

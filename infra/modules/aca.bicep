@@ -80,6 +80,20 @@ param ttsVoiceHostB string = 'alloy'
 @description('Spotify show ID for auto-publish (#182). Empty disables publishing in the container.')
 param spotifyShowId string = ''
 
+@description('Whether runtime Spotify publishing is enabled.')
+param spotifyPublishEnabled string = 'false'
+
+@secure()
+@description('Spotify session cookie SP_DC for runtime publication.')
+param spotifySessionCookieDc string = ''
+
+@secure()
+@description('Spotify session cookie SP_KEY for runtime publication.')
+param spotifySessionCookieKey string = ''
+
+@description('Whether jobs should auto-publish after synthesis.')
+param podcastAutoPublish string = 'false'
+
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
 
@@ -143,6 +157,16 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
       triggerType: 'Event'
       replicaTimeout: replicaTimeoutSeconds
       replicaRetryLimit: 1
+      secrets: [
+        {
+          name: 'spotify-sp-dc'
+          value: spotifySessionCookieDc
+        }
+        {
+          name: 'spotify-sp-key'
+          value: spotifySessionCookieKey
+        }
+      ]
       registries: hasContainerRegistry ? [
         {
           server: containerRegistryServer
@@ -230,8 +254,24 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
               value: podcasterApiKey
             }
             {
+              name: 'PODCAST_AUTO_PUBLISH'
+              value: podcastAutoPublish
+            }
+            {
+              name: 'SPOTIFY_PUBLISH_ENABLED'
+              value: spotifyPublishEnabled
+            }
+            {
               name: 'SPOTIFY_SHOW_ID'
               value: spotifyShowId
+            }
+            {
+              name: 'SP_DC'
+              secretRef: 'spotify-sp-dc'
+            }
+            {
+              name: 'SP_KEY'
+              secretRef: 'spotify-sp-key'
             }
           ]
         }

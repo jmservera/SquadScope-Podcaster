@@ -23,9 +23,11 @@ import os
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import datetime, timezone
 from typing import Any
 
 from podcaster.jobs import failed_response, run_generation_job
+from podcaster.orchestration import process_review_decision
 from podcaster.validation import is_authorized, validate_payload_details
 
 logger = logging.getLogger("podcaster.api")
@@ -60,7 +62,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/api/generate":
+        if self.path not in {"/api/generate", "/api/review"}:
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
 
@@ -83,15 +85,23 @@ class GenerateHandler(BaseHTTPRequestHandler):
             response = failed_response(["request body must be valid JSON"])
             _json_response(self, HTTPStatus.BAD_REQUEST, response)
             return
+        if not isinstance(payload, dict):
+            response = failed_response(["request body must be a JSON object"])
+            _json_response(self, HTTPStatus.BAD_REQUEST, response)
+            return
 
-        # Validate
+        if self.path == "/api/generate":
+            GenerateHandler._handle_generate(self, payload)
+            return
+        GenerateHandler._handle_review(self, payload)
+
+    def _handle_generate(self, payload: dict[str, Any]) -> None:
         validation = validate_payload_details(payload)
         if validation.errors:
             response = failed_response(validation.errors, validation.warnings or None)
             _json_response(self, HTTPStatus.BAD_REQUEST, response)
             return
 
-        # Run generation job
         try:
             result = run_generation_job(payload, validation_warnings=validation.warnings or None)
         except Exception:
@@ -100,7 +110,6 @@ class GenerateHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, response)
             return
 
-        # Determine status code
         status_code = HTTPStatus.ACCEPTED
         if result.response.get("status") == "failed":
             status_code = HTTPStatus.BAD_REQUEST
@@ -113,6 +122,62 @@ class GenerateHandler(BaseHTTPRequestHandler):
             result.response.get("job_id"),
             result.response.get("status"),
             bool(payload.get("dry_run")),
+        )
+
+    def _handle_review(self, payload: dict[str, Any]) -> None:
+        job_id = str(payload.get("job_id") or "").strip()
+        reviewer = str(payload.get("reviewer") or "").strip()
+        decision = str(payload.get("decision") or "").strip()
+        notes = str(payload.get("notes") or "")
+        run_url = str(payload.get("run_url") or "").strip() or None
+        reviewed_at = str(payload.get("reviewed_at") or "").strip() or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        publish_on_approval = payload.get("publish_on_approval", True) is not False
+        errors: list[str] = []
+        if not job_id:
+            errors.append("job_id is required")
+        if not reviewer:
+            errors.append("reviewer is required")
+        if decision not in {"approved", "changes_requested", "rejected"}:
+            errors.append("decision must be approved, changes_requested, or rejected")
+        if errors:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"errors": errors})
+            return
+        try:
+            outcome = process_review_decision(
+                job_id,
+                reviewer=reviewer,
+                decision=decision,
+                reviewed_at=reviewed_at,
+                notes=notes,
+                run_url=run_url,
+                publish_on_approval=publish_on_approval,
+            )
+        except ValueError as exc:
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            return
+        except Exception:
+            logger.exception("unhandled error in review orchestration")
+            _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal server error"})
+            return
+
+        publish_result = outcome.publish_result
+        _json_response(
+            self,
+            HTTPStatus.OK,
+            {
+                "job_id": job_id,
+                "status": outcome.manifest.get("status"),
+                "review_status": outcome.manifest.get("review_status"),
+                "publish_status": publish_result.status if publish_result else None,
+                "publish_error": publish_result.error if publish_result else None,
+                "manifest": outcome.manifest,
+            },
+        )
+        logger.info(
+            "api_review job_id=%s decision=%s publish_status=%s",
+            job_id,
+            decision,
+            publish_result.status if publish_result else "not_requested",
         )
 
 
