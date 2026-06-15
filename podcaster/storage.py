@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import time
@@ -8,7 +9,7 @@ from datetime import datetime, timezone
 from email.utils import formatdate
 from pathlib import Path
 from typing import Callable, Protocol
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -16,6 +17,8 @@ from urllib.request import Request, urlopen
 # time-limited download URLs apart from non-signed development locators.
 DOWNLOAD_METHOD_USER_DELEGATION_SAS = "azure_ad_user_delegation_sas"
 DOWNLOAD_METHOD_LOCAL_LOCATOR = "local_filesystem_locator"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -321,17 +324,48 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
 
     import json
 
-    try:
-        with urlopen(request, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
-        raise RuntimeError(
-            f"managed identity token request failed: HTTP {exc.code} {exc.reason}; {detail}"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError("managed identity token response was not a JSON object")
-    return payload
+    retryable_status_codes = {400, 429, 500, 502, 503, 504}
+    backoff_delays = (1.0, 2.0, 4.0)
+    max_attempts = 3
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            if exc.code in retryable_status_codes and attempt < max_attempts:
+                delay = backoff_delays[attempt - 1]
+                logger.warning(
+                    "managed identity token request retrying after HTTP %s on attempt %s/%s; sleeping %.0fs",
+                    exc.code,
+                    attempt,
+                    max_attempts,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+            raise RuntimeError(
+                f"managed identity token request failed: HTTP {exc.code} {exc.reason}; {detail}"
+            ) from exc
+        except URLError as exc:
+            if attempt < max_attempts:
+                delay = backoff_delays[attempt - 1]
+                logger.warning(
+                    "managed identity token request retrying after network error on attempt %s/%s; sleeping %.0fs: %s",
+                    attempt,
+                    max_attempts,
+                    delay,
+                    exc.reason,
+                )
+                time.sleep(delay)
+                continue
+            raise RuntimeError(f"managed identity token request failed: {exc.reason}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("managed identity token response was not a JSON object")
+        return payload
+
+    raise RuntimeError("managed identity token request failed after retries")
 
 
 def _token_expires_on(payload: dict[str, object]) -> int:
@@ -386,4 +420,3 @@ def _az_sas_command_runner(command: list[str]) -> str:
         detail = (result.stderr or "").strip()[:500]
         raise RuntimeError(f"az SAS generation failed (exit {result.returncode}): {detail}")
     return result.stdout
-
