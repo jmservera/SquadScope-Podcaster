@@ -325,8 +325,8 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
     import json
 
     retryable_status_codes = {400, 429, 500, 502, 503, 504}
-    backoff_delays = (1.0, 2.0, 4.0)
-    max_attempts = 4
+    backoff_delays = (1.0, 2.0)
+    max_attempts = 3
 
     for attempt in range(1, max_attempts + 1):
         try:
