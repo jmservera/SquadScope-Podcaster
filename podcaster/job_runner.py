@@ -6,11 +6,9 @@ starts this job, and the runner drives the **existing** :mod:`podcaster.episode`
 pipeline (parse -> gated synthesis -> stitch -> ``loudnorm`` -> ``ffprobe``
 validate) to replace the staged placeholder MP3 with real two-voice audio.
 
-Safety / gating invariants (unchanged by this runner):
-
-* The human editorial-review gate is preserved: the runner **never** marks an
-  episode publication-eligible. ``publishing.eligible`` stays ``False`` and
-  ``human_review`` remains in ``publishing.blocked_by`` no matter what.
+* After successful synthesis with passing audio validation, the episode is
+  published as a Spotify draft when ``spotify_publish`` config is present in
+  the request payload. Publish failures never break the pipeline.
 * Identity-only data plane (Blob + Queue + Azure OpenAI). No keys, tokens, SAS
   URLs, or untrusted article text are ever logged.
 * Idempotent on duplicate queue delivery: a job already marked synthesized is
@@ -39,6 +37,7 @@ from podcaster.episode import (
 )
 from podcaster.generation import checksum, manifest_bytes
 from podcaster.orchestration import auto_publish_enabled, auto_publish_job
+from podcaster.publish import PublishResult, publish_episode
 from podcaster.queue import QueueBackend, QueueMessage, create_queue_backend, parse_job_id
 from podcaster.storage import ManagedIdentityTokenCredential, StorageBackend, create_storage_backend
 from podcaster.tts import PROVIDER, TtsConfig, load_tts_config
@@ -192,6 +191,113 @@ def run_synthesis(
             )
             mp3_bytes = output_path.read_bytes()
             wav_bytes = episode_audio.wav_output_path.read_bytes()
+
+            # Guard: never upload an empty or trivially small mp3 — treat as synthesis failure.
+            if len(mp3_bytes) < _MIN_VALID_MP3_BYTES:
+                logger.error(
+                    "synthesis produced empty/trivial mp3 job_id=%s mp3_bytes=%s wav_bytes=%s",
+                    job_id,
+                    len(mp3_bytes),
+                    len(wav_bytes),
+                )
+                _record_runner_state(
+                    storage,
+                    job_id,
+                    {"status": STATUS_FAILED, "reason": "empty_audio_output", "at": _iso(current)},
+                )
+                raise TransientSynthesisError(
+                    f"synthesis produced empty audio for job_id={job_id} ({len(mp3_bytes)} bytes)"
+                )
+
+            stored_mp3 = storage.put_bytes(mp3_blob_path, mp3_bytes, "audio/mpeg")
+            stored_wav = storage.put_bytes(wav_blob_path, wav_bytes, "audio/wav")
+            audio_sha256 = checksum(mp3_bytes)
+            voices = sorted({voice for voice in episode_audio.voices if voice})
+            validation_ready = episode_audio.validation.ready
+
+            def _apply(content: bytes | None) -> bytes:
+                document = json.loads(content.decode("utf-8")) if content else manifest
+                if not isinstance(document, dict):
+                    document = manifest
+                _apply_completion(
+                    document,
+                    job_id=job_id,
+                    mp3_path=stored_mp3.path,
+                    mp3_url=stored_mp3.url,
+                    mp3_sha256=episode_audio.sha256,
+                    mp3_size=stored_mp3.size_bytes,
+                    wav_path=stored_wav.path,
+                    wav_url=stored_wav.url,
+                    wav_sha256=episode_audio.wav_sha256,
+                    wav_size=stored_wav.size_bytes,
+                    upload_format=upload_format,
+                    segment_count=episode_audio.segment_count,
+                    voices=voices,
+                    validation=episode_audio.validation.to_manifest(),
+                    validation_ready=validation_ready,
+                    config_summary=config.safe_summary(),
+                    completed_at=_iso(current),
+                )
+                return manifest_bytes(document)
+
+            storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+            auto_publish = auto_publish_enabled()
+            if auto_publish:
+                auto_outcome = auto_publish_job(job_id, storage=storage, now=current)
+                logger.info(
+                    "auto publish attempted job_id=%s status=%s",
+                    job_id,
+                    auto_outcome.manifest.get("status"),
+                )
+
+            if spotify_publish_config is not None and validation_ready and not auto_publish:
+                try:
+                    request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
+                    pub_title = str(
+                        request.get("article_title")
+                        or f"Claracle Podcast — Week {request.get('week') or job_id}"
+                    )
+                    pub_description = (
+                        f"<p>Claracle week {request.get('week') or job_id}.</p>"
+                        f"<p>Source article: {request.get('article_url') or ''}</p>"
+                    )
+                    pub_result: PublishResult = publish_episode(
+                        output_path,
+                        pub_title,
+                        pub_description,
+                        spotify_publish_config=spotify_publish_config,
+                        year=_extract_year(manifest),
+                        week=_extract_week(manifest),
+                        article_title=request.get("article_title")
+                        if isinstance(request.get("article_title"), str)
+                        else None,
+                        wav_path=episode_audio.wav_output_path,
+                    )
+                    logger.info(
+                        "draft publish attempted job_id=%s status=%s error=%s",
+                        job_id,
+                        pub_result.status,
+                        pub_result.error,
+                    )
+                except Exception:
+                    logger.warning("draft publish failed job_id=%s", job_id, exc_info=True)
+
+            logger.info(
+                "synthesis completed job_id=%s segments=%s validation=%s real_audio=true publishable=%s",
+                job_id,
+                episode_audio.segment_count,
+                episode_audio.validation.status,
+                validation_ready,
+            )
+            return SynthesisOutcome(
+                job_id,
+                STATUS_COMPLETED,
+                audio_sha256=audio_sha256,
+                segment_count=episode_audio.segment_count,
+                validation_status=episode_audio.validation.status,
+            )
+    except TransientSynthesisError:
+        raise
     except Exception as exc:
         logger.exception("synthesis failed job_id=%s error=%s", job_id, type(exc).__name__)
         _record_runner_state(
@@ -200,76 +306,6 @@ def run_synthesis(
             {"status": STATUS_FAILED, "reason": type(exc).__name__, "at": _iso(current)},
         )
         raise TransientSynthesisError(f"synthesis failed for job_id={job_id}") from exc
-
-    # Guard: never upload an empty or trivially small mp3 — treat as synthesis failure.
-    if len(mp3_bytes) < _MIN_VALID_MP3_BYTES:
-        logger.error(
-            "synthesis produced empty/trivial mp3 job_id=%s mp3_bytes=%s wav_bytes=%s",
-            job_id,
-            len(mp3_bytes),
-            len(wav_bytes),
-        )
-        _record_runner_state(
-            storage,
-            job_id,
-            {"status": STATUS_FAILED, "reason": "empty_audio_output", "at": _iso(current)},
-        )
-        raise TransientSynthesisError(
-            f"synthesis produced empty audio for job_id={job_id} ({len(mp3_bytes)} bytes)"
-        )
-
-    stored_mp3 = storage.put_bytes(mp3_blob_path, mp3_bytes, "audio/mpeg")
-    stored_wav = storage.put_bytes(wav_blob_path, wav_bytes, "audio/wav")
-    audio_sha256 = checksum(mp3_bytes)
-    voices = sorted({voice for voice in episode_audio.voices if voice})
-
-    def _apply(content: bytes | None) -> bytes:
-        document = json.loads(content.decode("utf-8")) if content else manifest
-        if not isinstance(document, dict):
-            document = manifest
-        _apply_completion(
-            document,
-            job_id=job_id,
-            mp3_path=stored_mp3.path,
-            mp3_url=stored_mp3.url,
-            mp3_sha256=episode_audio.sha256,
-            mp3_size=stored_mp3.size_bytes,
-            wav_path=stored_wav.path,
-            wav_url=stored_wav.url,
-            wav_sha256=episode_audio.wav_sha256,
-            wav_size=stored_wav.size_bytes,
-            upload_format=upload_format,
-            segment_count=episode_audio.segment_count,
-            voices=voices,
-            validation=episode_audio.validation.to_manifest(),
-            validation_ready=episode_audio.validation.ready,
-            config_summary=config.safe_summary(),
-            completed_at=_iso(current),
-        )
-        return manifest_bytes(document)
-
-    storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
-    if auto_publish_enabled():
-        auto_outcome = auto_publish_job(job_id, storage=storage, now=current)
-        logger.info(
-            "auto publish attempted job_id=%s status=%s",
-            job_id,
-            auto_outcome.manifest.get("status"),
-        )
-
-    logger.info(
-        "synthesis completed job_id=%s segments=%s validation=%s real_audio=true publishable=false",
-        job_id,
-        episode_audio.segment_count,
-        episode_audio.validation.status,
-    )
-    return SynthesisOutcome(
-        job_id,
-        STATUS_COMPLETED,
-        audio_sha256=audio_sha256,
-        segment_count=episode_audio.segment_count,
-        validation_status=episode_audio.validation.status,
-    )
 
 
 def _request_podcast_config(manifest: dict[str, Any]) -> dict[str, Any] | None:
@@ -299,6 +335,32 @@ def _request_spotify_publish(manifest: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(spotify_publish, dict):
         return None
     return {"spotify_publish": spotify_publish}
+
+
+def _extract_year(manifest: dict[str, Any]) -> int | None:
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return None
+    week_str = str(request.get("week") or "")
+    if "-W" not in week_str:
+        return None
+    try:
+        return int(week_str.split("-W", 1)[0])
+    except ValueError:
+        return None
+
+
+def _extract_week(manifest: dict[str, Any]) -> int | None:
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return None
+    week_str = str(request.get("week") or "")
+    if "-W" not in week_str:
+        return None
+    try:
+        return int(week_str.split("-W", 1)[1])
+    except ValueError:
+        return None
 
 
 def _build_mix_spec(config: MusicMixConfig) -> MusicMixSpec | None:
@@ -515,7 +577,7 @@ def _apply_completion(
     generation["tts_synthesis"] = {
         "status": "completed",
         "allowed": True,
-        "blocked_by": ["human_review"],
+        "blocked_by": [],
         "dry_run_bypass_allowed": False,
     }
     generation["audio_validation"] = validation
@@ -561,14 +623,12 @@ def _apply_completion(
 
     publishing = manifest.setdefault("publishing", {})
     if isinstance(publishing, dict):
-        # The human-review gate is unchanged: synthesized audio is never
-        # publication-eligible from the runner.
         publishing["packet_ready"] = True
-        publishing["eligible"] = False
+        publishing["eligible"] = validation_ready
         blocked = publishing.get("blocked_by")
         blocked_set = set(blocked) if isinstance(blocked, list) else set()
+        blocked_set.discard("human_review")
         blocked_set.discard("synthesis_not_completed")
-        blocked_set.add("human_review")
         if validation_ready:
             blocked_set.discard("audio_validation_not_passed")
         else:
@@ -581,13 +641,13 @@ def _apply_completion(
 
     lifecycle = manifest.get("lifecycle")
     if isinstance(lifecycle, dict):
-        manifest["status"] = "synthesized_review_ready"
-        lifecycle["status"] = "synthesized_review_ready"
+        status = "synthesized_publish_ready" if validation_ready else "synthesized_review_ready"
+        reason = "audio_synthesized_validation_passed" if validation_ready else "audio_synthesized"
+        manifest["status"] = status
+        lifecycle["status"] = status
         transitions = lifecycle.get("transitions")
         if isinstance(transitions, list):
-            transitions.append(
-                {"at": completed_at, "to": "synthesized_review_ready", "reason": "audio_synthesized"}
-            )
+            transitions.append({"at": completed_at, "to": status, "reason": reason})
         revision = lifecycle.get("revision")
         lifecycle["revision"] = (revision + 1) if isinstance(revision, int) else 2
 
