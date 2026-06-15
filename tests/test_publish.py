@@ -332,6 +332,8 @@ class TestPublishEpisode:
         # Step 6: metadata
         meta_resp = MagicMock()
         meta_resp.raise_for_status = MagicMock()
+        publish_resp = MagicMock()
+        publish_resp.raise_for_status = MagicMock()
 
         # Step 7: publish
         mock_session.request.side_effect = [
@@ -342,6 +344,7 @@ class TestPublishEpisode:
             process_resp,
             poll_resp,
             meta_resp,
+            publish_resp,
         ]
 
         result = publish_episode(mp3_file, "Claracle W24", "<p>Episode notes</p>", wav_path=wav_file)
@@ -360,10 +363,12 @@ class TestPublishEpisode:
         assert process_call.kwargs["json"]["episodeId"] == 12345
         assert process_call.kwargs["json"]["stationId"] == 1
         assert process_call.kwargs["json"]["userId"] == 2
-        metadata_call = mock_session.request.call_args_list[-1]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["userId"] == 2
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert metadata_call.kwargs["json"]["podcastEpisodeIsExplicit"] is False
+        publish_call = mock_session.request.call_args_list[-1]
+        assert publish_call.args[1].endswith("/publish?isMumsCompatible=true")
 
     @patch("podcaster.publish._build_session")
     def test_scheduled_mode_passes_date(self, mock_build, mp3_file, wav_file, spotify_env):
@@ -377,6 +382,7 @@ class TestPublishEpisode:
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
             _mock_json_resp({}),
         ]
         mock_session.request.side_effect = responses
@@ -400,13 +406,15 @@ class TestPublishEpisode:
         )
         assert result.status == "scheduled"
         assert result.anchor_episode_id == 999
-        metadata_call = mock_session.request.call_args_list[-1]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["title"] == "2026-W25: Scheduled Ep"
         assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
         assert metadata_call.kwargs["json"]["episodeNumber"] == 25
         assert metadata_call.kwargs["json"]["isPublished"] is False
         assert metadata_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00.000Z"
         assert metadata_call.kwargs["json"]["wizardDraftedToPublishOn"] == "2026-06-20T09:00:00.000Z"
+        publish_call = mock_session.request.call_args_list[-1]
+        assert publish_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00Z"
 
     @patch("podcaster.publish._build_session")
     def test_draft_mode_does_not_publish(self, mock_build, mp3_file, wav_file, spotify_env):
@@ -419,6 +427,7 @@ class TestPublishEpisode:
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
             _mock_json_resp({}),
         ]
 
@@ -461,12 +470,13 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
+            _mock_json_resp({}),
         ]
 
         result = publish_episode(mp3_file, "Original Title", "<p>Original desc</p>", wav_path=wav_file)
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-1]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["title"] == "Original Title"
         assert "seasonNumber" not in metadata_call.kwargs["json"]
         assert metadata_call.kwargs["json"]["isPublished"] is True
@@ -483,6 +493,7 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
+            _mock_json_resp({}),
         ]
 
         result = publish_episode(
@@ -494,7 +505,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-1]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert "publishOn" not in metadata_call.kwargs["json"]
         assert "wizardDraftedToPublishOn" not in metadata_call.kwargs["json"]
@@ -511,6 +522,7 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
+            _mock_json_resp({}),
         ]
 
         description = "<p>Episode notes</p>"
@@ -525,7 +537,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-1]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["description"] == description + timestamps_html
 
     @patch("podcaster.publish._build_session")
@@ -553,6 +565,7 @@ class TestPublishEpisode:
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
             _mock_json_resp({}),
         ]
 

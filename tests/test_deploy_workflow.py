@@ -53,6 +53,22 @@ def test_reusable_deploy_workflow_uses_oidc_auth() -> None:
     assert "azure/login@" in workflow, "reusable-deploy-azure.yml must use azure/login action"
 
 
+def test_reusable_deploy_workflow_threads_spotify_publish_settings() -> None:
+    workflow = _reusable_workflow_text()
+    aca_module = (ROOT / "infra/modules/aca.bicep").read_text(encoding="utf-8")
+    api_module = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+
+    for token in (
+        "SPOTIFY_PUBLISH_ENABLED",
+        "SPOTIFY_SHOW_ID",
+        "SP_DC",
+        "SP_KEY",
+        "PODCAST_AUTO_PUBLISH",
+    ):
+        assert token in workflow
+        assert token in aca_module or token in api_module
+
+
 def test_reusable_deploy_workflow_deploys_bicep_infrastructure() -> None:
     """Reusable ACA workflow deploys infra via az deployment group create with main.bicep."""
     workflow = _reusable_workflow_text()

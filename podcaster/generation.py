@@ -343,7 +343,7 @@ def _metadata(
             "artifact": "review-checklist.md",
             "gate": {
                 "status": "blocked",
-                "approval_required_before": "non_dry_run_tts_synthesis",
+                "approval_required_before": "spotify_publication",
                 "checks": [
                     "script_accuracy",
                     "claim_verification",
@@ -363,9 +363,9 @@ def _metadata(
             "tts_voice": None,
             "audio_placeholder": True,
             "tts_synthesis": {
-                "status": "blocked",
-                "allowed": False,
-                "blocked_by": ["provider_not_selected"] if payload.get("dry_run") else ["human_review", "provider_not_selected"],
+                "status": "blocked" if payload.get("dry_run") else "queued",
+                "allowed": bool(not payload.get("dry_run")),
+                "blocked_by": ["dry_run"] if payload.get("dry_run") else [],
                 "dry_run_bypass_allowed": bool(payload.get("dry_run")),
             },
             "audio_validation": audio_validation,
@@ -380,7 +380,7 @@ def _metadata(
             "packet_format": "squadscope-podcaster-packet-v1",
             "packet_ready": False,
             "eligible": False,
-            "blocked_by": ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"],
+            "blocked_by": ["human_review", "synthesis_not_completed", "audio_validation_not_passed"],
             "readiness_checks": {
                 "cost_ledger_complete": bool(cost_ledger.get("readiness", {}).get("complete"))
                 if isinstance(cost_ledger.get("readiness"), dict)
@@ -390,6 +390,7 @@ def _metadata(
                 else "unknown",
                 "editorial_review_complete": False,
                 "real_audio_available": False,
+                "audio_validation_passed": False,
             },
             "public_url": None,
         },
@@ -465,8 +466,8 @@ def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
             "",
             "## Enforcement",
             "",
-            "Non-dry-run TTS synthesis remains blocked until the review workflow records an approved decision with reviewer identity and timestamp.",
-            "Dry-run and non-publishing validation may run without approval, but cannot publish generated audio.",
+            "The synthesis runner generates real audio automatically for non-dry-run jobs.",
+            "Publication remains blocked until the review workflow records an approved decision with reviewer identity and timestamp.",
             "",
         ]
     )

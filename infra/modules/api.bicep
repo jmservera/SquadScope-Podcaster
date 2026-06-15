@@ -48,6 +48,20 @@ param chatDeploymentName string = ''
 @description('Spotify show ID for auto-publish (#182). Empty disables publishing.')
 param spotifyShowId string = ''
 
+@description('Whether runtime Spotify publishing is enabled.')
+param spotifyPublishEnabled string = 'false'
+
+@secure()
+@description('Spotify session cookie SP_DC for runtime publication.')
+param spotifySessionCookieDc string = ''
+
+@secure()
+@description('Spotify session cookie SP_KEY for runtime publication.')
+param spotifySessionCookieKey string = ''
+
+@description('Whether jobs should auto-publish after synthesis.')
+param podcastAutoPublish string = 'false'
+
 @description('vCPU allocated to the API app.')
 param appCpu string = '0.25'
 
@@ -78,6 +92,16 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
     environmentId: containerAppsEnvId
     configuration: {
       activeRevisionsMode: 'Single'
+      secrets: [
+        {
+          name: 'spotify-sp-dc'
+          value: spotifySessionCookieDc
+        }
+        {
+          name: 'spotify-sp-key'
+          value: spotifySessionCookieKey
+        }
+      ]
       ingress: {
         external: true
         targetPort: 8000
@@ -142,8 +166,24 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
               value: 'managed_identity'
             }
             {
+              name: 'PODCAST_AUTO_PUBLISH'
+              value: podcastAutoPublish
+            }
+            {
+              name: 'SPOTIFY_PUBLISH_ENABLED'
+              value: spotifyPublishEnabled
+            }
+            {
               name: 'SPOTIFY_SHOW_ID'
               value: spotifyShowId
+            }
+            {
+              name: 'SP_DC'
+              secretRef: 'spotify-sp-dc'
+            }
+            {
+              name: 'SP_KEY'
+              secretRef: 'spotify-sp-key'
             }
           ]
         }
