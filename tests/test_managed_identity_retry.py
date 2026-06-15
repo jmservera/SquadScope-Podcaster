@@ -106,11 +106,14 @@ def test_retry_on_url_error(monkeypatch, sleep_mock):
 
 
 def test_retry_backoff_timing(monkeypatch, sleep_mock):
-    _install_urlopen(monkeypatch, _http_error(429), _http_error(503), _http_error(500), TOKEN_PAYLOAD)
+    urlopen_mock = _install_urlopen(
+        monkeypatch, _http_error(429), _http_error(503), _http_error(500), TOKEN_PAYLOAD
+    )
 
     payload = storage._request_managed_identity_token(STORAGE_RESOURCE)
 
     assert payload == TOKEN_PAYLOAD
+    assert urlopen_mock.call_count == 4
     assert [call.args[0] for call in sleep_mock.call_args_list] == pytest.approx([1.0, 2.0, 4.0])
 
 
