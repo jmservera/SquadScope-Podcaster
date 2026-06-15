@@ -435,7 +435,8 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
     )
 
     # Without the retry bypass, this would return "failed" (6 total episodes > 5 max).
-    # With the fix, it should succeed because the job already has a ledger slot.
+    # With the fix, it should succeed because the job already has a ledger slot
+    # and the budget computation does not count an additional episode for retries.
     result = run_generation_job(
         job_payload,
         storage=storage,
@@ -443,7 +444,12 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
     )
 
     assert result.response["status"] == "accepted"
+    assert result.manifest["cost_ledger"]["budget"]["status"] != "over_budget"
     shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_monthly_budget_is_reserved_before_artifacts_are_staged() -> None:
+    """Monthly ledger reservation must happen before job artifacts are written."""
     artifact_root = Path(".test-artifacts-budget-reservation")
     shutil.rmtree(artifact_root, ignore_errors=True)
 

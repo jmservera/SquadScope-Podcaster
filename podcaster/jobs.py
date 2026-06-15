@@ -75,15 +75,20 @@ def run_generation_job(
         # budget guard so retries of the same job are not blocked by other
         # episodes that appeared after the initial run.
         is_retry = _job_already_in_ledger(monthly_ledger, job_id)
+        # For retries, don't count an additional episode — the slot is already
+        # allocated. Subtracting 1 means the guardrail's +1 just recovers the
+        # existing count, keeping the budget status accurate for downstream
+        # publish/review flows that inspect it.
+        guardrail_episode_count = max(prior_episode_count - 1, 0) if is_retry else prior_episode_count
         budget = evaluate_monthly_guardrail(
-            prior_episode_count=prior_episode_count,
+            prior_episode_count=guardrail_episode_count,
             prior_monthly_spend_usd=prior_monthly_spend,
             projected_episode_cost_usd=USD_ZERO,
             override=cost_override,
         )
         if not payload.get("dry_run") and budget["status"] == "over_budget" and not is_retry:
             raise MonthlyBudgetExceeded(budget)
-        budget_context["prior_episode_count"] = prior_episode_count
+        budget_context["prior_episode_count"] = guardrail_episode_count
         budget_context["prior_monthly_spend"] = prior_monthly_spend
         return manifest_bytes(
             reserve_monthly_ledger_entry(
