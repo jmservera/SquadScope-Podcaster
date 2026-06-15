@@ -7,6 +7,11 @@ on:
         description: 'Podcaster job ID to review'
         required: true
         type: string
+      podcaster_api_url:
+        description: 'Authenticated Podcaster runtime base URL (for example https://podcaster.example)'
+        required: false
+        default: ''
+        type: string
       manifest_url:
         description: 'Private operator manifest URL from /api/generate'
         required: true
@@ -61,65 +66,63 @@ jobs:
                   raise SystemExit(f"{name} must not contain credentials, query strings, or fragments")
           PY
 
+      - name: Set reviewed_at
+        id: reviewed_at
+        run: echo "value=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+
       - name: Record review decision
         env:
           JOB_ID: ${{ inputs.job_id }}
+          PODCASTER_API_URL: ${{ inputs.podcaster_api_url || vars.PODCASTER_API_URL }}
+          PODCASTER_API_KEY: ${{ secrets.PODCASTER_API_KEY }}
           MANIFEST_URL: ${{ inputs.manifest_url }}
           PACKET_URL: ${{ inputs.publishing_packet_url }}
           DECISION: ${{ inputs.decision }}
           REVIEW_NOTES: ${{ inputs.notes }}
+          REVIEWED_AT: ${{ steps.reviewed_at.outputs.value }}
           REVIEWER: ${{ github.actor }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          reviewed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          if [ -z "${PODCASTER_API_URL:-}" ]; then
+            echo "::error::PODCASTER_API_URL input or repository/environment variable is required."
+            exit 1
+          fi
+          if [ -z "${PODCASTER_API_KEY:-}" ]; then
+            echo "::error::PODCASTER_API_KEY secret is required."
+            exit 1
+          fi
           python - <<'PY'
           import json
           import os
-          from pathlib import Path
+          import urllib.request
 
-          manifest = {
-              "schema_version": "squadscope-podcaster-review-v1",
-              "job_id": os.environ["JOB_ID"],
-              "status": "review_pending",
-              "manifest_url": os.environ["MANIFEST_URL"],
-              "publishing_packet_url": os.environ["PACKET_URL"],
-              "review": {
-                  "status": "pending",
-                  "required": True,
-                  "mechanism": "github_environment",
-                  "environment": "podcast-review",
-                  "workflow": ".github/workflows/podcast-review-gate.yml",
-                  "approved_by": None,
-                  "approved_at": None,
-                  "audit_trail": [],
-                  "gate": {"status": "blocked"},
+          payload = json.dumps(
+              {
+                  "job_id": os.environ["JOB_ID"],
+                  "decision": os.environ["DECISION"],
+                  "reviewer": os.environ["REVIEWER"],
+                  "notes": os.environ["REVIEW_NOTES"],
+                  "reviewed_at": os.environ["REVIEWED_AT"],
+                  "run_url": os.environ["RUN_URL"],
+                  "publish_on_approval": True,
+              }
+          ).encode("utf-8")
+          request = urllib.request.Request(
+              os.environ["PODCASTER_API_URL"].rstrip("/") + "/api/review",
+              data=payload,
+              method="POST",
+              headers={
+                  "Content-Type": "application/json",
+                  "x-podcaster-api-key": os.environ["PODCASTER_API_KEY"],
               },
-              "generation": {
-                  "tts_synthesis": {
-                      "status": "blocked",
-                      "allowed": False,
-                      "blocked_by": [
-                          "human_review",
-                          "provider_not_selected",
-                          "provider_privacy_review_required",
-                          "rai_security_signoff_required"
-                      ],
-                  }
-              },
-              "publishing": {"eligible": False, "blocked_by": ["human_review", "real_tts_not_implemented"]},
-              "lifecycle": {"status": "review_pending", "transitions": []},
-          }
-          Path("review-manifest.input.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          )
+          with urllib.request.urlopen(request, timeout=60) as response:
+              body = json.loads(response.read().decode("utf-8"))
+          manifest = body["manifest"]
+          with open("review-manifest.json", "w", encoding="utf-8") as handle:
+              handle.write(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
           PY
-          python scripts/record_review_approval.py \
-            --manifest review-manifest.input.json \
-            --output review-manifest.json \
-            --reviewer "$REVIEWER" \
-            --decision "$DECISION" \
-            --notes "$REVIEW_NOTES" \
-            --reviewed-at "$reviewed_at" \
-            --run-url "$RUN_URL"
 
       - name: Upload review artifact
         # actions/upload-artifact v4

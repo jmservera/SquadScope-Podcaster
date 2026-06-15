@@ -116,6 +116,20 @@ param apiAppName string = '${baseName}-api'
 @description('Spotify show ID for auto-publish (#182). Empty disables publishing.')
 param spotifyShowId string = ''
 
+@description('Whether Spotify publishing is enabled for runtime orchestration.')
+param spotifyPublishEnabled string = 'false'
+
+@secure()
+@description('Spotify session cookie SP_DC for runtime publication.')
+param spotifySessionCookieDc string = ''
+
+@secure()
+@description('Spotify session cookie SP_KEY for runtime publication.')
+param spotifySessionCookieKey string = ''
+
+@description('Whether reviewed jobs should auto-publish after synthesis.')
+param podcastAutoPublish string = 'false'
+
 @description('Deploy an Azure Container Registry for synthesis/API images (#129).')
 param deployAcr bool = true
 
@@ -248,7 +262,11 @@ module aca 'modules/aca.bicep' = {
     ttsVoiceHostA: ttsVoiceHostA
     ttsVoiceHostB: ttsVoiceHostB
     podcasterApiKey: podcasterApiKey
+    spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId
+    spotifySessionCookieDc: spotifySessionCookieDc
+    spotifySessionCookieKey: spotifySessionCookieKey
+    podcastAutoPublish: podcastAutoPublish
   }
   dependsOn: [
     artifactContainer
@@ -296,7 +314,11 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     containerRegistryServer: acrLoginServer
     openAiEndpoint: openAiEndpoint
     chatDeploymentName: chatDeploymentName
+    spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId
+    spotifySessionCookieDc: spotifySessionCookieDc
+    spotifySessionCookieKey: spotifySessionCookieKey
+    podcastAutoPublish: podcastAutoPublish
   }
   dependsOn: [
     artifactContainer

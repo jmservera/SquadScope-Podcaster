@@ -13,6 +13,8 @@ from unittest.mock import patch
 import pytest
 
 from podcaster.api import GenerateHandler, _json_response
+from podcaster.orchestration import JobPublishOutcome
+from podcaster.publish import PublishResult
 
 
 class FakeRequest:
@@ -228,3 +230,33 @@ class TestResponseShape:
         }
         assert set(resp.keys()) == expected_keys
         assert resp["errors"]  # Should have validation errors
+
+
+class TestReviewEndpoint:
+    @pytest.fixture(autouse=True)
+    def _set_api_key(self):
+        with patch.dict(os.environ, {"PODCASTER_API_KEY": "test-key-123"}):
+            yield
+
+    def _headers(self, body: bytes) -> dict[str, str]:
+        return {"x-podcaster-api-key": "test-key-123", "Content-Length": str(len(body))}
+
+    def test_review_endpoint_requires_job_id_and_decision(self):
+        body = json.dumps({"reviewer": "leela"}).encode()
+        handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
+        assert handler.response_code == HTTPStatus.BAD_REQUEST
+        assert "job_id is required" in handler.get_response_json()["errors"]
+
+    @patch("podcaster.api.process_review_decision")
+    def test_review_endpoint_returns_manifest_and_publish_status(self, mock_process):
+        mock_process.return_value = JobPublishOutcome(
+            manifest={"job_id": "podcast-1", "status": "published", "review_status": "approved"},
+            publish_result=PublishResult(status="published"),
+        )
+        body = json.dumps({"job_id": "podcast-1", "reviewer": "leela", "decision": "approved"}).encode()
+        handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
+        assert handler.response_code == HTTPStatus.OK
+        response = handler.get_response_json()
+        assert response["job_id"] == "podcast-1"
+        assert response["publish_status"] == "published"
+        assert response["manifest"]["status"] == "published"

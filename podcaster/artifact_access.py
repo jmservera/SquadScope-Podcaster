@@ -39,7 +39,7 @@ def artifact_access_metadata(job_id: str, created_at: str, expires_at: str) -> d
         },
         "publication": {
             "eligible": False,
-            "blocked_by": ["human_review", "real_tts_not_implemented"],
+            "blocked_by": ["human_review", "synthesis_not_completed"],
         },
     }
 

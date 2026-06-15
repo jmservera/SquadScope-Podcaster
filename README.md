@@ -53,7 +53,7 @@ Without Azure storage settings, generated manifests, script drafts, transcripts,
 
 ## Human review gate
 
-Non-dry-run TTS synthesis is blocked until a human records approval through `.github/workflows/podcast-review-gate.yml`, which uses the GitHub Environment `podcast-review`. Configure that environment with the required editorial reviewers. The workflow requires the job ID, private manifest URL, and private publishing packet URL, pauses for environment approval, records `github.actor` and the UTC approval time, and uploads `review-manifest.json` as the audit artifact. Dry-run/non-publishing validation may run without approval, but generated output remains ineligible for publication.
+Non-dry-run jobs now synthesize first, then wait for review before publication. `.github/workflows/podcast-review-gate.yml` uses the GitHub Environment `podcast-review`, calls the runtime `/api/review` route for the real stored manifest, and uploads the returned `review-manifest.json` as the audit artifact. When `PODCAST_AUTO_PUBLISH=true`, the runtime records an automatic approval and publishes immediately after synthesis; when it is unset, approval remains the manual gate and the approved review triggers publish.
 
 Example request:
 
@@ -89,10 +89,15 @@ Required `prod` environment variables:
 Optional `prod` environment variables:
 
 - `AZURE_STORAGE_ACCOUNT_NAME` - override the deterministic default Storage Account name.
+- `SPOTIFY_PUBLISH_ENABLED` - set to `true` to let runtime publish approved episodes.
+- `PODCAST_AUTO_PUBLISH` - set to `true` to skip manual review and publish immediately after synthesis.
 
 Optional `prod` environment secret:
 
 - `PODCASTER_API_KEY` - if absent, the workflow generates a high-entropy key, masks it, and sets it only as an Azure app setting. Never print this value.
+- `SPOTIFY_SHOW_ID` - Spotify show identifier for runtime publish.
+- `SP_DC` - Spotify session cookie for runtime publish.
+- `SP_KEY` - Spotify session cookie for runtime publish.
 
 Optional `prod` environment secret for syncing integration values to SquadScope:
 

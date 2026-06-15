@@ -40,20 +40,20 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
 
     assert tuple(result.response.keys()) == RESPONSE_KEYS
     assert result.response["status"] == "accepted"
-    assert result.manifest["status"] == "review_pending"
+    assert result.manifest["status"] == "accepted"
     assert result.manifest["review"]["status"] == "pending"
     assert result.manifest["review"]["required"] is True
     assert result.manifest["review"]["mechanism"] == "github_environment"
     assert result.manifest["review"]["environment"] == "podcast-review"
     assert result.manifest["review"]["workflow"] == ".github/workflows/podcast-review-gate.yml"
     assert result.manifest["review"]["gate"]["status"] == "blocked"
-    assert result.manifest["review"]["gate"]["approval_required_before"] == "non_dry_run_tts_synthesis"
+    assert result.manifest["review"]["gate"]["approval_required_before"] == "spotify_publication"
     assert result.manifest["cost_ledger"]["budget"]["status"] == "within_budget"
     assert result.manifest["cost_ledger"]["readiness"]["complete"] is True
     assert result.manifest["generation"]["tts_synthesis"] == {
-        "status": "blocked",
-        "allowed": False,
-        "blocked_by": ["human_review", "provider_not_selected"],
+        "status": "queued",
+        "allowed": True,
+        "blocked_by": [],
         "dry_run_bypass_allowed": False,
     }
     assert result.manifest["generation"]["audio_validation"]["status"] == "blocked"
@@ -88,6 +88,7 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
         assert packet_manifest["review_status"] == "pending"
         assert packet_manifest["review"]["environment"] == "podcast-review"
         assert packet_manifest["review"]["gate"]["status"] == "blocked"
+        assert packet_manifest["review"]["gate"]["approval_required_before"] == "spotify_publication"
         assert packet_manifest["generation"]["audio_validation"]["status"] == "blocked"
         assert packet_manifest["cost_ledger"]["budget"]["status"] == "within_budget"
         assert packet_manifest["publishing"]["packet_ready"] is False
@@ -164,7 +165,7 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
         assert manifest["publishing"]["eligible"] is False
         assert manifest["publishing"]["packet_ready"] is False
         assert manifest["generation"]["audio_placeholder"] is True
-        assert manifest["generation"]["tts_synthesis"]["allowed"] is False
+        assert manifest["generation"]["tts_synthesis"]["allowed"] is True
         cost_ledger = json.loads(packet.read("COST-LEDGER.json"))
         assert cost_ledger == manifest["cost_ledger"]
         readme = packet.read("README.txt").decode("utf-8")
@@ -314,7 +315,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     job_id = build_job_id(payload)
     assert result.response["job_id"] == job_id
     assert manifest["job_id"] == job_id
-    assert manifest["status"] == "review_pending"
+    assert manifest["status"] == "accepted"
     assert manifest["created_at"] == "2026-06-07T19:07:49Z"
     assert manifest["expires_at"] == result.response["expires_at"] == "2026-06-14T19:07:49Z"
     assert manifest["request"] == {
@@ -330,8 +331,8 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
         "callback": {"requested": False, "url_host": None, "secret_name_provided": False},
     }
     assert manifest["lifecycle"]["force"] is True
-    assert manifest["lifecycle"]["transitions"][-1]["to"] == "review_pending"
-    assert manifest["publishing"]["blocked_by"] == ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"]
+    assert manifest["lifecycle"]["transitions"][-1]["to"] == "accepted"
+    assert manifest["publishing"]["blocked_by"] == ["human_review", "synthesis_not_completed", "audio_validation_not_passed"]
     assert manifest["review"]["artifacts_for_review"] == [
         "script.txt",
         "claim-ledger.json",
@@ -342,14 +343,15 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
         "manifest.json",
         "publishing-packet.zip",
     ]
-    assert manifest["generation"]["tts_synthesis"]["allowed"] is False
-    assert manifest["artifact_access"]["publication"]["blocked_by"] == ["human_review", "real_tts_not_implemented"]
+    assert manifest["generation"]["tts_synthesis"]["allowed"] is True
+    assert manifest["artifact_access"]["publication"]["blocked_by"] == ["human_review", "synthesis_not_completed"]
     assert manifest["publishing"]["packet_ready"] is False
     assert manifest["publishing"]["readiness_checks"] == {
         "cost_ledger_complete": True,
         "budget_status": "within_budget",
         "editorial_review_complete": False,
         "real_audio_available": False,
+        "audio_validation_passed": False,
     }
     assert manifest["cost_ledger"]["week"] == "2026-W23"
     assert manifest["cost_ledger"]["provider"] == "not_selected"
@@ -367,7 +369,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     )
     serialized = json.loads(manifest_bytes(manifest).decode("utf-8"))
     assert serialized == manifest
-    assert f"podcaster job staged job_id={job_id} status=review_pending dry_run=False artifact_count=9" in caplog.text
+    assert f"podcaster job staged job_id={job_id} status=accepted dry_run=False artifact_count=9" in caplog.text
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
@@ -762,4 +764,3 @@ def test_llm_script_generation_falls_back_on_failure(monkeypatch) -> None:
     assert any("LLM script generation failed" in w for w in result.response["warnings"])
 
     shutil.rmtree(artifact_root, ignore_errors=True)
-

@@ -95,7 +95,11 @@ jobs:
       - name: Resolve deployment names and API key
         env:
           PODCASTER_API_KEY_SECRET: ${{ secrets.PODCASTER_API_KEY }}
+          SPOTIFY_PUBLISH_ENABLED_VAR: ${{ vars.SPOTIFY_PUBLISH_ENABLED }}
           SPOTIFY_SHOW_ID_SECRET: ${{ secrets.SPOTIFY_SHOW_ID }}
+          SP_DC_SECRET: ${{ secrets.SP_DC }}
+          SP_KEY_SECRET: ${{ secrets.SP_KEY }}
+          PODCAST_AUTO_PUBLISH_VAR: ${{ vars.PODCAST_AUTO_PUBLISH }}
         run: |
           set -euo pipefail
           set +x
@@ -131,7 +135,11 @@ jobs:
           {
             echo "AZURE_STORAGE_ACCOUNT_NAME=$storage_account_name"
             echo "PODCASTER_API_KEY=$podcaster_api_key"
+            echo "SPOTIFY_PUBLISH_ENABLED=${SPOTIFY_PUBLISH_ENABLED_VAR:-false}"
             echo "SPOTIFY_SHOW_ID=${SPOTIFY_SHOW_ID_SECRET:-}"
+            echo "SP_DC=${SP_DC_SECRET:-}"
+            echo "SP_KEY=${SP_KEY_SECRET:-}"
+            echo "PODCAST_AUTO_PUBLISH=${PODCAST_AUTO_PUBLISH_VAR:-false}"
           } >> "$GITHUB_ENV"
 
           echo "Using Storage Account name: $storage_account_name"
@@ -237,7 +245,11 @@ jobs:
             --parameters deployApiApp=true \
             --parameters synthesisImage="${SYNTHESIS_IMAGE}" \
             --parameters apiImage="${API_IMAGE}" \
+            --parameters spotifyPublishEnabled="${SPOTIFY_PUBLISH_ENABLED:-false}" \
             --parameters spotifyShowId="${SPOTIFY_SHOW_ID:-}" \
+            --parameters spotifySessionCookieDc="${SP_DC:-}" \
+            --parameters spotifySessionCookieKey="${SP_KEY:-}" \
+            --parameters podcastAutoPublish="${PODCAST_AUTO_PUBLISH:-false}" \
             --output none
           echo "### ACA-only Podcaster infrastructure deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "Region: $AZURE_LOCATION" >> "$GITHUB_STEP_SUMMARY"

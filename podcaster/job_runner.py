@@ -38,6 +38,7 @@ from podcaster.episode import (
     synthesize_episode,
 )
 from podcaster.generation import checksum, manifest_bytes
+from podcaster.orchestration import auto_publish_enabled, auto_publish_job
 from podcaster.queue import QueueBackend, QueueMessage, create_queue_backend, parse_job_id
 from podcaster.storage import StorageBackend, create_storage_backend
 from podcaster.tts import PROVIDER, TtsConfig, load_tts_config
@@ -226,6 +227,13 @@ def run_synthesis(
         return manifest_bytes(document)
 
     storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+    if auto_publish_enabled():
+        auto_outcome = auto_publish_job(job_id, storage=storage, now=current)
+        logger.info(
+            "auto publish attempted job_id=%s status=%s",
+            job_id,
+            auto_outcome.manifest.get("status"),
+        )
 
     logger.info(
         "synthesis completed job_id=%s segments=%s validation=%s real_audio=true publishable=false",
@@ -525,10 +533,11 @@ def _apply_completion(
     if isinstance(publishing, dict):
         # The human-review gate is unchanged: synthesized audio is never
         # publication-eligible from the runner.
+        publishing["packet_ready"] = True
         publishing["eligible"] = False
         blocked = publishing.get("blocked_by")
         blocked_set = set(blocked) if isinstance(blocked, list) else set()
-        blocked_set.discard("real_tts_not_implemented")
+        blocked_set.discard("synthesis_not_completed")
         blocked_set.add("human_review")
         if validation_ready:
             blocked_set.discard("audio_validation_not_passed")
@@ -538,13 +547,16 @@ def _apply_completion(
         checks = publishing.get("readiness_checks")
         if isinstance(checks, dict):
             checks["real_audio_available"] = True
+            checks["audio_validation_passed"] = bool(validation_ready)
 
     lifecycle = manifest.get("lifecycle")
     if isinstance(lifecycle, dict):
+        manifest["status"] = "synthesized_review_ready"
+        lifecycle["status"] = "synthesized_review_ready"
         transitions = lifecycle.get("transitions")
         if isinstance(transitions, list):
             transitions.append(
-                {"at": completed_at, "to": "review_pending", "reason": "audio_synthesized"}
+                {"at": completed_at, "to": "synthesized_review_ready", "reason": "audio_synthesized"}
             )
         revision = lifecycle.get("revision")
         lifecycle["revision"] = (revision + 1) if isinstance(revision, int) else 2
@@ -565,6 +577,21 @@ def _record_runner_state(storage: StorageBackend, job_id: str, state: dict[str, 
         publishing = document.get("publishing")
         if isinstance(publishing, dict):
             publishing["eligible"] = False
+        lifecycle = document.setdefault("lifecycle", {})
+        if isinstance(lifecycle, dict):
+            status = "synthesis_failed" if state.get("status") == STATUS_FAILED else "synthesis_skipped"
+            document["status"] = status
+            lifecycle["status"] = status
+            transitions = lifecycle.setdefault("transitions", [])
+            if isinstance(transitions, list):
+                transitions.append(
+                    {
+                        "at": state.get("at"),
+                        "to": status,
+                        "reason": state.get("reason") or "synthesis_runner_state",
+                    }
+                )
+            lifecycle["revision"] = int(lifecycle.get("revision") or 1) + 1
         return manifest_bytes(document)
 
     try:

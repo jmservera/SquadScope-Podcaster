@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -105,11 +106,7 @@ def run_generation_job(
     prior_episode_count = int(budget_context["prior_episode_count"])
     prior_monthly_spend = budget_context["prior_monthly_spend"]
 
-    warnings = [
-        *(validation_warnings or []),
-        "human review is required before publishing",
-        "artifact URLs are private operator paths, not public publishing links",
-    ]
+    warnings = [*(validation_warnings or []), "human review is required before publishing", "artifact URLs are private operator paths, not public publishing links"]
     if payload.get("callback"):
         warnings.append("callback accepted by contract but not invoked yet")
 
@@ -196,7 +193,8 @@ def run_generation_job(
         audio_validation = placeholder_audio_validation(byte_length=0, sha256="")
 
     created_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    manifest_status = "dry_run" if payload.get("dry_run") else "review_pending"
+    auto_publish = os.environ.get("PODCAST_AUTO_PUBLISH", "").lower() == "true"
+    manifest_status = "dry_run" if payload.get("dry_run") else "accepted"
     manifest = {
         "schema_version": "squadscope-podcaster-job-v1",
         "job_id": job_id,
@@ -214,18 +212,24 @@ def run_generation_job(
             "tts_provider": None,
             "tts_voice": None,
             "tts_synthesis": {
-                "status": "blocked",
-                "allowed": False,
-                "blocked_by": ["human_review", "provider_not_selected"] if not payload.get("dry_run") else ["provider_not_selected"],
+                "status": "blocked" if payload.get("dry_run") else "queued",
+                "allowed": bool(not payload.get("dry_run")),
+                "blocked_by": ["dry_run"] if payload.get("dry_run") else [],
                 "dry_run_bypass_allowed": bool(payload.get("dry_run")),
             },
             "audio_validation": audio_validation.to_manifest(),
+            "synthesis_queue": {
+                "status": "not_requested" if payload.get("dry_run") else "pending",
+                "enqueued_at": None,
+                "detail": None,
+            },
         },
         "publishing": {
-            "mode": "manual",
+            "mode": "auto" if auto_publish else "review_gate",
+            "auto_publish_enabled": auto_publish,
             "packet_ready": False,
             "eligible": False,
-            "blocked_by": ["human_review", "real_tts_not_implemented", "audio_validation_not_passed"],
+            "blocked_by": ["human_review", "synthesis_not_completed", "audio_validation_not_passed"],
             "readiness_checks": {
                 "cost_ledger_complete": bool(cost_ledger.get("readiness", {}).get("complete"))
                 if isinstance(cost_ledger.get("readiness"), dict)
@@ -235,6 +239,7 @@ def run_generation_job(
                 else "unknown",
                 "editorial_review_complete": False,
                 "real_audio_available": False,
+                "audio_validation_passed": False,
             },
             "public_url": None,
         },
@@ -274,7 +279,17 @@ def run_generation_job(
     )
 
     if not payload.get("dry_run"):
-        _enqueue_synthesis(job_id, enqueue)
+        enqueue_state = _enqueue_synthesis(job_id, enqueue)
+        if enqueue_state["warning"]:
+            warnings.append(enqueue_state["warning"])
+        manifest["generation"]["synthesis_queue"] = {
+            "status": enqueue_state["status"],
+            "enqueued_at": enqueue_state["enqueued_at"],
+            "detail": enqueue_state["detail"],
+        }
+        if enqueue_state["warning"] and enqueue_state["warning"] not in manifest["warnings"]:
+            manifest["warnings"].append(enqueue_state["warning"])
+        _record_enqueue_state(storage, manifest_path, enqueue_state)
 
     response = _response_from_artifacts(
         job_id=job_id,
@@ -297,7 +312,7 @@ def failed_response(errors: list[str], warnings: list[str] | None = None) -> dic
     )
 
 
-def _enqueue_synthesis(job_id: str, enqueue: Callable[[str], bool] | None) -> None:
+def _enqueue_synthesis(job_id: str, enqueue: Callable[[str], bool] | None) -> dict[str, Any]:
     """Best-effort enqueue of the synthesis message once gates have passed.
 
     Failures (including an unconfigured queue) never break the stable async 202
@@ -306,10 +321,25 @@ def _enqueue_synthesis(job_id: str, enqueue: Callable[[str], bool] | None) -> No
     """
 
     send = enqueue or enqueue_synthesis_job
+    current = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     try:
-        send(job_id)
+        enqueued = bool(send(job_id))
+        if enqueued:
+            return {"status": "enqueued", "enqueued_at": current, "detail": None, "warning": None}
+        return {
+            "status": "not_configured",
+            "enqueued_at": current,
+            "detail": "synthesis queue not configured",
+            "warning": "synthesis queue not configured; job will remain staged until synthesis is replayed",
+        }
     except Exception:
         logging.exception("synthesis enqueue failed job_id=%s; continuing with staged placeholder", job_id)
+        return {
+            "status": "failed",
+            "enqueued_at": current,
+            "detail": "synthesis enqueue failed",
+            "warning": "synthesis enqueue failed; job remains staged until synthesis is replayed",
+        }
 
 
 def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
@@ -361,16 +391,13 @@ def _cost_override(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 def _lifecycle_metadata(payload: dict[str, Any], created_at: str, status: str) -> dict[str, Any]:
     transitions = [{"at": created_at, "to": "dry_run" if payload.get("dry_run") else "accepted", "reason": "request_validated"}]
-    if not payload.get("dry_run"):
-        transitions.append({"at": created_at, "to": "review_pending", "reason": "artifacts_staged"})
     return {"status": status, "revision": 1, "force": bool(payload.get("force")), "transitions": transitions}
 
 
 def _review_metadata(payload: dict[str, Any]) -> dict[str, Any]:
-    dry_run = bool(payload.get("dry_run"))
     return {
         "required": True,
-        "required_for_tts": not dry_run,
+        "required_for_tts": False,
         "status": "pending",
         "mechanism": "github_environment",
         "environment": "podcast-review",
@@ -389,8 +416,8 @@ def _review_metadata(payload: dict[str, Any]) -> dict[str, Any]:
             "publishing-packet.zip",
         ],
         "gate": {
-            "status": "dry_run_bypass" if dry_run else "blocked",
-            "approval_required_before": "non_dry_run_tts_synthesis",
+            "status": "dry_run_bypass" if payload.get("dry_run") else "blocked",
+            "approval_required_before": "spotify_publication",
             "checks": [
                 "script_accuracy",
                 "claim_verification",
@@ -437,3 +464,31 @@ def _response_from_artifacts(
             strict=True,
         )
     )
+
+
+def _record_enqueue_state(storage: StorageBackend, manifest_path: str, state: dict[str, Any]) -> None:
+    content = storage.get_bytes(manifest_path)
+    document = json.loads(content.decode("utf-8")) if content else {}
+    if not isinstance(document, dict):
+        document = {}
+    generation = document.setdefault("generation", {})
+    if isinstance(generation, dict):
+        generation["synthesis_queue"] = {
+            "status": state["status"],
+            "enqueued_at": state["enqueued_at"],
+            "detail": state["detail"],
+        }
+    warnings = document.get("warnings")
+    if state.get("warning") and isinstance(warnings, list) and state["warning"] not in warnings:
+        warnings.append(state["warning"])
+    lifecycle = document.setdefault("lifecycle", {})
+    if isinstance(lifecycle, dict) and isinstance(lifecycle.get("transitions"), list):
+        lifecycle["transitions"].append(
+            {
+                "at": state["enqueued_at"],
+                "to": "accepted",
+                "reason": f"synthesis_queue_{state['status']}",
+            }
+        )
+        lifecycle["revision"] = int(lifecycle.get("revision") or 1) + 1
+    storage.put_bytes(manifest_path, manifest_bytes(document), "application/json; charset=utf-8")
