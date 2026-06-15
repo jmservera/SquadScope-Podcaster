@@ -72,7 +72,7 @@ class ScriptGenConfig:
         )
 
 
-def _build_system_prompt(podcast_config: PodcastConfig, directions: ScriptDirections | None = None) -> str:
+def _build_system_prompt(podcast_config: PodcastConfig, directions: ScriptDirections | None = None, breaking_news: str | None = None) -> str:
     """Build the system prompt for script generation."""
 
     base = f"""You are a podcast script writer for "{podcast_config.name}" ({podcast_config.url}).
@@ -127,6 +127,16 @@ FORMAT RULES (you MUST follow these exactly):
         if extras:
             base += "\nADDITIONAL DIRECTIONS:\n" + "\n".join(f"- {e}" for e in extras) + "\n"
 
+    if breaking_news:
+        safe_news = neutralize(breaking_news, limit=5000)
+        base += (
+            "\nBREAKING NEWS SEGMENT (REQUIRED):\n"
+            "Include a 'Hot off the press' segment where the hosts excitedly discuss this late-breaking news.\n"
+            "Place it early in the episode (after the intro/disclosure but before the main article discussion).\n"
+            f"The breaking news is: {safe_news}\n"
+            "Format it naturally — one host announces it, both react and briefly discuss its significance.\n"
+        )
+
     return base
 
 
@@ -162,6 +172,7 @@ def generate_script(
     config: ScriptGenConfig,
     podcast_config: PodcastConfig | None = None,
     script_directions: ScriptDirections | None = None,
+    breaking_news: str | None = None,
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
 ) -> str:
@@ -183,7 +194,7 @@ def generate_script(
     safe_content = neutralize(article_content, limit=MAX_ARTICLE_CHARS)
     safe_week = neutralize(week, limit=32)
 
-    system_prompt = _build_system_prompt(podcast_config, script_directions)
+    system_prompt = _build_system_prompt(podcast_config, script_directions, breaking_news=breaking_news)
     user_prompt = _build_user_prompt(safe_week, safe_title, safe_content)
 
     token_provider = token_provider or ManagedIdentityTokenCredential().get_token
