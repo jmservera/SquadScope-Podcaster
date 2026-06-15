@@ -47,7 +47,7 @@ def test_cost_ledger_records_required_episode_budget_and_privacy_fields() -> Non
 
 def test_monthly_guardrail_blocks_over_episode_or_spend_limit() -> None:
     episode_limit = evaluate_monthly_guardrail(
-        prior_episode_count=5,
+        prior_episode_count=10,
         prior_monthly_spend_usd=Decimal("1.00"),
         projected_episode_cost_usd=Decimal("0.10"),
     )
@@ -65,7 +65,7 @@ def test_monthly_guardrail_blocks_over_episode_or_spend_limit() -> None:
 
 def test_monthly_guardrail_allows_explicit_operator_override() -> None:
     budget = evaluate_monthly_guardrail(
-        prior_episode_count=5,
+        prior_episode_count=10,
         prior_monthly_spend_usd=Decimal("5.00"),
         projected_episode_cost_usd=Decimal("0.50"),
         override={"actor": "hermes", "reason": "approved launch exception", "recorded_at": "2026-06-09T11:00:00Z"},
@@ -133,7 +133,7 @@ def test_cost_gate_blocks_over_budget_without_override() -> None:
         duration_seconds=300,
         audio_byte_length=1024,
         staged_byte_length=2048,
-        prior_episode_count=5,
+        prior_episode_count=10,
     )
 
     assert ledger["budget"]["status"] == "over_budget"
