@@ -70,13 +70,18 @@ def run_generation_job(
     def reserve_monthly_budget(content: bytes | None) -> bytes:
         monthly_ledger = load_monthly_ledger(content, month=month)
         prior_episode_count, prior_monthly_spend = monthly_budget_inputs(monthly_ledger, job_id=job_id)
+        # Detect retry: if the job_id already has a ledger entry, this is a
+        # re-submission and the budget slot is already allocated. Skip the
+        # budget guard so retries of the same job are not blocked by other
+        # episodes that appeared after the initial run.
+        is_retry = _job_already_in_ledger(monthly_ledger, job_id)
         budget = evaluate_monthly_guardrail(
             prior_episode_count=prior_episode_count,
             prior_monthly_spend_usd=prior_monthly_spend,
             projected_episode_cost_usd=USD_ZERO,
             override=cost_override,
         )
-        if not payload.get("dry_run") and budget["status"] == "over_budget":
+        if not payload.get("dry_run") and budget["status"] == "over_budget" and not is_retry:
             raise MonthlyBudgetExceeded(budget)
         budget_context["prior_episode_count"] = prior_episode_count
         budget_context["prior_monthly_spend"] = prior_monthly_spend
@@ -340,6 +345,22 @@ def _enqueue_synthesis(job_id: str, enqueue: Callable[[str], bool] | None) -> di
             "detail": "synthesis enqueue failed",
             "warning": "synthesis enqueue failed; job remains staged until synthesis is replayed",
         }
+
+
+def _job_already_in_ledger(monthly_ledger: dict[str, Any], job_id: str) -> bool:
+    """Return True if job_id already has an entry in the monthly ledger.
+
+    Used to detect retries: if the job already consumed a budget slot on a
+    prior run, a re-submission should not be blocked by budget limits that
+    were exceeded by OTHER jobs between the original run and the retry.
+    """
+    episodes = monthly_ledger.get("episodes")
+    if not isinstance(episodes, list):
+        return False
+    return any(
+        isinstance(ep, dict) and ep.get("job_id") == job_id
+        for ep in episodes
+    )
 
 
 def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:

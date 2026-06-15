@@ -127,8 +127,8 @@ def _stage(storage: FakeStorage, manifest: dict, script: str) -> None:
 
 def _patch_audio(monkeypatch) -> None:
     def fake_render(segments, wav_out, out, runner=None, **kwargs):
-        Path(wav_out).write_bytes(b"stitched-wav-bytes")
-        Path(out).write_bytes(b"stitched-mp3-bytes")
+        Path(wav_out).write_bytes(b"W" * 512)
+        Path(out).write_bytes(b"M" * 512)
         return Path(wav_out), Path(out)
 
     def fake_probe(path, sha256, runner=None):
@@ -214,8 +214,8 @@ def test_run_synthesis_completes_and_never_makes_publishable(monkeypatch):
     # Audio bytes were staged and the manifest artifact checksum updated.
     mp3_path = gen["synthesis_runner"]["audio"]["path"]
     wav_path = gen["synthesis_runner"]["audio"]["artifacts"]["wav"]["path"]
-    assert storage.get_bytes(mp3_path) == b"stitched-mp3-bytes"
-    assert storage.get_bytes(wav_path) == b"stitched-wav-bytes"
+    assert storage.get_bytes(mp3_path) == b"M" * 512
+    assert storage.get_bytes(wav_path) == b"W" * 512
     assert manifest["artifacts"][mp3_path]["sha256"] == gen["synthesis_runner"]["audio"]["sha256"]
     assert manifest["artifacts"][wav_path]["sha256"] == gen["synthesis_runner"]["audio"]["artifacts"]["wav"]["sha256"]
     assert gen["synthesis_runner"]["audio"]["upload_format"] == "wav"
@@ -415,3 +415,44 @@ def test_drain_processes_until_empty(monkeypatch):
     # Two deliveries of the same job: first completes, second is idempotent skip.
     assert [o.status for o in outcomes] == [job_runner.STATUS_COMPLETED, job_runner.STATUS_SKIPPED]
     assert queue.deleted == ["m1", "m2"]
+
+
+def test_run_synthesis_rejects_empty_mp3(monkeypatch):
+    """Synthesis that produces a trivially small mp3 is treated as a transient failure."""
+
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
+        Path(wav_out).write_bytes(b"tiny")
+        Path(out).write_bytes(b"tiny")  # < _MIN_VALID_MP3_BYTES
+        return Path(wav_out), Path(out)
+
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
+    monkeypatch.setattr(episode, "probe_audio", lambda *a, **kw: _fake_metadata(*a, **kw))
+    _patch_tts_network(monkeypatch)
+    storage = FakeStorage()
+    _stage(storage, _base_manifest(), _two_voice_script())
+
+    with pytest.raises(job_runner.TransientSynthesisError, match="empty audio"):
+        job_runner.run_synthesis(JOB_ID, storage, _production_config())
+
+    # Runner state should be recorded in the manifest's generation.synthesis_runner.
+    manifest_raw = storage.get_bytes(job_runner.manifest_path(JOB_ID))
+    assert manifest_raw is not None
+    manifest = json.loads(manifest_raw)
+    state = manifest["generation"]["synthesis_runner"]
+    assert state["status"] == "failed"
+    assert state["reason"] == "empty_audio_output"
+
+
+def _fake_metadata(path, sha256, runner=None):
+    from podcaster.audio import AudioMetadata
+
+    return AudioMetadata(
+        duration_seconds=300.0,
+        loudness_lufs=-16.0,
+        sample_rate_hz=44100,
+        bitrate_bps=192000,
+        channels=1,
+        content_type="audio/mpeg",
+        byte_length=4,
+        sha256=sha256,
+    )

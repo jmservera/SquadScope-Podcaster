@@ -58,6 +58,11 @@ REASON_RETRY_EXHAUSTED = "retry_exhausted"
 
 MAX_DEQUEUE_COUNT = 5
 
+# Minimum byte size for a valid MP3 — an MP3 frame header alone is 4 bytes,
+# but any real audio will be substantially larger. Use 256 bytes as a floor
+# to catch empty or corrupt outputs from ffmpeg that exit 0 without error.
+_MIN_VALID_MP3_BYTES = 256
+
 
 @dataclass(frozen=True)
 class SynthesisOutcome:
@@ -195,6 +200,23 @@ def run_synthesis(
             {"status": STATUS_FAILED, "reason": type(exc).__name__, "at": _iso(current)},
         )
         raise TransientSynthesisError(f"synthesis failed for job_id={job_id}") from exc
+
+    # Guard: never upload an empty or trivially small mp3 — treat as synthesis failure.
+    if len(mp3_bytes) < _MIN_VALID_MP3_BYTES:
+        logger.error(
+            "synthesis produced empty/trivial mp3 job_id=%s mp3_bytes=%s wav_bytes=%s",
+            job_id,
+            len(mp3_bytes),
+            len(wav_bytes),
+        )
+        _record_runner_state(
+            storage,
+            job_id,
+            {"status": STATUS_FAILED, "reason": "empty_audio_output", "at": _iso(current)},
+        )
+        raise TransientSynthesisError(
+            f"synthesis produced empty audio for job_id={job_id} ({len(mp3_bytes)} bytes)"
+        )
 
     stored_mp3 = storage.put_bytes(mp3_blob_path, mp3_bytes, "audio/mpeg")
     stored_wav = storage.put_bytes(wav_blob_path, wav_bytes, "audio/wav")
