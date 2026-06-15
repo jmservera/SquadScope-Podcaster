@@ -23,7 +23,7 @@ SquadScope Podcaster is a separate Azure-hosted service that turns a published S
 ## Users
 
 - SquadScope maintainers triggering podcast generation after publication.
-- Human editors reviewing scripts, show notes, and publishing packets.
+- Human editors reviewing episodes as Spotify drafts before promoting to public.
 - Future distribution operators publishing to Spotify or a podcast host.
 
 ## Functional requirements
@@ -34,7 +34,7 @@ SquadScope Podcaster is a separate Azure-hosted service that turns a published S
 4. Return `job_id`, `status`, artifact URLs, expiration time, warnings, and errors.
 5. Stage artifacts in Azure Blob Storage when generation is implemented.
 6. Preserve traceability from article URL and hash to podcast artifacts.
-7. Include a human review gate before public publishing.
+7. Auto-publish episodes as Spotify drafts after successful synthesis and audio validation; humans review directly on the Spotify platform.
 8. Record a cost ledger for every episode and block non-dry-run synthesis or packet readiness when monthly guardrails are unknown or exceeded.
 
 ## Quality requirements
@@ -51,6 +51,6 @@ SquadScope Podcaster is a separate Azure-hosted service that turns a published S
 1. Contract scaffold: API validates input and returns stub accepted/completed responses.
 2. Blob staging: write manifest and packet placeholders to Azure Blob Storage.
 3. TTS bakeoff: compare providers, cost, quality, rights, and operational fit.
-4. Human review gate: editor approval before final artifact release.
-5. Manual publishing packet: package all content needed for human publication, but keep it blocked until audio validation and human review pass.
+4. Draft publishing: after successful synthesis and audio validation, episodes are automatically published as Spotify drafts. Humans review directly on the Spotify platform before promoting to public.
+5. Publishing packet: package all content needed for distribution, blocked only until audio validation passes.
 6. Distribution research: evaluate Spotify and podcast-host automation options.

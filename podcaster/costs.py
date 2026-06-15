@@ -5,7 +5,7 @@ from decimal import InvalidOperation
 from typing import Any
 
 
-MAX_EPISODES_PER_MONTH = 10
+MAX_EPISODES_PER_MONTH = 5
 MAX_MONTHLY_SPEND_USD = Decimal("5.00")
 USD_ZERO = Decimal("0.00")
 

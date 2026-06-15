@@ -268,6 +268,21 @@ class TestFormatScript:
         assert "Manual review is required before publishing" in script
 
 
+class TestBreakingNewsPrompt:
+    def test_breaking_news_includes_hot_off_the_press(self):
+        config = PodcastConfig()
+        prompt = _build_system_prompt(config, breaking_news="Major security breach at ExampleCorp")
+        assert "Hot off the press" in prompt
+        assert "Major security breach at ExampleCorp" in prompt
+        assert "BREAKING NEWS SEGMENT" in prompt
+
+    def test_breaking_news_none_excludes_segment(self):
+        config = PodcastConfig()
+        prompt = _build_system_prompt(config, breaking_news=None)
+        assert "Hot off the press" not in prompt
+        assert "BREAKING NEWS SEGMENT" not in prompt
+
+
 class TestSystemPromptWithDirections:
     def test_directions_appended_to_prompt(self):
         from podcaster.config import EpisodeStyle, ScriptDirections

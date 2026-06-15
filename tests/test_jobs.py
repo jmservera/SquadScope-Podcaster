@@ -483,11 +483,11 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
 
     payloads = [
         {"week": f"2026-W2{index}", "article_url": f"https://example.com/article-{index}"}
-        for index in range(11)
+        for index in range(8)
     ]
 
     try:
-        with ThreadPoolExecutor(max_workers=11) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             results = list(
                 executor.map(
                     lambda payload: run_generation_job(
@@ -500,12 +500,12 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
             )
 
         statuses = [result.response["status"] for result in results]
-        assert statuses.count("accepted") == 10
-        assert statuses.count("failed") == 1
+        assert statuses.count("accepted") == 5
+        assert statuses.count("failed") == 3
 
         monthly = json.loads((artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8"))
-        assert len(monthly["episodes"]) == 10
-        assert len({episode["job_id"] for episode in monthly["episodes"]}) == 10
+        assert len(monthly["episodes"]) == 5
+        assert len({episode["job_id"] for episode in monthly["episodes"]}) == 5
         assert all(episode.get("state") != "reserved" for episode in monthly["episodes"])
 
         staged_job_ids = {path.name for path in (artifact_root / "jobs").iterdir() if path.is_dir()}
