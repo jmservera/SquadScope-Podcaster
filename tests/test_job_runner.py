@@ -192,7 +192,7 @@ def test_parse_job_id_rejects_empty_message():
 # --- run_synthesis happy path ---------------------------------------------
 
 
-def test_run_synthesis_completes_and_never_makes_publishable(monkeypatch):
+def test_run_synthesis_completes_and_marks_publish_ready(monkeypatch):
     _patch_audio(monkeypatch)
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
@@ -219,13 +219,13 @@ def test_run_synthesis_completes_and_never_makes_publishable(monkeypatch):
     assert manifest["artifacts"][mp3_path]["sha256"] == gen["synthesis_runner"]["audio"]["sha256"]
     assert manifest["artifacts"][wav_path]["sha256"] == gen["synthesis_runner"]["audio"]["artifacts"]["wav"]["sha256"]
     assert gen["synthesis_runner"]["audio"]["upload_format"] == "wav"
-    assert manifest["status"] == "synthesized_review_ready"
+    assert gen["tts_synthesis"]["blocked_by"] == []
+    assert manifest["status"] == "synthesized_publish_ready"
 
     pub = manifest["publishing"]
-    # Human-review gate is preserved: never publication-eligible from the runner.
-    assert pub["eligible"] is False
+    assert pub["eligible"] is True
     assert pub["packet_ready"] is True
-    assert "human_review" in pub["blocked_by"]
+    assert "human_review" not in pub["blocked_by"]
     assert "synthesis_not_completed" not in pub["blocked_by"]
     assert pub["readiness_checks"]["real_audio_available"] is True
     assert pub["readiness_checks"]["editorial_review_complete"] is False
@@ -262,6 +262,55 @@ def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
 
     assert outcome.status == job_runner.STATUS_COMPLETED
     assert called == [JOB_ID]
+
+
+def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch):
+    _patch_audio(monkeypatch)
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    manifest["request"] = {
+        "week": "2026-W24",
+        "article_url": "https://claracle.com/weekly/2026/w24/",
+        "article_title": "Skills go vertical",
+        "spotify_publish": {"publish_mode": "draft", "upload_format": "wav"},
+    }
+    _stage(storage, manifest, _two_voice_script())
+    published: list[dict[str, object]] = []
+
+    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: False)
+
+    def fake_publish_episode(mp3_path, title, description, **kwargs):
+        published.append(
+            {
+                "mp3_exists": Path(mp3_path).is_file(),
+                "wav_exists": Path(kwargs["wav_path"]).is_file(),
+                "title": title,
+                "description": description,
+                "year": kwargs["year"],
+                "week": kwargs["week"],
+                "article_title": kwargs["article_title"],
+            }
+        )
+        return job_runner.PublishResult(status="draft")
+
+    monkeypatch.setattr(job_runner, "publish_episode", fake_publish_episode)
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=lambda request: b"segment-bytes"
+    )
+
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    assert published == [
+        {
+            "mp3_exists": True,
+            "wav_exists": True,
+            "title": "Skills go vertical",
+            "description": "<p>Claracle week 2026-W24.</p><p>Source article: https://claracle.com/weekly/2026/w24/</p>",
+            "year": 2026,
+            "week": 24,
+            "article_title": "Skills go vertical",
+        }
+    ]
 
 
 # --- idempotency & skip paths ---------------------------------------------
