@@ -28,7 +28,10 @@ class JobPublishOutcome:
 
 
 def auto_publish_enabled() -> bool:
-    return os.environ.get("PODCAST_AUTO_PUBLISH", "").lower() == "true"
+    return (
+        os.environ.get("PODCAST_AUTO_PUBLISH", "").lower() == "true"
+        and os.environ.get("SPOTIFY_PUBLISH_ENABLED", "").lower() == "true"
+    )
 
 
 def process_review_decision(
@@ -134,7 +137,11 @@ def load_manifest(storage: StorageBackend, job_id: str) -> dict[str, Any]:
 
 
 def persist_manifest(storage: StorageBackend, job_id: str, manifest: dict[str, Any]) -> None:
-    storage.put_bytes(manifest_path(job_id), manifest_bytes(manifest), "application/json; charset=utf-8")
+    storage.update_bytes(
+        manifest_path(job_id),
+        "application/json; charset=utf-8",
+        lambda _current: manifest_bytes(manifest),
+    )
 
 
 def manifest_path(job_id: str) -> str:

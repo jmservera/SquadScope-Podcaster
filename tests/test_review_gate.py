@@ -18,6 +18,7 @@ SECURITY_DOC = ROOT / "docs/SECURITY.md"
 
 def test_review_workflow_uses_podcast_review_environment_and_uploads_record() -> None:
     workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+    record_step = workflow.split("- name: Record review decision", 1)[1].split("run: |", 1)[0]
 
     assert "workflow_dispatch:" in workflow
     assert "environment: podcast-review" in workflow
@@ -26,6 +27,8 @@ def test_review_workflow_uses_podcast_review_environment_and_uploads_record() ->
     assert "must not contain credentials, query strings, or fragments" in workflow
     assert "/api/review" in workflow
     assert "PODCASTER_API_KEY" in workflow
+    assert "MANIFEST_URL:" not in record_step
+    assert "PACKET_URL:" not in record_step
 
 
 def test_review_approval_records_actor_time_and_preserves_provider_tts_gate(tmp_path: Path) -> None:

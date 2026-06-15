@@ -53,7 +53,7 @@ Without Azure storage settings, generated manifests, script drafts, transcripts,
 
 ## Human review gate
 
-Non-dry-run jobs now synthesize first, then wait for review before publication. `.github/workflows/podcast-review-gate.yml` uses the GitHub Environment `podcast-review`, calls the runtime `/api/review` route for the real stored manifest, and uploads the returned `review-manifest.json` as the audit artifact. When `PODCAST_AUTO_PUBLISH=true`, the runtime records an automatic approval and publishes immediately after synthesis; when it is unset, approval remains the manual gate and the approved review triggers publish.
+Non-dry-run jobs now synthesize first, then wait for review before publication. `.github/workflows/podcast-review-gate.yml` uses the GitHub Environment `podcast-review`, calls the runtime `/api/review` route for the real stored manifest, and uploads the returned `review-manifest.json` as the audit artifact. Automatic approval only activates when both `PODCAST_AUTO_PUBLISH=true` and `SPOTIFY_PUBLISH_ENABLED=true`; otherwise jobs remain manually reviewable after synthesis.
 
 Example request:
 
@@ -90,7 +90,7 @@ Optional `prod` environment variables:
 
 - `AZURE_STORAGE_ACCOUNT_NAME` - override the deterministic default Storage Account name.
 - `SPOTIFY_PUBLISH_ENABLED` - set to `true` to let runtime publish approved episodes.
-- `PODCAST_AUTO_PUBLISH` - set to `true` to skip manual review and publish immediately after synthesis.
+- `PODCAST_AUTO_PUBLISH` - set to `true` to auto-approve after synthesis, but publication still requires `SPOTIFY_PUBLISH_ENABLED=true`.
 
 Optional `prod` environment secret:
 

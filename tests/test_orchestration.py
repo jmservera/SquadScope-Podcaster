@@ -5,7 +5,7 @@ from pathlib import Path
 
 from podcaster.costs import build_cost_ledger
 from podcaster.generation import manifest_bytes
-from podcaster.orchestration import auto_publish_job, manifest_path, process_review_decision
+from podcaster.orchestration import auto_publish_enabled, auto_publish_job, manifest_path, persist_manifest, process_review_decision
 from podcaster.publish import PublishResult
 from podcaster.storage import LocalStorageBackend
 
@@ -135,3 +135,39 @@ def test_auto_publish_job_records_system_review(tmp_path: Path, monkeypatch) -> 
     persisted = json.loads(storage.get_bytes(manifest_path(_job_id())).decode("utf-8"))
     assert outcome.manifest["review"]["approved_by"] == "system:auto-publish"
     assert persisted["status"] == "published"
+
+
+def test_auto_publish_requires_spotify_publish_enable(monkeypatch) -> None:
+    monkeypatch.setenv("PODCAST_AUTO_PUBLISH", "true")
+    monkeypatch.delenv("SPOTIFY_PUBLISH_ENABLED", raising=False)
+    assert auto_publish_enabled() is False
+
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
+    assert auto_publish_enabled() is True
+
+
+def test_persist_manifest_uses_storage_update_bytes() -> None:
+    class TrackingStorage(LocalStorageBackend):
+        def __init__(self, root: Path, base_url: str) -> None:
+            super().__init__(root, base_url)
+            self.updated: list[str] = []
+            self.puts: list[str] = []
+
+        def put_bytes(self, path: str, content: bytes, content_type: str):
+            self.puts.append(path)
+            return super().put_bytes(path, content, content_type)
+
+        def update_bytes(self, path: str, content_type: str, update):
+            self.updated.append(path)
+            return super().update_bytes(path, content_type, update)
+
+    storage = TrackingStorage(Path(".test-orchestration-storage"), "https://example.invalid/artifacts")
+    manifest = _synthesized_manifest()
+    try:
+        persist_manifest(storage, manifest["job_id"], manifest)
+        assert storage.updated == [manifest_path(manifest["job_id"])]
+        assert storage.puts == []
+    finally:
+        import shutil
+
+        shutil.rmtree(storage.root, ignore_errors=True)

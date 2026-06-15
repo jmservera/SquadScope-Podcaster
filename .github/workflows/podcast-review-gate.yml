@@ -75,8 +75,6 @@ jobs:
           JOB_ID: ${{ inputs.job_id }}
           PODCASTER_API_URL: ${{ inputs.podcaster_api_url || vars.PODCASTER_API_URL }}
           PODCASTER_API_KEY: ${{ secrets.PODCASTER_API_KEY }}
-          MANIFEST_URL: ${{ inputs.manifest_url }}
-          PACKET_URL: ${{ inputs.publishing_packet_url }}
           DECISION: ${{ inputs.decision }}
           REVIEW_NOTES: ${{ inputs.notes }}
           REVIEWED_AT: ${{ steps.reviewed_at.outputs.value }}
