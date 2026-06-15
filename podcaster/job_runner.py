@@ -40,7 +40,7 @@ from podcaster.episode import (
 from podcaster.generation import checksum, manifest_bytes
 from podcaster.orchestration import auto_publish_enabled, auto_publish_job
 from podcaster.queue import QueueBackend, QueueMessage, create_queue_backend, parse_job_id
-from podcaster.storage import StorageBackend, create_storage_backend
+from podcaster.storage import ManagedIdentityTokenCredential, StorageBackend, create_storage_backend
 from podcaster.tts import PROVIDER, TtsConfig, load_tts_config
 
 logger = logging.getLogger("podcaster.job_runner")
@@ -414,6 +414,14 @@ def main() -> int:
         return 2
     storage = create_storage_backend()
     config = load_tts_config()
+    import os
+
+    if os.environ.get("PODCASTER_STORAGE_ACCOUNT_URL"):
+        try:
+            ManagedIdentityTokenCredential().get_token("https://storage.azure.com/.default")
+        except Exception:  # noqa: BLE001 - health check should not crash the runner
+            logger.exception("managed identity token startup health check failed")
+            return 3
     outcomes = drain(queue, storage, config)
     completed = sum(1 for outcome in outcomes if outcome.status == STATUS_COMPLETED)
     skipped = sum(1 for outcome in outcomes if outcome.status == STATUS_SKIPPED)
