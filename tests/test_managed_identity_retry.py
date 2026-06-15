@@ -121,6 +121,7 @@ def test_health_check_passes(monkeypatch):
     credential_cls = Mock(return_value=credential)
     drain_mock = Mock(return_value=[])
 
+    monkeypatch.setenv("PODCASTER_STORAGE_ACCOUNT_URL", "https://acct.blob.core.windows.net")
     monkeypatch.setattr(job_runner, "create_queue_backend", lambda: queue)
     monkeypatch.setattr(job_runner, "create_storage_backend", lambda: backend)
     monkeypatch.setattr(job_runner, "load_tts_config", lambda: config)
@@ -142,6 +143,7 @@ def test_health_check_fails_exits_3(monkeypatch):
     credential_cls = Mock(return_value=credential)
     drain_mock = Mock()
 
+    monkeypatch.setenv("PODCASTER_STORAGE_ACCOUNT_URL", "https://acct.blob.core.windows.net")
     monkeypatch.setattr(job_runner, "create_queue_backend", lambda: queue)
     monkeypatch.setattr(job_runner, "create_storage_backend", lambda: backend)
     monkeypatch.setattr(job_runner, "load_tts_config", lambda: config)
