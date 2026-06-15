@@ -36,7 +36,7 @@ SOURCE_ARTIFACT_OBJECT_FIELDS = {
     "url",
     "week",
 }
-PODCAST_CONFIG_FIELDS = {"ai_voice_disclosure", "host_a", "host_b", "name", "spoken_site", "style_guide", "url"}
+PODCAST_CONFIG_FIELDS = {"ai_voice_disclosure", "host_a", "host_b", "hosts", "name", "spoken_site", "style_guide", "url"}
 HOST_CONFIG_FIELDS = {"name", "style", "voice"}
 
 RESPONSE_KEYS = (

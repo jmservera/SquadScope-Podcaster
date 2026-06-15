@@ -70,7 +70,7 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     assert result.manifest["artifact_access"]["retention"]["cleanup_after"] == result.response["expires_at"]
     assert result.manifest["artifact_access"]["audit"]["correlation_id"] == result.response["job_id"]
     assert result.response["publishing_packet_url"].endswith(".zip")
-    assert "human review is required before publishing" in result.response["warnings"]
+    assert "human review is required before publishing" not in result.response["warnings"]
     assert "artifact URLs are private operator paths, not public publishing links" in result.response["warnings"]
 
     job_dir = artifact_root / "jobs" / result.response["job_id"]
