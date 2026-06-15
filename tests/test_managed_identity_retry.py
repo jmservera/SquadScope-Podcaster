@@ -72,13 +72,15 @@ def test_retry_succeeds_on_third_attempt(monkeypatch, sleep_mock):
 
 
 def test_retry_exhausted_raises(monkeypatch, sleep_mock):
-    urlopen_mock = _install_urlopen(monkeypatch, _http_error(400), _http_error(400), _http_error(400))
+    urlopen_mock = _install_urlopen(
+        monkeypatch, _http_error(400), _http_error(400), _http_error(400), _http_error(400)
+    )
 
     with pytest.raises(RuntimeError, match="managed identity token request failed"):
         storage._request_managed_identity_token(STORAGE_RESOURCE)
 
-    assert urlopen_mock.call_count == 3
-    assert [call.args[0] for call in sleep_mock.call_args_list] == pytest.approx([1.0, 2.0])
+    assert urlopen_mock.call_count == 4
+    assert [call.args[0] for call in sleep_mock.call_args_list] == pytest.approx([1.0, 2.0, 4.0])
 
 
 def test_no_retry_on_non_retryable_status(monkeypatch, sleep_mock):
