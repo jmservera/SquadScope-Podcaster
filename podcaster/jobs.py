@@ -111,7 +111,7 @@ def run_generation_job(
     prior_episode_count = int(budget_context["prior_episode_count"])
     prior_monthly_spend = budget_context["prior_monthly_spend"]
 
-    warnings = [*(validation_warnings or []), "human review is required before publishing", "artifact URLs are private operator paths, not public publishing links"]
+    warnings = [*(validation_warnings or []), "artifact URLs are private operator paths, not public publishing links"]
     if payload.get("callback"):
         warnings.append("callback accepted by contract but not invoked yet")
 
