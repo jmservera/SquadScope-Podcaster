@@ -82,7 +82,7 @@ def test_enqueue_not_invoked_when_budget_gate_fails() -> None:
                 "month": "2026-06",
                 "episodes": [
                     {"job_id": f"existing-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
-                    for index in range(5)
+                    for index in range(10)
                 ],
             }
         ),

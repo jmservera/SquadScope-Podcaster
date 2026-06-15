@@ -385,7 +385,7 @@ def test_non_dry_run_fails_closed_when_monthly_episode_limit_exceeded() -> None:
                 "month": "2026-06",
                 "episodes": [
                     {"job_id": f"existing-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
-                    for index in range(5)
+                    for index in range(10)
                 ],
             }
         ),
@@ -405,7 +405,45 @@ def test_non_dry_run_fails_closed_when_monthly_episode_limit_exceeded() -> None:
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
-def test_monthly_budget_is_reserved_before_artifacts_are_staged() -> None:
+def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
+    """A retry of an existing job_id should not be blocked by other episodes
+    that were added after the original run."""
+    artifact_root = Path(".test-artifacts-retry-budget")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    # Pre-populate ledger with 10 other episodes (at limit) PLUS this job's entry.
+    job_payload = {"week": "2026-W29", "article_url": "https://example.com/retry-article"}
+    from podcaster.jobs import build_job_id
+    target_job_id = build_job_id(job_payload)
+
+    storage.put_bytes(
+        monthly_ledger_path("2026-06"),
+        manifest_bytes(
+            {
+                "schema_version": "squadscope-podcaster-monthly-cost-ledger-v1",
+                "month": "2026-06",
+                "episodes": [
+                    {"job_id": f"other-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
+                    for index in range(10)
+                ] + [
+                    {"job_id": target_job_id, "week": "2026-W29", "estimated_total_usd": "0.00"},
+                ],
+            }
+        ),
+        "application/json; charset=utf-8",
+    )
+
+    # Without the retry bypass, this would return "failed" (11 total episodes > 10 max).
+    # With the fix, it should succeed because the job already has a ledger slot.
+    result = run_generation_job(
+        job_payload,
+        storage=storage,
+        now=datetime(2026, 6, 30, 20, 53, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.response["status"] == "accepted"
+    shutil.rmtree(artifact_root, ignore_errors=True)
     artifact_root = Path(".test-artifacts-budget-reservation")
     shutil.rmtree(artifact_root, ignore_errors=True)
 
@@ -445,11 +483,11 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
 
     payloads = [
         {"week": f"2026-W2{index}", "article_url": f"https://example.com/article-{index}"}
-        for index in range(6)
+        for index in range(11)
     ]
 
     try:
-        with ThreadPoolExecutor(max_workers=6) as executor:
+        with ThreadPoolExecutor(max_workers=11) as executor:
             results = list(
                 executor.map(
                     lambda payload: run_generation_job(
@@ -462,12 +500,12 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
             )
 
         statuses = [result.response["status"] for result in results]
-        assert statuses.count("accepted") == 5
+        assert statuses.count("accepted") == 10
         assert statuses.count("failed") == 1
 
         monthly = json.loads((artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8"))
-        assert len(monthly["episodes"]) == 5
-        assert len({episode["job_id"] for episode in monthly["episodes"]}) == 5
+        assert len(monthly["episodes"]) == 10
+        assert len({episode["job_id"] for episode in monthly["episodes"]}) == 10
         assert all(episode.get("state") != "reserved" for episode in monthly["episodes"])
 
         staged_job_ids = {path.name for path in (artifact_root / "jobs").iterdir() if path.is_dir()}
@@ -495,7 +533,7 @@ def test_non_dry_run_allows_explicit_operator_cost_override() -> None:
                 "month": "2026-06",
                 "episodes": [
                     {"job_id": f"existing-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
-                    for index in range(5)
+                    for index in range(10)
                 ],
             }
         ),
@@ -525,7 +563,7 @@ def test_non_dry_run_allows_explicit_operator_cost_override() -> None:
         "recorded_at": "2026-06-09T11:00:00Z",
     }
     monthly = json.loads((artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8"))
-    assert len(monthly["episodes"]) == 6
+    assert len(monthly["episodes"]) == 11
     assert monthly["episodes"][-1]["budget_status"] == "override_recorded"
     shutil.rmtree(artifact_root, ignore_errors=True)
 
