@@ -94,6 +94,9 @@ param spotifySessionCookieKey string = ''
 @description('Whether jobs should auto-publish after synthesis.')
 param podcastAutoPublish string = 'false'
 
+@description('Whether VNet integration is enabled. Requires environment recreation if enabling on an existing deployment.')
+param deployVnet bool = false
+
 @description('Optional infrastructure subnet ID for VNet integration. When set, the Container Apps Environment joins this subnet.')
 param infrastructureSubnetId string = ''
 
@@ -142,7 +145,10 @@ resource managedEnv 'Microsoft.App/managedEnvironments@2025-01-01' = {
         sharedKey: workspace.listKeys().primarySharedKey
       }
     }
-    vnetConfiguration: !empty(infrastructureSubnetId) ? {
+    // NOTE: VNet integration is a create-time-only setting. Adding infrastructureSubnetId
+    // to an existing environment requires recreation (az containerapp env delete + redeploy).
+    // For existing deployments, set deployVnet=true and recreate the environment manually.
+    vnetConfiguration: (deployVnet && !empty(infrastructureSubnetId)) ? {
       infrastructureSubnetId: infrastructureSubnetId
       internal: false
     } : null
