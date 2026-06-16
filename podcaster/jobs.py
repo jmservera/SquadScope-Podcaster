@@ -22,8 +22,9 @@ from podcaster.costs import (
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.claim_extraction import claims_to_ledger_json, extract_claims
-from podcaster.config import PodcastConfig, ScriptDirections
+from podcaster.config import HistoricalContext, PodcastConfig, ScriptDirections
 from podcaster.generation import generate_artifacts, manifest_bytes, checksum
+from podcaster.prior_episodes import fetch_prior_episode_themes
 from podcaster.queue import enqueue_synthesis_job
 from podcaster.script_gen import ScriptGenConfig, generate_script
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
@@ -121,6 +122,22 @@ def run_generation_job(
     llm_claims_json: str | None = None
     llm_generation_engine = "local-deterministic-placeholder"
     script_directions = ScriptDirections.from_payload(payload)
+    historical_context: HistoricalContext | None = (
+        script_directions.historical_context if script_directions.historical_context.has_content else None
+    )
+    if not script_directions.historical_context.prior_episode_themes:
+        try:
+            prior_episode_themes = fetch_prior_episode_themes(storage, job_id)
+        except Exception:
+            logging.exception("prior episode theme extraction failed job_id=%s", job_id)
+            prior_episode_themes = ()
+        if prior_episode_themes:
+            historical_context = HistoricalContext(
+                summary=script_directions.historical_context.summary,
+                month_synthesis=script_directions.historical_context.month_synthesis,
+                yearly_narrative=script_directions.historical_context.yearly_narrative,
+                prior_episode_themes=prior_episode_themes,
+            )
     if payload.get("article_content") and isinstance(payload["article_content"], str):
         script_config = ScriptGenConfig.from_env()
         if script_config.ready:
@@ -134,6 +151,7 @@ def run_generation_job(
                     config=script_config,
                     podcast_config=podcast_config,
                     script_directions=script_directions,
+                    historical_context=historical_context,
                     breaking_news=payload.get("breaking_news") or None,
                 )
                 llm_generation_engine = "llm-script-gen"

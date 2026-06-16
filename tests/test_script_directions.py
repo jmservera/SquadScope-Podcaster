@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from podcaster.config import (
     EpisodeStyle,
+    HistoricalContext,
     MusicMixConfig,
     ScriptDirections,
     _parse_time_offset,
@@ -59,6 +60,41 @@ class TestScriptDirections:
         assert sd.has_content
         assert sd.episode_style.tone == "Upbeat and curious"
         assert sd.cold_open == ""
+
+    def test_historical_context_string_payload(self) -> None:
+        payload = {
+            "script_directions": {
+                "historical_context": "AI coding copilots kept moving from autocomplete to agentic workflows.",
+            }
+        }
+
+        sd = ScriptDirections.from_payload(payload)
+
+        assert sd.historical_context == HistoricalContext(
+            summary="AI coding copilots kept moving from autocomplete to agentic workflows."
+        )
+        assert sd.has_content
+
+    def test_historical_context_structured_payload(self) -> None:
+        payload = {
+            "script_directions": {
+                "historical_context": {
+                    "month_synthesis": "Developer tooling stories kept centering on workflow automation.",
+                    "yearly_narrative": "Teams steadily shifted from single-shot prompts to durable agent loops.",
+                    "prior_episode_themes": ["evaluation discipline", "cost control", "", 7],
+                }
+            }
+        }
+
+        sd = ScriptDirections.from_payload(payload)
+
+        assert sd.historical_context.month_synthesis == (
+            "Developer tooling stories kept centering on workflow automation."
+        )
+        assert sd.historical_context.yearly_narrative == (
+            "Teams steadily shifted from single-shot prompts to durable agent loops."
+        )
+        assert sd.historical_context.prior_episode_themes == ("evaluation discipline", "cost control")
 
 
 class TestMusicMixConfig:
