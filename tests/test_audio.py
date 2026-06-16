@@ -7,7 +7,7 @@ import pytest
 
 from podcaster.audio import (
     AudioMetadata,
-    MAX_FILE_SIZE_BYTES,
+    MAX_FILE_SIZE_BYTES_MP3,
     compute_segment_timeline,
     normalize_audio,
     placeholder_audio_validation,
@@ -45,7 +45,7 @@ def test_overlong_oversized_audio_fails_without_override() -> None:
             bitrate_bps=64000,
             channels=1,
             content_type="audio/mpeg",
-            byte_length=MAX_FILE_SIZE_BYTES + 1,
+            byte_length=MAX_FILE_SIZE_BYTES_MP3 + 1,
             sha256="b" * 64,
         )
     )
