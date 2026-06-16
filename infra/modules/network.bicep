@@ -60,6 +60,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         name: peSubnetName
         properties: {
           addressPrefix: peSubnetAddressPrefix
+          privateEndpointNetworkPolicies: 'Disabled'
         }
       }
     ]
@@ -107,9 +108,8 @@ resource queueDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks
 resource blobPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   name: '${storageAccountName}-blob-pe'
   location: location
-  properties: {
     subnet: {
-      id: vnet.properties.subnets[1].id
+      id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
     }
     privateLinkServiceConnections: [
       {
@@ -128,9 +128,8 @@ resource blobPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
 resource queuePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   name: '${storageAccountName}-queue-pe'
   location: location
-  properties: {
     subnet: {
-      id: vnet.properties.subnets[1].id
+      id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
     }
     privateLinkServiceConnections: [
       {
@@ -180,5 +179,5 @@ resource queueDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGro
 
 output vnetId string = vnet.id
 output vnetName string = vnet.name
-output acaSubnetId string = vnet.properties.subnets[0].id
-output peSubnetId string = vnet.properties.subnets[1].id
+output acaSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, acaSubnetName)
+output peSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
