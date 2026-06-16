@@ -152,9 +152,6 @@ module network 'modules/network.bicep' = {
     storageAccountId: storage.id
     storageAccountName: storage.name
   }
-  dependsOn: [
-    storage
-  ]
 }
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {

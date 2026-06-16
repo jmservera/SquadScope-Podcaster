@@ -108,6 +108,7 @@ resource queueDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks
 resource blobPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   name: '${storageAccountName}-blob-pe'
   location: location
+  properties: {
     subnet: {
       id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
     }
@@ -128,6 +129,7 @@ resource blobPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
 resource queuePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   name: '${storageAccountName}-queue-pe'
   location: location
+  properties: {
     subnet: {
       id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
     }
