@@ -16,6 +16,12 @@ on:
         default: 'true'
         type: choice
         options: ['false', 'true']
+      deploy_vnet:
+        description: 'Deploy VNet + private endpoints. ⚠️ Create-time only — enabling on existing ACA requires env recreation (downtime).'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 permissions:
   contents: read
@@ -27,6 +33,7 @@ jobs:
     with:
       sync_squadscope: ${{ inputs.sync_squadscope }}
       deploy_openai: ${{ inputs.deploy_openai }}
+      deploy_vnet: ${{ inputs.deploy_vnet }}
     secrets: inherit
     permissions:
       contents: read
