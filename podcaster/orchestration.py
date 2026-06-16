@@ -159,7 +159,9 @@ def _prepare_audio_files(
         wav_path = (storage.root / wav_blob_path) if wav_blob_path else None
         return (mp3_path, wav_path), None
 
-    scratch_dir = Path(".podcaster-publish-work") / job_id
+    import tempfile
+
+    scratch_dir = Path(tempfile.gettempdir()) / "podcaster-publish-work" / job_id
     scratch_dir.mkdir(parents=True, exist_ok=True)
     mp3_bytes = storage.get_bytes(mp3_blob_path)
     if mp3_bytes is None:
