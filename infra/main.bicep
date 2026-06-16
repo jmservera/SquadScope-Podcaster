@@ -143,6 +143,20 @@ var openAiCustomSubDomain = toLower(openAiAccountName)
 var openAiEndpoint = 'https://${openAiCustomSubDomain}.openai.azure.com/'
 var acrLoginServer = deployAcr ? '${toLower(acrName)}.azurecr.io' : containerRegistryServer
 
+// VNet + private endpoints for ACA ↔ Storage connectivity (#225).
+module network 'modules/network.bicep' = {
+  name: 'vnet-private-endpoints'
+  params: {
+    location: location
+    vnetName: '${baseName}-vnet'
+    storageAccountId: storage.id
+    storageAccountName: storage.name
+  }
+  dependsOn: [
+    storage
+  ]
+}
+
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
   location: location
@@ -156,9 +170,9 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     minimumTlsVersion: 'TLS1_2'
     networkAcls: {
       bypass: 'AzureServices'
-      defaultAction: 'Allow'
+      defaultAction: 'Deny'
     }
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
     supportsHttpsTrafficOnly: true
   }
 }
@@ -267,6 +281,7 @@ module aca 'modules/aca.bicep' = {
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     podcastAutoPublish: podcastAutoPublish
+    infrastructureSubnetId: network.outputs.acaSubnetId
   }
   dependsOn: [
     artifactContainer

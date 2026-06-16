@@ -94,6 +94,9 @@ param spotifySessionCookieKey string = ''
 @description('Whether jobs should auto-publish after synthesis.')
 param podcastAutoPublish string = 'false'
 
+@description('Optional infrastructure subnet ID for VNet integration. When set, the Container Apps Environment joins this subnet.')
+param infrastructureSubnetId string = ''
+
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
 
@@ -139,6 +142,10 @@ resource managedEnv 'Microsoft.App/managedEnvironments@2025-01-01' = {
         sharedKey: workspace.listKeys().primarySharedKey
       }
     }
+    vnetConfiguration: !empty(infrastructureSubnetId) ? {
+      infrastructureSubnetId: infrastructureSubnetId
+      internal: false
+    } : null
   }
 }
 
