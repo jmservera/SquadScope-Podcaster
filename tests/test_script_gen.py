@@ -282,6 +282,23 @@ class TestBreakingNewsPrompt:
         assert "Hot off the press" not in prompt
         assert "BREAKING NEWS SEGMENT" not in prompt
 
+    def test_breaking_news_in_user_prompt(self):
+        prompt = _build_user_prompt("2026-W25", "Title", "Content", breaking_news="Server outage at BigCo")
+        assert "BREAKING NEWS" in prompt
+        assert "Server outage at BigCo" in prompt
+
+    def test_breaking_news_none_excluded_from_user_prompt(self):
+        prompt = _build_user_prompt("2026-W25", "Title", "Content", breaking_news=None)
+        assert "BREAKING NEWS" not in prompt
+
+    def test_breaking_news_user_prompt_sanitized(self):
+        """breaking_news in user prompt is neutralized and capped at 5000 chars."""
+        long_news = "x" * 6000
+        prompt = _build_user_prompt("2026-W25", "Title", "Content", breaking_news=long_news)
+        # neutralize caps at 5000 chars
+        assert "x" * 5001 not in prompt
+        assert "BREAKING NEWS" in prompt
+
 
 class TestSystemPromptWithDirections:
     def test_directions_appended_to_prompt(self):
