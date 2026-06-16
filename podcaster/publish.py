@@ -195,6 +195,14 @@ def _retry_request(
         except requests.RequestException as exc:
             last_exc = exc
             if not _is_retryable(exc) or attempt >= _MAX_RETRIES - 1:
+                if exc.response is not None:
+                    body_snippet = exc.response.text[:500] if exc.response.text else "(empty)"
+                    logger.error(
+                        "Spotify API %s %s final failure body: %s",
+                        method,
+                        log_url,
+                        body_snippet,
+                    )
                 break
             wait = _RETRY_BACKOFF_BASE ** attempt
             safe_reason = type(exc).__name__
