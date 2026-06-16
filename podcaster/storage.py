@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import formatdate
@@ -59,6 +60,9 @@ class StorageBackend(Protocol):
     def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> StoredArtifact:
         ...
 
+    def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
+        ...
+
     def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
         ...
 
@@ -97,6 +101,19 @@ class LocalStorageBackend:
             target.write_bytes(updated)
             fcntl.flock(lock_file, fcntl.LOCK_UN)
         return StoredArtifact(path=safe_path, url=f"{self.base_url}/{safe_path}", size_bytes=len(updated), content_type=content_type)
+
+    def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
+        safe_prefix = _safe_blob_prefix(prefix)
+        if limit <= 0 or not self.root.exists():
+            return []
+        matches: list[str] = []
+        for target in sorted(path for path in self.root.rglob("*") if path.is_file()):
+            relative = target.relative_to(self.root).as_posix()
+            if relative.startswith(safe_prefix):
+                matches.append(relative)
+                if len(matches) >= limit:
+                    break
+        return matches
 
     def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
         # Local development has no SAS service; the locator is unsigned and
@@ -226,6 +243,45 @@ class AzureBlobStorageBackend:
                 return None, None
             detail = exc.read().decode("utf-8", errors="replace")[:500]
             raise RuntimeError(f"blob read failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+
+    def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
+        safe_prefix = _safe_blob_prefix(prefix)
+        if limit <= 0:
+            return []
+        token = self._credential.get_token("https://storage.azure.com/.default")
+        query = urlencode(
+            {
+                "restype": "container",
+                "comp": "list",
+                "prefix": safe_prefix,
+                "maxresults": str(limit),
+            }
+        )
+        request = Request(
+            f"{self._account_url}/{self._container_name}?{query}",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
+                "x-ms-version": "2023-11-03",
+            },
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                root = ET.fromstring(response.read())
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"blob list failed for {safe_prefix}: HTTP {exc.code} {detail}") from exc
+
+        names: list[str] = []
+        for blob in root.iter():
+            if not blob.tag.endswith("Blob"):
+                continue
+            for child in blob:
+                if child.tag.endswith("Name") and child.text:
+                    names.append(child.text)
+                    break
+        return names[:limit]
 
     def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
         """Mint a read-only, time-limited *user-delegation* SAS download URL.
@@ -392,6 +448,13 @@ def _safe_blob_path(path: str) -> str:
     parts = [part for part in path.replace("\\", "/").split("/") if part not in {"", ".", ".."}]
     if not parts:
         raise ValueError("artifact path must not be empty")
+    return "/".join(parts)
+
+
+def _safe_blob_prefix(prefix: str) -> str:
+    parts = [part for part in prefix.replace("\\", "/").split("/") if part not in {"", ".", ".."}]
+    if not parts:
+        raise ValueError("artifact prefix must not be empty")
     return "/".join(parts)
 
 
