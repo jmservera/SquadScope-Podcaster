@@ -144,6 +144,7 @@ def _build_user_prompt(
     week: str,
     article_title: str,
     article_content: str,
+    breaking_news: str | None = None,
 ) -> str:
     """Build the user prompt with the sanitized article content."""
 
@@ -152,14 +153,24 @@ def _build_user_prompt(
     if len(article_content) > MAX_ARTICLE_CHARS:
         content += "\n[Article truncated for length]"
 
-    return f"""Generate a podcast script for week {week} about this article:
+    prompt = f"""Generate a podcast script for week {week} about this article:
 
 Title: {article_title}
 
 Content:
-{content}
+{content}"""
+
+    if breaking_news:
+        prompt += f"""
+
+BREAKING NEWS (include this as a Hot off the press segment early in the episode):
+{breaking_news}"""
+
+    prompt += """
 
 Remember: write ONLY dialogue lines in the format "HostName: text". No headers, no metadata, no separators."""
+
+    return prompt
 
 
 def generate_script(
@@ -194,8 +205,11 @@ def generate_script(
     safe_content = neutralize(article_content, limit=MAX_ARTICLE_CHARS)
     safe_week = neutralize(week, limit=32)
 
+    if breaking_news:
+        logging.info("script_gen: breaking_news segment included chars=%d", len(breaking_news))
+
     system_prompt = _build_system_prompt(podcast_config, script_directions, breaking_news=breaking_news)
-    user_prompt = _build_user_prompt(safe_week, safe_title, safe_content)
+    user_prompt = _build_user_prompt(safe_week, safe_title, safe_content, breaking_news=breaking_news)
 
     token_provider = token_provider or ManagedIdentityTokenCredential().get_token
     transport = transport or _default_transport
