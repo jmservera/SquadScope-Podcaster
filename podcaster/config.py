@@ -331,6 +331,44 @@ class EpisodeStyle:
 
 
 @dataclass(frozen=True)
+class HistoricalContext:
+    """Caller-provided continuity hints for multi-episode script generation."""
+
+    summary: str = ""
+    month_synthesis: str = ""
+    yearly_narrative: str = ""
+    prior_episode_themes: tuple[str, ...] = ()
+
+    @classmethod
+    def from_value(cls, data: object) -> "HistoricalContext":
+        if isinstance(data, str):
+            return cls(summary=_safe_str(data))
+        if not isinstance(data, Mapping):
+            return cls()
+
+        prior_episode_themes_raw = data.get("prior_episode_themes")
+        prior_episode_themes: tuple[str, ...] = ()
+        if isinstance(prior_episode_themes_raw, str):
+            theme = _safe_str(prior_episode_themes_raw)
+            prior_episode_themes = (theme,) if theme else ()
+        elif isinstance(prior_episode_themes_raw, (list, tuple)):
+            prior_episode_themes = tuple(
+                theme for item in prior_episode_themes_raw if (theme := _safe_str(item))
+            )
+
+        return cls(
+            summary=_safe_str(data.get("summary")) or _safe_str(data.get("text")),
+            month_synthesis=_safe_str(data.get("month_synthesis")),
+            yearly_narrative=_safe_str(data.get("yearly_narrative")),
+            prior_episode_themes=prior_episode_themes,
+        )
+
+    @property
+    def has_content(self) -> bool:
+        return bool(self.summary or self.month_synthesis or self.yearly_narrative or self.prior_episode_themes)
+
+
+@dataclass(frozen=True)
 class ScriptDirections:
     """Parsed ``script_directions`` from the caller payload.
 
@@ -344,6 +382,7 @@ class ScriptDirections:
     ai_disclosure_cue: str = ""
     corrections_path: str = ""
     source_article_link: str = ""
+    historical_context: HistoricalContext = field(default_factory=HistoricalContext)
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> "ScriptDirections":
@@ -366,6 +405,7 @@ class ScriptDirections:
             ai_disclosure_cue=_safe_str(opening.get("ai_disclosure")),
             corrections_path=_safe_str(closing.get("corrections_path")),
             source_article_link=_safe_str(closing.get("source_article_link")),
+            historical_context=HistoricalContext.from_value(sd.get("historical_context")),
         )
 
     @property
@@ -380,6 +420,7 @@ class ScriptDirections:
             or self.ai_disclosure_cue
             or self.corrections_path
             or self.source_article_link
+            or self.historical_context.has_content
         )
 
 
