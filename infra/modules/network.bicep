@@ -110,7 +110,7 @@ resource blobPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   location: location
   properties: {
     subnet: {
-      id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
+      id: '${vnet.id}/subnets/${peSubnetName}'
     }
     privateLinkServiceConnections: [
       {
@@ -131,7 +131,7 @@ resource queuePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = 
   location: location
   properties: {
     subnet: {
-      id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
+      id: '${vnet.id}/subnets/${peSubnetName}'
     }
     privateLinkServiceConnections: [
       {
@@ -181,5 +181,5 @@ resource queueDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGro
 
 output vnetId string = vnet.id
 output vnetName string = vnet.name
-output acaSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, acaSubnetName)
-output peSubnetId string = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
+output acaSubnetId string = '${vnet.id}/subnets/${acaSubnetName}'
+output peSubnetId string = '${vnet.id}/subnets/${peSubnetName}'
