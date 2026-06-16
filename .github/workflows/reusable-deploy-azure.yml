@@ -23,7 +23,7 @@ on:
         default: 'true'
         type: string
       deploy_vnet:
-        description: 'Deploy VNet integration for the ACA environment (#243).'
+        description: 'Deploy VNet + private endpoints. ⚠️ Create-time only — enabling on existing ACA requires env recreation (downtime).'
         required: false
         default: 'false'
         type: string
