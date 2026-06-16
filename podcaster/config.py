@@ -365,7 +365,12 @@ class HistoricalContext:
 
     @property
     def has_content(self) -> bool:
-        return bool(self.summary or self.month_synthesis or self.yearly_narrative or self.prior_episode_themes)
+        return bool(
+            (self.summary and self.summary.strip())
+            or (self.month_synthesis and self.month_synthesis.strip())
+            or (self.yearly_narrative and self.yearly_narrative.strip())
+            or self.prior_episode_themes
+        )
 
 
 @dataclass(frozen=True)
