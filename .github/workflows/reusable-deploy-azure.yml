@@ -22,6 +22,11 @@ on:
         required: false
         default: 'true'
         type: string
+      deploy_vnet:
+        description: 'Deploy VNet integration for the ACA environment (#243).'
+        required: false
+        default: 'false'
+        type: string
     outputs:
       api_app_fqdn:
         description: 'FQDN of the deployed API container app'
@@ -49,6 +54,7 @@ jobs:
       AZURE_STORAGE_ACCOUNT_NAME: ${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
       SYNTHESIS_IMAGE: ${{ inputs.synthesis_image || format('{0}/{1}:latest', vars.SYNTHESIS_IMAGE_REGISTRY, vars.SYNTHESIS_IMAGE_REPOSITORY || 'podcaster-synthesis') }}
       API_IMAGE: ${{ inputs.api_image || format('{0}/{1}:latest', vars.SYNTHESIS_IMAGE_REGISTRY, vars.API_IMAGE_REPOSITORY || 'podcaster-api') }}
+      DEPLOY_VNET: ${{ inputs.deploy_vnet || 'false' }}
     steps:
       - name: Checkout
         # actions/checkout v6.0.3
@@ -250,6 +256,7 @@ jobs:
             --parameters spotifySessionCookieDc="${SP_DC:-}" \
             --parameters spotifySessionCookieKey="${SP_KEY:-}" \
             --parameters podcastAutoPublish="${PODCAST_AUTO_PUBLISH:-false}" \
+            --parameters deployVnet="${DEPLOY_VNET}" \
             --output none
           echo "### ACA-only Podcaster infrastructure deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "Region: $AZURE_LOCATION" >> "$GITHUB_STEP_SUMMARY"
