@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from podcaster.jobs import failed_response, run_generation_job
+from podcaster.failure_reporting import report_failure
 from podcaster.orchestration import process_review_decision
 from podcaster.validation import is_authorized, validate_payload_details
 
@@ -106,6 +107,11 @@ class GenerateHandler(BaseHTTPRequestHandler):
             result = run_generation_job(payload, validation_warnings=validation.warnings or None)
         except Exception:
             logger.exception("unhandled error in generation job")
+            report_failure(
+                container="podcaster-api",
+                error_type="GenerateEndpointError",
+                error_message="Unhandled exception in /api/generate",
+            )
             response = failed_response(["internal server error"])
             _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, response)
             return
@@ -157,6 +163,11 @@ class GenerateHandler(BaseHTTPRequestHandler):
             return
         except Exception:
             logger.exception("unhandled error in review orchestration")
+            report_failure(
+                container="podcaster-api",
+                error_type="ReviewEndpointError",
+                error_message="Unhandled exception in /api/review",
+            )
             _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal server error"})
             return
 

@@ -30,6 +30,7 @@ from typing import Any
 
 from podcaster.audio import MusicMixSpec
 from podcaster.config import MusicMixConfig, PodcastConfig, SpotifyPublishConfig
+from podcaster.failure_reporting import report_failure
 from podcaster.episode import (
     operator_review_decision,
     parse_script_segments,
@@ -466,6 +467,12 @@ def process_message(
                 REASON_RETRY_EXHAUSTED,
                 message.dequeue_count,
             )
+            report_failure(
+                container="podcaster-synth",
+                error_type="RetryExhausted",
+                error_message=f"Synthesis failed after {message.dequeue_count} attempts for job_id={job_id}",
+                details={"job_id": job_id, "dequeue_count": message.dequeue_count},
+            )
             queue.delete_message(message)
             return SynthesisOutcome(job_id, STATUS_FAILED, reason=REASON_RETRY_EXHAUSTED)
         logger.warning(
@@ -537,6 +544,14 @@ def main() -> int:
         skipped,
         failed,
     )
+    if failed:
+        failed_jobs = [o.job_id for o in outcomes if o.status == STATUS_FAILED and o.job_id]
+        report_failure(
+            container="podcaster-synth",
+            error_type="SynthesisRunFailure",
+            error_message=f"{failed} of {len(outcomes)} jobs failed during synthesis run",
+            details={"failed_jobs": failed_jobs, "completed": completed, "skipped": skipped},
+        )
     return 1 if failed else 0
 
 
