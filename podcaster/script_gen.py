@@ -161,10 +161,11 @@ Content:
 {content}"""
 
     if breaking_news:
+        safe_breaking = neutralize(breaking_news, limit=5000)
         prompt += f"""
 
 BREAKING NEWS (include this as a Hot off the press segment early in the episode):
-{breaking_news}"""
+{safe_breaking}"""
 
     prompt += """
 
@@ -206,7 +207,7 @@ def generate_script(
     safe_week = neutralize(week, limit=32)
 
     if breaking_news:
-        logging.info("script_gen: breaking_news segment included chars=%d", len(breaking_news))
+        logger.info("script_gen: breaking_news segment included chars=%d", len(breaking_news))
 
     system_prompt = _build_system_prompt(podcast_config, script_directions, breaking_news=breaking_news)
     user_prompt = _build_user_prompt(safe_week, safe_title, safe_content, breaking_news=breaking_news)
