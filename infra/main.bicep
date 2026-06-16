@@ -173,9 +173,9 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     minimumTlsVersion: 'TLS1_2'
     networkAcls: {
       bypass: 'AzureServices'
-      defaultAction: 'Deny'
+      defaultAction: deployVnet ? 'Deny' : 'Allow'
     }
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
     supportsHttpsTrafficOnly: true
   }
 }
