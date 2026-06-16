@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 logger = logging.getLogger(__name__)
 MAX_SPOTIFY_TITLE_CHARS = 200
 MAX_SPOTIFY_DESCRIPTION_CHARS = 4_000
-DEFAULT_SPOTIFY_UPLOAD_FORMAT = "wav"
+DEFAULT_SPOTIFY_UPLOAD_FORMAT = "mp3"
 _SPOTIFY_UPLOAD_FORMATS = frozenset({"wav", "mp3"})
 _VOID_HTML_TAGS = frozenset(
     {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
