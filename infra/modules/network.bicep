@@ -46,14 +46,8 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         name: acaSubnetName
         properties: {
           addressPrefix: acaSubnetAddressPrefix
-          delegations: [
-            {
-              name: 'Microsoft.App.environments'
-              properties: {
-                serviceName: 'Microsoft.App/environments'
-              }
-            }
-          ]
+          // No delegations — consumption-plan ACA does not support subnet delegations
+          // (ManagedEnvironmentV1SubnetDelegationNotAllowed)
         }
       }
       {
