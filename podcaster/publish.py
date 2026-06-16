@@ -383,13 +383,16 @@ def _process_upload(
             timeout=15,
         )
         data = resp.json()
-        status = data.get("status", "")
-        if status == "completed":
-            logger.info("Upload %s processing completed", upload_id)
+        # Status is in data.request.state (not top-level "status")
+        request_data = data.get("request", data)
+        status = request_data.get("state") or data.get("status", "")
+        if status in ("processed", "completed"):
+            logger.info("Upload %s processing completed (state=%s)", upload_id, status)
             return
         elif status == "failed":
+            reason = request_data.get("failureReason", "unknown")
             raise SpotifyPublishError(
-                f"Upload {upload_id} processing failed: {data}"
+                f"Upload {upload_id} processing failed: {reason}"
             )
         logger.debug("Upload %s status: %s (attempt %d)", upload_id, status, attempt + 1)
 
