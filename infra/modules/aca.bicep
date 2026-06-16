@@ -94,6 +94,12 @@ param spotifySessionCookieKey string = ''
 @description('Whether jobs should auto-publish after synthesis.')
 param podcastAutoPublish string = 'false'
 
+@description('Whether VNet integration is enabled. Requires environment recreation if enabling on an existing deployment.')
+param deployVnet bool = false
+
+@description('Optional infrastructure subnet ID for VNet integration. When set, the Container Apps Environment joins this subnet.')
+param infrastructureSubnetId string = ''
+
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
 
@@ -128,7 +134,30 @@ resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existin
   name: logAnalyticsWorkspaceName
 }
 
-resource managedEnv 'Microsoft.App/managedEnvironments@2025-01-01' = {
+// NOTE: VNet integration is a create-time-only setting. Adding infrastructureSubnetId
+// to an existing environment requires recreation (az containerapp env delete + redeploy).
+// For existing deployments, set deployVnet=true and recreate the environment manually.
+var useVnet = deployVnet && !empty(infrastructureSubnetId)
+
+resource managedEnvWithVnet 'Microsoft.App/managedEnvironments@2025-01-01' = if (useVnet) {
+  name: containerAppsEnvName
+  location: location
+  properties: {
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: workspace.properties.customerId
+        sharedKey: workspace.listKeys().primarySharedKey
+      }
+    }
+    vnetConfiguration: {
+      infrastructureSubnetId: infrastructureSubnetId
+      internal: false
+    }
+  }
+}
+
+resource managedEnvNoVnet 'Microsoft.App/managedEnvironments@2025-01-01' = if (!useVnet) {
   name: containerAppsEnvName
   location: location
   properties: {
@@ -152,7 +181,7 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
     }
   }
   properties: {
-    environmentId: managedEnv.id
+    environmentId: useVnet ? managedEnvWithVnet.id : managedEnvNoVnet.id
     configuration: {
       triggerType: 'Event'
       replicaTimeout: replicaTimeoutSeconds
@@ -307,8 +336,8 @@ resource jobQueueDataContributor 'Microsoft.Authorization/roleAssignments@2022-0
 }
 
 output jobName string = synthesisJob.name
-output environmentName string = managedEnv.name
-output environmentId string = managedEnv.id
+output environmentName string = useVnet ? managedEnvWithVnet.name : managedEnvNoVnet.name
+output environmentId string = useVnet ? managedEnvWithVnet.id : managedEnvNoVnet.id
 output queueName string = synthesisQueueName
 output jobIdentityName string = jobIdentity.name
 output jobIdentityPrincipalId string = jobIdentity.properties.principalId
