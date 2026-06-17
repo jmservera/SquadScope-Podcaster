@@ -26,7 +26,8 @@ RUN apt-get update \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 
 WORKDIR /app
 
@@ -34,15 +35,24 @@ WORKDIR /app
 RUN groupadd --system synth \
     && useradd --system --gid synth --home-dir /app --shell /usr/sbin/nologin synth
 
-# Install Python deps first for better layer caching. The runner itself uses
-# only the standard library, but requirements.txt is honored so the image
-# matches the repo's pinned dependency set.
+# Install Python deps first for better layer caching.
 COPY requirements.txt ./
-# Install deps, then remove the build toolchain (pip/setuptools/wheel). The
-# runner imports only the standard library, so dropping the toolchain keeps the
-# image free of build-tooling CVEs without affecting runtime behaviour.
-RUN python -m pip install --no-cache-dir -r requirements.txt \
-    && python -m pip uninstall -y pip setuptools wheel
+RUN python -m pip install --no-cache-dir -r requirements.txt
+
+# Playwright is installed only in this synthesis image (not in requirements.txt)
+# to keep the API image lean.  Pin range matches the version used in development.
+RUN python -m pip install --no-cache-dir 'playwright>=1.53,<2'
+
+# Install Playwright Chromium browser for the video pipeline (intro/outro
+# HTML rendering). --with-deps pulls required system libraries (libnss3,
+# libatk, etc.) so a separate apt-get layer is unnecessary.  Clean up the
+# apt lists left behind by the Playwright installer to keep the layer lean.
+RUN python -m playwright install chromium --with-deps \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Drop build toolchain — not needed at runtime.
+RUN python -m pip uninstall -y pip setuptools wheel
 
 # Application code (synthesis pipeline is reused unchanged from podcaster/).
 COPY podcaster ./podcaster
