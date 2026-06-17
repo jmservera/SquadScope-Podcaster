@@ -152,6 +152,13 @@ def _smooth_scroll(page: Page, duration_seconds: float) -> None:
         page.evaluate(f"window.scrollBy(0, {scroll_per_tick})")
         page.wait_for_timeout(tick_interval_ms)
 
+    # Wait out any remaining fractional duration not covered by ticks
+    elapsed_ms = total_ticks * tick_interval_ms
+    requested_ms = int(duration_seconds * 1000)
+    remainder_ms = requested_ms - elapsed_ms
+    if remainder_ms > 0:
+        page.wait_for_timeout(remainder_ms)
+
 
 def _render_fallback_page(
     page: Page, owner: str, name: str, duration_seconds: float
@@ -210,8 +217,8 @@ def _record_segment(
                       timeout=NETWORK_IDLE_TIMEOUT_MS)
             _dismiss_overlays(page)
             _smooth_scroll(page, segment.duration_seconds)
-    except Exception as exc:
-        logger.error("Error recording %s: %s — using fallback", repo.url, exc)
+    except Exception:
+        logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True
         _render_fallback_page(
             page, repo.owner, repo.name, segment.duration_seconds
