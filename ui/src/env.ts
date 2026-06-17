@@ -11,7 +11,7 @@ declare global {
 }
 
 function getEnv(key: string): string {
-  return window.__ENV?.[key] || import.meta.env[key] || '';
+  return window.__ENV?.[key] ?? import.meta.env[key] ?? '';
 }
 
 export const env = {
