@@ -2,5 +2,4 @@ azure-identity>=1.17,<2
 azure-storage-blob>=12.20,<13
 requests>=2.31,<3
 spotifyconnector==0.8.2
-playwright>=1.53,<2
 pytest>=8,<9
