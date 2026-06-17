@@ -24,7 +24,10 @@ video = ["playwright>=1.40,<2"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["slow: marks tests as slow (requires network + Playwright browsers)"]
+markers = [
+    "slow: marks tests as slow (requires network + Playwright browsers)",
+    "integration: end-to-end integration tests for video, UI and publish pipelines",
+]
 addopts = "-m 'not slow'"
 
 [tool.setuptools.packages.find]
