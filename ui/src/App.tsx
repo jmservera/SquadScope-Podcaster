@@ -44,14 +44,7 @@ const App: React.FC<AppProps> = ({ msalInstance }) => {
   return (
     <AuthProvider msalInstance={msalInstance}>
       <Routes>
-        <Route
-          path="/"
-          element={
-            <ProtectedRoute>
-              <LandingPage />
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/" element={<LandingPage />} />
         <Route
           path="/dashboard"
           element={
