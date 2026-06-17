@@ -78,7 +78,7 @@ class EpisodePlan:
                 for seg in self.segments
             ],
         }
-        return yaml.dump(data, default_flow_style=False, sort_keys=False)
+        return yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
 
 
 def extract_repo_urls(script: str) -> list[RepoReference]:
@@ -95,6 +95,8 @@ def extract_repo_urls(script: str) -> list[RepoReference]:
         name = match.group(2)
         # Strip common suffixes that aren't part of repo names
         name = name.rstrip(".")
+        if name.endswith(".git"):
+            name = name[:-4]
         ref = RepoReference(owner=owner, name=name)
         if ref not in seen:
             seen.add(ref)

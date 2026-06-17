@@ -8,10 +8,12 @@ import './index.css';
 
 const msalInstance = new PublicClientApplication(msalConfig);
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <App msalInstance={msalInstance} />
-    </BrowserRouter>
-  </React.StrictMode>
-);
+msalInstance.initialize().then(() => {
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <BrowserRouter>
+        <App msalInstance={msalInstance} />
+      </BrowserRouter>
+    </React.StrictMode>
+  );
+});

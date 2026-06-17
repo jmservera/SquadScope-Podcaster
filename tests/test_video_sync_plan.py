@@ -6,9 +6,7 @@ import yaml
 import pytest
 
 from podcaster.video.sync_plan import (
-    EpisodePlan,
     RepoReference,
-    VideoSegment,
     extract_repo_urls,
     generate_episode_plan,
     plan_from_script,
