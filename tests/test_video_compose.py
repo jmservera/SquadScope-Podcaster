@@ -6,9 +6,8 @@ Unit tests mock ffmpeg via the CommandRunner protocol.
 from __future__ import annotations
 
 import subprocess
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,8 +21,6 @@ from podcaster.video.video_compose import (
     OUTPUT_FPS,
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
-    TRANSITION_DURATION,
-    ComposeResult,
     LowerThird,
     _build_drawtext_filter,
     _build_normalize_cmd,
@@ -333,3 +330,27 @@ class TestComposeVideo:
 
         # 20s - 2s transition = 18s
         assert result.duration_seconds == pytest.approx(18.0)
+
+    def test_non_positive_transition_raises(self, tmp_path):
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        with pytest.raises(ValueError, match="transition_duration must be positive"):
+            compose_video(
+                segments=[seg],
+                output_dir=tmp_path / "out",
+                runner=_mock_runner(),
+                transition_duration=0,
+            )
+
+    def test_transition_duration_exceeds_segment_raises(self, tmp_path):
+        seg = _make_recorded_segment(duration=5.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        with pytest.raises(ValueError, match="must be less than"):
+            compose_video(
+                segments=[seg],
+                output_dir=tmp_path / "out",
+                runner=_mock_runner(),
+                transition_duration=5.0,
+            )

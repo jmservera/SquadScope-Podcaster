@@ -86,7 +86,7 @@ def _build_normalize_cmd(
         "-an",
         "-c:v", "libx264",
         "-preset", "ultrafast",
-        "-crf", "18",
+        "-crf", str(ENCODE_CRF),
         "-pix_fmt", ENCODE_PIX_FMT,
         str(output_path),
     ]
@@ -114,12 +114,7 @@ def _build_xfade_filter(
 
     cumulative = segment_durations[0] + segment_durations[1] - transition_duration
     for i in range(2, len(segment_durations)):
-        prev_label = f"v{i-2:02d}{i-1:02d}" if i == 2 else f"v{i-2:02d}{i-1:02d}"
-        # Recalculate: previous xfade labels
-        if i == 2:
-            in_label = "v01"
-        else:
-            in_label = f"vx{i-1}"
+        in_label = "v01" if i == 2 else f"vx{i-1}"
         out_label = f"vx{i}" if i < len(segment_durations) - 1 else "vout"
 
         offset = cumulative - transition_duration
@@ -210,11 +205,6 @@ def _compute_lower_thirds(
             ))
 
         cumulative_time += seg.duration_seconds
-        if i > 0:
-            # Subtract transition overlap from cumulative
-            pass
-        # Actually the xfade shortens total: each transition removes transition_duration
-        # But for lower-third positioning we track output time
         if i < len(segments) - 1:
             cumulative_time -= transition_duration
 
@@ -248,6 +238,16 @@ def compose_video(
     """
     if not segments:
         raise ValueError("No segments provided for composition")
+
+    if transition_duration <= 0:
+        raise ValueError("transition_duration must be positive")
+
+    min_seg = min(seg.segment.duration_seconds for seg in segments)
+    if transition_duration >= min_seg:
+        raise ValueError(
+            f"transition_duration ({transition_duration}s) must be less than "
+            f"the shortest segment duration ({min_seg}s)"
+        )
 
     run = runner or _default_runner
 
