@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
@@ -32,6 +32,10 @@ from podcaster.video.video_gen import (
     _record_segment,
     record_episode,
 )
+
+
+# Skip the entire integration suite when Playwright is not installed
+_pw = pytest.importorskip("playwright")
 
 
 # --- Helpers ---
@@ -328,28 +332,11 @@ class TestRecordSegment:
         assert call_kwargs["record_video_size"] == {"width": WIDTH, "height": HEIGHT}
 
 
-# --- record_episode tests (no Playwright dependency) ---
-
-
-class TestRecordEpisodeNoPW:
-    def test_raises_on_empty_plan(self):
-        plan = EpisodePlan(total_duration_seconds=60.0, segments=())
-        with pytest.raises(ValueError, match="no segments"):
-            record_episode(plan)
-
-    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
-    def test_raises_without_playwright(self):
-        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
-        with pytest.raises(RuntimeError, match="Playwright is not installed"):
-            record_episode(plan)
-
-
 # --- record_episode tests (mocked Playwright) ---
 
 
 class TestRecordEpisode:
-    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
-    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen.sync_playwright")
     @patch("podcaster.video.video_gen._check_repo_accessible", return_value=True)
     @patch("podcaster.video.video_gen._check_gh_pages", return_value=False)
     def test_records_all_segments(self, mock_pages, mock_access, mock_pw):
@@ -402,8 +389,12 @@ class TestRecordEpisode:
             assert any(n.startswith("astral-sh_ruff_") for n in names)
             assert any(n.startswith("jmservera_SquadScope_") for n in names)
 
-    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
-    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    def test_raises_on_empty_plan(self):
+        plan = EpisodePlan(total_duration_seconds=60.0, segments=())
+        with pytest.raises(ValueError, match="no segments"):
+            record_episode(plan)
+
+    @patch("podcaster.video.video_gen.sync_playwright")
     @patch("podcaster.video.video_gen._check_repo_accessible", return_value=True)
     @patch("podcaster.video.video_gen._check_gh_pages", return_value=False)
     def test_creates_temp_dir_when_none(self, mock_pages, mock_access, mock_pw):
@@ -452,18 +443,6 @@ class TestRecordEpisodeIntegration:
     Marked with @pytest.mark.slow — skipped by default.
     Run with: pytest -m slow tests/test_video_gen.py
     """
-
-    @pytest.fixture(autouse=True)
-    def _require_playwright(self):
-        pw = pytest.importorskip("playwright")
-        # Also verify browsers are installed
-        from playwright.sync_api import sync_playwright
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                browser.close()
-        except Exception as exc:
-            pytest.skip(f"Playwright browsers not available: {exc}")
 
     def test_records_three_repos(self):
         segments = [

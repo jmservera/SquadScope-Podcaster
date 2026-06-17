@@ -92,7 +92,7 @@ def _check_gh_pages(owner: str, name: str, timeout: float = 5.0) -> bool:
     try:
         resp = requests.head(url, timeout=timeout, allow_redirects=True)
         return resp.status_code == 200
-    except Exception:
+    except (requests.RequestException, Exception):
         return False
 
 
@@ -101,7 +101,7 @@ def _check_repo_accessible(url: str, timeout: float = 5.0) -> bool:
     try:
         resp = requests.head(url, timeout=timeout, allow_redirects=True)
         return resp.status_code != 404
-    except Exception:
+    except (requests.RequestException, Exception):
         # Network errors — assume accessible and let Playwright handle it
         return True
 
@@ -217,8 +217,8 @@ def _record_segment(
                       timeout=NETWORK_IDLE_TIMEOUT_MS)
             _dismiss_overlays(page)
             _smooth_scroll(page, segment.duration_seconds)
-    except Exception:
-        logger.exception("Error recording %s — using fallback", repo.url)
+    except Exception as exc:
+        logger.error("Error recording %s: %s — using fallback", repo.url, exc)
         is_fallback = True
         _render_fallback_page(
             page, repo.owner, repo.name, segment.duration_seconds
@@ -226,9 +226,9 @@ def _record_segment(
 
     # Close context first to finalize the recorded video file
     video = page.video
-    context.close()
     if video is None:
         raise RuntimeError(f"No video object for page recording of {repo.url}")
+    context.close()
 
     # Resolve path after close (Playwright finalizes on close)
     video_path_str = video.path()
@@ -270,14 +270,14 @@ def record_episode(
     Returns:
         RecordingResult with paths to all recorded WebM files.
     """
-    if not plan.segments:
-        raise ValueError("Episode plan has no segments to record")
-
     if not _PLAYWRIGHT_AVAILABLE:
         raise RuntimeError(
             "Playwright is not installed. Install it with: "
             "pip install 'podcaster[video]' && playwright install chromium"
         )
+
+    if not plan.segments:
+        raise ValueError("Episode plan has no segments to record")
 
     if output_dir is None:
         output_dir = Path(tempfile.mkdtemp(prefix="video_gen_"))
