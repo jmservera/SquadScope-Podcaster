@@ -30,18 +30,6 @@ param msalAuthority string = ''
 @description('API base URL that the UI calls (the API ACA FQDN).')
 param apiBaseUrl string = ''
 
-@secure()
-@description('Simple auth username (#273).')
-param uiAuthUsername string = ''
-
-@secure()
-@description('Simple auth password (#273).')
-param uiAuthPassword string = ''
-
-@secure()
-@description('HMAC secret for UI auth JWTs (#273).')
-param uiAuthSecret string = ''
-
 @description('vCPU allocated to the UI app.')
 param appCpu string = '0.25'
 
@@ -86,20 +74,7 @@ resource uiApp 'Microsoft.App/containerApps@2025-01-01' = {
           identity: identityId
         }
       ] : []
-      secrets: [
-        {
-          name: 'ui-auth-username'
-          value: uiAuthUsername
-        }
-        {
-          name: 'ui-auth-password'
-          value: uiAuthPassword
-        }
-        {
-          name: 'ui-auth-secret'
-          value: uiAuthSecret
-        }
-      ]
+      secrets: []
     }
     template: {
       containers: [
@@ -122,18 +97,6 @@ resource uiApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'VITE_API_BASE_URL'
               value: apiBaseUrl
-            }
-            {
-              name: 'UI_AUTH_USERNAME'
-              secretRef: 'ui-auth-username'
-            }
-            {
-              name: 'UI_AUTH_PASSWORD'
-              secretRef: 'ui-auth-password'
-            }
-            {
-              name: 'UI_AUTH_SECRET'
-              secretRef: 'ui-auth-secret'
             }
           ]
         }

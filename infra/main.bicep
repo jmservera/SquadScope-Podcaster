@@ -365,6 +365,9 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     podcastAutoPublish: podcastAutoPublish
+    uiAuthUsername: uiAuthUsername
+    uiAuthPassword: uiAuthPassword
+    uiAuthSecret: uiAuthSecret
   }
   dependsOn: [
     artifactContainer
@@ -385,9 +388,6 @@ module ui 'modules/ui.bicep' = if (deployUiApp) {
     msalClientId: msalClientId
     msalAuthority: msalAuthority
     apiBaseUrl: deployApiApp ? 'https://${api!.outputs.apiAppFqdn}' : ''
-    uiAuthUsername: uiAuthUsername
-    uiAuthPassword: uiAuthPassword
-    uiAuthSecret: uiAuthSecret
   }
 }
 

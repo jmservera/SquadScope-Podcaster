@@ -62,6 +62,18 @@ param spotifySessionCookieKey string = ''
 @description('Whether jobs should auto-publish after synthesis.')
 param podcastAutoPublish string = 'false'
 
+@secure()
+@description('Simple auth username for UI login (#273).')
+param uiAuthUsername string = ''
+
+@secure()
+@description('Simple auth password for UI login (#273).')
+param uiAuthPassword string = ''
+
+@secure()
+@description('HMAC secret for signing UI auth JWTs (#273).')
+param uiAuthSecret string = ''
+
 @description('vCPU allocated to the API app.')
 param appCpu string = '0.25'
 
@@ -100,6 +112,18 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
         {
           name: 'spotify-sp-key'
           value: spotifySessionCookieKey
+        }
+        {
+          name: 'ui-auth-username'
+          value: uiAuthUsername
+        }
+        {
+          name: 'ui-auth-password'
+          value: uiAuthPassword
+        }
+        {
+          name: 'ui-auth-secret'
+          value: uiAuthSecret
         }
       ]
       ingress: {
@@ -184,6 +208,18 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'SP_KEY'
               secretRef: 'spotify-sp-key'
+            }
+            {
+              name: 'UI_AUTH_USERNAME'
+              secretRef: 'ui-auth-username'
+            }
+            {
+              name: 'UI_AUTH_PASSWORD'
+              secretRef: 'ui-auth-password'
+            }
+            {
+              name: 'UI_AUTH_SECRET'
+              secretRef: 'ui-auth-secret'
             }
           ]
         }
