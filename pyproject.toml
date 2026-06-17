@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "httpx2>=0.1"]
+video = ["playwright>=1.40,<2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

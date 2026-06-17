@@ -217,8 +217,8 @@ def _record_segment(
                       timeout=NETWORK_IDLE_TIMEOUT_MS)
             _dismiss_overlays(page)
             _smooth_scroll(page, segment.duration_seconds)
-    except Exception as exc:
-        logger.error("Error recording %s: %s — using fallback", repo.url, exc)
+    except Exception:
+        logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True
         _render_fallback_page(
             page, repo.owner, repo.name, segment.duration_seconds

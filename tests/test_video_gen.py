@@ -346,12 +346,10 @@ class TestRecordEpisodeNoPW:
 
 # --- record_episode tests (mocked Playwright) ---
 
-pytest.importorskip("playwright")
-
 
 class TestRecordEpisode:
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
-    @patch("podcaster.video.video_gen.sync_playwright")
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
     @patch("podcaster.video.video_gen._check_repo_accessible", return_value=True)
     @patch("podcaster.video.video_gen._check_gh_pages", return_value=False)
     def test_records_all_segments(self, mock_pages, mock_access, mock_pw):
@@ -405,7 +403,7 @@ class TestRecordEpisode:
             assert any(n.startswith("jmservera_SquadScope_") for n in names)
 
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
-    @patch("podcaster.video.video_gen.sync_playwright")
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
     @patch("podcaster.video.video_gen._check_repo_accessible", return_value=True)
     @patch("podcaster.video.video_gen._check_gh_pages", return_value=False)
     def test_creates_temp_dir_when_none(self, mock_pages, mock_access, mock_pw):
