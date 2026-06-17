@@ -27,11 +27,8 @@ export async function fetchEpisodes(limit = 20, offset = 0): Promise<EpisodeList
   return resp.json();
 }
 
-export async function fetchEpisodeAudioUrl(jobId: string): Promise<string> {
-  const resp = await authenticatedFetch(
-    `${API_BASE}/api/episodes/${encodeURIComponent(jobId)}/audio`
-  );
-  if (!resp.ok) throw new Error(`Failed to fetch audio URL: ${resp.status}`);
-  const data = await resp.json();
-  return data.url;
+/** Resolve an episode's audio_url path to an absolute URL. */
+export function resolveAudioUrl(audioUrl: string): string {
+  if (audioUrl.startsWith('http')) return audioUrl;
+  return `${API_BASE}${audioUrl}`;
 }

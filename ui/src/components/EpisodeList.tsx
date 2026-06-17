@@ -1,43 +1,21 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   fetchEpisodes,
-  fetchEpisodeAudioUrl,
+  resolveAudioUrl,
   type Episode,
 } from '../api/episodes';
 
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) return '—';
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null || !isFinite(seconds)) return '—';
+  const totalSeconds = Math.floor(seconds);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function AudioPlayer({ jobId }: { jobId: string }) {
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function AudioPlayer({ audioUrl }: { audioUrl: string }) {
+  const resolvedUrl = resolveAudioUrl(audioUrl);
   const audioRef = useRef<HTMLAudioElement>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetchEpisodeAudioUrl(jobId)
-      .then((url) => {
-        if (!cancelled) setAudioUrl(url);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load audio');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [jobId]);
-
-  if (loading) return <span>Loading audio…</span>;
-  if (error) return <span style={{ color: '#f44336', fontSize: '0.85em' }}>{error}</span>;
-  if (!audioUrl) return <span>No audio available</span>;
 
   return (
     <audio
@@ -46,7 +24,7 @@ function AudioPlayer({ jobId }: { jobId: string }) {
       preload="metadata"
       style={{ width: '100%', maxWidth: '400px' }}
     >
-      <source src={audioUrl} type="audio/mpeg" />
+      <source src={resolvedUrl} type="audio/mpeg" />
       Your browser does not support the audio element.
     </audio>
   );
@@ -151,7 +129,7 @@ const EpisodeList: React.FC = () => {
                     <strong>Audio Preview</strong>
                     <div style={{ marginTop: '8px' }}>
                       {ep.audio_url ? (
-                        <AudioPlayer jobId={ep.job_id} />
+                        <AudioPlayer audioUrl={ep.audio_url} />
                       ) : (
                         <span style={{ color: '#999' }}>No audio file available</span>
                       )}
