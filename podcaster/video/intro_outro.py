@@ -2,13 +2,19 @@
 
 Part of the Video Epic (jmservera/SquadScope-Coordinator#23).
 Renders HTML pages with CSS animations in headless Chromium, recording
-them as MP4 files for video_compose.py to concatenate.
+them as WebM files for video_compose.py to concatenate.
 
-Closes jmservera/SquadScope-Podcaster#241.
+Tool selection: Issue #241 research evaluated HyperFrames and Playwright.
+Playwright was selected for this implementation because it supports full CSS
+animations and produces consistent WebM output that integrates cleanly with
+the ffmpeg-based video_compose pipeline. See #241 for the decision record.
+
+Related: jmservera/SquadScope-Podcaster#241.
 """
 
 from __future__ import annotations
 
+import html as html_mod
 import logging
 import tempfile
 from dataclasses import dataclass
@@ -133,6 +139,7 @@ body {{
 }}
 .link-item {{
   font-size: 20px; color: #8b949e;
+  text-decoration: none;
   padding: 12px 24px;
   border: 1px solid #30363d; border-radius: 8px;
   background: #21262d;
@@ -205,20 +212,21 @@ def _render_intro_html(config: IntroConfig) -> str:
     return INTRO_HTML.format(
         width=config.width,
         height=config.height,
-        episode_title=config.episode_title,
-        subtitle=config.subtitle,
+        episode_title=html_mod.escape(config.episode_title),
+        subtitle=html_mod.escape(config.subtitle),
     )
 
 
 def _render_outro_html(config: OutroConfig) -> str:
     """Render the outro HTML template with config values."""
     links_html = "\n    ".join(
-        f'<div class="link-item">{name}</div>' for name, _url in (config.links or [])
+        f'<a class="link-item" href="{html_mod.escape(url)}">{html_mod.escape(name)}</a>'
+        for name, url in (config.links or [])
     )
     return OUTRO_HTML.format(
         width=config.width,
         height=config.height,
-        url=config.url,
+        url=html_mod.escape(config.url),
         links_html=links_html,
     )
 
@@ -230,14 +238,15 @@ def _record_html_to_video(
     width: int = WIDTH,
     height: int = HEIGHT,
 ) -> Path:
-    """Render HTML page with Playwright and record to MP4.
+    """Render HTML page with Playwright and record to WebM.
 
     Opens a headless Chromium browser, loads the HTML content,
     waits for animations to complete, and records the viewport.
     """
     if not _PLAYWRIGHT_AVAILABLE:
         raise RuntimeError(
-            "Playwright is not installed. Install with: pip install playwright"
+            "Playwright is not installed. "
+            "Install with: pip install 'podcaster[video]' && playwright install chromium"
         )
 
     with sync_playwright() as p:
@@ -251,14 +260,21 @@ def _record_html_to_video(
         page.set_content(html_content)
         # Wait for CSS animations to play
         page.wait_for_timeout(duration_ms)
+        # Close context first to finalize the recorded video file
+        video = page.video
         context.close()
+        # Resolve path after close (Playwright finalizes on close)
+        video_path = Path(video.path()) if video else None
         browser.close()
 
-    # Playwright saves video with auto-generated name; rename to target
-    video_files = list(output_path.parent.glob("*.webm"))
-    if video_files:
-        latest = max(video_files, key=lambda f: f.stat().st_mtime)
-        latest.rename(output_path)
+    # Rename Playwright's auto-named file to the desired output path
+    if video_path and video_path.exists():
+        video_path.rename(output_path)
+    else:
+        raise RuntimeError(
+            f"Playwright did not produce a video file"
+            f"{f' at {video_path}' if video_path else ''}"
+        )
 
     if not output_path.exists():
         raise RuntimeError(
@@ -279,7 +295,7 @@ def generate_intro(
         output_dir: Directory for output. Uses tempdir if None.
 
     Returns:
-        ClipResult with path to the generated MP4/WebM file.
+        ClipResult with path to the generated WebM file.
     """
     if config is None:
         config = IntroConfig()
@@ -318,7 +334,7 @@ def generate_outro(
         output_dir: Directory for output. Uses tempdir if None.
 
     Returns:
-        ClipResult with path to the generated MP4/WebM file.
+        ClipResult with path to the generated WebM file.
     """
     if config is None:
         config = OutroConfig()

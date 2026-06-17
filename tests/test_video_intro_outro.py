@@ -137,9 +137,13 @@ def _mock_playwright_context(tmp_path: Path):
     mock_browser.new_context.return_value = mock_context
     mock_context.new_page.return_value = mock_page
 
+    video_file = tmp_path / "recording-001.webm"
+
+    # Mock page.video.path() to return the video file path
+    mock_page.video.path.return_value = str(video_file)
+
     # Simulate video file creation on context.close()
     def create_video_file():
-        video_file = tmp_path / "recording-001.webm"
         video_file.write_bytes(b"\x1a\x45\xdf\xa3")  # WebM magic bytes
 
     mock_context.close.side_effect = create_video_file
