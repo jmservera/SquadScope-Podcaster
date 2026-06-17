@@ -23,6 +23,8 @@ dev = ["pytest>=8,<9", "httpx2>=0.1"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["slow: marks tests as slow (requires network + Playwright browsers)"]
+addopts = "-m 'not slow'"
 
 [tool.setuptools.packages.find]
 include = ["podcaster*"]
