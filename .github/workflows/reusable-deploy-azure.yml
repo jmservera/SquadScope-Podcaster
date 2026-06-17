@@ -151,6 +151,8 @@ jobs:
             echo "::warning::PODCASTER_API_KEY is not configured in GitHub environment prod; generated a deployment key."
           fi
           echo "::add-mask::$podcaster_api_key"
+          [ -n "${UI_AUTH_PASSWORD_SECRET:-}" ] && echo "::add-mask::$UI_AUTH_PASSWORD_SECRET"
+          [ -n "${UI_AUTH_SECRET_SECRET:-}" ] && echo "::add-mask::$UI_AUTH_SECRET_SECRET"
 
           {
             echo "AZURE_STORAGE_ACCOUNT_NAME=$storage_account_name"
