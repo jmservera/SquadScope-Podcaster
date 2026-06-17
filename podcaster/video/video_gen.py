@@ -213,10 +213,17 @@ def _record_segment(
                 page, repo.owner, repo.name, segment.duration_seconds
             )
         else:
-            page.goto(repo.url, wait_until="networkidle",
-                      timeout=NETWORK_IDLE_TIMEOUT_MS)
-            _dismiss_overlays(page)
-            _smooth_scroll(page, segment.duration_seconds)
+            response = page.goto(repo.url, wait_until="networkidle",
+                                 timeout=NETWORK_IDLE_TIMEOUT_MS)
+            if response is not None and response.status == 404:
+                logger.warning("Got 404 for %s — using fallback", repo.url)
+                is_fallback = True
+                _render_fallback_page(
+                    page, repo.owner, repo.name, segment.duration_seconds
+                )
+            else:
+                _dismiss_overlays(page)
+                _smooth_scroll(page, segment.duration_seconds)
     except Exception:
         logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True

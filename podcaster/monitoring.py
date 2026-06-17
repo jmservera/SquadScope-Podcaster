@@ -19,9 +19,12 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import hmac
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -437,7 +440,14 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
 def list_episodes(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
     """List generated episodes that have audio artifacts."""
     storage = get_storage()
-    blobs = storage.list_blobs("jobs/", limit=10000)
+    _BLOB_LISTING_CAP = 10000
+    blobs = storage.list_blobs("jobs/", limit=_BLOB_LISTING_CAP)
+    if len(blobs) >= _BLOB_LISTING_CAP:
+        logger.warning(
+            "Episode listing hit the %d-blob cap; results may be incomplete. "
+            "Consider implementing paged listing in StorageBackend.",
+            _BLOB_LISTING_CAP,
+        )
     manifest_blobs = [b for b in blobs if b.endswith("/manifest.json")]
 
     episodes: list[EpisodeSummary] = []
@@ -466,6 +476,17 @@ def get_article(article_path: str):
     """Serve a markdown article from storage for UI preview."""
     if not article_path or article_path.strip("/") == "":
         raise HTTPException(status_code=400, detail="article_path must not be empty")
+
+    # Restrict to articles/ prefix to prevent unintended data exposure
+    normalized = article_path.lstrip("/")
+    if not normalized.startswith("articles/"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only files under the articles/ prefix can be served via this endpoint",
+        )
+    # Prevent path traversal
+    if ".." in normalized:
+        raise HTTPException(status_code=403, detail="Path traversal is not allowed")
 
     _ARTICLE_EXTENSIONS = (".md", ".txt")
     if not any(article_path.lower().endswith(ext) for ext in _ARTICLE_EXTENSIONS):
