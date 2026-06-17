@@ -35,7 +35,7 @@ _JWT_ALGORITHM = "HS256"
 # ---------------------------------------------------------------------------
 
 
-def _get_credentials() -> tuple[str, str, str] | None:
+def get_credentials() -> tuple[str, str, str] | None:
     """Return (username, password, secret) or None if auth is not configured."""
     username = os.environ.get("UI_AUTH_USERNAME", "").strip()
     password = os.environ.get("UI_AUTH_PASSWORD", "").strip()
@@ -100,7 +100,7 @@ def verify_auth(
     configured, all requests are allowed (open mode — mirrors pre-#273
     behaviour).
     """
-    creds = _get_credentials()
+    creds = get_credentials()
     configured_api_key = os.environ.get("MONITORING_API_KEY") or os.environ.get(
         "PODCASTER_API_KEY", ""
     )

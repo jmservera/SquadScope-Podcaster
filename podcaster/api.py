@@ -17,6 +17,7 @@ Security:
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone
 from typing import Any
 
+from podcaster.auth import create_token, get_credentials, verify_token
 from podcaster.jobs import failed_response, run_generation_job
 from podcaster.failure_reporting import report_failure
 from podcaster.orchestration import process_review_decision
@@ -60,9 +62,16 @@ class GenerateHandler(BaseHTTPRequestHandler):
         if self.path == HEALTH_PATH:
             _json_response(self, HTTPStatus.OK, {"status": "healthy"})
             return
+        if self.path == "/api/auth/me":
+            GenerateHandler._handle_auth_me(self)
+            return
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/auth/login":
+            GenerateHandler._handle_auth_login(self)
+            return
+
         if self.path not in {"/api/generate", "/api/review"}:
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
@@ -95,6 +104,84 @@ class GenerateHandler(BaseHTTPRequestHandler):
             GenerateHandler._handle_generate(self, payload)
             return
         GenerateHandler._handle_review(self, payload)
+
+    # ------------------------------------------------------------------
+    # Auth endpoints (#275)
+    # ------------------------------------------------------------------
+
+    def _handle_auth_login(self) -> None:
+        """POST /api/auth/login — validate credentials, return JWT."""
+        creds = get_credentials()
+        if creds is None:
+            _json_response(
+                self,
+                HTTPStatus.NOT_IMPLEMENTED,
+                {"error": "Simple auth is not configured (UI_AUTH_* env vars missing)"},
+            )
+            return
+
+        content_length = int(self.headers.get("Content-Length", "0"))
+        if content_length > MAX_REQUEST_BODY:
+            _json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request body too large"})
+            return
+
+        try:
+            raw_body = self.rfile.read(content_length)
+            payload = json.loads(raw_body)
+        except (json.JSONDecodeError, ValueError):
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "request body must be valid JSON"})
+            return
+        if not isinstance(payload, dict):
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "request body must be a JSON object"})
+            return
+
+        username = str(payload.get("username") or "").strip()
+        password = str(payload.get("password") or "").strip()
+        if not username or not password:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "username and password are required"})
+            return
+
+        expected_user, expected_pass, secret = creds
+        if not hmac.compare_digest(username, expected_user) or not hmac.compare_digest(
+            password, expected_pass
+        ):
+            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "Invalid username or password"})
+            return
+
+        token = create_token(username, secret)
+        _json_response(self, HTTPStatus.OK, {"token": token, "username": username})
+
+    def _handle_auth_me(self) -> None:
+        """GET /api/auth/me — return current user from Bearer token."""
+        creds = get_credentials()
+        authorization = self.headers.get("Authorization", "")
+        headers = {k: v for k, v in self.headers.items()}
+        if authorization.startswith("Bearer ") and creds is not None:
+            import jwt as _jwt
+
+            try:
+                payload = verify_token(authorization[7:], creds[2])
+            except _jwt.PyJWTError:
+                pass
+            else:
+                _json_response(self, HTTPStatus.OK, {"username": payload["sub"]})
+                return
+
+        if is_authorized(headers):
+            _json_response(self, HTTPStatus.OK, {"username": "api-key-user"})
+            return
+
+        if creds is None and not os.environ.get("PODCASTER_API_KEY"):
+            _json_response(
+                self,
+                HTTPStatus.NOT_IMPLEMENTED,
+                {"error": "Simple auth is not configured"},
+            )
+            return
+
+        _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "Invalid or missing credentials"})
+
+    # ------------------------------------------------------------------
 
     def _handle_generate(self, payload: dict[str, Any]) -> None:
         validation = validate_payload_details(payload)

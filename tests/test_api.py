@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from podcaster.api import GenerateHandler, _json_response
+from podcaster.auth import create_token
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
 
@@ -114,6 +115,151 @@ class TestAuthCheck:
             env = {k: v for k, v in os.environ.items() if k != "PODCASTER_API_KEY"}
             with patch.dict(os.environ, env, clear=True):
                 handler = make_handler("POST", "/api/generate", body=body, headers=headers)
+        assert handler.response_code == HTTPStatus.UNAUTHORIZED
+
+
+class TestAuthLogin:
+    def test_login_returns_501_when_not_configured(self):
+        body = json.dumps({"username": "any", "password": "any"}).encode()
+        headers = {"Content-Length": str(len(body))}
+        with patch.dict(os.environ, {}, clear=True):
+            handler = make_handler("POST", "/api/auth/login", body=body, headers=headers)
+        assert handler.response_code == HTTPStatus.NOT_IMPLEMENTED
+
+    def test_login_valid_credentials(self):
+        body = json.dumps({"username": "admin", "password": "hunter2"}).encode()
+        headers = {"Content-Length": str(len(body))}
+        with patch.dict(
+            os.environ,
+            {
+                "UI_AUTH_USERNAME": "admin",
+                "UI_AUTH_PASSWORD": "hunter2",
+                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+            },
+            clear=True,
+        ):
+            handler = make_handler("POST", "/api/auth/login", body=body, headers=headers)
+        assert handler.response_code == HTTPStatus.OK
+        response = handler.get_response_json()
+        assert response["username"] == "admin"
+        assert response["token"]
+
+    def test_login_wrong_password(self):
+        body = json.dumps({"username": "admin", "password": "wrong"}).encode()
+        headers = {"Content-Length": str(len(body))}
+        with patch.dict(
+            os.environ,
+            {
+                "UI_AUTH_USERNAME": "admin",
+                "UI_AUTH_PASSWORD": "hunter2",
+                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+            },
+            clear=True,
+        ):
+            handler = make_handler("POST", "/api/auth/login", body=body, headers=headers)
+        assert handler.response_code == HTTPStatus.UNAUTHORIZED
+
+    def test_login_non_json_body(self):
+        body = b"not json"
+        headers = {"Content-Length": str(len(body))}
+        with patch.dict(
+            os.environ,
+            {
+                "UI_AUTH_USERNAME": "admin",
+                "UI_AUTH_PASSWORD": "hunter2",
+                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+            },
+            clear=True,
+        ):
+            handler = make_handler("POST", "/api/auth/login", body=body, headers=headers)
+        assert handler.response_code == HTTPStatus.BAD_REQUEST
+
+    def test_login_non_object_body(self):
+        body = json.dumps(["admin", "hunter2"]).encode()
+        headers = {"Content-Length": str(len(body))}
+        with patch.dict(
+            os.environ,
+            {
+                "UI_AUTH_USERNAME": "admin",
+                "UI_AUTH_PASSWORD": "hunter2",
+                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+            },
+            clear=True,
+        ):
+            handler = make_handler("POST", "/api/auth/login", body=body, headers=headers)
+        assert handler.response_code == HTTPStatus.BAD_REQUEST
+
+    def test_login_missing_fields(self):
+        body = json.dumps({"username": "", "password": ""}).encode()
+        headers = {"Content-Length": str(len(body))}
+        with patch.dict(
+            os.environ,
+            {
+                "UI_AUTH_USERNAME": "admin",
+                "UI_AUTH_PASSWORD": "hunter2",
+                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+            },
+            clear=True,
+        ):
+            handler = make_handler("POST", "/api/auth/login", body=body, headers=headers)
+        assert handler.response_code == HTTPStatus.BAD_REQUEST
+
+
+class TestAuthMe:
+    def test_me_with_valid_bearer_token(self):
+        secret = "test-secret-256-bits-long-enough"
+        token = create_token("admin", secret)
+        headers = {"Authorization": f"Bearer {token}"}
+        with patch.dict(
+            os.environ,
+            {
+                "UI_AUTH_USERNAME": "admin",
+                "UI_AUTH_PASSWORD": "hunter2",
+                "UI_AUTH_SECRET": secret,
+            },
+            clear=True,
+        ):
+            handler = make_handler("GET", "/api/auth/me", headers=headers)
+        assert handler.response_code == HTTPStatus.OK
+        assert handler.get_response_json() == {"username": "admin"}
+
+    def test_me_with_api_key_no_ui_auth(self):
+        headers = {"x-podcaster-api-key": "test-key-123"}
+        with patch.dict(os.environ, {"PODCASTER_API_KEY": "test-key-123"}, clear=True):
+            handler = make_handler("GET", "/api/auth/me", headers=headers)
+        assert handler.response_code == HTTPStatus.OK
+        assert handler.get_response_json() == {"username": "api-key-user"}
+
+    def test_me_returns_501_when_nothing_configured(self):
+        with patch.dict(os.environ, {}, clear=True):
+            handler = make_handler("GET", "/api/auth/me")
+        assert handler.response_code == HTTPStatus.NOT_IMPLEMENTED
+
+    def test_me_with_invalid_token(self):
+        headers = {"Authorization": "Bearer bad-token"}
+        with patch.dict(
+            os.environ,
+            {
+                "UI_AUTH_USERNAME": "admin",
+                "UI_AUTH_PASSWORD": "hunter2",
+                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+            },
+            clear=True,
+        ):
+            handler = make_handler("GET", "/api/auth/me", headers=headers)
+        assert handler.response_code == HTTPStatus.UNAUTHORIZED
+
+    def test_me_with_no_auth_header(self):
+        with patch.dict(
+            os.environ,
+            {
+                "UI_AUTH_USERNAME": "admin",
+                "UI_AUTH_PASSWORD": "hunter2",
+                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+            },
+            clear=True,
+        ):
+            handler = make_handler("GET", "/api/auth/me")
         assert handler.response_code == HTTPStatus.UNAUTHORIZED
 
 
