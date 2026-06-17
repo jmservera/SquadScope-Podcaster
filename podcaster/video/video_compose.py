@@ -10,9 +10,9 @@ from __future__ import annotations
 import logging
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from podcaster.video.video_gen import RecordedSegment
 
@@ -28,6 +28,7 @@ LOWER_THIRD_DURATION = 5.0  # seconds
 LOWER_THIRD_FONT_SIZE = 36
 LOWER_THIRD_BOX_OPACITY = 0.6
 LOWER_THIRD_Y_POSITION = "h-h/6"
+LOWER_THIRD_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 # Final encode settings (YouTube/Spotify-ready)
 ENCODE_PRESET = "slow"
@@ -79,6 +80,8 @@ def _build_normalize_cmd(
     """Build ffmpeg command to normalize a clip to 1080p/30fps."""
     return [
         "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "warning",
         "-y",
         "-i", str(input_path),
         "-vf", f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
@@ -146,7 +149,8 @@ def _build_drawtext_filter(
 
         # Two-line lower third: repo name on top, URL below
         name_filter = (
-            f"drawtext=text='{escaped_text}'"
+            f"drawtext=fontfile={LOWER_THIRD_FONT}"
+            f":text='{escaped_text}'"
             f":fontsize={LOWER_THIRD_FONT_SIZE}"
             f":fontcolor=white"
             f":box=1:boxcolor=black@{LOWER_THIRD_BOX_OPACITY}"
@@ -155,7 +159,8 @@ def _build_drawtext_filter(
             f":enable='between(t,{lt.start_seconds:.3f},{lt.end_seconds:.3f})'"
         )
         url_filter = (
-            f"drawtext=text='{escaped_url}'"
+            f"drawtext=fontfile={LOWER_THIRD_FONT}"
+            f":text='{escaped_url}'"
             f":fontsize={LOWER_THIRD_FONT_SIZE - 8}"
             f":fontcolor=white@0.8"
             f":box=1:boxcolor=black@{LOWER_THIRD_BOX_OPACITY}"
@@ -295,7 +300,7 @@ def compose_video(
             video_label = "final"
 
     # Step 4: Build final ffmpeg command
-    cmd: list[str] = ["ffmpeg", "-y"]
+    cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y"]
 
     # Add all normalized video inputs
     for norm_path in normalized_paths:
