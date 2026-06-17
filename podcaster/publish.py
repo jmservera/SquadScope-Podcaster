@@ -691,9 +691,22 @@ def publish_episode(
             },
         )
 
-    upload_path = wav_path if upload_format == "wav" else mp3_path
-    content_type = "audio/wav" if upload_format == "wav" else "audio/mpeg"
-    format_label = "WAV" if upload_format == "wav" else "MP3"
+    # Detect video artifact — if MP4 exists alongside audio, prefer it for Spotify upload
+    # Spotify for Creators supports: mp3, m4a, wav, mpg, mp4, mov
+    video_path: Path | None = None
+    if mp3_path is not None:
+        candidate_mp4 = mp3_path.parent / (mp3_path.stem + ".mp4")
+        if candidate_mp4.exists() and candidate_mp4.stat().st_size > 0:
+            video_path = candidate_mp4
+
+    if video_path is not None:
+        upload_path = video_path
+        content_type = "video/mp4"
+        format_label = "MP4"
+    else:
+        upload_path = wav_path if upload_format == "wav" else mp3_path
+        content_type = "audio/wav" if upload_format == "wav" else "audio/mpeg"
+        format_label = "WAV" if upload_format == "wav" else "MP3"
 
     if upload_path is None or not upload_path.exists():
         return PublishResult(

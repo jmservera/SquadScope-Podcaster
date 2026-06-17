@@ -385,3 +385,17 @@ class TestHelpers:
         assert r2.succeeded is True
         r3 = DistributionResult(status="failed")
         assert r3.succeeded is False
+
+    def test_no_listener_facing_target_fails(self, tmp_path):
+        """Distribution fails if no listener-facing target (YouTube/Spotify) is configured (#268)."""
+        video_file = tmp_path / "test.mp4"
+        video_file.write_bytes(b"\x00" * 2048)
+        config = VideoDistributionConfig(
+            youtube_enabled=False,
+            spotify_rss_enabled=False,
+            blob_archive_enabled=True,
+            dry_run=False,
+        )
+        result = distribute_video(video_file, "job1", "title", "desc", 120.0, config)
+        assert result.status == "failed"
+        assert "No listener-facing publish target" in result.errors[0]

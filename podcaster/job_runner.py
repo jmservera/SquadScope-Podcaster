@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from typing import Any
 from podcaster.audio import MusicMixSpec
 from podcaster.config import MusicMixConfig, PodcastConfig, SpotifyPublishConfig
 from podcaster.failure_reporting import report_failure
+from podcaster.pipeline_lock import PIPELINE_AUDIO, claim_pipeline
 from podcaster.episode import (
     operator_review_decision,
     parse_script_segments,
@@ -55,6 +57,7 @@ REASON_ALREADY_SYNTHESIZED = "already_synthesized"
 REASON_NOT_TWO_VOICE = "script_not_two_voice_format"
 REASON_TTS_NOT_CONFIGURED = "tts_not_configured"
 REASON_RETRY_EXHAUSTED = "retry_exhausted"
+REASON_PIPELINE_CONFLICT = "pipeline_locked_by_video"
 
 MAX_DEQUEUE_COUNT = 5
 
@@ -120,6 +123,11 @@ def run_synthesis(
     if _already_synthesized(manifest):
         logger.info("synthesis skipped job_id=%s reason=%s", job_id, REASON_ALREADY_SYNTHESIZED)
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_SYNTHESIZED)
+
+    # Claim pipeline lock — prevent concurrent video generation on same job
+    if not claim_pipeline(storage, job_id, PIPELINE_AUDIO, now=current):
+        logger.info("synthesis skipped job_id=%s reason=%s", job_id, REASON_PIPELINE_CONFLICT)
+        return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_PIPELINE_CONFLICT)
 
     if not config.production_ready:
         logger.warning("synthesis skipped job_id=%s reason=%s", job_id, REASON_TTS_NOT_CONFIGURED)
@@ -262,6 +270,17 @@ def run_synthesis(
                 return manifest_bytes(document)
 
             storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+
+            # Validate at least one listener-facing publish target is configured (#268)
+            has_spotify = spotify_publish_config is not None or auto_publish_enabled()
+            has_youtube = os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true"
+            if not has_spotify and not has_youtube:
+                logger.warning(
+                    "no listener-facing publish target configured for job_id=%s — "
+                    "episode will not reach any audience (enable Spotify or YouTube)",
+                    job_id,
+                )
+
             auto_publish = auto_publish_enabled()
             if auto_publish:
                 auto_outcome = auto_publish_job(job_id, storage=storage, now=current)

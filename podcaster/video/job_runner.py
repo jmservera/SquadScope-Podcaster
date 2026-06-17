@@ -40,6 +40,7 @@ from podcaster.storage import (
     create_storage_backend,
 )
 from podcaster.failure_reporting import report_failure
+from podcaster.pipeline_lock import PIPELINE_VIDEO, claim_pipeline
 from podcaster.video.distribution import (
     DistributionResult,
     StorageUploader,
@@ -60,6 +61,7 @@ REASON_ALREADY_PROCESSED = "already_processed"
 REASON_NO_REPOS = "no_repos_in_script"
 REASON_COMPOSITION_FAILED = "composition_failed"
 REASON_RETRY_EXHAUSTED = "retry_exhausted"
+REASON_PIPELINE_CONFLICT = "pipeline_locked_by_audio"
 
 MAX_DEQUEUE_COUNT = 5
 
@@ -186,6 +188,11 @@ def run_video_generation(
     if _already_processed(manifest):
         logger.info("video skipped job_id=%s reason=%s", job_id, REASON_ALREADY_PROCESSED)
         return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_PROCESSED)
+
+    # Claim pipeline lock — prevent concurrent audio synthesis on same job
+    if not claim_pipeline(storage, job_id, PIPELINE_VIDEO, now=current):
+        logger.info("video skipped job_id=%s reason=%s", job_id, REASON_PIPELINE_CONFLICT)
+        return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_PIPELINE_CONFLICT)
 
     # Load script
     raw_script = storage.get_bytes(script_path(job_id))
