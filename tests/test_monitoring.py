@@ -309,3 +309,190 @@ class TestMonitoringAuth:
         resp = client.get("/api/jobs", headers={"x-podcaster-api-key": "monitor-key"})
 
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /api/stream/{blob_path}
+# ---------------------------------------------------------------------------
+
+
+class TestStreamBlob:
+    def test_streams_mp3(self, client, storage):
+        audio_data = b"\xff\xfb\x90\x04" + b"\x01" * 100
+        storage.put_bytes("jobs/test-job/episode.mp3", audio_data, "audio/mpeg")
+
+        resp = client.get("/api/stream/jobs/test-job/episode.mp3")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/mpeg"
+        assert resp.headers["content-length"] == str(len(audio_data))
+        assert resp.content == audio_data
+
+    def test_streams_image(self, client, storage):
+        image_data = b"\x89PNG\r\n\x1a\n" + b"\x01" * 50
+        storage.put_bytes("jobs/test-job/cover.png", image_data, "image/png")
+
+        resp = client.get("/api/stream/jobs/test-job/cover.png")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/png"
+        assert resp.content == image_data
+
+    def test_streams_video(self, client, storage):
+        video_data = b"\x01\x02\x03\x04" + b"\x05" * 100
+        storage.put_bytes("jobs/test-job/episode.mp4", video_data, "video/mp4")
+
+        resp = client.get("/api/stream/jobs/test-job/episode.mp4")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "video/mp4"
+
+    def test_rejects_non_media_content_type(self, client, storage):
+        storage.put_bytes("jobs/test-job/data.json", b"{}", "application/json")
+
+        resp = client.get("/api/stream/jobs/test-job/data.json")
+        assert resp.status_code == 403
+        assert "not streamable" in resp.json()["detail"]
+
+    def test_returns_404_for_missing_blob(self, client, storage):
+        resp = client.get("/api/stream/jobs/test-job/missing.mp3")
+        assert resp.status_code == 404
+
+    def test_cache_control_header(self, client, storage):
+        storage.put_bytes("jobs/test-job/episode.mp3", b"\xff" * 10, "audio/mpeg")
+
+        resp = client.get("/api/stream/jobs/test-job/episode.mp3")
+        assert "max-age=3600" in resp.headers.get("cache-control", "")
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /api/episodes
+# ---------------------------------------------------------------------------
+
+
+class TestListEpisodes:
+    def _manifest_with_audio(self, job_id: str, *, audio_path: str = "jobs/test/episode.mp3", **kwargs) -> dict[str, Any]:
+        m = _make_manifest(job_id, **kwargs)
+        m["generation"]["artifacts"] = {"audio": {"path": audio_path}}
+        m["generation"]["audio_validation"] = {"status": "passed"}
+        return m
+
+    def test_empty_when_no_audio(self, client, storage):
+        m = _make_manifest("test-job")
+        storage.put_bytes("jobs/test-job/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["episodes"] == []
+        assert data["total"] == 0
+
+    def test_returns_episodes_with_audio(self, client, storage):
+        m = self._manifest_with_audio("podcast-W24-abc", audio_path="jobs/podcast-W24-abc/episode.mp3")
+        storage.put_bytes("jobs/podcast-W24-abc/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        ep = data["episodes"][0]
+        assert ep["job_id"] == "podcast-W24-abc"
+        assert ep["audio_path"] == "jobs/podcast-W24-abc/episode.mp3"
+        assert ep["audio_url"] == "/api/stream/jobs/podcast-W24-abc/episode.mp3"
+        assert ep["quality_score"] == 1.0
+        assert ep["title"] == "Test Article"
+
+    def test_episodes_sorted_by_date(self, client, storage):
+        m1 = self._manifest_with_audio("job-old", created_at="2026-06-01T12:00:00Z", audio_path="jobs/job-old/ep.mp3")
+        m2 = self._manifest_with_audio("job-new", created_at="2026-06-10T12:00:00Z", audio_path="jobs/job-new/ep.mp3")
+        storage.put_bytes("jobs/job-old/manifest.json", json.dumps(m1).encode(), "application/json")
+        storage.put_bytes("jobs/job-new/manifest.json", json.dumps(m2).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        data = resp.json()
+        assert data["episodes"][0]["job_id"] == "job-new"
+        assert data["episodes"][1]["job_id"] == "job-old"
+
+    def test_episodes_pagination(self, client, storage):
+        for i in range(3):
+            m = self._manifest_with_audio(f"job-{i}", created_at=f"2026-06-{10+i:02d}T12:00:00Z", audio_path=f"jobs/job-{i}/ep.mp3")
+            storage.put_bytes(f"jobs/job-{i}/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes?limit=2&offset=0")
+        data = resp.json()
+        assert data["total"] == 3
+        assert len(data["episodes"]) == 2
+
+    def test_episode_with_string_audio_artifact(self, client, storage):
+        m = _make_manifest("job-str")
+        m["generation"]["artifacts"] = {"audio": "jobs/job-str/audio.mp3"}
+        storage.put_bytes("jobs/job-str/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["episodes"][0]["audio_path"] == "jobs/job-str/audio.mp3"
+
+    def test_episode_with_audio_file_fallback(self, client, storage):
+        m = _make_manifest("job-fallback")
+        m["generation"]["audio_file"] = "jobs/job-fallback/out.mp3"
+        storage.put_bytes("jobs/job-fallback/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["episodes"][0]["audio_path"] == "jobs/job-fallback/out.mp3"
+
+    def test_publish_status_from_manifest(self, client, storage):
+        m = self._manifest_with_audio("job-pub", audio_path="jobs/job-pub/ep.mp3")
+        m["publishing"]["status"] = "published"
+        storage.put_bytes("jobs/job-pub/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        data = resp.json()
+        assert data["episodes"][0]["publish_status"] == "published"
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /api/articles/{path}
+# ---------------------------------------------------------------------------
+
+
+class TestGetArticle:
+    def test_serves_markdown(self, client, storage):
+        content = "# Hello World\n\nThis is a test article."
+        storage.put_bytes("articles/test.md", content.encode(), "text/markdown")
+
+        resp = client.get("/api/articles/articles/test.md")
+        assert resp.status_code == 200
+        assert "text/markdown" in resp.headers["content-type"]
+        assert resp.text == content
+
+    def test_serves_text_file(self, client, storage):
+        content = "Plain text article."
+        storage.put_bytes("articles/test.txt", content.encode(), "text/plain")
+
+        resp = client.get("/api/articles/articles/test.txt")
+        assert resp.status_code == 200
+        assert "text/plain" in resp.headers["content-type"]
+        assert resp.text == content
+
+    def test_rejects_non_text_extension(self, client, storage):
+        storage.put_bytes("articles/data.json", b"{}", "application/json")
+
+        resp = client.get("/api/articles/articles/data.json")
+        assert resp.status_code == 403
+
+    def test_returns_404_for_missing_article(self, client, storage):
+        resp = client.get("/api/articles/articles/missing.md")
+        assert resp.status_code == 404
+
+    def test_rejects_non_utf8_content(self, client, storage):
+        storage.put_bytes("articles/bad.md", b"\xff\xfe" * 100, "text/markdown")
+
+        resp = client.get("/api/articles/articles/bad.md")
+        assert resp.status_code == 422
+
+    def test_cache_control_header(self, client, storage):
+        storage.put_bytes("articles/test.md", b"# Title", "text/markdown")
+
+        resp = client.get("/api/articles/articles/test.md")
+        assert "max-age=300" in resp.headers.get("cache-control", "")
+
