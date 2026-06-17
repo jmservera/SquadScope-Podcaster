@@ -15,13 +15,12 @@ const mockFetchEpisodes = vi.mocked(fetchEpisodes);
 const sampleEpisode = {
   job_id: 'job-1',
   title: 'Test Episode',
-  week: '2026-W24',
   status: 'published',
-  audio_url: '/api/stream/job-1/output.mp3',
-  duration_seconds: 180,
-  quality_score: 0.85,
-  published_at: '2026-06-10',
   created_at: '2026-06-09',
+  audio_path: 'job-1/output.mp3',
+  audio_url: '/api/stream/job-1/output.mp3',
+  quality_score: 0.85,
+  publish_status: 'published',
 };
 
 describe('EpisodeList', () => {
@@ -47,8 +46,7 @@ describe('EpisodeList', () => {
       expect(screen.getByText('Episodes (1)')).toBeInTheDocument();
     });
     expect(screen.getByText('Test Episode')).toBeInTheDocument();
-    expect(screen.getByText('2026-W24')).toBeInTheDocument();
-    expect(screen.getByText('3:00')).toBeInTheDocument();
+    expect(screen.getAllByText('published')).toHaveLength(2);
     expect(screen.getByText('85%')).toBeInTheDocument();
   });
 

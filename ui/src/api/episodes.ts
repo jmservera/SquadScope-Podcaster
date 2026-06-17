@@ -4,14 +4,13 @@ const API_BASE = import.meta.env.VITE_MONITORING_API_URL || '';
 
 export interface Episode {
   job_id: string;
-  title: string;
-  week: string | null;
+  title: string | null;
   status: string;
-  audio_url: string | null;
-  duration_seconds: number | null;
-  quality_score: number | null;
-  published_at: string | null;
   created_at: string | null;
+  audio_path: string | null;
+  audio_url: string | null;
+  quality_score: number | null;
+  publish_status: string | null;
 }
 
 export interface EpisodeListResponse {

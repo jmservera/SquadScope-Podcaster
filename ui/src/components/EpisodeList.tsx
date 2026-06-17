@@ -1,25 +1,15 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   fetchEpisodes,
   resolveAudioUrl,
   type Episode,
 } from '../api/episodes';
 
-function formatDuration(seconds: number | null | undefined): string {
-  if (seconds == null || !isFinite(seconds)) return '—';
-  const totalSeconds = Math.floor(seconds);
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
 function AudioPlayer({ audioUrl }: { audioUrl: string }) {
   const resolvedUrl = resolveAudioUrl(audioUrl);
-  const audioRef = useRef<HTMLAudioElement>(null);
 
   return (
     <audio
-      ref={audioRef}
       controls
       preload="metadata"
       style={{ width: '100%', maxWidth: '400px' }}
@@ -77,11 +67,10 @@ const EpisodeList: React.FC = () => {
         <thead>
           <tr style={{ borderBottom: '2px solid #333' }}>
             <th style={{ textAlign: 'left', padding: '8px' }}>Title</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Week</th>
             <th style={{ textAlign: 'left', padding: '8px' }}>Status</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Duration</th>
             <th style={{ textAlign: 'left', padding: '8px' }}>Quality</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Published</th>
+            <th style={{ textAlign: 'left', padding: '8px' }}>Publish Status</th>
+            <th style={{ textAlign: 'left', padding: '8px' }}>Created</th>
           </tr>
         </thead>
         <tbody>
@@ -99,7 +88,6 @@ const EpisodeList: React.FC = () => {
                 }}
               >
                 <td style={{ padding: '8px' }}>{ep.title || '—'}</td>
-                <td style={{ padding: '8px' }}>{ep.week || '—'}</td>
                 <td style={{ padding: '8px' }}>
                   <span
                     style={{
@@ -113,19 +101,19 @@ const EpisodeList: React.FC = () => {
                     {ep.status.replace(/_/g, ' ')}
                   </span>
                 </td>
-                <td style={{ padding: '8px' }}>{formatDuration(ep.duration_seconds)}</td>
                 <td style={{ padding: '8px' }}>
                   {ep.quality_score !== null
                     ? `${Math.round(ep.quality_score * 100)}%`
                     : '—'}
                 </td>
+                <td style={{ padding: '8px' }}>{ep.publish_status || '—'}</td>
                 <td style={{ padding: '8px', fontSize: '0.85em' }}>
-                  {ep.published_at || '—'}
+                  {ep.created_at || '—'}
                 </td>
               </tr>
               {expandedId === ep.job_id && (
                 <tr>
-                  <td colSpan={6} style={{ padding: '16px', backgroundColor: '#fafafa' }}>
+                  <td colSpan={5} style={{ padding: '16px', backgroundColor: '#fafafa' }}>
                     <strong>Audio Preview</strong>
                     <div style={{ marginTop: '8px' }}>
                       {ep.audio_url ? (
