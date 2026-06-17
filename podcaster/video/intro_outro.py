@@ -8,7 +8,7 @@ Design decision: Playwright was chosen over hyperframes (Issue #241 discussion)
 because it supports full CSS animations and produces consistent WebM output
 that integrates cleanly with the ffmpeg-based video_compose pipeline.
 
-Closes jmservera/SquadScope-Podcaster#241.
+Related: jmservera/SquadScope-Podcaster#241.
 """
 
 from __future__ import annotations
@@ -138,6 +138,7 @@ body {{
 }}
 .link-item {{
   font-size: 20px; color: #8b949e;
+  text-decoration: none;
   padding: 12px 24px;
   border: 1px solid #30363d; border-radius: 8px;
   background: #21262d;
@@ -218,8 +219,8 @@ def _render_intro_html(config: IntroConfig) -> str:
 def _render_outro_html(config: OutroConfig) -> str:
     """Render the outro HTML template with config values."""
     links_html = "\n    ".join(
-        f'<div class="link-item">{html_mod.escape(name)}</div>'
-        for name, _url in (config.links or [])
+        f'<a class="link-item" href="{html_mod.escape(url)}">{html_mod.escape(name)}</a>'
+        for name, url in (config.links or [])
     )
     return OUTRO_HTML.format(
         width=config.width,
@@ -247,9 +248,6 @@ def _record_html_to_video(
             "Install with: pip install 'podcaster[video]' && playwright install chromium"
         )
 
-    # Track pre-existing .webm files to avoid renaming the wrong one
-    pre_existing = set(output_path.parent.glob("*.webm"))
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -261,17 +259,17 @@ def _record_html_to_video(
         page.set_content(html_content)
         # Wait for CSS animations to play
         page.wait_for_timeout(duration_ms)
+        # Retrieve the video path via Playwright API before closing
+        video_path = Path(page.video.path())
         context.close()
         browser.close()
 
-    # Playwright saves video with auto-generated name; rename to target
-    new_files = [f for f in output_path.parent.glob("*.webm") if f not in pre_existing]
-    if new_files:
-        latest = max(new_files, key=lambda f: f.stat().st_mtime)
-        latest.rename(output_path)
+    # Rename Playwright's auto-named file to the desired output path
+    if video_path.exists():
+        video_path.rename(output_path)
     else:
         raise RuntimeError(
-            f"Playwright did not produce a video file in {output_path.parent}"
+            f"Playwright did not produce a video file at {video_path}"
         )
 
     if not output_path.exists():
