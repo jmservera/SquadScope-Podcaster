@@ -14,8 +14,6 @@ import logging
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
-
 import uuid
 
 import requests
@@ -94,7 +92,7 @@ def _check_gh_pages(owner: str, name: str, timeout: float = 5.0) -> bool:
     try:
         resp = requests.head(url, timeout=timeout, allow_redirects=True)
         return resp.status_code == 200
-    except (requests.RequestException, Exception):
+    except Exception:
         return False
 
 
@@ -103,7 +101,7 @@ def _check_repo_accessible(url: str, timeout: float = 5.0) -> bool:
     try:
         resp = requests.head(url, timeout=timeout, allow_redirects=True)
         return resp.status_code != 404
-    except (requests.RequestException, Exception):
+    except Exception:
         # Network errors — assume accessible and let Playwright handle it
         return True
 
@@ -221,9 +219,9 @@ def _record_segment(
 
     # Close context first to finalize the recorded video file
     video = page.video
+    context.close()
     if video is None:
         raise RuntimeError(f"No video object for page recording of {repo.url}")
-    context.close()
 
     # Resolve path after close (Playwright finalizes on close)
     video_path_str = video.path()
