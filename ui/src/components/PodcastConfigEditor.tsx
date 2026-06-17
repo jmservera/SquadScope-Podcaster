@@ -2,10 +2,6 @@ import React, { useEffect, useState } from 'react';
 import type { PodcastConfigData, PublishTarget } from '../api/podcastConfig';
 import { fetchPodcastConfig, savePodcastConfig, uploadMusic } from '../api/podcastConfig';
 
-interface PublishTargetWithId extends PublishTarget {
-  _key: string;
-}
-
 let nextTargetKey = 0;
 const genKey = () => `target-${++nextTargetKey}-${Date.now()}`;
 
@@ -61,6 +57,7 @@ const PodcastConfigEditor: React.FC = () => {
       setSuccess(null);
       const saved = await savePodcastConfig(config);
       setConfig(saved);
+      setTargetKeys(saved.publish_targets.map(() => genKey()));
       setSuccess('Configuration saved successfully');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save config');
@@ -234,6 +231,47 @@ const PodcastConfigEditor: React.FC = () => {
             </fieldset>
           ))}
           <button type="button" onClick={addTarget}>Add Publish Target</button>
+        </section>
+
+        <section>
+          <h2>Publishing Preferences</h2>
+          <div>
+            <label>
+              <input
+                type="checkbox"
+                checked={config.publishing_preferences?.auto_publish ?? false}
+                onChange={(e) =>
+                  setConfig((prev) => ({
+                    ...prev,
+                    publishing_preferences: {
+                      ...prev.publishing_preferences,
+                      auto_publish: e.target.checked,
+                    },
+                  }))
+                }
+              />
+              Auto-publish after generation
+            </label>
+          </div>
+          <div>
+            <label htmlFor="schedule-cron">Schedule (cron expression)</label>
+            <input
+              id="schedule-cron"
+              type="text"
+              value={config.publishing_preferences?.schedule_cron ?? ''}
+              onChange={(e) =>
+                setConfig((prev) => ({
+                  ...prev,
+                  publishing_preferences: {
+                    ...prev.publishing_preferences,
+                    auto_publish: prev.publishing_preferences?.auto_publish ?? false,
+                    schedule_cron: e.target.value || undefined,
+                  },
+                }))
+              }
+              placeholder="0 9 * * 1 (every Monday at 9am)"
+            />
+          </div>
         </section>
 
         <div style={{ marginTop: '1rem' }}>

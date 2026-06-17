@@ -9,11 +9,17 @@ export interface PublishTarget {
   target_id: string;
 }
 
+export interface PublishingPreferences {
+  auto_publish: boolean;
+  schedule_cron?: string;
+}
+
 export interface PodcastConfigData {
   name: string;
   intro_music_url: string;
   outro_music_url: string;
   publish_targets: PublishTarget[];
+  publishing_preferences?: PublishingPreferences;
 }
 
 export async function fetchPodcastConfig(): Promise<PodcastConfigData> {

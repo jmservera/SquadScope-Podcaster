@@ -8,6 +8,7 @@ import {
   fetchCredentials,
   saveCredential,
   deleteCredential,
+  updateCredential,
 } from '../api/credentials';
 
 const CREDENTIAL_FIELDS: Record<CredentialType, { label: string; fields: string[] }> = {
@@ -27,6 +28,7 @@ const CredentialSettings: React.FC = () => {
   const [formLabel, setFormLabel] = useState('');
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const loadCredentials = useCallback(async () => {
     try {
@@ -49,6 +51,7 @@ const CredentialSettings: React.FC = () => {
     setFormLabel('');
     setFormValues({});
     setShowForm(false);
+    setEditingId(null);
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -69,7 +72,11 @@ const CredentialSettings: React.FC = () => {
     try {
       setSaving(true);
       setError(null);
-      await saveCredential(payload);
+      if (editingId) {
+        await updateCredential(editingId, payload);
+      } else {
+        await saveCredential(payload);
+      }
       resetForm();
       await loadCredentials();
     } catch (err) {
@@ -87,6 +94,14 @@ const CredentialSettings: React.FC = () => {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete credential');
     }
+  };
+
+  const handleEdit = (cred: CredentialSummary) => {
+    setEditingId(cred.id);
+    setSelectedType(cred.type);
+    setFormLabel(cred.label);
+    setFormValues({});
+    setShowForm(true);
   };
 
   const handleFieldChange = (field: string, value: string) => {
@@ -127,6 +142,7 @@ const CredentialSettings: React.FC = () => {
                   <td>{cred.is_set ? '✓ Set' : '✗ Not set'}</td>
                   <td>{cred.updated_at}</td>
                   <td>
+                    <button onClick={() => handleEdit(cred)}>Edit</button>
                     <button onClick={() => handleDelete(cred.id)}>Delete</button>
                   </td>
                 </tr>
@@ -141,7 +157,7 @@ const CredentialSettings: React.FC = () => {
           <button onClick={() => setShowForm(true)}>Add Credential</button>
         ) : (
           <form onSubmit={handleSave}>
-            <h2>Add Credential</h2>
+            <h2>{editingId ? 'Edit Credential' : 'Add Credential'}</h2>
 
             <div>
               <label htmlFor="cred-type">Type</label>
