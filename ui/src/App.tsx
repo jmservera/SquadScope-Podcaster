@@ -5,6 +5,7 @@ import { useIsAuthenticated } from '@azure/msal-react';
 import AuthProvider from './components/AuthProvider';
 import LoginButton from './components/LoginButton';
 import Dashboard from './components/Dashboard';
+import JobMonitor from './components/JobMonitor';
 import ProtectedRoute from './components/ProtectedRoute';
 
 interface AppProps {
@@ -21,7 +22,8 @@ const LandingPage: React.FC = () => {
       {isAuthenticated ? (
         <div>
           <p>
-            You are signed in. Visit the <Link to="/dashboard">Dashboard</Link>.
+            You are signed in. Visit the <Link to="/dashboard">Dashboard</Link>{' '}
+            or the <Link to="/jobs">Job Monitor</Link>.
           </p>
           <Dashboard />
         </div>
@@ -49,6 +51,14 @@ const App: React.FC<AppProps> = ({ msalInstance }) => {
           element={
             <ProtectedRoute>
               <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/jobs"
+          element={
+            <ProtectedRoute>
+              <JobMonitor />
             </ProtectedRoute>
           }
         />
