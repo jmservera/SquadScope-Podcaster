@@ -270,14 +270,14 @@ def record_episode(
     Returns:
         RecordingResult with paths to all recorded WebM files.
     """
+    if not plan.segments:
+        raise ValueError("Episode plan has no segments to record")
+
     if not _PLAYWRIGHT_AVAILABLE:
         raise RuntimeError(
             "Playwright is not installed. Install it with: "
             "pip install 'podcaster[video]' && playwright install chromium"
         )
-
-    if not plan.segments:
-        raise ValueError("Episode plan has no segments to record")
 
     if output_dir is None:
         output_dir = Path(tempfile.mkdtemp(prefix="video_gen_"))
