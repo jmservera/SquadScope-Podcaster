@@ -1,73 +1,35 @@
-# React + TypeScript + Vite
+# SquadScope Podcaster — Management UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Custom React dashboard for managing podcast generation pipelines.
 
-Currently, two official plugins are available:
+## Architecture Decision
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+**Framework: Custom React** (see [ADR-0002](../docs/adr/0002-ui-framework-selection.md))
 
-## React Compiler
+Evaluated ToolJet, Refine, and custom React. Chose to continue with the existing
+scaffold due to: zero migration cost, working MSAL auth, maximum flexibility for
+podcast-specific workflows, and no license constraints.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Stack
 
-## Expanding the ESLint configuration
+- **React 19** + TypeScript + Vite
+- **Azure MSAL** for Entra ID authentication
+- **React Router** for navigation
+- **Vitest** for testing
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Features
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- Azure Entra ID (MSAL) sign-in/sign-out
+- Job monitoring (list, detail, logs)
+- Episode list with audio preview
+- Protected routes with token-based API access
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+## Development
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cp .env.sample .env   # Configure Azure client/tenant IDs
+npm install
+npm run dev           # http://localhost:5173
+npm run test          # Run tests
+npm run build         # Production build
 ```
