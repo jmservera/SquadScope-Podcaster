@@ -64,3 +64,19 @@ export async function updateCredential(
   if (!resp.ok) throw new Error(`Failed to update credential: ${resp.status}`);
   return resp.json();
 }
+
+export async function updateCredential(
+  id: string,
+  payload: SaveCredentialPayload,
+): Promise<CredentialSummary> {
+  const resp = await authenticatedFetch(
+    `${API_BASE}/api/credentials/${encodeURIComponent(id)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!resp.ok) throw new Error(`Failed to update credential: ${resp.status}`);
+  return resp.json();
+}

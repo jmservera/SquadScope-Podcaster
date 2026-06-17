@@ -274,6 +274,47 @@ const PodcastConfigEditor: React.FC = () => {
           </div>
         </section>
 
+        <section>
+          <h2>Publishing Preferences</h2>
+          <div>
+            <label>
+              <input
+                type="checkbox"
+                checked={config.publishing_preferences?.auto_publish ?? false}
+                onChange={(e) =>
+                  setConfig((prev) => ({
+                    ...prev,
+                    publishing_preferences: {
+                      ...prev.publishing_preferences,
+                      auto_publish: e.target.checked,
+                    },
+                  }))
+                }
+              />
+              Auto-publish after generation
+            </label>
+          </div>
+          <div>
+            <label htmlFor="schedule-cron">Schedule (cron expression)</label>
+            <input
+              id="schedule-cron"
+              type="text"
+              value={config.publishing_preferences?.schedule_cron ?? ''}
+              onChange={(e) =>
+                setConfig((prev) => ({
+                  ...prev,
+                  publishing_preferences: {
+                    ...prev.publishing_preferences,
+                    auto_publish: prev.publishing_preferences?.auto_publish ?? false,
+                    schedule_cron: e.target.value || undefined,
+                  },
+                }))
+              }
+              placeholder="0 9 * * 1 (every Monday at 9am)"
+            />
+          </div>
+        </section>
+
         <div style={{ marginTop: '1rem' }}>
           <button type="submit" disabled={saving}>
             {saving ? 'Saving…' : 'Save Configuration'}
