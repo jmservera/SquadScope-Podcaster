@@ -34,10 +34,6 @@ from podcaster.video.video_gen import (
 )
 
 
-# Skip the entire integration suite when Playwright is not installed
-_pw = pytest.importorskip("playwright")
-
-
 # --- Helpers ---
 
 def _make_segment(
@@ -198,6 +194,21 @@ class TestSmoothScroll:
         _smooth_scroll(page, 0.0)
         page.evaluate.assert_not_called()
 
+    def test_short_duration_waits_without_scrolling(self):
+        """Duration > 0 but < 1 tick (0.25s) should still wait the full duration."""
+        page = MagicMock()
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js: (
+            5000 if "scrollHeight" in js else None
+        )
+
+        _smooth_scroll(page, 0.1)  # too short for a full tick
+
+        # Should not call scrollHeight (returns before evaluating page)
+        page.evaluate.assert_not_called()
+        # Should wait for the full duration
+        page.wait_for_timeout.assert_called_once_with(100)
+
 
 # --- _render_fallback_page tests ---
 
@@ -321,6 +332,7 @@ class TestRecordSegment:
 
 
 class TestRecordEpisode:
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright")
     @patch("podcaster.video.video_gen._check_repo_accessible", return_value=True)
     @patch("podcaster.video.video_gen._check_gh_pages", return_value=False)
@@ -379,6 +391,13 @@ class TestRecordEpisode:
         with pytest.raises(ValueError, match="no segments"):
             record_episode(plan)
 
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
+    def test_raises_without_playwright(self):
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        with pytest.raises(RuntimeError, match="Playwright is not installed"):
+            record_episode(plan)
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright")
     @patch("podcaster.video.video_gen._check_repo_accessible", return_value=True)
     @patch("podcaster.video.video_gen._check_gh_pages", return_value=False)
@@ -428,6 +447,18 @@ class TestRecordEpisodeIntegration:
     Marked with @pytest.mark.slow — skipped by default.
     Run with: pytest -m slow tests/test_video_gen.py
     """
+
+    @pytest.fixture(autouse=True)
+    def _require_playwright(self):
+        pw = pytest.importorskip("playwright")
+        # Also verify browsers are installed
+        from playwright.sync_api import sync_playwright
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                browser.close()
+        except Exception as exc:
+            pytest.skip(f"Playwright browsers not available: {exc}")
 
     def test_records_three_repos(self):
         segments = [
