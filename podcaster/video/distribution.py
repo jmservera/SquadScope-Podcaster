@@ -415,7 +415,7 @@ def archive_to_blob(
 ) -> str | None:
     """Archive the finished video to Azure Blob storage.
 
-    Returns the blob path on success, None on failure.
+    Returns the full blob URL on success, None on failure.
     """
     if config and not config.blob_archive_enabled:
         logger.info("Blob archive disabled")
@@ -423,8 +423,9 @@ def archive_to_blob(
 
     if config and config.dry_run:
         blob_path = f"jobs/{job_id}/video/{job_id}.mp4"
-        logger.info("Blob archive dry-run: %s", blob_path)
-        return blob_path
+        dry_run_url = f"https://dry-run.blob.core.windows.net/{blob_path}"
+        logger.info("Blob archive dry-run: %s", dry_run_url)
+        return dry_run_url
 
     if storage is None:
         logger.warning("No storage backend for blob archive")
@@ -438,9 +439,9 @@ def archive_to_blob(
     video_bytes = video_path.read_bytes()
 
     try:
-        storage.upload(blob_path, video_bytes, "video/mp4")
-        logger.info("Video archived to blob: %s (%d bytes)", blob_path, len(video_bytes))
-        return blob_path
+        blob_url = storage.upload(blob_path, video_bytes, "video/mp4")
+        logger.info("Video archived to blob: %s (%d bytes)", blob_url, len(video_bytes))
+        return blob_url
     except Exception as exc:
         logger.error("Blob archive failed: %s", exc)
         return None
@@ -500,18 +501,20 @@ def distribute_video(
 
     # 3. Update Spotify RSS
     if config.spotify_rss_enabled:
-        # Use blob URL or YouTube URL as the video enclosure
-        enclosure_url = result.youtube_url or ""
-        if blob_path and storage:
-            enclosure_url = f"https://storage.blob.core.windows.net/{blob_path}"
+        # blob_path is now a full URL returned from storage.upload(); prefer it over YouTube URL
+        enclosure_url = blob_path or result.youtube_url or ""
 
-        rss_ok = update_spotify_rss(
-            enclosure_url, title, description, duration_seconds, config,
-            storage=storage,
-        )
-        result.spotify_rss_updated = rss_ok
-        if not rss_ok:
-            result.errors.append("Spotify RSS update failed")
+        if not enclosure_url:
+            logger.warning("No enclosure URL available for Spotify RSS — skipping")
+            result.errors.append("Spotify RSS skipped: no enclosure URL")
+        else:
+            rss_ok = update_spotify_rss(
+                enclosure_url, title, description, duration_seconds, config,
+                storage=storage,
+            )
+            result.spotify_rss_updated = rss_ok
+            if not rss_ok:
+                result.errors.append("Spotify RSS update failed")
 
     # Determine overall status
     targets_attempted = sum([

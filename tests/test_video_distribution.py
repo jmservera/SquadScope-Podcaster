@@ -70,6 +70,14 @@ class FakeTransport:
             return resp
         return (200, b'{"id": "test-video-id", "access_token": "fake-token"}')
 
+    def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+        self.requests.append({"url": url, "method": method, "headers": headers, "data": data})
+        if self._call_idx < len(self._responses):
+            resp = self._responses[self._call_idx]
+            self._call_idx += 1
+            return (resp[0], {"location": f"{url}/resumable-session"}, resp[1])
+        return (200, {"location": f"{url}/resumable-session"}, b'{"id": "test-video-id", "access_token": "fake-token"}')
+
 
 class FakeStorage:
     """Fake storage uploader for testing."""
@@ -275,12 +283,12 @@ class TestArchiveToBlob:
     def test_dry_run(self, video_file):
         config = VideoDistributionConfig(dry_run=True)
         result = archive_to_blob(video_file, "job1", config=config)
-        assert result == "jobs/job1/video/job1.mp4"
+        assert result == "https://dry-run.blob.core.windows.net/jobs/job1/video/job1.mp4"
 
     def test_successful_upload(self, video_file):
         storage = FakeStorage()
         result = archive_to_blob(video_file, "job1", storage=storage)
-        assert result == "jobs/job1/video/job1.mp4"
+        assert result == "https://storage.blob.core.windows.net/jobs/job1/video/job1.mp4"
         assert len(storage.uploads) == 1
         assert storage.uploads[0][2] == "video/mp4"
 

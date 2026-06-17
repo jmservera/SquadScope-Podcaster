@@ -42,6 +42,7 @@ from podcaster.storage import (
 from podcaster.failure_reporting import report_failure
 from podcaster.video.distribution import (
     DistributionResult,
+    StorageUploader,
     VideoDistributionConfig,
     distribute_video,
 )
@@ -80,6 +81,17 @@ class VideoOutcome:
 
 class TransientVideoError(RuntimeError):
     """A failure that should leave the queue message for retry."""
+
+
+class _StorageUploaderAdapter:
+    """Adapts StorageBackend (put_bytes → StoredArtifact) to StorageUploader (upload → URL)."""
+
+    def __init__(self, backend: StorageBackend) -> None:
+        self._backend = backend
+
+    def upload(self, path: str, content: bytes, content_type: str) -> str:
+        artifact = self._backend.put_bytes(path, content, content_type)
+        return artifact.url
 
 
 def manifest_path(job_id: str) -> str:
@@ -198,7 +210,9 @@ def run_video_generation(
         })
         return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_NO_REPOS)
 
-    # Compose video (in production this would dispatch parallel ACA segment jobs)
+    # Compose video
+    # TODO(#242): dispatch parallel ACA segment jobs instead of sequential local recording.
+    # Current implementation records locally; production should fan out to container instances.
     try:
         with tempfile.TemporaryDirectory(prefix="video_job_") as tmp:
             from podcaster.video.video_compose import compose_video
@@ -236,6 +250,7 @@ def run_video_generation(
                 description,
                 compose_result.duration_seconds,
                 dist_config,
+                storage=_StorageUploaderAdapter(storage),
             )
 
             # Record success in manifest
