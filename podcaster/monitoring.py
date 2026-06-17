@@ -19,14 +19,16 @@ Endpoints:
 from __future__ import annotations
 
 import json
-import mimetypes
+import logging
 import os
 import hmac
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from podcaster.storage import StorageBackend, create_storage_backend
@@ -306,13 +308,15 @@ _EXTENSION_CONTENT_TYPES: dict[str, str] = {
 }
 
 
-def _content_type_for_path(path: str) -> str:
-    """Determine content type from file extension."""
+def _content_type_for_path(path: str) -> str | None:
+    """Determine content type from file extension using the allowlist only.
+
+    Returns None if the extension is not in the allowlist.
+    """
     for ext, ct in _EXTENSION_CONTENT_TYPES.items():
         if path.lower().endswith(ext):
             return ct
-    guessed, _ = mimetypes.guess_type(path)
-    return guessed or "application/octet-stream"
+    return None
 
 
 @app.get("/api/stream/{blob_path:path}", dependencies=[Depends(_verify_api_key)])
@@ -326,8 +330,7 @@ def stream_blob(blob_path: str):
         raise HTTPException(status_code=400, detail="blob_path must not be empty")
 
     content_type = _content_type_for_path(blob_path)
-
-    if not any(content_type.startswith(prefix) for prefix in _STREAMABLE_PREFIXES):
+    if content_type is None or not any(content_type.startswith(prefix) for prefix in _STREAMABLE_PREFIXES):
         raise HTTPException(
             status_code=403,
             detail=f"Content type {content_type!r} is not streamable",
@@ -338,8 +341,14 @@ def stream_blob(blob_path: str):
     if data is None:
         raise HTTPException(status_code=404, detail="Blob not found")
 
-    return Response(
-        content=data,
+    _CHUNK_SIZE = 64 * 1024
+
+    def _iter_chunks():
+        for offset in range(0, len(data), _CHUNK_SIZE):
+            yield data[offset : offset + _CHUNK_SIZE]
+
+    return StreamingResponse(
+        _iter_chunks(),
         media_type=content_type,
         headers={
             "Content-Length": str(len(data)),
@@ -387,6 +396,20 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
     if not audio_path:
         audio_path = generation.get("audio_file") if isinstance(generation.get("audio_file"), str) else None
 
+    # Check synthesis_runner manifest shape (how audio is recorded in real runs)
+    if not audio_path:
+        synth = generation.get("synthesis_runner")
+        if isinstance(synth, dict):
+            audio_section = synth.get("audio")
+            if isinstance(audio_section, dict):
+                audio_path = audio_section.get("path")
+                if not audio_path:
+                    synth_artifacts = audio_section.get("artifacts")
+                    if isinstance(synth_artifacts, dict):
+                        mp3 = synth_artifacts.get("mp3")
+                        if isinstance(mp3, dict):
+                            audio_path = mp3.get("path")
+
     if not audio_path:
         return None
 
@@ -417,7 +440,14 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
 def list_episodes(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
     """List generated episodes that have audio artifacts."""
     storage = get_storage()
-    blobs = storage.list_blobs("jobs/", limit=10000)
+    _BLOB_LISTING_CAP = 10000
+    blobs = storage.list_blobs("jobs/", limit=_BLOB_LISTING_CAP)
+    if len(blobs) >= _BLOB_LISTING_CAP:
+        logger.warning(
+            "Episode listing hit the %d-blob cap; results may be incomplete. "
+            "Consider implementing paged listing in StorageBackend.",
+            _BLOB_LISTING_CAP,
+        )
     manifest_blobs = [b for b in blobs if b.endswith("/manifest.json")]
 
     episodes: list[EpisodeSummary] = []
@@ -447,12 +477,24 @@ def get_article(article_path: str):
     if not article_path or article_path.strip("/") == "":
         raise HTTPException(status_code=400, detail="article_path must not be empty")
 
-    content_type = _content_type_for_path(article_path)
-    if content_type not in ("text/markdown", "text/plain"):
+    # Restrict to articles/ prefix to prevent unintended data exposure
+    normalized = article_path.lstrip("/")
+    if not normalized.startswith("articles/"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only files under the articles/ prefix can be served via this endpoint",
+        )
+    # Prevent path traversal
+    if ".." in normalized:
+        raise HTTPException(status_code=403, detail="Path traversal is not allowed")
+
+    _ARTICLE_EXTENSIONS = (".md", ".txt")
+    if not any(article_path.lower().endswith(ext) for ext in _ARTICLE_EXTENSIONS):
         raise HTTPException(
             status_code=403,
             detail="Only markdown and text files can be served via this endpoint",
         )
+    content_type = _content_type_for_path(article_path) or "text/plain"
 
     storage = get_storage()
     data = storage.get_bytes(article_path)

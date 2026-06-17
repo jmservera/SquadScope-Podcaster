@@ -450,7 +450,7 @@ class TestRecordEpisodeIntegration:
     """Integration tests that actually launch Playwright against live GitHub.
 
     Marked with @pytest.mark.slow — skipped by default.
-    Run with: pytest -m slow tests/test_video_gen.py
+    Run with: pytest -o "addopts=" -m slow tests/test_video_gen.py
     """
 
     @pytest.fixture(autouse=True)
