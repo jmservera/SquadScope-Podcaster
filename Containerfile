@@ -39,6 +39,10 @@ RUN groupadd --system synth \
 COPY requirements.txt ./
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
+# Playwright is installed only in this synthesis image (not in requirements.txt)
+# to keep the API image lean.  Pin range matches the version used in development.
+RUN python -m pip install --no-cache-dir 'playwright>=1.53,<2'
+
 # Install Playwright Chromium browser for the video pipeline (intro/outro
 # HTML rendering). --with-deps pulls required system libraries (libnss3,
 # libatk, etc.) so a separate apt-get layer is unnecessary.  Clean up the
