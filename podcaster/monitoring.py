@@ -31,6 +31,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
+from podcaster.auth import (
+    LoginRequest,
+    LoginResponse,
+    MeResponse,
+    _get_credentials,
+    create_token,
+    verify_auth,
+    verify_token,
+)
 from podcaster.storage import StorageBackend, create_storage_backend
 
 app = FastAPI(title="Podcaster Job Monitor", version="0.1.0")
@@ -47,7 +56,7 @@ _CORS_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -116,12 +125,44 @@ def set_storage(storage: StorageBackend | None) -> None:
     _storage = storage
 
 
-def _verify_api_key(x_podcaster_api_key: str = Header(default="")) -> None:
-    configured = os.environ.get("MONITORING_API_KEY") or os.environ.get("PODCASTER_API_KEY", "")
-    if not configured:
-        return
-    if not x_podcaster_api_key or not hmac.compare_digest(x_podcaster_api_key, configured):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+# ---------------------------------------------------------------------------
+# Auth endpoints (#273)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/auth/login", response_model=LoginResponse)
+def login(body: LoginRequest):
+    """Validate username/password and return a JWT."""
+    creds = _get_credentials()
+    if creds is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Simple auth is not configured (UI_AUTH_* env vars missing)",
+        )
+    expected_user, expected_pass, secret = creds
+    if not hmac.compare_digest(body.username, expected_user) or not hmac.compare_digest(
+        body.password, expected_pass
+    ):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    token = create_token(body.username, secret)
+    return LoginResponse(token=token, username=body.username)
+
+
+@app.get("/api/auth/me", response_model=MeResponse)
+def me(authorization: str = Header(default="")):
+    """Return the current user from a valid Bearer token."""
+    creds = _get_credentials()
+    if creds is None:
+        raise HTTPException(status_code=501, detail="Simple auth is not configured")
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    import jwt as _jwt
+
+    try:
+        payload = verify_token(authorization[7:], creds[2])
+    except _jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return MeResponse(username=payload["sub"])
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +269,7 @@ def _extract_logs(manifest: dict[str, Any]) -> list[LogEntry]:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/jobs", response_model=JobListResponse, dependencies=[Depends(_verify_api_key)])
+@app.get("/api/jobs", response_model=JobListResponse, dependencies=[Depends(verify_auth)])
 def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
     """List recent pipeline jobs."""
     storage = get_storage()
@@ -252,7 +293,7 @@ def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(
     return JobListResponse(jobs=summaries[offset : offset + limit], total=len(summaries))
 
 
-@app.get("/api/jobs/{job_id}", response_model=JobDetailResponse, dependencies=[Depends(_verify_api_key)])
+@app.get("/api/jobs/{job_id}", response_model=JobDetailResponse, dependencies=[Depends(verify_auth)])
 def get_job(job_id: str):
     """Get detailed information for a specific job."""
     storage = get_storage()
@@ -266,7 +307,7 @@ def get_job(job_id: str):
     return _extract_detail(manifest)
 
 
-@app.get("/api/jobs/{job_id}/logs", response_model=JobLogsResponse, dependencies=[Depends(_verify_api_key)])
+@app.get("/api/jobs/{job_id}/logs", response_model=JobLogsResponse, dependencies=[Depends(verify_auth)])
 def get_job_logs(job_id: str):
     """Get log entries for a specific job (lifecycle transitions + runner state)."""
     storage = get_storage()
@@ -319,7 +360,7 @@ def _content_type_for_path(path: str) -> str | None:
     return None
 
 
-@app.get("/api/stream/{blob_path:path}", dependencies=[Depends(_verify_api_key)])
+@app.get("/api/stream/{blob_path:path}", dependencies=[Depends(verify_auth)])
 def stream_blob(blob_path: str):
     """Stream a blob from storage to the client.
 
@@ -436,7 +477,7 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
     )
 
 
-@app.get("/api/episodes", response_model=EpisodeListResponse, dependencies=[Depends(_verify_api_key)])
+@app.get("/api/episodes", response_model=EpisodeListResponse, dependencies=[Depends(verify_auth)])
 def list_episodes(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
     """List generated episodes that have audio artifacts."""
     storage = get_storage()
@@ -471,7 +512,7 @@ def list_episodes(limit: int = Query(default=20, ge=1, le=100), offset: int = Qu
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/articles/{article_path:path}", dependencies=[Depends(_verify_api_key)])
+@app.get("/api/articles/{article_path:path}", dependencies=[Depends(verify_auth)])
 def get_article(article_path: str):
     """Serve a markdown article from storage for UI preview."""
     if not article_path or article_path.strip("/") == "":

@@ -1,23 +1,14 @@
-import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import ProtectedRoute from '../ProtectedRoute';
+import { useAuth } from '../AuthProvider';
 
-const mockUseIsAuthenticated = vi.fn();
-
-vi.mock('@azure/msal-react', () => ({
-  useIsAuthenticated: () => mockUseIsAuthenticated(),
-  AuthenticatedTemplate: ({
-    children,
-  }: {
-    children: React.ReactNode;
-  }) => (mockUseIsAuthenticated() ? <div data-testid="auth">{children}</div> : null),
-  UnauthenticatedTemplate: ({
-    children,
-  }: {
-    children: React.ReactNode;
-  }) => (!mockUseIsAuthenticated() ? <div data-testid="unauth">{children}</div> : null),
+vi.mock('../AuthProvider', () => ({
+  useAuth: vi.fn(),
 }));
+
+const mockUseAuth = vi.mocked(useAuth);
 
 describe('ProtectedRoute', () => {
   beforeEach(() => {
@@ -25,30 +16,30 @@ describe('ProtectedRoute', () => {
   });
 
   it('shows children when authenticated', () => {
-    mockUseIsAuthenticated.mockReturnValue(true);
+    mockUseAuth.mockReturnValue({ isAuthenticated: true, username: 'admin', token: 'tok', login: vi.fn(), logout: vi.fn() });
 
     render(
-      <ProtectedRoute>
-        <div>Protected Content</div>
-      </ProtectedRoute>
+      <MemoryRouter>
+        <ProtectedRoute>
+          <div>Protected Content</div>
+        </ProtectedRoute>
+      </MemoryRouter>
     );
 
     expect(screen.getByText('Protected Content')).toBeInTheDocument();
-    expect(screen.getByTestId('auth')).toBeInTheDocument();
-    expect(screen.queryByText('Please sign in')).not.toBeInTheDocument();
   });
 
-  it('shows sign-in message when not authenticated', () => {
-    mockUseIsAuthenticated.mockReturnValue(false);
+  it('redirects when not authenticated', () => {
+    mockUseAuth.mockReturnValue({ isAuthenticated: false, username: null, token: null, login: vi.fn(), logout: vi.fn() });
 
     render(
-      <ProtectedRoute>
-        <div>Protected Content</div>
-      </ProtectedRoute>
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <ProtectedRoute>
+          <div>Protected Content</div>
+        </ProtectedRoute>
+      </MemoryRouter>
     );
 
     expect(screen.queryByText('Protected Content')).not.toBeInTheDocument();
-    expect(screen.getByTestId('unauth')).toBeInTheDocument();
-    expect(screen.getByText('Please sign in')).toBeInTheDocument();
   });
 });

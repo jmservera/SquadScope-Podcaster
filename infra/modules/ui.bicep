@@ -74,6 +74,7 @@ resource uiApp 'Microsoft.App/containerApps@2025-01-01' = {
           identity: identityId
         }
       ] : []
+      secrets: []
     }
     template: {
       containers: [
