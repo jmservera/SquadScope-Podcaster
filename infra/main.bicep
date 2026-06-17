@@ -130,6 +130,21 @@ param spotifySessionCookieKey string = ''
 @description('Whether reviewed jobs should auto-publish after synthesis.')
 param podcastAutoPublish string = 'false'
 
+@description('Deploy the Management UI app (#264).')
+param deployUiApp bool = true
+
+@description('UI container image (#264).')
+param uiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
+
+@description('UI app name.')
+param uiAppName string = '${baseName}-ui'
+
+@description('MSAL client ID for Azure Entra ID authentication.')
+param msalClientId string = ''
+
+@description('MSAL authority URL for Azure Entra ID authentication.')
+param msalAuthority string = ''
+
 @description('Deploy VNet + private endpoints for ACA ↔ Storage connectivity. Requires environment recreation if enabling on an existing deployment (VNet integration is a create-time-only setting).')
 param deployVnet bool = false
 
@@ -344,6 +359,23 @@ module api 'modules/api.bicep' = if (deployApiApp) {
   ]
 }
 
+// Management UI — static React SPA served by nginx (#264).
+// Gated behind deployUiApp. Runs in the same Container Apps Environment.
+module ui 'modules/ui.bicep' = if (deployUiApp) {
+  name: 'management-ui-app'
+  params: {
+    location: location
+    containerAppsEnvId: aca.outputs.environmentId
+    uiAppName: uiAppName
+    uiImage: uiImage
+    containerRegistryServer: acrLoginServer
+    identityId: aca.outputs.jobIdentityResourceId
+    msalClientId: msalClientId
+    msalAuthority: msalAuthority
+    apiBaseUrl: deployApiApp ? 'https://${api!.outputs.apiAppFqdn}' : ''
+  }
+}
+
 // Azure Container Registry for synthesis + API images (#129). Operator approved ACR.
 module acr 'modules/acr.bicep' = if (deployAcr) {
   name: 'container-registry'
@@ -367,4 +399,5 @@ output containerAppsEnvName string = aca.outputs.environmentName
 output synthesisQueueName string = aca.outputs.queueName
 output synthesisJobIdentityClientId string = aca.outputs.jobIdentityClientId
 output apiAppFqdn string = deployApiApp ? api!.outputs.apiAppFqdn : ''
+output uiAppFqdn string = deployUiApp ? ui!.outputs.uiAppFqdn : ''
 output acrLoginServer string = deployAcr ? acr!.outputs.loginServer : ''

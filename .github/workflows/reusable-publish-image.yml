@@ -15,6 +15,11 @@ on:
         description: Image tag. Defaults to first 12 chars of SHA
         required: false
         type: string
+      build_context:
+        description: Docker build context directory. Defaults to repo root.
+        required: false
+        type: string
+        default: '.'
     outputs:
       image_ref:
         description: Full pushed image reference including tag
@@ -76,7 +81,7 @@ jobs:
 
       - name: Build image
         if: steps.gate.outputs.approved == 'true'
-        run: docker build -f "${{ inputs.dockerfile }}" -t "$IMAGE_REF" .
+        run: docker build -f "${{ inputs.dockerfile }}" -t "$IMAGE_REF" ${{ inputs.build_context }}
 
       - name: Scan image before push (Trivy)
         if: steps.gate.outputs.approved == 'true'
