@@ -36,3 +36,4 @@ podcast-config.json
 infra/main.json
 .mcp.json
 .squad/.cache/
+.worktrees/
