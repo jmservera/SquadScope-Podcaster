@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone
 from typing import Any
 
-from podcaster.auth import create_token, get_credentials, verify_token
+from podcaster.auth_core import create_token, get_credentials, verify_token
 from podcaster.jobs import failed_response, run_generation_job
 from podcaster.failure_reporting import report_failure
 from podcaster.orchestration import process_review_decision
