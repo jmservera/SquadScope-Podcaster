@@ -647,11 +647,10 @@ class TestVideoArtifactDetection:
 
         result = publish_episode(mp3_file, "Test", "<p>desc</p>", wav_path=wav_file)
         assert result.dry_run is True
-        # In dry run, upload_path is still resolved from the non-video path
-        # The video detection happens after dry-run check, so test the real path
-        # Actually dry-run returns before video detection — let's verify the
-        # non-dry-run path detects it via the content_type used in upload
         assert result.status == "published"
+        # MP4 detection now runs before dry-run, so upload_path should be the video
+        assert result.details["upload_path"] == str(mp4_file)
+        assert result.details["content_type"] == "video/mp4"
 
     def test_no_mp4_uses_audio(self, tmp_path, spotify_env, monkeypatch):
         """Without MP4, normal audio upload path is used."""

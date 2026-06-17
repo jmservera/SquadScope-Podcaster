@@ -14,6 +14,8 @@ from podcaster.video.sync_plan import (
 from podcaster.video.video_compose import ComposeResult, compose_video
 from podcaster.video.video_gen import RecordedSegment
 
+pytestmark = pytest.mark.integration
+
 
 def _mp4_bytes(size: int = 2048) -> bytes:
     header = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2mp41"

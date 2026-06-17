@@ -26,4 +26,4 @@ jobs:
       - name: Build UI
         run: cd ui && npm ci --ignore-scripts && npm run build
       - name: Run integration tests
-        run: pytest tests/integration/ -v --tb=short -m "integration or not integration"
+        run: pytest tests/integration/ -v --tb=short -m "integration"

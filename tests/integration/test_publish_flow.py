@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import podcaster.orchestration as orchestration
 from podcaster.config import SpotifyPublishConfig
 from podcaster.publish import PublishResult, publish_episode
@@ -10,6 +12,8 @@ from podcaster.video.distribution import (
     VideoDistributionConfig,
     distribute_video,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def test_audio_only_publish_flow_calls_publish_episode(
@@ -140,7 +144,9 @@ def test_audio_and_video_publish_paths_are_independent(
     assert isinstance(publish_result, PublishResult)
     assert publish_result.dry_run is True
     assert publish_result.status == "published"
-    assert publish_result.details["upload_path"] == str(audio_path)
+    # MP4 detected next to MP3 — publish prefers video/mp4
+    assert publish_result.details["upload_path"] == str(video_path)
+    assert publish_result.details["content_type"] == "video/mp4"
 
     assert isinstance(distribution_result, DistributionResult)
     assert distribution_result.status == "completed"

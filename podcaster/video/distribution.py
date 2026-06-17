@@ -467,8 +467,9 @@ def distribute_video(
     Attempts all configured targets; failures on one target do not block others.
     Returns a DistributionResult summarizing outcomes across all targets.
 
-    Raises ValueError if no listener-facing publish target (YouTube or Spotify RSS)
-    is configured — blob archive alone is not sufficient for distribution.
+    Returns a failed DistributionResult if no listener-facing publish target
+    (YouTube or Spotify RSS) is configured — blob archive alone is not
+    sufficient for distribution.
     """
     result = DistributionResult()
 
