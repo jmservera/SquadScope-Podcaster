@@ -328,7 +328,25 @@ class TestRecordSegment:
         assert call_kwargs["record_video_size"] == {"width": WIDTH, "height": HEIGHT}
 
 
+# --- record_episode tests (no Playwright dependency) ---
+
+
+class TestRecordEpisodeNoPW:
+    def test_raises_on_empty_plan(self):
+        plan = EpisodePlan(total_duration_seconds=60.0, segments=())
+        with pytest.raises(ValueError, match="no segments"):
+            record_episode(plan)
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
+    def test_raises_without_playwright(self):
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        with pytest.raises(RuntimeError, match="Playwright is not installed"):
+            record_episode(plan)
+
+
 # --- record_episode tests (mocked Playwright) ---
+
+pytest.importorskip("playwright")
 
 
 class TestRecordEpisode:
@@ -385,17 +403,6 @@ class TestRecordEpisode:
             assert any(n.startswith("microsoft_vscode_") for n in names)
             assert any(n.startswith("astral-sh_ruff_") for n in names)
             assert any(n.startswith("jmservera_SquadScope_") for n in names)
-
-    def test_raises_on_empty_plan(self):
-        plan = EpisodePlan(total_duration_seconds=60.0, segments=())
-        with pytest.raises(ValueError, match="no segments"):
-            record_episode(plan)
-
-    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
-    def test_raises_without_playwright(self):
-        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
-        with pytest.raises(RuntimeError, match="Playwright is not installed"):
-            record_episode(plan)
 
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright")
