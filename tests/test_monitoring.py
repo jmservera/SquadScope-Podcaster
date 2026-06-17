@@ -449,6 +449,49 @@ class TestListEpisodes:
         data = resp.json()
         assert data["episodes"][0]["publish_status"] == "published"
 
+    def test_episode_from_synthesis_runner_audio_path(self, client, storage):
+        """Manifests produced by the synthesis runner record audio under
+        generation.synthesis_runner.audio.path."""
+        m = _make_manifest("job-synth")
+        m["generation"]["synthesis_runner"] = {
+            "status": "completed",
+            "audio": {
+                "path": "jobs/job-synth/episode.mp3",
+                "sha256": "abc123",
+                "size_bytes": 12345,
+                "artifacts": {
+                    "mp3": {"path": "jobs/job-synth/episode.mp3", "sha256": "abc123", "size_bytes": 12345},
+                    "wav": {"path": "jobs/job-synth/episode.wav", "sha256": "def456", "size_bytes": 99999},
+                },
+            },
+        }
+        storage.put_bytes("jobs/job-synth/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["episodes"][0]["job_id"] == "job-synth"
+        assert data["episodes"][0]["audio_path"] == "jobs/job-synth/episode.mp3"
+        assert data["episodes"][0]["audio_url"] == "/api/stream/jobs/job-synth/episode.mp3"
+
+    def test_episode_from_synthesis_runner_artifacts_mp3(self, client, storage):
+        """Falls back to synthesis_runner.audio.artifacts.mp3.path when audio.path is absent."""
+        m = _make_manifest("job-synth2")
+        m["generation"]["synthesis_runner"] = {
+            "status": "completed",
+            "audio": {
+                "artifacts": {
+                    "mp3": {"path": "jobs/job-synth2/episode.mp3", "sha256": "abc", "size_bytes": 100},
+                },
+            },
+        }
+        storage.put_bytes("jobs/job-synth2/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["episodes"][0]["audio_path"] == "jobs/job-synth2/episode.mp3"
+
 
 # ---------------------------------------------------------------------------
 # Tests: GET /api/articles/{path}
