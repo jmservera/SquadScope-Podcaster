@@ -44,14 +44,11 @@ describe('apiClient', () => {
     const { authenticatedFetch } = await import('../apiClient');
     await authenticatedFetch('https://api.example.com/data');
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://api.example.com/data',
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'Bearer mock-token',
-        }),
-      })
-    );
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe('https://api.example.com/data');
+    expect(options.headers).toBeInstanceOf(Headers);
+    expect(options.headers.get('Authorization')).toBe('Bearer mock-token');
   });
 
   it('falls back to acquireTokenPopup on InteractionRequiredAuthError', async () => {
@@ -65,13 +62,10 @@ describe('apiClient', () => {
     await authenticatedFetch('https://api.example.com/data');
 
     expect(mockAcquireTokenPopup).toHaveBeenCalledTimes(1);
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://api.example.com/data',
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'Bearer popup-token',
-        }),
-      })
-    );
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe('https://api.example.com/data');
+    expect(options.headers).toBeInstanceOf(Headers);
+    expect(options.headers.get('Authorization')).toBe('Bearer popup-token');
   });
 });

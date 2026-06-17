@@ -196,6 +196,24 @@ jobs:
           # Verify index.html is present in the nginx html directory.
           docker run --rm --entrypoint cat podcaster-ui:ci /usr/share/nginx/html/index.html | head -n 1
 
+      - name: Verify env-config.js is generated at container start
+        run: |
+          cid=$(docker run -d \
+            -e VITE_MSAL_CLIENT_ID=test-client-id \
+            -e VITE_API_BASE_URL=https://api.test.example.com \
+            podcaster-ui:ci)
+          sleep 2
+          content=$(docker exec "$cid" cat /usr/share/nginx/html/env-config.js)
+          docker stop "$cid" > /dev/null
+          docker rm "$cid" > /dev/null
+          if ! echo "$content" | grep -q 'test-client-id'; then
+            echo "::error::env-config.js was not generated with expected runtime env vars"
+            echo "$content"
+            exit 1
+          fi
+          echo "env-config.js verified:"
+          echo "$content"
+
       - name: Scan UI image for vulnerabilities (Trivy)
         # aquasecurity/trivy-action v0.36.0
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25

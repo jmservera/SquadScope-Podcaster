@@ -281,19 +281,19 @@ jobs:
           echo "### ACA-only Podcaster infrastructure deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "Region: $AZURE_LOCATION" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Get API app FQDN
+      - name: Get app FQDNs
         id: get_fqdn
         run: |
-          fqdn=$(az containerapp show \
-            --name "${AZURE_RESOURCE_GROUP}-api" \
+          fqdn=$(az deployment group show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
-            --query "properties.configuration.ingress.fqdn" \
+            --name main \
+            --query "properties.outputs.apiAppFqdn.value" \
             --output tsv 2>/dev/null || echo "")
           echo "api_app_fqdn=$fqdn" >> "$GITHUB_OUTPUT"
-          ui_fqdn=$(az containerapp show \
-            --name "${AZURE_RESOURCE_GROUP}-ui" \
+          ui_fqdn=$(az deployment group show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
-            --query "properties.configuration.ingress.fqdn" \
+            --name main \
+            --query "properties.outputs.uiAppFqdn.value" \
             --output tsv 2>/dev/null || echo "")
           echo "ui_app_fqdn=$ui_fqdn" >> "$GITHUB_OUTPUT"
 
