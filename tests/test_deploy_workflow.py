@@ -190,7 +190,7 @@ def test_reusable_deploy_workflow_has_prod_environment_concurrency_and_output() 
     assert re.search(r"(?m)^    concurrency:\n^      group: prod-deploy\n^      cancel-in-progress: false$", workflow)
     assert "api_app_fqdn:" in workflow
     assert "id: get_fqdn" in workflow
-    assert '--query "properties.configuration.ingress.fqdn"' in workflow
+    assert '--query "properties.outputs.apiAppFqdn.value"' in workflow
 
 
 def test_reusable_deploy_workflow_accepts_image_overrides() -> None:

@@ -12,6 +12,10 @@ on:
         description: 'Full image ref for API container. Defaults to :latest'
         required: false
         type: string
+      ui_image:
+        description: 'Full image ref for UI container. Defaults to :latest'
+        required: false
+        type: string
       sync_squadscope:
         description: 'Sync API key secret to jmservera/SquadScope when SQUADSCOPE_SYNC_TOKEN is configured'
         required: false
@@ -31,6 +35,9 @@ on:
       api_app_fqdn:
         description: 'FQDN of the deployed API container app'
         value: ${{ jobs.deploy.outputs.api_app_fqdn }}
+      ui_app_fqdn:
+        description: 'FQDN of the deployed UI container app'
+        value: ${{ jobs.deploy.outputs.ui_app_fqdn }}
 
 permissions:
   contents: read
@@ -45,6 +52,7 @@ jobs:
       cancel-in-progress: false
     outputs:
       api_app_fqdn: ${{ steps.get_fqdn.outputs.api_app_fqdn }}
+      ui_app_fqdn: ${{ steps.get_fqdn.outputs.ui_app_fqdn }}
     env:
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
@@ -54,6 +62,7 @@ jobs:
       AZURE_STORAGE_ACCOUNT_NAME: ${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
       SYNTHESIS_IMAGE: ${{ inputs.synthesis_image || format('{0}/{1}:latest', vars.SYNTHESIS_IMAGE_REGISTRY, vars.SYNTHESIS_IMAGE_REPOSITORY || 'podcaster-synthesis') }}
       API_IMAGE: ${{ inputs.api_image || format('{0}/{1}:latest', vars.SYNTHESIS_IMAGE_REGISTRY, vars.API_IMAGE_REPOSITORY || 'podcaster-api') }}
+      UI_IMAGE: ${{ inputs.ui_image || format('{0}/{1}:latest', vars.SYNTHESIS_IMAGE_REGISTRY, vars.UI_IMAGE_REPOSITORY || 'podcaster-ui') }}
       DEPLOY_VNET: ${{ inputs.deploy_vnet || 'false' }}
     steps:
       - name: Checkout
@@ -106,6 +115,8 @@ jobs:
           SP_DC_SECRET: ${{ secrets.SP_DC }}
           SP_KEY_SECRET: ${{ secrets.SP_KEY }}
           PODCAST_AUTO_PUBLISH_VAR: ${{ vars.PODCAST_AUTO_PUBLISH }}
+          MSAL_CLIENT_ID_VAR: ${{ vars.MSAL_CLIENT_ID }}
+          MSAL_AUTHORITY_VAR: ${{ vars.MSAL_AUTHORITY }}
         run: |
           set -euo pipefail
           set +x
@@ -146,6 +157,8 @@ jobs:
             echo "SP_DC=${SP_DC_SECRET:-}"
             echo "SP_KEY=${SP_KEY_SECRET:-}"
             echo "PODCAST_AUTO_PUBLISH=${PODCAST_AUTO_PUBLISH_VAR:-false}"
+            echo "MSAL_CLIENT_ID=${MSAL_CLIENT_ID_VAR:-}"
+            echo "MSAL_AUTHORITY=${MSAL_AUTHORITY_VAR:-}"
           } >> "$GITHUB_ENV"
 
           echo "Using Storage Account name: $storage_account_name"
@@ -191,11 +204,14 @@ jobs:
 
           resolved_synth=$(resolve_latest "$SYNTHESIS_IMAGE")
           resolved_api=$(resolve_latest "$API_IMAGE")
+          resolved_ui=$(resolve_latest "$UI_IMAGE")
 
           echo "SYNTHESIS_IMAGE=$resolved_synth" >> "$GITHUB_ENV"
           echo "API_IMAGE=$resolved_api" >> "$GITHUB_ENV"
+          echo "UI_IMAGE=$resolved_ui" >> "$GITHUB_ENV"
           echo "Synthesis image: $resolved_synth"
           echo "API image: $resolved_api"
+          echo "UI image: $resolved_ui"
 
       - name: Ensure resource group exists
         run: |
@@ -244,6 +260,7 @@ jobs:
 
           az deployment group create \
             --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name main \
             --template-file infra/main.bicep \
             --parameters storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
             --parameters deploymentPrincipalObjectId="$deployment_principal_object_id" \
@@ -257,19 +274,29 @@ jobs:
             --parameters spotifySessionCookieKey="${SP_KEY:-}" \
             --parameters podcastAutoPublish="${PODCAST_AUTO_PUBLISH:-false}" \
             --parameters deployVnet="${DEPLOY_VNET}" \
+            --parameters deployUiApp=true \
+            --parameters uiImage="${UI_IMAGE}" \
+            --parameters msalClientId="${MSAL_CLIENT_ID:-}" \
+            --parameters msalAuthority="${MSAL_AUTHORITY:-}" \
             --output none
           echo "### ACA-only Podcaster infrastructure deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "Region: $AZURE_LOCATION" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Get API app FQDN
+      - name: Get app FQDNs
         id: get_fqdn
         run: |
-          fqdn=$(az containerapp show \
-            --name "${AZURE_RESOURCE_GROUP}-api" \
+          fqdn=$(az deployment group show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
-            --query "properties.configuration.ingress.fqdn" \
+            --name main \
+            --query "properties.outputs.apiAppFqdn.value" \
             --output tsv 2>/dev/null || echo "")
           echo "api_app_fqdn=$fqdn" >> "$GITHUB_OUTPUT"
+          ui_fqdn=$(az deployment group show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name main \
+            --query "properties.outputs.uiAppFqdn.value" \
+            --output tsv 2>/dev/null || echo "")
+          echo "ui_app_fqdn=$ui_fqdn" >> "$GITHUB_OUTPUT"
 
       - name: Optionally sync values to SquadScope
         if: ${{ inputs.sync_squadscope == 'true' }}

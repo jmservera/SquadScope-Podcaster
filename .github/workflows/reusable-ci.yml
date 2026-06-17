@@ -69,6 +69,35 @@ jobs:
       - name: Compile Python
         run: python -m compileall podcaster
 
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v6.0.3
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        # actions/setup-node v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ui
+        run: npm test
+
+      - name: Build
+        working-directory: ui
+        run: npm run build
+
   synthesis-image:
     # Build + scan the ffmpeg synthesis-runner image on PRs (ADR 0001, #77).
     # No registry push happens here; publishing is gated in a separate,
@@ -150,6 +179,58 @@ jobs:
         with:
           scan-type: config
           scan-ref: Containerfile.api
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+
+      - name: Build UI image
+        run: docker build -f ui/Dockerfile -t podcaster-ui:ci ui/
+
+      - name: Verify UI image serves content and runs as non-root
+        run: |
+          uid="$(docker run --rm --entrypoint id podcaster-ui:ci -u)"
+          if [ "$uid" = "0" ]; then
+            echo "::error::UI image must not run as root (uid=$uid)"
+            exit 1
+          fi
+          # Verify index.html is present in the nginx html directory.
+          docker run --rm --entrypoint cat podcaster-ui:ci /usr/share/nginx/html/index.html | head -n 1
+
+      - name: Verify env-config.js is generated at container start
+        run: |
+          cid=$(docker run -d \
+            -e VITE_MSAL_CLIENT_ID=test-client-id \
+            -e VITE_API_BASE_URL=https://api.test.example.com \
+            podcaster-ui:ci)
+          sleep 2
+          content=$(docker exec "$cid" cat /usr/share/nginx/html/env-config.js)
+          docker stop "$cid" > /dev/null
+          docker rm "$cid" > /dev/null
+          if ! echo "$content" | grep -q 'test-client-id'; then
+            echo "::error::env-config.js was not generated with expected runtime env vars"
+            echo "$content"
+            exit 1
+          fi
+          echo "env-config.js verified:"
+          echo "$content"
+
+      - name: Scan UI image for vulnerabilities (Trivy)
+        # aquasecurity/trivy-action v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: podcaster-ui:ci
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Scan ui/Dockerfile for misconfiguration (Trivy config)
+        # aquasecurity/trivy-action v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: config
+          scan-ref: ui/Dockerfile
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
