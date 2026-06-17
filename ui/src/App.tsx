@@ -27,7 +27,7 @@ const LandingPage: React.FC = () => {
           <p>
             You are signed in. Visit the <Link to="/dashboard">Dashboard</Link>{' '}
             or the <Link to="/jobs">Job Monitor</Link>{' '}
-            or browse <Link to="/episodes">Episodes</Link>
+            or browse <Link to="/episodes">Episodes</Link>{' '}
             or manage <Link to="/credentials">Credentials</Link>{' '}
             and <Link to="/podcast-config">Podcast Config</Link>.
           </p>

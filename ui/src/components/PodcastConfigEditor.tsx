@@ -2,6 +2,13 @@ import React, { useEffect, useState } from 'react';
 import type { PodcastConfigData, PublishTarget } from '../api/podcastConfig';
 import { fetchPodcastConfig, savePodcastConfig, uploadMusic } from '../api/podcastConfig';
 
+interface PublishTargetWithId extends PublishTarget {
+  _key: string;
+}
+
+let nextTargetKey = 0;
+const genKey = () => `target-${++nextTargetKey}-${Date.now()}`;
+
 const EMPTY_TARGET: PublishTarget = { platform: 'spotify', enabled: true, target_id: '' };
 
 const PLATFORM_LABELS: Record<PublishTarget['platform'], string> = {
@@ -17,6 +24,7 @@ const PodcastConfigEditor: React.FC = () => {
     outro_music_url: '',
     publish_targets: [],
   });
+  const [targetKeys, setTargetKeys] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,21 +32,21 @@ const PodcastConfigEditor: React.FC = () => {
   const [uploading, setUploading] = useState<'intro' | 'outro' | null>(null);
 
   useEffect(() => {
+    const loadConfig = async () => {
+      try {
+        setLoading(true);
+        const data = await fetchPodcastConfig();
+        setConfig(data);
+        setTargetKeys(data.publish_targets.map(() => genKey()));
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load config');
+      } finally {
+        setLoading(false);
+      }
+    };
     loadConfig();
   }, []);
-
-  const loadConfig = async () => {
-    try {
-      setLoading(true);
-      const data = await fetchPodcastConfig();
-      setConfig(data);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load config');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +90,7 @@ const PodcastConfigEditor: React.FC = () => {
       ...prev,
       publish_targets: [...prev.publish_targets, { ...EMPTY_TARGET }],
     }));
+    setTargetKeys((prev) => [...prev, genKey()]);
   };
 
   const removeTarget = (index: number) => {
@@ -89,6 +98,7 @@ const PodcastConfigEditor: React.FC = () => {
       ...prev,
       publish_targets: prev.publish_targets.filter((_, i) => i !== index),
     }));
+    setTargetKeys((prev) => prev.filter((_, i) => i !== index));
   };
 
   const updateTarget = (index: number, updates: Partial<PublishTarget>) => {
@@ -181,7 +191,7 @@ const PodcastConfigEditor: React.FC = () => {
             <p>No publish targets configured.</p>
           )}
           {config.publish_targets.map((target, index) => (
-            <fieldset key={index}>
+            <fieldset key={targetKeys[index] ?? index}>
               <legend>Target {index + 1}</legend>
               <div>
                 <label htmlFor={`target-platform-${index}`}>Platform</label>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import type {
   CredentialSummary,
   CredentialType,
@@ -28,7 +28,7 @@ const CredentialSettings: React.FC = () => {
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [showForm, setShowForm] = useState(false);
 
-  const loadCredentials = async () => {
+  const loadCredentials = useCallback(async () => {
     try {
       setLoading(true);
       const data = await fetchCredentials();
@@ -39,11 +39,11 @@ const CredentialSettings: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadCredentials();
-  }, []);
+  }, [loadCredentials]);
 
   const resetForm = () => {
     setFormLabel('');
