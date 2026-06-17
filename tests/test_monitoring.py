@@ -150,6 +150,18 @@ class TestListJobs:
         assert data["total"] == 5
         assert len(data["jobs"]) == 2
 
+    def test_skips_corrupt_manifests_in_total(self, client, storage):
+        valid_manifest = _make_manifest("podcast-2026-W24-valid")
+        storage.put_bytes("jobs/podcast-2026-W24-valid/manifest.json", json.dumps(valid_manifest).encode(), "application/json")
+        storage.put_bytes("jobs/podcast-2026-W23-corrupt/manifest.json", b"not json", "application/json")
+
+        resp = client.get("/api/jobs")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert [job["job_id"] for job in data["jobs"]] == ["podcast-2026-W24-valid"]
+
     def test_limit_bounds(self, client, storage):
         resp = client.get("/api/jobs?limit=0")
         assert resp.status_code == 422  # validation error
@@ -274,3 +286,26 @@ class TestHealthz:
         resp = client.get("/healthz")
         assert resp.status_code == 200
         assert resp.json() == {"status": "healthy"}
+
+
+class TestMonitoringAuth:
+    def test_allows_requests_without_configured_key(self, client, storage):
+        resp = client.get("/api/jobs")
+
+        assert resp.status_code == 200
+
+    def test_rejects_missing_or_invalid_api_key_when_configured(self, client, storage, monkeypatch):
+        monkeypatch.setenv("MONITORING_API_KEY", "monitor-key")
+
+        missing = client.get("/api/jobs")
+        wrong = client.get("/api/jobs", headers={"x-podcaster-api-key": "wrong"})
+
+        assert missing.status_code == 401
+        assert wrong.status_code == 401
+
+    def test_allows_valid_api_key_when_configured(self, client, storage, monkeypatch):
+        monkeypatch.setenv("MONITORING_API_KEY", "monitor-key")
+
+        resp = client.get("/api/jobs", headers={"x-podcaster-api-key": "monitor-key"})
+
+        assert resp.status_code == 200

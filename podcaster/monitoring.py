@@ -15,10 +15,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import hmac
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -29,9 +30,13 @@ logger = logging.getLogger("podcaster.monitoring")
 app = FastAPI(title="Podcaster Job Monitor", version="0.1.0")
 
 # Allow the UI dev server (Vite) and production origins.
-_CORS_ORIGINS = os.environ.get(
-    "MONITORING_CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
-).split(",")
+_CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "MONITORING_CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    ).split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -103,6 +108,14 @@ def set_storage(storage: StorageBackend | None) -> None:
     """Inject a storage backend (used in tests)."""
     global _storage
     _storage = storage
+
+
+def _verify_api_key(x_podcaster_api_key: str = Header(default="")) -> None:
+    configured = os.environ.get("MONITORING_API_KEY") or os.environ.get("PODCASTER_API_KEY", "")
+    if not configured:
+        return
+    if not x_podcaster_api_key or not hmac.compare_digest(x_podcaster_api_key, configured):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +222,7 @@ def _extract_logs(manifest: dict[str, Any]) -> list[LogEntry]:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/jobs", response_model=JobListResponse)
+@app.get("/api/jobs", response_model=JobListResponse, dependencies=[Depends(_verify_api_key)])
 def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
     """List recent pipeline jobs."""
     storage = get_storage()
@@ -220,11 +233,8 @@ def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(
     # Sort by path (which includes the job_id with week info) — reverse for most recent first.
     manifest_blobs.sort(reverse=True)
 
-    total = len(manifest_blobs)
-    page = manifest_blobs[offset : offset + limit]
-
     summaries: list[JobSummary] = []
-    for blob_path in page:
+    for blob_path in manifest_blobs:
         raw = storage.get_bytes(blob_path)
         if raw is None:
             continue
@@ -233,13 +243,10 @@ def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(
             continue
         summaries.append(_extract_summary(manifest))
 
-    # Sort by created_at descending (most recent first).
-    summaries.sort(key=lambda s: s.created_at or "", reverse=True)
-
-    return JobListResponse(jobs=summaries, total=total)
+    return JobListResponse(jobs=summaries[offset : offset + limit], total=len(summaries))
 
 
-@app.get("/api/jobs/{job_id}", response_model=JobDetailResponse)
+@app.get("/api/jobs/{job_id}", response_model=JobDetailResponse, dependencies=[Depends(_verify_api_key)])
 def get_job(job_id: str):
     """Get detailed information for a specific job."""
     storage = get_storage()
@@ -253,7 +260,7 @@ def get_job(job_id: str):
     return _extract_detail(manifest)
 
 
-@app.get("/api/jobs/{job_id}/logs", response_model=JobLogsResponse)
+@app.get("/api/jobs/{job_id}/logs", response_model=JobLogsResponse, dependencies=[Depends(_verify_api_key)])
 def get_job_logs(job_id: str):
     """Get log entries for a specific job (lifecycle transitions + runner state)."""
     storage = get_storage()

@@ -50,13 +50,13 @@ export async function fetchJobs(limit = 20, offset = 0): Promise<JobListResponse
 }
 
 export async function fetchJobDetail(jobId: string): Promise<JobDetailResponse> {
-  const resp = await authenticatedFetch(`${API_BASE}/api/jobs/${jobId}`);
+  const resp = await authenticatedFetch(`${API_BASE}/api/jobs/${encodeURIComponent(jobId)}`);
   if (!resp.ok) throw new Error(`Failed to fetch job ${jobId}: ${resp.status}`);
   return resp.json();
 }
 
 export async function fetchJobLogs(jobId: string): Promise<JobLogsResponse> {
-  const resp = await authenticatedFetch(`${API_BASE}/api/jobs/${jobId}/logs`);
+  const resp = await authenticatedFetch(`${API_BASE}/api/jobs/${encodeURIComponent(jobId)}/logs`);
   if (!resp.ok) throw new Error(`Failed to fetch logs for ${jobId}: ${resp.status}`);
   return resp.json();
 }

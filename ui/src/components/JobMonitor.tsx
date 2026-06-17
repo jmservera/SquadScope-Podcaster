@@ -94,6 +94,7 @@ const JobMonitor: React.FC = () => {
   }
 
   async function selectJob(jobId: string) {
+    setError(null);
     setLogsLoading(true);
     try {
       const [detail, logsData] = await Promise.all([
@@ -106,6 +107,13 @@ const JobMonitor: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Failed to load job detail');
     } finally {
       setLogsLoading(false);
+    }
+  }
+
+  function handleJobRowKeyDown(event: React.KeyboardEvent<HTMLTableRowElement>, jobId: string) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      void selectJob(jobId);
     }
   }
 
@@ -131,6 +139,9 @@ const JobMonitor: React.FC = () => {
             <tr
               key={job.job_id}
               onClick={() => selectJob(job.job_id)}
+              onKeyDown={(event) => handleJobRowKeyDown(event, job.job_id)}
+              role="button"
+              tabIndex={0}
               style={{
                 cursor: 'pointer',
                 borderBottom: '1px solid #eee',
