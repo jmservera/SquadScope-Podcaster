@@ -6,7 +6,8 @@
 set -e
 
 json_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/</\\u003c/g'
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/</\\u003c/g' | \
+    tr '\n' '\036' | sed 's/\x1e/\\n/g' | tr '\r' '\036' | sed 's/\x1e/\\r/g'
 }
 
 cat > /usr/share/nginx/html/env-config.js <<EOF

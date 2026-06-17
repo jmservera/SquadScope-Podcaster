@@ -1,13 +1,15 @@
 import { LogLevel } from '@azure/msal-browser';
 import type { Configuration } from '@azure/msal-browser';
+import { env } from './env';
 
-const clientId = import.meta.env.VITE_AZURE_CLIENT_ID ?? 'YOUR_CLIENT_ID';
-const tenantId = import.meta.env.VITE_AZURE_TENANT_ID ?? 'YOUR_TENANT_ID';
+const clientId = env.VITE_MSAL_CLIENT_ID || env.VITE_AZURE_CLIENT_ID || 'YOUR_CLIENT_ID';
+const tenantId = env.VITE_AZURE_TENANT_ID || 'YOUR_TENANT_ID';
+const authority = env.VITE_MSAL_AUTHORITY || `https://login.microsoftonline.com/${tenantId}`;
 
 export const msalConfig: Configuration = {
   auth: {
     clientId,
-    authority: `https://login.microsoftonline.com/${tenantId}`,
+    authority,
     redirectUri: typeof window !== 'undefined' ? window.location.origin : 'http://localhost',
   },
   cache: {
@@ -37,5 +39,5 @@ export const loginRequest = {
 };
 
 export const apiConfig = {
-  scopes: [import.meta.env.VITE_API_SCOPE ?? `api://${clientId}/access_as_user`],
+  scopes: [env.VITE_API_SCOPE || `api://${clientId}/access_as_user`],
 };

@@ -1,6 +1,7 @@
 import { authenticatedFetch } from './apiClient';
+import { env } from '../env';
 
-const API_BASE = import.meta.env.VITE_MONITORING_API_URL || '';
+const API_BASE = env.VITE_MONITORING_API_URL || env.VITE_API_BASE_URL || '';
 
 export interface Episode {
   job_id: string;
