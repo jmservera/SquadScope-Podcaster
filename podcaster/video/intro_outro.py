@@ -19,6 +19,7 @@ try:
 
     _PLAYWRIGHT_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover
+    sync_playwright = None  # type: ignore[assignment]
     _PLAYWRIGHT_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
@@ -258,6 +259,11 @@ def _record_html_to_video(
     if video_files:
         latest = max(video_files, key=lambda f: f.stat().st_mtime)
         latest.rename(output_path)
+
+    if not output_path.exists():
+        raise RuntimeError(
+            f"Playwright recording failed: no video file produced at {output_path}"
+        )
 
     return output_path
 

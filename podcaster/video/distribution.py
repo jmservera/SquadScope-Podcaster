@@ -120,6 +120,17 @@ class HttpTransport(Protocol):
     ) -> tuple[int, bytes]:
         ...
 
+    def request_with_headers(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        data: bytes | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        """Like request() but also returns response headers."""
+        ...
+
 
 class _DefaultTransport:
     """Default HTTP transport using urllib."""
@@ -135,6 +146,19 @@ class _DefaultTransport:
         req = Request(url, data=data, method=method, headers=headers or {})
         with urlopen(req, timeout=300) as resp:
             return resp.status, resp.read()
+
+    def request_with_headers(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        data: bytes | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        req = Request(url, data=data, method=method, headers=headers or {})
+        with urlopen(req, timeout=300) as resp:
+            resp_headers = {k.lower(): v for k, v in resp.getheaders()}
+            return resp.status, resp_headers, resp.read()
 
 
 class StorageUploader(Protocol):
@@ -227,7 +251,7 @@ def upload_to_youtube(
     init_url = f"{_YOUTUBE_UPLOAD_URL}?{params}"
     metadata_bytes = json.dumps(metadata).encode("utf-8")
 
-    status, body = http.request(
+    status, resp_headers, body = http.request_with_headers(
         init_url,
         method="POST",
         headers={
@@ -243,15 +267,27 @@ def upload_to_youtube(
         logger.error("YouTube resumable upload init failed: HTTP %s", status)
         return None, None
 
-    # For simplicity, do a single-request upload (works for files <128MB)
-    # Real production would use chunked resumable upload for large files
+    # Use the resumable session URI returned in the Location header
+    upload_url = resp_headers.get("location", init_url)
+
+    # Guard: single-request upload only suitable for files under 128 MB.
+    # Larger files require chunked resumable upload (not yet implemented).
+    _MAX_SINGLE_UPLOAD_BYTES = 128 * 1024 * 1024
+    if file_size > _MAX_SINGLE_UPLOAD_BYTES:
+        logger.error(
+            "Video too large for single-request upload (%d bytes > %d). "
+            "Chunked resumable upload not yet implemented.",
+            file_size, _MAX_SINGLE_UPLOAD_BYTES,
+        )
+        return None, None
+
     video_bytes = video_path.read_bytes()
 
     for attempt in range(_MAX_RETRIES):
         try:
             upload_status, upload_body = http.request(
-                init_url,
-                method="POST",
+                upload_url,
+                method="PUT",
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "video/mp4",

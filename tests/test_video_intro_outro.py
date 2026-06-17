@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
+pytest.importorskip("playwright", reason="playwright not installed — skipping video intro/outro tests")
+
 from podcaster.video.intro_outro import (
     CLARACLE_URL,
     INTRO_DURATION_MS,
@@ -150,7 +152,8 @@ class TestRecordHtmlToVideo:
         mock_pw = _mock_playwright_context(tmp_path)
         output_path = tmp_path / "test.webm"
 
-        with patch(
+        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
+             patch(
             "podcaster.video.intro_outro.sync_playwright"
         ) as mock_sync_pw:
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
@@ -178,7 +181,8 @@ class TestRecordHtmlToVideo:
         output_path = tmp_path / "test.webm"
         mock_page = mock_pw.chromium.launch.return_value.new_context.return_value.new_page.return_value
 
-        with patch(
+        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
+             patch(
             "podcaster.video.intro_outro.sync_playwright"
         ) as mock_sync_pw:
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
@@ -197,7 +201,8 @@ class TestRecordHtmlToVideo:
         mock_pw = _mock_playwright_context(tmp_path)
         output_path = tmp_path / "final.webm"
 
-        with patch(
+        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
+             patch(
             "podcaster.video.intro_outro.sync_playwright"
         ) as mock_sync_pw:
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
@@ -230,7 +235,8 @@ class TestGenerateIntro:
     def test_returns_clip_result(self, tmp_path):
         mock_pw = _mock_playwright_context(tmp_path)
 
-        with patch(
+        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
+             patch(
             "podcaster.video.intro_outro.sync_playwright"
         ) as mock_sync_pw:
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
@@ -250,7 +256,8 @@ class TestGenerateIntro:
     def test_uses_default_config(self, tmp_path):
         mock_pw = _mock_playwright_context(tmp_path)
 
-        with patch(
+        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
+             patch(
             "podcaster.video.intro_outro.sync_playwright"
         ) as mock_sync_pw:
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
@@ -265,7 +272,8 @@ class TestGenerateIntro:
             output_dir = Path(td) / "new_subdir"
             mock_pw = _mock_playwright_context(output_dir)
 
-            with patch(
+            with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
+                 patch(
                 "podcaster.video.intro_outro.sync_playwright"
             ) as mock_sync_pw:
                 mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
@@ -282,7 +290,8 @@ class TestGenerateOutro:
     def test_returns_clip_result(self, tmp_path):
         mock_pw = _mock_playwright_context(tmp_path)
 
-        with patch(
+        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
+             patch(
             "podcaster.video.intro_outro.sync_playwright"
         ) as mock_sync_pw:
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
@@ -305,7 +314,8 @@ class TestGenerateOutro:
             duration_ms=8000,
         )
 
-        with patch(
+        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
+             patch(
             "podcaster.video.intro_outro.sync_playwright"
         ) as mock_sync_pw:
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
