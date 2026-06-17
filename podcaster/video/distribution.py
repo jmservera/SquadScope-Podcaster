@@ -466,8 +466,24 @@ def distribute_video(
 
     Attempts all configured targets; failures on one target do not block others.
     Returns a DistributionResult summarizing outcomes across all targets.
+
+    Returns a failed DistributionResult if no listener-facing publish target
+    (YouTube or Spotify RSS) is configured — blob archive alone is not
+    sufficient for distribution.
     """
     result = DistributionResult()
+
+    # Validate at least one listener-facing target is configured (#268)
+    if not config.youtube_enabled and not config.spotify_rss_enabled:
+        result.status = "failed"
+        result.errors.append(
+            "No listener-facing publish target configured. "
+            "Enable at least one of: VIDEO_YOUTUBE_ENABLED, VIDEO_SPOTIFY_RSS_ENABLED."
+        )
+        logger.error(
+            "video distribution aborted job_id=%s: no listener-facing target configured", job_id
+        )
+        return result
 
     if not video_path.exists():
         result.status = "failed"
