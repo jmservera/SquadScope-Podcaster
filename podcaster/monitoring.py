@@ -35,8 +35,8 @@ from podcaster.auth import (
     LoginRequest,
     LoginResponse,
     MeResponse,
-    _get_credentials,
     create_token,
+    get_credentials,
     verify_auth,
     verify_token,
 )
@@ -133,7 +133,7 @@ def set_storage(storage: StorageBackend | None) -> None:
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(body: LoginRequest):
     """Validate username/password and return a JWT."""
-    creds = _get_credentials()
+    creds = get_credentials()
     if creds is None:
         raise HTTPException(
             status_code=501,
@@ -151,7 +151,7 @@ def login(body: LoginRequest):
 @app.get("/api/auth/me", response_model=MeResponse)
 def me(authorization: str = Header(default="")):
     """Return the current user from a valid Bearer token."""
-    creds = _get_credentials()
+    creds = get_credentials()
     if creds is None:
         raise HTTPException(status_code=501, detail="Simple auth is not configured")
     if not authorization.startswith("Bearer "):

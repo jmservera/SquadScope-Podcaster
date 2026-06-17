@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone
 from typing import Any
 
-from podcaster.auth import _get_credentials, create_token, verify_token
+from podcaster.auth import create_token, get_credentials, verify_token
 from podcaster.jobs import failed_response, run_generation_job
 from podcaster.failure_reporting import report_failure
 from podcaster.orchestration import process_review_decision
@@ -63,13 +63,13 @@ class GenerateHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.OK, {"status": "healthy"})
             return
         if self.path == "/api/auth/me":
-            self._handle_auth_me()
+            GenerateHandler._handle_auth_me(self)
             return
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/api/auth/login":
-            self._handle_auth_login()
+            GenerateHandler._handle_auth_login(self)
             return
 
         if self.path not in {"/api/generate", "/api/review"}:
@@ -111,7 +111,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
 
     def _handle_auth_login(self) -> None:
         """POST /api/auth/login — validate credentials, return JWT."""
-        creds = _get_credentials()
+        creds = get_credentials()
         if creds is None:
             _json_response(
                 self,
@@ -130,6 +130,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
             payload = json.loads(raw_body)
         except (json.JSONDecodeError, ValueError):
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "request body must be valid JSON"})
+            return
+        if not isinstance(payload, dict):
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "request body must be a JSON object"})
             return
 
         username = str(payload.get("username") or "").strip()
@@ -150,8 +153,25 @@ class GenerateHandler(BaseHTTPRequestHandler):
 
     def _handle_auth_me(self) -> None:
         """GET /api/auth/me — return current user from Bearer token."""
-        creds = _get_credentials()
-        if creds is None:
+        creds = get_credentials()
+        authorization = self.headers.get("Authorization", "")
+        headers = {k: v for k, v in self.headers.items()}
+        if authorization.startswith("Bearer ") and creds is not None:
+            import jwt as _jwt
+
+            try:
+                payload = verify_token(authorization[7:], creds[2])
+            except _jwt.PyJWTError:
+                pass
+            else:
+                _json_response(self, HTTPStatus.OK, {"username": payload["sub"]})
+                return
+
+        if is_authorized(headers):
+            _json_response(self, HTTPStatus.OK, {"username": "api-key-user"})
+            return
+
+        if creds is None and not os.environ.get("PODCASTER_API_KEY"):
             _json_response(
                 self,
                 HTTPStatus.NOT_IMPLEMENTED,
@@ -159,25 +179,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
             )
             return
 
-        authorization = self.headers.get("Authorization", "")
-        if not authorization.startswith("Bearer "):
-            # Fall back to API key auth
-            headers = {k: v for k, v in self.headers.items()}
-            if is_authorized(headers):
-                _json_response(self, HTTPStatus.OK, {"username": "api-key-user"})
-                return
-            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "Missing Bearer token"})
-            return
-
-        import jwt as _jwt
-
-        try:
-            payload = verify_token(authorization[7:], creds[2])
-        except _jwt.PyJWTError:
-            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "Invalid or expired token"})
-            return
-
-        _json_response(self, HTTPStatus.OK, {"username": payload["sub"]})
+        _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "Invalid or missing credentials"})
 
     # ------------------------------------------------------------------
 
