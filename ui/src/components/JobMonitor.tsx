@@ -71,6 +71,7 @@ const JobMonitor: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<JobDetailResponse | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
@@ -94,7 +95,7 @@ const JobMonitor: React.FC = () => {
   }
 
   async function selectJob(jobId: string) {
-    setError(null);
+    setDetailError(null);
     setLogsLoading(true);
     try {
       const [detail, logsData] = await Promise.all([
@@ -104,7 +105,7 @@ const JobMonitor: React.FC = () => {
       setSelectedJob(detail);
       setLogs(logsData.logs);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load job detail');
+      setDetailError(err instanceof Error ? err.message : 'Failed to load job detail');
     } finally {
       setLogsLoading(false);
     }
@@ -164,6 +165,10 @@ const JobMonitor: React.FC = () => {
           ))}
         </tbody>
       </table>
+
+      {detailError && (
+        <p style={{ color: 'red', marginTop: '16px' }}>Error: {detailError}</p>
+      )}
 
       {selectedJob && (
         <div style={{ marginTop: '24px' }}>

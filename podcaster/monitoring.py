@@ -13,10 +13,8 @@ Endpoints:
 from __future__ import annotations
 
 import json
-import logging
 import os
 import hmac
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -24,8 +22,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from podcaster.storage import StorageBackend, create_storage_backend
-
-logger = logging.getLogger("podcaster.monitoring")
 
 app = FastAPI(title="Podcaster Job Monitor", version="0.1.0")
 
@@ -227,11 +223,8 @@ def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(
     """List recent pipeline jobs."""
     storage = get_storage()
     # List all manifest blobs under jobs/ prefix.
-    blobs = storage.list_blobs("jobs/", limit=500)
+    blobs = storage.list_blobs("jobs/", limit=10000)
     manifest_blobs = [b for b in blobs if b.endswith("/manifest.json")]
-
-    # Sort by path (which includes the job_id with week info) — reverse for most recent first.
-    manifest_blobs.sort(reverse=True)
 
     summaries: list[JobSummary] = []
     for blob_path in manifest_blobs:
@@ -242,6 +235,9 @@ def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(
         if manifest is None:
             continue
         summaries.append(_extract_summary(manifest))
+
+    # Sort by created_at descending so pagination is consistent.
+    summaries.sort(key=lambda s: s.created_at or "", reverse=True)
 
     return JobListResponse(jobs=summaries[offset : offset + limit], total=len(summaries))
 
