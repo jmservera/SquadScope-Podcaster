@@ -1,23 +1,19 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import ProtectedRoute from '../ProtectedRoute';
 
-const mockUseIsAuthenticated = vi.fn();
+vi.mock('../AuthProvider', () => {
+  const mockUseAuth = vi.fn();
+  return {
+    useAuth: mockUseAuth,
+    __mockUseAuth: mockUseAuth,
+  };
+});
 
-vi.mock('@azure/msal-react', () => ({
-  useIsAuthenticated: () => mockUseIsAuthenticated(),
-  AuthenticatedTemplate: ({
-    children,
-  }: {
-    children: React.ReactNode;
-  }) => (mockUseIsAuthenticated() ? <div data-testid="auth">{children}</div> : null),
-  UnauthenticatedTemplate: ({
-    children,
-  }: {
-    children: React.ReactNode;
-  }) => (!mockUseIsAuthenticated() ? <div data-testid="unauth">{children}</div> : null),
-}));
+import { __mockUseAuth } from '../AuthProvider';
+const mockUseAuth = __mockUseAuth as ReturnType<typeof vi.fn>;
 
 describe('ProtectedRoute', () => {
   beforeEach(() => {
@@ -25,30 +21,30 @@ describe('ProtectedRoute', () => {
   });
 
   it('shows children when authenticated', () => {
-    mockUseIsAuthenticated.mockReturnValue(true);
+    mockUseAuth.mockReturnValue({ isAuthenticated: true, username: 'admin', token: 'tok', login: vi.fn(), logout: vi.fn() });
 
     render(
-      <ProtectedRoute>
-        <div>Protected Content</div>
-      </ProtectedRoute>
+      <MemoryRouter>
+        <ProtectedRoute>
+          <div>Protected Content</div>
+        </ProtectedRoute>
+      </MemoryRouter>
     );
 
     expect(screen.getByText('Protected Content')).toBeInTheDocument();
-    expect(screen.getByTestId('auth')).toBeInTheDocument();
-    expect(screen.queryByText('Please sign in')).not.toBeInTheDocument();
   });
 
-  it('shows sign-in message when not authenticated', () => {
-    mockUseIsAuthenticated.mockReturnValue(false);
+  it('redirects when not authenticated', () => {
+    mockUseAuth.mockReturnValue({ isAuthenticated: false, username: null, token: null, login: vi.fn(), logout: vi.fn() });
 
     render(
-      <ProtectedRoute>
-        <div>Protected Content</div>
-      </ProtectedRoute>
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <ProtectedRoute>
+          <div>Protected Content</div>
+        </ProtectedRoute>
+      </MemoryRouter>
     );
 
     expect(screen.queryByText('Protected Content')).not.toBeInTheDocument();
-    expect(screen.getByTestId('unauth')).toBeInTheDocument();
-    expect(screen.getByText('Please sign in')).toBeInTheDocument();
   });
 });

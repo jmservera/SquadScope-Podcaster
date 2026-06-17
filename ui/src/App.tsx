@@ -1,8 +1,10 @@
 import React from 'react';
-import type { IPublicClientApplication } from '@azure/msal-browser';
+// MSAL import kept as dead code for future optional use (#273)
+// import type { IPublicClientApplication } from '@azure/msal-browser';
 import { Routes, Route, Link } from 'react-router-dom';
-import { useIsAuthenticated } from '@azure/msal-react';
+// import { useIsAuthenticated } from '@azure/msal-react';
 import AuthProvider from './components/AuthProvider';
+import { useAuth } from './components/AuthProvider';
 import LoginButton from './components/LoginButton';
 import Dashboard from './components/Dashboard';
 import JobMonitor from './components/JobMonitor';
@@ -11,12 +13,8 @@ import CredentialSettings from './components/CredentialSettings';
 import PodcastConfigEditor from './components/PodcastConfigEditor';
 import ProtectedRoute from './components/ProtectedRoute';
 
-interface AppProps {
-  msalInstance?: IPublicClientApplication;
-}
-
 const LandingPage: React.FC = () => {
-  const isAuthenticated = useIsAuthenticated();
+  const { isAuthenticated } = useAuth();
 
   return (
     <div>
@@ -40,9 +38,9 @@ const LandingPage: React.FC = () => {
   );
 };
 
-const App: React.FC<AppProps> = ({ msalInstance }) => {
+const App: React.FC = () => {
   return (
-    <AuthProvider msalInstance={msalInstance}>
+    <AuthProvider>
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route

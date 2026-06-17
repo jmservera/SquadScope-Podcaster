@@ -1,22 +1,19 @@
 import React from 'react';
-import { useMsal } from '@azure/msal-react';
+// MSAL import kept as dead code for future optional use (#273)
+// import { useMsal } from '@azure/msal-react';
+import { useAuth } from './AuthProvider';
 
 const Dashboard: React.FC = () => {
-  const { accounts } = useMsal();
-  const account = accounts[0];
+  const { username } = useAuth();
 
   return (
     <div>
-      <h1>Welcome, {account?.name}</h1>
+      <h1>Welcome, {username}</h1>
       <section>
         <h2>Account Info</h2>
         <dl>
           <dt>Username</dt>
-          <dd>{account?.username}</dd>
-          <dt>Tenant ID</dt>
-          <dd>{account?.tenantId}</dd>
-          <dt>Home Account ID</dt>
-          <dd>{account?.homeAccountId}</dd>
+          <dd>{username}</dd>
         </dl>
       </section>
     </div>

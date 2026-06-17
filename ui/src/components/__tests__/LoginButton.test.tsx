@@ -1,100 +1,46 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  InteractionStatus,
-  Logger,
-  type AccountInfo,
-  type IPublicClientApplication,
-} from '@azure/msal-browser';
 import LoginButton from '../LoginButton';
 
-const mockLoginPopup = vi.fn().mockResolvedValue({});
-const mockLogoutPopup = vi.fn().mockResolvedValue({});
-
-vi.mock('@azure/msal-react', () => ({
-  useMsal: vi.fn(),
-  useIsAuthenticated: vi.fn(),
-}));
-
-import { useMsal, useIsAuthenticated } from '@azure/msal-react';
-
-const mockUseMsal = vi.mocked(useMsal);
-const mockUseIsAuthenticated = vi.mocked(useIsAuthenticated);
-const logger = new Logger({});
-
-type MsalContext = ReturnType<typeof useMsal>;
-
-function createMsalContext(accounts: AccountInfo[]): MsalContext {
+vi.mock('../AuthProvider', () => {
+  const mockUseAuth = vi.fn();
   return {
-    instance: {
-      loginPopup: mockLoginPopup,
-      logoutPopup: mockLogoutPopup,
-    } as unknown as IPublicClientApplication,
-    accounts,
-    inProgress: InteractionStatus.None,
-    logger,
+    useAuth: mockUseAuth,
+    __mockUseAuth: mockUseAuth,
   };
-}
+});
+
+import { __mockUseAuth } from '../AuthProvider';
+const mockUseAuth = __mockUseAuth as ReturnType<typeof vi.fn>;
 
 describe('LoginButton', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('renders Sign In button when not authenticated', () => {
-    mockUseIsAuthenticated.mockReturnValue(false);
-    mockUseMsal.mockReturnValue(createMsalContext([]));
+  it('renders login form when not authenticated', () => {
+    mockUseAuth.mockReturnValue({ isAuthenticated: false, username: null, token: null, login: vi.fn(), logout: vi.fn() });
 
     render(<LoginButton />);
+    expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument();
   });
 
-  it('calls loginPopup when Sign In is clicked', () => {
-    mockUseIsAuthenticated.mockReturnValue(false);
-    mockUseMsal.mockReturnValue(createMsalContext([]));
-
-    render(<LoginButton />);
-    fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
-    expect(mockLoginPopup).toHaveBeenCalledTimes(1);
-  });
-
-  it('renders Sign Out button and user name when authenticated', () => {
-    mockUseIsAuthenticated.mockReturnValue(true);
-    mockUseMsal.mockReturnValue(
-      createMsalContext([
-        {
-          name: 'Test User',
-          username: 'test@example.com',
-          tenantId: 'tid',
-          homeAccountId: 'hid',
-          environment: 'login.microsoftonline.com',
-          localAccountId: 'lid',
-        },
-      ])
-    );
+  it('renders Sign Out button and username when authenticated', () => {
+    mockUseAuth.mockReturnValue({ isAuthenticated: true, username: 'admin', token: 'tok', login: vi.fn(), logout: vi.fn() });
 
     render(<LoginButton />);
     expect(screen.getByRole('button', { name: /sign out/i })).toBeInTheDocument();
-    expect(screen.getByText('Test User')).toBeInTheDocument();
+    expect(screen.getByText('admin')).toBeInTheDocument();
   });
 
-  it('calls logoutPopup when Sign Out is clicked', () => {
-    mockUseIsAuthenticated.mockReturnValue(true);
-    mockUseMsal.mockReturnValue(
-      createMsalContext([
-        {
-          name: 'Test User',
-          username: 'test@example.com',
-          tenantId: 'tid',
-          homeAccountId: 'hid',
-          environment: 'login.microsoftonline.com',
-          localAccountId: 'lid',
-        },
-      ])
-    );
+  it('calls logout when Sign Out is clicked', () => {
+    const mockLogout = vi.fn();
+    mockUseAuth.mockReturnValue({ isAuthenticated: true, username: 'admin', token: 'tok', login: vi.fn(), logout: mockLogout });
 
     render(<LoginButton />);
     fireEvent.click(screen.getByRole('button', { name: /sign out/i }));
-    expect(mockLogoutPopup).toHaveBeenCalledTimes(1);
+    expect(mockLogout).toHaveBeenCalledTimes(1);
   });
 });

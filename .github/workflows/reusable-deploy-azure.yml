@@ -117,6 +117,9 @@ jobs:
           PODCAST_AUTO_PUBLISH_VAR: ${{ vars.PODCAST_AUTO_PUBLISH }}
           MSAL_CLIENT_ID_VAR: ${{ vars.MSAL_CLIENT_ID }}
           MSAL_AUTHORITY_VAR: ${{ vars.MSAL_AUTHORITY }}
+          UI_AUTH_USERNAME_SECRET: ${{ secrets.UI_AUTH_USERNAME }}
+          UI_AUTH_PASSWORD_SECRET: ${{ secrets.UI_AUTH_PASSWORD }}
+          UI_AUTH_SECRET_SECRET: ${{ secrets.UI_AUTH_SECRET }}
         run: |
           set -euo pipefail
           set +x
@@ -159,6 +162,9 @@ jobs:
             echo "PODCAST_AUTO_PUBLISH=${PODCAST_AUTO_PUBLISH_VAR:-false}"
             echo "MSAL_CLIENT_ID=${MSAL_CLIENT_ID_VAR:-}"
             echo "MSAL_AUTHORITY=${MSAL_AUTHORITY_VAR:-}"
+            echo "UI_AUTH_USERNAME=${UI_AUTH_USERNAME_SECRET:-}"
+            echo "UI_AUTH_PASSWORD=${UI_AUTH_PASSWORD_SECRET:-}"
+            echo "UI_AUTH_SECRET=${UI_AUTH_SECRET_SECRET:-}"
           } >> "$GITHUB_ENV"
 
           echo "Using Storage Account name: $storage_account_name"
@@ -278,6 +284,9 @@ jobs:
             --parameters uiImage="${UI_IMAGE}" \
             --parameters msalClientId="${MSAL_CLIENT_ID:-}" \
             --parameters msalAuthority="${MSAL_AUTHORITY:-}" \
+            --parameters uiAuthUsername="${UI_AUTH_USERNAME:-}" \
+            --parameters uiAuthPassword="${UI_AUTH_PASSWORD:-}" \
+            --parameters uiAuthSecret="${UI_AUTH_SECRET:-}" \
             --output none
           echo "### ACA-only Podcaster infrastructure deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "Region: $AZURE_LOCATION" >> "$GITHUB_STEP_SUMMARY"

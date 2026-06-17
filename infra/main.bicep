@@ -145,6 +145,18 @@ param msalClientId string = ''
 @description('MSAL authority URL for Azure Entra ID authentication.')
 param msalAuthority string = ''
 
+@secure()
+@description('Simple auth username for the UI when MSAL/Entra is not available (#273).')
+param uiAuthUsername string = ''
+
+@secure()
+@description('Simple auth password for the UI when MSAL/Entra is not available (#273).')
+param uiAuthPassword string = ''
+
+@secure()
+@description('HMAC secret for signing UI auth JWTs (#273).')
+param uiAuthSecret string = ''
+
 @description('Deploy VNet + private endpoints for ACA ↔ Storage connectivity. Requires environment recreation if enabling on an existing deployment (VNet integration is a create-time-only setting).')
 param deployVnet bool = false
 
@@ -373,6 +385,9 @@ module ui 'modules/ui.bicep' = if (deployUiApp) {
     msalClientId: msalClientId
     msalAuthority: msalAuthority
     apiBaseUrl: deployApiApp ? 'https://${api!.outputs.apiAppFqdn}' : ''
+    uiAuthUsername: uiAuthUsername
+    uiAuthPassword: uiAuthPassword
+    uiAuthSecret: uiAuthSecret
   }
 }
 
