@@ -52,7 +52,10 @@ def claim_pipeline(
         if not isinstance(doc, dict):
             doc = {}
 
-        generation = doc.setdefault("generation", {})
+        generation = doc.get("generation")
+        if not isinstance(generation, dict):
+            generation = {}
+            doc["generation"] = generation
         lock = generation.get("pipeline_lock")
 
         if isinstance(lock, dict):
@@ -79,12 +82,12 @@ def claim_pipeline(
         )
         return False
     except Exception:
-        # If we can't update the manifest at all, allow the pipeline to proceed
-        # (fail-open) — the storage layer's optimistic concurrency still protects writes.
+        # Storage errors are fail-closed — refusing to proceed without a confirmed
+        # lock prevents both pipelines from running simultaneously on the same job.
         logger.warning(
-            "pipeline lock check failed for job_id=%s, proceeding anyway", job_id, exc_info=True
+            "pipeline lock check failed for job_id=%s, refusing to proceed", job_id, exc_info=True
         )
-        return True
+        return False
 
 
 class _LockConflict(Exception):

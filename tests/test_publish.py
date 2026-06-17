@@ -636,7 +636,7 @@ class TestVideoArtifactDetection:
     """Tests for video MP4 detection in publish_episode (#268)."""
 
     def test_mp4_preferred_over_audio_when_present(self, tmp_path, spotify_env, monkeypatch):
-        """When an MP4 exists alongside the MP3, publish uses video/mp4."""
+        """When an MP4 exists alongside the MP3, publish uses video/mp4 even in dry run."""
         monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
         mp3_file = tmp_path / "episode.mp3"
         mp3_file.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 1000)
@@ -648,8 +648,8 @@ class TestVideoArtifactDetection:
         result = publish_episode(mp3_file, "Test", "<p>desc</p>", wav_path=wav_file)
         assert result.dry_run is True
         assert result.status == "published"
-        # MP4 detection now runs before dry-run, so upload_path should be the video
         assert result.details["upload_path"] == str(mp4_file)
+        assert result.details["upload_format"] == "mp4"
         assert result.details["content_type"] == "video/mp4"
 
     def test_no_mp4_uses_audio(self, tmp_path, spotify_env, monkeypatch):
@@ -664,3 +664,4 @@ class TestVideoArtifactDetection:
         assert result.dry_run is True
         assert result.details["upload_format"] == "wav"
         assert result.details["upload_path"] == str(wav_file)
+        assert result.details["content_type"] == "audio/wav"

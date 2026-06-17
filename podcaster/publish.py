@@ -658,17 +658,11 @@ def publish_episode(
             resolved_description, timestamps_html
         )
 
-    # Resolve credentials
-    try:
-        env_show_id, env_sp_dc, env_sp_key = _get_credentials()
-        show_id = show_id or env_show_id
-        sp_dc = sp_dc or env_sp_dc
-        sp_key = sp_key or env_sp_key
-    except ValueError as exc:
-        return PublishResult(status="failed", error=str(exc))
-
     # Detect video artifact — if MP4 exists alongside audio, prefer it for Spotify upload
     # Spotify for Creators supports: mp3, m4a, wav, mpg, mp4, mov
+    # NOTE: This only checks the local filesystem. If the MP4 is stored in blob/remote
+    # storage but not downloaded locally, it will not be detected. The caller is
+    # responsible for ensuring video artifacts are present on the local path when needed.
     video_path: Path | None = None
     if mp3_path is not None:
         candidate_mp4 = mp3_path.parent / (mp3_path.stem + ".mp4")
@@ -687,11 +681,12 @@ def publish_episode(
     # Dry-run mode
     if _is_dry_run():
         logger.info(
-            "DRY RUN: Would publish %s as '%s' (%s, format=%s)",
+            "DRY RUN: Would publish %s as '%s' (%s, format=%s, content_type=%s)",
             upload_path,
             resolved_title,
             publish_behavior,
             format_label,
+            content_type,
         )
         return PublishResult(
             anchor_episode_id=None,
@@ -702,11 +697,21 @@ def publish_episode(
                 "mp3_path": str(mp3_path),
                 "wav_path": str(wav_path) if wav_path else None,
                 "upload_path": str(upload_path) if upload_path else None,
-                "upload_format": upload_format,
+                "upload_format": format_label.lower(),
                 "content_type": content_type,
                 "publish_behavior": publish_behavior,
             },
         )
+
+    # Resolve credentials
+    try:
+        env_show_id, env_sp_dc, env_sp_key = _get_credentials()
+        show_id = show_id or env_show_id
+        sp_dc = sp_dc or env_sp_dc
+        sp_key = sp_key or env_sp_key
+    except ValueError as exc:
+        return PublishResult(status="failed", error=str(exc))
+
 
     if upload_path is None or not upload_path.exists():
         return PublishResult(
