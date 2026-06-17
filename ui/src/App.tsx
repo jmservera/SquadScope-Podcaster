@@ -7,6 +7,8 @@ import LoginButton from './components/LoginButton';
 import Dashboard from './components/Dashboard';
 import JobMonitor from './components/JobMonitor';
 import EpisodeList from './components/EpisodeList';
+import CredentialSettings from './components/CredentialSettings';
+import PodcastConfigEditor from './components/PodcastConfigEditor';
 import ProtectedRoute from './components/ProtectedRoute';
 
 interface AppProps {
@@ -25,7 +27,9 @@ const LandingPage: React.FC = () => {
           <p>
             You are signed in. Visit the <Link to="/dashboard">Dashboard</Link>{' '}
             or the <Link to="/jobs">Job Monitor</Link>{' '}
-            or browse <Link to="/episodes">Episodes</Link>.
+            or browse <Link to="/episodes">Episodes</Link>{' '}
+            or manage <Link to="/credentials">Credentials</Link>{' '}
+            and <Link to="/podcast-config">Podcast Config</Link>.
           </p>
           <Dashboard />
         </div>
@@ -69,6 +73,22 @@ const App: React.FC<AppProps> = ({ msalInstance }) => {
           element={
             <ProtectedRoute>
               <EpisodeList />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/credentials"
+          element={
+            <ProtectedRoute>
+              <CredentialSettings />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/podcast-config"
+          element={
+            <ProtectedRoute>
+              <PodcastConfigEditor />
             </ProtectedRoute>
           }
         />
