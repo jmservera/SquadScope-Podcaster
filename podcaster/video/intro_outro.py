@@ -4,9 +4,10 @@ Part of the Video Epic (jmservera/SquadScope-Coordinator#23).
 Renders HTML pages with CSS animations in headless Chromium, recording
 them as WebM files for video_compose.py to concatenate.
 
-Design decision: Playwright was chosen over hyperframes (Issue #241 discussion)
-because it supports full CSS animations and produces consistent WebM output
-that integrates cleanly with the ffmpeg-based video_compose pipeline.
+Tool selection: Issue #241 research evaluated HyperFrames and Playwright.
+Playwright was selected for this implementation because it supports full CSS
+animations and produces consistent WebM output that integrates cleanly with
+the ffmpeg-based video_compose pipeline. See #241 for the decision record.
 
 Related: jmservera/SquadScope-Podcaster#241.
 """
@@ -259,17 +260,20 @@ def _record_html_to_video(
         page.set_content(html_content)
         # Wait for CSS animations to play
         page.wait_for_timeout(duration_ms)
-        # Retrieve the video path via Playwright API before closing
-        video_path = Path(page.video.path())
+        # Close context first to finalize the recorded video file
+        video = page.video
         context.close()
+        # Resolve path after close (Playwright finalizes on close)
+        video_path = Path(video.path()) if video else None
         browser.close()
 
     # Rename Playwright's auto-named file to the desired output path
-    if video_path.exists():
+    if video_path and video_path.exists():
         video_path.rename(output_path)
     else:
         raise RuntimeError(
-            f"Playwright did not produce a video file at {video_path}"
+            f"Playwright did not produce a video file"
+            f"{f' at {video_path}' if video_path else ''}"
         )
 
     if not output_path.exists():
