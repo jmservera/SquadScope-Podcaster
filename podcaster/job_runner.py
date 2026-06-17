@@ -272,7 +272,13 @@ def run_synthesis(
             storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
 
             # Validate at least one listener-facing publish target is configured (#268)
-            has_spotify = spotify_publish_config is not None or auto_publish_enabled()
+            # spotify_publish_config being present is not enough — Spotify must also be
+            # enabled via SPOTIFY_PUBLISH_ENABLED=true for actual publishing to occur.
+            has_spotify = (
+                (spotify_publish_config is not None
+                 and os.environ.get("SPOTIFY_PUBLISH_ENABLED", "").lower() == "true")
+                or auto_publish_enabled()
+            )
             has_youtube = os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true"
             if not has_spotify and not has_youtube:
                 logger.warning(

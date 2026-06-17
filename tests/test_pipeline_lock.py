@@ -26,12 +26,15 @@ class FakeStorageBackend:
         self._content = updated
         from dataclasses import dataclass
 
+        _p = path
+        _ct = content_type
+
         @dataclass
         class _Artifact:
-            path: str = path
-            url: str = f"http://test/{path}"
+            path: str = _p
+            url: str = f"http://test/{_p}"
             size_bytes: int = len(updated)
-            content_type: str = content_type
+            content_type: str = _ct
 
         return _Artifact()
 
@@ -72,3 +75,22 @@ class TestClaimPipeline:
         storage = FakeStorageBackend(b"not json")
         # Should still claim (treats as empty)
         assert claim_pipeline(storage, "job-1", PIPELINE_AUDIO) is True
+
+    def test_claim_when_generation_is_not_dict(self):
+        """If manifest.generation is a non-dict value, it should be replaced safely."""
+        initial = json.dumps({"generation": "corrupted_string"}).encode()
+        storage = FakeStorageBackend(initial)
+        assert claim_pipeline(storage, "job-1", PIPELINE_AUDIO) is True
+        doc = storage.content
+        assert isinstance(doc["generation"], dict)
+        assert doc["generation"]["pipeline_lock"]["pipeline"] == "audio"
+
+    def test_storage_error_returns_false(self):
+        """Storage errors should fail-closed (return False), not fail-open."""
+
+        class FailingStorage(FakeStorageBackend):
+            def update_bytes(self, path, content_type, update):
+                raise OSError("storage unavailable")
+
+        storage = FailingStorage(None)
+        assert claim_pipeline(storage, "job-1", PIPELINE_AUDIO) is False
