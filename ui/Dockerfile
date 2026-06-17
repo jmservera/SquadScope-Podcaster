@@ -15,7 +15,7 @@ COPY . .
 RUN npm run build
 
 # --- runtime stage ---
-FROM nginxinc/nginx-unprivileged:1.28-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:cc300bd2e8776708a8c2c8686a74f06eadf221c5ce01e85d0e821955d7a730ab
 
 # Remove default site.
 USER root
