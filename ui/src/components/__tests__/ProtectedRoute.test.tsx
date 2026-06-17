@@ -1,19 +1,14 @@
-import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import ProtectedRoute from '../ProtectedRoute';
+import { useAuth } from '../AuthProvider';
 
-vi.mock('../AuthProvider', () => {
-  const mockUseAuth = vi.fn();
-  return {
-    useAuth: mockUseAuth,
-    __mockUseAuth: mockUseAuth,
-  };
-});
+vi.mock('../AuthProvider', () => ({
+  useAuth: vi.fn(),
+}));
 
-import { __mockUseAuth } from '../AuthProvider';
-const mockUseAuth = __mockUseAuth as ReturnType<typeof vi.fn>;
+const mockUseAuth = vi.mocked(useAuth);
 
 describe('ProtectedRoute', () => {
   beforeEach(() => {
