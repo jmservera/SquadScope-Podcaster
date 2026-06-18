@@ -45,6 +45,12 @@ HEALTH_PATH = "/healthz"
 def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str, Any]) -> None:
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
     handler.send_response(status)
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+    handler.send_header(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, x-podcaster-api-key",
+    )
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
@@ -57,6 +63,16 @@ class GenerateHandler(BaseHTTPRequestHandler):
     # Suppress per-request logging to stderr (use structured logging instead).
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, x-podcaster-api-key",
+        )
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == HEALTH_PATH:
