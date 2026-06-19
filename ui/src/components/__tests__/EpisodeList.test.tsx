@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../api/episodes', () => ({
   fetchEpisodes: vi.fn(),
-  resolveAudioUrl: vi.fn((url: string) => `http://localhost${url}`),
+  getAuthenticatedAudioUrl: vi.fn((url: string) => `http://localhost${url}?token=test-token`),
 }));
 
 import { fetchEpisodes } from '../../api/episodes';
@@ -43,7 +43,7 @@ describe('EpisodeList', () => {
     render(<EpisodeList />);
 
     await waitFor(() => {
-      expect(screen.getByText('Episodes (1)')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Episodes' })).toBeInTheDocument();
     });
     expect(screen.getByText('Test Episode')).toBeInTheDocument();
     expect(screen.getAllByText('published')).toHaveLength(2);

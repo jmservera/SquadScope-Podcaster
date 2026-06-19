@@ -1,5 +1,5 @@
 import { authenticatedFetch } from './apiClient';
-import { env } from '../env';
+import { env, getAuthToken } from '../env';
 
 const API_BASE = env.VITE_MONITORING_API_URL || env.VITE_API_BASE_URL || '';
 
@@ -31,4 +31,13 @@ export async function fetchEpisodes(limit = 20, offset = 0): Promise<EpisodeList
 export function resolveAudioUrl(audioUrl: string): string {
   if (audioUrl.startsWith('http')) return audioUrl;
   return `${API_BASE}${audioUrl}`;
+}
+
+/** Build an audio URL with token query param for browser media elements. */
+export function getAuthenticatedAudioUrl(audioUrl: string): string {
+  const resolved = resolveAudioUrl(audioUrl);
+  const token = getAuthToken();
+  if (!token) return resolved;
+  const separator = resolved.includes('?') ? '&' : '?';
+  return `${resolved}${separator}token=${encodeURIComponent(token)}`;
 }

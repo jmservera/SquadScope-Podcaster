@@ -8,57 +8,40 @@ import {
   type LogEntry,
 } from '../api/jobs';
 
-const STATUS_COLORS: Record<string, string> = {
-  accepted: '#2196F3',
-  synthesized_publish_ready: '#4CAF50',
-  synthesized_review_ready: '#FF9800',
-  synthesis_failed: '#f44336',
-  synthesis_skipped: '#9E9E9E',
-  dry_run: '#607D8B',
-};
+function badgeClass(status: string): string {
+  if (status.includes('failed') || status.includes('error')) return 'badge badge-error';
+  if (status.includes('ready') || status === 'published') return 'badge badge-success';
+  if (status.includes('warning') || status.includes('review')) return 'badge badge-warning';
+  return 'badge badge-info';
+}
 
 function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLORS[status] || '#757575';
-  return (
-    <span
-      style={{
-        backgroundColor: color,
-        color: '#fff',
-        padding: '2px 8px',
-        borderRadius: '4px',
-        fontSize: '0.8em',
-      }}
-    >
-      {status.replace(/_/g, ' ')}
-    </span>
-  );
+  return <span className={badgeClass(status)}>{status.replace(/_/g, ' ')}</span>;
 }
 
 function QualityScore({ score }: { score: number | null }) {
   if (score === null) return <span>—</span>;
   const pct = Math.round(score * 100);
-  const color = pct >= 80 ? '#4CAF50' : pct >= 50 ? '#FF9800' : '#f44336';
-  return <span style={{ color, fontWeight: 'bold' }}>{pct}%</span>;
+  const className = pct >= 80 ? 'success-text' : pct >= 50 ? 'warning-text' : 'error-text';
+  return <span className={className}>{pct}%</span>;
 }
 
 function LogViewer({ logs }: { logs: LogEntry[] }) {
   return (
-    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85em' }}>
+    <table className="styled-table">
       <thead>
-        <tr style={{ borderBottom: '1px solid #ddd' }}>
-          <th style={{ textAlign: 'left', padding: '4px 8px' }}>Time</th>
-          <th style={{ textAlign: 'left', padding: '4px 8px' }}>Event</th>
-          <th style={{ textAlign: 'left', padding: '4px 8px' }}>Detail</th>
+        <tr>
+          <th>Time</th>
+          <th>Event</th>
+          <th>Detail</th>
         </tr>
       </thead>
       <tbody>
         {logs.map((log, i) => (
-          <tr key={i} style={{ borderBottom: '1px solid #eee' }}>
-            <td style={{ padding: '4px 8px', fontFamily: 'monospace' }}>
-              {log.timestamp || '—'}
-            </td>
-            <td style={{ padding: '4px 8px' }}>{log.event}</td>
-            <td style={{ padding: '4px 8px', color: '#666' }}>{log.detail || ''}</td>
+          <tr key={i}>
+            <td className="mono-text">{log.timestamp || '—'}</td>
+            <td>{log.event}</td>
+            <td className="muted-text">{log.detail || ''}</td>
           </tr>
         ))}
       </tbody>
@@ -119,20 +102,25 @@ const JobMonitor: React.FC = () => {
   }
 
   if (loading) return <p>Loading jobs…</p>;
-  if (error) return <p style={{ color: 'red' }}>Error: {error}</p>;
+  if (error) return <p className="error-text">Error: {error}</p>;
 
   return (
     <div>
-      <h2>Pipeline Jobs ({total})</h2>
+      <div className="page-header">
+        <div>
+          <h1>Pipeline Jobs</h1>
+          <p className="page-subtitle">{total} jobs available for inspection.</p>
+        </div>
+      </div>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="styled-table">
         <thead>
-          <tr style={{ borderBottom: '2px solid #333' }}>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Job ID</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Status</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Week</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Title</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Created</th>
+          <tr>
+            <th>Job ID</th>
+            <th>Status</th>
+            <th>Week</th>
+            <th>Title</th>
+            <th>Created</th>
           </tr>
         </thead>
         <tbody>
@@ -143,40 +131,35 @@ const JobMonitor: React.FC = () => {
               onKeyDown={(event) => handleJobRowKeyDown(event, job.job_id)}
               role="button"
               tabIndex={0}
-              style={{
-                cursor: 'pointer',
-                borderBottom: '1px solid #eee',
-                backgroundColor:
-                  selectedJob?.job_id === job.job_id ? '#f0f7ff' : undefined,
-              }}
+              className={`row-button${selectedJob?.job_id === job.job_id ? ' is-active' : ''}`}
             >
-              <td style={{ padding: '8px', fontFamily: 'monospace', fontSize: '0.85em' }}>
-                {job.job_id}
-              </td>
-              <td style={{ padding: '8px' }}>
-                <StatusBadge status={job.status} />
-              </td>
-              <td style={{ padding: '8px' }}>{job.week || '—'}</td>
-              <td style={{ padding: '8px' }}>{job.article_title || '—'}</td>
-              <td style={{ padding: '8px', fontSize: '0.85em' }}>
-                {job.created_at || '—'}
-              </td>
+            <td className="mono-text">{job.job_id}</td>
+            <td>
+              <StatusBadge status={job.status} />
+            </td>
+            <td>{job.week || '—'}</td>
+            <td>{job.article_title || '—'}</td>
+            <td className="mono-text">{job.created_at || '—'}</td>
             </tr>
           ))}
         </tbody>
       </table>
 
       {detailError && (
-        <p style={{ color: 'red', marginTop: '16px' }}>Error: {detailError}</p>
+        <p className="error-text section-spacing">Error: {detailError}</p>
       )}
 
       {selectedJob && (
-        <div style={{ marginTop: '24px' }}>
-          <h3>
-            Job: {selectedJob.job_id}{' '}
-            <QualityScore score={selectedJob.quality_score} />
-          </h3>
-          <dl>
+        <div className="card panel-spacing">
+          <div className="page-header">
+            <div>
+             <h2>Job: {selectedJob.job_id}</h2>
+             <p className="page-subtitle">
+               Quality score <QualityScore score={selectedJob.quality_score} />
+             </p>
+            </div>
+          </div>
+          <dl className="detail-list">
             <dt>Status</dt>
             <dd><StatusBadge status={selectedJob.status} /></dd>
             <dt>Week</dt>
@@ -199,9 +182,9 @@ const JobMonitor: React.FC = () => {
               <>
                 <dt>Warnings</dt>
                 <dd>
-                  <ul style={{ margin: 0, paddingLeft: '16px' }}>
+                  <ul>
                     {selectedJob.warnings.map((w, i) => (
-                      <li key={i} style={{ color: '#FF9800' }}>{w}</li>
+                      <li className="warning-text" key={i}>{w}</li>
                     ))}
                   </ul>
                 </dd>
@@ -209,7 +192,7 @@ const JobMonitor: React.FC = () => {
             )}
           </dl>
 
-          <h4>Logs</h4>
+          <h3>Logs</h3>
           {logsLoading ? (
             <p>Loading logs…</p>
           ) : logs.length > 0 ? (

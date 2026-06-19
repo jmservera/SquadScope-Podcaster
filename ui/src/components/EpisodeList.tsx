@@ -1,19 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import {
   fetchEpisodes,
-  resolveAudioUrl,
+  getAuthenticatedAudioUrl,
   type Episode,
 } from '../api/episodes';
 
+function badgeClass(status: string): string {
+  if (status === 'published') return 'badge badge-success';
+  if (status.includes('failed') || status.includes('error')) return 'badge badge-error';
+  if (status.includes('ready') || status.includes('review')) return 'badge badge-warning';
+  return 'badge badge-info';
+}
+
 function AudioPlayer({ audioUrl }: { audioUrl: string }) {
-  const resolvedUrl = resolveAudioUrl(audioUrl);
+  const resolvedUrl = getAuthenticatedAudioUrl(audioUrl);
 
   return (
-    <audio
-      controls
-      preload="metadata"
-      style={{ width: '100%', maxWidth: '400px' }}
-    >
+    <audio className="audio-player" controls preload="metadata">
       <source src={resolvedUrl} type="audio/mpeg" />
       Your browser does not support the audio element.
     </audio>
@@ -57,20 +60,25 @@ const EpisodeList: React.FC = () => {
   }
 
   if (loading) return <p>Loading episodes…</p>;
-  if (error) return <p style={{ color: 'red' }}>Error: {error}</p>;
+  if (error) return <p className="error-text">Error: {error}</p>;
 
   return (
     <div>
-      <h2>Episodes ({total})</h2>
+      <div className="page-header">
+        <div>
+          <h1>Episodes</h1>
+          <p className="page-subtitle">{total} episodes available for review and playback.</p>
+        </div>
+      </div>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="styled-table">
         <thead>
-          <tr style={{ borderBottom: '2px solid #333' }}>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Title</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Status</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Quality</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Publish Status</th>
-            <th style={{ textAlign: 'left', padding: '8px' }}>Created</th>
+          <tr>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Quality</th>
+            <th>Publish Status</th>
+            <th>Created</th>
           </tr>
         </thead>
         <tbody>
@@ -81,45 +89,40 @@ const EpisodeList: React.FC = () => {
                 onKeyDown={(event) => handleRowKeyDown(event, ep.job_id)}
                 role="button"
                 tabIndex={0}
-                style={{
-                  cursor: 'pointer',
-                  borderBottom: '1px solid #eee',
-                  backgroundColor: expandedId === ep.job_id ? '#f0f7ff' : undefined,
-                }}
+                className={`row-button${expandedId === ep.job_id ? ' is-active' : ''}`}
               >
-                <td style={{ padding: '8px' }}>{ep.title || '—'}</td>
-                <td style={{ padding: '8px' }}>
-                  <span
-                    style={{
-                      padding: '2px 8px',
-                      borderRadius: '4px',
-                      fontSize: '0.8em',
-                      backgroundColor: ep.status === 'published' ? '#4CAF50' : '#FF9800',
-                      color: '#fff',
-                    }}
-                  >
-                    {ep.status.replace(/_/g, ' ')}
-                  </span>
+                <td>
+                  <div className="episode-title">{ep.title || 'Untitled episode'}</div>
                 </td>
-                <td style={{ padding: '8px' }}>
+                <td>
+                  <span className={badgeClass(ep.status)}>{ep.status.replace(/_/g, ' ')}</span>
+                </td>
+                <td>
                   {ep.quality_score !== null
                     ? `${Math.round(ep.quality_score * 100)}%`
                     : '—'}
                 </td>
-                <td style={{ padding: '8px' }}>{ep.publish_status || '—'}</td>
-                <td style={{ padding: '8px', fontSize: '0.85em' }}>
-                  {ep.created_at || '—'}
-                </td>
+                <td>{ep.publish_status || '—'}</td>
+                <td className="mono-text">{ep.created_at || '—'}</td>
               </tr>
               {expandedId === ep.job_id && (
                 <tr>
-                  <td colSpan={5} style={{ padding: '16px', backgroundColor: '#fafafa' }}>
+                  <td className="table-detail-cell" colSpan={5}>
                     <strong>Audio Preview</strong>
-                    <div style={{ marginTop: '8px' }}>
+                    <div className="audio-preview">
                       {ep.audio_url ? (
-                        <AudioPlayer audioUrl={ep.audio_url} />
+                        <>
+                          <AudioPlayer audioUrl={ep.audio_url} />
+                          <a
+                            className="btn btn-secondary"
+                            href={getAuthenticatedAudioUrl(ep.audio_url)}
+                            download
+                          >
+                            Download MP3
+                          </a>
+                        </>
                       ) : (
-                        <span style={{ color: '#999' }}>No audio file available</span>
+                        <span className="muted-text">No audio file available</span>
                       )}
                     </div>
                   </td>
