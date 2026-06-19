@@ -360,7 +360,7 @@ class TestReviewEndpoint:
 
 
 class TestUiNavigationEndpoints:
-    def test_credentials_reports_configured_auth(self, client, storage, monkeypatch):
+    def test_credentials_list_returns_empty(self, client, storage, monkeypatch):
         monkeypatch.setenv("PODCASTER_API_KEY", "api-key")
         monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
         monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
@@ -369,7 +369,7 @@ class TestUiNavigationEndpoints:
         resp = client.get("/api/credentials", headers={"x-podcaster-api-key": "api-key"})
 
         assert resp.status_code == 200
-        assert resp.json() == {"api_key_configured": True, "ui_auth_configured": True}
+        assert resp.json() == {"credentials": []}
 
     def test_config_endpoints_return_runtime_settings(self, client, storage, monkeypatch):
         monkeypatch.setenv("MONITORING_API_KEY", "monitor-key")
@@ -650,3 +650,108 @@ class TestGetArticle:
 
         resp = client.get("/api/articles/articles/test.md")
         assert "max-age=300" in resp.headers.get("cache-control", "")
+
+
+class TestCredentialsCrudMonitoring:
+    """Tests for credential CRUD endpoints wired into monitoring.py."""
+
+    def _headers(self, monkeypatch):
+        monkeypatch.setenv("PODCASTER_API_KEY", "api-key")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        return {"x-podcaster-api-key": "api-key"}
+
+    def test_credentials_crud_lifecycle(self, client, storage, monkeypatch):
+        headers = self._headers(monkeypatch)
+
+        # Create
+        resp = client.post(
+            "/api/credentials",
+            json={"type": "spotify", "label": "Main", "values": {"show_id": "s1"}},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        created = resp.json()
+        assert created["type"] == "spotify"
+        assert created["label"] == "Main"
+        assert created["is_set"] is True
+        assert "values" not in created
+        cred_id = created["id"]
+
+        # List
+        resp = client.get("/api/credentials", headers=headers)
+        assert resp.status_code == 200
+        assert len(resp.json()["credentials"]) == 1
+
+        # Update
+        resp = client.put(
+            f"/api/credentials/{cred_id}",
+            json={"type": "youtube", "label": "Updated", "values": {"ch": "c1"}},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["label"] == "Updated"
+
+        # Delete
+        resp = client.delete(f"/api/credentials/{cred_id}", headers=headers)
+        assert resp.status_code == 204
+
+        # Verify empty
+        resp = client.get("/api/credentials", headers=headers)
+        assert resp.json() == {"credentials": []}
+
+    def test_credentials_require_ui_auth_secret(self, client, storage, monkeypatch):
+        monkeypatch.setenv("PODCASTER_API_KEY", "api-key")
+        monkeypatch.delenv("UI_AUTH_SECRET", raising=False)
+        resp = client.get("/api/credentials", headers={"x-podcaster-api-key": "api-key"})
+        assert resp.status_code == 501
+
+    def test_credentials_reject_invalid_payload(self, client, storage, monkeypatch):
+        headers = self._headers(monkeypatch)
+        resp = client.post(
+            "/api/credentials",
+            json={"type": "bad", "label": "", "values": []},
+            headers=headers,
+        )
+        assert resp.status_code == 400
+
+
+class TestPodcastConfigMonitoring:
+    """Tests for podcast-config endpoints wired into monitoring.py."""
+
+    def _headers(self, monkeypatch):
+        monkeypatch.setenv("PODCASTER_API_KEY", "api-key")
+        return {"x-podcaster-api-key": "api-key"}
+
+    def test_get_returns_defaults(self, client, storage, monkeypatch):
+        headers = self._headers(monkeypatch)
+        resp = client.get("/api/podcast-config", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == ""
+        assert data["auto_publish"] is False
+
+    def test_save_and_read_back(self, client, storage, monkeypatch):
+        headers = self._headers(monkeypatch)
+        payload = {
+            "name": "My Show",
+            "intro_music_url": None,
+            "outro_music_url": None,
+            "publish_targets": [],
+            "auto_publish": False,
+            "schedule": None,
+        }
+        resp = client.post("/api/podcast-config", json=payload, headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "My Show"
+
+        resp = client.get("/api/podcast-config", headers=headers)
+        assert resp.json()["name"] == "My Show"
+
+    def test_save_rejects_invalid(self, client, storage, monkeypatch):
+        headers = self._headers(monkeypatch)
+        resp = client.post(
+            "/api/podcast-config",
+            json={"name": "", "publish_targets": [], "auto_publish": "yes"},
+            headers=headers,
+        )
+        assert resp.status_code == 400

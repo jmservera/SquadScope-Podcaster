@@ -6,16 +6,21 @@ proxy for media files so the UI can play audio/video without direct
 storage credentials.
 
 Endpoints:
-  POST /api/generate         — validate payload and enqueue generation
-  POST /api/review           — process review decisions
-  GET /api/jobs              — list recent jobs (paginated)
-  GET /api/jobs/{id}         — job detail (manifest + derived status)
-  GET /api/jobs/{id}/logs    — job logs (runner state transitions)
-  GET /api/stream/{path}     — stream blob content (audio/video/images)
-  GET /api/episodes          — list generated episodes with metadata
-  GET /api/articles/{path}   — serve markdown articles for preview
-  GET /api/credentials       — auth configuration status for the UI
-  GET/POST /api/config       — runtime config inspection placeholder
+  POST /api/generate              — validate payload and enqueue generation
+  POST /api/review                — process review decisions
+  GET /api/jobs                   — list recent jobs (paginated)
+  GET /api/jobs/{id}              — job detail (manifest + derived status)
+  GET /api/jobs/{id}/logs         — job logs (runner state transitions)
+  GET /api/stream/{path}          — stream blob content (audio/video/images)
+  GET /api/episodes               — list generated episodes with metadata
+  GET /api/articles/{path}        — serve markdown articles for preview
+  GET /api/credentials            — list credentials (summaries, no secrets)
+  POST /api/credentials           — create a credential
+  PUT /api/credentials/{id}       — update a credential
+  DELETE /api/credentials/{id}    — delete a credential
+  GET /api/podcast-config         — get podcast configuration
+  POST /api/podcast-config        — save podcast configuration
+  GET/POST /api/config            — runtime config inspection placeholder
 """
 
 from __future__ import annotations
@@ -43,9 +48,11 @@ from podcaster.auth import (
     verify_auth,
     verify_token,
 )
+from podcaster.credentials import CredentialStore
 from podcaster.failure_reporting import report_failure
 from podcaster.jobs import failed_response, run_generation_job
 from podcaster.orchestration import process_review_decision
+from podcaster.podcast_config import PodcastConfigStore
 from podcaster.storage import StorageBackend, create_storage_backend
 from podcaster.validation import validate_payload_details
 
@@ -466,15 +473,86 @@ def healthz():
     return {"status": "healthy"}
 
 
+def _get_credential_store() -> CredentialStore:
+    """Build a CredentialStore using UI_AUTH_SECRET for Fernet encryption."""
+    secret = os.environ.get("UI_AUTH_SECRET", "").strip()
+    if not secret:
+        raise HTTPException(
+            status_code=501,
+            detail="UI_AUTH_SECRET is required for credential encryption",
+        )
+    return CredentialStore(get_storage(), secret=secret)
+
+
 @app.get("/api/credentials", dependencies=[Depends(verify_auth)])
-def api_credentials():
-    """Return credential configuration status for the UI (#279)."""
-    return {
-        "api_key_configured": bool(
-            os.environ.get("MONITORING_API_KEY") or os.environ.get("PODCASTER_API_KEY")
-        ),
-        "ui_auth_configured": get_credentials() is not None,
-    }
+def api_credentials_list():
+    """List stored credentials (summaries only, no secret values)."""
+    store = _get_credential_store()
+    return store.list_credentials()
+
+
+@app.post("/api/credentials", dependencies=[Depends(verify_auth)])
+async def api_credentials_create(request: Request):
+    """Create a new credential entry."""
+    payload, error_response = await _read_json_object(request)
+    if error_response is not None:
+        return error_response
+    assert payload is not None
+    store = _get_credential_store()
+    try:
+        summary = store.create_credential(payload)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return JSONResponse(status_code=200, content=summary)
+
+
+@app.put("/api/credentials/{credential_id}", dependencies=[Depends(verify_auth)])
+async def api_credentials_update(credential_id: str, request: Request):
+    """Update an existing credential entry."""
+    payload, error_response = await _read_json_object(request)
+    if error_response is not None:
+        return error_response
+    assert payload is not None
+    store = _get_credential_store()
+    try:
+        summary = store.update_credential(credential_id, payload)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if summary is None:
+        raise HTTPException(status_code=404, detail="credential not found")
+    return JSONResponse(status_code=200, content=summary)
+
+
+@app.delete("/api/credentials/{credential_id}", dependencies=[Depends(verify_auth)])
+def api_credentials_delete(credential_id: str):
+    """Delete a credential entry."""
+    store = _get_credential_store()
+    deleted = store.delete_credential(credential_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="credential not found")
+    return Response(status_code=204)
+
+
+@app.get("/api/podcast-config", dependencies=[Depends(verify_auth)])
+def api_podcast_config_get():
+    """Return podcast configuration."""
+    store = PodcastConfigStore(get_storage())
+    return store.get()
+
+
+@app.post("/api/podcast-config", dependencies=[Depends(verify_auth)])
+async def api_podcast_config_save(request: Request):
+    """Save podcast configuration."""
+    payload, error_response = await _read_json_object(request)
+    if error_response is not None:
+        return error_response
+    assert payload is not None
+    store = PodcastConfigStore(get_storage())
+    try:
+        document = store.save(payload)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return JSONResponse(status_code=200, content=document)
 
 
 @app.get("/api/config", dependencies=[Depends(verify_auth)])
