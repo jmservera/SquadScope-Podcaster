@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Callable
 
 from podcaster.costs import build_cost_ledger
 from podcaster.generation import manifest_bytes
-from podcaster.orchestration import auto_publish_enabled, auto_publish_job, manifest_path, persist_manifest, process_review_decision
+from podcaster.orchestration import (
+    _prepare_audio_files,
+    auto_publish_enabled,
+    auto_publish_job,
+    manifest_path,
+    persist_manifest,
+    process_review_decision,
+)
 from podcaster.publish import PublishResult
-from podcaster.storage import LocalStorageBackend
+from podcaster.storage import LocalStorageBackend, StoredArtifact
 
 
 def _job_id() -> str:
@@ -79,6 +87,26 @@ def _stage(storage: LocalStorageBackend, manifest: dict) -> None:
     storage.put_bytes(manifest_path(job_id), manifest_bytes(manifest), "application/json; charset=utf-8")
     storage.put_bytes(f"jobs/{job_id}/audio/{job_id}.mp3", b"mp3", "audio/mpeg")
     storage.put_bytes(f"jobs/{job_id}/audio/{job_id}.wav", b"wav", "audio/wav")
+
+
+class _RemoteStorageStub:
+    def __init__(self, blobs: dict[str, bytes]) -> None:
+        self._blobs = blobs
+
+    def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
+        raise NotImplementedError
+
+    def get_bytes(self, path: str) -> bytes | None:
+        return self._blobs.get(path)
+
+    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> StoredArtifact:
+        raise NotImplementedError
+
+    def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
+        raise NotImplementedError
+
+    def generate_download_url(self, path: str, *, expiry):
+        raise NotImplementedError
 
 
 def test_review_approval_publishes_when_audio_is_ready(tmp_path: Path, monkeypatch) -> None:
@@ -171,3 +199,62 @@ def test_persist_manifest_uses_storage_update_bytes() -> None:
         import shutil
 
         shutil.rmtree(storage.root, ignore_errors=True)
+
+
+def test_prepare_audio_files_remote_storage_downloads_mp4_when_present(tmp_path: Path, monkeypatch) -> None:
+    job_id = _job_id()
+    manifest = _synthesized_manifest()
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    storage = _RemoteStorageStub(
+        {
+            f"jobs/{job_id}/audio/{job_id}.mp3": b"mp3-bytes",
+            f"jobs/{job_id}/audio/{job_id}.wav": b"wav-bytes",
+            f"jobs/{job_id}/audio/{job_id}.mp4": b"mp4-bytes",
+        }
+    )
+
+    (mp3_path, wav_path), cleanup_dir = _prepare_audio_files(storage, manifest, job_id)
+
+    assert cleanup_dir == tmp_path / "podcaster-publish-work" / job_id
+    assert mp3_path.read_bytes() == b"mp3-bytes"
+    assert wav_path is not None
+    assert wav_path.read_bytes() == b"wav-bytes"
+    candidate_mp4 = mp3_path.with_suffix(".mp4")
+    assert candidate_mp4 == cleanup_dir / f"{job_id}.mp4"
+    assert candidate_mp4.read_bytes() == b"mp4-bytes"
+
+
+def test_prepare_audio_files_remote_storage_skips_missing_mp4(tmp_path: Path, monkeypatch) -> None:
+    job_id = _job_id()
+    manifest = _synthesized_manifest()
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    storage = _RemoteStorageStub(
+        {
+            f"jobs/{job_id}/audio/{job_id}.mp3": b"mp3-bytes",
+            f"jobs/{job_id}/audio/{job_id}.wav": b"wav-bytes",
+        }
+    )
+
+    (mp3_path, wav_path), cleanup_dir = _prepare_audio_files(storage, manifest, job_id)
+
+    assert cleanup_dir == tmp_path / "podcaster-publish-work" / job_id
+    assert wav_path is not None
+    assert not mp3_path.with_suffix(".mp4").exists()
+
+
+def test_prepare_audio_files_remote_storage_falls_back_to_video_mp4(tmp_path: Path, monkeypatch) -> None:
+    job_id = _job_id()
+    manifest = _synthesized_manifest()
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    storage = _RemoteStorageStub(
+        {
+            f"jobs/{job_id}/audio/{job_id}.mp3": b"mp3-bytes",
+            f"jobs/{job_id}/audio/{job_id}.wav": b"wav-bytes",
+            f"jobs/{job_id}/video/{job_id}.mp4": b"video-mp4-bytes",
+        }
+    )
+
+    (mp3_path, _wav_path), cleanup_dir = _prepare_audio_files(storage, manifest, job_id)
+
+    assert cleanup_dir == tmp_path / "podcaster-publish-work" / job_id
+    assert mp3_path.with_suffix(".mp4").read_bytes() == b"video-mp4-bytes"

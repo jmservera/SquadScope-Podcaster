@@ -175,6 +175,15 @@ def _prepare_audio_files(
         if wav_bytes is not None:
             wav_path = scratch_dir / Path(wav_blob_path).name
             wav_path.write_bytes(wav_bytes)
+
+    mp4_blob_path = f"jobs/{job_id}/audio/{job_id}.mp4"
+    mp4_bytes = storage.get_bytes(mp4_blob_path)
+    if mp4_bytes is None:
+        mp4_blob_path = f"jobs/{job_id}/video/{job_id}.mp4"
+        mp4_bytes = storage.get_bytes(mp4_blob_path)
+    if mp4_bytes is not None:
+        mp4_path = scratch_dir / f"{mp3_path.stem}.mp4"
+        mp4_path.write_bytes(mp4_bytes)
     return (mp3_path, wav_path), scratch_dir
 
 
