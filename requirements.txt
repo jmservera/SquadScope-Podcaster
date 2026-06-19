@@ -1,6 +1,6 @@
 azure-identity>=1.17,<2
 azure-storage-blob>=12.20,<13
-cryptography>=43,<45
+cryptography>=48.0.1
 fastapi>=0.115,<1
 pydantic>=2,<3
 playwright>=1.53,<2
