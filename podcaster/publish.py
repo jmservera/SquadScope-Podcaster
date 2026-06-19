@@ -348,8 +348,10 @@ def _process_upload(
     station_id: str,
     user_id: str,
     filename: str,
+    content_type: str = "audio/mpeg",
 ) -> None:
     """Step 5: Trigger processing and poll until complete."""
+    is_video = content_type.startswith("video/")
     url = f"{_BASE_URL}/v3/upload/{upload_id}/process_upload"
     _retry_request(
         session,
@@ -359,10 +361,10 @@ def _process_upload(
         params=_mums_params(),
         json={
             "userId": int(user_id),
-            "uploadType": "default",
+            "uploadType": "video" if is_video else "default",
             "origin": "episode-media:upload",
             "caption": filename,
-            "isExtractedFromVideo": False,
+            "isExtractedFromVideo": is_video,
             "isMultipartUpload": False,
             "uploadId": upload_id,
             "episodeId": anchor_id,
@@ -748,6 +750,7 @@ def publish_episode(
             station_id=station_id,
             user_id=user_id,
             filename=upload_path.name,
+            content_type=content_type,
         )
 
         # Step 6: Set metadata
