@@ -332,7 +332,7 @@ def _upload_audio(
             "Authorization": None,
             **_MUTATION_HEADERS,
         },
-        timeout=120,
+        timeout=300,
     )
     etag = resp.headers.get("ETag", "").strip('"')
     logger.info("Uploaded audio (%d bytes, %s), ETag=%s", len(audio_data), content_type, etag)
@@ -351,6 +351,7 @@ def _process_upload(
     content_type: str = "audio/mpeg",
 ) -> None:
     """Step 5: Trigger processing and poll until complete."""
+    is_video = content_type.startswith("video/")
     url = f"{_BASE_URL}/v3/upload/{upload_id}/process_upload"
     _retry_request(
         session,
@@ -360,11 +361,12 @@ def _process_upload(
         params=_mums_params(),
         json={
             "userId": int(user_id),
-            "uploadType": "default",
+            "uploadType": "video" if is_video else "default",
             "origin": "episode-media:upload",
             "caption": filename,
-            "isExtractedFromVideo": False,
-            "isMultipartUpload": False,
+            "isExtractedFromVideo": is_video,
+            "isMultipartUpload": True,
+            "parts": [{"partNumber": 1, "etag": etag}],
             "uploadId": upload_id,
             "episodeId": anchor_id,
             "stationId": int(station_id),
@@ -372,17 +374,29 @@ def _process_upload(
         timeout=30,
     )
 
-    # Poll for completion
+    # Poll for completion; tolerate 404 (media may not be visible immediately)
     status_url = f"{_BASE_URL}/v3/upload/media/{upload_id}"
     for attempt in range(_POLL_MAX_ATTEMPTS):
         time.sleep(_POLL_INTERVAL)
-        resp = _retry_request(
-            session,
-            "GET",
-            status_url,
-            params=_mums_params(includeMediaValidation="true"),
-            timeout=15,
-        )
+        try:
+            resp = session.request(
+                "GET",
+                status_url,
+                params=_mums_params(includeMediaValidation="true"),
+                timeout=15,
+            )
+            if resp.status_code == 404:
+                logger.debug(
+                    "Upload %s status poll 404 (not ready), attempt %d",
+                    upload_id,
+                    attempt + 1,
+                )
+                continue
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            raise SpotifyPublishError(
+                f"Upload {upload_id} status poll failed: {exc}"
+            ) from exc
         data = resp.json()
         # Status is in data.request.state (not top-level "status")
         request_data = data.get("request", data)
@@ -659,22 +673,26 @@ def publish_episode(
             resolved_description, timestamps_html
         )
 
-    # Detect video artifact — if MP4 exists alongside audio, log it but upload audio only.
-    # Spotify's anchor.fm API does not reliably support video podcast uploads unless the
-    # show is explicitly enabled for video. Fall back to audio to ensure publish succeeds.
+    # Detect video artifact — prefer MP4 when present and non-empty.
+    video_path: Path | None = None
     if mp3_path is not None:
         candidate_mp4 = mp3_path.parent / (mp3_path.stem + ".mp4")
         if candidate_mp4.exists() and candidate_mp4.stat().st_size > 0:
+            video_path = candidate_mp4
             logger.info(
-                "Video artifact found (%s, %.1f MB) but skipping video upload — "
-                "Spotify show may not support video podcasts. Publishing audio only.",
+                "Video artifact found (%s, %.1f MB) — preferring MP4 for Spotify upload.",
                 candidate_mp4.name,
                 candidate_mp4.stat().st_size / 1_048_576,
             )
 
-    upload_path = wav_path if upload_format == "wav" else mp3_path
-    content_type = "audio/wav" if upload_format == "wav" else "audio/mpeg"
-    format_label = "WAV" if upload_format == "wav" else "MP3"
+    if video_path is not None:
+        upload_path: Path | None = video_path
+        content_type = "video/mp4"
+        format_label = "MP4"
+    else:
+        upload_path = wav_path if upload_format == "wav" else mp3_path
+        content_type = "audio/wav" if upload_format == "wav" else "audio/mpeg"
+        format_label = "WAV" if upload_format == "wav" else "MP3"
 
     # Dry-run mode
     if _is_dry_run():
