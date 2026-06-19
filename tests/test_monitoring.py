@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any, Callable
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from podcaster.monitoring import app, set_storage, JobSummary, JobDetailResponse
+from podcaster.orchestration import JobPublishOutcome
+from podcaster.publish import PublishResult
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +291,115 @@ class TestHealthz:
         assert resp.json() == {"status": "healthy"}
 
 
+class TestGenerateEndpoint:
+    def test_invalid_json_returns_400(self, client, storage):
+        resp = client.post("/api/generate", data="not json", headers={"content-type": "application/json"})
+
+        assert resp.status_code == 400
+        assert "request body must be valid JSON" in resp.json()["errors"]
+
+    def test_validation_errors_return_contract_body(self, client, storage):
+        resp = client.post("/api/generate", json={})
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["status"] == "failed"
+        assert "week is required" in body["errors"]
+
+    @patch("podcaster.monitoring.run_generation_job")
+    def test_success_returns_202(self, mock_run_generation_job, client, storage):
+        mock_run_generation_job.return_value = type(
+            "Result",
+            (),
+            {"response": {"job_id": "job-123", "status": "accepted", "errors": [], "warnings": []}},
+        )()
+
+        resp = client.post(
+            "/api/generate",
+            json={"week": "2026-W24", "article_url": "https://example.com/article"},
+        )
+
+        assert resp.status_code == 202
+        assert resp.json()["job_id"] == "job-123"
+
+
+class TestReviewEndpoint:
+    def test_missing_required_fields_return_400(self, client, storage):
+        resp = client.post("/api/review", json={"reviewer": "leela"})
+
+        assert resp.status_code == 400
+        assert "job_id is required" in resp.json()["errors"]
+
+    @patch("podcaster.monitoring.process_review_decision")
+    def test_returns_manifest_and_publish_status(self, mock_process_review_decision, client, storage):
+        mock_process_review_decision.return_value = JobPublishOutcome(
+            manifest={"job_id": "podcast-1", "status": "published", "review_status": "approved"},
+            publish_result=PublishResult(status="published"),
+        )
+
+        resp = client.post(
+            "/api/review",
+            json={"job_id": "podcast-1", "reviewer": "leela", "decision": "approved"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["job_id"] == "podcast-1"
+        assert body["publish_status"] == "published"
+        assert body["manifest"]["status"] == "published"
+
+    @patch("podcaster.monitoring.process_review_decision", side_effect=ValueError("missing job"))
+    def test_returns_404_for_missing_job(self, _mock_process_review_decision, client, storage):
+        resp = client.post(
+            "/api/review",
+            json={"job_id": "podcast-1", "reviewer": "leela", "decision": "approved"},
+        )
+
+        assert resp.status_code == 404
+        assert resp.json() == {"error": "missing job"}
+
+
+class TestUiNavigationEndpoints:
+    def test_credentials_reports_configured_auth(self, client, storage, monkeypatch):
+        monkeypatch.setenv("PODCASTER_API_KEY", "api-key")
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "secret-256-bits-long-enough")
+
+        resp = client.get("/api/credentials", headers={"x-podcaster-api-key": "api-key"})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"api_key_configured": True, "ui_auth_configured": True}
+
+    def test_config_endpoints_return_runtime_settings(self, client, storage, monkeypatch):
+        monkeypatch.setenv("MONITORING_API_KEY", "monitor-key")
+        monkeypatch.setenv("STORAGE_BACKEND", "local")
+        monkeypatch.setenv("AZURE_STORAGE_CONTAINER", "episodes")
+        headers = {"x-podcaster-api-key": "monitor-key"}
+
+        get_resp = client.get("/api/config", headers=headers)
+        post_resp = client.post("/api/config", json={"foo": "bar"}, headers=headers)
+
+        assert get_resp.status_code == 200
+        assert get_resp.json()["storage_backend"] == "local"
+        assert get_resp.json()["storage_container"] == "episodes"
+        assert get_resp.json()["cors_origins"] == ["*"]
+        assert post_resp.status_code == 200
+        assert post_resp.json()["status"] == "accepted"
+
+    def test_cors_preflight_allows_wildcard_origin(self, client, storage):
+        resp = client.options(
+            "/api/generate",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["access-control-allow-origin"] == "*"
+
+
 class TestMonitoringAuth:
     def test_allows_requests_without_configured_key(self, client, storage):
         resp = client.get("/api/jobs")
@@ -538,4 +650,3 @@ class TestGetArticle:
 
         resp = client.get("/api/articles/articles/test.md")
         assert "max-age=300" in resp.headers.get("cache-control", "")
-
