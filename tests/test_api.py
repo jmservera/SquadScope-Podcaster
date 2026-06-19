@@ -79,6 +79,10 @@ def make_handler(method: str, path: str, body: bytes = b"", headers: dict[str, s
         GenerateHandler.do_GET(handler)  # type: ignore[arg-type]
     elif method == "POST":
         GenerateHandler.do_POST(handler)  # type: ignore[arg-type]
+    elif method == "PUT":
+        GenerateHandler.do_PUT(handler)  # type: ignore[arg-type]
+    elif method == "DELETE":
+        GenerateHandler.do_DELETE(handler)  # type: ignore[arg-type]
     return handler
 
 
