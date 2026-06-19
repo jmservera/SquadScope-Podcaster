@@ -26,11 +26,15 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from podcaster.auth_core import create_token, get_credentials, verify_token
+from podcaster.credentials import CredentialStore
 from podcaster.jobs import failed_response, run_generation_job
 from podcaster.failure_reporting import report_failure
 from podcaster.orchestration import process_review_decision
+from podcaster.podcast_config import PodcastConfigStore
+from podcaster.storage import create_storage_backend
 from podcaster.validation import is_authorized, validate_payload_details
 
 logger = logging.getLogger("podcaster.api")
@@ -46,7 +50,7 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str,
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+    handler.send_header("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS")
     handler.send_header(
         "Access-Control-Allow-Headers",
         "Content-Type, Authorization, x-podcaster-api-key",
@@ -55,6 +59,18 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str,
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
     handler.wfile.write(payload)
+
+
+def _empty_response(handler: BaseHTTPRequestHandler, status: int) -> None:
+    handler.send_response(status)
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS")
+    handler.send_header(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, x-podcaster-api-key",
+    )
+    handler.send_header("Content-Length", "0")
+    handler.end_headers()
 
 
 class GenerateHandler(BaseHTTPRequestHandler):
@@ -67,7 +83,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.OK)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
             "Content-Type, Authorization, x-podcaster-api-key",
@@ -75,20 +91,36 @@ class GenerateHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == HEALTH_PATH:
+        path = urlparse(self.path).path
+        if path == HEALTH_PATH:
             _json_response(self, HTTPStatus.OK, {"status": "healthy"})
             return
-        if self.path == "/api/auth/me":
+        if path == "/api/auth/me":
             GenerateHandler._handle_auth_me(self)
+            return
+        if path == "/api/credentials":
+            GenerateHandler._handle_credentials_list(self)
+            return
+        if path == "/api/podcast-config":
+            GenerateHandler._handle_podcast_config_get(self)
             return
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/api/auth/login":
+        path = urlparse(self.path).path
+        if path == "/api/auth/login":
             GenerateHandler._handle_auth_login(self)
             return
 
-        if self.path not in {"/api/generate", "/api/review"}:
+        if path == "/api/credentials":
+            GenerateHandler._handle_credentials_create(self)
+            return
+
+        if path == "/api/podcast-config":
+            GenerateHandler._handle_podcast_config_save(self)
+            return
+
+        if path not in {"/api/generate", "/api/review"}:
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
 
@@ -116,10 +148,24 @@ class GenerateHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, response)
             return
 
-        if self.path == "/api/generate":
+        if path == "/api/generate":
             GenerateHandler._handle_generate(self, payload)
             return
         GenerateHandler._handle_review(self, payload)
+
+    def do_PUT(self) -> None:  # noqa: N802
+        credential_id = GenerateHandler._credential_id_from_path(self)
+        if credential_id is None:
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return
+        GenerateHandler._handle_credentials_update(self, credential_id)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        credential_id = GenerateHandler._credential_id_from_path(self)
+        if credential_id is None:
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return
+        GenerateHandler._handle_credentials_delete(self, credential_id)
 
     # ------------------------------------------------------------------
     # Auth endpoints (#275)
@@ -198,6 +244,157 @@ class GenerateHandler(BaseHTTPRequestHandler):
         _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "Invalid or missing credentials"})
 
     # ------------------------------------------------------------------
+
+    def _credential_id_from_path(self) -> str | None:
+        path = urlparse(self.path).path
+        prefix = "/api/credentials/"
+        if not path.startswith(prefix):
+            return None
+        credential_id = unquote(path[len(prefix) :]).strip()
+        return credential_id or None
+
+    def _is_request_authorized(self) -> bool:
+        headers = {k: v for k, v in self.headers.items()}
+        if is_authorized(headers):
+            return True
+
+        authorization = self.headers.get("Authorization", "")
+        creds = get_credentials()
+        if authorization.startswith("Bearer ") and creds is not None:
+            import jwt as _jwt
+
+            try:
+                verify_token(authorization[7:], creds[2])
+            except _jwt.PyJWTError:
+                return False
+            return True
+        return False
+
+    def _read_json_object(self) -> tuple[dict[str, Any] | None, str | None]:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        if content_length > MAX_REQUEST_BODY:
+            return None, "request body too large"
+
+        try:
+            raw_body = self.rfile.read(content_length)
+            payload = json.loads(raw_body)
+        except (json.JSONDecodeError, ValueError):
+            return None, "request body must be valid JSON"
+        if not isinstance(payload, dict):
+            return None, "request body must be a JSON object"
+        return payload, None
+
+    def _handle_credentials_list(self) -> None:
+        if not GenerateHandler._is_request_authorized(self):
+            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        try:
+            response = CredentialStore(create_storage_backend()).list_credentials()
+        except RuntimeError as exc:
+            status = HTTPStatus.NOT_IMPLEMENTED if "UI_AUTH_SECRET" in str(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            _json_response(self, status, {"error": str(exc)})
+            return
+        _json_response(self, HTTPStatus.OK, response)
+
+    def _handle_credentials_create(self) -> None:
+        if not GenerateHandler._is_request_authorized(self):
+            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        payload, error = GenerateHandler._read_json_object(self)
+        if error is not None:
+            _json_response(
+                self,
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE if error == "request body too large" else HTTPStatus.BAD_REQUEST,
+                {"error": error},
+            )
+            return
+        assert payload is not None
+        try:
+            summary = CredentialStore(create_storage_backend()).create_credential(payload)
+        except ValueError as exc:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        except RuntimeError as exc:
+            status = HTTPStatus.NOT_IMPLEMENTED if "UI_AUTH_SECRET" in str(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            _json_response(self, status, {"error": str(exc)})
+            return
+        _json_response(self, HTTPStatus.OK, summary)
+
+    def _handle_credentials_update(self, credential_id: str) -> None:
+        if not GenerateHandler._is_request_authorized(self):
+            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        payload, error = GenerateHandler._read_json_object(self)
+        if error is not None:
+            _json_response(
+                self,
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE if error == "request body too large" else HTTPStatus.BAD_REQUEST,
+                {"error": error},
+            )
+            return
+        assert payload is not None
+        try:
+            summary = CredentialStore(create_storage_backend()).update_credential(credential_id, payload)
+        except ValueError as exc:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        except RuntimeError as exc:
+            status = HTTPStatus.NOT_IMPLEMENTED if "UI_AUTH_SECRET" in str(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            _json_response(self, status, {"error": str(exc)})
+            return
+        if summary is None:
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "credential not found"})
+            return
+        _json_response(self, HTTPStatus.OK, summary)
+
+    def _handle_credentials_delete(self, credential_id: str) -> None:
+        if not GenerateHandler._is_request_authorized(self):
+            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        try:
+            deleted = CredentialStore(create_storage_backend()).delete_credential(credential_id)
+        except RuntimeError as exc:
+            status = HTTPStatus.NOT_IMPLEMENTED if "UI_AUTH_SECRET" in str(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            _json_response(self, status, {"error": str(exc)})
+            return
+        if not deleted:
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "credential not found"})
+            return
+        _empty_response(self, HTTPStatus.NO_CONTENT)
+
+    def _handle_podcast_config_get(self) -> None:
+        if not GenerateHandler._is_request_authorized(self):
+            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        try:
+            response = PodcastConfigStore(create_storage_backend()).get()
+        except RuntimeError as exc:
+            _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+        _json_response(self, HTTPStatus.OK, response)
+
+    def _handle_podcast_config_save(self) -> None:
+        if not GenerateHandler._is_request_authorized(self):
+            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        payload, error = GenerateHandler._read_json_object(self)
+        if error is not None:
+            _json_response(
+                self,
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE if error == "request body too large" else HTTPStatus.BAD_REQUEST,
+                {"error": error},
+            )
+            return
+        assert payload is not None
+        try:
+            response = PodcastConfigStore(create_storage_backend()).save(payload)
+        except ValueError as exc:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        except RuntimeError as exc:
+            _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+        _json_response(self, HTTPStatus.OK, response)
 
     def _handle_generate(self, payload: dict[str, Any]) -> None:
         validation = validate_payload_details(payload)
