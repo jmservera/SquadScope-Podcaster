@@ -106,4 +106,14 @@ def verify_auth(
         if hmac.compare_digest(x_podcaster_api_key, configured_api_key):
             return
 
+    # --- Try query parameter token (for browser media elements) ---
+    query_token = request.query_params.get("token", "")
+    if query_token and creds is not None:
+        _secret = creds[2]
+        try:
+            verify_token(query_token, _secret)
+            return
+        except jwt.PyJWTError:
+            pass
+
     raise HTTPException(status_code=401, detail="Invalid or missing credentials")

@@ -12,16 +12,18 @@ import EpisodeList from './components/EpisodeList';
 import CredentialSettings from './components/CredentialSettings';
 import PodcastConfigEditor from './components/PodcastConfigEditor';
 import ProtectedRoute from './components/ProtectedRoute';
+import Layout from './components/Layout';
+import './layout.css';
 
 const LandingPage: React.FC = () => {
   const { isAuthenticated } = useAuth();
 
   return (
-    <div>
+    <div className="landing-page">
       <h1>SquadScope Podcaster</h1>
       <LoginButton />
       {isAuthenticated ? (
-        <div>
+        <div className="landing-actions">
           <p>
             You are signed in. Visit the <Link to="/dashboard">Dashboard</Link>{' '}
             or the <Link to="/jobs">Job Monitor</Link>{' '}
@@ -47,7 +49,9 @@ const App: React.FC = () => {
           path="/dashboard"
           element={
             <ProtectedRoute>
-              <Dashboard />
+              <Layout>
+                <Dashboard />
+              </Layout>
             </ProtectedRoute>
           }
         />
@@ -55,7 +59,9 @@ const App: React.FC = () => {
           path="/jobs"
           element={
             <ProtectedRoute>
-              <JobMonitor />
+              <Layout>
+                <JobMonitor />
+              </Layout>
             </ProtectedRoute>
           }
         />
@@ -63,7 +69,9 @@ const App: React.FC = () => {
           path="/episodes"
           element={
             <ProtectedRoute>
-              <EpisodeList />
+              <Layout>
+                <EpisodeList />
+              </Layout>
             </ProtectedRoute>
           }
         />
@@ -71,7 +79,9 @@ const App: React.FC = () => {
           path="/credentials"
           element={
             <ProtectedRoute>
-              <CredentialSettings />
+              <Layout>
+                <CredentialSettings />
+              </Layout>
             </ProtectedRoute>
           }
         />
@@ -79,7 +89,9 @@ const App: React.FC = () => {
           path="/podcast-config"
           element={
             <ProtectedRoute>
-              <PodcastConfigEditor />
+              <Layout>
+                <PodcastConfigEditor />
+              </Layout>
             </ProtectedRoute>
           }
         />
