@@ -1,19 +1,21 @@
-"""Job monitoring API for the SquadScope Podcaster dashboard (#249, #250).
+"""FastAPI API server for podcaster monitoring and generation endpoints.
 
 Exposes read-only endpoints to list, inspect, and retrieve logs for
 pipeline jobs stored in the storage backend. Also provides a streaming
 proxy for media files so the UI can play audio/video without direct
 storage credentials.
 
-Runs as a separate FastAPI application (not the main /api/generate server).
-
 Endpoints:
+  POST /api/generate         — validate payload and enqueue generation
+  POST /api/review           — process review decisions
   GET /api/jobs              — list recent jobs (paginated)
   GET /api/jobs/{id}         — job detail (manifest + derived status)
   GET /api/jobs/{id}/logs    — job logs (runner state transitions)
   GET /api/stream/{path}     — stream blob content (audio/video/images)
   GET /api/episodes          — list generated episodes with metadata
   GET /api/articles/{path}   — serve markdown articles for preview
+  GET /api/credentials       — auth configuration status for the UI
+  GET/POST /api/config       — runtime config inspection placeholder
 """
 
 from __future__ import annotations
@@ -22,13 +24,14 @@ import json
 import logging
 import os
 import hmac
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from podcaster.auth import (
@@ -40,23 +43,28 @@ from podcaster.auth import (
     verify_auth,
     verify_token,
 )
+from podcaster.failure_reporting import report_failure
+from podcaster.jobs import failed_response, run_generation_job
+from podcaster.orchestration import process_review_decision
 from podcaster.storage import StorageBackend, create_storage_backend
+from podcaster.validation import validate_payload_details
 
 app = FastAPI(title="Podcaster Job Monitor", version="0.1.0")
 
-# Allow the UI dev server (Vite) and production origins.
-_CORS_ORIGINS = [
-    origin.strip()
-    for origin in os.environ.get(
-        "MONITORING_CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
-    ).split(",")
-    if origin.strip()
-]
+MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MiB
+
+# Allow all origins by default for backward compatibility with the API container.
+_CORS_ORIGINS_RAW = os.environ.get("MONITORING_CORS_ORIGINS", "*")
+_CORS_ORIGINS = (
+    ["*"]
+    if _CORS_ORIGINS_RAW.strip() == "*"
+    else [origin.strip() for origin in _CORS_ORIGINS_RAW.split(",") if origin.strip()]
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
-    allow_methods=["GET", "POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -123,6 +131,29 @@ def set_storage(storage: StorageBackend | None) -> None:
     """Inject a storage backend (used in tests)."""
     global _storage
     _storage = storage
+
+
+async def _read_json_object(request: Request) -> tuple[dict[str, Any] | None, JSONResponse | None]:
+    content_length = int(request.headers.get("content-length", "0") or "0")
+    if content_length > MAX_REQUEST_BODY:
+        return None, JSONResponse(status_code=413, content={"error": "request body too large"})
+
+    raw_body = await request.body()
+    try:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, ValueError):
+        return None, JSONResponse(
+            status_code=400,
+            content=failed_response(["request body must be valid JSON"]),
+        )
+
+    if not isinstance(payload, dict):
+        return None, JSONResponse(
+            status_code=400,
+            content=failed_response(["request body must be a JSON object"]),
+        )
+
+    return payload, None
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +300,115 @@ def _extract_logs(manifest: dict[str, Any]) -> list[LogEntry]:
 # ---------------------------------------------------------------------------
 
 
+@app.post("/api/generate", dependencies=[Depends(verify_auth)])
+async def api_generate(request: Request):
+    """Validate payload and run the generation pipeline (#279)."""
+    payload, error_response = await _read_json_object(request)
+    if error_response is not None:
+        return error_response
+
+    assert payload is not None
+    validation = validate_payload_details(payload)
+    if validation.errors:
+        response = failed_response(validation.errors, validation.warnings or None)
+        return JSONResponse(status_code=400, content=response)
+
+    try:
+        result = run_generation_job(payload, validation_warnings=validation.warnings or None)
+    except Exception:
+        logger.exception("unhandled error in generation job")
+        report_failure(
+            container="podcaster-api",
+            error_type="GenerateEndpointError",
+            error_message="Unhandled exception in /api/generate",
+        )
+        response = failed_response(["internal server error"])
+        return JSONResponse(status_code=500, content=response)
+
+    status_code = 202
+    if result.response.get("status") == "failed":
+        status_code = 400
+    elif result.response.get("status") == "dry_run":
+        status_code = 200
+
+    logger.info(
+        "api_generate job_id=%s status=%s dry_run=%s",
+        result.response.get("job_id"),
+        result.response.get("status"),
+        bool(payload.get("dry_run")),
+    )
+    return JSONResponse(status_code=status_code, content=result.response)
+
+
+@app.post("/api/review", dependencies=[Depends(verify_auth)])
+async def api_review(request: Request):
+    """Process a review decision for a generated episode (#279)."""
+    payload, error_response = await _read_json_object(request)
+    if error_response is not None:
+        return error_response
+
+    assert payload is not None
+    job_id = str(payload.get("job_id") or "").strip()
+    reviewer = str(payload.get("reviewer") or "").strip()
+    decision = str(payload.get("decision") or "").strip()
+    notes = str(payload.get("notes") or "")
+    run_url = str(payload.get("run_url") or "").strip() or None
+    reviewed_at = str(payload.get("reviewed_at") or "").strip() or datetime.now(timezone.utc).replace(
+        microsecond=0
+    ).isoformat().replace("+00:00", "Z")
+    publish_on_approval = payload.get("publish_on_approval", True) is not False
+
+    errors: list[str] = []
+    if not job_id:
+        errors.append("job_id is required")
+    if not reviewer:
+        errors.append("reviewer is required")
+    if decision not in {"approved", "changes_requested", "rejected"}:
+        errors.append("decision must be approved, changes_requested, or rejected")
+    if errors:
+        return JSONResponse(status_code=400, content={"errors": errors})
+
+    try:
+        outcome = process_review_decision(
+            job_id,
+            reviewer=reviewer,
+            decision=decision,
+            reviewed_at=reviewed_at,
+            notes=notes,
+            run_url=run_url,
+            publish_on_approval=publish_on_approval,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except Exception:
+        logger.exception("unhandled error in review orchestration")
+        report_failure(
+            container="podcaster-api",
+            error_type="ReviewEndpointError",
+            error_message="Unhandled exception in /api/review",
+        )
+        return JSONResponse(status_code=500, content={"error": "internal server error"})
+
+    publish_result = outcome.publish_result
+    logger.info(
+        "api_review job_id=%s decision=%s publish_status=%s",
+        job_id,
+        decision,
+        publish_result.status if publish_result else "not_requested",
+    )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "job_id": job_id,
+            "status": outcome.manifest.get("status"),
+            "review_status": outcome.manifest.get("review_status"),
+            "publish_status": publish_result.status if publish_result else None,
+            "publish_error": publish_result.error if publish_result else None,
+            "manifest": outcome.manifest,
+        },
+    )
+
+
 @app.get("/api/jobs", response_model=JobListResponse, dependencies=[Depends(verify_auth)])
 def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
     """List recent pipeline jobs."""
@@ -324,6 +464,38 @@ def get_job_logs(job_id: str):
 @app.get("/healthz")
 def healthz():
     return {"status": "healthy"}
+
+
+@app.get("/api/credentials", dependencies=[Depends(verify_auth)])
+def api_credentials():
+    """Return credential configuration status for the UI (#279)."""
+    return {
+        "api_key_configured": bool(
+            os.environ.get("MONITORING_API_KEY") or os.environ.get("PODCASTER_API_KEY")
+        ),
+        "ui_auth_configured": get_credentials() is not None,
+    }
+
+
+@app.get("/api/config", dependencies=[Depends(verify_auth)])
+def api_config_get():
+    """Return current runtime configuration for the UI (#279)."""
+    return {
+        "storage_backend": os.environ.get("STORAGE_BACKEND", "azure"),
+        "storage_container": os.environ.get("AZURE_STORAGE_CONTAINER", ""),
+        "cors_origins": _CORS_ORIGINS,
+    }
+
+
+@app.post("/api/config", dependencies=[Depends(verify_auth)])
+async def api_config_post(request: Request):
+    """Update runtime configuration (placeholder) (#279)."""
+    payload, error_response = await _read_json_object(request)
+    if error_response is not None:
+        return error_response
+
+    assert payload is not None
+    return {"status": "accepted", "note": "Runtime config updates are not yet implemented"}
 
 
 # ---------------------------------------------------------------------------

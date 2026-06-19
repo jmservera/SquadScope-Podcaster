@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# Lightweight HTTP API image for the /api/generate endpoint (#131).
+# FastAPI API image for generation and monitoring endpoints (#279).
 # This is the thin front door that validates requests, stages artifacts,
-# enqueues synthesis messages, and returns the 202 contract response.
+# enqueues synthesis messages, exposes review/monitoring APIs, and returns
+# the stable integration contract response.
 #
 # Unlike the synthesis runner (Containerfile), this image does NOT need ffmpeg
 # — it only handles HTTP and Storage operations. Kept lean for fast cold starts.
@@ -38,4 +39,4 @@ USER api
 
 EXPOSE 8000
 
-ENTRYPOINT ["python", "-m", "podcaster.api"]
+ENTRYPOINT ["python", "-m", "uvicorn", "podcaster.monitoring:app", "--host", "0.0.0.0", "--port", "8000"]
