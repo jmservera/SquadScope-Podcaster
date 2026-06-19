@@ -351,7 +351,6 @@ def _process_upload(
     content_type: str = "audio/mpeg",
 ) -> None:
     """Step 5: Trigger processing and poll until complete."""
-    is_video = content_type.startswith("video/")
     url = f"{_BASE_URL}/v3/upload/{upload_id}/process_upload"
     _retry_request(
         session,
@@ -361,10 +360,10 @@ def _process_upload(
         params=_mums_params(),
         json={
             "userId": int(user_id),
-            "uploadType": "video" if is_video else "default",
+            "uploadType": "default",
             "origin": "episode-media:upload",
             "caption": filename,
-            "isExtractedFromVideo": is_video,
+            "isExtractedFromVideo": False,
             "isMultipartUpload": False,
             "uploadId": upload_id,
             "episodeId": anchor_id,
@@ -660,25 +659,22 @@ def publish_episode(
             resolved_description, timestamps_html
         )
 
-    # Detect video artifact — if MP4 exists alongside audio, prefer it for Spotify upload
-    # Spotify for Creators supports: mp3, m4a, wav, mpg, mp4, mov
-    # NOTE: This only checks the local filesystem. If the MP4 is stored in blob/remote
-    # storage but not downloaded locally, it will not be detected. The caller is
-    # responsible for ensuring video artifacts are present on the local path when needed.
-    video_path: Path | None = None
+    # Detect video artifact — if MP4 exists alongside audio, log it but upload audio only.
+    # Spotify's anchor.fm API does not reliably support video podcast uploads unless the
+    # show is explicitly enabled for video. Fall back to audio to ensure publish succeeds.
     if mp3_path is not None:
         candidate_mp4 = mp3_path.parent / (mp3_path.stem + ".mp4")
         if candidate_mp4.exists() and candidate_mp4.stat().st_size > 0:
-            video_path = candidate_mp4
+            logger.info(
+                "Video artifact found (%s, %.1f MB) but skipping video upload — "
+                "Spotify show may not support video podcasts. Publishing audio only.",
+                candidate_mp4.name,
+                candidate_mp4.stat().st_size / 1_048_576,
+            )
 
-    if video_path is not None:
-        upload_path = video_path
-        content_type = "video/mp4"
-        format_label = "MP4"
-    else:
-        upload_path = wav_path if upload_format == "wav" else mp3_path
-        content_type = "audio/wav" if upload_format == "wav" else "audio/mpeg"
-        format_label = "WAV" if upload_format == "wav" else "MP3"
+    upload_path = wav_path if upload_format == "wav" else mp3_path
+    content_type = "audio/wav" if upload_format == "wav" else "audio/mpeg"
+    format_label = "WAV" if upload_format == "wav" else "MP3"
 
     # Dry-run mode
     if _is_dry_run():

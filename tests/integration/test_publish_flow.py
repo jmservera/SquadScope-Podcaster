@@ -144,9 +144,9 @@ def test_audio_and_video_publish_paths_are_independent(
     assert isinstance(publish_result, PublishResult)
     assert publish_result.dry_run is True
     assert publish_result.status == "published"
-    # MP4 detected next to MP3 — publish prefers video/mp4
-    assert publish_result.details["upload_path"] == str(video_path)
-    assert publish_result.details["content_type"] == "video/mp4"
+    # Video found but audio uploaded (Spotify show video support not guaranteed)
+    assert publish_result.details["upload_path"] == str(audio_path)
+    assert publish_result.details["content_type"] == "audio/mpeg"
 
     assert isinstance(distribution_result, DistributionResult)
     assert distribution_result.status == "completed"
