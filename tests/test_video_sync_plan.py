@@ -9,7 +9,11 @@ from podcaster.video.sync_plan import (
     RepoReference,
     extract_repo_urls,
     generate_episode_plan,
+    generate_episode_plan_timed,
     plan_from_script,
+    plan_from_script_timed,
+    sort_repos_by_mention,
+    _script_position,
 )
 
 
@@ -198,3 +202,167 @@ class TestPlanFromScript:
         assert "https://github.com/microsoft/vscode" in repo_urls
         assert "https://github.com/astral-sh/ruff" in repo_urls
         assert "https://github.com/jmservera/SquadScope-Podcaster" in repo_urls
+
+
+# --- Script-position tests (#296) ---
+
+
+class TestScriptPosition:
+    def test_url_at_start(self):
+        script = "https://github.com/a/b rest of script"
+        assert _script_position(script, "https://github.com/a/b") == pytest.approx(0.0)
+
+    def test_url_at_end(self):
+        script = "start " + "https://github.com/a/b"
+        pos = _script_position(script, "https://github.com/a/b")
+        assert pos == pytest.approx(6 / len(script))
+
+    def test_url_not_found_returns_one(self):
+        assert _script_position("hello world", "https://github.com/x/y") == 1.0
+
+    def test_empty_script_returns_zero(self):
+        assert _script_position("", "https://github.com/a/b") == 0.0
+
+    def test_position_between_zero_and_one(self):
+        script = "aaa https://github.com/a/b zzz"
+        pos = _script_position(script, "https://github.com/a/b")
+        assert 0.0 < pos < 1.0
+
+
+class TestSortReposByMention:
+    def test_sorts_by_script_order(self):
+        script = "first https://github.com/b/b ... later https://github.com/a/a"
+        repos = [
+            RepoReference(owner="a", name="a"),
+            RepoReference(owner="b", name="b"),
+        ]
+        sorted_repos = sort_repos_by_mention(script, repos)
+        assert sorted_repos[0].url == "https://github.com/b/b"
+        assert sorted_repos[1].url == "https://github.com/a/a"
+
+    def test_not_found_repos_go_last(self):
+        script = "https://github.com/a/a is mentioned"
+        repos = [
+            RepoReference(owner="z", name="z"),
+            RepoReference(owner="a", name="a"),
+        ]
+        sorted_repos = sort_repos_by_mention(script, repos)
+        assert sorted_repos[0].url == "https://github.com/a/a"
+        assert sorted_repos[1].url == "https://github.com/z/z"
+
+    def test_empty_repos_returns_empty(self):
+        assert sort_repos_by_mention("some script", []) == []
+
+    def test_single_repo_unchanged(self):
+        repo = RepoReference(owner="a", name="b")
+        assert sort_repos_by_mention("https://github.com/a/b", [repo]) == [repo]
+
+
+class TestGenerateEpisodePlanTimed:
+    def _repo(self, owner: str, name: str) -> RepoReference:
+        return RepoReference(owner=owner, name=name)
+
+    def test_empty_repos_raises(self):
+        with pytest.raises(ValueError, match="No repos"):
+            generate_episode_plan_timed("script", [], 100.0)
+
+    def test_zero_duration_raises(self):
+        repos = [self._repo("a", "b")]
+        with pytest.raises(ValueError, match="positive"):
+            generate_episode_plan_timed("script", repos, 0.0)
+
+    def test_negative_duration_raises(self):
+        repos = [self._repo("a", "b")]
+        with pytest.raises(ValueError, match="positive"):
+            generate_episode_plan_timed("script", repos, -5.0)
+
+    def test_single_repo_fills_total_duration(self):
+        repos = [self._repo("a", "b")]
+        plan = generate_episode_plan_timed(
+            "intro https://github.com/a/b done", repos, 60.0
+        )
+        assert len(plan.segments) == 1
+        seg = plan.segments[0]
+        # Single segment: start + duration must equal total duration
+        assert seg.duration_seconds > 0
+        assert seg.start_seconds + seg.duration_seconds == pytest.approx(60.0, abs=0.1)
+
+    def test_timing_reflects_script_position(self):
+        # repo a/a is mentioned early (~10%), repo b/b mentioned late (~90%)
+        script = (
+            "aaa https://github.com/a/a bbb " + "x" * 800 +
+            " https://github.com/b/b zzz"
+        )
+        repos = [
+            self._repo("a", "a"),
+            self._repo("b", "b"),
+        ]
+        plan = generate_episode_plan_timed(script, repos, 100.0)
+        segs = {s.repo.url: s for s in plan.segments}
+        start_a = segs["https://github.com/a/a"].start_seconds
+        start_b = segs["https://github.com/b/b"].start_seconds
+        assert start_a < start_b
+
+    def test_min_segment_enforced(self):
+        # Both repos appear at the very start — min_segment should separate them
+        script = (
+            "https://github.com/a/a https://github.com/b/b rest of script"
+        )
+        repos = [
+            self._repo("a", "a"),
+            self._repo("b", "b"),
+        ]
+        plan = generate_episode_plan_timed(script, repos, 20.0, min_segment_seconds=5.0)
+        starts = [s.start_seconds for s in plan.segments]
+        # second segment must start at least 5 s after the first
+        assert starts[1] >= starts[0] + 4.9
+
+    def test_segment_order_is_monotonic(self):
+        script = (
+            "https://github.com/c/c ... "
+            "https://github.com/a/a ... "
+            "https://github.com/b/b"
+        )
+        repos = [
+            self._repo("a", "a"),
+            self._repo("b", "b"),
+            self._repo("c", "c"),
+        ]
+        plan = generate_episode_plan_timed(script, repos, 90.0)
+        starts = [s.start_seconds for s in plan.segments]
+        assert starts == sorted(starts)
+
+    def test_total_duration_preserved(self):
+        script = (
+            "https://github.com/a/a ... "
+            "https://github.com/b/b ... "
+            "https://github.com/c/c"
+        )
+        repos = [
+            self._repo("a", "a"),
+            self._repo("b", "b"),
+            self._repo("c", "c"),
+        ]
+        plan = generate_episode_plan_timed(script, repos, 90.0)
+        assert plan.total_duration_seconds == 90.0
+        last = plan.segments[-1]
+        assert last.start_seconds + last.duration_seconds == pytest.approx(90.0, abs=1.0)
+
+
+class TestPlanFromScriptTimed:
+    def test_produces_plan(self):
+        plan = plan_from_script_timed(SAMPLE_SCRIPT, 200.0)
+        assert len(plan.segments) == 4
+        assert plan.total_duration_seconds == 200.0
+
+    def test_raises_on_no_repos(self):
+        with pytest.raises(ValueError, match="No GitHub repository URLs"):
+            plan_from_script_timed(SCRIPT_NO_REPOS, 60.0)
+
+    def test_ordering_matches_script(self):
+        # vscode is mentioned before ruff in SAMPLE_SCRIPT
+        plan = plan_from_script_timed(SAMPLE_SCRIPT, 200.0)
+        urls = [s.repo.url for s in plan.segments]
+        idx_vscode = urls.index("https://github.com/microsoft/vscode")
+        idx_ruff = urls.index("https://github.com/astral-sh/ruff")
+        assert idx_vscode < idx_ruff
