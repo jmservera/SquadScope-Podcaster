@@ -26,10 +26,17 @@ from podcaster.video.video_compose import (
     _build_normalize_cmd,
     _build_xfade_filter,
     _compute_lower_thirds,
-    _find_drawtext_capable_ffmpeg,
     _probe_drawtext_ffmpeg,
     compose_video,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_drawtext_probe(monkeypatch):
+    monkeypatch.setattr(
+        "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
+        lambda: "ffmpeg",
+    )
 
 
 # --- Helpers ---
@@ -364,9 +371,11 @@ class TestComposeVideo:
 class TestProbeDrawtextFfmpeg:
     """Unit tests for _probe_drawtext_ffmpeg — mocks subprocess.run."""
 
-    def _make_proc(self, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
+    def _make_proc(
+        self, stdout: str = "", stderr: str = "", returncode: int = 0
+    ) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=stdout, stderr=stderr
+            args=[], returncode=returncode, stdout=stdout, stderr=stderr
         )
 
     def test_returns_first_capable_candidate(self):
@@ -406,6 +415,30 @@ class TestProbeDrawtextFfmpeg:
             mock_run.return_value = self._make_proc(stderr="drawtext AVOptions")
             result = _probe_drawtext_ffmpeg(candidates=["ffmpeg"])
         assert result == "ffmpeg"
+
+    def test_nonzero_probe_returncode_is_rejected(self):
+        """Non-zero probes are rejected even when stderr mentions drawtext."""
+        outputs = [
+            self._make_proc(stderr="Unknown option drawtext", returncode=1),
+            self._make_proc(stdout="drawtext", returncode=0),
+        ]
+        with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
+            result = _probe_drawtext_ffmpeg(
+                candidates=["/bad/ffmpeg", "/usr/bin/ffmpeg"]
+            )
+        assert result == "/usr/bin/ffmpeg"
+
+    def test_timeout_is_skipped(self):
+        """TimeoutExpired for a candidate is silently skipped."""
+        outputs = [
+            subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=10),
+            self._make_proc(stdout="drawtext"),
+        ]
+        with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
+            result = _probe_drawtext_ffmpeg(
+                candidates=["/hung/ffmpeg", "/usr/bin/ffmpeg"]
+            )
+        assert result == "/usr/bin/ffmpeg"
 
     def test_empty_candidates_returns_none(self):
         result = _probe_drawtext_ffmpeg(candidates=[])
@@ -481,4 +514,3 @@ class TestComposeVideoDrawtext:
             )
 
         mock_probe.assert_not_called()
-

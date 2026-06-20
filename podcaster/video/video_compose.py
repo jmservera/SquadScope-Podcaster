@@ -33,8 +33,9 @@ def _probe_drawtext_ffmpeg(
 ) -> str | None:
     """Return the first ffmpeg binary in *candidates* that supports drawtext.
 
-    Probes each candidate via ``ffmpeg -hide_banner -filters`` and checks for
-    'drawtext' in the output.  Returns None if no candidate supports drawtext.
+    Probes each candidate via ``ffmpeg -hide_banner -filters`` and accepts a
+    zero-exit probe whose output contains 'drawtext'.  Returns None if no
+    candidate supports drawtext.
     Not cached — call :func:`_find_drawtext_capable_ffmpeg` for the cached version.
     """
     if candidates is None:
@@ -45,10 +46,13 @@ def _probe_drawtext_ffmpeg(
                 [binary, "-hide_banner", "-filters"],
                 capture_output=True,
                 text=True,
+                timeout=10,
             )
-            if "drawtext" in proc.stdout or "drawtext" in proc.stderr:
+            if proc.returncode == 0 and (
+                "drawtext" in proc.stdout or "drawtext" in proc.stderr
+            ):
                 return binary
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             continue
     return None
 
