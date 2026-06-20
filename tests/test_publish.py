@@ -636,7 +636,7 @@ class TestVideoArtifactDetection:
     """Tests for video MP4 detection in publish_episode (#268)."""
 
     def test_mp4_preferred_over_audio_when_present(self, tmp_path, spotify_env, monkeypatch):
-        """When an MP4 exists alongside the MP3, publish logs it but uses audio (video not reliably supported)."""
+        """When an MP4 exists alongside the MP3, it is preferred for Spotify upload."""
         monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
         mp3_file = tmp_path / "episode.mp3"
         mp3_file.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 1000)
@@ -648,10 +648,10 @@ class TestVideoArtifactDetection:
         result = publish_episode(mp3_file, "Test", "<p>desc</p>", wav_path=wav_file)
         assert result.dry_run is True
         assert result.status == "published"
-        # Audio is uploaded even when video exists (Spotify video not guaranteed)
-        assert result.details["upload_path"] == str(wav_file)
-        assert result.details["upload_format"] == "wav"
-        assert result.details["content_type"] == "audio/wav"
+        # MP4 is preferred when present
+        assert result.details["upload_path"] == str(mp4_file)
+        assert result.details["upload_format"] == "mp4"
+        assert result.details["content_type"] == "video/mp4"
 
     def test_no_mp4_uses_audio(self, tmp_path, spotify_env, monkeypatch):
         """Without MP4, normal audio upload path is used."""
@@ -666,3 +666,132 @@ class TestVideoArtifactDetection:
         assert result.details["upload_format"] == "wav"
         assert result.details["upload_path"] == str(wav_file)
         assert result.details["content_type"] == "audio/wav"
+
+
+class TestProcessUpload:
+    """Tests for _process_upload payload and polling behaviour (#292)."""
+
+    def test_process_upload_audio_payload(self):
+        """POST payload uses uploadType=default and isExtractedFromVideo=False for audio."""
+        from podcaster.publish import _process_upload
+
+        captured = {}
+
+        session = MagicMock()
+
+        def side_effect(method, url, **kwargs):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if method == "POST":
+                captured["json"] = kwargs.get("json", {})
+                resp.status_code = 200
+                resp.json.return_value = {}
+                resp.headers = {}
+                return resp
+            # GET poll: return processed immediately
+            resp.status_code = 200
+            resp.json.return_value = {"request": {"state": "processed"}}
+            return resp
+
+        session.request.side_effect = side_effect
+
+        with patch("podcaster.publish.time.sleep"):
+            _process_upload(
+                session,
+                upload_id="u123",
+                etag="abc123",
+                anchor_id=42,
+                station_id="99",
+                user_id="7",
+                filename="ep.mp3",
+                content_type="audio/mpeg",
+            )
+
+        assert captured["json"]["uploadType"] == "default"
+        assert captured["json"]["isExtractedFromVideo"] is False
+        assert captured["json"]["isMultipartUpload"] is True
+        assert captured["json"]["parts"] == [{"partNumber": 1, "etag": "abc123"}]
+
+    def test_process_upload_video_payload(self):
+        """POST payload uses uploadType=video and isExtractedFromVideo=True for video."""
+        from podcaster.publish import _process_upload
+
+        captured = {}
+
+        session = MagicMock()
+
+        def side_effect(method, url, **kwargs):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if method == "POST":
+                captured["json"] = kwargs.get("json", {})
+                resp.status_code = 200
+                resp.json.return_value = {}
+                resp.headers = {}
+                return resp
+            resp.status_code = 200
+            resp.json.return_value = {"request": {"state": "processed"}}
+            return resp
+
+        session.request.side_effect = side_effect
+
+        with patch("podcaster.publish.time.sleep"):
+            _process_upload(
+                session,
+                upload_id="v456",
+                etag="etag456",
+                anchor_id=10,
+                station_id="5",
+                user_id="3",
+                filename="ep.mp4",
+                content_type="video/mp4",
+            )
+
+        assert captured["json"]["uploadType"] == "video"
+        assert captured["json"]["isExtractedFromVideo"] is True
+        assert captured["json"]["isMultipartUpload"] is True
+        assert captured["json"]["parts"] == [{"partNumber": 1, "etag": "etag456"}]
+
+    def test_process_upload_tolerates_404_on_poll(self):
+        """A 404 during GET polling is treated as 'not ready' and retried."""
+        from podcaster.publish import _process_upload
+
+        session = MagicMock()
+        call_count = {"n": 0}
+
+        def side_effect(method, url, **kwargs):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if method == "POST":
+                resp.status_code = 200
+                resp.json.return_value = {}
+                resp.headers = {}
+                return resp
+            idx = call_count["n"]
+            call_count["n"] += 1
+            if idx == 0:
+                # First poll: 404 — not ready yet
+                resp.status_code = 404
+                return resp
+            # Second poll: processed
+            resp.status_code = 200
+            resp.json.return_value = {"request": {"state": "processed"}}
+            return resp
+
+        session.request.side_effect = side_effect
+
+        with patch("podcaster.publish.time.sleep"):
+            _process_upload(
+                session,
+                upload_id="x789",
+                etag="etag789",
+                anchor_id=1,
+                station_id="1",
+                user_id="1",
+                filename="ep.mp3",
+                content_type="audio/mpeg",
+            )
+
+        # Two GET poll calls: first 404, then 200/processed
+        get_calls = [c for c in session.request.call_args_list if c.args[0] == "GET"]
+        assert len(get_calls) == 2

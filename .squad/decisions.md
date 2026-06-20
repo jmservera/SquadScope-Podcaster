@@ -1162,3 +1162,21 @@ Review scope: `feat/spotify-publish-182` does not contain `podcaster/publish.py`
 6. Add security tests (no secrets in logs, dry-run = zero HTTP calls, reject non-HTTPS, sanitized error responses).
 7. Use `SPOTIFY_SHOW_ID` as non-secret config; keep only `SP_DC`/`SP_KEY` in secret stores.
 
+
+### 2026-06-17T18-19-53: Integration smoke tests use local fakes instead of network or Docker
+**By:** Fry
+**What:** Integration smoke tests use local fakes instead of network or Docker
+**References:** jmservera/SquadScope-Podcaster#265
+**Why:** Added pytest integration smoke coverage for issue #265 that stays fully local: the video pipeline test exercises sync_plan -> video_gen.record_episode orchestration -> video_compose -> distribution with fake Playwright and fake ffmpeg runners that create real files under tmp_path, the publish-flow test uses LocalStorageBackend plus Spotify dry-run env vars, and the UI serve coverage uses FastAPI TestClient against the monitoring app with local artifacts. Static bundle validation checks ui/dist/index.html only when present and skips cleanly when the built UI bundle is absent, so `pytest tests/integration/` never requires Docker, browsers, live network, or credentials.
+
+### 2026-06-17T18-26-30: Spotify dry-run publish path stays credential-free for issue #265 offline integration coverage
+**By:** Scribe
+**What:** Spotify dry-run publish path stays credential-free for issue #265 offline integration coverage
+**References:** jmservera/SquadScope-Podcaster#265, Bender, Hermes, Fry
+**Why:** For issue #265, the Spotify publish dry-run path must remain usable without credentials so offline integration coverage can exercise publish flow end-to-end. Bender updated `podcaster/publish.py` and the related tests/docs so dry-run bypasses credential requirements while preserving real publish validation for non-dry-run modes. Hermes re-reviewed the final behavior and returned a green verdict.
+
+### 2026-06-17T18-19-07: Integration workflow runs offline pytest suite with prebuilt UI bundle
+**By:** bender
+**What:** Integration workflow runs offline pytest suite with prebuilt UI bundle
+**References:** issue #265, tests/integration/test_video_pipeline.py, tests/integration/test_ui_serve.py, tests/integration/test_publish_flow.py
+**Why:** For issue #265 workflow/docs ownership, I verified the repo layout before editing: Python imports resolve through the `podcaster` package (video pipeline modules under `podcaster.video.*`), while the management UI lives under `ui/` and must be treated as a built frontend rather than a Python package. I added `.github/workflows/integration-tests.yml` to build `ui/dist` with dummy MSAL/API values and run `pytest tests/integration/ -q -ra -m "not slow"` without Docker, live network, or credentials. The workflow also handles the transient case where `tests/integration/` is absent by emitting a notice instead of failing, so it stays safe during cross-agent landing order.
