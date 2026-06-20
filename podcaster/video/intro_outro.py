@@ -680,3 +680,221 @@ def generate_outro_ffmpeg(
         width=config.width,
         height=config.height,
     )
+
+
+# --- End credits sequence (#300) ---
+
+
+@dataclass
+class CreditsEntry:
+    """A single line in the end-credits card.
+
+    Rendered as a two-row label/value pair:
+    ``label`` is shown in a muted colour above the larger ``value`` text.
+
+    Attributes:
+        label: Category heading (e.g. ``"Creator"``).
+        value: Credit text (e.g. ``"Juan Manuel Servera (@jmservera)"``).
+    """
+
+    label: str
+    value: str
+
+
+# Default credits — overridable via CreditsConfig.entries.
+# Music attribution sourced from podcaster/music.py (TRACK_ATTRIBUTION).
+_DEFAULT_CREDITS_ENTRIES: list[CreditsEntry] = [
+    CreditsEntry("Creator", "Juan Manuel Servera (@jmservera)"),
+    CreditsEntry("AI Team", "Squad (Coordinator) \u00b7 Bender (Podcaster)"),
+    CreditsEntry("AI Hosts", "Fable & Alloy"),
+    CreditsEntry("Music", "Summer Sport by AudioCoffee (CC-BY-SA-3.0)"),
+    CreditsEntry("Powered by", "Claracle / SquadScope"),
+]
+
+# Expose default list as a public constant so tests and callers can inspect it
+DEFAULT_CREDITS_ENTRIES: list[CreditsEntry] = _DEFAULT_CREDITS_ENTRIES
+
+# Credits card layout constants
+_CREDITS_HEADING_Y = 120      # show name top margin
+_CREDITS_TITLE_Y = 220        # "Credits" label y position
+_CREDITS_ENTRIES_Y_START = 320  # first entry's label y position
+_CREDITS_ENTRY_HEIGHT = 100   # pixels between consecutive entries
+_CREDITS_VALUE_OFFSET = 36    # value y offset below label within one entry
+
+# Default credits duration (8 s sits comfortably in the 5-10 s requirement)
+DEFAULT_CREDITS_DURATION_MS = 8_000
+
+
+@dataclass
+class CreditsConfig:
+    """Configuration for the end-credits video card.
+
+    All fields have sensible defaults so callers can override only what they
+    need.  ``entries`` defaults to :data:`DEFAULT_CREDITS_ENTRIES`; pass an
+    explicit list to replace them entirely.
+
+    Attributes:
+        show_name: Branding headline at the top of the card.
+        title: Section heading text (displayed below the show name).
+        entries: Ordered list of :class:`CreditsEntry` items.  Defaults to
+            :data:`DEFAULT_CREDITS_ENTRIES` when ``None``.
+        duration_ms: Total clip duration in milliseconds (default 8 000 ms).
+        width: Output video width in pixels.
+        height: Output video height in pixels.
+    """
+
+    show_name: str = DEFAULT_SHOW_NAME
+    title: str = "Credits"
+    entries: list[CreditsEntry] | None = None
+    duration_ms: int = DEFAULT_CREDITS_DURATION_MS
+    width: int = WIDTH
+    height: int = HEIGHT
+
+    def __post_init__(self) -> None:
+        if self.entries is None:
+            self.entries = list(_DEFAULT_CREDITS_ENTRIES)
+
+
+def _build_credits_ffmpeg_cmd(
+    config: CreditsConfig,
+    output_path: Path,
+    ffmpeg_bin: str = "ffmpeg",
+) -> list[str]:
+    """Build an ffmpeg command that generates the end-credits title card.
+
+    Produces a dark-background card consistent with the Claracle Weekly
+    intro/outro branding:
+
+    * Show name at top (``fontsize=60``, muted white).
+    * ``"Credits"`` (or custom ``config.title``) heading in blue.
+    * Each :class:`CreditsEntry` rendered as a staggered two-row label/value
+      pair — label in ``#8b949e``, value in ``#c9d1d9``.
+    * Smooth fade-in (0.5 s) and fade-out (1.0 s).
+
+    Args:
+        config: Credits configuration.
+        output_path: Destination MP4 file path.
+        ffmpeg_bin: Path or name of the ffmpeg binary to use.
+
+    Returns:
+        Command list suitable for :func:`subprocess.run`.
+    """
+    duration_sec = config.duration_ms / 1000.0
+    fade_out_st = max(0.0, duration_sec - 1.0)
+    entries = config.entries or []
+
+    filters: list[str] = [
+        # Show name — Claracle Weekly branding headline
+        (
+            f"drawtext=fontfile={TITLE_FONT}"
+            f":text='{_escape_drawtext(config.show_name)}'"
+            f":fontsize=60:fontcolor=#c9d1d9"
+            f":x=(w-text_w)/2:y={_CREDITS_HEADING_Y}"
+            f":enable='gte(t,0.2)'"
+        ),
+        # Credits section heading
+        (
+            f"drawtext=fontfile={TITLE_FONT}"
+            f":text='{_escape_drawtext(config.title)}'"
+            f":fontsize=44:fontcolor=#58a6ff"
+            f":x=(w-text_w)/2:y={_CREDITS_TITLE_Y}"
+            f":enable='gte(t,0.3)'"
+        ),
+    ]
+
+    for i, entry in enumerate(entries):
+        t_start = 0.5 + i * 0.4
+        y_label = _CREDITS_ENTRIES_Y_START + i * _CREDITS_ENTRY_HEIGHT
+        y_value = y_label + _CREDITS_VALUE_OFFSET
+
+        # Category label (dim, smaller)
+        filters.append(
+            f"drawtext=fontfile={TITLE_FONT}"
+            f":text='{_escape_drawtext(entry.label)}'"
+            f":fontsize=22:fontcolor=#8b949e"
+            f":x=(w-text_w)/2:y={y_label}"
+            f":enable='gte(t,{t_start:.1f})'"
+        )
+        # Credit value (bright, larger)
+        filters.append(
+            f"drawtext=fontfile={TITLE_FONT}"
+            f":text='{_escape_drawtext(entry.value)}'"
+            f":fontsize=30:fontcolor=#c9d1d9"
+            f":x=(w-text_w)/2:y={y_value}"
+            f":enable='gte(t,{t_start:.1f})'"
+        )
+
+    filters += [
+        "fade=t=in:st=0:d=0.5",
+        f"fade=t=out:st={fade_out_st:.3f}:d=1.0",
+    ]
+
+    return [
+        ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y",
+        "-f", "lavfi",
+        "-i", f"color=c=#0d1117:size={config.width}x{config.height}:rate={FPS}",
+        "-t", f"{duration_sec:.3f}",
+        "-vf", ",".join(filters),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+        str(output_path),
+    ]
+
+
+def generate_credits_ffmpeg(
+    config: CreditsConfig | None = None,
+    output_dir: Path | None = None,
+    ffmpeg_bin: str | None = None,
+    runner: Any = None,
+) -> ClipResult:
+    """Generate the end-credits video card using ffmpeg drawtext.
+
+    Produces an MP4 with Claracle Weekly branding at the top, a "Credits"
+    heading, and staggered label/value pairs for creator, AI team, AI hosts,
+    music attribution, and powered-by.  Uses the drawtext-capable ffmpeg
+    binary from :func:`_get_drawtext_ffmpeg` when *ffmpeg_bin* is not
+    specified; falls back to ``"ffmpeg"`` with a warning if none is found.
+
+    All credit lines come from :class:`CreditsConfig`; override ``entries``
+    to customise without touching the ffmpeg-building code.
+
+    Args:
+        config: Credits configuration.  Uses defaults (including
+            :data:`DEFAULT_CREDITS_ENTRIES`) when ``None``.
+        output_dir: Directory for the output ``credits.mp4``.  Uses a
+            temp dir if ``None``.
+        ffmpeg_bin: Explicit ffmpeg binary.  Auto-detected via
+            :func:`_get_drawtext_ffmpeg` if ``None``.
+        runner: Command runner for injection in tests.  Uses
+            :func:`subprocess.run` if ``None``.
+
+    Returns:
+        :class:`ClipResult` pointing to the generated ``credits.mp4``.
+    """
+    if config is None:
+        config = CreditsConfig()
+    if output_dir is None:
+        output_dir = Path(tempfile.mkdtemp(prefix="claracle_credits_"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if ffmpeg_bin is None:
+        detected = _get_drawtext_ffmpeg()
+        if detected is None:
+            logger.warning(
+                "No ffmpeg binary with drawtext (libfreetype) found; "
+                "credits card will use 'ffmpeg' but may fail without drawtext support."
+            )
+        ffmpeg_bin = detected or "ffmpeg"
+
+    output_path = output_dir / "credits.mp4"
+    cmd = _build_credits_ffmpeg_cmd(config, output_path, ffmpeg_bin)
+
+    run = runner or _default_runner
+    run(cmd)
+    logger.info("Generated end-credits card: %s", output_path)
+
+    return ClipResult(
+        path=output_path,
+        duration_ms=config.duration_ms,
+        width=config.width,
+        height=config.height,
+    )
