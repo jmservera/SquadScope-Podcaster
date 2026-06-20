@@ -12,8 +12,9 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Sequence
 
+from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 from podcaster.video.video_gen import RecordedSegment
 
 logger = logging.getLogger(__name__)
@@ -404,3 +405,173 @@ def compose_video(
         segment_count=len(segments),
         has_audio=audio_path is not None,
     )
+
+
+# --- Recording-to-plan sync utilities (#296) ---
+
+
+@dataclass
+class SyncedSegment:
+    """A recorded segment paired with its target time window from the episode plan.
+
+    Produced by :func:`build_sync_map`.  Pass a list of these to
+    :func:`apply_sync` to trim recordings that exceed their window.
+    """
+
+    recorded: RecordedSegment
+    target_start_seconds: float
+    target_duration_seconds: float
+
+    @property
+    def needs_trim(self) -> bool:
+        """True when the recording duration exceeds the target window by > 0.1 s."""
+        return (
+            self.recorded.segment.duration_seconds
+            > self.target_duration_seconds + 0.1
+        )
+
+
+def build_sync_map(
+    plan: EpisodePlan,
+    recordings: Sequence[RecordedSegment],
+) -> list[SyncedSegment]:
+    """Match each recorded segment to its target time window from *plan*.
+
+    Pairs recordings to plan segments by repo URL, preserving plan order.
+    Recordings with no matching plan segment are ignored; plan segments with
+    no matching recording raise ``ValueError``.
+
+    Args:
+        plan: Episode plan with target timing (e.g. from
+            :func:`~podcaster.video.sync_plan.plan_from_script_timed`).
+        recordings: Recorded segments produced by
+            :func:`~podcaster.video.video_gen.record_episode`.
+
+    Returns:
+        Ordered list of :class:`SyncedSegment` following plan ordering.
+
+    Raises:
+        ValueError: If any plan segment has no matching recording.
+    """
+    by_url: dict[str, RecordedSegment] = {
+        rec.segment.repo.url: rec for rec in recordings
+    }
+    result: list[SyncedSegment] = []
+    for seg in plan.segments:
+        url = seg.repo.url
+        if url not in by_url:
+            raise ValueError(
+                f"No recording found for plan segment {url!r}. "
+                f"Available: {sorted(by_url)}"
+            )
+        result.append(
+            SyncedSegment(
+                recorded=by_url[url],
+                target_start_seconds=seg.start_seconds,
+                target_duration_seconds=seg.duration_seconds,
+            )
+        )
+    return result
+
+
+def trim_recording_cmd(
+    input_path: Path,
+    start_seconds: float,
+    duration_seconds: float,
+    output_path: Path,
+    ffmpeg_bin: str = "ffmpeg",
+) -> list[str]:
+    """Build an ffmpeg stream-copy command to trim a recording.
+
+    Seeks to *start_seconds* and captures *duration_seconds* of video using
+    ``-c copy`` (no re-encode).
+
+    Args:
+        input_path: Source video file.
+        start_seconds: Seek offset within the source file (usually 0.0).
+        duration_seconds: Duration to extract.
+        output_path: Destination file (same format as input).
+        ffmpeg_bin: Path or name of the ffmpeg binary.
+
+    Returns:
+        Command list suitable for :func:`subprocess.run`.
+    """
+    return [
+        ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y",
+        "-ss", f"{start_seconds:.3f}",
+        "-i", str(input_path),
+        "-t", f"{duration_seconds:.3f}",
+        "-c", "copy",
+        str(output_path),
+    ]
+
+
+def apply_sync(
+    sync_map: list[SyncedSegment],
+    output_dir: Path,
+    ffmpeg_bin: str = "ffmpeg",
+    runner: CommandRunner | None = None,
+) -> list[RecordedSegment]:
+    """Trim recordings to their target windows and return updated segments.
+
+    For each :class:`SyncedSegment` where :attr:`~SyncedSegment.needs_trim`
+    is True, runs :func:`trim_recording_cmd` to shorten the file.  Recordings
+    already within the target duration are used as-is (no copy, no re-encode).
+    All returned :class:`RecordedSegment` objects have their
+    ``segment.start_seconds`` updated to ``target_start_seconds`` so they are
+    ready to pass directly to :func:`compose_video`.
+
+    Args:
+        sync_map: Synced segments from :func:`build_sync_map`.
+        output_dir: Directory for trimmed output files.
+        ffmpeg_bin: ffmpeg binary to use for trimming.
+        runner: Command runner for testing. Uses :func:`subprocess.run` if None.
+
+    Returns:
+        List of :class:`RecordedSegment` instances with updated timing and
+        (where necessary) trimmed video paths.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run = runner or _default_runner
+    result: list[RecordedSegment] = []
+
+    for i, ss in enumerate(sync_map):
+        if ss.needs_trim:
+            stem = ss.recorded.video_path.stem
+            suffix = ss.recorded.video_path.suffix
+            trimmed_path = output_dir / f"{stem}_trimmed_{i:03d}{suffix}"
+            cmd = trim_recording_cmd(
+                input_path=ss.recorded.video_path,
+                start_seconds=0.0,
+                duration_seconds=ss.target_duration_seconds,
+                output_path=trimmed_path,
+                ffmpeg_bin=ffmpeg_bin,
+            )
+            logger.info(
+                "Trimming %s: %.1fs → %.1fs",
+                ss.recorded.video_path.name,
+                ss.recorded.segment.duration_seconds,
+                ss.target_duration_seconds,
+            )
+            run(cmd)
+            video_path = trimmed_path
+            duration = ss.target_duration_seconds
+        else:
+            video_path = ss.recorded.video_path
+            duration = ss.recorded.segment.duration_seconds
+
+        new_segment = VideoSegment(
+            repo=ss.recorded.segment.repo,
+            start_seconds=ss.target_start_seconds,
+            duration_seconds=duration,
+        )
+        result.append(
+            RecordedSegment(
+                segment=new_segment,
+                video_path=video_path,
+                is_fallback=ss.recorded.is_fallback,
+                has_pages=ss.recorded.has_pages,
+            )
+        )
+
+    return result
