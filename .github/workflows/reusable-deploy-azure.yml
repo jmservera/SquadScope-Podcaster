@@ -160,7 +160,7 @@ jobs:
             echo "PODCASTER_API_KEY=$podcaster_api_key"
             echo "SPOTIFY_PUBLISH_ENABLED=${SPOTIFY_PUBLISH_ENABLED_VAR:-false}"
             echo "SPOTIFY_SHOW_ID=${SPOTIFY_SHOW_ID_SECRET:-}"
-            echo "SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID_VAR:-}"
+            echo "SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID_VAR:-05a1371ee5194c27860b3ff3ff3979d2}"
             echo "SP_DC=${SP_DC_SECRET:-}"
             echo "SP_KEY=${SP_KEY_SECRET:-}"
             echo "PODCAST_AUTO_PUBLISH=${PODCAST_AUTO_PUBLISH_VAR:-false}"
@@ -280,7 +280,7 @@ jobs:
             --parameters apiImage="${API_IMAGE}" \
             --parameters spotifyPublishEnabled="${SPOTIFY_PUBLISH_ENABLED:-false}" \
             --parameters spotifyShowId="${SPOTIFY_SHOW_ID:-}" \
-            --parameters spotifyClientId="${SPOTIFY_CLIENT_ID:-}" \
+            --parameters spotifyClientId="${SPOTIFY_CLIENT_ID:-05a1371ee5194c27860b3ff3ff3979d2}" \
             --parameters spotifySessionCookieDc="${SP_DC:-}" \
             --parameters spotifySessionCookieKey="${SP_KEY:-}" \
             --parameters podcastAutoPublish="${PODCAST_AUTO_PUBLISH:-false}" \

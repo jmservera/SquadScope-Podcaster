@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Spotify for Creators internal API base
 _BASE_URL = "https://api-v5.anchor.fm"
-_SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "05a1371ee5194c27860b3ff3ff3979d2")
+_SPOTIFY_CLIENT_ID = (os.environ.get("SPOTIFY_CLIENT_ID") or "").strip() or "05a1371ee5194c27860b3ff3ff3979d2"
 _SPOTIFY_CONNECTOR_BASE_URL = "https://generic.wg.spotify.com/podcasters/v0"
 
 # Required headers for mutation requests
