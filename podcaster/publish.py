@@ -289,24 +289,44 @@ def _create_episode(session: requests.Session, station_id: str) -> int:
     return anchor_id
 
 
+_VIDEO_CHUNK_SIZE = 30 * 1024 * 1024  # 30MB per chunk for video multipart
+
+
 def _get_upload_url(
     session: requests.Session,
     anchor_id: int,
     *,
     filename: str,
     content_type: str,
-) -> tuple[str, str]:
-    """Step 3: Get a signed upload URL. Returns (signed_url, upload_id)."""
+    is_video: bool = False,
+    file_size: int = 0,
+) -> "tuple[str, str] | tuple[list[dict], str]":
+    """Step 3: Get signed upload URL(s). Returns (signed_url, upload_id) for
+    audio or (signed_url_parts, request_uuid) for video.
+
+    Video uploads use multipart: each part gets its own signed GCS URL.
+    Audio uses a single S3 signed URL.
+    """
     url = f"{_BASE_URL}/v3/episodes/{anchor_id}/upload/signedUrl"
+    params = _mums_params(filename=filename, type=content_type)
+    if is_video:
+        import math
+
+        num_parts = max(1, math.ceil(file_size / _VIDEO_CHUNK_SIZE))
+        params["uploadType"] = "video"
+        params["isMultipartUpload"] = "true"
+        params["numParts"] = str(num_parts)
     resp = _retry_request(
         session,
         "GET",
         url,
-        params=_mums_params(filename=filename, type=content_type),
+        params=params,
         timeout=15,
     )
     data = resp.json()
     upload_id = data.get("uploadId") or data["requestUuid"]
+    if is_video and "signedUrlParts" in data:
+        return data["signedUrlParts"], str(upload_id)
     return data.get("signedUrl") or data["url"], str(upload_id)
 
 
@@ -317,11 +337,7 @@ def _upload_audio(
     *,
     content_type: str,
 ) -> str:
-    """Step 4: Upload audio to GCS, returns ETag (stripped of quotes).
-
-    Strips the Authorization header to avoid leaking the Spotify bearer
-    token to the external GCS upload host.
-    """
+    """Upload a single file to a signed URL (S3). Returns ETag."""
     resp = _retry_request(
         session,
         "PUT",
@@ -329,7 +345,7 @@ def _upload_audio(
         data=audio_data,
         headers={
             "Content-Type": content_type,
-            "Authorization": None,
+            "Authorization": None,  # strip bearer token
             **_MUTATION_HEADERS,
         },
         timeout=300,
@@ -337,6 +353,46 @@ def _upload_audio(
     etag = resp.headers.get("ETag", "").strip('"')
     logger.info("Uploaded audio (%d bytes, %s), ETag=%s", len(audio_data), content_type, etag)
     return etag
+
+
+def _upload_video_multipart(
+    session: requests.Session,
+    signed_url_parts: list[dict],
+    video_data: bytes,
+) -> list[dict]:
+    """Upload video in chunks to GCS multipart signed URLs.
+
+    Returns list of {partNumber, etag} for process_upload.
+    GCS signed URLs must NOT receive extra headers (Origin, Referer, Auth).
+    """
+    parts_etags = []
+    for i, part_info in enumerate(signed_url_parts):
+        start = i * _VIDEO_CHUNK_SIZE
+        end = min(start + _VIDEO_CHUNK_SIZE, len(video_data))
+        chunk = video_data[start:end]
+        part_url = part_info["url"]
+
+        resp = _retry_request(
+            session,
+            "PUT",
+            part_url,
+            data=chunk,
+            headers={
+                "Authorization": None,
+                "Referer": "https://creators.spotify.com/",
+            },
+            timeout=300,
+        )
+        etag = resp.headers.get("ETag", "").strip('"')
+        parts_etags.append({"partNumber": part_info["partNumber"], "etag": etag})
+        logger.info(
+            "Uploaded video part %d/%d (%d bytes), ETag=%s",
+            part_info["partNumber"],
+            len(signed_url_parts),
+            len(chunk),
+            etag,
+        )
+    return parts_etags
 
 
 def _process_upload(
@@ -349,9 +405,15 @@ def _process_upload(
     user_id: str,
     filename: str,
     content_type: str = "audio/mpeg",
+    parts_etags: list[dict] | None = None,
 ) -> None:
     """Step 5: Trigger processing and poll until complete."""
     is_video = content_type.startswith("video/")
+    # For video multipart: use the provided parts list
+    # For audio: single part with the etag
+    if parts_etags is None:
+        parts_etags = [{"partNumber": 1, "etag": etag}]
+
     url = f"{_BASE_URL}/v3/upload/{upload_id}/process_upload"
     _retry_request(
         session,
@@ -366,7 +428,7 @@ def _process_upload(
             "caption": filename,
             "isExtractedFromVideo": is_video,
             "isMultipartUpload": True,
-            "parts": [{"partNumber": 1, "etag": etag}],
+            "parts": parts_etags,
             "uploadId": upload_id,
             "episodeId": anchor_id,
             "stationId": int(station_id),
@@ -375,9 +437,11 @@ def _process_upload(
     )
 
     # Poll for completion; tolerate 404 (media may not be visible immediately)
+    # Use exponential backoff for 404s (known Spotify transient quirk)
     status_url = f"{_BASE_URL}/v3/upload/media/{upload_id}"
+    backoff = _POLL_INTERVAL
     for attempt in range(_POLL_MAX_ATTEMPTS):
-        time.sleep(_POLL_INTERVAL)
+        time.sleep(backoff)
         try:
             resp = session.request(
                 "GET",
@@ -391,23 +455,36 @@ def _process_upload(
                     upload_id,
                     attempt + 1,
                 )
+                backoff = min(backoff * 1.5, 30)  # backoff up to 30s between polls
                 continue
             resp.raise_for_status()
         except requests.HTTPError as exc:
             raise SpotifyPublishError(
                 f"Upload {upload_id} status poll failed: {exc}"
             ) from exc
+        backoff = _POLL_INTERVAL  # reset on success
         data = resp.json()
         # Status is in data.request.state (not top-level "status")
         request_data = data.get("request", data)
         status = request_data.get("state") or data.get("status", "")
         if status in ("processed", "completed"):
             logger.info("Upload %s processing completed (state=%s)", upload_id, status)
+            # Check mediaValidation for video
+            validation = data.get("mediaValidation", {})
+            if validation.get("status") == "validation_failure":
+                reasons = [r.get("reason", "unknown") for r in validation.get("failures", [])]
+                raise SpotifyPublishError(
+                    f"Upload {upload_id} media validation failed: {reasons}"
+                )
             return
         elif status == "failed":
             reason = request_data.get("failureReason", "unknown")
+            # Also check mediaValidation for details
+            validation = data.get("mediaValidation", {})
+            failures = [r.get("reason", "") for r in validation.get("failures", [])]
+            detail = f"{reason}" + (f" (validation: {failures})" if failures else "")
             raise SpotifyPublishError(
-                f"Upload {upload_id} processing failed: {reason}"
+                f"Upload {upload_id} processing failed: {detail}"
             )
         logger.debug("Upload %s status: %s (attempt %d)", upload_id, status, attempt + 1)
 
@@ -743,28 +820,42 @@ def publish_episode(
         # Step 2: Create draft episode
         anchor_id = _create_episode(session, station_id)
 
-        # Step 3: Get upload URL
-        signed_url, upload_id = _get_upload_url(
-            session,
-            anchor_id,
-            filename=upload_path.name,
-            content_type=content_type,
-        )
+        # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
+        is_video = content_type.startswith("video/")
+        file_data = upload_path.read_bytes()
 
-        # Step 4: Upload audio
-        audio_data = upload_path.read_bytes()
-        etag = _upload_audio(session, signed_url, audio_data, content_type=content_type)
+        if is_video:
+            upload_result = _get_upload_url(
+                session,
+                anchor_id,
+                filename=upload_path.name,
+                content_type=content_type,
+                is_video=True,
+                file_size=len(file_data),
+            )
+            signed_url_parts, upload_id = upload_result  # type: ignore[misc]
+            parts_etags = _upload_video_multipart(session, signed_url_parts, file_data)
+        else:
+            signed_url, upload_id = _get_upload_url(
+                session,
+                anchor_id,
+                filename=upload_path.name,
+                content_type=content_type,
+            )
+            etag = _upload_audio(session, signed_url, file_data, content_type=content_type)
+            parts_etags = [{"partNumber": 1, "etag": etag}]
 
         # Step 5: Process upload
         _process_upload(
             session,
             upload_id,
-            etag,
+            parts_etags[0]["etag"] if len(parts_etags) == 1 else parts_etags[0]["etag"],
             anchor_id=anchor_id,
             station_id=station_id,
             user_id=user_id,
             filename=upload_path.name,
             content_type=content_type,
+            parts_etags=parts_etags if is_video else None,
         )
 
         # Step 6: Set metadata
