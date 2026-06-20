@@ -14,6 +14,9 @@ import pytest
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 from podcaster.video.video_gen import RecordedSegment
 from podcaster.video.video_compose import (
+    BOUNDARY_CONTENT_TO_CONTENT,
+    BOUNDARY_CONTENT_TO_OUTRO,
+    BOUNDARY_INTRO_TO_CONTENT,
     ENCODE_CRF,
     ENCODE_PIX_FMT,
     ENCODE_PRESET,
@@ -21,6 +24,10 @@ from podcaster.video.video_compose import (
     OUTPUT_FPS,
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
+    TRANSITION_FADE,
+    TRANSITION_FADE_BLACK,
+    TRANSITION_SLIDE_LEFT,
+    TRANSITION_WIPE_LEFT,
     LowerThird,
     _build_drawtext_filter,
     _build_normalize_cmd,
@@ -28,6 +35,7 @@ from podcaster.video.video_compose import (
     _compute_lower_thirds,
     _probe_drawtext_ffmpeg,
     compose_video,
+    select_transitions,
 )
 
 
@@ -99,12 +107,19 @@ class TestBuildXfadeFilter:
         assert result == ""
 
     def test_two_segments(self):
+        # Default: uses select_transitions → "fade" for content_to_content
         result = _build_xfade_filter([10.0, 10.0], transition_duration=1.0)
         assert "xfade" in result
-        assert "fadeblack" in result
         assert "duration=1.0" in result
         assert "offset=9.000" in result
         assert "[v01]" in result
+
+    def test_explicit_fadeblack(self):
+        result = _build_xfade_filter(
+            [10.0, 10.0], transition_duration=1.0, transitions=["fadeblack"]
+        )
+        assert "fadeblack" in result
+        assert "offset=9.000" in result
 
     def test_three_segments(self):
         result = _build_xfade_filter([10.0, 10.0, 10.0], transition_duration=1.0)
@@ -116,6 +131,29 @@ class TestBuildXfadeFilter:
         result = _build_xfade_filter([8.0, 8.0], transition_duration=2.0)
         assert "duration=2.0" in result
         assert "offset=6.000" in result
+
+    def test_explicit_transitions_used(self):
+        result = _build_xfade_filter(
+            [10.0, 10.0, 10.0],
+            transition_duration=1.0,
+            transitions=["slideleft", "wipeleft"],
+        )
+        assert "slideleft" in result
+        assert "wipeleft" in result
+
+    def test_transitions_length_mismatch_raises(self):
+        with pytest.raises(ValueError, match="transitions length"):
+            _build_xfade_filter([10.0, 10.0, 10.0], transitions=["fade"])
+
+    def test_default_transitions_vary_for_four_segments(self):
+        # 4 segments → 3 boundaries → should not all be the same transition
+        result = _build_xfade_filter(
+            [10.0, 10.0, 10.0, 10.0], transition_duration=1.0
+        )
+        # The rotation is: fade, slideleft, wipeleft
+        assert "fade" in result
+        assert "slideleft" in result
+        assert "wipeleft" in result
 
 
 # --- Tests for _build_drawtext_filter ---
@@ -515,6 +553,142 @@ class TestComposeVideoDrawtext:
 
         mock_probe.assert_not_called()
 
+
+# --- Tests for transition selection (#298) ---
+
+
+class TestSelectTransitions:
+    def test_empty_boundaries(self):
+        assert select_transitions(0) == []
+
+    def test_single_content_boundary(self):
+        result = select_transitions(1)
+        assert result == [TRANSITION_FADE]
+
+    def test_intro_to_content_uses_fadeblack(self):
+        result = select_transitions(1, [BOUNDARY_INTRO_TO_CONTENT])
+        assert result == [TRANSITION_FADE_BLACK]
+
+    def test_content_to_outro_uses_wipeleft(self):
+        result = select_transitions(1, [BOUNDARY_CONTENT_TO_OUTRO])
+        assert result == [TRANSITION_WIPE_LEFT]
+
+    def test_three_content_boundaries_cycle(self):
+        result = select_transitions(3, [
+            BOUNDARY_CONTENT_TO_CONTENT,
+            BOUNDARY_CONTENT_TO_CONTENT,
+            BOUNDARY_CONTENT_TO_CONTENT,
+        ])
+        # Should cycle: fade, slideleft, wipeleft
+        assert result[0] == TRANSITION_FADE
+        assert result[1] == TRANSITION_SLIDE_LEFT
+        assert result[2] == TRANSITION_WIPE_LEFT
+
+    def test_mixed_boundary_kinds(self):
+        result = select_transitions(3, [
+            BOUNDARY_INTRO_TO_CONTENT,
+            BOUNDARY_CONTENT_TO_CONTENT,
+            BOUNDARY_CONTENT_TO_OUTRO,
+        ])
+        assert result[0] == TRANSITION_FADE_BLACK
+        assert result[1] == TRANSITION_FADE    # first content rotation slot
+        assert result[2] == TRANSITION_WIPE_LEFT
+
+    def test_four_content_boundaries_wrap(self):
+        # 4 content boundaries → should wrap around rotation
+        result = select_transitions(4)
+        # Rotation: fade, slideleft, wipeleft, slideright
+        assert len(set(result)) > 1  # not all the same
+
+    def test_length_mismatch_raises(self):
+        with pytest.raises(ValueError, match="boundary_kinds length"):
+            select_transitions(3, [BOUNDARY_CONTENT_TO_CONTENT, BOUNDARY_CONTENT_TO_CONTENT])
+
+
+class TestComposeVideoTransitions:
+    """Tests for transition selection integration in compose_video (#298)."""
+
+    def test_default_transitions_vary_with_four_segments(self, tmp_path):
+        """compose_video with 4 segments should use varied xfade transitions."""
+        runner = _mock_runner()
+        segs = []
+        for i in range(4):
+            p = tmp_path / f"seg{i}.webm"
+            p.touch()
+            segs.append(_make_recorded_segment(duration=10.0, video_path=p))
+
+        with patch(
+            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
+            return_value=None,
+        ):
+            compose_video(
+                segments=segs,
+                output_dir=tmp_path / "out",
+                runner=runner,
+                transition_duration=1.0,
+            )
+
+        # Find the filter_complex call
+        all_calls = [call[0][0] for call in runner.call_args_list]
+        compose_cmd = all_calls[-1]
+        fc_idx = compose_cmd.index("-filter_complex") if "-filter_complex" in compose_cmd else -1
+        assert fc_idx >= 0
+        fc_value = compose_cmd[fc_idx + 1]
+        # With 4 segments, should see at least 2 distinct transition types
+        assert "fade" in fc_value
+        assert "slideleft" in fc_value
+
+    def test_boundary_kinds_passed_through(self, tmp_path):
+        """boundary_kinds parameter changes the transitions used."""
+        runner = _mock_runner()
+        segs = []
+        for i in range(2):
+            p = tmp_path / f"s{i}.webm"
+            p.touch()
+            segs.append(_make_recorded_segment(duration=10.0, video_path=p))
+
+        with patch(
+            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
+            return_value=None,
+        ):
+            compose_video(
+                segments=segs,
+                output_dir=tmp_path / "out",
+                runner=runner,
+                transition_duration=1.0,
+                boundary_kinds=[BOUNDARY_INTRO_TO_CONTENT],
+            )
+
+        all_calls = [call[0][0] for call in runner.call_args_list]
+        compose_cmd = all_calls[-1]
+        fc_idx = compose_cmd.index("-filter_complex")
+        assert "fadeblack" in compose_cmd[fc_idx + 1]
+
+    def test_content_to_outro_uses_wipeleft(self, tmp_path):
+        """content_to_outro boundary uses wipeleft transition."""
+        runner = _mock_runner()
+        segs = []
+        for i in range(2):
+            p = tmp_path / f"s{i}.webm"
+            p.touch()
+            segs.append(_make_recorded_segment(duration=10.0, video_path=p))
+
+        with patch(
+            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
+            return_value=None,
+        ):
+            compose_video(
+                segments=segs,
+                output_dir=tmp_path / "out",
+                runner=runner,
+                transition_duration=1.0,
+                boundary_kinds=[BOUNDARY_CONTENT_TO_OUTRO],
+            )
+
+        all_calls = [call[0][0] for call in runner.call_args_list]
+        compose_cmd = all_calls[-1]
+        fc_idx = compose_cmd.index("-filter_complex")
+        assert "wipeleft" in compose_cmd[fc_idx + 1]
 
 
 # --- Tests for sync-map utilities (#296) ---

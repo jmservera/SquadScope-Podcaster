@@ -366,3 +366,213 @@ class TestPlanFromScriptTimed:
         idx_vscode = urls.index("https://github.com/microsoft/vscode")
         idx_ruff = urls.index("https://github.com/astral-sh/ruff")
         assert idx_vscode < idx_ruff
+
+
+# --- Audio-boundary sync tests (#297) ---
+
+
+from podcaster.video.sync_plan import (
+    AudioCuePoint,
+    VisualCue,
+    VISUAL_KIND_IMAGE,
+    VISUAL_KIND_RECORDING,
+    VISUAL_KIND_SCREENSHOT,
+    build_audio_cue_points,
+    snap_to_audio_boundary,
+    snap_episode_plan_to_audio,
+    snap_visual_cues,
+)
+from podcaster.video.sync_plan import EpisodePlan, VideoSegment
+
+
+class TestBuildAudioCuePoints:
+    def test_empty_segments_returns_empty(self):
+        assert build_audio_cue_points([], []) == []
+
+    def test_single_segment_produces_start_and_end(self):
+        cues = build_audio_cue_points([0.0], [10.0])
+        times = [c.time_seconds for c in cues]
+        assert 0.0 in times
+        assert 10.0 in times
+
+    def test_single_segment_no_gap_midpoint(self):
+        cues = build_audio_cue_points([0.0], [10.0], gap_seconds=0.35)
+        kinds = [c.kind for c in cues]
+        assert "gap_midpoint" not in kinds
+
+    def test_two_segments_produces_gap_midpoint(self):
+        # segment 0: 0..5, gap 0.5, segment 1: 5.5..10.5
+        cues = build_audio_cue_points([0.0, 5.5], [5.0, 5.0], gap_seconds=0.5)
+        kinds = [c.kind for c in cues]
+        assert "gap_midpoint" in kinds
+        midpoint_cue = next(c for c in cues if c.kind == "gap_midpoint")
+        assert midpoint_cue.time_seconds == pytest.approx(5.25)  # midpoint of 5.0..5.5
+
+    def test_cues_sorted_by_time(self):
+        cues = build_audio_cue_points([0.0, 10.0, 20.0], [8.0, 8.0, 8.0], gap_seconds=2.0)
+        times = [c.time_seconds for c in cues]
+        assert times == sorted(times)
+
+    def test_mismatched_lengths_raise(self):
+        with pytest.raises(ValueError, match="length"):
+            build_audio_cue_points([0.0, 5.0], [5.0])
+
+    def test_negative_duration_raises(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            build_audio_cue_points([0.0], [-1.0])
+
+    def test_no_gap_when_gap_seconds_zero(self):
+        cues = build_audio_cue_points([0.0, 10.0], [10.0, 10.0], gap_seconds=0.0)
+        kinds = [c.kind for c in cues]
+        assert "gap_midpoint" not in kinds
+
+    def test_deduplication_within_10ms(self):
+        # Two segments that end/start at almost the same time
+        cues = build_audio_cue_points([0.0, 10.005], [10.0, 5.0], gap_seconds=0.0)
+        times = [c.time_seconds for c in cues]
+        # 10.0 (end of seg 0) and 10.005 (start of seg 1) should deduplicate
+        close = [t for t in times if 9.99 < t < 10.02]
+        assert len(close) == 1
+
+
+class TestSnapToAudioBoundary:
+    def _cues(self, *times: float) -> list[AudioCuePoint]:
+        return [AudioCuePoint(t, "turn_start") for t in times]
+
+    def test_snaps_within_tolerance(self):
+        cues = self._cues(0.0, 10.0, 20.0)
+        assert snap_to_audio_boundary(9.7, cues, tolerance_seconds=0.5) == pytest.approx(10.0)
+
+    def test_no_snap_outside_tolerance(self):
+        cues = self._cues(0.0, 10.0, 20.0)
+        assert snap_to_audio_boundary(11.0, cues, tolerance_seconds=0.5) == pytest.approx(11.0)
+
+    def test_empty_cues_returns_original(self):
+        assert snap_to_audio_boundary(5.0, [], 0.5) == pytest.approx(5.0)
+
+    def test_exact_match_snaps(self):
+        cues = self._cues(5.0)
+        assert snap_to_audio_boundary(5.0, cues, 0.5) == pytest.approx(5.0)
+
+    def test_boundary_at_tolerance_snaps(self):
+        # Distance == tolerance → should snap
+        cues = self._cues(10.0)
+        assert snap_to_audio_boundary(10.5, cues, tolerance_seconds=0.5) == pytest.approx(10.0)
+
+    def test_just_outside_tolerance_does_not_snap(self):
+        cues = self._cues(10.0)
+        assert snap_to_audio_boundary(10.51, cues, tolerance_seconds=0.5) == pytest.approx(10.51)
+
+    def test_negative_offset_snaps(self):
+        cues = self._cues(10.0)
+        assert snap_to_audio_boundary(9.6, cues, tolerance_seconds=0.5) == pytest.approx(10.0)
+
+
+class TestSnapEpisodePlanToAudio:
+    def _plan(self, *segs: tuple[str, float, float]) -> EpisodePlan:
+        """Build plan from (name, start, duration) tuples."""
+        segments = tuple(
+            VideoSegment(
+                repo=RepoReference(owner="test", name=name),
+                start_seconds=start,
+                duration_seconds=dur,
+            )
+            for name, start, dur in segs
+        )
+        total = segments[-1].start_seconds + segments[-1].duration_seconds if segments else 0.0
+        return EpisodePlan(total_duration_seconds=total, segments=segments)
+
+    def _cues(self, *times: float) -> list[AudioCuePoint]:
+        return [AudioCuePoint(t, "turn_start") for t in times]
+
+    def test_empty_plan_returns_unchanged(self):
+        plan = EpisodePlan(total_duration_seconds=60.0, segments=())
+        result = snap_episode_plan_to_audio(plan, self._cues(10.0))
+        assert result == plan
+
+    def test_snaps_segment_starts(self):
+        plan = self._plan(("a", 9.7, 30.0), ("b", 39.7, 30.0))
+        cues = self._cues(10.0, 40.0)
+        result = snap_episode_plan_to_audio(plan, cues, tolerance_seconds=0.5)
+        assert result.segments[0].start_seconds == pytest.approx(10.0)
+        assert result.segments[1].start_seconds == pytest.approx(40.0)
+
+    def test_no_snap_outside_tolerance(self):
+        plan = self._plan(("a", 5.0, 30.0))
+        cues = self._cues(10.0)
+        result = snap_episode_plan_to_audio(plan, cues, tolerance_seconds=0.5)
+        assert result.segments[0].start_seconds == pytest.approx(5.0)
+
+    def test_total_duration_preserved(self):
+        plan = self._plan(("a", 0.0, 30.0), ("b", 30.0, 30.0))
+        cues = self._cues(5.0, 35.0)
+        result = snap_episode_plan_to_audio(plan, cues)
+        assert result.total_duration_seconds == plan.total_duration_seconds
+
+    def test_segment_durations_adjusted(self):
+        # After snapping start of seg[1] from 29.8 → 30.0, seg[0] duration grows
+        plan = self._plan(("a", 0.0, 29.8), ("b", 29.8, 30.2))
+        cues = self._cues(0.0, 30.0, 60.0)
+        result = snap_episode_plan_to_audio(plan, cues, tolerance_seconds=0.5)
+        assert result.segments[0].duration_seconds == pytest.approx(30.0)
+        assert result.segments[1].start_seconds == pytest.approx(30.0)
+
+    def test_monotonic_order_maintained(self):
+        # Two segments both snap to same cue — second should not precede first
+        plan = self._plan(("a", 9.8, 0.3), ("b", 10.1, 30.0))
+        cues = self._cues(10.0)
+        result = snap_episode_plan_to_audio(plan, cues, tolerance_seconds=0.5)
+        starts = [s.start_seconds for s in result.segments]
+        assert starts[0] <= starts[1]
+
+
+class TestSnapVisualCues:
+    def _cues(self, *times: float) -> list[AudioCuePoint]:
+        return [AudioCuePoint(t, "turn_start") for t in times]
+
+    def test_snaps_recording_cue(self):
+        cues = self._cues(10.0)
+        vcues = [VisualCue(time_seconds=9.8, kind=VISUAL_KIND_RECORDING, label="repo")]
+        result = snap_visual_cues(vcues, cues, tolerance_seconds=0.5)
+        assert result[0].time_seconds == pytest.approx(10.0)
+        assert result[0].kind == VISUAL_KIND_RECORDING
+
+    def test_snaps_image_cue(self):
+        cues = self._cues(5.0)
+        vcues = [VisualCue(time_seconds=5.3, kind=VISUAL_KIND_IMAGE, label="img.png")]
+        result = snap_visual_cues(vcues, cues, tolerance_seconds=0.5)
+        assert result[0].time_seconds == pytest.approx(5.0)
+
+    def test_snaps_screenshot_cue(self):
+        cues = self._cues(15.0)
+        vcues = [VisualCue(time_seconds=14.7, kind=VISUAL_KIND_SCREENSHOT, label="shot.png")]
+        result = snap_visual_cues(vcues, cues, tolerance_seconds=0.5)
+        assert result[0].time_seconds == pytest.approx(15.0)
+
+    def test_preserves_label_and_kind(self):
+        cues = self._cues(10.0)
+        vcues = [VisualCue(9.9, VISUAL_KIND_IMAGE, "my_label")]
+        result = snap_visual_cues(vcues, cues)
+        assert result[0].label == "my_label"
+        assert result[0].kind == VISUAL_KIND_IMAGE
+
+    def test_no_snap_outside_tolerance(self):
+        cues = self._cues(10.0)
+        vcues = [VisualCue(time_seconds=15.0, kind=VISUAL_KIND_IMAGE, label="")]
+        result = snap_visual_cues(vcues, cues, tolerance_seconds=0.5)
+        assert result[0].time_seconds == pytest.approx(15.0)
+
+    def test_empty_cues_returns_empty(self):
+        assert snap_visual_cues([], [AudioCuePoint(0.0, "turn_start")]) == []
+
+    def test_multiple_cues_snapped_independently(self):
+        audio_cues = self._cues(10.0, 20.0, 30.0)
+        vcues = [
+            VisualCue(9.7, VISUAL_KIND_RECORDING, "a"),
+            VisualCue(19.8, VISUAL_KIND_IMAGE, "b"),
+            VisualCue(35.0, VISUAL_KIND_SCREENSHOT, "c"),  # out of tolerance
+        ]
+        result = snap_visual_cues(vcues, audio_cues, tolerance_seconds=0.5)
+        assert result[0].time_seconds == pytest.approx(10.0)
+        assert result[1].time_seconds == pytest.approx(20.0)
+        assert result[2].time_seconds == pytest.approx(35.0)  # unchanged

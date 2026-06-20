@@ -86,6 +86,29 @@ ENCODE_CRF = 18
 ENCODE_PIX_FMT = "yuv420p"
 ENCODE_AUDIO_BITRATE = "192k"
 
+# --- Transition types (#298) ---
+# Valid xfade transition names (subset chosen for quality and file-size impact)
+
+TRANSITION_FADE = "fade"              # smooth crossfade — universal default
+TRANSITION_FADE_BLACK = "fadeblack"   # fade through black — good for intro joins
+TRANSITION_SLIDE_LEFT = "slideleft"   # slide incoming segment in from the right
+TRANSITION_SLIDE_RIGHT = "slideright" # slide incoming segment in from the left
+TRANSITION_WIPE_LEFT = "wipeleft"     # wipe — clean, good for content→outro
+TRANSITION_WIPE_RIGHT = "wiperight"
+
+# Boundary kind identifiers (caller classifies each N-1 boundary for N segments)
+BOUNDARY_INTRO_TO_CONTENT = "intro_to_content"
+BOUNDARY_CONTENT_TO_CONTENT = "content_to_content"
+BOUNDARY_CONTENT_TO_OUTRO = "content_to_outro"
+
+# Rotation used for content→content boundaries (cycles to add variety)
+_CONTENT_ROTATION: list[str] = [
+    TRANSITION_FADE,
+    TRANSITION_SLIDE_LEFT,
+    TRANSITION_WIPE_LEFT,
+    TRANSITION_SLIDE_RIGHT,
+]
+
 
 class CommandRunner(Protocol):
     """Protocol for running shell commands (allows mocking)."""
@@ -145,34 +168,106 @@ def _build_normalize_cmd(
     ]
 
 
+def select_transitions(
+    n_boundaries: int,
+    boundary_kinds: list[str] | None = None,
+) -> list[str]:
+    """Return one transition type per segment boundary.
+
+    Varies transitions to keep the video dynamic.  Per-boundary rules:
+
+    * ``"intro_to_content"`` → :data:`TRANSITION_FADE_BLACK` (dramatic join)
+    * ``"content_to_outro"``  → :data:`TRANSITION_WIPE_LEFT` (clean exit)
+    * ``"content_to_content"`` (default) → cycles through
+      :data:`_CONTENT_ROTATION` (fade → slideleft → wipeleft → slideright → …)
+
+    Args:
+        n_boundaries: Number of segment boundaries (= number of segments − 1).
+        boundary_kinds: One kind string per boundary.  Defaults to all
+            ``"content_to_content"`` when ``None``.
+
+    Returns:
+        List of xfade transition-type strings, length ``n_boundaries``.
+
+    Raises:
+        ValueError: If *boundary_kinds* length ≠ *n_boundaries*.
+    """
+    if n_boundaries <= 0:
+        return []
+
+    kinds = boundary_kinds or [BOUNDARY_CONTENT_TO_CONTENT] * n_boundaries
+    if len(kinds) != n_boundaries:
+        raise ValueError(
+            f"boundary_kinds length ({len(kinds)}) must equal "
+            f"n_boundaries ({n_boundaries})"
+        )
+
+    content_idx = 0
+    result: list[str] = []
+    for kind in kinds:
+        if kind == BOUNDARY_INTRO_TO_CONTENT:
+            result.append(TRANSITION_FADE_BLACK)
+        elif kind == BOUNDARY_CONTENT_TO_OUTRO:
+            result.append(TRANSITION_WIPE_LEFT)
+        else:
+            result.append(_CONTENT_ROTATION[content_idx % len(_CONTENT_ROTATION)])
+            content_idx += 1
+    return result
+
+
 def _build_xfade_filter(
     segment_durations: list[float],
     transition_duration: float = TRANSITION_DURATION,
+    transitions: list[str] | None = None,
 ) -> str:
     """Build the xfade filter chain for N segments.
 
     For N segments, creates N-1 xfade transitions chained together.
     Each xfade offset is calculated as cumulative duration minus transition overlap.
+
+    Args:
+        segment_durations: Duration of each normalised segment in seconds.
+        transition_duration: Duration of each transition in seconds.
+        transitions: One xfade transition-type string per boundary (length =
+            ``len(segment_durations) - 1``).  When ``None``,
+            :func:`select_transitions` is called with default boundary kinds so
+            transitions are automatically varied.
+
+    Returns:
+        ffmpeg ``filter_complex`` fragment string, or ``""`` for < 2 segments.
+
+    Raises:
+        ValueError: If *transitions* length doesn't match the boundary count.
     """
-    if len(segment_durations) < 2:
+    n = len(segment_durations)
+    if n < 2:
         return ""
+
+    n_boundaries = n - 1
+    if transitions is None:
+        transitions = select_transitions(n_boundaries)
+    elif len(transitions) != n_boundaries:
+        raise ValueError(
+            f"transitions length ({len(transitions)}) must equal "
+            f"n_boundaries ({n_boundaries})"
+        )
 
     filters: list[str] = []
     # First transition: [0:v][1:v]xfade=...
     offset = segment_durations[0] - transition_duration
     filters.append(
-        f"[0:v][1:v]xfade=transition=fadeblack:duration={transition_duration}"
+        f"[0:v][1:v]xfade=transition={transitions[0]}:duration={transition_duration}"
         f":offset={offset:.3f}[v01]"
     )
 
     cumulative = segment_durations[0] + segment_durations[1] - transition_duration
-    for i in range(2, len(segment_durations)):
+    for i in range(2, n):
         in_label = "v01" if i == 2 else f"vx{i-1}"
-        out_label = f"vx{i}" if i < len(segment_durations) - 1 else "vout"
+        out_label = f"vx{i}" if i < n - 1 else "vout"
 
         offset = cumulative - transition_duration
         filters.append(
-            f"[{in_label}][{i}:v]xfade=transition=fadeblack"
+            f"[{in_label}][{i}:v]xfade=transition={transitions[i - 1]}"
             f":duration={transition_duration}:offset={offset:.3f}[{out_label}]"
         )
         cumulative += segment_durations[i] - transition_duration
@@ -273,6 +368,7 @@ def compose_video(
     output_dir: Path | None = None,
     runner: CommandRunner | None = None,
     transition_duration: float = TRANSITION_DURATION,
+    boundary_kinds: list[str] | None = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -282,7 +378,13 @@ def compose_video(
         output_path: Explicit output file path. Overrides output_dir.
         output_dir: Directory for output. Uses temp dir if neither path is given.
         runner: Command runner (for testing). Uses subprocess if None.
-        transition_duration: Duration of crossfade transitions between segments.
+        transition_duration: Duration of each xfade transition in seconds.
+            Default 1.0 s.  Must be > 0 and < shortest segment duration.
+        boundary_kinds: One boundary-kind string per segment boundary
+            (length = ``len(segments) - 1``).  Classifies each transition as
+            ``"intro_to_content"``, ``"content_to_content"`` (default), or
+            ``"content_to_outro"`` so different transition types are applied
+            per boundary.  Pass ``None`` (default) to use automatic cycling.
 
     Returns:
         ComposeResult with path to the final MP4.
@@ -332,8 +434,12 @@ def compose_video(
         video_label = "0:v"
         filter_complex_parts: list[str] = []
     else:
-        # Build xfade chain
-        xfade_filter = _build_xfade_filter(durations, transition_duration)
+        # Build xfade chain with varied transitions
+        n_boundaries = len(segments) - 1
+        chosen_transitions = select_transitions(n_boundaries, boundary_kinds)
+        xfade_filter = _build_xfade_filter(
+            durations, transition_duration, chosen_transitions
+        )
         filter_complex_parts = [xfade_filter] if xfade_filter else []
 
         if len(segments) == 2:

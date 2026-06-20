@@ -17,14 +17,19 @@ pytest.importorskip("playwright", reason="playwright not installed — skipping 
 from podcaster.video.intro_outro import (
     CLARACLE_URL,
     DEFAULT_SHOW_NAME,
+    DEFAULT_CREDITS_DURATION_MS,
     INTRO_DURATION_MS,
     OUTRO_DURATION_MS,
     TITLE_FONT,
     WIDTH,
     HEIGHT,
     ClipResult,
+    CreditsConfig,
+    CreditsEntry,
+    DEFAULT_CREDITS_ENTRIES,
     IntroConfig,
     OutroConfig,
+    _build_credits_ffmpeg_cmd,
     _build_intro_ffmpeg_cmd,
     _build_outro_ffmpeg_cmd,
     _escape_drawtext,
@@ -32,6 +37,7 @@ from podcaster.video.intro_outro import (
     _render_outro_html,
     _record_html_to_video,
     derive_intro_duration,
+    generate_credits_ffmpeg,
     generate_intro,
     generate_intro_ffmpeg,
     generate_outro,
@@ -651,3 +657,187 @@ class TestGenerateOutroFfmpeg:
         vf = cmd[cmd.index("-vf") + 1]
         assert DEFAULT_SHOW_NAME in vf
 
+
+
+# --- End credits tests (#300) ---
+
+
+class TestCreditsEntry:
+    def test_label_and_value(self):
+        e = CreditsEntry("Creator", "Juan Manuel Servera (@jmservera)")
+        assert e.label == "Creator"
+        assert e.value == "Juan Manuel Servera (@jmservera)"
+
+    def test_default_credits_entries_has_required_lines(self):
+        labels = [e.label for e in DEFAULT_CREDITS_ENTRIES]
+        assert "Creator" in labels
+        assert "AI Team" in labels
+        assert "AI Hosts" in labels
+        assert "Music" in labels
+        assert "Powered by" in labels
+
+    def test_creator_is_jmservera(self):
+        creator = next(e for e in DEFAULT_CREDITS_ENTRIES if e.label == "Creator")
+        assert "jmservera" in creator.value
+
+    def test_ai_hosts_has_fable_and_alloy(self):
+        hosts = next(e for e in DEFAULT_CREDITS_ENTRIES if e.label == "AI Hosts")
+        assert "Fable" in hosts.value
+        assert "Alloy" in hosts.value
+
+    def test_music_has_license(self):
+        music = next(e for e in DEFAULT_CREDITS_ENTRIES if e.label == "Music")
+        assert "CC-BY-SA" in music.value or "CC BY SA" in music.value.replace("-", " ")
+
+    def test_powered_by_claracle(self):
+        powered = next(e for e in DEFAULT_CREDITS_ENTRIES if e.label == "Powered by")
+        assert "Claracle" in powered.value
+
+
+class TestCreditsConfig:
+    def test_defaults(self):
+        config = CreditsConfig()
+        assert config.show_name == DEFAULT_SHOW_NAME
+        assert config.title == "Credits"
+        assert config.duration_ms == DEFAULT_CREDITS_DURATION_MS
+        assert config.entries is not None
+        assert len(config.entries) == len(DEFAULT_CREDITS_ENTRIES)
+
+    def test_default_duration_in_range(self):
+        assert 5_000 <= CreditsConfig().duration_ms <= 10_000
+
+    def test_custom_show_name(self):
+        config = CreditsConfig(show_name="My Show")
+        assert config.show_name == "My Show"
+
+    def test_custom_entries_override(self):
+        custom = [CreditsEntry("Host", "Test Person")]
+        config = CreditsConfig(entries=custom)
+        assert config.entries == custom
+
+    def test_custom_title(self):
+        config = CreditsConfig(title="The Team")
+        assert config.title == "The Team"
+
+    def test_width_height_defaults(self):
+        config = CreditsConfig()
+        assert config.width == 1920
+        assert config.height == 1080
+
+
+class TestBuildCreditsFfmpegCmd:
+    def test_basic_structure(self):
+        cmd = _build_credits_ffmpeg_cmd(CreditsConfig(), Path("/out/credits.mp4"))
+        assert cmd[0] == "ffmpeg"
+        assert "-y" in cmd
+        assert "/out/credits.mp4" in cmd
+        assert "-vf" in cmd
+        assert "-t" in cmd
+
+    def test_show_name_in_filter(self):
+        cmd = _build_credits_ffmpeg_cmd(CreditsConfig(), Path("/out/c.mp4"))
+        vf = cmd[cmd.index("-vf") + 1]
+        assert DEFAULT_SHOW_NAME in vf
+
+    def test_credits_title_in_filter(self):
+        cmd = _build_credits_ffmpeg_cmd(CreditsConfig(), Path("/out/c.mp4"))
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "Credits" in vf
+
+    def test_all_required_credit_lines_in_filter(self):
+        cmd = _build_credits_ffmpeg_cmd(CreditsConfig(), Path("/out/c.mp4"))
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "jmservera" in vf
+        assert "Fable" in vf
+        assert "Alloy" in vf
+        assert "CC-BY-SA" in vf
+        assert "Claracle" in vf
+
+    def test_duration_matches_config(self):
+        config = CreditsConfig(duration_ms=7000)
+        cmd = _build_credits_ffmpeg_cmd(config, Path("/out/c.mp4"))
+        t_idx = cmd.index("-t")
+        assert cmd[t_idx + 1] == pytest.approx("7.000", rel=0)
+
+    def test_duration_string_exact(self):
+        cmd = _build_credits_ffmpeg_cmd(CreditsConfig(duration_ms=8000), Path("/out/c.mp4"))
+        t_idx = cmd.index("-t")
+        assert cmd[t_idx + 1] == "8.000"
+
+    def test_fade_in_and_out_in_filter(self):
+        cmd = _build_credits_ffmpeg_cmd(CreditsConfig(), Path("/out/c.mp4"))
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "fade=t=in" in vf
+        assert "fade=t=out" in vf
+
+    def test_custom_ffmpeg_bin(self):
+        cmd = _build_credits_ffmpeg_cmd(
+            CreditsConfig(), Path("/out/c.mp4"), ffmpeg_bin="/usr/bin/ffmpeg"
+        )
+        assert cmd[0] == "/usr/bin/ffmpeg"
+
+    def test_dark_background_color(self):
+        cmd = _build_credits_ffmpeg_cmd(CreditsConfig(), Path("/out/c.mp4"))
+        assert "#0d1117" in " ".join(cmd)
+
+    def test_custom_entries_appear_in_filter(self):
+        config = CreditsConfig(entries=[CreditsEntry("Director", "Test User")])
+        cmd = _build_credits_ffmpeg_cmd(config, Path("/out/c.mp4"))
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "Director" in vf
+        assert "Test User" in vf
+
+    def test_empty_entries_still_produces_valid_cmd(self):
+        config = CreditsConfig(entries=[])
+        cmd = _build_credits_ffmpeg_cmd(config, Path("/out/c.mp4"))
+        assert "-vf" in cmd
+
+
+class TestGenerateCreditsFfmpeg:
+    def test_calls_runner(self, tmp_path):
+        runner = _make_ffmpeg_runner()
+        generate_credits_ffmpeg(output_dir=tmp_path, ffmpeg_bin="ffmpeg", runner=runner)
+        runner.assert_called_once()
+
+    def test_returns_clip_result(self, tmp_path):
+        runner = _make_ffmpeg_runner()
+        result = generate_credits_ffmpeg(output_dir=tmp_path, ffmpeg_bin="ffmpeg", runner=runner)
+        assert isinstance(result, ClipResult)
+        assert result.path.name == "credits.mp4"
+
+    def test_duration_from_config(self, tmp_path):
+        runner = _make_ffmpeg_runner()
+        config = CreditsConfig(duration_ms=6000)
+        result = generate_credits_ffmpeg(
+            config=config, output_dir=tmp_path, ffmpeg_bin="ffmpeg", runner=runner
+        )
+        assert result.duration_ms == 6000
+
+    def test_output_in_specified_dir(self, tmp_path):
+        runner = _make_ffmpeg_runner()
+        result = generate_credits_ffmpeg(output_dir=tmp_path, ffmpeg_bin="ffmpeg", runner=runner)
+        assert result.path.parent == tmp_path
+
+    def test_default_config_show_name_in_filter(self, tmp_path):
+        runner = _make_ffmpeg_runner()
+        generate_credits_ffmpeg(output_dir=tmp_path, ffmpeg_bin="ffmpeg", runner=runner)
+        cmd = runner.call_args[0][0]
+        vf = cmd[cmd.index("-vf") + 1]
+        assert DEFAULT_SHOW_NAME in vf
+
+    def test_drawtext_fallback_when_no_capable_ffmpeg(self, tmp_path):
+        """Falls back to 'ffmpeg' with a warning when no drawtext-capable binary found."""
+        runner = _make_ffmpeg_runner()
+        with patch(
+            "podcaster.video.intro_outro._get_drawtext_ffmpeg", return_value=None
+        ):
+            generate_credits_ffmpeg(output_dir=tmp_path, runner=runner)
+        assert runner.call_args[0][0][0] == "ffmpeg"
+
+    def test_branding_consistent_with_intro(self, tmp_path):
+        """Credits show_name matches the DEFAULT_SHOW_NAME used in intro/outro."""
+        runner = _make_ffmpeg_runner()
+        generate_credits_ffmpeg(output_dir=tmp_path, ffmpeg_bin="ffmpeg", runner=runner)
+        cmd = runner.call_args[0][0]
+        vf = cmd[cmd.index("-vf") + 1]
+        assert DEFAULT_SHOW_NAME in vf
