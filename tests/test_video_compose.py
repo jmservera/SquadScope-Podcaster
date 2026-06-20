@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -26,6 +26,8 @@ from podcaster.video.video_compose import (
     _build_normalize_cmd,
     _build_xfade_filter,
     _compute_lower_thirds,
+    _find_drawtext_capable_ffmpeg,
+    _probe_drawtext_ffmpeg,
     compose_video,
 )
 
@@ -354,3 +356,129 @@ class TestComposeVideo:
                 runner=_mock_runner(),
                 transition_duration=5.0,
             )
+
+
+# --- Tests for drawtext binary detection (#282) ---
+
+
+class TestProbeDrawtextFfmpeg:
+    """Unit tests for _probe_drawtext_ffmpeg — mocks subprocess.run."""
+
+    def _make_proc(self, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=stdout, stderr=stderr
+        )
+
+    def test_returns_first_capable_candidate(self):
+        """Returns the first candidate whose -filters output contains 'drawtext'."""
+        with patch("podcaster.video.video_compose.subprocess.run") as mock_run:
+            mock_run.return_value = self._make_proc(stdout=" VS drawtext ")
+            result = _probe_drawtext_ffmpeg(candidates=["/usr/bin/ffmpeg", "ffmpeg"])
+        assert result == "/usr/bin/ffmpeg"
+
+    def test_skips_incapable_candidate(self):
+        """Skips candidates without drawtext and returns the first capable one."""
+        outputs = [
+            self._make_proc(stdout="scale, overlay, crop"),  # no drawtext
+            self._make_proc(stdout="scale, drawtext, overlay"),
+        ]
+        with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
+            result = _probe_drawtext_ffmpeg(candidates=["/static/ffmpeg", "/usr/bin/ffmpeg"])
+        assert result == "/usr/bin/ffmpeg"
+
+    def test_returns_none_when_no_candidate_has_drawtext(self):
+        """Returns None when no candidate has drawtext in its filter list."""
+        with patch("podcaster.video.video_compose.subprocess.run") as mock_run:
+            mock_run.return_value = self._make_proc(stdout="scale, overlay, crop")
+            result = _probe_drawtext_ffmpeg(candidates=["/static/ffmpeg"])
+        assert result is None
+
+    def test_skips_missing_binary(self):
+        """FileNotFoundError for a candidate is silently skipped."""
+        outputs = [FileNotFoundError("not found"), self._make_proc(stdout="drawtext")]
+        with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
+            result = _probe_drawtext_ffmpeg(candidates=["/missing/ffmpeg", "/usr/bin/ffmpeg"])
+        assert result == "/usr/bin/ffmpeg"
+
+    def test_drawtext_in_stderr_also_counts(self):
+        """drawtext detected from stderr (some ffmpeg versions print there)."""
+        with patch("podcaster.video.video_compose.subprocess.run") as mock_run:
+            mock_run.return_value = self._make_proc(stderr="drawtext AVOptions")
+            result = _probe_drawtext_ffmpeg(candidates=["ffmpeg"])
+        assert result == "ffmpeg"
+
+    def test_empty_candidates_returns_none(self):
+        result = _probe_drawtext_ffmpeg(candidates=[])
+        assert result is None
+
+
+class TestComposeVideoDrawtext:
+    """Integration-style tests for drawtext detection within compose_video (#282)."""
+
+    def test_drawtext_capable_binary_used_in_compose(self, tmp_path):
+        """When _find_drawtext_capable_ffmpeg returns a path, compose cmd uses it."""
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=20.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        with patch(
+            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
+            return_value="/usr/bin/ffmpeg",
+        ):
+            compose_video(segments=[seg], output_dir=tmp_path / "out", runner=runner)
+
+        final_cmd = runner.call_args_list[-1][0][0]
+        assert final_cmd[0] == "/usr/bin/ffmpeg"
+        # Lower third drawtext overlays must be in the filter_complex
+        fc_idx = final_cmd.index("-filter_complex")
+        filter_complex = final_cmd[fc_idx + 1]
+        assert "drawtext" in filter_complex
+
+    def test_drawtext_skipped_gracefully_when_unavailable(self, tmp_path, caplog):
+        """When no drawtext-capable ffmpeg exists, overlays are skipped and video renders."""
+        import logging
+
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=20.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        with patch(
+            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
+            return_value=None,
+        ):
+            with caplog.at_level(logging.WARNING, logger="podcaster.video.video_compose"):
+                result = compose_video(
+                    segments=[seg], output_dir=tmp_path / "out", runner=runner
+                )
+
+        # Video must still be produced (no exception)
+        assert result.segment_count == 1
+        assert result.output_path.suffix == ".mp4"
+
+        # Warning must have been emitted
+        assert any("drawtext" in record.message for record in caplog.records)
+
+        # Final compose command must NOT contain drawtext filter expressions
+        final_cmd = runner.call_args_list[-1][0][0]
+        assert "-filter_complex" not in final_cmd, "drawtext filter_complex should not be in compose cmd"
+        assert not any(arg.startswith("drawtext=") for arg in final_cmd)
+
+    def test_no_drawtext_probe_when_no_lower_thirds(self, tmp_path):
+        """_find_drawtext_capable_ffmpeg is NOT called when no lower-thirds are needed."""
+        runner = _mock_runner()
+        # Duration=1.0 with transition_duration=0.1: lt_end=min(5.5, 0.5)=lt_start → no LT
+        seg = _make_recorded_segment(duration=1.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        with patch(
+            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg"
+        ) as mock_probe:
+            compose_video(
+                segments=[seg],
+                output_dir=tmp_path / "out",
+                runner=runner,
+                transition_duration=0.1,
+            )
+
+        mock_probe.assert_not_called()
+

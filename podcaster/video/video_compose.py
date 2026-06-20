@@ -18,6 +18,51 @@ from podcaster.video.video_gen import RecordedSegment
 
 logger = logging.getLogger(__name__)
 
+# --- drawtext binary detection (#282) ---
+
+# Module-level cache: populated on first call to _find_drawtext_capable_ffmpeg().
+_drawtext_cache: dict[str, str | None] = {}
+
+# Preferred candidates: system ffmpeg first (has libfreetype on Ubuntu/Debian),
+# then whatever 'ffmpeg' resolves on PATH (may be a static binary without drawtext).
+_DRAWTEXT_CANDIDATES = ["/usr/bin/ffmpeg", "ffmpeg"]
+
+
+def _probe_drawtext_ffmpeg(
+    candidates: list[str] | None = None,
+) -> str | None:
+    """Return the first ffmpeg binary in *candidates* that supports drawtext.
+
+    Probes each candidate via ``ffmpeg -hide_banner -filters`` and checks for
+    'drawtext' in the output.  Returns None if no candidate supports drawtext.
+    Not cached — call :func:`_find_drawtext_capable_ffmpeg` for the cached version.
+    """
+    if candidates is None:
+        candidates = _DRAWTEXT_CANDIDATES
+    for binary in candidates:
+        try:
+            proc = subprocess.run(
+                [binary, "-hide_banner", "-filters"],
+                capture_output=True,
+                text=True,
+            )
+            if "drawtext" in proc.stdout or "drawtext" in proc.stderr:
+                return binary
+        except (FileNotFoundError, OSError):
+            continue
+    return None
+
+
+def _find_drawtext_capable_ffmpeg() -> str | None:
+    """Return a drawtext-capable ffmpeg binary path, or None if unavailable.
+
+    Result is cached after the first call to avoid repeated subprocess probes.
+    """
+    if "binary" not in _drawtext_cache:
+        _drawtext_cache["binary"] = _probe_drawtext_ffmpeg()
+    return _drawtext_cache["binary"]
+
+
 # --- Constants ---
 
 OUTPUT_WIDTH = 1920
@@ -291,16 +336,26 @@ def compose_video(
         else:
             video_label = "vout"
 
-    # Step 3: Add lower-third overlays
+    # Step 3: Add lower-third overlays — only if a drawtext-capable ffmpeg is available.
     lower_thirds = _compute_lower_thirds(segments, transition_duration)
+    compose_ffmpeg_bin = "ffmpeg"  # default; overridden below when drawtext is used
     if lower_thirds:
-        drawtext_filter = _build_drawtext_filter(lower_thirds, video_label)
-        if drawtext_filter:
-            filter_complex_parts.append(drawtext_filter)
-            video_label = "final"
+        drawtext_bin = _find_drawtext_capable_ffmpeg()
+        if drawtext_bin:
+            drawtext_filter = _build_drawtext_filter(lower_thirds, video_label)
+            if drawtext_filter:
+                filter_complex_parts.append(drawtext_filter)
+                video_label = "final"
+                compose_ffmpeg_bin = drawtext_bin
+        else:
+            logger.warning(
+                "No ffmpeg binary with drawtext filter (libfreetype) found; "
+                "skipping lower-third overlays.  Install system ffmpeg "
+                "(e.g. apt install ffmpeg) or a build with libfreetype to enable overlays."
+            )
 
     # Step 4: Build final ffmpeg command
-    cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y"]
+    cmd: list[str] = [compose_ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y"]
 
     # Add all normalized video inputs
     for norm_path in normalized_paths:
