@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -26,8 +26,17 @@ from podcaster.video.video_compose import (
     _build_normalize_cmd,
     _build_xfade_filter,
     _compute_lower_thirds,
+    _probe_drawtext_ffmpeg,
     compose_video,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_drawtext_probe(monkeypatch):
+    monkeypatch.setattr(
+        "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
+        lambda: "ffmpeg",
+    )
 
 
 # --- Helpers ---
@@ -354,3 +363,386 @@ class TestComposeVideo:
                 runner=_mock_runner(),
                 transition_duration=5.0,
             )
+
+
+# --- Tests for drawtext binary detection (#282) ---
+
+
+class TestProbeDrawtextFfmpeg:
+    """Unit tests for _probe_drawtext_ffmpeg — mocks subprocess.run."""
+
+    def _make_proc(
+        self, stdout: str = "", stderr: str = "", returncode: int = 0
+    ) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=stderr
+        )
+
+    def test_returns_first_capable_candidate(self):
+        """Returns the first candidate whose -filters output contains 'drawtext'."""
+        with patch("podcaster.video.video_compose.subprocess.run") as mock_run:
+            mock_run.return_value = self._make_proc(stdout=" VS drawtext ")
+            result = _probe_drawtext_ffmpeg(candidates=["/usr/bin/ffmpeg", "ffmpeg"])
+        assert result == "/usr/bin/ffmpeg"
+
+    def test_skips_incapable_candidate(self):
+        """Skips candidates without drawtext and returns the first capable one."""
+        outputs = [
+            self._make_proc(stdout="scale, overlay, crop"),  # no drawtext
+            self._make_proc(stdout="scale, drawtext, overlay"),
+        ]
+        with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
+            result = _probe_drawtext_ffmpeg(candidates=["/static/ffmpeg", "/usr/bin/ffmpeg"])
+        assert result == "/usr/bin/ffmpeg"
+
+    def test_returns_none_when_no_candidate_has_drawtext(self):
+        """Returns None when no candidate has drawtext in its filter list."""
+        with patch("podcaster.video.video_compose.subprocess.run") as mock_run:
+            mock_run.return_value = self._make_proc(stdout="scale, overlay, crop")
+            result = _probe_drawtext_ffmpeg(candidates=["/static/ffmpeg"])
+        assert result is None
+
+    def test_skips_missing_binary(self):
+        """FileNotFoundError for a candidate is silently skipped."""
+        outputs = [FileNotFoundError("not found"), self._make_proc(stdout="drawtext")]
+        with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
+            result = _probe_drawtext_ffmpeg(candidates=["/missing/ffmpeg", "/usr/bin/ffmpeg"])
+        assert result == "/usr/bin/ffmpeg"
+
+    def test_drawtext_in_stderr_also_counts(self):
+        """drawtext detected from stderr (some ffmpeg versions print there)."""
+        with patch("podcaster.video.video_compose.subprocess.run") as mock_run:
+            mock_run.return_value = self._make_proc(stderr="drawtext AVOptions")
+            result = _probe_drawtext_ffmpeg(candidates=["ffmpeg"])
+        assert result == "ffmpeg"
+
+    def test_nonzero_probe_returncode_is_rejected(self):
+        """Non-zero probes are rejected even when stderr mentions drawtext."""
+        outputs = [
+            self._make_proc(stderr="Unknown option drawtext", returncode=1),
+            self._make_proc(stdout="drawtext", returncode=0),
+        ]
+        with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
+            result = _probe_drawtext_ffmpeg(
+                candidates=["/bad/ffmpeg", "/usr/bin/ffmpeg"]
+            )
+        assert result == "/usr/bin/ffmpeg"
+
+    def test_timeout_is_skipped(self):
+        """TimeoutExpired for a candidate is silently skipped."""
+        outputs = [
+            subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=10),
+            self._make_proc(stdout="drawtext"),
+        ]
+        with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
+            result = _probe_drawtext_ffmpeg(
+                candidates=["/hung/ffmpeg", "/usr/bin/ffmpeg"]
+            )
+        assert result == "/usr/bin/ffmpeg"
+
+    def test_empty_candidates_returns_none(self):
+        result = _probe_drawtext_ffmpeg(candidates=[])
+        assert result is None
+
+
+class TestComposeVideoDrawtext:
+    """Integration-style tests for drawtext detection within compose_video (#282)."""
+
+    def test_drawtext_capable_binary_used_in_compose(self, tmp_path):
+        """When _find_drawtext_capable_ffmpeg returns a path, compose cmd uses it."""
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=20.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        with patch(
+            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
+            return_value="/usr/bin/ffmpeg",
+        ):
+            compose_video(segments=[seg], output_dir=tmp_path / "out", runner=runner)
+
+        final_cmd = runner.call_args_list[-1][0][0]
+        assert final_cmd[0] == "/usr/bin/ffmpeg"
+        # Lower third drawtext overlays must be in the filter_complex
+        fc_idx = final_cmd.index("-filter_complex")
+        filter_complex = final_cmd[fc_idx + 1]
+        assert "drawtext" in filter_complex
+
+    def test_drawtext_skipped_gracefully_when_unavailable(self, tmp_path, caplog):
+        """When no drawtext-capable ffmpeg exists, overlays are skipped and video renders."""
+        import logging
+
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=20.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        with patch(
+            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
+            return_value=None,
+        ):
+            with caplog.at_level(logging.WARNING, logger="podcaster.video.video_compose"):
+                result = compose_video(
+                    segments=[seg], output_dir=tmp_path / "out", runner=runner
+                )
+
+        # Video must still be produced (no exception)
+        assert result.segment_count == 1
+        assert result.output_path.suffix == ".mp4"
+
+        # Warning must have been emitted
+        assert any("drawtext" in record.message for record in caplog.records)
+
+        # Final compose command must NOT contain drawtext filter expressions
+        final_cmd = runner.call_args_list[-1][0][0]
+        assert "-filter_complex" not in final_cmd, "drawtext filter_complex should not be in compose cmd"
+        assert not any(arg.startswith("drawtext=") for arg in final_cmd)
+
+    def test_no_drawtext_probe_when_no_lower_thirds(self, tmp_path):
+        """_find_drawtext_capable_ffmpeg is NOT called when no lower-thirds are needed."""
+        runner = _mock_runner()
+        # Duration=1.0 with transition_duration=0.1: lt_end=min(5.5, 0.5)=lt_start → no LT
+        seg = _make_recorded_segment(duration=1.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        with patch(
+            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg"
+        ) as mock_probe:
+            compose_video(
+                segments=[seg],
+                output_dir=tmp_path / "out",
+                runner=runner,
+                transition_duration=0.1,
+            )
+
+        mock_probe.assert_not_called()
+
+
+
+# --- Tests for sync-map utilities (#296) ---
+
+
+from podcaster.video.video_compose import (
+    SyncedSegment,
+    build_sync_map,
+    trim_recording_cmd,
+    apply_sync,
+)
+from podcaster.video.sync_plan import EpisodePlan
+
+
+def _make_plan(*items: tuple[str, str, float, float]) -> EpisodePlan:
+    """Build an EpisodePlan from (owner, name, start, duration) tuples."""
+    segs = tuple(
+        VideoSegment(
+            repo=RepoReference(owner=owner, name=name),
+            start_seconds=start,
+            duration_seconds=dur,
+        )
+        for owner, name, start, dur in items
+    )
+    total = sum(s.start_seconds + s.duration_seconds for s in segs[-1:])
+    return EpisodePlan(total_duration_seconds=total or 0.0, segments=segs)
+
+
+class TestSyncedSegment:
+    def _make(self, rec_dur: float, target_dur: float) -> SyncedSegment:
+        rec = _make_recorded_segment(duration=rec_dur)
+        seg = VideoSegment(
+            repo=rec.segment.repo,
+            start_seconds=0.0,
+            duration_seconds=target_dur,
+        )
+        return SyncedSegment(
+            recorded=rec,
+            target_start_seconds=10.0,
+            target_duration_seconds=target_dur,
+        )
+
+    def test_needs_trim_when_recording_longer(self):
+        ss = self._make(rec_dur=20.0, target_dur=10.0)
+        assert ss.needs_trim is True
+
+    def test_no_trim_when_within_tolerance(self):
+        # recording is only 0.05 s longer — within the 0.1 s tolerance
+        ss = self._make(rec_dur=10.05, target_dur=10.0)
+        assert ss.needs_trim is False
+
+    def test_no_trim_when_recording_shorter(self):
+        ss = self._make(rec_dur=8.0, target_dur=10.0)
+        assert ss.needs_trim is False
+
+    def test_needs_trim_exactly_at_boundary(self):
+        # recording is exactly 0.1 s over — NOT a trim (boundary is strictly >0.1)
+        ss = self._make(rec_dur=10.1, target_dur=10.0)
+        assert ss.needs_trim is False
+
+
+class TestBuildSyncMap:
+    def _repo_url(self, owner: str, name: str) -> str:
+        return f"https://github.com/{owner}/{name}"
+
+    def _rec(self, owner: str, name: str, dur: float = 10.0) -> RecordedSegment:
+        seg = VideoSegment(
+            repo=RepoReference(owner=owner, name=name),
+            start_seconds=0.0,
+            duration_seconds=dur,
+        )
+        return RecordedSegment(segment=seg, video_path=Path(f"/recs/{name}.webm"))
+
+    def _plan_from_recs(
+        self, *recs: tuple[str, str, float, float]
+    ) -> EpisodePlan:
+        segs = tuple(
+            VideoSegment(
+                repo=RepoReference(owner=owner, name=name),
+                start_seconds=start,
+                duration_seconds=dur,
+            )
+            for owner, name, start, dur in recs
+        )
+        total = segs[-1].start_seconds + segs[-1].duration_seconds if segs else 0.0
+        return EpisodePlan(total_duration_seconds=total, segments=segs)
+
+    def test_matches_recordings_to_plan(self):
+        plan = self._plan_from_recs(
+            ("a", "repo1", 0.0, 30.0),
+            ("a", "repo2", 30.0, 30.0),
+        )
+        recs = [self._rec("a", "repo1"), self._rec("a", "repo2")]
+        sync_map = build_sync_map(plan, recs)
+        assert len(sync_map) == 2
+        assert sync_map[0].recorded.segment.repo.url == self._repo_url("a", "repo1")
+        assert sync_map[0].target_start_seconds == 0.0
+        assert sync_map[1].target_start_seconds == 30.0
+
+    def test_raises_on_missing_recording(self):
+        plan = self._plan_from_recs(("x", "missing", 0.0, 30.0))
+        with pytest.raises(ValueError, match="No recording found"):
+            build_sync_map(plan, [])
+
+    def test_extra_recordings_are_ignored(self):
+        plan = self._plan_from_recs(("a", "used", 0.0, 10.0))
+        recs = [self._rec("a", "used"), self._rec("a", "extra")]
+        sync_map = build_sync_map(plan, recs)
+        assert len(sync_map) == 1
+        assert sync_map[0].recorded.segment.repo.name == "used"
+
+    def test_plan_order_preserved(self):
+        plan = self._plan_from_recs(
+            ("a", "first", 0.0, 20.0),
+            ("a", "second", 20.0, 20.0),
+            ("a", "third", 40.0, 20.0),
+        )
+        recs = [
+            self._rec("a", "third"),
+            self._rec("a", "first"),
+            self._rec("a", "second"),
+        ]
+        sync_map = build_sync_map(plan, recs)
+        names = [ss.recorded.segment.repo.name for ss in sync_map]
+        assert names == ["first", "second", "third"]
+
+
+class TestTrimRecordingCmd:
+    def test_basic_structure(self):
+        cmd = trim_recording_cmd(
+            input_path=Path("/in/video.webm"),
+            start_seconds=0.0,
+            duration_seconds=15.0,
+            output_path=Path("/out/trimmed.webm"),
+        )
+        assert cmd[0] == "ffmpeg"
+        assert "-y" in cmd
+        assert "/in/video.webm" in cmd
+        assert "/out/trimmed.webm" in cmd
+        assert "-ss" in cmd
+        assert "-t" in cmd
+        assert "-c" in cmd
+        assert "copy" in cmd
+
+    def test_custom_ffmpeg_bin(self):
+        cmd = trim_recording_cmd(
+            Path("/in/v.webm"), 1.0, 5.0, Path("/out/v.webm"), "/usr/bin/ffmpeg"
+        )
+        assert cmd[0] == "/usr/bin/ffmpeg"
+
+    def test_duration_formatted(self):
+        cmd = trim_recording_cmd(Path("/a.webm"), 0.0, 7.5, Path("/b.webm"))
+        t_idx = cmd.index("-t")
+        assert cmd[t_idx + 1] == "7.500"
+
+    def test_start_seconds_formatted(self):
+        cmd = trim_recording_cmd(Path("/a.webm"), 2.123, 5.0, Path("/b.webm"))
+        ss_idx = cmd.index("-ss")
+        assert cmd[ss_idx + 1] == "2.123"
+
+
+class TestApplySync:
+    def _make_rec(self, name: str, dur: float, path: Path) -> RecordedSegment:
+        seg = VideoSegment(
+            repo=RepoReference(owner="test", name=name),
+            start_seconds=0.0,
+            duration_seconds=dur,
+        )
+        return RecordedSegment(segment=seg, video_path=path)
+
+    def _make_ss(
+        self,
+        name: str,
+        rec_dur: float,
+        target_start: float,
+        target_dur: float,
+        path: Path,
+    ) -> SyncedSegment:
+        return SyncedSegment(
+            recorded=self._make_rec(name, rec_dur, path),
+            target_start_seconds=target_start,
+            target_duration_seconds=target_dur,
+        )
+
+    def test_trims_when_needed(self, tmp_path):
+        runner = _mock_runner()
+        src = tmp_path / "input.webm"
+        src.touch()
+        ss = self._make_ss("repo", rec_dur=30.0, target_start=10.0, target_dur=10.0, path=src)
+        result = apply_sync([ss], output_dir=tmp_path / "out", runner=runner)
+
+        assert len(result) == 1
+        runner.assert_called_once()
+        cmd = runner.call_args[0][0]
+        assert "-t" in cmd
+        assert result[0].segment.start_seconds == 10.0
+        assert result[0].segment.duration_seconds == pytest.approx(10.0)
+
+    def test_no_trim_when_within_tolerance(self, tmp_path):
+        runner = _mock_runner()
+        src = tmp_path / "input.webm"
+        src.touch()
+        ss = self._make_ss("repo", rec_dur=10.05, target_start=5.0, target_dur=10.0, path=src)
+        result = apply_sync([ss], output_dir=tmp_path / "out", runner=runner)
+
+        runner.assert_not_called()
+        assert result[0].video_path == src
+        assert result[0].segment.start_seconds == 5.0
+
+    def test_creates_output_dir(self, tmp_path):
+        runner = _mock_runner()
+        output_dir = tmp_path / "nested" / "output"
+        src = tmp_path / "v.webm"
+        src.touch()
+        ss = self._make_ss("r", rec_dur=20.0, target_start=0.0, target_dur=5.0, path=src)
+        apply_sync([ss], output_dir=output_dir, runner=runner)
+        assert output_dir.is_dir()
+
+    def test_multiple_segments(self, tmp_path):
+        runner = _mock_runner()
+        src1 = tmp_path / "a.webm"
+        src2 = tmp_path / "b.webm"
+        src1.touch()
+        src2.touch()
+        ss1 = self._make_ss("a", 20.0, 0.0, 10.0, src1)   # needs trim
+        ss2 = self._make_ss("b", 8.0, 10.0, 10.0, src2)   # no trim
+        result = apply_sync([ss1, ss2], output_dir=tmp_path / "out", runner=runner)
+        assert len(result) == 2
+        assert runner.call_count == 1  # only ss1 triggered a trim
+        assert result[0].segment.start_seconds == 0.0
+        assert result[1].segment.start_seconds == 10.0
