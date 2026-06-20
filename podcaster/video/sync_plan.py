@@ -183,6 +183,10 @@ def _script_position(script: str, url: str) -> float:
     if not script:
         return 0.0
     pos = script.find(url)
+    if pos < 0 and url.startswith("https://"):
+        # extract_repo_urls() also matches http:// mentions, but RepoReference.url
+        # always normalizes to https://. Try the http:// variant before giving up.
+        pos = script.find("http://" + url[len("https://"):])
     if pos < 0:
         return 1.0
     return pos / len(script)

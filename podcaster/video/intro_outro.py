@@ -420,7 +420,15 @@ def derive_intro_duration(
 
     Returns:
         Estimated intro duration in seconds.
+
+    Raises:
+        ValueError: If *words_per_minute* is not positive.
     """
+    if words_per_minute <= 0:
+        raise ValueError(
+            f"words_per_minute must be positive, got {words_per_minute}"
+        )
+
     if not script.strip():
         return default_seconds
 
@@ -452,8 +460,20 @@ def _default_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _escape_drawtext(text: str) -> str:
-    """Escape special characters for use inside an ffmpeg drawtext option value."""
-    return text.replace("\\", "\\\\").replace("'", r"\'").replace(":", r"\:")
+    """Escape special characters for use inside an ffmpeg drawtext option value.
+
+    Escapes backslash first (so later-inserted escapes aren't double-escaped),
+    then the quote and colon used by drawtext option syntax, the comma that
+    separates entries in the filter graph, and the percent sign that triggers
+    drawtext text expansion.
+    """
+    return (
+        text.replace("\\", "\\\\")
+        .replace("'", r"\'")
+        .replace(":", r"\:")
+        .replace(",", r"\,")
+        .replace("%", r"\%")
+    )
 
 
 def _build_intro_ffmpeg_cmd(

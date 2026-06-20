@@ -624,8 +624,15 @@ def apply_sync(
     is True, runs :func:`trim_recording_cmd` to shorten the file.  Recordings
     already within the target duration are used as-is (no copy, no re-encode).
     All returned :class:`RecordedSegment` objects have their
-    ``segment.start_seconds`` updated to ``target_start_seconds`` so they are
-    ready to pass directly to :func:`compose_video`.
+    ``segment.start_seconds`` updated to ``target_start_seconds``.
+
+    .. note::
+        :func:`compose_video` currently places segments sequentially based on
+        list order and ``duration_seconds`` (with transition overlap) and does
+        **not** read ``start_seconds``.  The updated ``start_seconds`` is set
+        for downstream consumers and debugging (e.g. plan serialization,
+        inspection); it does not affect ``compose_video`` placement today.
+        Keep the returned list in the intended playback order.
 
     Args:
         sync_map: Synced segments from :func:`build_sync_map`.
