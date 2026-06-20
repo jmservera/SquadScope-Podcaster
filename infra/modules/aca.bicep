@@ -80,6 +80,9 @@ param ttsVoiceHostB string = 'alloy'
 @description('Spotify show ID for auto-publish (#182). Empty disables publishing in the container.')
 param spotifyShowId string = ''
 
+@description('Spotify web player client ID (#302). Defaults to public Spotify web player ID.')
+param spotifyClientId string = '05a1371ee5194c27860b3ff3ff3979d2'
+
 @description('Whether runtime Spotify publishing is enabled.')
 param spotifyPublishEnabled string = 'false'
 
@@ -293,6 +296,10 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'SPOTIFY_SHOW_ID'
               value: spotifyShowId
+            }
+            {
+              name: 'SPOTIFY_CLIENT_ID'
+              value: spotifyClientId
             }
             {
               name: 'SP_DC'
