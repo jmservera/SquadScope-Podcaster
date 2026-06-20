@@ -30,6 +30,7 @@ def _clean_env(monkeypatch):
         "SPOTIFY_PUBLISH_ENABLED",
         "SPOTIFY_PUBLISH_DRY_RUN",
         "SPOTIFY_SHOW_ID",
+        "SPOTIFY_CLIENT_ID",
         "SP_DC",
         "SP_KEY",
     ):
@@ -795,3 +796,27 @@ class TestProcessUpload:
         # Two GET poll calls: first 404, then 200/processed
         get_calls = [c for c in session.request.call_args_list if c.args[0] == "GET"]
         assert len(get_calls) == 2
+
+
+class TestSpotifyClientId:
+    """Tests for SPOTIFY_CLIENT_ID env-var configurability (#302)."""
+
+    def test_default_client_id_when_env_unset(self, monkeypatch):
+        """_SPOTIFY_CLIENT_ID uses the public Spotify web-player default when env var is absent."""
+        import importlib
+
+        import podcaster.publish as pub_mod
+
+        monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+        importlib.reload(pub_mod)
+        assert pub_mod._SPOTIFY_CLIENT_ID == "05a1371ee5194c27860b3ff3ff3979d2"
+
+    def test_custom_client_id_from_env(self, monkeypatch):
+        """_SPOTIFY_CLIENT_ID reads a custom value from SPOTIFY_CLIENT_ID env var."""
+        import importlib
+
+        import podcaster.publish as pub_mod
+
+        monkeypatch.setenv("SPOTIFY_CLIENT_ID", "custom-test-client-id-abc123")
+        importlib.reload(pub_mod)
+        assert pub_mod._SPOTIFY_CLIENT_ID == "custom-test-client-id-abc123"
