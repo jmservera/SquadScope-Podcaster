@@ -170,3 +170,378 @@ def plan_from_script(
     if not repos:
         raise ValueError("No GitHub repository URLs found in script")
     return generate_episode_plan(repos, total_duration_seconds)
+
+
+# --- Script-position-aware sync planning (#296) ---
+
+
+def _script_position(script: str, url: str) -> float:
+    """Return the fractional character position (0.0–1.0) of the first mention
+    of *url* in *script*.  Returns 1.0 if the URL is not found (placing the
+    segment at the end) or 0.0 if the script is empty.
+    """
+    if not script:
+        return 0.0
+    pos = script.find(url)
+    if pos < 0:
+        return 1.0
+    return pos / len(script)
+
+
+def sort_repos_by_mention(
+    script: str,
+    repos: Sequence[RepoReference],
+) -> list[RepoReference]:
+    """Return *repos* sorted by first-mention position in *script*.
+
+    Repos whose URL is not found in the script are placed at the end (position
+    1.0).  Stable sort: repos at equal positions preserve their input order.
+
+    Args:
+        script: Full podcast script text.
+        repos: Repo references to sort.
+
+    Returns:
+        New list sorted by ascending script position.
+    """
+    return sorted(repos, key=lambda r: _script_position(script, r.url))
+
+
+def generate_episode_plan_timed(
+    script: str,
+    repos: Sequence[RepoReference],
+    total_duration_seconds: float,
+    min_segment_seconds: float = 5.0,
+) -> EpisodePlan:
+    """Generate a plan where segment timing mirrors where each repo is mentioned.
+
+    Unlike :func:`generate_episode_plan` (equal split), this function places
+    each segment at a timestamp proportional to its first mention in *script*.
+    Useful for synchronising screen recordings with the audio track so each
+    repo appears on screen exactly when the hosts discuss it.
+
+    When multiple repos are mentioned close together, the minimum-segment
+    floor (``min_segment_seconds``) separates them.  The floor is automatically
+    reduced if the total available time is smaller than ``n_repos ×
+    min_segment_seconds``.
+
+    Args:
+        script: Full podcast script text used to derive timing positions.
+        repos: Repo references.  Ordering in the output follows script mention
+            order (not the input order).
+        total_duration_seconds: Total audio duration in seconds.
+        min_segment_seconds: Minimum duration for any single segment. Default 5.0 s.
+
+    Returns:
+        EpisodePlan with segment timing derived from script text positions.
+
+    Raises:
+        ValueError: If *repos* is empty or *total_duration_seconds* is non-positive.
+    """
+    if not repos:
+        raise ValueError("No repos provided for episode plan generation")
+    if total_duration_seconds <= 0:
+        raise ValueError(
+            f"Total duration must be positive, got {total_duration_seconds}"
+        )
+
+    n = len(repos)
+    # Cap the minimum so all n segments always fit within total_duration
+    effective_min = min(min_segment_seconds, total_duration_seconds / n)
+
+    ordered = sort_repos_by_mention(script, repos)
+
+    start_times: list[float] = []
+    for i, repo in enumerate(ordered):
+        pos = _script_position(script, repo.url)
+        # Upper bound: leave room for this segment and all subsequent ones
+        max_start = total_duration_seconds - (n - i) * effective_min
+        start = max(0.0, min(pos * total_duration_seconds, max_start))
+        # Enforce strictly-increasing order with minimum gap
+        if i > 0:
+            start = max(start, start_times[i - 1] + effective_min)
+        start_times.append(start)
+
+    segments: list[VideoSegment] = []
+    for i, (repo, start) in enumerate(zip(ordered, start_times)):
+        if i < n - 1:
+            duration = start_times[i + 1] - start
+        else:
+            duration = total_duration_seconds - start
+        # Guard against floating-point drift producing tiny negatives
+        duration = max(duration, effective_min)
+        segments.append(
+            VideoSegment(repo=repo, start_seconds=start, duration_seconds=duration)
+        )
+
+    return EpisodePlan(
+        total_duration_seconds=total_duration_seconds,
+        segments=tuple(segments),
+    )
+
+
+def plan_from_script_timed(
+    script: str,
+    total_duration_seconds: float,
+    min_segment_seconds: float = 5.0,
+) -> EpisodePlan:
+    """End-to-end: parse script → extract repos → generate timing-aware plan.
+
+    Like :func:`plan_from_script` but derives per-segment timing from each
+    repo's first mention position in *script* rather than distributing time
+    equally.
+
+    Args:
+        script: Full podcast script text (header + body).
+        total_duration_seconds: Total audio duration in seconds.
+        min_segment_seconds: Minimum segment duration. Default 5.0 s.
+
+    Returns:
+        EpisodePlan with timing matching script mention positions.
+
+    Raises:
+        ValueError: If no repos found or duration is non-positive.
+    """
+    repos = extract_repo_urls(script)
+    if not repos:
+        raise ValueError("No GitHub repository URLs found in script")
+    return generate_episode_plan_timed(
+        script, repos, total_duration_seconds, min_segment_seconds
+    )
+
+
+# --- Audio-boundary sync utilities (#297) ---
+
+# Available timing granularity: TTS segment (VoiceTurn) level.
+# Azure OpenAI TTS returns raw audio bytes with no word/sentence timestamps.
+# Natural visual transition points are therefore segment boundaries (turn starts/ends)
+# and gap midpoints between consecutive TTS turns.
+
+_CUE_TURN_START = "turn_start"
+_CUE_TURN_END = "turn_end"
+_CUE_GAP_MIDPOINT = "gap_midpoint"
+
+# Visual element kinds
+VISUAL_KIND_RECORDING = "recording"
+VISUAL_KIND_IMAGE = "image"
+VISUAL_KIND_SCREENSHOT = "screenshot"
+
+
+@dataclass(frozen=True)
+class AudioCuePoint:
+    """A natural audio boundary suitable for visual cue alignment.
+
+    These are derived from the TTS segment (VoiceTurn) timeline and represent
+    the best available points at which visual transitions feel natural — they
+    coincide with speaker-turn boundaries and the silence gaps between them.
+
+    Attributes:
+        time_seconds: Absolute time in the assembled audio.
+        kind: One of ``"turn_start"``, ``"turn_end"``, ``"gap_midpoint"``.
+    """
+
+    time_seconds: float
+    kind: str
+
+
+@dataclass(frozen=True)
+class VisualCue:
+    """A visual element with an intended display time and source kind.
+
+    Used as input to :func:`snap_visual_cues`.  The ``time_seconds`` field
+    is the *desired* display time before snapping; the returned list will have
+    adjusted ``time_seconds`` values.
+
+    Attributes:
+        time_seconds: Desired display start time (seconds into assembled audio).
+        kind: ``"recording"``, ``"image"``, or ``"screenshot"``.
+        label: Human-readable identifier (repo URL, file name, etc.).
+    """
+
+    time_seconds: float
+    kind: str
+    label: str = ""
+
+
+def build_audio_cue_points(
+    segment_starts: list[float],
+    segment_durations: list[float],
+    gap_seconds: float = 0.35,
+) -> list[AudioCuePoint]:
+    """Build cue points from a TTS segment timeline.
+
+    Produces one cue per turn start, one per turn end, and one per gap
+    midpoint (where applicable).  The resulting list is sorted by
+    ``time_seconds`` and deduplicated to within 10 ms.
+
+    Args:
+        segment_starts: Absolute start times of each TTS turn (seconds).
+            Obtain via :func:`~podcaster.audio.compute_segment_timeline`.
+        segment_durations: Duration (seconds) of each TTS turn, same length
+            as *segment_starts*.
+        gap_seconds: Gap between consecutive turns in the assembled audio.
+            Must match the value used when calling
+            :func:`~podcaster.audio.compute_segment_timeline`.
+
+    Returns:
+        Sorted, deduplicated list of :class:`AudioCuePoint` objects.
+
+    Raises:
+        ValueError: If *segment_starts* and *segment_durations* lengths differ,
+            or if any duration is negative.
+    """
+    if len(segment_starts) != len(segment_durations):
+        raise ValueError(
+            f"segment_starts length ({len(segment_starts)}) must equal "
+            f"segment_durations length ({len(segment_durations)})"
+        )
+    for dur in segment_durations:
+        if dur < 0:
+            raise ValueError(f"All segment durations must be non-negative, got {dur}")
+
+    cues: list[AudioCuePoint] = []
+    n = len(segment_starts)
+    for i, (start, dur) in enumerate(zip(segment_starts, segment_durations)):
+        cues.append(AudioCuePoint(time_seconds=start, kind=_CUE_TURN_START))
+        end = start + dur
+        cues.append(AudioCuePoint(time_seconds=end, kind=_CUE_TURN_END))
+        # Gap midpoint between this turn and the next
+        if gap_seconds > 0 and i < n - 1:
+            next_start = segment_starts[i + 1]
+            midpoint = end + (next_start - end) / 2.0
+            cues.append(AudioCuePoint(time_seconds=midpoint, kind=_CUE_GAP_MIDPOINT))
+
+    # Sort and deduplicate within 10 ms
+    cues.sort(key=lambda c: c.time_seconds)
+    deduped: list[AudioCuePoint] = []
+    for cue in cues:
+        if deduped and abs(cue.time_seconds - deduped[-1].time_seconds) < 0.01:
+            continue
+        deduped.append(cue)
+    return deduped
+
+
+def snap_to_audio_boundary(
+    time_seconds: float,
+    cue_points: list[AudioCuePoint],
+    tolerance_seconds: float = 0.5,
+) -> float:
+    """Snap a visual cue time to the nearest audio boundary within tolerance.
+
+    Finds the closest :class:`AudioCuePoint` to *time_seconds*.  If it is
+    within *tolerance_seconds*, returns its time; otherwise returns
+    *time_seconds* unchanged.  This prevents both premature visual jumps (the
+    cue would shift earlier by at most *tolerance_seconds*) and lingering on
+    old content (the cue shifts later by at most *tolerance_seconds*).
+
+    Args:
+        time_seconds: The desired visual cue time to snap.
+        cue_points: Natural audio boundaries from :func:`build_audio_cue_points`.
+        tolerance_seconds: Maximum snap distance. Default 0.5 s.
+
+    Returns:
+        Snapped time (seconds).  Equals *time_seconds* if no boundary is close
+        enough or *cue_points* is empty.
+    """
+    if not cue_points:
+        return time_seconds
+
+    nearest = min(cue_points, key=lambda c: abs(c.time_seconds - time_seconds))
+    if abs(nearest.time_seconds - time_seconds) <= tolerance_seconds:
+        return nearest.time_seconds
+    return time_seconds
+
+
+def snap_episode_plan_to_audio(
+    plan: EpisodePlan,
+    cue_points: list[AudioCuePoint],
+    tolerance_seconds: float = 0.5,
+) -> EpisodePlan:
+    """Snap all segment start times in an EpisodePlan to natural audio boundaries.
+
+    Applies :func:`snap_to_audio_boundary` to every segment's ``start_seconds``.
+    Segment durations are adjusted to preserve the relative order and gap
+    between consecutive segments; the last segment is extended/trimmed to fill
+    the plan's ``total_duration_seconds``.
+
+    The result enforces:
+
+    * **No premature jump**: a visual won't appear more than *tolerance_seconds*
+      before the audio cue.
+    * **No linger**: a visual won't stay on screen more than *tolerance_seconds*
+      after the audio has moved on.
+
+    Args:
+        plan: Episode plan whose segment starts will be snapped.
+        cue_points: Audio boundaries from :func:`build_audio_cue_points`.
+        tolerance_seconds: Maximum snap distance per segment. Default 0.5 s.
+
+    Returns:
+        New :class:`EpisodePlan` with snapped segment timings.
+    """
+    if not plan.segments:
+        return plan
+
+    snapped_starts: list[float] = []
+    for seg in plan.segments:
+        snapped = snap_to_audio_boundary(
+            seg.start_seconds, cue_points, tolerance_seconds
+        )
+        # Enforce monotonic order after snapping
+        if snapped_starts and snapped <= snapped_starts[-1]:
+            snapped = snapped_starts[-1] + 0.0  # keep previous; will recalc dur below
+        snapped_starts.append(snapped)
+
+    new_segments: list[VideoSegment] = []
+    n = len(plan.segments)
+    for i, (seg, new_start) in enumerate(zip(plan.segments, snapped_starts)):
+        if i < n - 1:
+            new_dur = snapped_starts[i + 1] - new_start
+        else:
+            new_dur = plan.total_duration_seconds - new_start
+        # Guard against floating-point negatives
+        new_dur = max(new_dur, 0.0)
+        new_segments.append(
+            VideoSegment(
+                repo=seg.repo,
+                start_seconds=new_start,
+                duration_seconds=new_dur,
+            )
+        )
+
+    return EpisodePlan(
+        total_duration_seconds=plan.total_duration_seconds,
+        segments=tuple(new_segments),
+    )
+
+
+def snap_visual_cues(
+    cues: list[VisualCue],
+    cue_points: list[AudioCuePoint],
+    tolerance_seconds: float = 0.5,
+) -> list[VisualCue]:
+    """Snap a list of visual element cues to natural audio boundaries.
+
+    Generalisation of :func:`snap_episode_plan_to_audio` that works with any
+    visual element kind (recording, image, screenshot).  Each cue's
+    ``time_seconds`` is independently snapped; ordering is preserved but
+    otherwise unchanged.
+
+    Args:
+        cues: Visual elements to snap. Any ``kind`` is accepted.
+        cue_points: Audio boundaries from :func:`build_audio_cue_points`.
+        tolerance_seconds: Maximum snap distance per cue. Default 0.5 s.
+
+    Returns:
+        New list of :class:`VisualCue` objects with snapped ``time_seconds``.
+    """
+    return [
+        VisualCue(
+            time_seconds=snap_to_audio_boundary(
+                cue.time_seconds, cue_points, tolerance_seconds
+            ),
+            kind=cue.kind,
+            label=cue.label,
+        )
+        for cue in cues
+    ]
