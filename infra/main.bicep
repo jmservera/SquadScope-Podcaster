@@ -116,6 +116,9 @@ param apiAppName string = '${baseName}-api'
 @description('Spotify show ID for auto-publish (#182). Empty disables publishing.')
 param spotifyShowId string = ''
 
+@description('Spotify web player client ID (#302). Defaults to public Spotify web player ID.')
+param spotifyClientId string = '05a1371ee5194c27860b3ff3ff3979d2'
+
 @description('Whether Spotify publishing is enabled for runtime orchestration.')
 param spotifyPublishEnabled string = 'false'
 
@@ -308,6 +311,7 @@ module aca 'modules/aca.bicep' = {
     podcasterApiKey: podcasterApiKey
     spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId
+    spotifyClientId: spotifyClientId
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     podcastAutoPublish: podcastAutoPublish
@@ -362,6 +366,7 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     chatDeploymentName: chatDeploymentName
     spotifyPublishEnabled: spotifyPublishEnabled
     spotifyShowId: spotifyShowId
+    spotifyClientId: spotifyClientId
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     podcastAutoPublish: podcastAutoPublish
