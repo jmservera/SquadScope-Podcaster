@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import hmac
 from datetime import datetime, timezone
 from typing import Any
@@ -653,6 +654,15 @@ def stream_blob(blob_path: str):
 # ---------------------------------------------------------------------------
 
 
+class EpisodeArtifact(BaseModel):
+    """A downloadable artifact file produced for an episode."""
+
+    name: str
+    path: str
+    url: str
+    content_type: str | None = None
+
+
 class EpisodeSummary(BaseModel):
     job_id: str
     title: str | None = None
@@ -660,13 +670,100 @@ class EpisodeSummary(BaseModel):
     status: str = "unknown"
     audio_path: str | None = None
     audio_url: str | None = None
+    video_path: str | None = None
+    video_url: str | None = None
     quality_score: float | None = None
     publish_status: str | None = None
+    artifacts: list[EpisodeArtifact] = []
 
 
 class EpisodeListResponse(BaseModel):
     episodes: list[EpisodeSummary]
     total: int
+
+
+def _normalize_blob_path(value: str) -> str:
+    """Normalize a blob reference to a relative path suitable for /api/stream/.
+
+    ``video_runner.distribution.blob_path`` may be recorded as a full URL
+    (e.g. ``https://account.blob.core.windows.net/container/path/file.mp4``)
+    rather than a relative blob path. Strip any scheme/host prefix and the
+    leading container segment so only the container-relative blob path remains,
+    matching the format used for audio and other artifacts.
+    """
+    stripped = value.strip()
+    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+/(.*)$", stripped)
+    if match:
+        stripped = match.group(1)
+        container = os.environ.get("PODCASTER_STORAGE_CONTAINER", "podcaster-artifacts")
+        prefix = f"{container}/"
+        if container and stripped.startswith(prefix):
+            stripped = stripped[len(prefix):]
+    return stripped.lstrip("/")
+
+
+def _extract_video_path(generation: dict[str, Any]) -> str | None:
+    """Resolve the generated video (.mp4) blob path from a manifest's generation block."""
+    video_runner = generation.get("video_runner")
+    if isinstance(video_runner, dict):
+        distribution = video_runner.get("distribution")
+        if isinstance(distribution, dict):
+            blob_path = distribution.get("blob_path")
+            if isinstance(blob_path, str) and blob_path:
+                return _normalize_blob_path(blob_path)
+
+    artifacts = generation.get("artifacts")
+    if isinstance(artifacts, dict):
+        video = artifacts.get("video")
+        if isinstance(video, dict):
+            path = video.get("path")
+            if isinstance(path, str) and path:
+                return path
+        elif isinstance(video, str) and video:
+            return video
+
+    return None
+
+
+def _collect_artifacts(
+    generation: dict[str, Any], exclude: set[str]
+) -> list[EpisodeArtifact]:
+    """Collect extra downloadable artifact files (e.g. wav, images), excluding
+    the primary audio/video already surfaced via dedicated players."""
+    items: list[EpisodeArtifact] = []
+    seen = {p for p in exclude if p}
+
+    def _add(path: Any, name: str | None = None) -> None:
+        if not isinstance(path, str) or not path or path in seen:
+            return
+        seen.add(path)
+        items.append(
+            EpisodeArtifact(
+                name=name or path.rsplit("/", 1)[-1],
+                path=path,
+                url=f"/api/stream/{path}",
+                content_type=_content_type_for_path(path),
+            )
+        )
+
+    def _add_mapping(mapping: Any) -> None:
+        if not isinstance(mapping, dict):
+            return
+        for key, val in mapping.items():
+            if isinstance(val, dict):
+                _add(val.get("path"), key)
+            elif isinstance(val, str):
+                _add(val, key)
+
+    _add_mapping(generation.get("artifacts"))
+
+    synth = generation.get("synthesis_runner")
+    if isinstance(synth, dict):
+        audio_section = synth.get("audio")
+        if isinstance(audio_section, dict):
+            _add_mapping(audio_section.get("artifacts"))
+
+    return items
 
 
 def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
@@ -707,6 +804,9 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
     request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
     publishing = manifest.get("publishing") if isinstance(manifest.get("publishing"), dict) else None
 
+    video_path = _extract_video_path(generation)
+    artifacts = _collect_artifacts(generation, exclude={audio_path, video_path or ""})
+
     quality_score: float | None = None
     if isinstance(generation.get("audio_validation"), dict):
         av = generation["audio_validation"]
@@ -722,8 +822,11 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
         status=manifest.get("status", "unknown"),
         audio_path=audio_path,
         audio_url=f"/api/stream/{audio_path}" if audio_path else None,
+        video_path=video_path,
+        video_url=f"/api/stream/{video_path}" if video_path else None,
         quality_score=quality_score,
         publish_status=publishing.get("status") if publishing else None,
+        artifacts=artifacts,
     )
 
 
