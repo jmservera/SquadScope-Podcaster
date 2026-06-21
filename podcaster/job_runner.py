@@ -139,9 +139,21 @@ def run_synthesis(
 
     if _already_synthesized(manifest):
         logger.info("synthesis skipped job_id=%s reason=%s", job_id, REASON_ALREADY_SYNTHESIZED)
+        # Audio already exists, but a re-trigger should still kick off video
+        # generation unless the video was already produced for this job. Without
+        # this, re-triggering a podcast that already has audio would never start
+        # the video pipeline (the enqueue below in the synthesis path is skipped).
+        if video_generation_enabled():
+            if _video_already_generated(manifest):
+                logger.info(
+                    "video enqueue skipped job_id=%s reason=video_already_generated",
+                    job_id,
+                )
+            else:
+                _enqueue_video(job_id, enqueue_video)
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_SYNTHESIZED)
 
-    # Claim pipeline lock — prevent concurrent video generation on same job
+    # Claim audio pipeline lock — prevent concurrent audio synthesis on the same job
     if not claim_pipeline(storage, job_id, PIPELINE_AUDIO, now=current):
         logger.info("synthesis skipped job_id=%s reason=%s", job_id, REASON_PIPELINE_CONFLICT)
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_PIPELINE_CONFLICT)
@@ -354,28 +366,7 @@ def run_synthesis(
             # publish above — both audio and video are published on their own.
             # A failed or unconfigured enqueue never breaks synthesis completion.
             if video_generation_enabled():
-                enqueue = enqueue_video or enqueue_video_job
-                try:
-                    enqueued = enqueue(job_id)
-                    if enqueued:
-                        logger.info(
-                            "video generation enqueued job_id=%s; "
-                            "video will be published separately by the video pipeline",
-                            job_id,
-                        )
-                    else:
-                        logger.warning(
-                            "video generation enabled but video queue not configured "
-                            "for job_id=%s; audio was published, video skipped",
-                            job_id,
-                        )
-                except Exception:
-                    logger.warning(
-                        "failed to enqueue video job_id=%s; "
-                        "audio was published, video skipped",
-                        job_id,
-                        exc_info=True,
-                    )
+                _enqueue_video(job_id, enqueue_video)
 
             logger.info(
                 "synthesis completed job_id=%s segments=%s validation=%s real_audio=true publishable=%s",
@@ -635,6 +626,49 @@ def _already_synthesized(manifest: dict[str, Any]) -> bool:
         return False
     state = generation.get("synthesis_runner")
     return isinstance(state, dict) and state.get("status") == STATUS_COMPLETED
+
+
+def _video_already_generated(manifest: dict[str, Any]) -> bool:
+    """Whether the video pipeline already completed for this job.
+
+    Mirrors the video runner's own idempotency check (``generation.video_runner``
+    status). Used to avoid re-enqueuing video on a re-trigger when the MP4 has
+    already been produced.
+    """
+    generation = manifest.get("generation")
+    if not isinstance(generation, dict):
+        return False
+    video_state = generation.get("video_runner")
+    return isinstance(video_state, dict) and video_state.get("status") == STATUS_COMPLETED
+
+
+def _enqueue_video(job_id: str, enqueue_video=None) -> None:
+    """Enqueue a video job, logging outcome. Never raises.
+
+    A failed or unconfigured enqueue must never break synthesis completion or
+    the skipped (already-synthesized) path.
+    """
+    enqueue = enqueue_video or enqueue_video_job
+    try:
+        enqueued = enqueue(job_id)
+        if enqueued:
+            logger.info(
+                "video generation enqueued job_id=%s; "
+                "video will be published separately by the video pipeline",
+                job_id,
+            )
+        else:
+            logger.warning(
+                "video generation enabled but video queue not configured "
+                "for job_id=%s; video skipped",
+                job_id,
+            )
+    except Exception:
+        logger.warning(
+            "failed to enqueue video job_id=%s; video skipped",
+            job_id,
+            exc_info=True,
+        )
 
 
 def _mp3_artifact_path(manifest: dict[str, Any], job_id: str) -> str:
