@@ -87,6 +87,12 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
       triggerType: 'Event'
       replicaTimeout: replicaTimeoutSeconds
       replicaRetryLimit: 1
+      secrets: [
+        {
+          name: 'podcaster-api-key'
+          value: podcasterApiKey
+        }
+      ]
       registries: hasContainerRegistry ? [
         {
           server: containerRegistryServer
@@ -165,7 +171,7 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             }
             {
               name: 'PODCASTER_API_KEY'
-              value: podcasterApiKey
+              secretRef: 'podcaster-api-key'
             }
           ]
         }
