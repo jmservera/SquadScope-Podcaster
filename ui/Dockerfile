@@ -19,9 +19,10 @@ FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:cc300bd2e8776708a8c2c8686a74
 
 USER root
 
-# Pick up latest security patches for libexpat (CVE-2026-45186) without
-# changing the base image pin.
-RUN apk upgrade --no-cache libexpat
+# Patch libexpat for CVE-2026-45186 without changing the base image pin.
+# Pin the known-fixed minimum version so the build is deterministic and
+# fails fast if the patched package is unavailable.
+RUN apk add --no-cache --upgrade "libexpat>=2.8.1-r0"
 
 # Remove default site.
 RUN rm -rf /usr/share/nginx/html/*
