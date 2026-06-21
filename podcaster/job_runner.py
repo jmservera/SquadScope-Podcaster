@@ -153,7 +153,9 @@ def run_synthesis(
                 _enqueue_video(job_id, enqueue_video)
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_SYNTHESIZED)
 
-    # Claim audio pipeline lock — prevent concurrent audio synthesis on the same job
+    # Claim the audio pipeline lock — skips only if the video pipeline already owns
+    # this job's lock (cross-pipeline guard). It does not prevent two concurrent audio
+    # runners, since claiming for an audio owner just re-confirms ownership.
     if not claim_pipeline(storage, job_id, PIPELINE_AUDIO, now=current):
         logger.info("synthesis skipped job_id=%s reason=%s", job_id, REASON_PIPELINE_CONFLICT)
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_PIPELINE_CONFLICT)
