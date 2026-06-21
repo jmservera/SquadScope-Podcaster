@@ -396,6 +396,97 @@ def test_run_synthesis_is_idempotent_on_duplicate_delivery(monkeypatch):
     assert outcome.reason == job_runner.REASON_ALREADY_SYNTHESIZED
 
 
+def test_run_synthesis_skip_enqueues_video_on_retrigger(monkeypatch):
+    # Re-triggering a job that already has audio must still start video.
+    _patch_audio(monkeypatch)
+    monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
+    _stage(storage, manifest, _two_voice_script())
+
+    enqueued: list[str] = []
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        transport=lambda request: pytest.fail("must not re-synthesize"),
+        enqueue_video=lambda job_id: enqueued.append(job_id) or True,
+    )
+
+    assert outcome.status == job_runner.STATUS_SKIPPED
+    assert outcome.reason == job_runner.REASON_ALREADY_SYNTHESIZED
+    assert enqueued == [JOB_ID]
+
+
+def test_run_synthesis_skip_does_not_enqueue_video_when_already_generated(monkeypatch):
+    # If the video pipeline already completed, a re-trigger must not re-enqueue.
+    _patch_audio(monkeypatch)
+    monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
+    manifest["generation"]["video_runner"] = {"status": "completed", "job_id": JOB_ID}
+    _stage(storage, manifest, _two_voice_script())
+
+    enqueued: list[str] = []
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        transport=lambda request: pytest.fail("must not re-synthesize"),
+        enqueue_video=lambda job_id: enqueued.append(job_id) or True,
+    )
+
+    assert outcome.status == job_runner.STATUS_SKIPPED
+    assert outcome.reason == job_runner.REASON_ALREADY_SYNTHESIZED
+    assert enqueued == []
+
+
+def test_run_synthesis_skip_no_video_when_generation_disabled(monkeypatch):
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
+    _stage(storage, manifest, _two_voice_script())
+
+    enqueued: list[str] = []
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        transport=lambda request: pytest.fail("must not re-synthesize"),
+        enqueue_video=lambda job_id: enqueued.append(job_id) or True,
+    )
+
+    assert outcome.status == job_runner.STATUS_SKIPPED
+    assert enqueued == []
+
+
+def test_run_synthesis_skip_video_enqueue_failure_is_swallowed(monkeypatch):
+    _patch_audio(monkeypatch)
+    monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
+    _stage(storage, manifest, _two_voice_script())
+
+    def boom(_job_id):
+        raise RuntimeError("queue send exploded")
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        transport=lambda request: pytest.fail("must not re-synthesize"),
+        enqueue_video=boom,
+    )
+
+    assert outcome.status == job_runner.STATUS_SKIPPED
+    assert outcome.reason == job_runner.REASON_ALREADY_SYNTHESIZED
+
+
 def test_run_synthesis_skips_placeholder_script(monkeypatch):
     _patch_audio(monkeypatch)
     storage = FakeStorage()
