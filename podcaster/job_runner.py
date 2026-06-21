@@ -143,16 +143,17 @@ def run_synthesis(
         # generation unless the video was already produced for this job. Without
         # this, re-triggering a podcast that already has audio would never start
         # the video pipeline (the enqueue below in the synthesis path is skipped).
-        if video_generation_enabled() and not _video_already_generated(manifest):
-            _enqueue_video(job_id, enqueue_video)
-        elif _video_already_generated(manifest):
-            logger.info(
-                "video enqueue skipped job_id=%s reason=video_already_generated",
-                job_id,
-            )
+        if video_generation_enabled():
+            if _video_already_generated(manifest):
+                logger.info(
+                    "video enqueue skipped job_id=%s reason=video_already_generated",
+                    job_id,
+                )
+            else:
+                _enqueue_video(job_id, enqueue_video)
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_SYNTHESIZED)
 
-    # Claim pipeline lock — prevent concurrent video generation on same job
+    # Claim audio pipeline lock — prevent concurrent audio synthesis on the same job
     if not claim_pipeline(storage, job_id, PIPELINE_AUDIO, now=current):
         logger.info("synthesis skipped job_id=%s reason=%s", job_id, REASON_PIPELINE_CONFLICT)
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_PIPELINE_CONFLICT)
