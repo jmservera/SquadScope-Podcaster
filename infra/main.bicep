@@ -92,11 +92,20 @@ param containerAppsEnvName string = '${baseName}-cae'
 @description('Queue-triggered synthesis Container Apps Job name.')
 param synthesisJobName string = '${baseName}-synth'
 
+@description('Queue-triggered video Container Apps Job name (#324).')
+param videoJobName string = '${baseName}-video'
+
 @description('User-assigned managed identity used by the synthesis job.')
 param synthesisJobIdentityName string = '${baseName}-synthesis-id'
 
 @description('Storage Queue carrying synthesis messages (job_id only; no secrets/PII).')
 param synthesisQueueName string = 'synthesis-jobs'
+
+@description('Storage Queue carrying video-generation messages (job_id only; no secrets/PII).')
+param videoQueueName string = 'video-jobs'
+
+@description('Whether the synthesis job enqueues a video-generation message after publishing audio (#324).')
+param videoGenerationEnabled string = 'true'
 
 @description('Synthesis container image (ffmpeg baked in, built by #77).')
 param synthesisImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
@@ -300,6 +309,8 @@ module aca 'modules/aca.bicep' = {
     storageAccountName: storage.name
     logAnalyticsWorkspaceName: workspace.name
     synthesisQueueName: synthesisQueueName
+    videoQueueName: videoQueueName
+    videoGenerationEnabled: videoGenerationEnabled
     storageContainerName: storageContainerName
     synthesisImage: synthesisImage
     containerRegistryServer: acrLoginServer
@@ -317,6 +328,31 @@ module aca 'modules/aca.bicep' = {
     podcastAutoPublish: podcastAutoPublish
     deployVnet: deployVnet
     infrastructureSubnetId: deployVnet ? network.outputs.acaSubnetId : ''
+  }
+  dependsOn: [
+    artifactContainer
+  ]
+}
+
+// Video generation runner (#324): a queue-triggered ACA Job consuming the video-jobs queue.
+// Reuses the synthesis image (ffmpeg baked in) with a command override that runs the video job
+// runner, and reuses the synthesis managed identity (already has Blob + Queue RBAC).
+module acaVideo 'modules/aca-video.bicep' = {
+  name: 'video-generation-job'
+  params: {
+    location: location
+    containerAppsEnvId: aca.outputs.environmentId
+    videoJobName: videoJobName
+    jobIdentityResourceId: aca.outputs.jobIdentityResourceId
+    jobIdentityClientId: aca.outputs.jobIdentityClientId
+    storageAccountName: storage.name
+    videoQueueName: aca.outputs.videoQueueName
+    storageContainerName: storageContainerName
+    videoImage: synthesisImage
+    containerRegistryServer: acrLoginServer
+    openAiEndpoint: openAiEndpoint
+    chatDeploymentName: chatDeploymentName
+    podcasterApiKey: podcasterApiKey
   }
   dependsOn: [
     artifactContainer
@@ -417,6 +453,8 @@ output chatDeploymentName string = chatDeploymentName
 output synthesisJobName string = aca.outputs.jobName
 output containerAppsEnvName string = aca.outputs.environmentName
 output synthesisQueueName string = aca.outputs.queueName
+output videoQueueName string = aca.outputs.videoQueueName
+output videoJobName string = acaVideo.outputs.jobName
 output synthesisJobIdentityClientId string = aca.outputs.jobIdentityClientId
 output apiAppFqdn string = deployApiApp ? api!.outputs.apiAppFqdn : ''
 output uiAppFqdn string = deployUiApp ? ui!.outputs.uiAppFqdn : ''
