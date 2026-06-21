@@ -619,6 +619,24 @@ class TestListEpisodes:
         assert ep["video_path"] == "jobs/job-vid/video/job-vid.mp4"
         assert ep["video_url"] == "/api/stream/jobs/job-vid/video/job-vid.mp4"
 
+    def test_episode_video_full_url_normalized_to_blob_path(self, client, storage, monkeypatch):
+        """A full blob URL in distribution.blob_path is normalized to a container-relative path."""
+        monkeypatch.setenv("PODCASTER_STORAGE_CONTAINER", "podcaster-artifacts")
+        m = self._manifest_with_audio("job-url", audio_path="jobs/job-url/episode.mp3")
+        m["generation"]["video_runner"] = {
+            "status": "completed",
+            "distribution": {
+                "status": "archived",
+                "blob_path": "https://acct.blob.core.windows.net/podcaster-artifacts/jobs/job-url/video/job-url.mp4",
+            },
+        }
+        storage.put_bytes("jobs/job-url/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        ep = resp.json()["episodes"][0]
+        assert ep["video_path"] == "jobs/job-url/video/job-url.mp4"
+        assert ep["video_url"] == "/api/stream/jobs/job-url/video/job-url.mp4"
+
     def test_episode_without_video_has_null_video_fields(self, client, storage):
         m = self._manifest_with_audio("job-novid", audio_path="jobs/job-novid/episode.mp3")
         storage.put_bytes("jobs/job-novid/manifest.json", json.dumps(m).encode(), "application/json")

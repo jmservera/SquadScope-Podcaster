@@ -28,7 +28,12 @@ function VideoPlayer({ videoUrl }: { videoUrl: string }) {
   const resolvedUrl = getAuthenticatedStreamUrl(videoUrl);
 
   return (
-    <video className="video-player" controls preload="metadata" width="100%">
+    <video
+      className="video-player"
+      controls
+      preload="metadata"
+      style={{ width: "100%", maxWidth: "640px" }}
+    >
       <source src={resolvedUrl} type="video/mp4" />
       Your browser does not support the video element.
     </video>

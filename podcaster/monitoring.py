@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import hmac
 from datetime import datetime, timezone
 from typing import Any
@@ -681,6 +682,26 @@ class EpisodeListResponse(BaseModel):
     total: int
 
 
+def _normalize_blob_path(value: str) -> str:
+    """Normalize a blob reference to a relative path suitable for /api/stream/.
+
+    ``video_runner.distribution.blob_path`` may be recorded as a full URL
+    (e.g. ``https://account.blob.core.windows.net/container/path/file.mp4``)
+    rather than a relative blob path. Strip any scheme/host prefix and the
+    leading container segment so only the container-relative blob path remains,
+    matching the format used for audio and other artifacts.
+    """
+    stripped = value.strip()
+    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+/(.*)$", stripped)
+    if match:
+        stripped = match.group(1)
+        container = os.environ.get("PODCASTER_STORAGE_CONTAINER", "podcaster-artifacts")
+        prefix = f"{container}/"
+        if container and stripped.startswith(prefix):
+            stripped = stripped[len(prefix):]
+    return stripped.lstrip("/")
+
+
 def _extract_video_path(generation: dict[str, Any]) -> str | None:
     """Resolve the generated video (.mp4) blob path from a manifest's generation block."""
     video_runner = generation.get("video_runner")
@@ -689,7 +710,7 @@ def _extract_video_path(generation: dict[str, Any]) -> str | None:
         if isinstance(distribution, dict):
             blob_path = distribution.get("blob_path")
             if isinstance(blob_path, str) and blob_path:
-                return blob_path
+                return _normalize_blob_path(blob_path)
 
     artifacts = generation.get("artifacts")
     if isinstance(artifacts, dict):
