@@ -70,10 +70,11 @@ _MIN_VALID_MP3_BYTES = 256
 def video_generation_enabled() -> bool:
     """Whether to enqueue a video job after successful synthesis.
 
-    Defaults to ``True``. When enabled, the audio runner hands off to the video
-    pipeline (which composes the MP4 and publishes it to Spotify), so the
-    premature MP3 Spotify publish is deferred. Set ``VIDEO_GENERATION_ENABLED``
-    to a falsey value (``false``/``0``/``no``) to fall back to direct MP3 publish.
+    Defaults to ``True``. When enabled, the audio runner enqueues a video job
+    *in addition to* publishing the MP3 immediately; the video pipeline composes
+    the MP4 and publishes it to Spotify separately. Audio and video are always
+    published independently. Set ``VIDEO_GENERATION_ENABLED`` to a falsey value
+    (``false``/``0``/``no``) to skip video generation entirely.
     """
 
     raw = os.environ.get("VIDEO_GENERATION_ENABLED")
@@ -303,76 +304,78 @@ def run_synthesis(
                     job_id,
                 )
 
-            video_enabled = video_generation_enabled()
-            if video_enabled:
-                # Hand off to the video pipeline: it composes the MP4 and is
-                # responsible for the Spotify (video) publish via
-                # podcaster.video.distribution. Defer the MP3 Spotify publish so
-                # we don't publish a premature audio-only episode.
+            # Publish the MP3 immediately. Audio is always published as soon as
+            # synthesis completes, independently of video generation — we never
+            # defer the audio publish to the video pipeline.
+            auto_publish = auto_publish_enabled()
+            if auto_publish:
+                auto_outcome = auto_publish_job(job_id, storage=storage, now=current)
+                logger.info(
+                    "auto publish attempted job_id=%s status=%s",
+                    job_id,
+                    auto_outcome.manifest.get("status"),
+                )
+
+            if spotify_publish_config is not None and validation_ready and not auto_publish:
+                try:
+                    request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
+                    pub_title = str(
+                        request.get("article_title")
+                        or f"Claracle Podcast — Week {request.get('week') or job_id}"
+                    )
+                    pub_description = (
+                        f"<p>Claracle week {request.get('week') or job_id}.</p>"
+                        f"<p>Source article: {request.get('article_url') or ''}</p>"
+                    )
+                    pub_result: PublishResult = publish_episode(
+                        output_path,
+                        pub_title,
+                        pub_description,
+                        spotify_publish_config=spotify_publish_config,
+                        year=_extract_year(manifest),
+                        week=_extract_week(manifest),
+                        article_title=request.get("article_title")
+                        if isinstance(request.get("article_title"), str)
+                        else None,
+                        wav_path=episode_audio.wav_output_path,
+                    )
+                    logger.info(
+                        "draft publish attempted job_id=%s status=%s error=%s",
+                        job_id,
+                        pub_result.status,
+                        pub_result.error,
+                    )
+                except Exception:
+                    logger.warning("draft publish failed job_id=%s", job_id, exc_info=True)
+
+            # Additionally hand off to the video pipeline. It composes the MP4
+            # and publishes it to Spotify separately (via
+            # podcaster.video.distribution). This runs independently of the MP3
+            # publish above — both audio and video are published on their own.
+            # A failed or unconfigured enqueue never breaks synthesis completion.
+            if video_generation_enabled():
                 enqueue = enqueue_video or enqueue_video_job
                 try:
                     enqueued = enqueue(job_id)
                     if enqueued:
                         logger.info(
                             "video generation enqueued job_id=%s; "
-                            "Spotify publish deferred to video pipeline",
+                            "video will be published separately by the video pipeline",
                             job_id,
                         )
                     else:
                         logger.warning(
                             "video generation enabled but video queue not configured "
-                            "for job_id=%s; episode stays audio-only and unpublished",
+                            "for job_id=%s; audio was published, video skipped",
                             job_id,
                         )
                 except Exception:
                     logger.warning(
                         "failed to enqueue video job_id=%s; "
-                        "episode stays audio-only and unpublished",
+                        "audio was published, video skipped",
                         job_id,
                         exc_info=True,
                     )
-            else:
-                # Fallback: no video pipeline — publish the MP3 directly.
-                auto_publish = auto_publish_enabled()
-                if auto_publish:
-                    auto_outcome = auto_publish_job(job_id, storage=storage, now=current)
-                    logger.info(
-                        "auto publish attempted job_id=%s status=%s",
-                        job_id,
-                        auto_outcome.manifest.get("status"),
-                    )
-
-                if spotify_publish_config is not None and validation_ready and not auto_publish:
-                    try:
-                        request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
-                        pub_title = str(
-                            request.get("article_title")
-                            or f"Claracle Podcast — Week {request.get('week') or job_id}"
-                        )
-                        pub_description = (
-                            f"<p>Claracle week {request.get('week') or job_id}.</p>"
-                            f"<p>Source article: {request.get('article_url') or ''}</p>"
-                        )
-                        pub_result: PublishResult = publish_episode(
-                            output_path,
-                            pub_title,
-                            pub_description,
-                            spotify_publish_config=spotify_publish_config,
-                            year=_extract_year(manifest),
-                            week=_extract_week(manifest),
-                            article_title=request.get("article_title")
-                            if isinstance(request.get("article_title"), str)
-                            else None,
-                            wav_path=episode_audio.wav_output_path,
-                        )
-                        logger.info(
-                            "draft publish attempted job_id=%s status=%s error=%s",
-                            job_id,
-                            pub_result.status,
-                            pub_result.error,
-                        )
-                    except Exception:
-                        logger.warning("draft publish failed job_id=%s", job_id, exc_info=True)
 
             logger.info(
                 "synthesis completed job_id=%s segments=%s validation=%s real_audio=true publishable=%s",

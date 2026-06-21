@@ -315,7 +315,7 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
     ]
 
 
-def test_run_synthesis_enqueues_video_and_defers_spotify_when_video_enabled(monkeypatch):
+def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(monkeypatch):
     _patch_audio(monkeypatch)
     monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
     storage = FakeStorage()
@@ -329,17 +329,14 @@ def test_run_synthesis_enqueues_video_and_defers_spotify_when_video_enabled(monk
     _stage(storage, manifest, _two_voice_script())
 
     enqueued: list[str] = []
+    auto_published: list[str] = []
 
-    def boom_publish(*args, **kwargs):
-        raise AssertionError("MP3 Spotify publish must be deferred when video is enabled")
+    def fake_auto_publish_job(job_id, **kwargs):
+        auto_published.append(job_id)
+        return _FakeAutoOutcome()
 
     monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: True)
-    monkeypatch.setattr(job_runner, "publish_episode", boom_publish)
-    monkeypatch.setattr(
-        job_runner,
-        "auto_publish_job",
-        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("auto publish must be deferred")),
-    )
+    monkeypatch.setattr(job_runner, "auto_publish_job", fake_auto_publish_job)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -351,7 +348,13 @@ def test_run_synthesis_enqueues_video_and_defers_spotify_when_video_enabled(monk
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
+    # Video is enqueued AND audio is published immediately — both independently.
     assert enqueued == [JOB_ID]
+    assert auto_published == [JOB_ID]
+
+
+class _FakeAutoOutcome:
+    manifest = {"status": "published"}
 
 
 def test_run_synthesis_video_enqueue_failure_does_not_break_completion(monkeypatch):
