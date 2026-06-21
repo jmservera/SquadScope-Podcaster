@@ -124,6 +124,59 @@ def _build_historical_context_block(historical_context: HistoricalContext | None
     return cap_length(full_block, MAX_HISTORICAL_CONTEXT_CHARS)
 
 
+_SHOW_INTRO_SEGMENT_ALIASES = frozenset({"show intro", "show_intro", "intro", "introduction"})
+_COLD_OPEN_SEGMENT_ALIASES = frozenset({"cold open", "cold-open", "cold_open", "coldopen"})
+
+
+def _build_episode_structure(directions: "ScriptDirections", podcast_config: PodcastConfig) -> str:
+    """Build a single, ordered episode-structure block for the system prompt.
+
+    Guarantees an unambiguous opening order: the show intro is always the very
+    first thing, immediately followed by the cold open, then the host welcome +
+    AI disclosure, then the remaining configured segments in order. This avoids
+    the conflicting "what comes first" signals that previously let the LLM bury
+    the show intro behind the cold open or welcome.
+    """
+
+    style = directions.episode_style
+    segments = [s.strip() for s in style.segment_order if s and s.strip()]
+
+    has_cold_open_segment = any(s.lower() in _COLD_OPEN_SEGMENT_ALIASES for s in segments)
+    remaining = [
+        s
+        for s in segments
+        if s.lower() not in _SHOW_INTRO_SEGMENT_ALIASES and s.lower() not in _COLD_OPEN_SEGMENT_ALIASES
+    ]
+
+    items: list[str] = []
+    if directions.show_intro:
+        items.append(
+            "Show Intro — the VERY FIRST line of the episode, before the cold open and before "
+            f"anything else: {directions.show_intro}"
+        )
+    if directions.cold_open or has_cold_open_segment:
+        position = "immediately after the show intro" if directions.show_intro else "the opening of the episode"
+        cue = directions.cold_open or "Open with a provocative, attention-grabbing statement."
+        items.append(f"Cold Open — {position}: {cue}")
+    if items:
+        # The welcome + disclosure follow the intro/cold open in the spoken order.
+        items.append(
+            f"Host welcome + AI voice disclosure — {podcast_config.host_a.name} welcomes listeners to "
+            f'"{podcast_config.name}", names the topic, and points to {podcast_config.spoken_site}; '
+            f'{podcast_config.host_b.name} states: "{podcast_config.ai_voice_disclosure}".'
+        )
+    items.extend(remaining)
+
+    if not items:
+        return ""
+
+    numbered = "\n".join(f"{i}. {line}" for i, line in enumerate(items, start=1))
+    return (
+        "\nEPISODE STRUCTURE (STRICT ORDER — follow exactly, do NOT reorder; the Show Intro is the "
+        "very first thing listeners hear):\n" + numbered + "\n"
+    )
+
+
 def _build_system_prompt(
     podcast_config: PodcastConfig,
     directions: ScriptDirections | None = None,
@@ -145,6 +198,8 @@ def _build_system_prompt(
 Write a dynamic, joyful two-host conversation about the article provided. The hosts are:
 - {podcast_config.host_a.name} (voice: {podcast_config.host_a.voice}): {podcast_config.host_a.style}
 - {podcast_config.host_b.name} (voice: {podcast_config.host_b.voice}): {podcast_config.host_b.style}
+
+HOST NAMES ARE FIXED: the ONLY two speakers are "{podcast_config.host_a.name}" and "{podcast_config.host_b.name}". Never invent, rename, or substitute any other host names (e.g. do not use placeholder or example names).
 
 FORMAT RULES (you MUST follow these exactly):
 1. Output ONLY the dialogue lines, one per line, formatted as "{podcast_config.host_a.name}: <text>" or "{podcast_config.host_b.name}: <text>"
@@ -174,17 +229,24 @@ FORMAT RULES (you MUST follow these exactly):
                 "A script under 1200 words is TOO SHORT — keep going until you hit the target.",
             )
         if directions.show_intro:
-            extras.append(
-                f"SHOW INTRO (MUST be the very first line of the episode, before cold open): {directions.show_intro}"
+            # When a show intro is supplied it must be the very first thing in the
+            # episode. Reframe rule 3 so the host welcome follows the show intro
+            # and cold open instead of claiming to be the opening line — otherwise
+            # the LLM receives conflicting "what comes first" signals.
+            base = base.replace(
+                f"3. The conversation MUST open with {podcast_config.host_a.name} welcoming "
+                f'listeners to "{podcast_config.name}" week\'s episode, mentioning the article '
+                f"topic, introducing themselves, and stating {podcast_config.spoken_site} as where to find extended info.",
+                f"3. After the show intro and cold open (see EPISODE STRUCTURE below), "
+                f'{podcast_config.host_a.name} welcomes listeners to "{podcast_config.name}", '
+                f"mentions the article topic, introduces the hosts, and states {podcast_config.spoken_site} "
+                "as where to find extended info.",
             )
+        # Build a single, unambiguous ordered episode structure so the show intro
+        # is guaranteed first, the cold open second, then the configured segments.
+        base += _build_episode_structure(directions, podcast_config)
         if style.tone:
             extras.append(f"TONE: {style.tone}")
-        if style.segment_order:
-            extras.append(f"SEGMENT ORDER (follow this structure): {', '.join(style.segment_order)}")
-        if directions.cold_open:
-            extras.append(
-                f"COLD OPEN: Start with a provocative or attention-grabbing statement: {directions.cold_open}"
-            )
         if directions.source_article_link:
             extras.append(
                 f"CLOSING: Reference the source article link for listeners who want the full text: {directions.source_article_link}"
