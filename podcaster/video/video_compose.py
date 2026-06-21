@@ -7,15 +7,19 @@ YouTube/Spotify-ready MP4 with crossfade transitions and lower-third overlays.
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import TYPE_CHECKING, Protocol, Sequence
 
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 from podcaster.video.video_gen import RecordedSegment
+
+if TYPE_CHECKING:
+    from podcaster.storage import StorageBackend
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,23 @@ ENCODE_PRESET = "slow"
 ENCODE_CRF = 18
 ENCODE_PIX_FMT = "yuv420p"
 ENCODE_AUDIO_BITRATE = "192k"
+
+# --- Reusable intro/outro (#314, #319) ---
+# Stored once in the artifacts container and prepended/appended to every episode.
+INTRO_BLOB_PATH = "assets/video/intro.mp4"
+OUTRO_BLOB_PATH = "assets/video/outro.mp4"
+# Canonical audio params for the concat-join step.
+CONCAT_AUDIO_SAMPLE_RATE = "48000"
+CONCAT_AUDIO_CHANNELS = "2"
+
+
+def _default_intro_outro_cache_dir() -> Path:
+    """Default on-disk cache for downloaded intro/outro clips.
+
+    A stable temp-dir location so repeated episode generations on the same
+    host reuse the already-downloaded clips instead of re-fetching them.
+    """
+    return Path(tempfile.gettempdir()) / "podcaster-intro-outro-cache"
 
 # --- Transition types (#298) ---
 # Valid xfade transition names (subset chosen for quality and file-size impact)
@@ -166,6 +187,209 @@ def _build_normalize_cmd(
         "-pix_fmt", ENCODE_PIX_FMT,
         str(output_path),
     ]
+
+
+def _fetch_blob_cached(
+    storage: "StorageBackend",
+    blob_path: str,
+    cache_path: Path,
+    label: str,
+) -> Path | None:
+    """Fetch *blob_path* from storage into *cache_path*, reusing a prior cache.
+
+    Returns the local path on success, or ``None`` if the blob is missing or
+    the fetch fails (graceful degradation — the caller composes without it).
+    """
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        logger.info("Using cached %s clip: %s", label, cache_path)
+        return cache_path
+
+    try:
+        data = storage.get_bytes(blob_path)
+    except Exception as exc:  # noqa: BLE001 — never fail composition on fetch error
+        logger.warning(
+            "Failed to fetch %s clip from storage (%s): %s; composing without it",
+            label, blob_path, exc,
+        )
+        return None
+
+    if not data:
+        logger.warning(
+            "No %s clip found in storage at %s; composing without it",
+            label, blob_path,
+        )
+        return None
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(data)
+    logger.info(
+        "Downloaded %s clip (%d bytes) from %s to %s",
+        label, len(data), blob_path, cache_path,
+    )
+    return cache_path
+
+
+def _fetch_intro_outro(
+    storage: "StorageBackend",
+    cache_dir: Path,
+) -> tuple[Path | None, Path | None]:
+    """Download (and cache) the stored intro/outro clips.
+
+    Returns ``(intro_path, outro_path)`` where either entry may be ``None`` when
+    the corresponding blob is unavailable.
+    """
+    intro = _fetch_blob_cached(
+        storage, INTRO_BLOB_PATH, cache_dir / "intro.mp4", "intro"
+    )
+    outro = _fetch_blob_cached(
+        storage, OUTRO_BLOB_PATH, cache_dir / "outro.mp4", "outro"
+    )
+    return intro, outro
+
+
+def _probe_media(path: Path, run: "CommandRunner") -> tuple[bool, float]:
+    """Probe a media file for audio presence and duration via ffprobe.
+
+    Returns ``(has_audio, duration_seconds)``.  On any probe failure returns
+    ``(False, 0.0)`` so callers degrade gracefully.
+    """
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration:stream=codec_type",
+        "-of", "json",
+        str(path),
+    ]
+    try:
+        proc = run(cmd)
+        info = json.loads(proc.stdout or "{}")
+    except Exception:  # noqa: BLE001 — probing is best-effort
+        return False, 0.0
+
+    has_audio = any(
+        stream.get("codec_type") == "audio"
+        for stream in info.get("streams", [])
+    )
+    try:
+        duration = float(info.get("format", {}).get("duration", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    return has_audio, duration
+
+
+def _build_canonical_av_cmd(
+    input_path: Path,
+    output_path: Path,
+    *,
+    has_audio: bool,
+) -> list[str]:
+    """Re-encode *input_path* to the canonical 1080p/30fps + stereo-AAC format.
+
+    Guarantees both a video and an audio stream so every joined clip has an
+    identical layout and the concat-demuxer copy step succeeds.  When the source
+    has no audio, a silent stereo track is synthesised.
+    """
+    vf = (
+        f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
+        f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
+        f"fps={OUTPUT_FPS},format={ENCODE_PIX_FMT},setsar=1"
+    )
+    cmd: list[str] = [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "-i", str(input_path),
+    ]
+    if not has_audio:
+        cmd += [
+            "-f", "lavfi",
+            "-i",
+            f"anullsrc=channel_layout=stereo:sample_rate={CONCAT_AUDIO_SAMPLE_RATE}",
+        ]
+    audio_map = "0:a:0" if has_audio else "1:a"
+    cmd += [
+        "-filter_complex", f"[0:v]{vf}[v]",
+        "-map", "[v]",
+        "-map", audio_map,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", str(ENCODE_CRF),
+        "-pix_fmt", ENCODE_PIX_FMT,
+        "-c:a", "aac",
+        "-b:a", ENCODE_AUDIO_BITRATE,
+        "-ar", CONCAT_AUDIO_SAMPLE_RATE,
+        "-ac", CONCAT_AUDIO_CHANNELS,
+    ]
+    if not has_audio:
+        cmd.append("-shortest")
+    cmd.append(str(output_path))
+    return cmd
+
+
+def _build_concat_cmd(list_file: Path, output_path: Path) -> list[str]:
+    """Build the concat-demuxer command joining canonicalised clips (stream copy)."""
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", str(list_file),
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+
+
+def _join_intro_outro(
+    content_path: Path,
+    output_path: Path,
+    intro_path: Path | None,
+    outro_path: Path | None,
+    *,
+    content_has_audio: bool,
+    run: "CommandRunner",
+    work_dir: Path,
+) -> float:
+    """Prepend *intro_path* and append *outro_path* around *content_path*.
+
+    Canonicalises each present clip to a uniform AV format, then concatenates
+    ``intro -> content -> outro`` into *output_path* using the concat demuxer.
+
+    Returns the total added duration (seconds) of the intro/outro clips so the
+    caller can adjust the reported episode duration.
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    canon_dir = work_dir / "join"
+    canon_dir.mkdir(parents=True, exist_ok=True)
+
+    ordered: list[tuple[str, Path, bool]] = []
+    added_duration = 0.0
+
+    if intro_path is not None:
+        intro_has_audio, intro_dur = _probe_media(intro_path, run)
+        added_duration += intro_dur
+        ordered.append(("intro", intro_path, intro_has_audio))
+
+    ordered.append(("content", content_path, content_has_audio))
+
+    if outro_path is not None:
+        outro_has_audio, outro_dur = _probe_media(outro_path, run)
+        added_duration += outro_dur
+        ordered.append(("outro", outro_path, outro_has_audio))
+
+    canon_paths: list[Path] = []
+    for label, src, has_audio in ordered:
+        canon_path = canon_dir / f"{label}.mp4"
+        logger.info("Canonicalizing %s clip for concat: %s", label, src)
+        run(_build_canonical_av_cmd(src, canon_path, has_audio=has_audio))
+        canon_paths.append(canon_path)
+
+    list_file = canon_dir / "concat.txt"
+    list_file.write_text(
+        "".join(f"file '{p.as_posix()}'\n" for p in canon_paths),
+        encoding="utf-8",
+    )
+    logger.info(
+        "Joining %d clips (intro/content/outro) into %s",
+        len(canon_paths), output_path,
+    )
+    run(_build_concat_cmd(list_file, output_path))
+    return added_duration
 
 
 def select_transitions(
@@ -369,6 +593,8 @@ def compose_video(
     runner: CommandRunner | None = None,
     transition_duration: float = TRANSITION_DURATION,
     boundary_kinds: list[str] | None = None,
+    storage: "StorageBackend | None" = None,
+    intro_outro_cache_dir: Path | None = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -385,6 +611,14 @@ def compose_video(
             ``"intro_to_content"``, ``"content_to_content"`` (default), or
             ``"content_to_outro"`` so different transition types are applied
             per boundary.  Pass ``None`` (default) to use automatic cycling.
+        storage: Optional storage backend.  When provided, the reusable intro
+            (``assets/video/intro.mp4``) and outro (``assets/video/outro.mp4``)
+            clips are downloaded (and cached locally), prepended/appended around
+            the composed content.  Missing clips are skipped with a warning
+            (graceful degradation).
+        intro_outro_cache_dir: Local cache directory for the downloaded
+            intro/outro clips.  Defaults to a stable temp-dir location so
+            repeated runs on the same host avoid re-downloading.
 
     Returns:
         ComposeResult with path to the final MP4.
@@ -413,6 +647,21 @@ def compose_video(
             output_dir = Path(tempfile.mkdtemp(prefix="video_compose_"))
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "episode.mp4"
+
+    # Resolve reusable intro/outro clips (graceful degradation if unavailable).
+    intro_path: Path | None = None
+    outro_path: Path | None = None
+    if storage is not None:
+        cache_dir = intro_outro_cache_dir or _default_intro_outro_cache_dir()
+        intro_path, outro_path = _fetch_intro_outro(storage, cache_dir)
+
+    # When intro/outro are present, compose the content to a temp file first and
+    # join the clips around it afterwards; otherwise write the content directly.
+    has_bookends = intro_path is not None or outro_path is not None
+    if has_bookends:
+        compose_target = output_path.parent / "content.mp4"
+    else:
+        compose_target = output_path
 
     # Step 1: Normalize all segments to 1080p/30fps
     normalized_paths: list[Path] = []
@@ -478,6 +727,24 @@ def compose_video(
         cmd.extend(["-i", str(audio_path)])
 
     # Add filter_complex if we have filters
+    audio_label: str | None = None
+    if audio_path is not None:
+        # The xfade-overlapped video is shorter than the full episode audio:
+        # each transition removes ``transition_duration`` seconds of overlap from
+        # the timeline. Spotify (and well-formed players) reject a video/audio
+        # duration mismatch, so pad the video by holding the last frame and pad
+        # the audio with trailing silence, then force both to one identical,
+        # frame-aligned duration so the muxed streams match exactly.
+        target_duration = round(sum(durations) * OUTPUT_FPS) / OUTPUT_FPS
+        video_pad = transition_duration * max(0, len(segments) - 1) + 1.0
+        video_src = f"[{video_label}]" if filter_complex_parts else "[0:v]"
+        filter_complex_parts.append(
+            f"{video_src}tpad=stop_mode=clone:stop_duration={video_pad}[vsync]"
+        )
+        video_label = "vsync"
+        filter_complex_parts.append(f"[{audio_input_idx}:a]apad[async]")
+        audio_label = "async"
+
     if filter_complex_parts:
         cmd.extend(["-filter_complex", ";".join(filter_complex_parts)])
         cmd.extend(["-map", f"[{video_label}]"])
@@ -486,7 +753,7 @@ def compose_video(
 
     # Map audio
     if audio_path is not None:
-        cmd.extend(["-map", f"{audio_input_idx}:a"])
+        cmd.extend(["-map", f"[{audio_label}]"])
         cmd.extend(["-c:a", "aac", "-b:a", ENCODE_AUDIO_BITRATE])
 
     # Output encoding
@@ -496,14 +763,32 @@ def compose_video(
         "-crf", str(ENCODE_CRF),
         "-pix_fmt", ENCODE_PIX_FMT,
         "-movflags", "+faststart",
-        str(output_path),
     ])
+    if audio_path is not None:
+        cmd.extend(["-t", f"{target_duration:.3f}"])
+    cmd.append(str(compose_target))
 
-    logger.info("Composing %d segments into %s", len(segments), output_path)
+    logger.info("Composing %d segments into %s", len(segments), compose_target)
     run(cmd)
 
     # Calculate output duration (accounting for transition overlaps)
-    total_duration = sum(durations) - transition_duration * max(0, len(segments) - 1)
+    if audio_path is not None:
+        total_duration = target_duration
+    else:
+        total_duration = sum(durations) - transition_duration * max(0, len(segments) - 1)
+
+    # Prepend intro / append outro around the composed content (if available).
+    if has_bookends:
+        added = _join_intro_outro(
+            compose_target,
+            output_path,
+            intro_path,
+            outro_path,
+            content_has_audio=audio_path is not None,
+            run=run,
+            work_dir=output_path.parent,
+        )
+        total_duration += added
 
     return ComposeResult(
         output_path=output_path,

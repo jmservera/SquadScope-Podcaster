@@ -240,6 +240,7 @@ def run_video_generation(
                 audio_path=audio_path,
                 output_path=output_path,
                 runner=compose_runner,
+                storage=storage,
             )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
