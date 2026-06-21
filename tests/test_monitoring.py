@@ -280,6 +280,51 @@ class TestGetJobLogs:
 
 
 # ---------------------------------------------------------------------------
+# Tests: POST /api/jobs/{id}/video/generate
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueueVideo:
+    def test_not_found(self, client, storage):
+        resp = client.post("/api/jobs/nonexistent/video/generate")
+        assert resp.status_code == 404
+
+    def test_corrupt_manifest(self, client, storage):
+        storage.put_bytes("jobs/bad-job/manifest.json", b"not json", "application/json")
+        resp = client.post("/api/jobs/bad-job/video/generate")
+        assert resp.status_code == 500
+
+    def test_enqueues_successfully(self, client, storage):
+        m = _make_manifest("podcast-2026-W24-abc123")
+        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+
+        with patch("podcaster.monitoring.enqueue_video_job", return_value=True) as mock_enqueue:
+            resp = client.post("/api/jobs/podcast-2026-W24-abc123/video/generate")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"job_id": "podcast-2026-W24-abc123", "enqueued": True}
+        mock_enqueue.assert_called_once_with("podcast-2026-W24-abc123")
+
+    def test_queue_not_configured_returns_503(self, client, storage):
+        m = _make_manifest("podcast-2026-W24-abc123")
+        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+
+        with patch("podcaster.monitoring.enqueue_video_job", return_value=False):
+            resp = client.post("/api/jobs/podcast-2026-W24-abc123/video/generate")
+
+        assert resp.status_code == 503
+
+    def test_enqueue_failure_returns_502(self, client, storage):
+        m = _make_manifest("podcast-2026-W24-abc123")
+        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+
+        with patch("podcaster.monitoring.enqueue_video_job", side_effect=RuntimeError("boom")):
+            resp = client.post("/api/jobs/podcast-2026-W24-abc123/video/generate")
+
+        assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
 # Tests: GET /healthz
 # ---------------------------------------------------------------------------
 

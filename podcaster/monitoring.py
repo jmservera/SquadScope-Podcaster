@@ -11,6 +11,7 @@ Endpoints:
   GET /api/jobs                   — list recent jobs (paginated)
   GET /api/jobs/{id}              — job detail (manifest + derived status)
   GET /api/jobs/{id}/logs         — job logs (runner state transitions)
+  POST /api/jobs/{id}/video/generate — manually enqueue a video job
   GET /api/stream/{path}          — stream blob content (audio/video/images)
   GET /api/episodes               — list generated episodes with metadata
   GET /api/articles/{path}        — serve markdown articles for preview
@@ -54,6 +55,7 @@ from podcaster.failure_reporting import report_failure
 from podcaster.jobs import failed_response, run_generation_job
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
+from podcaster.queue import enqueue_video_job
 from podcaster.storage import StorageBackend, create_storage_backend
 from podcaster.validation import validate_payload_details
 
@@ -467,6 +469,39 @@ def get_job_logs(job_id: str):
     if manifest is None:
         raise HTTPException(status_code=500, detail="Manifest is corrupt")
     return JobLogsResponse(job_id=job_id, logs=_extract_logs(manifest))
+
+
+@app.post("/api/jobs/{job_id}/video/generate", dependencies=[Depends(verify_auth)])
+def enqueue_video(job_id: str):
+    """Manually enqueue a video-generation message for an existing job.
+
+    Useful for retriggering video composition without a full re-synthesis.
+    The job must already exist (have a manifest). Returns 503 when the video
+    queue is not configured.
+    """
+    storage = get_storage()
+    manifest_path = f"jobs/{job_id}/manifest.json"
+    raw = storage.get_bytes(manifest_path)
+    if raw is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+    manifest = _parse_manifest(raw)
+    if manifest is None:
+        raise HTTPException(status_code=500, detail="Manifest is corrupt")
+
+    try:
+        enqueued = enqueue_video_job(job_id)
+    except Exception:
+        logger.warning("manual video enqueue failed job_id=%s", job_id, exc_info=True)
+        raise HTTPException(status_code=502, detail="Failed to enqueue video job")
+
+    if not enqueued:
+        raise HTTPException(
+            status_code=503,
+            detail="Video queue is not configured (PODCASTER_STORAGE_QUEUE_URL unset)",
+        )
+
+    logger.info("manual video enqueue succeeded job_id=%s", job_id)
+    return {"job_id": job_id, "enqueued": True}
 
 
 @app.get("/healthz")

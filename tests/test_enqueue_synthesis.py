@@ -191,3 +191,26 @@ def test_enqueue_video_job_skips_when_queue_not_configured(monkeypatch) -> None:
 
     monkeypatch.delenv("PODCASTER_STORAGE_QUEUE_URL", raising=False)
     assert enqueue_video_job("podcast-2026-W23-deadbeef0004") is False
+
+
+def test_enqueue_video_job_diagnostics_mask_url(monkeypatch, caplog) -> None:
+    from podcaster.queue import enqueue_video_job
+
+    monkeypatch.setenv(
+        "PODCASTER_STORAGE_QUEUE_URL",
+        "https://acct.queue.core.windows.net/?sig=SECRETSAS",
+    )
+    monkeypatch.setenv("PODCASTER_VIDEO_QUEUE", "video-jobs")
+
+    producer = RecordingProducer()
+    with caplog.at_level("INFO"):
+        enqueue_video_job("podcast-2026-W23-deadbeef0005", producer=producer)
+
+    diag = [r.getMessage() for r in caplog.records if "diagnostics" in r.getMessage()]
+    assert diag, "expected a diagnostics log line"
+    text = diag[0]
+    assert "PODCASTER_STORAGE_QUEUE_URL_set=True" in text
+    assert "video-jobs" in text
+    assert "SECRETSAS" not in text
+    assert "sig=" not in text
+
