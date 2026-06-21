@@ -20,6 +20,8 @@ from podcaster.video.video_compose import (
     ENCODE_CRF,
     ENCODE_PIX_FMT,
     ENCODE_PRESET,
+    INTRO_BLOB_PATH,
+    OUTRO_BLOB_PATH,
     LOWER_THIRD_DURATION,
     OUTPUT_FPS,
     OUTPUT_HEIGHT,
@@ -29,10 +31,14 @@ from podcaster.video.video_compose import (
     TRANSITION_SLIDE_LEFT,
     TRANSITION_WIPE_LEFT,
     LowerThird,
+    _build_canonical_av_cmd,
+    _build_concat_cmd,
     _build_drawtext_filter,
     _build_normalize_cmd,
     _build_xfade_filter,
     _compute_lower_thirds,
+    _fetch_blob_cached,
+    _fetch_intro_outro,
     _probe_drawtext_ffmpeg,
     compose_video,
     select_transitions,
@@ -920,3 +926,216 @@ class TestApplySync:
         assert runner.call_count == 1  # only ss1 triggered a trim
         assert result[0].segment.start_seconds == 0.0
         assert result[1].segment.start_seconds == 10.0
+
+
+# --- Tests for reusable intro/outro integration (#319) ---
+
+
+class _FakeStorage:
+    """Minimal StorageBackend stub returning canned bytes for blob paths."""
+
+    def __init__(self, blobs: dict[str, bytes] | None = None, *, raise_on=None):
+        self._blobs = blobs or {}
+        self._raise_on = raise_on or set()
+        self.calls: list[str] = []
+
+    def get_bytes(self, path: str) -> bytes | None:
+        self.calls.append(path)
+        if path in self._raise_on:
+            raise RuntimeError("boom")
+        return self._blobs.get(path)
+
+
+def _ffprobe_runner(has_audio: bool = True, duration: float = 6.0) -> MagicMock:
+    """A runner that answers ffprobe with JSON and other commands with success."""
+    runner = MagicMock()
+
+    def _side_effect(command):
+        if command and command[0] == "ffprobe":
+            streams = [{"codec_type": "video"}]
+            if has_audio:
+                streams.append({"codec_type": "audio"})
+            payload = (
+                '{"streams": '
+                + str(streams).replace("'", '"')
+                + ', "format": {"duration": "'
+                + str(duration)
+                + '"}}'
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=payload, stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    runner.side_effect = _side_effect
+    return runner
+
+
+class TestFetchBlobCached:
+    def test_downloads_and_caches(self, tmp_path):
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"intro-bytes"})
+        cache = tmp_path / "intro.mp4"
+        result = _fetch_blob_cached(storage, INTRO_BLOB_PATH, cache, "intro")
+        assert result == cache
+        assert cache.read_bytes() == b"intro-bytes"
+        assert storage.calls == [INTRO_BLOB_PATH]
+
+    def test_reuses_existing_cache_no_redownload(self, tmp_path):
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"fresh"})
+        cache = tmp_path / "intro.mp4"
+        cache.write_bytes(b"cached")
+        result = _fetch_blob_cached(storage, INTRO_BLOB_PATH, cache, "intro")
+        assert result == cache
+        # Existing non-empty cache is reused; storage is not queried.
+        assert storage.calls == []
+        assert cache.read_bytes() == b"cached"
+
+    def test_missing_blob_returns_none(self, tmp_path):
+        storage = _FakeStorage({})
+        cache = tmp_path / "outro.mp4"
+        result = _fetch_blob_cached(storage, OUTRO_BLOB_PATH, cache, "outro")
+        assert result is None
+        assert not cache.exists()
+
+    def test_fetch_error_returns_none(self, tmp_path):
+        storage = _FakeStorage({}, raise_on={INTRO_BLOB_PATH})
+        cache = tmp_path / "intro.mp4"
+        result = _fetch_blob_cached(storage, INTRO_BLOB_PATH, cache, "intro")
+        assert result is None
+
+
+class TestFetchIntroOutro:
+    def test_returns_both_when_present(self, tmp_path):
+        storage = _FakeStorage(
+            {INTRO_BLOB_PATH: b"i", OUTRO_BLOB_PATH: b"o"}
+        )
+        intro, outro = _fetch_intro_outro(storage, tmp_path)
+        assert intro is not None and intro.read_bytes() == b"i"
+        assert outro is not None and outro.read_bytes() == b"o"
+
+    def test_partial_availability(self, tmp_path):
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"i"})
+        intro, outro = _fetch_intro_outro(storage, tmp_path)
+        assert intro is not None
+        assert outro is None
+
+
+class TestBuildCanonicalAvCmd:
+    def test_with_audio_maps_source_audio(self):
+        cmd = _build_canonical_av_cmd(
+            Path("/in.mp4"), Path("/out.mp4"), has_audio=True
+        )
+        assert cmd[0] == "ffmpeg"
+        assert "0:a:0" in cmd
+        assert "anullsrc" not in " ".join(cmd)
+        assert "-shortest" not in cmd
+        assert f"{OUTPUT_WIDTH}:{OUTPUT_HEIGHT}" in cmd[cmd.index("-filter_complex") + 1]
+
+    def test_without_audio_synthesizes_silence(self):
+        cmd = _build_canonical_av_cmd(
+            Path("/in.mp4"), Path("/out.mp4"), has_audio=False
+        )
+        joined = " ".join(cmd)
+        assert "anullsrc" in joined
+        assert "1:a" in cmd
+        assert "-shortest" in cmd
+
+
+class TestBuildConcatCmd:
+    def test_uses_concat_demuxer_copy(self, tmp_path):
+        cmd = _build_concat_cmd(tmp_path / "list.txt", tmp_path / "out.mp4")
+        assert "concat" in cmd
+        assert "-safe" in cmd
+        assert "copy" in cmd
+
+
+class TestComposeVideoIntroOutro:
+    def test_no_storage_skips_intro_outro(self, tmp_path):
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        compose_video(segments=[seg], output_dir=tmp_path / "out", runner=runner)
+        # 1 normalize + 1 compose, no ffprobe/concat
+        assert runner.call_count == 2
+        assert all(
+            c.args[0][0] != "ffprobe" for c in runner.call_args_list
+        )
+
+    def test_prepends_intro_and_appends_outro(self, tmp_path):
+        runner = _ffprobe_runner(has_audio=True, duration=5.0)
+        storage = _FakeStorage(
+            {INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"}
+        )
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        out = tmp_path / "out" / "episode.mp4"
+
+        result = compose_video(
+            segments=[seg],
+            audio_path=None,
+            output_path=out,
+            runner=runner,
+            storage=storage,
+            intro_outro_cache_dir=tmp_path / "cache",
+        )
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        # content composed to a temp file, not directly to output
+        compose_cmd = next(c for c in cmds if c[0] in ("ffmpeg",) and "content.mp4" in c[-1])
+        assert compose_cmd[-1].endswith("content.mp4")
+        # a concat command writing the final output exists
+        concat_cmds = [c for c in cmds if "concat" in c and c[-1] == str(out)]
+        assert len(concat_cmds) == 1
+        # two ffprobe calls (intro + outro)
+        probe_cmds = [c for c in cmds if c[0] == "ffprobe"]
+        assert len(probe_cmds) == 2
+        # canonical re-encodes for intro, content, outro (3 canonicalize calls)
+        canon_cmds = [c for c in cmds if "-filter_complex" in c and "[0:v]" in " ".join(c)
+                      and "join" in c[-1]]
+        assert len(canon_cmds) == 3
+        # duration includes the two 5s clips added to the 10s content
+        assert result.duration_seconds == pytest.approx(20.0)
+
+    def test_missing_intro_outro_graceful_fallback(self, tmp_path):
+        runner = _mock_runner()
+        storage = _FakeStorage({})  # neither intro nor outro present
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        out = tmp_path / "out" / "episode.mp4"
+
+        result = compose_video(
+            segments=[seg],
+            output_path=out,
+            runner=runner,
+            storage=storage,
+            intro_outro_cache_dir=tmp_path / "cache",
+        )
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        # No concat, no ffprobe — behaves like the plain path.
+        assert not any("concat" in c for c in cmds)
+        assert not any(c[0] == "ffprobe" for c in cmds)
+        # content written straight to the final output
+        assert result.output_path == out
+        assert result.duration_seconds == pytest.approx(10.0)
+
+    def test_only_intro_available(self, tmp_path):
+        runner = _ffprobe_runner(has_audio=False, duration=5.0)
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"intro"})
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        out = tmp_path / "out" / "episode.mp4"
+
+        result = compose_video(
+            segments=[seg],
+            output_path=out,
+            runner=runner,
+            storage=storage,
+            intro_outro_cache_dir=tmp_path / "cache",
+        )
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        concat_cmds = [c for c in cmds if "concat" in c]
+        assert len(concat_cmds) == 1
+        # only the intro is probed
+        probe_cmds = [c for c in cmds if c[0] == "ffprobe"]
+        assert len(probe_cmds) == 1
+        assert result.duration_seconds == pytest.approx(15.0)

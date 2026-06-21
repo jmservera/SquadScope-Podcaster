@@ -89,7 +89,11 @@ def test_video_pipeline_generates_mp4_output(
     assert result.output_path.exists()
     assert result.output_path.suffix == ".mp4"
     assert result.segment_count == 2
-    assert result.duration_seconds == pytest.approx(11.0)
+    # With audio, the composed video is padded to match the full episode audio
+    # duration (sum of segment durations); without audio it reflects the
+    # xfade-overlapped timeline (one transition shorter).
+    expected_duration = 12.0 if with_audio else 11.0
+    assert result.duration_seconds == pytest.approx(expected_duration)
     assert result.has_audio is with_audio
     assert result.output_path.read_bytes().startswith(b"\x00\x00\x00\x18ftyp")
 
