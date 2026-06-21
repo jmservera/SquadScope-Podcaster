@@ -30,6 +30,12 @@ param logAnalyticsWorkspaceName string
 @description('Storage Queue that carries synthesis messages (job_id only; no secrets/PII).')
 param synthesisQueueName string = 'synthesis-jobs'
 
+@description('Storage Queue that carries video-generation messages (job_id only; no secrets/PII).')
+param videoQueueName string = 'video-jobs'
+
+@description('Whether the synthesis job should enqueue a video-generation message after publishing audio (#324).')
+param videoGenerationEnabled string = 'true'
+
 @description('Private blob container holding generated podcaster artifacts.')
 param storageContainerName string = 'podcaster-artifacts'
 
@@ -130,6 +136,13 @@ resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-0
 
 resource synthesisQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
   name: synthesisQueueName
+  parent: queueService
+}
+
+// Video-generation queue consumed by the video ACA Job (#324). Created here next to the
+// synthesis queue so both share the single 'default' queue service on the storage account.
+resource videoQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  name: videoQueueName
   parent: queueService
 }
 
@@ -258,6 +271,14 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
               value: synthesisQueueName
             }
             {
+              name: 'PODCASTER_VIDEO_QUEUE'
+              value: videoQueueName
+            }
+            {
+              name: 'VIDEO_GENERATION_ENABLED'
+              value: videoGenerationEnabled
+            }
+            {
               name: 'AZURE_OPENAI_ENDPOINT'
               value: openAiEndpoint
             }
@@ -346,6 +367,7 @@ output jobName string = synthesisJob.name
 output environmentName string = useVnet ? managedEnvWithVnet.name : managedEnvNoVnet.name
 output environmentId string = useVnet ? managedEnvWithVnet.id : managedEnvNoVnet.id
 output queueName string = synthesisQueueName
+output videoQueueName string = videoQueueName
 output jobIdentityName string = jobIdentity.name
 output jobIdentityPrincipalId string = jobIdentity.properties.principalId
 output jobIdentityClientId string = jobIdentity.properties.clientId
