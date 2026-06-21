@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=1920, height=1080" />
 
     <!-- GSAP (timelines registered on window.__timelines, controlled by the runtime) -->
-    <script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
+    <script src="../node_modules/gsap/dist/gsap.min.js"></script>
     <!-- Vendored Max Headroom WebGL background web component -->
     <script type="module" src="../assets/max-headroom-bg.esm.js"></script>
 
@@ -139,7 +139,7 @@
       data-width="1920"
       data-height="1080"
       data-start="0"
-      data-duration="10"
+      data-duration="12"
     >
       <max-headroom-bg speed="0.5" fisheye-strength="0.2"></max-headroom-bg>
       <div class="overlay"></div>
@@ -149,7 +149,7 @@
           id="title"
           class="title clip"
           data-text="Claracle"
-          data-start="1"
+          data-start="2"
           data-duration="9"
           data-track-index="2"
         >Claracle</h1>
@@ -157,7 +157,7 @@
         <h2
           id="subtitle"
           class="subtitle clip"
-          data-start="3"
+          data-start="4"
           data-duration="7"
           data-track-index="3"
         >WEEKLY REPORT</h2>
@@ -165,7 +165,7 @@
         <p
           id="hosts"
           class="hosts clip"
-          data-start="5"
+          data-start="6"
           data-duration="5"
           data-track-index="4"
         >with <span class="accent">Clarabel</span> &amp; <span class="accent mag">Joracle</span></p>
@@ -174,7 +174,7 @@
       <p
         id="disclosure"
         class="disclosure clip"
-        data-start="7"
+        data-start="8"
         data-duration="3"
         data-track-index="5"
       >AI-generated voice narration <span class="dot">&bull;</span> Data is real</p>
@@ -184,42 +184,48 @@
           window.__timelines = window.__timelines || {};
           const tl = gsap.timeline({ paused: true });
 
-          // Title: glitchy neon entrance at t=1s
+          // Global fade-in from black at the very start (t=0, 1s)
+          tl.fromTo("#root", { opacity: 0 }, { opacity: 1, duration: 1.0, ease: "power1.inOut" }, 0);
+
+          // Title: glitchy neon entrance at t=2s
           tl.set("#title", { opacity: 0 });
           tl.fromTo(
             "#title",
             { opacity: 0, scale: 1.18, y: -10, x: -26 },
             { opacity: 1, scale: 1, y: 0, x: 0, duration: 0.7, ease: "power3.out" },
-            1.0
+            2.0
           );
           // brief post-entrance horizontal "signal" jitter
-          tl.to("#title", { x: 8, duration: 0.05, ease: "none" }, 1.75);
-          tl.to("#title", { x: -6, duration: 0.05, ease: "none" }, 1.82);
-          tl.to("#title", { x: 0, duration: 0.08, ease: "none" }, 1.9);
+          tl.to("#title", { x: 8, duration: 0.05, ease: "none" }, 2.75);
+          tl.to("#title", { x: -6, duration: 0.05, ease: "none" }, 2.82);
+          tl.to("#title", { x: 0, duration: 0.08, ease: "none" }, 2.9);
 
-          // Subtitle: fade-in at t=3s
+          // Subtitle: fade-in at t=4s
           tl.fromTo(
             "#subtitle",
             { opacity: 0, y: 24 },
             { opacity: 1, y: 0, duration: 0.8, ease: "power2.out" },
-            3.0
+            4.0
           );
 
-          // Hosts: elegant fade-in at t=5s
+          // Hosts: elegant fade-in at t=6s
           tl.fromTo(
             "#hosts",
             { opacity: 0, y: 28 },
             { opacity: 1, y: 0, duration: 0.9, ease: "power2.out" },
-            5.0
+            6.0
           );
 
-          // AI disclosure: subtle fade-in at t=7s
+          // AI disclosure: subtle fade-in at t=8s
           tl.fromTo(
             "#disclosure",
             { opacity: 0, y: 14 },
             { opacity: 0.92, y: 0, duration: 0.7, ease: "power1.out" },
-            7.0
+            8.0
           );
+
+          // Global fade-out to black at the end (t=11s, 1s)
+          tl.to("#root", { opacity: 0, duration: 1.0, ease: "power1.inOut" }, 11.0);
 
           window.__timelines["claracle-intro"] = tl;
         })();

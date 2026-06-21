@@ -8,9 +8,9 @@ stored in Azure Blob Storage, and reused across all episodes — the pipeline
 downloads and caches them locally, then prepends the intro and appends the outro
 around the episode content (see `podcaster/video/video_compose.py`).
 
-- **Intro:** 10 seconds — Max Headroom animated WebGL background + "Claracle
+- **Intro:** 12 seconds — Max Headroom animated WebGL background + "Claracle
   Weekly Report" title.
-- **Outro:** 12 seconds — credits display over the same Max Headroom background.
+- **Outro:** 14 seconds — credits display over the same Max Headroom background.
 
 ## Architecture
 
@@ -28,8 +28,8 @@ Source compositions live in [`scripts/intro-outro/`](../scripts/intro-outro):
 scripts/intro-outro/
 ├── index.html                 # project root composition (required by HyperFrames)
 ├── compositions/
-│   ├── intro.html             # 10s intro
-│   └── outro.html             # 12s outro
+│   ├── intro.html             # 12s intro
+│   └── outro.html             # 14s outro
 ├── render.sh                  # render both compositions to output/*.mp4
 └── package.json               # hyperframes, gsap, webgl-max-headroom
 ```
@@ -102,12 +102,12 @@ registered on `window.__timelines["…"]`). Do **not** add external font/CDN lin
 ### Example Prompt (modifying the intro)
 
 > Using the HyperFrames composition at
-> `scripts/intro-outro/compositions/intro.html` (10s, 1920×1080, 30fps), modify
+> `scripts/intro-outro/compositions/intro.html` (12s, 1920×1080, 30fps), modify
 > the intro to:
 > - Change the title animation to use a glitch-RGB effect instead of neon glow
 > - Add a particle burst when "Claracle" appears
 > - Speed up the background rotation to 0.7
-> - Keep the same timing structure (10 seconds total)
+> - Keep the same timing structure (12 seconds total)
 >
 > Preview with `npx hyperframes preview`, lint with `npx hyperframes lint .`,
 > then render with
@@ -116,7 +116,7 @@ registered on `window.__timelines["…"]`). Do **not** add external font/CDN lin
 ### Example Prompt (modifying the outro)
 
 > Using the HyperFrames composition at
-> `scripts/intro-outro/compositions/outro.html` (12s, 1920×1080, 30fps), update
+> `scripts/intro-outro/compositions/outro.html` (14s, 1920×1080, 30fps), update
 > the outro credits:
 > - Add a new credit line: "Special thanks: [name]"
 > - Change the Spotify CTA to include YouTube

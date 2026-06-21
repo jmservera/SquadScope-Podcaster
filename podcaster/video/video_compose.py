@@ -11,7 +11,10 @@ import json
 import logging
 import subprocess
 import tempfile
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, Sequence
 
@@ -106,6 +109,144 @@ def _default_intro_outro_cache_dir() -> Path:
     host reuse the already-downloaded clips instead of re-fetching them.
     """
     return Path(tempfile.gettempdir()) / "podcaster-intro-outro-cache"
+
+
+# --- DOG (Digital On-Screen Graphic) watermark (#config-driven) ---
+# A small, semi-transparent logo overlaid on the MAIN content segments only
+# (intro/outro carry their own branding and are joined afterwards).
+
+DEFAULT_DOG_LOGO_URL = (
+    "https://raw.githubusercontent.com/jmservera/SquadScope/main/assets/images/claracle.jpeg"
+)
+DOG_DEFAULT_POSITION = "top-right"
+DOG_DEFAULT_SIZE = 80
+DOG_DEFAULT_OPACITY = 0.3
+# Pixel inset from the frame edge for the watermark.
+DOG_MARGIN = 40
+
+# Supported corner positions mapped to ffmpeg overlay x:y expressions.
+# ``W``/``H`` are the main video dimensions, ``w``/``h`` the (scaled) overlay.
+_DOG_POSITIONS: dict[str, str] = {
+    "top-left": f"{DOG_MARGIN}:{DOG_MARGIN}",
+    "top-right": f"W-w-{DOG_MARGIN}:{DOG_MARGIN}",
+    "bottom-left": f"{DOG_MARGIN}:H-h-{DOG_MARGIN}",
+    "bottom-right": f"W-w-{DOG_MARGIN}:H-h-{DOG_MARGIN}",
+}
+
+
+@dataclass
+class DogLogoConfig:
+    """Configuration for the DOG (Digital On-Screen Graphic) watermark.
+
+    Supplied via the API payload (``request.podcast_config.dog_logo``).  When a
+    config object is present the logo is downloaded from :attr:`url`, scaled to
+    :attr:`size` pixels wide, made :attr:`opacity` transparent and overlaid in
+    the configured :attr:`position` corner of the main content segments only.
+    """
+
+    url: str = DEFAULT_DOG_LOGO_URL
+    position: str = DOG_DEFAULT_POSITION
+    size: int = DOG_DEFAULT_SIZE
+    opacity: float = DOG_DEFAULT_OPACITY
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "DogLogoConfig | None":
+        """Build a config from a payload dict, or ``None`` if absent/invalid.
+
+        Missing keys fall back to defaults, so an empty dict yields a fully
+        default config.  A non-dict input (e.g. ``None``) returns ``None`` so the
+        caller skips the watermark (graceful degradation).
+        """
+        if not isinstance(data, dict):
+            return None
+        url = data.get("url", DEFAULT_DOG_LOGO_URL)
+        if not isinstance(url, str) or not url.strip():
+            url = DEFAULT_DOG_LOGO_URL
+        position = data.get("position", DOG_DEFAULT_POSITION)
+        if position not in _DOG_POSITIONS:
+            position = DOG_DEFAULT_POSITION
+        try:
+            size = int(data.get("size", DOG_DEFAULT_SIZE))
+        except (TypeError, ValueError):
+            size = DOG_DEFAULT_SIZE
+        if size <= 0:
+            size = DOG_DEFAULT_SIZE
+        try:
+            opacity = float(data.get("opacity", DOG_DEFAULT_OPACITY))
+        except (TypeError, ValueError):
+            opacity = DOG_DEFAULT_OPACITY
+        opacity = max(0.0, min(1.0, opacity))
+        return cls(url=url, position=position, size=size, opacity=opacity)
+
+
+def _default_dog_cache_dir() -> Path:
+    """Default on-disk cache for downloaded DOG logo images."""
+    return Path(tempfile.gettempdir()) / "podcaster-dog-logo-cache"
+
+
+def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
+    """Download (and cache) the DOG logo image from *url*.
+
+    Caches by a hash of the URL so different logos coexist and re-runs reuse a
+    prior download.  Returns the local path, or ``None`` on any failure so the
+    caller composes without a watermark (graceful degradation).
+    """
+    scheme = urllib.parse.urlparse(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        logger.warning(
+            "Skipping DOG logo fetch: unsupported URL scheme %r in %s; composing without watermark",
+            scheme, url,
+        )
+        return None
+
+    digest = sha256(url.encode("utf-8")).hexdigest()[:16]
+    suffix = Path(url.split("?", 1)[0]).suffix or ".img"
+    cache_path = cache_dir / f"dog_{digest}{suffix}"
+
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        logger.info("Using cached DOG logo: %s", cache_path)
+        return cache_path
+
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(url, timeout=15) as resp:  # noqa: S310 — config-driven URL
+            data = resp.read()
+    except Exception as exc:  # noqa: BLE001 — never fail composition on fetch error
+        logger.warning(
+            "Failed to download DOG logo from %s: %s; composing without watermark",
+            url, exc,
+        )
+        return None
+
+    if not data:
+        logger.warning("DOG logo at %s was empty; composing without watermark", url)
+        return None
+
+    cache_path.write_bytes(data)
+    logger.info("Downloaded DOG logo (%d bytes) from %s to %s", len(data), url, cache_path)
+    return cache_path
+
+
+def _build_dog_overlay_filter(
+    config: "DogLogoConfig",
+    logo_input_idx: int,
+    video_label: str,
+    out_label: str = "dogout",
+) -> str:
+    """Build the ffmpeg filter fragment overlaying the DOG logo onto the video.
+
+    Scales the logo input to ``config.size`` px wide (aspect preserved), applies
+    ``config.opacity`` via the alpha channel, then overlays it in the configured
+    corner.  ``video_label`` is the current video stream label (e.g. ``"vout"``
+    or ``"0:v"``); the result is exposed as ``out_label``.
+    """
+    position = _DOG_POSITIONS.get(config.position, _DOG_POSITIONS[DOG_DEFAULT_POSITION])
+    return (
+        f"[{logo_input_idx}:v]scale={config.size}:-1,format=rgba,"
+        f"colorchannelmixer=aa={config.opacity}[dog];"
+        f"[{video_label}][dog]overlay={position}:format=auto[{out_label}]"
+    )
+
 
 # --- Transition types (#298) ---
 # Valid xfade transition names (subset chosen for quality and file-size impact)
@@ -309,7 +450,7 @@ def _build_canonical_av_cmd(
         "-map", "[v]",
         "-map", audio_map,
         "-c:v", "libx264",
-        "-preset", "fast",
+        "-preset", ENCODE_PRESET,
         "-crf", str(ENCODE_CRF),
         "-pix_fmt", ENCODE_PIX_FMT,
         "-c:a", "aac",
@@ -595,6 +736,8 @@ def compose_video(
     boundary_kinds: list[str] | None = None,
     storage: "StorageBackend | None" = None,
     intro_outro_cache_dir: Path | None = None,
+    dog_logo: "DogLogoConfig | None" = None,
+    dog_logo_cache_dir: Path | None = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -619,6 +762,13 @@ def compose_video(
         intro_outro_cache_dir: Local cache directory for the downloaded
             intro/outro clips.  Defaults to a stable temp-dir location so
             repeated runs on the same host avoid re-downloading.
+        dog_logo: Optional DOG (Digital On-Screen Graphic) watermark config.
+            When provided, the logo at ``dog_logo.url`` is downloaded and
+            overlaid on the main content segments (never the intro/outro) in
+            the configured corner at the configured size/opacity.  A failed
+            download is skipped silently (graceful degradation).
+        dog_logo_cache_dir: Local cache directory for the downloaded DOG logo.
+            Defaults to a stable temp-dir location.
 
     Returns:
         ComposeResult with path to the final MP4.
@@ -714,6 +864,21 @@ def compose_video(
                 "(e.g. apt install ffmpeg) or a build with libfreetype to enable overlays."
             )
 
+    # Step 3.5: DOG (Digital On-Screen Graphic) watermark — overlaid on the main
+    # content here, before intro/outro are joined, so it never covers the bumpers.
+    dog_logo_path: Path | None = None
+    if dog_logo is not None:
+        dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
+        dog_logo_path = _fetch_dog_logo(dog_logo.url, dog_cache)
+    # The logo input is appended after the (optional) audio input.
+    dog_input_idx = len(normalized_paths) + (1 if audio_path is not None else 0)
+    if dog_logo_path is not None:
+        dog_src = video_label if filter_complex_parts else "0:v"
+        filter_complex_parts.append(
+            _build_dog_overlay_filter(dog_logo, dog_input_idx, dog_src)
+        )
+        video_label = "dogout"
+
     # Step 4: Build final ffmpeg command
     cmd: list[str] = [compose_ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y"]
 
@@ -725,6 +890,10 @@ def compose_video(
     audio_input_idx = len(normalized_paths)
     if audio_path is not None:
         cmd.extend(["-i", str(audio_path)])
+
+    # Add DOG logo image input (must follow the audio input to match dog_input_idx)
+    if dog_logo_path is not None:
+        cmd.extend(["-i", str(dog_logo_path)])
 
     # Add filter_complex if we have filters
     audio_label: str | None = None
