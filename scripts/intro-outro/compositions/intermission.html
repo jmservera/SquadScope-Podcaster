@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+
+    <!-- GSAP (timelines registered on window.__timelines, controlled by the runtime) -->
+    <script src="../node_modules/gsap/dist/gsap.min.js"></script>
+    <!-- Vendored Max Headroom WebGL background web component -->
+    <script type="module" src="../assets/max-headroom-bg.esm.js"></script>
+
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 1920px; height: 1080px; overflow: hidden; background: #05010f;
+      }
+
+      #root {
+        position: relative; width: 1920px; height: 1080px; overflow: hidden;
+        background: radial-gradient(ellipse at center, #0a0320 0%, #05010f 70%, #020008 100%);
+      }
+
+      /* WebGL neon-cube background */
+      max-headroom-bg {
+        position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0;
+      }
+
+      /* Dark vignette + scanlines, matching intro/outro look */
+      .overlay {
+        position: absolute; inset: 0; z-index: 1; pointer-events: none;
+        background:
+          radial-gradient(ellipse at center, rgba(5,1,15,0) 35%, rgba(5,1,15,0.78) 100%),
+          repeating-linear-gradient(
+            0deg, rgba(0,0,0,0.0) 0px, rgba(0,0,0,0.0) 2px,
+            rgba(0,0,0,0.28) 3px, rgba(0,0,0,0.0) 4px
+          );
+      }
+    </style>
+  </head>
+
+  <body>
+    <div
+      id="root"
+      data-composition-id="claracle-intermission"
+      data-width="1920"
+      data-height="1080"
+      data-start="0"
+      data-duration="10"
+    >
+      <!-- Same visual style as intro/outro: animated Max Headroom background only. -->
+      <max-headroom-bg speed="0.5" fisheye-strength="0.2"></max-headroom-bg>
+      <div class="overlay"></div>
+
+      <script>
+        (function () {
+          window.__timelines = window.__timelines || {};
+          // No text/credits — reusable section-break asset. The background runs
+          // for the full 10s on the runtime's virtual clock. A paused, empty
+          // timeline satisfies the composition contract.
+          window.__timelines["claracle-intermission"] = gsap.timeline({ paused: true });
+        })();
+      </script>
+    </div>
+  </body>
+</html>

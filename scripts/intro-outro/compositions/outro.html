@@ -146,7 +146,7 @@
       data-width="1920"
       data-height="1080"
       data-start="0"
-      data-duration="14"
+      data-duration="20"
     >
       <max-headroom-bg speed="0.3" fisheye-strength="0.2"></max-headroom-bg>
       <div class="overlay"></div>
@@ -194,8 +194,9 @@
           window.__timelines = window.__timelines || {};
           const tl = gsap.timeline({ paused: true });
 
-          // Global fade-in from black at the very start (t=0, 1s)
-          tl.fromTo("#root", { opacity: 0 }, { opacity: 1, duration: 1.0, ease: "power1.inOut" }, 0);
+          // No global fade-in/out here: cross-fades are applied later by the
+          // video_compose pipeline. After the credits finish the background
+          // keeps animating for ~6 extra seconds so the pipeline can cross-fade.
 
           // Helper: section fades in then fades out before the finale.
           function appear(sel, t, fadeOut) {
@@ -222,9 +223,6 @@
           // Finale: Claracle neon glow pulse + final AI disclosure
           tl.fromTo("#f-logo", { opacity: 0, scale: 1.12 }, { opacity: 1, scale: 1, duration: 0.9, ease: "power3.out" }, 10.7);
           tl.fromTo("#f-ai", { opacity: 0, y: 16 }, { opacity: 0.95, y: 0, duration: 0.8, ease: "power1.out" }, 11.1);
-
-          // Global fade-out to black at the end (t=13s, 1s)
-          tl.to("#root", { opacity: 0, duration: 1.0, ease: "power1.inOut" }, 13.0);
 
           window.__timelines["claracle-outro"] = tl;
         })();

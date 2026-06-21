@@ -1,16 +1,23 @@
 # Claracle Intro / Outro Video Compositions
 
-Max Headroom–style **intro** (12s) and **outro** (14s) bumpers for the Claracle
+Max Headroom–style **intro** (18s) and **outro** (20s) bumpers — plus a
+reusable **intermission** (10s) section-break asset — for the Claracle
 podcast, built with [HyperFrames](https://www.npmjs.com/package/hyperframes) and
 a WebGL [`webgl-max-headroom`](https://www.npmjs.com/package/webgl-max-headroom)
 background, animated with [GSAP](https://gsap.com/).
 
 Implements epic #314 (issues #315 environment, #316 intro, #317 outro).
 
+> **No fades in these compositions.** Fade-in / fade-out and cross-fades are
+> applied later by the `video_compose` pipeline. The intro and outro each carry
+> ~6 seconds of just-background animation after their text beats finish so the
+> pipeline has room to cross-fade. The intermission is background-only.
+
 | Composition | File | Duration | Resolution | FPS |
 | ----------- | ---- | -------- | ---------- | --- |
-| Intro | `compositions/intro.html` | 12s | 1920×1080 | 30 |
-| Outro | `compositions/outro.html` | 14s | 1920×1080 | 30 |
+| Intro | `compositions/intro.html` | 18s | 1920×1080 | 30 |
+| Outro | `compositions/outro.html` | 20s | 1920×1080 | 30 |
+| Intermission | `compositions/intermission.html` | 10s | 1920×1080 | 30 |
 
 ## Layout
 
@@ -18,12 +25,13 @@ Implements epic #314 (issues #315 environment, #316 intro, #317 outro).
 scripts/intro-outro/
 ├── index.html                 # project root composition (required by hyperframes)
 ├── compositions/
-│   ├── intro.html             # 12s intro
-│   └── outro.html             # 14s outro
+│   ├── intro.html             # 18s intro
+│   ├── outro.html             # 20s outro
+│   └── intermission.html      # 10s background-only section break
 ├── assets/
 │   ├── max-headroom-bg.esm.js # vendored WebGL background component
 │   └── fonts/Orbitron.woff2   # vendored cyberpunk font (offline-safe)
-├── render.sh                  # render both to output/*.mp4
+├── render.sh                  # render all three to output/*.mp4
 ├── output/                    # rendered MP4s (gitignored)
 └── package.json
 ```
@@ -51,7 +59,7 @@ npx @puppeteer/browsers install chrome-headless-shell@stable --path "$PWD/chrome
 ## Render
 
 ```bash
-./render.sh           # both, high quality → output/intro.mp4, output/outro.mp4
+./render.sh           # all three, high quality → output/{intro,outro,intermission}.mp4
 ./render.sh draft     # faster preview
 ```
 
@@ -76,7 +84,12 @@ npx hyperframes lint .         # lint the whole project (pass the directory)
 ## Design notes
 
 - **Background:** `<max-headroom-bg>` neon grid/cube. Intro `speed="0.5"`,
-  `fisheye-strength="0.2"`; outro `speed="0.3"` (calmer).
+  `fisheye-strength="0.2"`; outro `speed="0.3"` (calmer); intermission
+  `speed="0.5"`, `fisheye-strength="0.2"` (matches intro).
+- **No fades in-composition:** the GSAP timelines no longer fade `#root` in/out.
+  Cross-fades are the `video_compose` pipeline's responsibility. Intro/outro hold
+  ~6s of background-only animation after their text beats; the intermission is
+  background-only for its full 10s.
 - **Palette:** cyan `#00ffff`, magenta `#ff00ff`, yellow `#ffe14d` on dark.
 - **Type:** Orbitron (variable, weights 400–900) via local `@font-face`.
 - **Glitch/glow:** RGB-split via CSS `::before`/`::after` + `clip-path`
@@ -98,6 +111,12 @@ Hosts Clarabel & Joracle (AI-generated synthetic voices) → Music "Summer Sport
 by AudioCoffee, CC-BY-SA-3.0, audiocoffee.net | Promoted by chosic.com → Platform
 Claracle www.claracle.com → "Follow us on Spotify". Credits fade, then a finale
 "Claracle" neon-glow pulse with "This episode uses AI-generated voice narration".
+The background then keeps animating for the remaining seconds (no fade-out).
+
+### Intermission
+Background-only section-break asset — no text, titles, or credits. 10 seconds of
+the Max Headroom animation at the same speed/fisheye/colors as the intro, for the
+video pipeline to drop between sections.
 
 ## Upload to Azure (review copies)
 
@@ -109,6 +128,9 @@ az storage blob upload --account-name squadscopepo3f9a07d60de7 \
 az storage blob upload --account-name squadscopepo3f9a07d60de7 \
   --container-name podcaster-artifacts --name assets/video/outro.mp4 \
   --file output/outro.mp4 --overwrite --auth-mode login
+az storage blob upload --account-name squadscopepo3f9a07d60de7 \
+  --container-name podcaster-artifacts --name assets/video/intermission.mp4 \
+  --file output/intermission.mp4 --overwrite --auth-mode login
 ```
 
 ## Regenerating with an AI assistant
@@ -117,7 +139,7 @@ These compositions are plain HTML/CSS/JS and are well suited to AI-assisted
 iteration. Example prompt:
 
 > Edit `scripts/intro-outro/compositions/intro.html` (a HyperFrames composition,
-> 12s, 1920×1080, 30fps). Keep the `<max-headroom-bg>` WebGL background and the
+> 18s, 1920×1080, 30fps). Keep the `<max-headroom-bg>` WebGL background and the
 > Orbitron `@font-face`. Maintain the composition contract: root `#root` with
 > `data-composition-id`, `data-width`, `data-height`, `data-start="0"`,
 > `data-duration`; timed elements use `class="clip"` with
