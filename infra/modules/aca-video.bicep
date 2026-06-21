@@ -65,10 +65,6 @@ param openAiEndpoint string = ''
 @description('Azure OpenAI chat deployment (alias) name.')
 param chatDeploymentName string = ''
 
-@secure()
-@description('Podcaster API key for auth.')
-param podcasterApiKey string = ''
-
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
 
@@ -87,12 +83,6 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
       triggerType: 'Event'
       replicaTimeout: replicaTimeoutSeconds
       replicaRetryLimit: 1
-      secrets: [
-        {
-          name: 'podcaster-api-key'
-          value: podcasterApiKey
-        }
-      ]
       registries: hasContainerRegistry ? [
         {
           server: containerRegistryServer
@@ -168,10 +158,6 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'AZURE_OPENAI_AUTH_MODE'
               value: 'managed_identity'
-            }
-            {
-              name: 'PODCASTER_API_KEY'
-              secretRef: 'podcaster-api-key'
             }
           ]
         }

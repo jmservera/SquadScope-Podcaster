@@ -352,7 +352,6 @@ module acaVideo 'modules/aca-video.bicep' = {
     containerRegistryServer: acrLoginServer
     openAiEndpoint: openAiEndpoint
     chatDeploymentName: chatDeploymentName
-    podcasterApiKey: podcasterApiKey
   }
   dependsOn: [
     artifactContainer
