@@ -153,7 +153,9 @@ def run_synthesis(
                 _enqueue_video(job_id, enqueue_video)
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_ALREADY_SYNTHESIZED)
 
-    # Claim audio pipeline lock — prevent concurrent audio synthesis on the same job
+    # Claim the audio pipeline lock — skips only if the video pipeline already owns
+    # this job's lock (cross-pipeline guard). It does not prevent two concurrent audio
+    # runners, since claiming for an audio owner just re-confirms ownership.
     if not claim_pipeline(storage, job_id, PIPELINE_AUDIO, now=current):
         logger.info("synthesis skipped job_id=%s reason=%s", job_id, REASON_PIPELINE_CONFLICT)
         return SynthesisOutcome(job_id, STATUS_SKIPPED, reason=REASON_PIPELINE_CONFLICT)
@@ -321,12 +323,19 @@ def run_synthesis(
             # defer the audio publish to the video pipeline.
             auto_publish = auto_publish_enabled()
             if auto_publish:
-                auto_outcome = auto_publish_job(job_id, storage=storage, now=current)
-                logger.info(
-                    "auto publish attempted job_id=%s status=%s",
-                    job_id,
-                    auto_outcome.manifest.get("status"),
-                )
+                try:
+                    auto_outcome = auto_publish_job(job_id, storage=storage, now=current)
+                    logger.info(
+                        "auto publish attempted job_id=%s status=%s",
+                        job_id,
+                        auto_outcome.manifest.get("status"),
+                    )
+                except Exception:
+                    logger.warning(
+                        "auto publish failed job_id=%s; continuing to video enqueue",
+                        job_id,
+                        exc_info=True,
+                    )
 
             if spotify_publish_config is not None and validation_ready and not auto_publish:
                 try:
@@ -649,6 +658,11 @@ def _enqueue_video(job_id: str, enqueue_video=None) -> None:
     the skipped (already-synthesized) path.
     """
     enqueue = enqueue_video or enqueue_video_job
+    logger.info(
+        "_enqueue_video diagnostics job_id=%s video_generation_enabled=%s",
+        job_id,
+        video_generation_enabled(),
+    )
     try:
         enqueued = enqueue(job_id)
         if enqueued:

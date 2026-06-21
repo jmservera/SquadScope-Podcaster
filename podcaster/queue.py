@@ -37,6 +37,27 @@ _STORAGE_SCOPE = "https://storage.azure.com/.default"
 _QUEUE_API_VERSION = "2023-11-03"
 
 
+def _mask_queue_url(url: str | None) -> str:
+    """Mask a queue service URL for safe logging.
+
+    Keeps the scheme and host (so the storage account is identifiable for
+    diagnostics) but never logs query strings/SAS tokens or full paths.
+    """
+
+    if not url:
+        return "<unset>"
+    try:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if not host:
+            return "<set>"
+        return f"{parts.scheme}://{host}/***"
+    except Exception:
+        return "<set>"
+
+
 @dataclass(frozen=True)
 class QueueMessage:
     """One received Storage Queue message (job_id payload only)."""
@@ -264,6 +285,17 @@ def enqueue_video_job(job_id: str, *, producer: QueueProducer | None = None) -> 
 
     Only ``job_id`` is placed on the wire — never secrets or PII.
     """
+
+    queue_url = os.environ.get("PODCASTER_STORAGE_QUEUE_URL")
+    queue_name = os.environ.get("PODCASTER_VIDEO_QUEUE", "video-jobs")
+    logging.info(
+        "enqueue_video_job diagnostics job_id=%s PODCASTER_STORAGE_QUEUE_URL_set=%s "
+        "PODCASTER_STORAGE_QUEUE_URL=%s PODCASTER_VIDEO_QUEUE=%s",
+        job_id,
+        bool(queue_url),
+        _mask_queue_url(queue_url),
+        queue_name,
+    )
 
     backend = producer
     if backend is None:
