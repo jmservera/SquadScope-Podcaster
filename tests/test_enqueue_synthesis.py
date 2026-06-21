@@ -160,3 +160,34 @@ def test_enqueue_synthesis_job_carries_only_job_id_and_no_secret(caplog) -> None
 def test_enqueue_synthesis_job_skips_when_queue_not_configured(monkeypatch) -> None:
     monkeypatch.delenv("PODCASTER_STORAGE_QUEUE_URL", raising=False)
     assert enqueue_synthesis_job("podcast-2026-W23-deadbeef0002") is False
+
+
+def test_enqueue_video_job_carries_only_job_id_with_video_schema(caplog) -> None:
+    from podcaster.queue import VIDEO_QUEUE_SCHEMA_VERSION, enqueue_video_job
+
+    producer = RecordingProducer()
+    job_id = "podcast-2026-W23-deadbeef0003"
+
+    with caplog.at_level("INFO"):
+        sent = enqueue_video_job(job_id, producer=producer)
+
+    assert sent is True
+    assert len(producer.sent) == 1
+    body = producer.sent[0]
+    assert parse_job_id(body) == job_id
+
+    decoded = queue_module.base64.b64decode(body).decode("utf-8")
+    message = json.loads(decoded)
+    assert message == {"schema_version": VIDEO_QUEUE_SCHEMA_VERSION, "job_id": job_id}
+
+    for record in caplog.records:
+        text = record.getMessage()
+        assert "Bearer" not in text
+        assert "secret" not in text.lower()
+
+
+def test_enqueue_video_job_skips_when_queue_not_configured(monkeypatch) -> None:
+    from podcaster.queue import enqueue_video_job
+
+    monkeypatch.delenv("PODCASTER_STORAGE_QUEUE_URL", raising=False)
+    assert enqueue_video_job("podcast-2026-W23-deadbeef0004") is False
