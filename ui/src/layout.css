@@ -357,6 +357,36 @@ textarea:focus {
   max-width: 420px;
 }
 
+.video-preview {
+  margin-top: 16px;
+}
+
+.video-preview-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.video-player {
+  width: 100%;
+  max-width: 640px;
+  border-radius: 8px;
+  background: #000;
+}
+
+.artifacts-section {
+  margin-top: 16px;
+}
+
+.artifacts-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+}
+
 .status-with-meta {
   display: flex;
   flex-direction: column;

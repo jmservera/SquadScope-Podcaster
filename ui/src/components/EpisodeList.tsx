@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   fetchEpisodes,
   getAuthenticatedAudioUrl,
+  getAuthenticatedStreamUrl,
   type Episode,
 } from '../api/episodes';
 
@@ -20,6 +21,17 @@ function AudioPlayer({ audioUrl }: { audioUrl: string }) {
       <source src={resolvedUrl} type="audio/mpeg" />
       Your browser does not support the audio element.
     </audio>
+  );
+}
+
+function VideoPlayer({ videoUrl }: { videoUrl: string }) {
+  const resolvedUrl = getAuthenticatedStreamUrl(videoUrl);
+
+  return (
+    <video className="video-player" controls preload="metadata" width="100%">
+      <source src={resolvedUrl} type="video/mp4" />
+      Your browser does not support the video element.
+    </video>
   );
 }
 
@@ -125,6 +137,40 @@ const EpisodeList: React.FC = () => {
                         <span className="muted-text">No audio file available</span>
                       )}
                     </div>
+
+                    {ep.video_url && (
+                      <div className="video-preview">
+                        <strong>Video Preview</strong>
+                        <div className="video-preview-body">
+                          <VideoPlayer videoUrl={ep.video_url} />
+                          <a
+                            className="btn btn-secondary"
+                            href={getAuthenticatedStreamUrl(ep.video_url)}
+                            download
+                          >
+                            Download MP4
+                          </a>
+                        </div>
+                      </div>
+                    )}
+
+                    {ep.artifacts && ep.artifacts.length > 0 && (
+                      <div className="artifacts-section">
+                        <strong>Artifacts</strong>
+                        <div className="artifacts-list">
+                          {ep.artifacts.map((artifact) => (
+                            <a
+                              key={artifact.path}
+                              className="btn btn-secondary"
+                              href={getAuthenticatedStreamUrl(artifact.url)}
+                              download
+                            >
+                              Download {artifact.name}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </td>
                 </tr>
               )}
