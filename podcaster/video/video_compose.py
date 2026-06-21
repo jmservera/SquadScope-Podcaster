@@ -11,6 +11,7 @@ import json
 import logging
 import subprocess
 import tempfile
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from hashlib import sha256
@@ -152,8 +153,9 @@ class DogLogoConfig:
     def from_dict(cls, data: dict | None) -> "DogLogoConfig | None":
         """Build a config from a payload dict, or ``None`` if absent/invalid.
 
-        Missing keys fall back to defaults; an empty/non-dict input returns
-        ``None`` so the caller skips the watermark (graceful degradation).
+        Missing keys fall back to defaults, so an empty dict yields a fully
+        default config.  A non-dict input (e.g. ``None``) returns ``None`` so the
+        caller skips the watermark (graceful degradation).
         """
         if not isinstance(data, dict):
             return None
@@ -189,6 +191,14 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
     prior download.  Returns the local path, or ``None`` on any failure so the
     caller composes without a watermark (graceful degradation).
     """
+    scheme = urllib.parse.urlparse(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        logger.warning(
+            "Skipping DOG logo fetch: unsupported URL scheme %r in %s; composing without watermark",
+            scheme, url,
+        )
+        return None
+
     digest = sha256(url.encode("utf-8")).hexdigest()[:16]
     suffix = Path(url.split("?", 1)[0]).suffix or ".img"
     cache_path = cache_dir / f"dog_{digest}{suffix}"
@@ -440,7 +450,7 @@ def _build_canonical_av_cmd(
         "-map", "[v]",
         "-map", audio_map,
         "-c:v", "libx264",
-        "-preset", "fast",
+        "-preset", ENCODE_PRESET,
         "-crf", str(ENCODE_CRF),
         "-pix_fmt", ENCODE_PIX_FMT,
         "-c:a", "aac",
