@@ -237,6 +237,7 @@ def _build_dog_overlay_filter(
         f"[{video_label}][dog]overlay={position}:format=auto[{out_label}]"
     )
 
+
 # --- Transition types (#298) ---
 # Valid xfade transition names (subset chosen for quality and file-size impact)
 
