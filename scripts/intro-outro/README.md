@@ -100,10 +100,10 @@ npx hyperframes lint .         # lint the whole project (pass the directory)
   composition-time seconds. FPS is a CLI flag, not a meta attribute.
 
 ### Intro beats
-- t=1s — "Claracle" title, neon-glow glitch entrance
-- t=3s — "WEEKLY REPORT" subtitle fade-in
-- t=5s — "with Clarabel & Joracle"
-- t=7s — "AI-generated voice narration • Data is real" (small, lower area)
+- t=2s — "Claracle" title, neon-glow glitch entrance
+- t=4s — "WEEKLY REPORT" subtitle fade-in
+- t=6s — "with Clarabel & Joracle"
+- t=8s — "AI-generated voice narration • Data is real" (small, lower area)
 
 ### Outro beats
 Credits appear section-by-section (not scrolling): CREDITS → Director jmservera →
