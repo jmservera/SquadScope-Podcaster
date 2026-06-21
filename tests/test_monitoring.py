@@ -604,6 +604,78 @@ class TestListEpisodes:
         assert data["total"] == 1
         assert data["episodes"][0]["audio_path"] == "jobs/job-synth2/episode.mp3"
 
+    def test_episode_with_video_artifact(self, client, storage):
+        """Video blob path is surfaced as video_path/video_url from the video runner."""
+        m = self._manifest_with_audio("job-vid", audio_path="jobs/job-vid/episode.mp3")
+        m["generation"]["video_runner"] = {
+            "status": "completed",
+            "distribution": {"status": "archived", "blob_path": "jobs/job-vid/video/job-vid.mp4"},
+        }
+        storage.put_bytes("jobs/job-vid/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        data = resp.json()
+        ep = data["episodes"][0]
+        assert ep["video_path"] == "jobs/job-vid/video/job-vid.mp4"
+        assert ep["video_url"] == "/api/stream/jobs/job-vid/video/job-vid.mp4"
+
+    def test_episode_video_full_url_normalized_to_blob_path(self, client, storage, monkeypatch):
+        """A full blob URL in distribution.blob_path is normalized to a container-relative path."""
+        monkeypatch.setenv("PODCASTER_STORAGE_CONTAINER", "podcaster-artifacts")
+        m = self._manifest_with_audio("job-url", audio_path="jobs/job-url/episode.mp3")
+        m["generation"]["video_runner"] = {
+            "status": "completed",
+            "distribution": {
+                "status": "archived",
+                "blob_path": "https://acct.blob.core.windows.net/podcaster-artifacts/jobs/job-url/video/job-url.mp4",
+            },
+        }
+        storage.put_bytes("jobs/job-url/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        ep = resp.json()["episodes"][0]
+        assert ep["video_path"] == "jobs/job-url/video/job-url.mp4"
+        assert ep["video_url"] == "/api/stream/jobs/job-url/video/job-url.mp4"
+
+    def test_episode_without_video_has_null_video_fields(self, client, storage):
+        m = self._manifest_with_audio("job-novid", audio_path="jobs/job-novid/episode.mp3")
+        storage.put_bytes("jobs/job-novid/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        ep = resp.json()["episodes"][0]
+        assert ep["video_path"] is None
+        assert ep["video_url"] is None
+
+    def test_episode_lists_extra_artifacts_excluding_audio_and_video(self, client, storage):
+        """Extra files (e.g. wav) are exposed as artifacts; the primary audio and
+        video are excluded since they have dedicated players."""
+        m = _make_manifest("job-art")
+        m["generation"]["synthesis_runner"] = {
+            "status": "completed",
+            "audio": {
+                "path": "jobs/job-art/episode.mp3",
+                "artifacts": {
+                    "mp3": {"path": "jobs/job-art/episode.mp3"},
+                    "wav": {"path": "jobs/job-art/episode.wav"},
+                },
+            },
+        }
+        m["generation"]["video_runner"] = {
+            "status": "completed",
+            "distribution": {"status": "archived", "blob_path": "jobs/job-art/video/job-art.mp4"},
+        }
+        storage.put_bytes("jobs/job-art/manifest.json", json.dumps(m).encode(), "application/json")
+
+        resp = client.get("/api/episodes")
+        ep = resp.json()["episodes"][0]
+        artifact_paths = {a["path"] for a in ep["artifacts"]}
+        assert "jobs/job-art/episode.wav" in artifact_paths
+        assert "jobs/job-art/episode.mp3" not in artifact_paths
+        assert "jobs/job-art/video/job-art.mp4" not in artifact_paths
+        wav = next(a for a in ep["artifacts"] if a["path"] == "jobs/job-art/episode.wav")
+        assert wav["url"] == "/api/stream/jobs/job-art/episode.wav"
+        assert wav["content_type"] == "audio/wav"
+
 
 # ---------------------------------------------------------------------------
 # Tests: GET /api/articles/{path}
