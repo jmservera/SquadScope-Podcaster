@@ -6,11 +6,19 @@ The Claracle podcast uses pre-generated **intro** and **outro** videos that are
 composed into every episode by the video pipeline. They are rendered once,
 stored in Azure Blob Storage, and reused across all episodes — the pipeline
 downloads and caches them locally, then prepends the intro and appends the outro
-around the episode content (see `podcaster/video/video_compose.py`).
+around the episode content (see `podcaster/video/video_compose.py`). A reusable
+**intermission** clip is also provided for section breaks during video
+production.
 
-- **Intro:** 12 seconds — Max Headroom animated WebGL background + "Claracle
+- **Intro:** 18 seconds — Max Headroom animated WebGL background + "Claracle
   Weekly Report" title.
-- **Outro:** 14 seconds — credits display over the same Max Headroom background.
+- **Outro:** 20 seconds — credits display over the same Max Headroom background.
+- **Intermission:** 10 seconds — background-only section-break asset (no text).
+
+> **Fades are not baked into these clips.** Fade-in / fade-out and cross-fades
+> are applied by the `video_compose` pipeline. The intro and outro each hold
+> ~6 seconds of background-only animation after their text beats finish so the
+> pipeline has room to cross-fade; the intermission is background-only.
 
 ## Architecture
 
@@ -19,7 +27,7 @@ around the episode content (see `podcaster/video/video_compose.py`).
 | Background | [`webgl-max-headroom`](https://www.npmjs.com/package/webgl-max-headroom) — WebGL neon rotating-cube Max Headroom effect |
 | Animation | [GSAP](https://gsap.com/) timelines (`window.__timelines`) |
 | Composition / render | [HyperFrames](https://www.npmjs.com/package/hyperframes) — deterministic HTML-to-MP4 renderer |
-| Storage | Azure Blob Storage — `assets/video/intro.mp4` and `assets/video/outro.mp4` in the `podcaster-artifacts` container |
+| Storage | Azure Blob Storage — `assets/video/intro.mp4`, `assets/video/outro.mp4`, and `assets/video/intermission.mp4` in the `podcaster-artifacts` container |
 | Pipeline join | `compose_video()` in `podcaster/video/video_compose.py` (concat demuxer) |
 
 Source compositions live in [`scripts/intro-outro/`](../scripts/intro-outro):
@@ -28,9 +36,10 @@ Source compositions live in [`scripts/intro-outro/`](../scripts/intro-outro):
 scripts/intro-outro/
 ├── index.html                 # project root composition (required by HyperFrames)
 ├── compositions/
-│   ├── intro.html             # 12s intro
-│   └── outro.html             # 14s outro
-├── render.sh                  # render both compositions to output/*.mp4
+│   ├── intro.html             # 18s intro
+│   ├── outro.html             # 20s outro
+│   └── intermission.html      # 10s background-only section break
+├── render.sh                  # render all compositions to output/*.mp4
 └── package.json               # hyperframes, gsap, webgl-max-headroom
 ```
 
@@ -49,7 +58,7 @@ cd scripts/intro-outro
 npm install
 npx hyperframes doctor          # verify Node + FFmpeg + Chrome environment
 npx hyperframes preview         # interactive live preview in the browser
-./render.sh                     # render intro.mp4 + outro.mp4 into output/
+./render.sh                     # render intro/outro/intermission into output/
 ```
 
 `render.sh draft` produces a faster, lower-quality preview render.
@@ -67,11 +76,12 @@ npx hyperframes preview
 # 2. Lint (must report 0 errors — no external font/CDN links allowed)
 npx hyperframes lint .
 
-# 3. Render to MP4 (both clips, 1920×1080, 30fps)
+# 3. Render to MP4 (all clips, 1920×1080, 30fps)
 ./render.sh
 # …or render a single composition explicitly:
 npx hyperframes render -c compositions/intro.html -o output/intro.mp4 --quality high --fps 30
 npx hyperframes render -c compositions/outro.html -o output/outro.mp4 --quality high --fps 30
+npx hyperframes render -c compositions/intermission.html -o output/intermission.mp4 --quality high --fps 30
 
 # 4. Upload to Azure Blob Storage (the pipeline reads these blobs)
 az login   # if not already authenticated
@@ -81,6 +91,9 @@ az storage blob upload --account-name squadscopepo3f9a07d60de7 \
 az storage blob upload --account-name squadscopepo3f9a07d60de7 \
   --container-name podcaster-artifacts --name assets/video/outro.mp4 \
   --file output/outro.mp4 --overwrite --auth-mode login
+az storage blob upload --account-name squadscopepo3f9a07d60de7 \
+  --container-name podcaster-artifacts --name assets/video/intermission.mp4 \
+  --file output/intermission.mp4 --overwrite --auth-mode login
 ```
 
 > The video pipeline caches the downloaded clips locally
@@ -102,12 +115,12 @@ registered on `window.__timelines["…"]`). Do **not** add external font/CDN lin
 ### Example Prompt (modifying the intro)
 
 > Using the HyperFrames composition at
-> `scripts/intro-outro/compositions/intro.html` (12s, 1920×1080, 30fps), modify
+> `scripts/intro-outro/compositions/intro.html` (18s, 1920×1080, 30fps), modify
 > the intro to:
 > - Change the title animation to use a glitch-RGB effect instead of neon glow
 > - Add a particle burst when "Claracle" appears
 > - Speed up the background rotation to 0.7
-> - Keep the same timing structure (12 seconds total)
+> - Keep the same timing structure (18 seconds total)
 >
 > Preview with `npx hyperframes preview`, lint with `npx hyperframes lint .`,
 > then render with
@@ -116,7 +129,7 @@ registered on `window.__timelines["…"]`). Do **not** add external font/CDN lin
 ### Example Prompt (modifying the outro)
 
 > Using the HyperFrames composition at
-> `scripts/intro-outro/compositions/outro.html` (14s, 1920×1080, 30fps), update
+> `scripts/intro-outro/compositions/outro.html` (20s, 1920×1080, 30fps), update
 > the outro credits:
 > - Add a new credit line: "Special thanks: [name]"
 > - Change the Spotify CTA to include YouTube

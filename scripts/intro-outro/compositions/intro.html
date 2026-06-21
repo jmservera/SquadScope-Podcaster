@@ -139,7 +139,7 @@
       data-width="1920"
       data-height="1080"
       data-start="0"
-      data-duration="12"
+      data-duration="18"
     >
       <max-headroom-bg speed="0.5" fisheye-strength="0.2"></max-headroom-bg>
       <div class="overlay"></div>
@@ -184,8 +184,9 @@
           window.__timelines = window.__timelines || {};
           const tl = gsap.timeline({ paused: true });
 
-          // Global fade-in from black at the very start (t=0, 1s)
-          tl.fromTo("#root", { opacity: 0 }, { opacity: 1, duration: 1.0, ease: "power1.inOut" }, 0);
+          // No global fade-in/out here: cross-fades are applied later by the
+          // video_compose pipeline. The background keeps animating for ~6 extra
+          // seconds after the text beats so the pipeline has room to cross-fade.
 
           // Title: glitchy neon entrance at t=2s
           tl.set("#title", { opacity: 0 });
@@ -223,9 +224,6 @@
             { opacity: 0.92, y: 0, duration: 0.7, ease: "power1.out" },
             8.0
           );
-
-          // Global fade-out to black at the end (t=11s, 1s)
-          tl.to("#root", { opacity: 0, duration: 1.0, ease: "power1.inOut" }, 11.0);
 
           window.__timelines["claracle-intro"] = tl;
         })();
