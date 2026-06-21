@@ -1,6 +1,6 @@
 # Claracle Intro / Outro Video Compositions
 
-Max Headroom–style **intro** (10s) and **outro** (12s) bumpers for the Claracle
+Max Headroom–style **intro** (12s) and **outro** (14s) bumpers for the Claracle
 podcast, built with [HyperFrames](https://www.npmjs.com/package/hyperframes) and
 a WebGL [`webgl-max-headroom`](https://www.npmjs.com/package/webgl-max-headroom)
 background, animated with [GSAP](https://gsap.com/).
@@ -9,8 +9,8 @@ Implements epic #314 (issues #315 environment, #316 intro, #317 outro).
 
 | Composition | File | Duration | Resolution | FPS |
 | ----------- | ---- | -------- | ---------- | --- |
-| Intro | `compositions/intro.html` | 10s | 1920×1080 | 30 |
-| Outro | `compositions/outro.html` | 12s | 1920×1080 | 30 |
+| Intro | `compositions/intro.html` | 12s | 1920×1080 | 30 |
+| Outro | `compositions/outro.html` | 14s | 1920×1080 | 30 |
 
 ## Layout
 
@@ -18,8 +18,8 @@ Implements epic #314 (issues #315 environment, #316 intro, #317 outro).
 scripts/intro-outro/
 ├── index.html                 # project root composition (required by hyperframes)
 ├── compositions/
-│   ├── intro.html             # 10s intro
-│   └── outro.html             # 12s outro
+│   ├── intro.html             # 12s intro
+│   └── outro.html             # 14s outro
 ├── assets/
 │   ├── max-headroom-bg.esm.js # vendored WebGL background component
 │   └── fonts/Orbitron.woff2   # vendored cyberpunk font (offline-safe)
@@ -117,7 +117,7 @@ These compositions are plain HTML/CSS/JS and are well suited to AI-assisted
 iteration. Example prompt:
 
 > Edit `scripts/intro-outro/compositions/intro.html` (a HyperFrames composition,
-> 10s, 1920×1080, 30fps). Keep the `<max-headroom-bg>` WebGL background and the
+> 12s, 1920×1080, 30fps). Keep the `<max-headroom-bg>` WebGL background and the
 > Orbitron `@font-face`. Maintain the composition contract: root `#root` with
 > `data-composition-id`, `data-width`, `data-height`, `data-start="0"`,
 > `data-duration`; timed elements use `class="clip"` with

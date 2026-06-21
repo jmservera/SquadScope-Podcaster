@@ -24,6 +24,8 @@
         font-family: "Orbitron", sans-serif;
         background: radial-gradient(ellipse at center, #0a0320 0%, #05010f 70%, #020008 100%);
         color: #e7faff;
+        /* Dark halo placed behind neon glow for legibility over the animated bg */
+        --halo: 0 0 20px rgba(0,0,0,0.85), 0 0 40px rgba(0,0,0,0.6), 0 0 60px rgba(0,0,0,0.4);
       }
 
       /* Slower, calmer WebGL background */
@@ -49,29 +51,30 @@
       .credits-title {
         font-size: 64px; font-weight: 900; letter-spacing: 18px; text-indent: 18px;
         color: #ffe14d;
-        text-shadow: 0 0 12px rgba(255,225,77,0.85), 0 0 30px rgba(255,170,0,0.5);
+        text-shadow: 0 0 12px rgba(255,225,77,0.85), 0 0 30px rgba(255,170,0,0.5), var(--halo);
         margin-bottom: 8px;
       }
 
       .row { display: flex; flex-direction: column; align-items: center; gap: 4px; }
       .row .label {
         font-size: 26px; font-weight: 700; letter-spacing: 8px; text-indent: 8px;
-        color: #00ffff; text-shadow: 0 0 10px rgba(0,255,255,0.7);
+        color: #00ffff; text-shadow: 0 0 10px rgba(0,255,255,0.7), var(--halo);
       }
       .row .value {
         font-size: 42px; font-weight: 700; letter-spacing: 2px; color: #ffffff;
-        text-shadow: 0 0 10px rgba(255,255,255,0.45);
+        text-shadow: 0 0 10px rgba(255,255,255,0.45), var(--halo);
       }
       .row .value .mag {
-        color: #ff00ff; text-shadow: 0 0 10px rgba(255,0,255,0.7);
+        color: #ff00ff; text-shadow: 0 0 10px rgba(255,0,255,0.7), var(--halo);
       }
       .row .sub {
         font-size: 24px; font-weight: 500; letter-spacing: 2px;
         color: rgba(190,225,235,0.85);
+        text-shadow: var(--halo);
       }
       .row .lic {
         font-size: 26px; font-weight: 700; letter-spacing: 3px; color: #ffe14d;
-        text-shadow: 0 0 10px rgba(255,225,77,0.55);
+        text-shadow: 0 0 10px rgba(255,225,77,0.55), var(--halo);
       }
 
       .divider {
@@ -79,10 +82,10 @@
         box-shadow: 0 0 14px rgba(0,255,255,0.6); margin: 6px 0;
       }
 
-      .platform .value { color: #00ffff; text-shadow: 0 0 12px rgba(0,255,255,0.8); }
+      .platform .value { color: #00ffff; text-shadow: 0 0 12px rgba(0,255,255,0.8), var(--halo); }
       .spotify {
         font-size: 40px; font-weight: 700; letter-spacing: 4px; color: #1ed760;
-        text-shadow: 0 0 12px rgba(30,215,96,0.7), 0 0 26px rgba(30,215,96,0.4);
+        text-shadow: 0 0 12px rgba(30,215,96,0.7), 0 0 26px rgba(30,215,96,0.4), var(--halo);
       }
 
       /* ---- Finale ---- */
@@ -112,7 +115,7 @@
       .ai-disclosure {
         font-size: 30px; font-weight: 500; letter-spacing: 5px;
         color: rgba(200,230,240,0.95);
-        text-shadow: 0 0 10px rgba(0,255,255,0.4);
+        text-shadow: 0 0 10px rgba(0,255,255,0.4), var(--halo);
       }
 
       @keyframes neon-pulse {
@@ -143,53 +146,56 @@
       data-width="1920"
       data-height="1080"
       data-start="0"
-      data-duration="12"
+      data-duration="14"
     >
       <max-headroom-bg speed="0.3" fisheye-strength="0.2"></max-headroom-bg>
       <div class="overlay"></div>
 
       <!-- Credits, appearing section by section (static blocks, not scrolling) -->
       <div class="credits">
-        <div id="c-title" class="credits-title clip" data-start="0.6" data-duration="8.8" data-track-index="2">CREDITS</div>
+        <div id="c-title" class="credits-title clip" data-start="1.6" data-duration="8.8" data-track-index="2">CREDITS</div>
 
-        <div id="c-director" class="row clip" data-start="1.4" data-duration="8.0" data-track-index="3">
+        <div id="c-director" class="row clip" data-start="2.4" data-duration="8.0" data-track-index="3">
           <div class="label">DIRECTOR</div>
           <div class="value">jmservera</div>
         </div>
 
-        <div id="c-hosts" class="row clip" data-start="2.6" data-duration="6.8" data-track-index="4">
+        <div id="c-hosts" class="row clip" data-start="3.6" data-duration="6.8" data-track-index="4">
           <div class="label">HOSTS</div>
           <div class="value">Clarabel <span class="mag">&amp;</span> Joracle</div>
           <div class="sub">AI-generated synthetic voices</div>
         </div>
 
-        <div id="c-music" class="row clip" data-start="3.8" data-duration="5.6" data-track-index="5">
+        <div id="c-music" class="row clip" data-start="4.8" data-duration="5.6" data-track-index="5">
           <div class="label">MUSIC</div>
           <div class="value">&ldquo;Summer Sport&rdquo; by AudioCoffee</div>
           <div class="lic">CC-BY-SA-3.0</div>
           <div class="sub">audiocoffee.net &nbsp;|&nbsp; Promoted by chosic.com</div>
         </div>
 
-        <div id="c-divider" class="divider clip" data-start="5.4" data-duration="4.0" data-track-index="6"></div>
+        <div id="c-divider" class="divider clip" data-start="6.4" data-duration="4.0" data-track-index="6"></div>
 
-        <div id="c-platform" class="row platform clip" data-start="6.0" data-duration="3.4" data-track-index="7">
+        <div id="c-platform" class="row platform clip" data-start="7.0" data-duration="3.4" data-track-index="7">
           <div class="label">PLATFORM</div>
           <div class="value">Claracle &mdash; www.claracle.com</div>
         </div>
 
-        <div id="c-spotify" class="spotify clip" data-start="7.2" data-duration="2.2" data-track-index="8">Follow us on Spotify</div>
+        <div id="c-spotify" class="spotify clip" data-start="8.2" data-duration="2.2" data-track-index="8">Follow us on Spotify</div>
       </div>
 
       <!-- Finale: AI disclosure + Claracle neon glow pulse -->
       <div class="finale">
-        <h1 id="f-logo" class="finale-logo clip" data-text="Claracle" data-start="9.6" data-duration="2.4" data-track-index="9">Claracle</h1>
-        <p id="f-ai" class="ai-disclosure clip" data-start="9.6" data-duration="2.4" data-track-index="10">This episode uses AI-generated voice narration</p>
+        <h1 id="f-logo" class="finale-logo clip" data-text="Claracle" data-start="10.6" data-duration="2.4" data-track-index="9">Claracle</h1>
+        <p id="f-ai" class="ai-disclosure clip" data-start="10.6" data-duration="2.4" data-track-index="10">This episode uses AI-generated voice narration</p>
       </div>
 
       <script>
         (function () {
           window.__timelines = window.__timelines || {};
           const tl = gsap.timeline({ paused: true });
+
+          // Global fade-in from black at the very start (t=0, 1s)
+          tl.fromTo("#root", { opacity: 0 }, { opacity: 1, duration: 1.0, ease: "power1.inOut" }, 0);
 
           // Helper: section fades in then fades out before the finale.
           function appear(sel, t, fadeOut) {
@@ -200,22 +206,25 @@
               t
             );
             if (fadeOut !== false) {
-              tl.to(sel, { opacity: 0, duration: 0.5, ease: "power1.in" }, 8.9);
+              tl.to(sel, { opacity: 0, duration: 0.5, ease: "power1.in" }, 9.9);
             }
           }
 
-          appear("#c-title", 0.6);
-          appear("#c-director", 1.4);
-          appear("#c-hosts", 2.6);
-          appear("#c-music", 3.8);
-          tl.fromTo("#c-divider", { opacity: 0, scaleX: 0.2 }, { opacity: 1, scaleX: 1, duration: 0.6, ease: "power2.out" }, 5.4);
-          tl.to("#c-divider", { opacity: 0, duration: 0.5, ease: "power1.in" }, 8.9);
-          appear("#c-platform", 6.0);
-          appear("#c-spotify", 7.2);
+          appear("#c-title", 1.6);
+          appear("#c-director", 2.4);
+          appear("#c-hosts", 3.6);
+          appear("#c-music", 4.8);
+          tl.fromTo("#c-divider", { opacity: 0, scaleX: 0.2 }, { opacity: 1, scaleX: 1, duration: 0.6, ease: "power2.out" }, 6.4);
+          tl.to("#c-divider", { opacity: 0, duration: 0.5, ease: "power1.in" }, 9.9);
+          appear("#c-platform", 7.0);
+          appear("#c-spotify", 8.2);
 
           // Finale: Claracle neon glow pulse + final AI disclosure
-          tl.fromTo("#f-logo", { opacity: 0, scale: 1.12 }, { opacity: 1, scale: 1, duration: 0.9, ease: "power3.out" }, 9.7);
-          tl.fromTo("#f-ai", { opacity: 0, y: 16 }, { opacity: 0.95, y: 0, duration: 0.8, ease: "power1.out" }, 10.1);
+          tl.fromTo("#f-logo", { opacity: 0, scale: 1.12 }, { opacity: 1, scale: 1, duration: 0.9, ease: "power3.out" }, 10.7);
+          tl.fromTo("#f-ai", { opacity: 0, y: 16 }, { opacity: 0.95, y: 0, duration: 0.8, ease: "power1.out" }, 11.1);
+
+          // Global fade-out to black at the end (t=13s, 1s)
+          tl.to("#root", { opacity: 0, duration: 1.0, ease: "power1.inOut" }, 13.0);
 
           window.__timelines["claracle-outro"] = tl;
         })();

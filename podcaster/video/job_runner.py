@@ -235,12 +235,14 @@ def run_video_generation(
 
             # Compose final MP4
             output_path = output_dir / f"{job_id}.mp4"
+            dog_logo_cfg = _resolve_dog_logo(manifest)
             compose_result = compose_video(
                 recording.recorded,
                 audio_path=audio_path,
                 output_path=output_path,
                 runner=compose_runner,
                 storage=storage,
+                dog_logo=dog_logo_cfg,
             )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
@@ -291,6 +293,23 @@ def run_video_generation(
             "status": STATUS_FAILED, "reason": type(exc).__name__, "at": _iso(current),
         })
         raise TransientVideoError(f"video generation failed for job_id={job_id}") from exc
+
+
+def _resolve_dog_logo(manifest: dict[str, Any]):
+    """Build a DogLogoConfig from ``request.podcast_config.dog_logo`` if present.
+
+    Returns ``None`` when the manifest carries no ``dog_logo`` config so the
+    composition skips the watermark (graceful degradation).
+    """
+    from podcaster.video.video_compose import DogLogoConfig
+
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return None
+    podcast_config = request.get("podcast_config")
+    if not isinstance(podcast_config, dict):
+        return None
+    return DogLogoConfig.from_dict(podcast_config.get("dog_logo"))
 
 
 def _resolve_audio_path(

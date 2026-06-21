@@ -73,8 +73,13 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 - `dry_run` (optional boolean): Validate and generate draft/stub artifacts only.
 - `force` (optional boolean): Regenerate even if prior artifacts exist.
 - `callback` (optional object): Future callback target. The `secret_name` names a secret, not the secret value.
-- `podcast_config` (optional object): Override podcast identity and style. Includes sub-fields `name`, `url`, `spoken_site`, `ai_voice_disclosure`, `host_a`, `host_b`, and `style_guide`.
+- `podcast_config` (optional object): Override podcast identity and style. Includes sub-fields `name`, `url`, `spoken_site`, `ai_voice_disclosure`, `host_a`, `host_b`, `style_guide`, and `dog_logo`.
 - `podcast_config.style_guide` (optional string): Full text of the editorial style guide (segment structure, tone, phrasing principles). Passed from SquadScope's `docs/editorial-style-guide.md`. When present, it is included as context for script generation (#116).
+- `podcast_config.dog_logo` (optional object): Configures a DOG (Digital On-Screen Graphic) logo watermark overlaid on the **main content** of the generated video (never on the intro/outro bumpers, which carry their own branding). When absent, no watermark is applied (graceful). Sub-fields:
+  - `url` (string, default `https://raw.githubusercontent.com/jmservera/SquadScope/main/assets/images/claracle.jpeg`): Raw URL to the logo image. Downloaded and cached at composition time.
+  - `position` (string, default `top-right`): One of `top-left`, `top-right`, `bottom-left`, `bottom-right`.
+  - `size` (integer, default `80`): Logo width in pixels (aspect ratio preserved).
+  - `opacity` (float, default `0.3`): Logo opacity, clamped to `0.0`–`1.0`.
 - `script_directions` (optional object): Guides LLM script generation with episode structure and cues. All sub-fields are optional:
   - `opening_cues.cold_open` (string): Prompt for a cold-open hook.
   - `opening_cues.ai_disclosure` (string): AI voice disclosure phrasing cue.

@@ -22,6 +22,7 @@ from podcaster.video.job_runner import (
     TransientVideoError,
     VideoOutcome,
     _already_processed,
+    _resolve_dog_logo,
     drain,
     manifest_path,
     process_message,
@@ -288,3 +289,32 @@ class TestDrain:
         queue = FakeQueue(messages)
         outcomes = drain(queue, storage, dry_config, max_messages=3)
         assert len(outcomes) == 3
+
+
+class TestResolveDogLogo:
+    def test_present_config_builds_dog_logo(self):
+        manifest = {
+            "request": {
+                "podcast_config": {
+                    "dog_logo": {
+                        "url": "https://example.com/x.png",
+                        "position": "bottom-right",
+                        "size": 100,
+                        "opacity": 0.5,
+                    }
+                }
+            }
+        }
+        cfg = _resolve_dog_logo(manifest)
+        assert cfg is not None
+        assert cfg.url == "https://example.com/x.png"
+        assert cfg.position == "bottom-right"
+        assert cfg.size == 100
+        assert cfg.opacity == 0.5
+
+    def test_missing_dog_logo_returns_none(self):
+        assert _resolve_dog_logo({"request": {"podcast_config": {}}}) is None
+
+    def test_no_request_returns_none(self):
+        assert _resolve_dog_logo({}) is None
+        assert _resolve_dog_logo({"request": "nope"}) is None

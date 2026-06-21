@@ -30,9 +30,12 @@ from podcaster.video.video_compose import (
     TRANSITION_FADE_BLACK,
     TRANSITION_SLIDE_LEFT,
     TRANSITION_WIPE_LEFT,
+    DEFAULT_DOG_LOGO_URL,
+    DogLogoConfig,
     LowerThird,
     _build_canonical_av_cmd,
     _build_concat_cmd,
+    _build_dog_overlay_filter,
     _build_drawtext_filter,
     _build_normalize_cmd,
     _build_xfade_filter,
@@ -1139,3 +1142,122 @@ class TestComposeVideoIntroOutro:
         probe_cmds = [c for c in cmds if c[0] == "ffprobe"]
         assert len(probe_cmds) == 1
         assert result.duration_seconds == pytest.approx(15.0)
+
+
+# --- Tests for DOG (Digital On-Screen Graphic) watermark ---
+
+
+class TestDogLogoConfig:
+    def test_defaults_from_empty_dict(self):
+        cfg = DogLogoConfig.from_dict({})
+        assert cfg is not None
+        assert cfg.url == DEFAULT_DOG_LOGO_URL
+        assert cfg.position == "top-right"
+        assert cfg.size == 80
+        assert cfg.opacity == pytest.approx(0.3)
+
+    def test_none_input_returns_none(self):
+        assert DogLogoConfig.from_dict(None) is None
+        assert DogLogoConfig.from_dict("nope") is None
+
+    def test_custom_values(self):
+        cfg = DogLogoConfig.from_dict({
+            "url": "https://example.com/logo.png",
+            "position": "bottom-left",
+            "size": 120,
+            "opacity": 0.5,
+        })
+        assert cfg.url == "https://example.com/logo.png"
+        assert cfg.position == "bottom-left"
+        assert cfg.size == 120
+        assert cfg.opacity == pytest.approx(0.5)
+
+    def test_invalid_values_fall_back(self):
+        cfg = DogLogoConfig.from_dict({
+            "url": "   ",
+            "position": "middle",
+            "size": "huge",
+            "opacity": "bad",
+        })
+        assert cfg.url == DEFAULT_DOG_LOGO_URL
+        assert cfg.position == "top-right"
+        assert cfg.size == 80
+        assert cfg.opacity == pytest.approx(0.3)
+
+    def test_opacity_clamped(self):
+        assert DogLogoConfig.from_dict({"opacity": 5}).opacity == pytest.approx(1.0)
+        assert DogLogoConfig.from_dict({"opacity": -1}).opacity == pytest.approx(0.0)
+
+
+class TestBuildDogOverlayFilter:
+    def test_top_right_position(self):
+        cfg = DogLogoConfig(size=80, opacity=0.3, position="top-right")
+        f = _build_dog_overlay_filter(cfg, 2, "vout")
+        assert "[2:v]scale=80:-1" in f
+        assert "colorchannelmixer=aa=0.3" in f
+        assert "[vout][dog]overlay=W-w-40:40" in f
+        assert f.endswith("[dogout]")
+
+    def test_bottom_left_position(self):
+        cfg = DogLogoConfig(size=100, opacity=0.4, position="bottom-left")
+        f = _build_dog_overlay_filter(cfg, 1, "0:v")
+        assert "overlay=40:H-h-40" in f
+        assert "scale=100:-1" in f
+
+
+class TestComposeVideoDogLogo:
+    def test_overlay_applied_to_content(self, tmp_path, monkeypatch):
+        logo = tmp_path / "logo.png"
+        logo.write_bytes(b"fakepng")
+        monkeypatch.setattr(
+            "podcaster.video.video_compose._fetch_dog_logo",
+            lambda url, cache_dir: logo,
+        )
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=runner,
+            dog_logo=DogLogoConfig(),
+        )
+        compose_cmd = next(
+            c.args[0] for c in runner.call_args_list
+            if "-filter_complex" in c.args[0]
+        )
+        joined = " ".join(compose_cmd)
+        assert "overlay=" in joined
+        assert "[dogout]" in joined
+        # the logo image was added as an input
+        assert str(logo) in compose_cmd
+
+    def test_no_config_skips_overlay(self, tmp_path):
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=runner,
+            dog_logo=None,
+        )
+        for c in runner.call_args_list:
+            assert "overlay=" not in " ".join(c.args[0])
+
+    def test_failed_download_graceful(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "podcaster.video.video_compose._fetch_dog_logo",
+            lambda url, cache_dir: None,
+        )
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=runner,
+            dog_logo=DogLogoConfig(),
+        )
+        for c in runner.call_args_list:
+            assert "overlay=" not in " ".join(c.args[0])

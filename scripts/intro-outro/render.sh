@@ -26,10 +26,10 @@ echo "Using browser: ${HYPERFRAMES_BROWSER_PATH}"
 
 mkdir -p output
 
-echo "Rendering intro (10s)..."
+echo "Rendering intro (12s)..."
 npx hyperframes render -c compositions/intro.html -o output/intro.mp4 --quality "${QUALITY}" --fps "${FPS}" --quiet
 
-echo "Rendering outro (12s)..."
+echo "Rendering outro (14s)..."
 npx hyperframes render -c compositions/outro.html -o output/outro.mp4 --quality "${QUALITY}" --fps "${FPS}" --quiet
 
 echo "Done. Outputs:"
