@@ -362,9 +362,32 @@ class TestSystemPromptWithDirections:
         assert "12-18 dialogue exchanges" not in prompt
         assert "TARGET FORMAT" not in prompt
         assert "TONE: Conversational, not performative." in prompt
-        assert "Cold Open, The Signal, Outro" in prompt
+        # Segment order now appears inside the strict EPISODE STRUCTURE block,
+        # with the cold open and its cue placed ahead of the remaining segments.
+        assert "EPISODE STRUCTURE" in prompt
+        assert prompt.index("Cold Open") < prompt.index("The Signal") < prompt.index("Outro")
         assert "40% of repos have zero tests" in prompt
         assert "https://example.com/full" in prompt
+
+    def test_show_intro_is_first_in_structure(self):
+        from podcaster.config import EpisodeStyle, ScriptDirections
+
+        directions = ScriptDirections(
+            episode_style=EpisodeStyle(
+                segment_order=("Cold Open", "The Signal", "Outro"),
+            ),
+            show_intro="Claracle — where AI meets developer trends.",
+            cold_open="One provocative stat from this week's data.",
+        )
+        prompt = _build_system_prompt(PodcastConfig(), directions)
+        structure_start = prompt.index("EPISODE STRUCTURE")
+        intro_pos = prompt.index("Claracle — where AI meets developer trends.", structure_start)
+        cold_pos = prompt.index("One provocative stat from this week's data.", structure_start)
+        signal_pos = prompt.index("The Signal", structure_start)
+        # Show intro must come before the cold open, which comes before the body.
+        assert structure_start < intro_pos < cold_pos < signal_pos
+        # Rule 3 must no longer claim the welcome is the opening line.
+        assert "After the show intro and cold open" in prompt
 
     def test_no_directions_no_extras(self):
         prompt = _build_system_prompt(PodcastConfig(), None)
