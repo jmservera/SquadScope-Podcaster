@@ -245,6 +245,7 @@ def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
 
 def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
     _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
     called: list[str] = []
@@ -266,6 +267,7 @@ def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
 
 def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch):
     _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
     storage = FakeStorage()
     manifest = _base_manifest()
     manifest["request"] = {
@@ -311,6 +313,66 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
             "article_title": "Skills go vertical",
         }
     ]
+
+
+def test_run_synthesis_enqueues_video_and_defers_spotify_when_video_enabled(monkeypatch):
+    _patch_audio(monkeypatch)
+    monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    manifest["request"] = {
+        "week": "2026-W24",
+        "article_url": "https://claracle.com/weekly/2026/w24/",
+        "article_title": "Skills go vertical",
+        "spotify_publish": {"publish_mode": "draft", "upload_format": "wav"},
+    }
+    _stage(storage, manifest, _two_voice_script())
+
+    enqueued: list[str] = []
+
+    def boom_publish(*args, **kwargs):
+        raise AssertionError("MP3 Spotify publish must be deferred when video is enabled")
+
+    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: True)
+    monkeypatch.setattr(job_runner, "publish_episode", boom_publish)
+    monkeypatch.setattr(
+        job_runner,
+        "auto_publish_job",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("auto publish must be deferred")),
+    )
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
+        enqueue_video=lambda job_id: enqueued.append(job_id) or True,
+    )
+
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    assert enqueued == [JOB_ID]
+
+
+def test_run_synthesis_video_enqueue_failure_does_not_break_completion(monkeypatch):
+    _patch_audio(monkeypatch)
+    monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
+    storage = FakeStorage()
+    _stage(storage, _base_manifest(), _two_voice_script())
+
+    def boom(_job_id):
+        raise RuntimeError("queue send exploded")
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
+        enqueue_video=boom,
+    )
+
+    assert outcome.status == job_runner.STATUS_COMPLETED
 
 
 # --- idempotency & skip paths ---------------------------------------------

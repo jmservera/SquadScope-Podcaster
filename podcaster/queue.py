@@ -32,6 +32,7 @@ from podcaster.storage import (
 )
 
 SYNTHESIS_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-synthesis-queue-v1"
+VIDEO_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-video-queue-v1"
 _STORAGE_SCOPE = "https://storage.azure.com/.default"
 _QUEUE_API_VERSION = "2023-11-03"
 
@@ -72,6 +73,23 @@ def encode_synthesis_message(job_id: str) -> str:
         raise ValueError("job_id is required to build a synthesis message")
     payload = json.dumps(
         {"schema_version": SYNTHESIS_QUEUE_SCHEMA_VERSION, "job_id": job_id.strip()},
+        separators=(",", ":"),
+    )
+    return base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def encode_video_message(job_id: str) -> str:
+    """Encode a video queue message body for a ``job_id``.
+
+    Mirrors :func:`encode_synthesis_message` but stamps the video queue schema
+    version so the video job runner (which parses with :func:`parse_job_id`)
+    receives a well-formed ``{"schema_version": ..., "job_id": ...}`` payload.
+    """
+
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise ValueError("job_id is required to build a video message")
+    payload = json.dumps(
+        {"schema_version": VIDEO_QUEUE_SCHEMA_VERSION, "job_id": job_id.strip()},
         separators=(",", ":"),
     )
     return base64.b64encode(payload.encode("utf-8")).decode("ascii")
@@ -200,6 +218,21 @@ def create_queue_backend() -> QueueBackend | None:
     return AzureStorageQueueBackend(queue_url, queue_name)
 
 
+def create_video_queue_backend() -> QueueBackend | None:
+    """Build the video queue backend from the environment.
+
+    Returns ``None`` when ``PODCASTER_STORAGE_QUEUE_URL`` is unset. The queue
+    name defaults to ``video-jobs`` and is overridable with
+    ``PODCASTER_VIDEO_QUEUE`` (matching the video job runner's consumer).
+    """
+
+    queue_url = os.environ.get("PODCASTER_STORAGE_QUEUE_URL")
+    queue_name = os.environ.get("PODCASTER_VIDEO_QUEUE", "video-jobs")
+    if not queue_url:
+        return None
+    return AzureStorageQueueBackend(queue_url, queue_name)
+
+
 def enqueue_synthesis_job(job_id: str, *, producer: QueueProducer | None = None) -> bool:
     """Enqueue a synthesis message for ``job_id`` on the synthesis queue.
 
@@ -219,4 +252,25 @@ def enqueue_synthesis_job(job_id: str, *, producer: QueueProducer | None = None)
         return False
     backend.send_message(encode_synthesis_message(job_id))
     logging.info("enqueued synthesis job_id=%s", job_id)
+    return True
+
+
+def enqueue_video_job(job_id: str, *, producer: QueueProducer | None = None) -> bool:
+    """Enqueue a video-generation message for ``job_id`` on the video queue.
+
+    Returns ``True`` when a message was sent. Returns ``False`` (without raising)
+    when the video queue is not configured, so audio-only synthesis keeps
+    working when video generation infrastructure is not provisioned.
+
+    Only ``job_id`` is placed on the wire — never secrets or PII.
+    """
+
+    backend = producer
+    if backend is None:
+        backend = create_video_queue_backend()
+    if backend is None:
+        logging.info("video queue not configured; skipping enqueue job_id=%s", job_id)
+        return False
+    backend.send_message(encode_video_message(job_id))
+    logging.info("enqueued video job_id=%s", job_id)
     return True
