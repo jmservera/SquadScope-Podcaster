@@ -1,0 +1,5 @@
+node_modules/
+output/
+renders/
+chrome-headless-shell/
+*.log
