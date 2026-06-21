@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
+    <script type="module" src="./assets/max-headroom-bg.esm.js"></script>
+    <style>
+      @font-face {
+        font-family: "Orbitron";
+        font-style: normal;
+        font-weight: 400 900;
+        font-display: block;
+        src: url("./assets/fonts/Orbitron.woff2") format("woff2");
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: #05010f; }
+      max-headroom-bg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
+      .center {
+        position: absolute; inset: 0; z-index: 2;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        font-family: "Orbitron", sans-serif; text-align: center;
+      }
+      #idx-title {
+        font-size: 150px; font-weight: 900; letter-spacing: 6px; color: #00ffff;
+        text-shadow: 0 0 16px #00ffff, 0 0 40px #ff00ff;
+      }
+      #idx-sub { margin-top: 20px; font-size: 44px; color: #ff00ff; letter-spacing: 10px; }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="reel-index"
+      data-width="1920"
+      data-height="1080"
+      data-start="0"
+      data-duration="4"
+    >
+      <max-headroom-bg speed="0.4" fisheye-strength="0.2"></max-headroom-bg>
+      <div class="center">
+        <div id="idx-title" class="clip" data-start="0" data-duration="4" data-track-index="1">Claracle</div>
+        <div id="idx-sub" class="clip" data-start="0" data-duration="4" data-track-index="2">INTRO / OUTRO REEL</div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      tl.from("#idx-title", { opacity: 0, y: -40, duration: 1, ease: "power2.out" }, 0.2);
+      tl.from("#idx-sub", { opacity: 0, duration: 1, ease: "power1.out" }, 0.8);
+      window.__timelines["reel-index"] = tl;
+    </script>
+  </body>
+</html>
