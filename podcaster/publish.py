@@ -575,34 +575,51 @@ def _publish_episode_live(
 
 def upload_video_to_episode(
     video_path: Path,
-    anchor_id: int,
+    anchor_id: int | None = None,
     *,
+    title: str | None = None,
+    description: str | None = None,
     content_type: str = "video/mp4",
     show_id: str | None = None,
     sp_dc: str | None = None,
     sp_key: str | None = None,
 ) -> PublishResult:
-    """Attach a video file to an existing Spotify episode draft (#337).
+    """Publish a video as a NEW separate Spotify episode draft (#340).
 
-    Reuses the multipart GCS video upload + process_upload path to add an MP4
-    to the same anchor episode that already holds the audio. Does not create a
-    new episode, set metadata, or publish — those were handled by the audio
-    publish flow that produced ``anchor_id``.
+    Spotify rejects attaching a video to an episode that already holds audio
+    (``process_upload`` returns ``state=failed``). To work around this the video
+    is published as its own brand-new draft episode: create a draft, upload the
+    MP4 as the episode's primary media, process the upload, and set metadata.
 
-    Returns a PublishResult; status is "draft" on success and "failed" otherwise.
+    The existing audio episode (``anchor_id``, kept only for logging/reference)
+    is never modified — the result is two independent drafts on Spotify, one
+    audio and one video.
+
+    Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
+    status is "draft" on success and "failed" otherwise.
     """
+    video_title = title or "Video Episode"
+    video_description = description or ""
+
     if _is_dry_run():
         logger.info(
-            "DRY RUN: Would upload video %s to existing episode anchorId=%s (%s)",
+            "DRY RUN: Would create new video episode draft '%s' for %s (%s); "
+            "audio episode anchorId=%s left untouched",
+            video_title,
             video_path,
-            anchor_id,
             content_type,
+            anchor_id,
         )
         return PublishResult(
-            anchor_episode_id=anchor_id,
+            anchor_episode_id=None,
             status="draft",
             dry_run=True,
-            details={"upload_path": str(video_path), "content_type": content_type},
+            details={
+                "upload_path": str(video_path),
+                "content_type": content_type,
+                "title": video_title,
+                "audio_anchor_id": anchor_id,
+            },
         )
 
     if not video_path.exists() or video_path.stat().st_size == 0:
@@ -622,10 +639,13 @@ def upload_video_to_episode(
         session = _build_session(sp_dc, sp_key, show_id)
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
+        # Create a NEW draft episode for the video — never touch the audio one.
+        video_anchor_id = _create_episode(session, station_id)
+
         file_data = video_path.read_bytes()
         upload_result = _get_upload_url(
             session,
-            anchor_id,
+            video_anchor_id,
             filename=video_path.name,
             content_type=content_type,
             is_video=True,
@@ -637,7 +657,7 @@ def upload_video_to_episode(
         _process_upload(
             session,
             upload_id,
-            anchor_id=anchor_id,
+            anchor_id=video_anchor_id,
             station_id=station_id,
             user_id=user_id,
             filename=video_path.name,
@@ -645,18 +665,32 @@ def upload_video_to_episode(
             parts_etags=parts_etags,
         )
 
+        _set_metadata(
+            session,
+            video_anchor_id,
+            user_id,
+            title=video_title,
+            description=video_description,
+            publish_behavior="draft",
+            publish_on=None,
+        )
+
         logger.info(
-            "Video attached to existing episode anchorId=%d (%d bytes)",
+            "Video published as new episode draft anchorId=%d "
+            "(audio episode anchorId=%s untouched, %d bytes)",
+            video_anchor_id,
             anchor_id,
             len(file_data),
         )
         return PublishResult(
-            anchor_episode_id=anchor_id,
+            anchor_episode_id=video_anchor_id,
             status="draft",
             details={
                 "station_id": station_id,
                 "upload_id": upload_id,
                 "content_type": content_type,
+                "audio_anchor_id": anchor_id,
+                "title": video_title,
             },
         )
     except SpotifyPublishError as exc:
