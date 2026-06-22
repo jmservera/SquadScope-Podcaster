@@ -130,9 +130,13 @@ DEFAULT_DOG_LOGO_URL = (
 )
 DOG_DEFAULT_POSITION = "top-right"
 DOG_DEFAULT_SIZE = 80
-DOG_DEFAULT_OPACITY = 0.3
+DOG_DEFAULT_OPACITY = 0.5
 # Pixel inset from the frame edge for the watermark.
 DOG_MARGIN = 40
+# Seconds before the intro ends at which the DOG watermark starts appearing,
+# so the logo is on screen before the intro→content join rather than popping in
+# only once the content begins (#361).
+DOG_INTRO_LEAD_SECONDS = 3.0
 
 # Supported corner positions mapped to ffmpeg overlay x:y expressions.
 # ``W``/``H`` are the main video dimensions, ``w``/``h`` the (scaled) overlay.
@@ -242,19 +246,27 @@ def _build_dog_overlay_filter(
     logo_input_idx: int,
     video_label: str,
     out_label: str = "dogout",
+    *,
+    enable: str | None = None,
 ) -> str:
     """Build the ffmpeg filter fragment overlaying the DOG logo onto the video.
 
     Scales the logo input to ``config.size`` px wide (aspect preserved), applies
     ``config.opacity`` via the alpha channel, then overlays it in the configured
     corner.  ``video_label`` is the current video stream label (e.g. ``"vout"``
-    or ``"0:v"``); the result is exposed as ``out_label``.
+    or ``"0:v"``); the result is exposed as ``out_label``.  When ``enable`` is a
+    timeline expression (e.g. ``"gte(t,7.0)"``) the overlay is only shown while
+    that expression is true, used to reveal the DOG over the tail of the intro
+    bumper (#361).
     """
     position = _DOG_POSITIONS.get(config.position, _DOG_POSITIONS[DOG_DEFAULT_POSITION])
+    overlay = f"[{video_label}][dog]overlay={position}:format=auto"
+    if enable:
+        overlay += f":enable='{enable}'"
     return (
         f"[{logo_input_idx}:v]scale={config.size}:-1,format=rgba,"
         f"colorchannelmixer=aa={config.opacity}[dog];"
-        f"[{video_label}][dog]overlay={position}:format=auto[{out_label}]"
+        f"{overlay}[{out_label}]"
     )
 
 
@@ -694,6 +706,34 @@ def _build_h264_metadata_cmd(input_path: Path, output_path: Path) -> list[str]:
     ]
 
 
+def _build_intro_dog_cmd(
+    intro_path: Path,
+    dog_logo: "DogLogoConfig",
+    dog_logo_path: Path,
+    enable_start: float,
+    output_path: Path,
+    preset: str = ENCODE_PRESET,
+) -> list[str]:
+    """Overlay the DOG logo onto the intro clip for its final seconds (#361).
+
+    The watermark is enabled only from *enable_start* (seconds) onward via an
+    ``enable='gte(t,...)'`` expression so it appears over the tail of the intro
+    bumper — and is therefore already on screen when the content begins — rather
+    than covering the whole intro.  Encodes video-only at *preset*.
+    """
+    enable_expr = f"gte(t,{enable_start:.3f})"
+    overlay = _build_dog_overlay_filter(dog_logo, 1, "0:v", enable=enable_expr)
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "-i", str(intro_path),
+        "-i", str(dog_logo_path),
+        "-filter_complex", overlay,
+        "-map", "[dogout]",
+        *_encode_tail(preset),
+        str(output_path),
+    ]
+
+
 def _join_intro_outro(
     content_path: Path,
     output_path: Path,
@@ -702,6 +742,8 @@ def _join_intro_outro(
     *,
     run: "CommandRunner",
     work_dir: Path,
+    dog_logo: "DogLogoConfig | None" = None,
+    dog_logo_path: Path | None = None,
 ) -> float:
     """Prepend *intro_path* and append *outro_path* around *content_path*.
 
@@ -711,6 +753,10 @@ def _join_intro_outro(
 
     Source audio on the intro/outro clips is always stripped: the podcast MP3
     is overlaid as the sole audio track on the final joined video afterwards.
+
+    When *dog_logo* and *dog_logo_path* are provided, the DOG watermark is also
+    overlaid on the final :data:`DOG_INTRO_LEAD_SECONDS` seconds of the intro
+    clip so it is already on screen before the intro→content join (#361).
 
     Returns the total added duration (seconds) of the intro/outro clips so the
     caller can adjust the reported episode duration.
@@ -725,7 +771,19 @@ def _join_intro_outro(
     if intro_path is not None:
         _, intro_dur = _probe_media(intro_path, run)
         added_duration += intro_dur
-        ordered.append(("intro", intro_path))
+        intro_src = intro_path
+        if dog_logo is not None and dog_logo_path is not None:
+            enable_start = max(0.0, intro_dur - DOG_INTRO_LEAD_SECONDS)
+            dog_intro = canon_dir / "intro_dog.mp4"
+            logger.info(
+                "Overlaying DOG on intro tail from %.1fs (intro=%.1fs)",
+                enable_start, intro_dur,
+            )
+            run(_build_intro_dog_cmd(
+                intro_path, dog_logo, dog_logo_path, enable_start, dog_intro
+            ))
+            intro_src = dog_intro
+        ordered.append(("intro", intro_src))
 
     ordered.append(("content", content_path))
 
@@ -1231,9 +1289,11 @@ def compose_video(
             repeated runs on the same host avoid re-downloading.
         dog_logo: Optional DOG (Digital On-Screen Graphic) watermark config.
             When provided, the logo at ``dog_logo.url`` is downloaded and
-            overlaid on the main content segments (never the intro/outro) in
-            the configured corner at the configured size/opacity.  A failed
-            download is skipped silently (graceful degradation).
+            overlaid on the main content segments in the configured corner at
+            the configured size/opacity.  It additionally appears over the final
+            :data:`DOG_INTRO_LEAD_SECONDS` seconds of the intro bumper so it is
+            on screen before the intro ends (#361); the outro stays unbranded.
+            A failed download is skipped silently (graceful degradation).
         dog_logo_cache_dir: Local cache directory for the downloaded DOG logo.
             Defaults to a stable temp-dir location.
         audio_duration: Total podcast audio length in seconds.  When provided
@@ -1364,7 +1424,8 @@ def compose_video(
             )
 
     # Step 3.5: DOG (Digital On-Screen Graphic) watermark — overlaid on the main
-    # content here, before intro/outro are joined, so it never covers the bumpers.
+    # content here, before intro/outro are joined.  It is additionally overlaid
+    # on the intro tail during the join so it appears before the intro ends (#361).
     dog_logo_path: Path | None = None
     if dog_logo is not None:
         dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
@@ -1400,6 +1461,8 @@ def compose_video(
             outro_path,
             run=run,
             work_dir=output_path.parent,
+            dog_logo=dog_logo,
+            dog_logo_path=dog_logo_path,
         )
         video_duration += added
         video_only_path = joined_target
