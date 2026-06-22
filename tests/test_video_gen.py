@@ -328,6 +328,72 @@ class TestRecordSegment:
         assert call_kwargs["record_video_size"] == {"width": WIDTH, "height": HEIGHT}
 
 
+class TestRecordGenericSegment:
+    def _mock_browser(self, tmp_path: Path):
+        browser = MagicMock()
+        context = MagicMock()
+        page = MagicMock()
+        video = MagicMock()
+        browser.new_context.return_value = context
+        context.new_page.return_value = page
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js: (
+            2000 if "scrollHeight" in js else None
+        )
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        fake_video = raw_dir / "generic.webm"
+        fake_video.write_bytes(b"\x1a\x45\xdf\xa3")
+        video.path.return_value = str(fake_video)
+        page.video = video
+        return browser, page, tmp_path
+
+    def test_static_background_when_no_source_url(self, tmp_path):
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        segment = VideoSegment(repo=None, start_seconds=0.0, duration_seconds=2.0)
+
+        result = _record_segment(browser, segment, out_dir)
+
+        assert result.video_path.exists()
+        # Static background uses set_content, never navigates.
+        page.set_content.assert_called_once()
+        page.goto.assert_not_called()
+
+    def test_navigates_to_source_url(self, tmp_path):
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        segment = VideoSegment(
+            repo=None,
+            source_url="https://claracle.com/weekly/2026/W26/",
+            start_seconds=0.0,
+            duration_seconds=2.0,
+        )
+
+        result = _record_segment(browser, segment, out_dir)
+
+        assert result.video_path.exists()
+        # Source URL is navigated to and scrolled, not the static background.
+        page.goto.assert_called_once()
+        assert page.goto.call_args[0][0] == "https://claracle.com/weekly/2026/W26/"
+        page.set_content.assert_not_called()
+
+    def test_falls_back_to_background_on_nav_error(self, tmp_path):
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        page.goto.side_effect = Exception("timeout")
+        segment = VideoSegment(
+            repo=None,
+            source_url="https://claracle.com/weekly/2026/W26/",
+            start_seconds=0.0,
+            duration_seconds=2.0,
+        )
+
+        result = _record_segment(browser, segment, out_dir)
+
+        assert result.video_path.exists()
+        page.goto.assert_called_once()
+        # On failure it renders the static background instead.
+        page.set_content.assert_called_once()
+
+
 # --- record_episode tests (no Playwright dependency) ---
 
 

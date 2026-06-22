@@ -7,9 +7,12 @@ import pytest
 
 from podcaster.video.sync_plan import (
     RepoReference,
+    VideoSegment,
     extract_repo_urls,
+    extract_source_url,
     generate_episode_plan,
     generate_episode_plan_timed,
+    generate_generic_plan,
     plan_from_script,
     plan_from_script_timed,
     sort_repos_by_mention,
@@ -45,6 +48,50 @@ Episode: 1
 Ada: Welcome! Today we talk about general topics.
 Beto: No GitHub links at all today.
 """
+
+SCRIPT_NO_REPOS_WITH_SOURCE = """\
+Title: Weekly Roundup
+Episode: 26
+Source URL: https://claracle.com/weekly/2026/W26/
+Generated: 2026-06-22T00:00:00Z
+---
+
+Ada: Welcome! Today we talk about general trends.
+Beto: No GitHub links at all today.
+"""
+
+
+# --- extract_source_url tests ---
+
+
+class TestExtractSourceUrl:
+    def test_extracts_url_from_header(self):
+        assert (
+            extract_source_url(SCRIPT_NO_REPOS_WITH_SOURCE)
+            == "https://claracle.com/weekly/2026/W26/"
+        )
+
+    def test_returns_none_when_absent(self):
+        assert extract_source_url(SCRIPT_NO_REPOS) is None
+
+    def test_ignores_url_in_body(self):
+        script = "Title: X\n---\n\nAda: see Source URL: not-a-header here\n"
+        # Only header-style lines (Source URL: at line start) are matched.
+        assert extract_source_url(script) is None
+
+
+class TestGenerateGenericPlan:
+    def test_without_source_url(self):
+        plan = generate_generic_plan(60.0)
+        seg = plan.segments[0]
+        assert seg.is_generic
+        assert seg.source_url is None
+
+    def test_with_source_url(self):
+        plan = generate_generic_plan(60.0, "https://claracle.com/weekly/2026/W26/")
+        seg = plan.segments[0]
+        assert seg.is_generic
+        assert seg.source_url == "https://claracle.com/weekly/2026/W26/"
 
 
 # --- extract_repo_urls tests ---
@@ -198,6 +245,14 @@ class TestPlanFromScript:
         assert seg.repo is None
         assert seg.start_seconds == 0.0
         assert seg.duration_seconds == pytest.approx(60.0)
+
+    def test_generic_plan_uses_source_url(self):
+        plan = plan_from_script(
+            SCRIPT_NO_REPOS_WITH_SOURCE, total_duration_seconds=60.0
+        )
+        seg = plan.segments[0]
+        assert seg.is_generic
+        assert seg.source_url == "https://claracle.com/weekly/2026/W26/"
 
     def test_yaml_output_has_all_repos(self):
         plan = plan_from_script(SAMPLE_SCRIPT, total_duration_seconds=200.0)
@@ -366,6 +421,14 @@ class TestPlanFromScriptTimed:
         assert len(plan.segments) == 1
         assert plan.segments[0].is_generic
         assert plan.total_duration_seconds == 60.0
+
+    def test_generic_plan_uses_source_url(self):
+        plan = plan_from_script_timed(SCRIPT_NO_REPOS_WITH_SOURCE, 60.0)
+        assert plan.segments[0].is_generic
+        assert (
+            plan.segments[0].source_url
+            == "https://claracle.com/weekly/2026/W26/"
+        )
 
     def test_ordering_matches_script(self):
         # vscode is mentioned before ruff in SAMPLE_SCRIPT

@@ -221,7 +221,12 @@ def _record_generic_segment(
     segment: VideoSegment,
     output_dir: Path,
 ) -> RecordedSegment:
-    """Record a generic background segment (no repo) with the brand animation."""
+    """Record a generic background segment (no repo).
+
+    When the segment has a ``source_url`` (e.g. the article's weekly page),
+    that page is navigated to and scrolled like a regular repo recording;
+    otherwise the static branded background animation is shown.
+    """
     video_dir = output_dir / "raw"
     video_dir.mkdir(parents=True, exist_ok=True)
 
@@ -233,7 +238,24 @@ def _record_generic_segment(
     )
     page: Page = context.new_page()
     try:
-        _render_generic_background(page, segment.duration_seconds)
+        source_url = segment.source_url
+        if source_url:
+            try:
+                page.goto(
+                    source_url,
+                    wait_until="networkidle",
+                    timeout=NETWORK_IDLE_TIMEOUT_MS,
+                )
+                _dismiss_overlays(page)
+                _smooth_scroll(page, segment.duration_seconds)
+            except Exception:
+                logger.exception(
+                    "Error recording generic source %s — using background",
+                    source_url,
+                )
+                _render_generic_background(page, segment.duration_seconds)
+        else:
+            _render_generic_background(page, segment.duration_seconds)
     finally:
         video = page.video
         context.close()
