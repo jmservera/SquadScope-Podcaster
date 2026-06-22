@@ -294,15 +294,13 @@ class TestGenerateEpisodePlan:
         with pytest.raises(ValueError, match="positive"):
             generate_episode_plan(repos, total_duration_seconds=-10.0)
 
-    def test_caps_segments_to_max(self):
-        """More repos than _MAX_SEGMENTS are truncated."""
-        from podcaster.video.sync_plan import _MAX_SEGMENTS
-
+    def test_no_segment_cap(self):
+        """All repos become segments — pairwise composition has no cap (#349)."""
         repos = [RepoReference(owner="o", name=f"r{i}") for i in range(20)]
         plan = generate_episode_plan(repos, total_duration_seconds=300.0)
-        assert len(plan.segments) == _MAX_SEGMENTS
-        # Duration is divided among capped count
-        expected_dur = 300.0 / _MAX_SEGMENTS
+        assert len(plan.segments) == 20
+        # Duration is divided among all repos
+        expected_dur = 300.0 / 20
         for seg in plan.segments:
             assert seg.duration_seconds == pytest.approx(expected_dur)
 
