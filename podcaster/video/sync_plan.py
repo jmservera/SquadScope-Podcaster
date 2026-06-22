@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 # contains no GitHub repo URLs.
 _ARTICLE_FETCH_TIMEOUT = 10
 
+# Maximum number of repo segments to include in an episode plan.
+# Keeps ffmpeg filter_complex within ACA container memory limits (~2GB).
+_MAX_SEGMENTS = 10
+
 # Host allowlist for article fetching (SSRF guard). Only the public Claracle
 # article pages may be fetched; any other host returns an empty repo list.
 _ARTICLE_FETCH_ALLOWED_HOSTS = frozenset({"claracle.com", "www.claracle.com"})
@@ -263,10 +267,13 @@ def generate_episode_plan(
             f"Total duration must be positive, got {total_duration_seconds}"
         )
 
-    segment_duration = total_duration_seconds / len(repos)
+    # Cap repos to avoid OOM in ffmpeg filter_complex (18+ xfade chains crash ACA).
+    capped_repos = repos[:_MAX_SEGMENTS]
+
+    segment_duration = total_duration_seconds / len(capped_repos)
     segments: list[VideoSegment] = []
 
-    for i, repo in enumerate(repos):
+    for i, repo in enumerate(capped_repos):
         segments.append(
             VideoSegment(
                 repo=repo,
