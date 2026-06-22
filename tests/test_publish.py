@@ -835,7 +835,9 @@ class TestUploadVideoToEpisode:
         result = upload_video_to_episode(self._video(tmp_path), 42, title="My Show")
         assert result.dry_run is True
         assert result.status == "draft"
+        assert result.anchor_episode_id is None
         assert result.details["title"] == "My Show"
+        assert result.details["audio_anchor_id"] == 42
 
     def test_missing_file(self, tmp_path, monkeypatch):
         from podcaster.publish import upload_video_to_episode

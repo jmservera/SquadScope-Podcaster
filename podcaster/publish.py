@@ -611,13 +611,14 @@ def upload_video_to_episode(
             anchor_id,
         )
         return PublishResult(
-            anchor_episode_id=anchor_id,
+            anchor_episode_id=None,
             status="draft",
             dry_run=True,
             details={
                 "upload_path": str(video_path),
                 "content_type": content_type,
                 "title": video_title,
+                "audio_anchor_id": anchor_id,
             },
         )
 

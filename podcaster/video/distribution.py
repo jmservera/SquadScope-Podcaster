@@ -452,7 +452,7 @@ def archive_to_blob(
         return None
 
 
-# --- Spotify Episode Upload (#337) ---
+# --- Spotify Episode Upload (#340) ---
 
 
 def upload_to_spotify_episode(
@@ -532,8 +532,8 @@ def distribute_video(
     blob archive) is enabled.
 
     ``spotify_anchor_id`` is the anchor episode id (resolved by the caller from
-    ``generation.publish_result.anchor_id``) used to attach the MP4 to the same
-    Spotify episode draft as the audio.
+    ``generation.publish_result.anchor_id``) used to create a NEW separate video
+    draft episode on Spotify (#340).
     """
     result = DistributionResult()
 
