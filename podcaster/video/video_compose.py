@@ -89,7 +89,11 @@ LOWER_THIRD_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 # Final encode settings (YouTube/Spotify-ready)
 ENCODE_PRESET = "slow"
-ENCODE_CRF = 18
+# CRF 16 keeps text edges crisp on screen-recorded, text-heavy content while
+# staying in the visually-lossless range (issue #359).  Research (SSIM/PSNR vs a
+# lossless reference) showed CRF 18 already preserved text well; 16 buys a small
+# extra margin for fine GitHub UI glyphs at negligible size cost.
+ENCODE_CRF = 16
 ENCODE_PIX_FMT = "yuv420p"
 ENCODE_AUDIO_BITRATE = "192k"
 
