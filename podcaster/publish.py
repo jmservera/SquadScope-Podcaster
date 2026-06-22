@@ -473,7 +473,6 @@ def _process_upload(
         request_data = data.get("request", data)
         status = request_data.get("state") or data.get("status", "")
         if status in ("processed", "completed"):
-            logger.info("Upload %s processing completed (state=%s)", upload_id, status)
             # Check mediaValidation for video
             validation = data.get("mediaValidation", {})
             if validation.get("status") == "validation_failure":
@@ -493,6 +492,7 @@ def _process_upload(
                 raise SpotifyPublishError(
                     f"Upload {upload_id} media validation failed: {detail}"
                 )
+            logger.info("Upload %s processing completed (state=%s)", upload_id, status)
             return
         elif status == "failed":
             logger.debug(
@@ -500,7 +500,7 @@ def _process_upload(
                 upload_id,
                 json.dumps(data),
             )
-            reason = request_data.get("failureReason", "unknown")
+            reason = request_data.get("failureReason") or "unknown"
             # Also check mediaValidation for details
             validation = data.get("mediaValidation", {})
             failures = [r.get("reason", "") for r in validation.get("failures", [])]
