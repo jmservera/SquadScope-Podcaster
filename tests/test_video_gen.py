@@ -19,6 +19,7 @@ from podcaster.video.sync_plan import (
 )
 from podcaster.video.video_gen import (
     MAX_SCROLL_VIEWPORT_MULTIPLIER,
+    RECORDING_CHROMIUM_ARGS,
     SCROLL_TICKS_PER_SEC,
     WIDTH,
     HEIGHT,
@@ -150,7 +151,9 @@ class TestSmoothScroll:
         ticks = int(duration * SCROLL_TICKS_PER_SEC)
         # 1 call for scrollHeight + ticks calls for scrollBy
         assert page.evaluate.call_count == ticks + 1
-        assert page.wait_for_timeout.call_count == ticks
+        # One wait per tick, plus an optional trailing wait for the fractional
+        # remainder not covered by whole ticks.
+        assert page.wait_for_timeout.call_count in (ticks, ticks + 1)
 
     def test_caps_scroll_distance(self):
         page = MagicMock()
@@ -195,19 +198,19 @@ class TestSmoothScroll:
         page.evaluate.assert_not_called()
 
     def test_short_duration_waits_without_scrolling(self):
-        """Duration > 0 but < 1 tick (0.25s) should still wait the full duration."""
+        """Duration > 0 but < 1 tick should still wait the full duration."""
         page = MagicMock()
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
         page.evaluate.side_effect = lambda js: (
             5000 if "scrollHeight" in js else None
         )
 
-        _smooth_scroll(page, 0.1)  # too short for a full tick
+        _smooth_scroll(page, 0.02)  # too short for a full tick
 
         # Should not call scrollHeight (returns before evaluating page)
         page.evaluate.assert_not_called()
         # Should wait for the full duration
-        page.wait_for_timeout.assert_called_once_with(100)
+        page.wait_for_timeout.assert_called_once_with(20)
 
 
 # --- _render_fallback_page tests ---
@@ -514,6 +517,45 @@ class TestRecordEpisode:
 
         assert result.output_dir.exists()
         assert "video_gen_" in result.output_dir.name
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._check_repo_accessible", return_value=True)
+    @patch("podcaster.video.video_gen._check_gh_pages", return_value=False)
+    def test_launches_with_anti_throttling_args(
+        self, mock_pages, mock_access, mock_pw
+    ):
+        """Chromium is launched with the anti-throttling recording args (#359)."""
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+        browser = pw_instance.chromium.launch.return_value
+
+        def make_context_side_effect(**kwargs):
+            ctx = MagicMock()
+            page = MagicMock()
+            video = MagicMock()
+            page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+            page.evaluate.side_effect = lambda js: (
+                2000 if "scrollHeight" in js else None
+            )
+            raw_dir = Path(kwargs.get("record_video_dir", "/tmp"))
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            import uuid
+            fake_video = raw_dir / f"{uuid.uuid4()}.webm"
+            fake_video.write_bytes(b"\x1a\x45\xdf\xa3")
+            video.path.return_value = str(fake_video)
+            page.video = video
+            ctx.new_page.return_value = page
+            return ctx
+
+        browser.new_context.side_effect = make_context_side_effect
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        record_episode(plan, output_dir=None)
+
+        _, kwargs = pw_instance.chromium.launch.call_args
+        assert kwargs.get("args") == RECORDING_CHROMIUM_ARGS
 
 
 # --- Integration tests (require Playwright + network) ---
