@@ -41,6 +41,51 @@ HEIGHT = 1080
 SCROLL_TICKS_PER_SEC = 4
 MAX_SCROLL_VIEWPORT_MULTIPLIER = 2.5
 NETWORK_IDLE_TIMEOUT_MS = 10_000
+# Timeout for navigating to a repo's external website (issue #360).  Kept
+# shorter than the GitHub timeout so a slow/down website falls back quickly to
+# the already-rendered GitHub page.
+WEBSITE_NAV_TIMEOUT_MS = 8_000
+
+# JavaScript that extracts the repo's website/homepage URL from the GitHub
+# "About" sidebar (issue #360).  GitHub renders the homepage link as an anchor
+# immediately following the link octicon:
+#   <svg class="octicon octicon-link ...">…</svg>
+#   <span ...><a role="link" href="https://example.com">example.com</a></span>
+# We also fall back to any external (non-github.com) ``role="link"`` anchor in
+# the header/sidebar.  Returns the absolute URL string or null.
+_WEBSITE_URL_JS = """
+() => {
+  const isExternal = (a) => {
+    if (!a || !a.href) return false;
+    try {
+      const u = new URL(a.href);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+      const host = u.hostname.toLowerCase();
+      return host !== 'github.com' && !host.endsWith('.github.com');
+    } catch (e) {
+      return false;
+    }
+  };
+  const icon = document.querySelector('svg.octicon-link');
+  if (icon) {
+    let sib = icon.nextElementSibling;
+    while (sib) {
+      const a = sib.matches && sib.matches('a[href]')
+        ? sib
+        : (sib.querySelector ? sib.querySelector('a[href]') : null);
+      if (isExternal(a)) return a.href;
+      sib = sib.nextElementSibling;
+    }
+  }
+  const candidates = document.querySelectorAll(
+    'a[role="link"][href^="http"], a.text-bold[href^="http"]'
+  );
+  for (const a of candidates) {
+    if (isExternal(a)) return a.href;
+  }
+  return null;
+}
+"""
 # Brief settle pause after navigation, before scrolling begins, so the page has
 # finished painting (fonts, images, lazy content) and the recording does not
 # capture the initial layout flash/flicker (issues #353, #355).
@@ -130,6 +175,7 @@ class RecordedSegment:
     video_path: Path
     is_fallback: bool = False
     has_pages: bool = False
+    website_url: str | None = None
 
 
 @dataclass
@@ -233,6 +279,50 @@ def _smooth_scroll(page: Page, duration_seconds: float) -> None:
     remainder_ms = requested_ms - elapsed_ms
     if remainder_ms > 0:
         page.wait_for_timeout(remainder_ms)
+
+
+def _extract_website_url(page: Page) -> str | None:
+    """Extract the repo's external website URL from the GitHub page (issue #360).
+
+    Looks for the homepage link in the repo's "About" sidebar/header.  Returns
+    the absolute URL when an external (non-github.com) http(s) link is found,
+    otherwise ``None``.  Best-effort: any failure returns ``None`` so recording
+    falls back to the GitHub page.
+    """
+    try:
+        url = page.evaluate(_WEBSITE_URL_JS)
+    except Exception:
+        return None
+    if isinstance(url, str) and url.strip():
+        return url.strip()
+    return None
+
+
+def _navigate_to_website(page: Page, url: str) -> bool:
+    """Navigate to the repo's external website (issue #360).
+
+    Uses a shorter timeout than GitHub so a slow/down site fails fast.  Returns
+    True if the website loaded successfully (non-404), False otherwise so the
+    caller can fall back to the GitHub page.
+    """
+    try:
+        response = page.goto(
+            url,
+            wait_until="networkidle",
+            timeout=WEBSITE_NAV_TIMEOUT_MS,
+        )
+    except Exception:
+        logger.warning("Failed to load website %s — falling back to GitHub", url)
+        return False
+    if response is not None and response.status >= 400:
+        logger.warning(
+            "Website %s returned %s — falling back to GitHub",
+            url,
+            response.status,
+        )
+        return False
+    logger.info("Recording website %s instead of GitHub page", url)
+    return True
 
 
 def _render_fallback_page(
@@ -351,6 +441,7 @@ def _record_segment(
 
     is_fallback = False
     has_pages = False
+    website_url: str | None = None
 
     if check_accessibility and not _check_repo_accessible(repo.url):
         is_fallback = True
@@ -402,6 +493,21 @@ def _record_segment(
                     pass
                 page.wait_for_timeout(PAGE_SETTLE_MS)
                 _dismiss_overlays(page)
+                # If the repo links an external website, record that instead of
+                # the GitHub page; fall back to GitHub if it fails to load
+                # (issue #360).
+                website_url = _extract_website_url(page)
+                if website_url and _navigate_to_website(page, website_url):
+                    try:
+                        page.wait_for_load_state(
+                            "networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS
+                        )
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(PAGE_SETTLE_MS)
+                    _dismiss_overlays(page)
+                else:
+                    website_url = None
                 _prepare_page_for_recording(page)
                 _smooth_scroll(page, segment.duration_seconds)
     except Exception:
@@ -437,6 +543,7 @@ def _record_segment(
         video_path=dest_path,
         is_fallback=is_fallback,
         has_pages=has_pages,
+        website_url=website_url,
     )
 
 
@@ -488,10 +595,11 @@ def record_episode(
                 )
                 result.recorded.append(recorded)
                 logger.info(
-                    "Saved: %s (fallback=%s, pages=%s)",
+                    "Saved: %s (fallback=%s, pages=%s, website=%s)",
                     recorded.video_path.name,
                     recorded.is_fallback,
                     recorded.has_pages,
+                    recorded.website_url,
                 )
         finally:
             browser.close()
