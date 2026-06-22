@@ -60,6 +60,35 @@ p {{ font-size: 24px; color: #8b949e; }}
 </body></html>
 """
 
+# Animated branded background used for generic segments (no repo to record).
+GENERIC_BACKGROUND_HTML = """\
+<!DOCTYPE html>
+<html><head><style>
+body {{
+  margin: 0; overflow: hidden;
+  width: {width}px; height: {height}px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: -apple-system, sans-serif; color: #c9d1d9;
+  background: linear-gradient(-45deg, #0d1117, #161b22, #1f6feb, #161b22);
+  background-size: 400% 400%;
+  animation: gradient 18s ease infinite;
+}}
+@keyframes gradient {{
+  0% {{ background-position: 0% 50%; }}
+  50% {{ background-position: 100% 50%; }}
+  100% {{ background-position: 0% 50%; }}
+}}
+.card {{ text-align: center; }}
+h1 {{ font-size: 64px; margin: 0 0 16px; letter-spacing: 1px; }}
+p {{ font-size: 28px; color: #8b949e; margin: 0; }}
+</style></head><body>
+<div class="card">
+  <h1>{title}</h1>
+  <p>{subtitle}</p>
+</div>
+</body></html>
+"""
+
 # Common GitHub overlay selectors to dismiss
 _OVERLAY_SELECTORS = [
     "[data-testid='cookie-banner'] button",
@@ -171,6 +200,63 @@ def _render_fallback_page(
     page.wait_for_timeout(int(duration_seconds * 1000))
 
 
+GENERIC_BACKGROUND_TITLE = "SquadScope"
+GENERIC_BACKGROUND_SUBTITLE = "Open Source Highlights"
+
+
+def _render_generic_background(page: Page, duration_seconds: float) -> None:
+    """Show the animated branded background for a generic (no-repo) segment."""
+    html = GENERIC_BACKGROUND_HTML.format(
+        width=WIDTH,
+        height=HEIGHT,
+        title=GENERIC_BACKGROUND_TITLE,
+        subtitle=GENERIC_BACKGROUND_SUBTITLE,
+    )
+    page.set_content(html)
+    page.wait_for_timeout(int(duration_seconds * 1000))
+
+
+def _record_generic_segment(
+    browser: Browser,
+    segment: VideoSegment,
+    output_dir: Path,
+) -> RecordedSegment:
+    """Record a generic background segment (no repo) with the brand animation."""
+    video_dir = output_dir / "raw"
+    video_dir.mkdir(parents=True, exist_ok=True)
+
+    context: BrowserContext = browser.new_context(
+        record_video_dir=str(video_dir),
+        record_video_size={"width": WIDTH, "height": HEIGHT},
+        viewport={"width": WIDTH, "height": HEIGHT},
+        color_scheme="dark",
+    )
+    page: Page = context.new_page()
+    try:
+        _render_generic_background(page, segment.duration_seconds)
+    finally:
+        video = page.video
+        context.close()
+
+    if video is None:
+        raise RuntimeError("No video object for generic background recording")
+
+    src_path = Path(video.path())
+    unique_suffix = uuid.uuid4().hex[:8]
+    dest_path = output_dir / f"generic_{unique_suffix}.webm"
+    if src_path.exists():
+        src_path.rename(dest_path)
+    else:
+        raise FileNotFoundError(f"Playwright video file not found at {src_path}")
+
+    return RecordedSegment(
+        segment=segment,
+        video_path=dest_path,
+        is_fallback=True,
+        has_pages=False,
+    )
+
+
 def _record_segment(
     browser: Browser,
     segment: VideoSegment,
@@ -182,6 +268,9 @@ def _record_segment(
     Creates a fresh browser context with video recording, navigates to the
     repo URL, scrolls, and closes the context to finalize the video file.
     """
+    if segment.is_generic:
+        return _record_generic_segment(browser, segment, output_dir)
+
     repo = segment.repo
     video_dir = output_dir / "raw"
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -300,7 +389,7 @@ def record_episode(
             for segment in plan.segments:
                 logger.info(
                     "Recording segment: %s (%.1fs)",
-                    segment.repo.url,
+                    segment.label,
                     segment.duration_seconds,
                 )
                 recorded = _record_segment(

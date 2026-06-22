@@ -10,16 +10,22 @@ This module:
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
 import yaml
 
+logger = logging.getLogger(__name__)
+
 # Matches GitHub repo URLs: https://github.com/owner/repo (with optional trailing path)
 _GITHUB_REPO_RE = re.compile(
     r"https?://github\.com/([A-Za-z0-9\-_.]+)/([A-Za-z0-9\-_.]+)"
 )
+
+# Label used for generic background segments that are not tied to a repo.
+GENERIC_SEGMENT_LABEL = "__generic__"
 
 
 @dataclass(frozen=True)
@@ -44,15 +50,30 @@ class RepoReference:
 
 @dataclass(frozen=True)
 class VideoSegment:
-    """A timed video segment in the episode plan."""
+    """A timed video segment in the episode plan.
 
-    repo: RepoReference
+    A segment with ``repo=None`` is a *generic* background segment: it is not
+    tied to a GitHub repository and is rendered with the background animation
+    rather than a recorded repo page.
+    """
+
     start_seconds: float
     duration_seconds: float
+    repo: RepoReference | None = None
 
     @property
     def end_seconds(self) -> float:
         return self.start_seconds + self.duration_seconds
+
+    @property
+    def is_generic(self) -> bool:
+        """True when this segment has no associated repository."""
+        return self.repo is None
+
+    @property
+    def label(self) -> str:
+        """Stable identifier used to match recordings to plan segments."""
+        return self.repo.url if self.repo is not None else GENERIC_SEGMENT_LABEL
 
 
 @dataclass(frozen=True)
@@ -68,9 +89,10 @@ class EpisodePlan:
             "total_duration_seconds": self.total_duration_seconds,
             "segments": [
                 {
-                    "repo_url": seg.repo.url,
-                    "repo_owner": seg.repo.owner,
-                    "repo_name": seg.repo.name,
+                    "repo_url": seg.repo.url if seg.repo is not None else None,
+                    "repo_owner": seg.repo.owner if seg.repo is not None else None,
+                    "repo_name": seg.repo.name if seg.repo is not None else None,
+                    "generic": seg.is_generic,
                     "start_seconds": round(seg.start_seconds, 3),
                     "duration_seconds": round(seg.duration_seconds, 3),
                     "end_seconds": round(seg.end_seconds, 3),
@@ -148,6 +170,40 @@ def generate_episode_plan(
     )
 
 
+def generate_generic_plan(total_duration_seconds: float) -> EpisodePlan:
+    """Generate a plan with a single generic background segment.
+
+    Used when a script contains no GitHub repository URLs (e.g. news-oriented
+    episodes). The resulting segment has ``repo=None`` and spans the full audio
+    duration, so the video pipeline renders the background animation with text
+    overlays instead of skipping video generation entirely.
+
+    Args:
+        total_duration_seconds: Total audio duration in seconds.
+
+    Returns:
+        An EpisodePlan with one generic, full-length segment.
+
+    Raises:
+        ValueError: If duration is non-positive.
+    """
+    if total_duration_seconds <= 0:
+        raise ValueError(
+            f"Total duration must be positive, got {total_duration_seconds}"
+        )
+
+    return EpisodePlan(
+        total_duration_seconds=total_duration_seconds,
+        segments=(
+            VideoSegment(
+                repo=None,
+                start_seconds=0.0,
+                duration_seconds=total_duration_seconds,
+            ),
+        ),
+    )
+
+
 def plan_from_script(
     script: str,
     total_duration_seconds: float,
@@ -155,6 +211,9 @@ def plan_from_script(
     """End-to-end: parse script → extract repos → generate plan.
 
     Convenience function that combines extraction and plan generation.
+
+    When the script contains no GitHub repository URLs, a generic background
+    plan is generated instead of raising, so the video is still produced.
 
     Args:
         script: Full podcast script text (header + body).
@@ -164,11 +223,15 @@ def plan_from_script(
         An EpisodePlan ready to serialize to YAML.
 
     Raises:
-        ValueError: If no repos found or duration is non-positive.
+        ValueError: If duration is non-positive.
     """
     repos = extract_repo_urls(script)
     if not repos:
-        raise ValueError("No GitHub repository URLs found in script")
+        logger.info(
+            "No GitHub repository URLs found in script; "
+            "generating generic background plan"
+        )
+        return generate_generic_plan(total_duration_seconds)
     return generate_episode_plan(repos, total_duration_seconds)
 
 
@@ -295,6 +358,9 @@ def plan_from_script_timed(
     repo's first mention position in *script* rather than distributing time
     equally.
 
+    When the script contains no GitHub repository URLs, a generic background
+    plan is generated instead of raising, so the video is still produced.
+
     Args:
         script: Full podcast script text (header + body).
         total_duration_seconds: Total audio duration in seconds.
@@ -304,11 +370,15 @@ def plan_from_script_timed(
         EpisodePlan with timing matching script mention positions.
 
     Raises:
-        ValueError: If no repos found or duration is non-positive.
+        ValueError: If duration is non-positive.
     """
     repos = extract_repo_urls(script)
     if not repos:
-        raise ValueError("No GitHub repository URLs found in script")
+        logger.info(
+            "No GitHub repository URLs found in script; "
+            "generating generic background plan"
+        )
+        return generate_generic_plan(total_duration_seconds)
     return generate_episode_plan_timed(
         script, repos, total_duration_seconds, min_segment_seconds
     )

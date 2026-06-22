@@ -711,7 +711,7 @@ def _compute_lower_thirds(
         lt_start = start + 0.5
         lt_end = min(lt_start + LOWER_THIRD_DURATION, start + seg.duration_seconds - 0.5)
 
-        if lt_end > lt_start:
+        if lt_end > lt_start and not seg.is_generic:
             lower_thirds.append(LowerThird(
                 text=f"{seg.repo.owner}/{seg.repo.name}",
                 url=seg.repo.url,
@@ -1014,11 +1014,11 @@ def build_sync_map(
         ValueError: If any plan segment has no matching recording.
     """
     by_url: dict[str, RecordedSegment] = {
-        rec.segment.repo.url: rec for rec in recordings
+        rec.segment.label: rec for rec in recordings
     }
     result: list[SyncedSegment] = []
     for seg in plan.segments:
-        url = seg.repo.url
+        url = seg.label
         if url not in by_url:
             raise ValueError(
                 f"No recording found for plan segment {url!r}. "
