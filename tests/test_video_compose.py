@@ -338,8 +338,45 @@ class TestComposeVideo:
         assert result.segment_count == 3
         # 30s - 2 transitions of 1s each = 28s
         assert result.duration_seconds == pytest.approx(28.0)
-        # 3 normalize + 1 compose
-        assert runner.call_count == 4
+        # 3 normalize + 2 pairwise xfade passes (N-1 passes for N segments)
+        assert runner.call_count == 5
+
+    def test_many_segments_pairwise_constant_inputs(self, tmp_path):
+        """>10 segments compose without a cap; each xfade pass has 2 inputs (#349)."""
+        runner = _mock_runner()
+        segs = []
+        for i in range(18):
+            p = tmp_path / f"seg{i:02d}.webm"
+            p.touch()
+            segs.append(
+                _make_recorded_segment(
+                    owner="o", name=f"r{i}", duration=10.0, video_path=p
+                )
+            )
+
+        result = compose_video(
+            segments=segs,
+            output_dir=tmp_path / "out",
+            runner=runner,
+        )
+
+        assert result.segment_count == 18
+        # 18 normalize + 17 pairwise xfade passes
+        assert runner.call_count == 18 + 17
+
+        # Every composition (xfade) pass must use exactly two video inputs so
+        # memory stays constant regardless of segment count (no N-way graph).
+        xfade_cmds = [
+            c.args[0]
+            for c in runner.call_args_list
+            if "-filter_complex" in c.args[0]
+            and "xfade" in c.args[0][c.args[0].index("-filter_complex") + 1]
+        ]
+        assert len(xfade_cmds) == 17
+        for cmd in xfade_cmds:
+            assert cmd.count("-i") == 2
+            # bt709 colour flags preserved on every encode step
+            assert "-colorspace" in cmd and "bt709" in cmd
 
     def test_compose_command_has_encode_settings(self, tmp_path):
         runner = _mock_runner()
@@ -638,15 +675,17 @@ class TestComposeVideoTransitions:
                 transition_duration=1.0,
             )
 
-        # Find the filter_complex call
+        # Pairwise composition runs one xfade pass per boundary; collect the
+        # transitions across every filter_complex pass.
         all_calls = [call[0][0] for call in runner.call_args_list]
-        compose_cmd = all_calls[-1]
-        fc_idx = compose_cmd.index("-filter_complex") if "-filter_complex" in compose_cmd else -1
-        assert fc_idx >= 0
-        fc_value = compose_cmd[fc_idx + 1]
+        xfade_filters = " ".join(
+            c[c.index("-filter_complex") + 1]
+            for c in all_calls
+            if "-filter_complex" in c and "xfade" in c[c.index("-filter_complex") + 1]
+        )
         # With 4 segments, should see at least 2 distinct transition types
-        assert "fade" in fc_value
-        assert "slideleft" in fc_value
+        assert "fade" in xfade_filters
+        assert "slideleft" in xfade_filters
 
     def test_boundary_kinds_passed_through(self, tmp_path):
         """boundary_kinds parameter changes the transitions used."""

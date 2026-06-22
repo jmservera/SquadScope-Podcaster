@@ -770,16 +770,23 @@ def _build_drawtext_filter(
     return ";".join(filters)
 
 
-def _compute_lower_thirds(
+def _compute_lower_thirds_by_index(
     segments: list[RecordedSegment],
     transition_duration: float = TRANSITION_DURATION,
-) -> list[LowerThird]:
-    """Compute lower-third timings from recorded segments.
+) -> dict[int, LowerThird]:
+    """Compute lower-third timings keyed by segment index.
 
-    Each lower-third appears at the start of its segment (after transition)
-    and lasts LOWER_THIRD_DURATION seconds or until segment ends.
+    Each lower-third uses an **absolute** time offset in the final video so it
+    can be baked in during whichever composition pass adds its segment.  A
+    segment's lower-third starts ``0.5`` s after the segment becomes visible
+    (which, accounting for the xfade overlaps, is
+    ``sum(durations[0..i-1]) - i*transition_duration``) and lasts
+    :data:`LOWER_THIRD_DURATION` seconds or until the segment ends.
+
+    Generic background segments and segments too short to display a readable
+    overlay are skipped (absent from the returned mapping).
     """
-    lower_thirds: list[LowerThird] = []
+    lower_thirds: dict[int, LowerThird] = {}
     cumulative_time = 0.0
 
     for i, rec in enumerate(segments):
@@ -795,18 +802,247 @@ def _compute_lower_thirds(
         lt_end = min(lt_start + LOWER_THIRD_DURATION, start + seg.duration_seconds - 0.5)
 
         if lt_end > lt_start and not seg.is_generic:
-            lower_thirds.append(LowerThird(
+            lower_thirds[i] = LowerThird(
                 text=f"{seg.repo.owner}/{seg.repo.name}",
                 url=seg.repo.url,
                 start_seconds=lt_start,
                 end_seconds=lt_end,
-            ))
+            )
 
         cumulative_time += seg.duration_seconds
         if i < len(segments) - 1:
             cumulative_time -= transition_duration
 
     return lower_thirds
+
+
+def _compute_lower_thirds(
+    segments: list[RecordedSegment],
+    transition_duration: float = TRANSITION_DURATION,
+) -> list[LowerThird]:
+    """Compute lower-third timings from recorded segments.
+
+    Each lower-third appears at the start of its segment (after transition)
+    and lasts LOWER_THIRD_DURATION seconds or until segment ends.
+    """
+    return list(
+        _compute_lower_thirds_by_index(segments, transition_duration).values()
+    )
+
+
+# --- Pairwise xfade composition (#349) ---
+# Instead of a single N-input filter_complex (which OOMs in the ACA container
+# at ~18+ segments), segments are composited two at a time: each pass takes the
+# running accumulator plus the next segment, applies one xfade transition and
+# the new segment's lower-third, and writes a fresh intermediate.  Memory stays
+# constant (2 inputs per pass) regardless of segment count.
+
+# bt709 colour flags applied to every libx264 encode for consistent colour.
+_BT709_FLAGS: list[str] = [
+    "-colorspace", "bt709",
+    "-color_trc", "bt709",
+    "-color_primaries", "bt709",
+    "-color_range", "tv",
+]
+
+
+def _encode_tail(preset: str) -> list[str]:
+    """Common video-only libx264 encode flags (with bt709) for a given preset."""
+    return [
+        "-an",
+        "-c:v", "libx264",
+        "-preset", preset,
+        "-crf", str(ENCODE_CRF),
+        "-pix_fmt", ENCODE_PIX_FMT,
+        *_BT709_FLAGS,
+        "-movflags", "+faststart",
+    ]
+
+
+def _build_xfade_step_cmd(
+    accumulator_path: Path,
+    segment_path: Path,
+    transition: str,
+    transition_duration: float,
+    offset: float,
+    step_lower_thirds: list[LowerThird],
+    drawtext_bin: str | None,
+    output_path: Path,
+    preset: str,
+) -> list[str]:
+    """Build a single pairwise xfade pass (accumulator + one segment).
+
+    Crossfades ``accumulator_path`` into ``segment_path`` at ``offset`` and,
+    when a drawtext-capable ffmpeg is available, bakes in the lower-thirds for
+    this pass (absolute-timed, so they land at the right moment in the final
+    video).  Encodes video-only at ``preset`` with bt709 colour flags.
+    """
+    binary = drawtext_bin or "ffmpeg"
+    cmd: list[str] = [
+        binary, "-hide_banner", "-loglevel", "warning", "-y",
+        "-i", str(accumulator_path),
+        "-i", str(segment_path),
+    ]
+    filters = [
+        f"[0:v][1:v]xfade=transition={transition}"
+        f":duration={transition_duration}:offset={offset:.3f}[vx]"
+    ]
+    video_label = "vx"
+    if step_lower_thirds and drawtext_bin:
+        filters.append(_build_drawtext_filter(step_lower_thirds, "vx"))
+        video_label = "final"
+    cmd += ["-filter_complex", ";".join(filters), "-map", f"[{video_label}]"]
+    cmd += _encode_tail(preset)
+    cmd.append(str(output_path))
+    return cmd
+
+
+def _build_finalize_cmd(
+    input_path: Path,
+    dog_logo: "DogLogoConfig | None",
+    dog_logo_path: Path | None,
+    final_lower_thirds: list[LowerThird],
+    drawtext_bin: str | None,
+    output_path: Path,
+    preset: str,
+) -> list[str]:
+    """Build the final pass: optional lower-thirds + optional DOG overlay.
+
+    Used both for the single-segment case (where there is no xfade pass to
+    carry the lower-third) and for the final DOG overlay on the fully
+    accumulated video.  Encodes video-only at ``preset`` with bt709 flags.
+    """
+    binary = drawtext_bin or "ffmpeg"
+    cmd: list[str] = [
+        binary, "-hide_banner", "-loglevel", "warning", "-y",
+        "-i", str(input_path),
+    ]
+    if dog_logo_path is not None:
+        cmd += ["-i", str(dog_logo_path)]
+
+    filters: list[str] = []
+    video_label = "0:v"
+    if final_lower_thirds and drawtext_bin:
+        filters.append(_build_drawtext_filter(final_lower_thirds, "0:v"))
+        video_label = "final"
+    if dog_logo_path is not None and dog_logo is not None:
+        filters.append(
+            _build_dog_overlay_filter(dog_logo, 1, video_label)
+        )
+        video_label = "dogout"
+
+    if filters:
+        cmd += ["-filter_complex", ";".join(filters), "-map", f"[{video_label}]"]
+    else:
+        cmd += ["-map", "0:v"]
+    cmd += _encode_tail(preset)
+    cmd.append(str(output_path))
+    return cmd
+
+
+def _compose_pairwise(
+    normalized_paths: list[Path],
+    durations: list[float],
+    transition_duration: float,
+    transitions: list[str],
+    lower_thirds_by_index: dict[int, LowerThird],
+    drawtext_bin: str | None,
+    dog_logo: "DogLogoConfig | None",
+    dog_logo_path: Path | None,
+    compose_target: Path,
+    run: "CommandRunner",
+    work_dir: Path,
+) -> None:
+    """Composite normalized segments pairwise into *compose_target* (video-only).
+
+    Runs ``len(segments) - 1`` sequential xfade passes (each with exactly two
+    video inputs → constant memory), baking each segment's lower-third in as it
+    is added.  Intermediates use ``-preset ultrafast``; the final output (the
+    DOG overlay pass when a logo is present, otherwise the last xfade pass)
+    uses :data:`ENCODE_PRESET`.  Intermediate files are deleted as soon as they
+    are consumed to keep disk usage bounded.
+    """
+    n = len(normalized_paths)
+    has_dog = dog_logo is not None and dog_logo_path is not None
+
+    if n == 1:
+        final_lts = (
+            [lower_thirds_by_index[0]] if 0 in lower_thirds_by_index else []
+        )
+        run(
+            _build_finalize_cmd(
+                normalized_paths[0],
+                dog_logo if has_dog else None,
+                dog_logo_path if has_dog else None,
+                final_lts,
+                drawtext_bin,
+                compose_target,
+                ENCODE_PRESET,
+            )
+        )
+        return
+
+    pair_dir = work_dir / "pairwise"
+    pair_dir.mkdir(parents=True, exist_ok=True)
+
+    accumulator = normalized_paths[0]
+    accumulator_is_intermediate = False
+    # Length of the accumulated video so far (segments 0..i-1 with overlaps).
+    cumulative = durations[0]
+
+    for i in range(1, n):
+        offset = cumulative - transition_duration
+
+        # Segment 0 has no xfade pass of its own, so its lower-third rides
+        # along on the first pass; every other segment's rides on its own pass.
+        step_lts: list[LowerThird] = []
+        if i == 1 and 0 in lower_thirds_by_index:
+            step_lts.append(lower_thirds_by_index[0])
+        if i in lower_thirds_by_index:
+            step_lts.append(lower_thirds_by_index[i])
+
+        is_last_pass = i == n - 1
+        if is_last_pass and not has_dog:
+            out_path = compose_target
+            preset = ENCODE_PRESET
+        else:
+            out_path = pair_dir / f"acc_{i:03d}.mp4"
+            preset = "ultrafast"
+
+        run(
+            _build_xfade_step_cmd(
+                accumulator,
+                normalized_paths[i],
+                transitions[i - 1],
+                transition_duration,
+                offset,
+                step_lts,
+                drawtext_bin,
+                out_path,
+                preset,
+            )
+        )
+
+        if accumulator_is_intermediate:
+            accumulator.unlink(missing_ok=True)
+        accumulator = out_path
+        accumulator_is_intermediate = out_path != compose_target
+        cumulative += durations[i] - transition_duration
+
+    if has_dog:
+        run(
+            _build_finalize_cmd(
+                accumulator,
+                dog_logo,
+                dog_logo_path,
+                [],
+                drawtext_bin,
+                compose_target,
+                ENCODE_PRESET,
+            )
+        )
+        if accumulator_is_intermediate:
+            accumulator.unlink(missing_ok=True)
 
 
 def compose_video(
@@ -913,39 +1149,24 @@ def compose_video(
         run(cmd)
         normalized_paths.append(norm_path)
 
-    # Step 2: Build the composition filter
+    # Step 2: Plan transitions and lower-thirds for pairwise composition.
     durations = [seg.segment.duration_seconds for seg in segments]
 
-    if len(segments) == 1:
-        # Single segment — no xfade needed
-        video_label = "0:v"
-        filter_complex_parts: list[str] = []
-    else:
-        # Build xfade chain with varied transitions
+    if len(segments) >= 2:
         n_boundaries = len(segments) - 1
         chosen_transitions = select_transitions(n_boundaries, boundary_kinds)
-        xfade_filter = _build_xfade_filter(
-            durations, transition_duration, chosen_transitions
-        )
-        filter_complex_parts = [xfade_filter] if xfade_filter else []
+    else:
+        chosen_transitions = []
 
-        if len(segments) == 2:
-            video_label = "v01"
-        else:
-            video_label = "vout"
-
-    # Step 3: Add lower-third overlays — only if a drawtext-capable ffmpeg is available.
-    lower_thirds = _compute_lower_thirds(segments, transition_duration)
-    compose_ffmpeg_bin = "ffmpeg"  # default; overridden below when drawtext is used
-    if lower_thirds:
+    # Step 3: Lower-third overlays — only probe for a drawtext-capable ffmpeg
+    # when there is at least one lower-third to draw.
+    lower_thirds_by_index = _compute_lower_thirds_by_index(
+        segments, transition_duration
+    )
+    drawtext_bin: str | None = None
+    if lower_thirds_by_index:
         drawtext_bin = _find_drawtext_capable_ffmpeg()
-        if drawtext_bin:
-            drawtext_filter = _build_drawtext_filter(lower_thirds, video_label)
-            if drawtext_filter:
-                filter_complex_parts.append(drawtext_filter)
-                video_label = "final"
-                compose_ffmpeg_bin = drawtext_bin
-        else:
+        if drawtext_bin is None:
             logger.warning(
                 "No ffmpeg binary with drawtext filter (libfreetype) found; "
                 "skipping lower-third overlays.  Install system ffmpeg "
@@ -958,50 +1179,24 @@ def compose_video(
     if dog_logo is not None:
         dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
         dog_logo_path = _fetch_dog_logo(dog_logo.url, dog_cache)
-    # The content is video-only here, so the logo input follows the video inputs.
-    dog_input_idx = len(normalized_paths)
-    if dog_logo_path is not None:
-        dog_src = video_label if filter_complex_parts else "0:v"
-        filter_complex_parts.append(
-            _build_dog_overlay_filter(dog_logo, dog_input_idx, dog_src)
-        )
-        video_label = "dogout"
 
-    # Step 4: Build the (video-only) content composition command
-    cmd: list[str] = [compose_ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y"]
-
-    # Add all normalized video inputs
-    for norm_path in normalized_paths:
-        cmd.extend(["-i", str(norm_path)])
-
-    # Add DOG logo image input (follows the video inputs to match dog_input_idx)
-    if dog_logo_path is not None:
-        cmd.extend(["-i", str(dog_logo_path)])
-
-    if filter_complex_parts:
-        cmd.extend(["-filter_complex", ";".join(filter_complex_parts)])
-        cmd.extend(["-map", f"[{video_label}]"])
-    else:
-        cmd.extend(["-map", "0:v"])
-
-    # Output encoding — video-only (audio is overlaid on the final joined video).
-    cmd.extend([
-        "-an",
-        "-c:v", "libx264",
-        "-preset", ENCODE_PRESET,
-        "-crf", str(ENCODE_CRF),
-        "-pix_fmt", ENCODE_PIX_FMT,
-        "-colorspace", "bt709",
-        "-color_trc", "bt709",
-        "-color_primaries", "bt709",
-        "-color_range", "tv",
-        "-movflags", "+faststart",
-    ])
-    cmd.append(str(compose_target))
-
+    # Step 4: Composite the (video-only) content pairwise — each pass uses
+    # exactly two video inputs so memory stays constant regardless of segment
+    # count (replaces the old N-input filter_complex that OOMed at ~18 segments).
     logger.info("Composing %d segments into %s", len(segments), compose_target)
-    run(cmd)
-
+    _compose_pairwise(
+        normalized_paths,
+        durations,
+        transition_duration,
+        chosen_transitions,
+        lower_thirds_by_index,
+        drawtext_bin,
+        dog_logo,
+        dog_logo_path,
+        compose_target,
+        run,
+        output_path.parent,
+    )
     # Content video duration (accounting for transition overlaps).
     video_duration = sum(durations) - transition_duration * max(0, len(segments) - 1)
 

@@ -25,10 +25,6 @@ logger = logging.getLogger(__name__)
 # contains no GitHub repo URLs.
 _ARTICLE_FETCH_TIMEOUT = 10
 
-# Maximum number of repo segments to include in an episode plan.
-# Keeps ffmpeg filter_complex within ACA container memory limits (~2GB).
-_MAX_SEGMENTS = 10
-
 # Host allowlist for article fetching (SSRF guard). Only the public Claracle
 # article pages may be fetched; any other host returns an empty repo list.
 _ARTICLE_FETCH_ALLOWED_HOSTS = frozenset({"claracle.com", "www.claracle.com"})
@@ -248,14 +244,13 @@ def generate_episode_plan(
 ) -> EpisodePlan:
     """Generate an episode plan with fixed-duration segments.
 
-    Phase 1 strategy: divides total audio duration equally among repos,
-    capped to ``_MAX_SEGMENTS`` to keep the ffmpeg filter graph within
-    ACA container memory limits.
+    Phase 1 strategy: divides total audio duration equally among repos.
+    There is no segment cap — composition uses pairwise xfade passes
+    (see ``video_compose._compose_pairwise``) with constant memory, so any
+    number of segments can be composed without OOMing the ACA container.
 
     Args:
         repos: Ordered list of repo references for the episode.
-            If more than ``_MAX_SEGMENTS`` are provided, the list is
-            truncated and a warning is logged.
         total_duration_seconds: Total audio duration in seconds.
 
     Returns:
@@ -271,19 +266,10 @@ def generate_episode_plan(
             f"Total duration must be positive, got {total_duration_seconds}"
         )
 
-    # Cap repos to avoid OOM in ffmpeg filter_complex (18+ xfade chains crash ACA).
-    if len(repos) > _MAX_SEGMENTS:
-        logger.warning(
-            "Capping repos from %d to %d to avoid OOM in ffmpeg composition",
-            len(repos),
-            _MAX_SEGMENTS,
-        )
-    capped_repos = repos[:_MAX_SEGMENTS]
-
-    segment_duration = total_duration_seconds / len(capped_repos)
+    segment_duration = total_duration_seconds / len(repos)
     segments: list[VideoSegment] = []
 
-    for i, repo in enumerate(capped_repos):
+    for i, repo in enumerate(repos):
         segments.append(
             VideoSegment(
                 repo=repo,
