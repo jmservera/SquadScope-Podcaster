@@ -252,7 +252,7 @@ def _record_generic_segment(
     return RecordedSegment(
         segment=segment,
         video_path=dest_path,
-        is_fallback=True,
+        is_fallback=False,
         has_pages=False,
     )
 

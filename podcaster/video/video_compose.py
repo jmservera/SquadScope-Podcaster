@@ -997,7 +997,7 @@ def build_sync_map(
 ) -> list[SyncedSegment]:
     """Match each recorded segment to its target time window from *plan*.
 
-    Pairs recordings to plan segments by repo URL, preserving plan order.
+    Pairs recordings to plan segments by segment label, preserving plan order.
     Recordings with no matching plan segment are ignored; plan segments with
     no matching recording raise ``ValueError``.
 
