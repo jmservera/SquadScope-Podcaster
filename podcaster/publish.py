@@ -573,6 +573,101 @@ def _publish_episode_live(
     )
 
 
+def upload_video_to_episode(
+    video_path: Path,
+    anchor_id: int,
+    *,
+    content_type: str = "video/mp4",
+    show_id: str | None = None,
+    sp_dc: str | None = None,
+    sp_key: str | None = None,
+) -> PublishResult:
+    """Attach a video file to an existing Spotify episode draft (#337).
+
+    Reuses the multipart GCS video upload + process_upload path to add an MP4
+    to the same anchor episode that already holds the audio. Does not create a
+    new episode, set metadata, or publish — those were handled by the audio
+    publish flow that produced ``anchor_id``.
+
+    Returns a PublishResult; status is "draft" on success and "failed" otherwise.
+    """
+    if _is_dry_run():
+        logger.info(
+            "DRY RUN: Would upload video %s to existing episode anchorId=%s (%s)",
+            video_path,
+            anchor_id,
+            content_type,
+        )
+        return PublishResult(
+            anchor_episode_id=anchor_id,
+            status="draft",
+            dry_run=True,
+            details={"upload_path": str(video_path), "content_type": content_type},
+        )
+
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        return PublishResult(
+            status="failed", error=f"Video file not found or empty: {video_path}"
+        )
+
+    try:
+        env_show_id, env_sp_dc, env_sp_key = _get_credentials()
+        show_id = show_id or env_show_id
+        sp_dc = sp_dc or env_sp_dc
+        sp_key = sp_key or env_sp_key
+    except ValueError as exc:
+        return PublishResult(status="failed", error=str(exc))
+
+    try:
+        session = _build_session(sp_dc, sp_key, show_id)
+        station_id, user_id = _resolve_legacy_ids(session, show_id)
+
+        file_data = video_path.read_bytes()
+        upload_result = _get_upload_url(
+            session,
+            anchor_id,
+            filename=video_path.name,
+            content_type=content_type,
+            is_video=True,
+            file_size=len(file_data),
+        )
+        signed_url_parts, upload_id = upload_result  # type: ignore[misc]
+        parts_etags = _upload_video_multipart(session, signed_url_parts, file_data)
+
+        _process_upload(
+            session,
+            upload_id,
+            anchor_id=anchor_id,
+            station_id=station_id,
+            user_id=user_id,
+            filename=video_path.name,
+            content_type=content_type,
+            parts_etags=parts_etags,
+        )
+
+        logger.info(
+            "Video attached to existing episode anchorId=%d (%d bytes)",
+            anchor_id,
+            len(file_data),
+        )
+        return PublishResult(
+            anchor_episode_id=anchor_id,
+            status="draft",
+            details={
+                "station_id": station_id,
+                "upload_id": upload_id,
+                "content_type": content_type,
+            },
+        )
+    except SpotifyPublishError as exc:
+        logger.error("Spotify video upload failed: %s", exc)
+        return PublishResult(status="failed", error=str(exc))
+    except Exception as exc:
+        safe_msg = re.sub(r"https?://\S+", lambda m: _safe_url(m.group()), str(exc))
+        logger.error("Unexpected error during Spotify video upload: %s", safe_msg)
+        return PublishResult(status="failed", error=f"Unexpected: {safe_msg}")
+
+
 def _safe_resolve_number(
     label: str,
     resolver,

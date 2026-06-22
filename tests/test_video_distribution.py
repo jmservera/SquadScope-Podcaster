@@ -18,6 +18,7 @@ from podcaster.video.distribution import (
     archive_to_blob,
     distribute_video,
     update_spotify_rss,
+    upload_to_spotify_episode,
     upload_to_youtube,
 )
 
@@ -386,16 +387,93 @@ class TestHelpers:
         r3 = DistributionResult(status="failed")
         assert r3.succeeded is False
 
-    def test_no_listener_facing_target_fails(self, tmp_path):
-        """Distribution fails if no listener-facing target (YouTube/Spotify) is configured (#268)."""
+    def test_blob_archive_alone_is_sufficient(self, tmp_path):
+        """Blob archive alone is a sufficient distribution target (#337)."""
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"\x00" * 2048)
         config = VideoDistributionConfig(
             youtube_enabled=False,
             spotify_rss_enabled=False,
+            spotify_upload_enabled=False,
             blob_archive_enabled=True,
+            dry_run=True,
+        )
+        result = distribute_video(video_file, "job1", "title", "desc", 120.0, config)
+        assert result.status == "completed"
+        assert result.blob_path is not None
+
+    def test_no_target_at_all_fails(self, tmp_path):
+        """Distribution fails only if no target whatsoever is enabled (#337)."""
+        video_file = tmp_path / "test.mp4"
+        video_file.write_bytes(b"\x00" * 2048)
+        config = VideoDistributionConfig(
+            youtube_enabled=False,
+            spotify_rss_enabled=False,
+            spotify_upload_enabled=False,
+            blob_archive_enabled=False,
             dry_run=False,
         )
         result = distribute_video(video_file, "job1", "title", "desc", 120.0, config)
         assert result.status == "failed"
-        assert "No listener-facing publish target" in result.errors[0]
+        assert "No distribution target configured" in result.errors[0]
+
+
+class TestSpotifyEpisodeUpload:
+    """Tests for the Spotify episode video-upload target (#337)."""
+
+    def test_from_env(self, monkeypatch):
+        monkeypatch.setenv("VIDEO_SPOTIFY_UPLOAD_ENABLED", "true")
+        config = VideoDistributionConfig.from_env()
+        assert config.spotify_upload_enabled is True
+
+    def test_from_payload(self):
+        config = VideoDistributionConfig.from_payload({"spotify_upload_enabled": True})
+        assert config.spotify_upload_enabled is True
+
+    def test_no_anchor_id_returns_false(self, video_file):
+        config = VideoDistributionConfig(spotify_upload_enabled=True)
+        assert upload_to_spotify_episode(video_file, None, config) is False
+
+    def test_dry_run_returns_true(self, video_file):
+        config = VideoDistributionConfig(spotify_upload_enabled=True, dry_run=True)
+        assert upload_to_spotify_episode(video_file, 42, config) is True
+
+    def test_delegates_to_publish(self, video_file, monkeypatch):
+        captured = {}
+
+        def fake_upload(path, anchor_id, *, content_type="video/mp4"):
+            captured["path"] = path
+            captured["anchor_id"] = anchor_id
+            captured["content_type"] = content_type
+            from podcaster.publish import PublishResult
+
+            return PublishResult(anchor_episode_id=anchor_id, status="draft")
+
+        monkeypatch.setattr("podcaster.publish.upload_video_to_episode", fake_upload)
+        config = VideoDistributionConfig(spotify_upload_enabled=True)
+        assert upload_to_spotify_episode(video_file, 99, config) is True
+        assert captured["anchor_id"] == 99
+        assert captured["content_type"] == "video/mp4"
+
+    def test_publish_failure_returns_false(self, video_file, monkeypatch):
+        def fake_upload(path, anchor_id, *, content_type="video/mp4"):
+            from podcaster.publish import PublishResult
+
+            return PublishResult(status="failed", error="boom")
+
+        monkeypatch.setattr("podcaster.publish.upload_video_to_episode", fake_upload)
+        config = VideoDistributionConfig(spotify_upload_enabled=True)
+        assert upload_to_spotify_episode(video_file, 99, config) is False
+
+    def test_distribute_video_spotify_upload_dry_run(self, video_file):
+        config = VideoDistributionConfig(
+            spotify_upload_enabled=True,
+            blob_archive_enabled=False,
+            dry_run=True,
+        )
+        result = distribute_video(
+            video_file, "job1", "title", "desc", 120.0, config,
+            spotify_anchor_id=123,
+        )
+        assert result.spotify_upload_updated is True
+        assert result.status == "completed"

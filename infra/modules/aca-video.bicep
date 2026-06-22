@@ -159,6 +159,14 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
               name: 'AZURE_OPENAI_AUTH_MODE'
               value: 'managed_identity'
             }
+            {
+              name: 'VIDEO_BLOB_ARCHIVE_ENABLED'
+              value: 'true'
+            }
+            {
+              name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED'
+              value: 'true'
+            }
           ]
         }
       ]
