@@ -40,6 +40,7 @@ from podcaster.video.video_compose import (
     _build_drawtext_filter,
     _build_fit_segment_cmd,
     _build_h264_metadata_cmd,
+    _build_intro_dog_cmd,
     _build_normalize_cmd,
     _build_xfade_filter,
     _compute_lower_thirds,
@@ -1531,7 +1532,7 @@ class TestDogLogoConfig:
         assert cfg.url == DEFAULT_DOG_LOGO_URL
         assert cfg.position == "top-right"
         assert cfg.size == 80
-        assert cfg.opacity == pytest.approx(0.3)
+        assert cfg.opacity == pytest.approx(0.5)
 
     def test_none_input_returns_none(self):
         assert DogLogoConfig.from_dict(None) is None
@@ -1559,7 +1560,7 @@ class TestDogLogoConfig:
         assert cfg.url == DEFAULT_DOG_LOGO_URL
         assert cfg.position == "top-right"
         assert cfg.size == 80
-        assert cfg.opacity == pytest.approx(0.3)
+        assert cfg.opacity == pytest.approx(0.5)
 
     def test_opacity_clamped(self):
         assert DogLogoConfig.from_dict({"opacity": 5}).opacity == pytest.approx(1.0)
@@ -1580,6 +1581,35 @@ class TestBuildDogOverlayFilter:
         f = _build_dog_overlay_filter(cfg, 1, "0:v")
         assert "overlay=40:H-h-40" in f
         assert "scale=100:-1" in f
+
+    def test_enable_expression_appended(self):
+        cfg = DogLogoConfig(size=80, opacity=0.5, position="top-right")
+        f = _build_dog_overlay_filter(cfg, 1, "0:v", enable="gte(t,7.000)")
+        assert "overlay=W-w-40:40:format=auto:enable='gte(t,7.000)'" in f
+        assert f.endswith("[dogout]")
+
+    def test_no_enable_by_default(self):
+        cfg = DogLogoConfig(size=80, opacity=0.5, position="top-right")
+        f = _build_dog_overlay_filter(cfg, 1, "0:v")
+        assert "enable=" not in f
+
+
+class TestBuildIntroDogCmd:
+    def test_overlay_enabled_on_intro_tail(self, tmp_path):
+        cfg = DogLogoConfig(size=80, opacity=0.5, position="top-right")
+        intro = tmp_path / "intro.mp4"
+        logo = tmp_path / "logo.png"
+        out = tmp_path / "intro_dog.mp4"
+        cmd = _build_intro_dog_cmd(intro, cfg, logo, 7.0, out)
+        assert cmd[0] == "ffmpeg"
+        assert str(intro) in cmd
+        assert str(logo) in cmd
+        joined = " ".join(cmd)
+        assert "enable='gte(t,7.000)'" in joined
+        assert "[dogout]" in joined
+        # video-only encode (no audio)
+        assert "-an" in cmd
+        assert cmd[-1] == str(out)
 
 
 class TestComposeVideoDogLogo:
@@ -1608,6 +1638,36 @@ class TestComposeVideoDogLogo:
         assert "[dogout]" in joined
         # the logo image was added as an input
         assert str(logo) in compose_cmd
+
+    def test_overlay_applied_to_intro_tail(self, tmp_path, monkeypatch):
+        logo = tmp_path / "logo.png"
+        logo.write_bytes(b"fakepng")
+        monkeypatch.setattr(
+            "podcaster.video.video_compose._fetch_dog_logo",
+            lambda url, cache_dir: logo,
+        )
+        runner = _ffprobe_runner(has_audio=False, duration=5.0)
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"intro"})
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        compose_video(
+            segments=[seg],
+            output_path=tmp_path / "out" / "episode.mp4",
+            runner=runner,
+            storage=storage,
+            intro_outro_cache_dir=tmp_path / "cache",
+            dog_logo=DogLogoConfig(),
+        )
+        cmds = [c.args[0] for c in runner.call_args_list]
+        # the intro-tail DOG pass overlays the logo with a time-gated enable
+        intro_dog_cmd = next(
+            c for c in cmds
+            if "-filter_complex" in c and c[-1].endswith("intro_dog.mp4")
+        )
+        joined = " ".join(intro_dog_cmd)
+        assert "enable='gte(t," in joined
+        assert "[dogout]" in joined
+        assert str(logo) in intro_dog_cmd
 
     def test_no_config_skips_overlay(self, tmp_path):
         runner = _mock_runner()
