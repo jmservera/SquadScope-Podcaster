@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import os
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig, truncate_html
 from podcaster.publish import (
-    PublishResult,
     SpotifyPublishError,
     _build_session,
     _is_dry_run,
@@ -983,3 +979,122 @@ class TestPollUploadErrorExtraction:
                 parts_etags=[{"partNumber": 1, "etag": "e1"}],
             )
         assert "SOME_OTHER_ERROR" in str(exc.value)
+
+
+class TestCredentialExpiryDetection:
+    """#364: detect Spotify 401/403 as credential expiry and notify."""
+
+    def _http_error(self, status_code):
+        import requests
+
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = "Unauthorized"
+        return requests.HTTPError("auth", response=resp)
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    def test_retry_request_raises_credential_expired(self, status_code, monkeypatch):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        resp = MagicMock()
+        resp.raise_for_status.side_effect = self._http_error(status_code)
+        session.request.return_value = resp
+
+        monkeypatch.setattr(pub.time, "sleep", lambda *a, **k: None)
+        with pytest.raises(pub.SpotifyCredentialExpiredError) as exc:
+            pub._retry_request(session, "GET", "https://api-v5.anchor.fm/x")
+        assert str(status_code) in str(exc.value)
+        # Must not retry on auth failure.
+        assert session.request.call_count == 1
+
+    def test_retry_request_still_retries_500(self, monkeypatch):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        resp = MagicMock()
+        resp.raise_for_status.side_effect = self._http_error(500)
+        session.request.return_value = resp
+
+        monkeypatch.setattr(pub.time, "sleep", lambda *a, **k: None)
+        with pytest.raises(pub.SpotifyPublishError) as exc:
+            pub._retry_request(session, "GET", "https://api-v5.anchor.fm/x")
+        assert not isinstance(exc.value, pub.SpotifyCredentialExpiredError)
+
+    def test_process_upload_401_raises_credential_expired(self, monkeypatch):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        process_resp = MagicMock()
+        process_resp.raise_for_status = MagicMock()
+        poll_resp = MagicMock()
+        poll_resp.status_code = 401
+        poll_resp.raise_for_status.side_effect = self._http_error(401)
+        session.request.side_effect = [process_resp, poll_resp]
+
+        monkeypatch.setattr(pub.time, "sleep", lambda *a, **k: None)
+        with pytest.raises(pub.SpotifyCredentialExpiredError):
+            pub._process_upload(
+                session,
+                "u1",
+                anchor_id=1,
+                station_id="2",
+                user_id="3",
+                filename="ep.mp3",
+                content_type="audio/mpeg",
+            )
+
+    def test_bearer_exchange_login_required_is_credential_expired(self, monkeypatch):
+        from podcaster import publish as pub
+
+        connector = MagicMock()
+        connector._authenticate.side_effect = Exception("Login required")
+        with patch("podcaster.publish.SpotifyConnector", return_value=connector):
+            with pytest.raises(pub.SpotifyCredentialExpiredError):
+                pub._request_bearer_token("dc", "key", "show")
+
+    def test_publish_episode_notifies_on_credential_expiry(
+        self, spotify_env, mp3_file, monkeypatch
+    ):
+        from podcaster import publish as pub
+
+        monkeypatch.setattr(
+            pub,
+            "_build_session",
+            MagicMock(
+                side_effect=pub.SpotifyCredentialExpiredError(
+                    "Spotify rejected the request (HTTP 401)"
+                )
+            ),
+        )
+        from podcaster.config import SpotifyPublishConfig
+
+        config = SpotifyPublishConfig.from_payload(
+            {"spotify_publish": {"upload_format": "mp3"}}
+        )
+        with patch(
+            "podcaster.credential_expiry.notify_credential_expiry",
+            return_value=4242,
+        ) as notify:
+            result = pub.publish_episode(
+                mp3_path=mp3_file,
+                title="Title",
+                description="Desc",
+                spotify_publish_config=config,
+            )
+
+        notify.assert_called_once()
+        assert result.status == "failed"
+        assert result.details["credentials_expired"] is True
+        assert result.details["notification_issue"] == 4242
+
+    def test_verify_auth_403_reports_expired(self, spotify_env):
+        with patch("podcaster.publish._build_session") as mock_build_session:
+            mock_session = MagicMock()
+            mock_build_session.return_value = mock_session
+            mock_resp = MagicMock()
+            mock_resp.status_code = 403
+            mock_session.get.return_value = mock_resp
+            valid, msg = verify_spotify_auth()
+        assert valid is False
+        assert "refresh" in msg.lower()

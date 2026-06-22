@@ -71,6 +71,17 @@ class SpotifyPublishError(Exception):
     """Raised when a Spotify API call fails."""
 
 
+class SpotifyCredentialExpiredError(SpotifyPublishError):
+    """Raised when Spotify rejects the request due to expired credentials.
+
+    This signals that the ``SP_DC`` / ``SP_KEY`` browser cookies (or the
+    short-lived bearer token derived from them) are no longer valid and an
+    operator must refresh them. It is distinct from generic publish failures
+    so callers can trigger an explicit, actionable credential-expiry
+    notification.
+    """
+
+
 def _is_enabled() -> bool:
     """Check if Spotify publishing is enabled."""
     return os.environ.get("SPOTIFY_PUBLISH_ENABLED", "").lower() == "true"
@@ -144,7 +155,7 @@ def _request_bearer_token(sp_dc: str, sp_key: str, show_id: str) -> str:
     except Exception as exc:
         message = str(exc)
         if "login required" in message.lower() or "credentials" in message.lower():
-            raise SpotifyPublishError(
+            raise SpotifyCredentialExpiredError(
                 "Spotify cookies expired — operator must refresh SP_DC/SP_KEY."
             ) from exc
         raise SpotifyPublishError(
@@ -195,6 +206,22 @@ def _retry_request(
             return resp
         except requests.RequestException as exc:
             last_exc = exc
+            if (
+                isinstance(exc, requests.HTTPError)
+                and exc.response is not None
+                and exc.response.status_code in {401, 403}
+            ):
+                logger.error(
+                    "Spotify API %s %s returned HTTP %d — credentials expired.",
+                    method,
+                    log_url,
+                    exc.response.status_code,
+                )
+                raise SpotifyCredentialExpiredError(
+                    "Spotify rejected the request (HTTP "
+                    f"{exc.response.status_code}) — SP_DC/SP_KEY credentials "
+                    "expired. Operator must refresh them."
+                ) from exc
             if not _is_retryable(exc) or attempt >= _MAX_RETRIES - 1:
                 if exc.response is not None:
                     body_snippet = exc.response.text[:500] if exc.response.text else "(empty)"
@@ -249,8 +276,11 @@ def verify_spotify_auth() -> tuple[bool, str]:
             if data.get("stationId") and data.get("userId"):
                 return True, "Spotify auth valid."
             return False, "Spotify auth invalid — legacyIds response missing IDs."
-        elif resp.status_code == 401:
-            return False, "Spotify cookies expired — operator must refresh SP_DC/SP_KEY."
+        elif resp.status_code in {401, 403}:
+            return False, (
+                "Spotify cookies expired (HTTP "
+                f"{resp.status_code}) — operator must refresh SP_DC/SP_KEY."
+            )
         else:
             return False, f"Unexpected status {resp.status_code} from Spotify."
     except SpotifyPublishError as exc:
@@ -464,6 +494,12 @@ def _process_upload(
                 continue
             resp.raise_for_status()
         except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code in {401, 403}:
+                raise SpotifyCredentialExpiredError(
+                    "Spotify rejected the request (HTTP "
+                    f"{exc.response.status_code}) — SP_DC/SP_KEY credentials "
+                    "expired. Operator must refresh them."
+                ) from exc
             raise SpotifyPublishError(
                 f"Upload {upload_id} status poll failed: {exc}"
             ) from exc
@@ -1046,6 +1082,27 @@ def publish_episode(
             details={"station_id": station_id, "upload_id": upload_id},
         )
 
+    except SpotifyCredentialExpiredError as exc:
+        logger.error(
+            "Spotify publish failed — credentials expired: %s. "
+            "Opening credential-expiry notification.",
+            exc,
+        )
+        try:
+            from podcaster.credential_expiry import notify_credential_expiry
+
+            issue_number = notify_credential_expiry(str(exc))
+        except Exception:  # pragma: no cover - defensive; notify never raises
+            logger.warning("credential-expiry notification failed", exc_info=True)
+            issue_number = None
+        return PublishResult(
+            status="failed",
+            error=str(exc),
+            details={
+                "credentials_expired": True,
+                "notification_issue": issue_number,
+            },
+        )
     except SpotifyPublishError as exc:
         logger.error("Spotify publish failed: %s", exc)
         return PublishResult(status="failed", error=str(exc))
