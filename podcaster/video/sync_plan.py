@@ -15,9 +15,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
+import requests
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Timeout (seconds) for fetching the source article page when the script
+# contains no GitHub repo URLs.
+_ARTICLE_FETCH_TIMEOUT = 10
 
 # Matches GitHub repo URLs: https://github.com/owner/repo (with optional trailing path)
 _GITHUB_REPO_RE = re.compile(
@@ -160,6 +165,63 @@ def extract_source_url(script: str) -> str | None:
     return url
 
 
+def fetch_repos_from_article(url: str) -> list[RepoReference]:
+    """Fetch *url* and extract GitHub repo references from its HTML.
+
+    The podcast script never contains GitHub repo URLs, but the source article
+    page does.  This helper navigates to the article page and scrapes any
+    ``https://github.com/owner/repo`` links from the raw HTML.
+
+    The Source URL recorded in the script header uses an uppercase ISO week
+    segment (e.g. ``/W26/``) while the live claracle.com pages are served from a
+    lowercase path (``/w26/``).  We therefore try the lowercase variant first
+    and fall back to the original casing.
+
+    Network and HTTP errors are swallowed: on any failure the function returns
+    an empty list so the caller can fall back to a generic plan gracefully.
+
+    Args:
+        url: The article ``Source URL:`` (https only).
+
+    Returns:
+        Ordered, de-duplicated list of repo references found on the page, or an
+        empty list when the page cannot be fetched or contains no repos.
+    """
+    if not url or not url.startswith("https://"):
+        return []
+
+    # Try lowercase first (live pages use lowercase week segments), then the
+    # original casing.  Preserve order and skip duplicates.
+    candidates: list[str] = []
+    lowered = url.lower()
+    for candidate in (lowered, url):
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in candidates:
+        try:
+            response = requests.get(candidate, timeout=_ARTICLE_FETCH_TIMEOUT)
+        except requests.RequestException as exc:  # noqa: BLE001 — best-effort
+            logger.warning("Failed to fetch article page %s: %s", candidate, exc)
+            continue
+        if response.status_code != 200:
+            logger.info(
+                "Article page %s returned HTTP %s", candidate, response.status_code
+            )
+            continue
+        repos = extract_repo_urls(response.text)
+        if repos:
+            logger.info(
+                "Extracted %d GitHub repo(s) from article page %s",
+                len(repos),
+                candidate,
+            )
+            return repos
+        logger.info("No GitHub repos found on article page %s", candidate)
+
+    return []
+
+
 def generate_episode_plan(
     repos: Sequence[RepoReference],
     total_duration_seconds: float,
@@ -268,8 +330,16 @@ def plan_from_script(
     repos = extract_repo_urls(script)
     if not repos:
         source_url = extract_source_url(script)
+        if source_url:
+            repos = fetch_repos_from_article(source_url)
+        if repos:
+            logger.info(
+                "Using %d GitHub repo(s) fetched from source article for plan",
+                len(repos),
+            )
+            return generate_episode_plan(repos, total_duration_seconds)
         logger.info(
-            "No GitHub repository URLs found in script; "
+            "No GitHub repository URLs found in script or source article; "
             "generating generic background plan (source_url=%s)",
             source_url,
         )
@@ -417,8 +487,18 @@ def plan_from_script_timed(
     repos = extract_repo_urls(script)
     if not repos:
         source_url = extract_source_url(script)
+        if source_url:
+            repos = fetch_repos_from_article(source_url)
+        if repos:
+            logger.info(
+                "Using %d GitHub repo(s) fetched from source article for plan",
+                len(repos),
+            )
+            return generate_episode_plan_timed(
+                script, repos, total_duration_seconds, min_segment_seconds
+            )
         logger.info(
-            "No GitHub repository URLs found in script; "
+            "No GitHub repository URLs found in script or source article; "
             "generating generic background plan (source_url=%s)",
             source_url,
         )
