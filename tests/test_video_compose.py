@@ -1060,14 +1060,52 @@ class TestBuildAudioOverlayCmd:
         # video copied, audio re-encoded to aac
         assert "copy" in cmd
         assert "aac" in cmd
-        # the podcast audio is mapped from the 2nd input
+        # audio is mapped from the 2nd input
         assert "0:v:0" in cmd
         assert "1:a:0" in cmd
-        # trims to the shorter of video/audio (no audio truncation flag)
-        assert "-shortest" in cmd
+        # audio is NEVER truncated: no -shortest in audio overlay
+        assert "-shortest" not in cmd
         assert "-t" not in cmd
         assert str(tmp_path / "audio.mp3") in cmd
         assert cmd[-1] == str(tmp_path / "out.mp4")
+
+    def test_extends_video_when_audio_is_longer(self, tmp_path):
+        cmd = _build_audio_overlay_cmd(
+            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4",
+            video_duration=10.0, audio_duration=15.0,
+        )
+        joined = " ".join(cmd)
+        # video is re-encoded (not copied) so it can be padded + faded
+        assert "-c:v" in cmd and "libx264" in cmd
+        assert "copy" not in cmd
+        # final frame held for 5s then faded to black over the last 2s of the
+        # held region (fade starts where the original video ends)
+        assert "tpad=stop_mode=clone:stop_duration=5.000" in joined
+        assert "fade=t=out:st=10.000:d=2.000" in joined
+        # explicit bt709 color flags for Spotify consistency
+        assert "-colorspace" in cmd and "bt709" in cmd
+        assert "-shortest" not in cmd
+
+    def test_copies_video_when_video_is_longer(self, tmp_path):
+        cmd = _build_audio_overlay_cmd(
+            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4",
+            video_duration=20.0, audio_duration=15.0,
+        )
+        assert "copy" in cmd
+        assert "tpad" not in " ".join(cmd)
+        assert "-shortest" not in cmd
+
+    def test_fade_clamped_to_short_padding(self, tmp_path):
+        # Padding (1s) is shorter than the 2s fade window: the fade must start
+        # where the original video ends and last only as long as the padding so
+        # it never bleeds into the real footage.
+        cmd = _build_audio_overlay_cmd(
+            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4",
+            video_duration=10.0, audio_duration=11.0,
+        )
+        joined = " ".join(cmd)
+        assert "tpad=stop_mode=clone:stop_duration=1.000" in joined
+        assert "fade=t=out:st=10.000:d=1.000" in joined
 
 
 class TestComposeVideoContentVideoOnly:
@@ -1094,11 +1132,12 @@ class TestComposeVideoContentVideoOnly:
         # The final command overlays the podcast MP3 onto the content
         final_cmd = cmds[-1]
         assert str(audio) in final_cmd
-        assert "-shortest" in final_cmd
+        assert "-shortest" not in final_cmd
         assert final_cmd[-1] == str(out)
-        # Reported duration trims to the shorter of video (10) / audio (12)
+        # Reported duration is the full (untruncated) length; the runner probes
+        # both audio and video as 12.0s here.
         assert result.has_audio is True
-        assert result.duration_seconds == pytest.approx(10.0)
+        assert result.duration_seconds == pytest.approx(12.0)
 
     def test_bookends_and_audio_overlay_on_joined_video(self, tmp_path):
         # _ffprobe_runner answers every probe with the same duration, so intro,
@@ -1139,8 +1178,9 @@ class TestComposeVideoContentVideoOnly:
         final_cmd = cmds[-1]
         assert str(audio) in final_cmd
         assert final_cmd[-1] == str(out)
-        # video duration = 10 (content) + 5 + 5 (bookends) = 20; audio probes as
-        # 5.0s, so the output trims to the shorter audio duration.
+        # video duration = 10 (content) + 5 + 5 (bookends); audio probes as 5.0s.
+        # The runner mocks every probe at 5.0s, so the reported (untruncated)
+        # length resolves to 5.0s here.
         assert result.duration_seconds == pytest.approx(5.0)
 
 

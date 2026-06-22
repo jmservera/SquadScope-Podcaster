@@ -10,6 +10,7 @@ from podcaster.video.sync_plan import (
     VideoSegment,
     extract_repo_urls,
     extract_source_url,
+    fetch_repos_from_article,
     generate_episode_plan,
     generate_episode_plan_timed,
     generate_generic_plan,
@@ -88,6 +89,99 @@ class TestExtractSourceUrl:
         ]:
             script = f"Source URL: {bad_url}\n---\nContent"
             assert extract_source_url(script) is None
+
+
+class _FakeResponse:
+    def __init__(self, status_code=200, text=""):
+        self.status_code = status_code
+        self.text = text
+
+
+class TestFetchReposFromArticle:
+    _PAGE_HTML = (
+        "<html><body>"
+        "<a href='https://github.com/microsoft/vscode'>vscode</a>"
+        "<a href='https://github.com/astral-sh/ruff'>ruff</a>"
+        "</body></html>"
+    )
+
+    def test_tries_lowercase_url_first(self, monkeypatch):
+        calls: list[str] = []
+
+        def fake_get(url, timeout=None):
+            calls.append(url)
+            return _FakeResponse(200, self._PAGE_HTML)
+
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.requests.get", fake_get
+        )
+        repos = fetch_repos_from_article(
+            "https://claracle.com/weekly/2026/W26/"
+        )
+        # lowercase variant attempted first
+        assert calls[0] == "https://claracle.com/weekly/2026/w26/"
+        assert RepoReference("microsoft", "vscode") in repos
+        assert RepoReference("astral-sh", "ruff") in repos
+
+    def test_falls_back_to_original_case(self, monkeypatch):
+        def fake_get(url, timeout=None):
+            if url == "https://claracle.com/weekly/2026/w26/":
+                return _FakeResponse(404, "not found")
+            return _FakeResponse(200, self._PAGE_HTML)
+
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.requests.get", fake_get
+        )
+        repos = fetch_repos_from_article(
+            "https://claracle.com/weekly/2026/W26/"
+        )
+        assert RepoReference("microsoft", "vscode") in repos
+
+    def test_returns_empty_on_network_error(self, monkeypatch):
+        import requests as _requests
+
+        def fake_get(url, timeout=None):
+            raise _requests.RequestException("boom")
+
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.requests.get", fake_get
+        )
+        assert fetch_repos_from_article("https://claracle.com/x/") == []
+
+    def test_returns_empty_when_no_repos_on_page(self, monkeypatch):
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.requests.get",
+            lambda url, timeout=None: _FakeResponse(200, "<html>nothing</html>"),
+        )
+        assert fetch_repos_from_article("https://claracle.com/x/") == []
+
+    def test_rejects_non_https(self):
+        assert fetch_repos_from_article("http://example.com/") == []
+        assert fetch_repos_from_article("") == []
+
+    def test_rejects_disallowed_host(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.requests.get",
+            lambda url, timeout=None: called.append(url)
+            or _FakeResponse(200, "<html></html>"),
+        )
+        # Hosts outside the allowlist must never be fetched (SSRF guard).
+        assert fetch_repos_from_article("https://example.com/x/") == []
+        assert fetch_repos_from_article("https://evil.claracle.com.attacker/") == []
+        assert fetch_repos_from_article("https://169.254.169.254/latest/") == []
+        assert called == []
+
+    def test_allows_claracle_hosts(self, monkeypatch):
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.requests.get",
+            lambda url, timeout=None: _FakeResponse(
+                200, '<a href="https://github.com/microsoft/vscode">repo</a>'
+            ),
+        )
+        for host in ("claracle.com", "www.claracle.com"):
+            repos = fetch_repos_from_article(f"https://{host}/weekly/2026/W26/")
+            assert repos == [RepoReference("microsoft", "vscode")]
 
 
 class TestGenerateGenericPlan:
@@ -256,13 +350,35 @@ class TestPlanFromScript:
         assert seg.start_seconds == 0.0
         assert seg.duration_seconds == pytest.approx(60.0)
 
-    def test_generic_plan_uses_source_url(self):
+    def test_generic_plan_uses_source_url(self, monkeypatch):
+        # No repos on the fetched article either → fall back to generic plan.
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.fetch_repos_from_article",
+            lambda url: [],
+        )
         plan = plan_from_script(
             SCRIPT_NO_REPOS_WITH_SOURCE, total_duration_seconds=60.0
         )
         seg = plan.segments[0]
         assert seg.is_generic
         assert seg.source_url == "https://claracle.com/weekly/2026/W26/"
+
+    def test_uses_repos_fetched_from_article(self, monkeypatch):
+        fetched = [
+            RepoReference("microsoft", "vscode"),
+            RepoReference("astral-sh", "ruff"),
+        ]
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.fetch_repos_from_article",
+            lambda url: fetched,
+        )
+        plan = plan_from_script(
+            SCRIPT_NO_REPOS_WITH_SOURCE, total_duration_seconds=60.0
+        )
+        # Real timed segments per repo, not a single generic background.
+        assert len(plan.segments) == 2
+        assert all(not s.is_generic for s in plan.segments)
+        assert {s.repo for s in plan.segments} == set(fetched)
 
     def test_yaml_output_has_all_repos(self):
         plan = plan_from_script(SAMPLE_SCRIPT, total_duration_seconds=200.0)
@@ -432,13 +548,36 @@ class TestPlanFromScriptTimed:
         assert plan.segments[0].is_generic
         assert plan.total_duration_seconds == 60.0
 
-    def test_generic_plan_uses_source_url(self):
+    def test_generic_plan_uses_source_url(self, monkeypatch):
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.fetch_repos_from_article",
+            lambda url: [],
+        )
         plan = plan_from_script_timed(SCRIPT_NO_REPOS_WITH_SOURCE, 60.0)
         assert plan.segments[0].is_generic
         assert (
             plan.segments[0].source_url
             == "https://claracle.com/weekly/2026/W26/"
         )
+
+    def test_article_repos_use_equal_split(self, monkeypatch):
+        # Repos fetched from the article are absent from the script, so timed
+        # positioning would clump them all at the end. Verify we fall back to an
+        # equal-split plan with evenly distributed start times instead.
+        fetched = [
+            RepoReference("microsoft", "vscode"),
+            RepoReference("astral-sh", "ruff"),
+            RepoReference("python", "cpython"),
+        ]
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.fetch_repos_from_article",
+            lambda url: fetched,
+        )
+        plan = plan_from_script_timed(SCRIPT_NO_REPOS_WITH_SOURCE, 90.0)
+        assert len(plan.segments) == 3
+        assert all(not s.is_generic for s in plan.segments)
+        starts = [s.start_seconds for s in plan.segments]
+        assert starts == pytest.approx([0.0, 30.0, 60.0])
 
     def test_ordering_matches_script(self):
         # vscode is mentioned before ruff in SAMPLE_SCRIPT

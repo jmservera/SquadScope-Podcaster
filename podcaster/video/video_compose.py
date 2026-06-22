@@ -93,6 +93,11 @@ ENCODE_CRF = 18
 ENCODE_PIX_FMT = "yuv420p"
 ENCODE_AUDIO_BITRATE = "192k"
 
+# When the podcast audio outlasts the composed video, the final frame is held
+# (via tpad) and then faded to black over this many seconds so the outro audio
+# plays in full without an abrupt freeze.
+OUTRO_VIDEO_FADE_SECONDS = 2.0
+
 # --- Reusable intro/outro (#314, #319) ---
 # Stored once in the artifacts container and prepended/appended to every episode.
 INTRO_BLOB_PATH = "assets/video/intro.mp4"
@@ -326,6 +331,10 @@ def _build_normalize_cmd(
         "-preset", "ultrafast",
         "-crf", str(ENCODE_CRF),
         "-pix_fmt", ENCODE_PIX_FMT,
+        "-colorspace", "bt709",
+        "-color_trc", "bt709",
+        "-color_primaries", "bt709",
+        "-color_range", "tv",
         str(output_path),
     ]
 
@@ -453,6 +462,10 @@ def _build_canonical_av_cmd(
         "-preset", ENCODE_PRESET,
         "-crf", str(ENCODE_CRF),
         "-pix_fmt", ENCODE_PIX_FMT,
+        "-colorspace", "bt709",
+        "-color_trc", "bt709",
+        "-color_primaries", "bt709",
+        "-color_range", "tv",
         "-c:a", "aac",
         "-b:a", ENCODE_AUDIO_BITRATE,
         "-ar", CONCAT_AUDIO_SAMPLE_RATE,
@@ -480,29 +493,67 @@ def _build_audio_overlay_cmd(
     video_path: Path,
     audio_path: Path,
     output_path: Path,
+    *,
+    video_duration: float = 0.0,
+    audio_duration: float = 0.0,
 ) -> list[str]:
     """Overlay *audio_path* as the sole audio track on *video_path*.
 
-    Copies the (already-encoded) video stream and re-encodes the podcast MP3 to
-    AAC, dropping any audio the video may carry.  ``-shortest`` trims the muxed
-    output to the shorter of the video/audio durations so the streams stay
-    aligned without truncating the podcast audio mid-stream.
+    The podcast MP3 is re-encoded to AAC and mapped as the only audio stream
+    (any audio the video carries is dropped).  Crucially, the muxed output is
+    **never** truncated with ``-shortest``: the outro audio must always play in
+    full.
+
+    When the audio outlasts the video, the final video frame is held for the
+    remaining ``audio_duration - video_duration`` seconds (ffmpeg ``tpad`` with
+    ``stop_mode=clone``) and then faded to black over the last
+    :data:`OUTRO_VIDEO_FADE_SECONDS` seconds.  This requires re-encoding the
+    video stream.  When the video is at least as long as the audio, the video
+    stream is copied unchanged and any trailing silence is left as-is.
     """
-    return [
+    cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
         "-i", str(video_path),
         "-i", str(audio_path),
         "-map", "0:v:0",
         "-map", "1:a:0",
-        "-c:v", "copy",
+    ]
+
+    extend_video = audio_duration > video_duration > 0
+    if extend_video:
+        pad_duration = audio_duration - video_duration
+        # Fade only the held/padded region: start the fade where the original
+        # video ends and clamp its length to the padding so it never bleeds into
+        # the real footage when the padding is shorter than the fade window.
+        fade_start = video_duration
+        fade_duration = min(OUTRO_VIDEO_FADE_SECONDS, pad_duration)
+        vf = (
+            f"tpad=stop_mode=clone:stop_duration={pad_duration:.3f},"
+            f"fade=t=out:st={fade_start:.3f}:d={fade_duration:.3f}"
+        )
+        cmd += [
+            "-vf", vf,
+            "-c:v", "libx264",
+            "-preset", ENCODE_PRESET,
+            "-crf", str(ENCODE_CRF),
+            "-pix_fmt", ENCODE_PIX_FMT,
+            "-colorspace", "bt709",
+            "-color_trc", "bt709",
+            "-color_primaries", "bt709",
+            "-color_range", "tv",
+        ]
+    else:
+        cmd += ["-c:v", "copy"]
+
+    cmd += [
         "-c:a", "aac",
         "-b:a", ENCODE_AUDIO_BITRATE,
         "-ar", CONCAT_AUDIO_SAMPLE_RATE,
         "-ac", CONCAT_AUDIO_CHANNELS,
-        "-shortest",
         "-movflags", "+faststart",
         str(output_path),
     ]
+    return cmd
 
 
 def _join_intro_outro(
@@ -940,6 +991,10 @@ def compose_video(
         "-preset", ENCODE_PRESET,
         "-crf", str(ENCODE_CRF),
         "-pix_fmt", ENCODE_PIX_FMT,
+        "-colorspace", "bt709",
+        "-color_trc", "bt709",
+        "-color_primaries", "bt709",
+        "-color_range", "tv",
         "-movflags", "+faststart",
     ])
     cmd.append(str(compose_target))
@@ -971,11 +1026,20 @@ def compose_video(
     # Overlay the podcast MP3 as the sole audio track on the full video.
     if needs_audio:
         _, audio_duration = _probe_media(audio_path, run)
-        run(_build_audio_overlay_cmd(video_only_path, audio_path, output_path))
+        _, probed_video_duration = _probe_media(video_only_path, run)
+        effective_video_duration = probed_video_duration or video_duration
+        run(_build_audio_overlay_cmd(
+            video_only_path,
+            audio_path,
+            output_path,
+            video_duration=effective_video_duration,
+            audio_duration=audio_duration,
+        ))
+        # Audio is never truncated; the muxed output runs for the longer stream.
         total_duration = (
-            min(video_duration, audio_duration)
+            max(effective_video_duration, audio_duration)
             if audio_duration > 0
-            else video_duration
+            else effective_video_duration
         )
     else:
         total_duration = video_duration
