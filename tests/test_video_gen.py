@@ -28,6 +28,8 @@ from podcaster.video.video_gen import (
     _check_gh_pages,
     _check_repo_accessible,
     _dismiss_overlays,
+    _extract_website_url,
+    _navigate_to_website,
     _smooth_scroll,
     _render_fallback_page,
     _record_segment,
@@ -227,6 +229,59 @@ class TestRenderFallbackPage:
         page.wait_for_timeout.assert_called_once_with(5000)
 
 
+# --- _extract_website_url / _navigate_to_website tests ---
+
+
+class TestExtractWebsiteUrl:
+    def test_returns_url_from_evaluate(self):
+        page = MagicMock()
+        page.evaluate.return_value = "https://claracle.com"
+        assert _extract_website_url(page) == "https://claracle.com"
+
+    def test_strips_whitespace(self):
+        page = MagicMock()
+        page.evaluate.return_value = "  https://nextjs.org  "
+        assert _extract_website_url(page) == "https://nextjs.org"
+
+    def test_returns_none_when_no_link(self):
+        page = MagicMock()
+        page.evaluate.return_value = None
+        assert _extract_website_url(page) is None
+
+    def test_returns_none_on_empty_string(self):
+        page = MagicMock()
+        page.evaluate.return_value = "   "
+        assert _extract_website_url(page) is None
+
+    def test_returns_none_on_exception(self):
+        page = MagicMock()
+        page.evaluate.side_effect = Exception("eval failed")
+        assert _extract_website_url(page) is None
+
+
+class TestNavigateToWebsite:
+    def test_returns_true_on_success(self):
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=200)
+        assert _navigate_to_website(page, "https://example.com") is True
+        page.goto.assert_called_once()
+
+    def test_returns_true_when_no_response(self):
+        page = MagicMock()
+        page.goto.return_value = None
+        assert _navigate_to_website(page, "https://example.com") is True
+
+    def test_returns_false_on_http_error(self):
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=503)
+        assert _navigate_to_website(page, "https://example.com") is False
+
+    def test_returns_false_on_exception(self):
+        page = MagicMock()
+        page.goto.side_effect = Exception("timeout")
+        assert _navigate_to_website(page, "https://example.com") is False
+
+
 # --- _record_segment tests (mocked Playwright) ---
 
 
@@ -329,6 +384,57 @@ class TestRecordSegment:
         call_kwargs = browser.new_context.call_args[1]
         assert call_kwargs["color_scheme"] == "dark"
         assert call_kwargs["record_video_size"] == {"width": WIDTH, "height": HEIGHT}
+
+    def test_navigates_to_website_when_available(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        # First goto is GitHub, second is the website — both succeed.
+        page.goto.return_value = MagicMock(status=200)
+        segment = _make_segment(owner="jmservera", name="SquadScope", duration=2.0)
+
+        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
+             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
+             patch("podcaster.video.video_gen._extract_website_url",
+                   return_value="https://claracle.com"):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.website_url == "https://claracle.com"
+        assert result.is_fallback is False
+        # Two navigations: GitHub page, then the website.
+        assert page.goto.call_count == 2
+        assert page.goto.call_args_list[1][0][0] == "https://claracle.com"
+
+    def test_no_website_records_github(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=200)
+        segment = _make_segment(owner="microsoft", name="vscode", duration=2.0)
+
+        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
+             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
+             patch("podcaster.video.video_gen._extract_website_url", return_value=None):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.website_url is None
+        assert page.goto.call_count == 1
+
+    def test_falls_back_to_github_when_website_fails(self, tmp_path):
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=200)
+        segment = _make_segment(owner="jmservera", name="SquadScope", duration=2.0)
+
+        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
+             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
+             patch("podcaster.video.video_gen._extract_website_url",
+                   return_value="https://broken.example"), \
+             patch("podcaster.video.video_gen._navigate_to_website", return_value=False):
+            result = _record_segment(browser, segment, out_dir)
+
+        # Website failed to load — record the GitHub page, no website recorded.
+        assert result.website_url is None
+        assert result.is_fallback is False
+        assert result.video_path.exists()
 
 
 class TestRecordGenericSegment:
