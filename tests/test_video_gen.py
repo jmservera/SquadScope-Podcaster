@@ -374,7 +374,10 @@ class TestRecordGenericSegment:
         # Source URL is navigated to and scrolled, not the static background.
         page.goto.assert_called_once()
         assert page.goto.call_args[0][0] == "https://claracle.com/weekly/2026/W26/"
-        page.set_content.assert_not_called()
+        # The only set_content call is the dark hold frame painted before
+        # navigation (issue #355); the static background is never rendered.
+        from podcaster.video.video_gen import DARK_HOLD_HTML
+        page.set_content.assert_called_once_with(DARK_HOLD_HTML)
 
     def test_falls_back_to_background_on_nav_error(self, tmp_path):
         browser, page, out_dir = self._mock_browser(tmp_path)
@@ -390,8 +393,13 @@ class TestRecordGenericSegment:
 
         assert result.video_path.exists()
         page.goto.assert_called_once()
-        # On failure it renders the static background instead.
-        page.set_content.assert_called_once()
+        # On failure it renders the static background. set_content is called
+        # twice: once for the dark hold frame, once for the background.
+        from podcaster.video.video_gen import DARK_HOLD_HTML
+        assert page.set_content.call_count == 2
+        contents = [c.args[0] for c in page.set_content.call_args_list]
+        assert contents[0] == DARK_HOLD_HTML
+        assert "SquadScope" in contents[1]
 
 
 # --- record_episode tests (no Playwright dependency) ---

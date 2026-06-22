@@ -98,6 +98,11 @@ ENCODE_AUDIO_BITRATE = "192k"
 # plays in full without an abrupt freeze.
 OUTRO_VIDEO_FADE_SECONDS = 2.0
 
+# Smallest content window we will ever fit segments into. Guards against a
+# pathological audio duration that is shorter than the intro + outro bumpers
+# (issue #355): the content must still occupy at least this many seconds.
+MIN_CONTENT_WINDOW_SECONDS = 1.0
+
 # --- Reusable intro/outro (#314, #319) ---
 # Stored once in the artifacts container and prepended/appended to every episode.
 INTRO_BLOB_PATH = "assets/video/intro.mp4"
@@ -337,6 +342,90 @@ def _build_normalize_cmd(
         "-color_range", "tv",
         str(output_path),
     ]
+
+
+def _build_fit_segment_cmd(
+    input_path: Path,
+    output_path: Path,
+    target_duration: float,
+) -> list[str]:
+    """Normalize a clip to 1080p/30fps and fit it to *target_duration* seconds.
+
+    Unlike :func:`_build_normalize_cmd`, the output is forced to an exact
+    duration so each content segment occupies precisely its slice of the audio
+    timeline (issue #355):
+
+    * If the source is **longer** than ``target_duration`` it is trimmed
+      (``-t``).
+    * If the source is **shorter**, its final frame is held (frozen) via
+      ``tpad=stop_mode=clone`` and the result is then cut to the target.
+
+    ``tpad`` appends up to ``target_duration`` extra seconds of cloned frames
+    *after* the source ends, so the subsequent ``-t target_duration`` always has
+    enough material regardless of how short the recording is — a single pass
+    that both trims and freeze-extends without probing the source length.
+    """
+    target = max(target_duration, 0.0)
+    vf = (
+        f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
+        f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
+        f"fps={OUTPUT_FPS},"
+        f"tpad=stop_mode=clone:stop_duration={target:.3f}"
+    )
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "warning",
+        "-y",
+        "-i", str(input_path),
+        "-vf", vf,
+        "-t", f"{target:.3f}",
+        "-an",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", str(ENCODE_CRF),
+        "-pix_fmt", ENCODE_PIX_FMT,
+        "-colorspace", "bt709",
+        "-color_trc", "bt709",
+        "-color_primaries", "bt709",
+        "-color_range", "tv",
+        str(output_path),
+    ]
+
+
+def _fit_target_durations(
+    plan_durations: Sequence[float],
+    content_window: float,
+    transition_duration: float,
+) -> list[float]:
+    """Scale per-segment *plan_durations* to fill *content_window* exactly.
+
+    The composed content overlaps adjacent segments by ``transition_duration``
+    (one xfade per boundary), so for the post-overlap content to equal
+    ``content_window`` the segment durations must sum to
+    ``content_window + transition_duration * (n - 1)``.
+
+    Durations are scaled proportionally so each segment keeps its share of the
+    timeline (preserving the sync-plan alignment), then floored to just above
+    ``transition_duration`` so every xfade pass remains valid.
+    """
+    n = len(plan_durations)
+    if n == 0:
+        return []
+    overlap_total = transition_duration * max(0, n - 1)
+    target_sum = max(content_window, MIN_CONTENT_WINDOW_SECONDS) + overlap_total
+
+    source_sum = sum(plan_durations)
+    if source_sum <= 0:
+        even = target_sum / n
+        scaled = [even] * n
+    else:
+        scale = target_sum / source_sum
+        scaled = [d * scale for d in plan_durations]
+
+    # An xfade boundary needs both clips strictly longer than the transition.
+    floor = transition_duration + 0.5
+    return [max(d, floor) for d in scaled]
 
 
 def _fetch_blob_cached(
@@ -802,6 +891,7 @@ def _build_drawtext_filter(
 def _compute_lower_thirds_by_index(
     segments: list[RecordedSegment],
     transition_duration: float = TRANSITION_DURATION,
+    durations: list[float] | None = None,
 ) -> dict[int, LowerThird]:
     """Compute lower-third timings keyed by segment index.
 
@@ -814,12 +904,17 @@ def _compute_lower_thirds_by_index(
 
     Generic background segments and segments too short to display a readable
     overlay are skipped (absent from the returned mapping).
+
+    When *durations* is supplied it overrides each segment's recorded length —
+    used by the fit-to-window path (issue #355) so overlay timing matches the
+    trimmed/extended on-screen durations rather than the raw recordings.
     """
     lower_thirds: dict[int, LowerThird] = {}
     cumulative_time = 0.0
 
     for i, rec in enumerate(segments):
         seg = rec.segment
+        seg_duration = durations[i] if durations is not None else seg.duration_seconds
         # After first segment, account for transition overlap
         if i > 0:
             start = cumulative_time
@@ -828,7 +923,7 @@ def _compute_lower_thirds_by_index(
 
         # Lower third starts slightly after segment begins
         lt_start = start + 0.5
-        lt_end = min(lt_start + LOWER_THIRD_DURATION, start + seg.duration_seconds - 0.5)
+        lt_end = min(lt_start + LOWER_THIRD_DURATION, start + seg_duration - 0.5)
 
         if lt_end > lt_start and not seg.is_generic:
             lower_thirds[i] = LowerThird(
@@ -838,7 +933,7 @@ def _compute_lower_thirds_by_index(
                 end_seconds=lt_end,
             )
 
-        cumulative_time += seg.duration_seconds
+        cumulative_time += seg_duration
         if i < len(segments) - 1:
             cumulative_time -= transition_duration
 
@@ -1086,6 +1181,7 @@ def compose_video(
     intro_outro_cache_dir: Path | None = None,
     dog_logo: "DogLogoConfig | None" = None,
     dog_logo_cache_dir: Path | None = None,
+    audio_duration: float | None = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -1120,6 +1216,14 @@ def compose_video(
             download is skipped silently (graceful degradation).
         dog_logo_cache_dir: Local cache directory for the downloaded DOG logo.
             Defaults to a stable temp-dir location.
+        audio_duration: Total podcast audio length in seconds.  When provided
+            (and positive), the content segments are *fit to the audio
+            timeline* (issue #355): the intro and outro bumpers always play in
+            full and the content is trimmed/freeze-extended to fill exactly
+            ``audio_duration - intro_duration - outro_duration``.  Each segment
+            keeps its proportional slice of the timeline so the right repo is on
+            screen while the hosts discuss it.  When ``None`` the legacy
+            behaviour (content length follows the recordings) is preserved.
 
     Returns:
         ComposeResult with path to the final MP4.
@@ -1166,20 +1270,57 @@ def compose_video(
     needs_audio = audio_path is not None
     compose_target = output_path.parent / "content.mp4"
 
-    # Step 1: Normalize all segments to 1080p/30fps
+    # Fit-to-window planning (issue #355): when the audio duration is known we
+    # trim/freeze the content so it fills exactly the audio timeline minus the
+    # intro and outro bumpers (which always play in full).  Probe the bumper
+    # durations up front so the content window can be computed.
+    fit_to_window = audio_duration is not None and audio_duration > 0
+    fit_durations: list[float] | None = None
+    if fit_to_window:
+        intro_dur = _probe_media(intro_path, run)[1] if intro_path else 0.0
+        outro_dur = _probe_media(outro_path, run)[1] if outro_path else 0.0
+        content_window = max(
+            audio_duration - intro_dur - outro_dur,
+            MIN_CONTENT_WINDOW_SECONDS,
+        )
+        plan_durations = [seg.segment.duration_seconds for seg in segments]
+        fit_durations = _fit_target_durations(
+            plan_durations, content_window, transition_duration
+        )
+        logger.info(
+            "Fitting %d content segment(s) to %.1fs window "
+            "(audio=%.1fs, intro=%.1fs, outro=%.1fs)",
+            len(segments), content_window, audio_duration, intro_dur, outro_dur,
+        )
+
+    # Step 1: Normalize all segments to 1080p/30fps (fitting each to its target
+    # duration when fit-to-window is active).
     normalized_paths: list[Path] = []
     norm_dir = output_path.parent / "normalized"
     norm_dir.mkdir(parents=True, exist_ok=True)
 
     for i, rec in enumerate(segments):
         norm_path = norm_dir / f"seg_{i:03d}.mp4"
-        cmd = _build_normalize_cmd(rec.video_path, norm_path)
-        logger.info("Normalizing segment %d: %s", i, rec.video_path.name)
+        if fit_durations is not None:
+            cmd = _build_fit_segment_cmd(rec.video_path, norm_path, fit_durations[i])
+            logger.info(
+                "Fitting segment %d to %.1fs: %s",
+                i, fit_durations[i], rec.video_path.name,
+            )
+        else:
+            cmd = _build_normalize_cmd(rec.video_path, norm_path)
+            logger.info("Normalizing segment %d: %s", i, rec.video_path.name)
         run(cmd)
         normalized_paths.append(norm_path)
 
     # Step 2: Plan transitions and lower-thirds for pairwise composition.
-    durations = [seg.segment.duration_seconds for seg in segments]
+    # When fitting, the segment durations on screen are the fitted targets, not
+    # the original recording lengths.
+    durations = (
+        list(fit_durations)
+        if fit_durations is not None
+        else [seg.segment.duration_seconds for seg in segments]
+    )
 
     if len(segments) >= 2:
         n_boundaries = len(segments) - 1
@@ -1190,7 +1331,7 @@ def compose_video(
     # Step 3: Lower-third overlays — only probe for a drawtext-capable ffmpeg
     # when there is at least one lower-third to draw.
     lower_thirds_by_index = _compute_lower_thirds_by_index(
-        segments, transition_duration
+        segments, transition_duration, durations=fit_durations
     )
     drawtext_bin: str | None = None
     if lower_thirds_by_index:
