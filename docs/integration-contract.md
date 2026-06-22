@@ -79,7 +79,7 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
   - `url` (string, default `https://raw.githubusercontent.com/jmservera/SquadScope/main/assets/images/claracle.jpeg`): Raw URL to the logo image. Downloaded and cached at composition time.
   - `position` (string, default `top-right`): One of `top-left`, `top-right`, `bottom-left`, `bottom-right`.
   - `size` (integer, default `80`): Logo width in pixels (aspect ratio preserved).
-  - `opacity` (float, default `0.3`): Logo opacity, clamped to `0.0`–`1.0`.
+  - `opacity` (float, default `0.5`): Logo opacity, clamped to `0.0`–`1.0`.
 - `script_directions` (optional object): Guides LLM script generation with episode structure and cues. All sub-fields are optional:
   - `opening_cues.cold_open` (string): Prompt for a cold-open hook.
   - `opening_cues.ai_disclosure` (string): AI voice disclosure phrasing cue.
