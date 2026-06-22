@@ -125,6 +125,48 @@ ANTI_FLASH_CSS = (
     "html{scroll-behavior:auto !important;}"
     "::-webkit-scrollbar{display:none !important;}"
 )
+
+# Minimum natural width AND height (px) for an image to receive the zoom effect.
+# Small icons/avatars stay still; only genuinely large images get emphasis.
+IMAGE_ZOOM_MIN_SIZE_PX = 200
+
+# A subtle Ken Burns / zoom-in effect applied to large images during recording
+# (issue #362) to give the video visual dynamics.  ANTI_FLASH_CSS disables all
+# animations via the universal selector with !important, so this rule must also
+# use !important *and* a higher-specificity element+class selector
+# (`img.ss-zoom-target`) to win the cascade and keep animating.  Only images
+# tagged by _IMAGE_ZOOM_JS receive the class, so pages without large images are
+# unaffected.  `alternate` keeps the motion smooth (zoom in then back) without a
+# hard jump that would cause flickering.
+ZOOM_IMAGE_CSS = (
+    "@keyframes ss-image-zoom{"
+    "from{transform:scale(1);}to{transform:scale(1.05);}}"
+    "img.ss-zoom-target{"
+    "animation:ss-image-zoom 2.5s ease-in-out infinite alternate !important;"
+    "transform-origin:center center !important;will-change:transform;}"
+)
+
+# Flags large images (both natural dimensions above the threshold) with the
+# ss-zoom-target class so ZOOM_IMAGE_CSS applies only to them.  Returns the
+# number of images tagged.
+_IMAGE_ZOOM_JS = """
+(minSize) => {
+  const imgs = Array.from(document.images || []);
+  let count = 0;
+  for (const img of imgs) {
+    const w = img.naturalWidth || 0;
+    const h = img.naturalHeight || 0;
+    if (w === 0) {
+      continue;
+    }
+    if (w > minSize && h > minSize) {
+      img.classList.add('ss-zoom-target');
+      count += 1;
+    }
+  }
+  return count;
+}
+"""
 FALLBACK_BRAND_HTML = """\
 <!DOCTYPE html>
 <html><head><style>
@@ -251,6 +293,32 @@ def _prepare_page_for_recording(page: Page) -> None:
         )
     except Exception:
         pass
+    _apply_image_zoom(page)
+
+
+def _apply_image_zoom(page: Page) -> int:
+    """Apply a subtle zoom (Ken Burns) effect to large images (issue #362).
+
+    Detects ``<img>`` elements whose natural width *and* height both exceed
+    ``IMAGE_ZOOM_MIN_SIZE_PX``, tags them, then injects keyframe CSS that scales
+    them 1.0 → 1.05 on a smooth loop.  The CSS deliberately overrides the
+    universal ``animation:none`` rule from ANTI_FLASH_CSS via a higher
+    specificity selector plus ``!important``.  Best-effort: any failure is
+    swallowed and no style is injected.  Returns the number of images affected
+    (0 if none were found or an error occurred).
+    """
+    try:
+        count = page.evaluate(_IMAGE_ZOOM_JS, IMAGE_ZOOM_MIN_SIZE_PX)
+    except Exception:
+        return 0
+    if not count:
+        return 0
+    try:
+        page.add_style_tag(content=ZOOM_IMAGE_CSS)
+    except Exception:
+        return 0
+    logger.debug("Applied zoom effect to %d large image(s)", count)
+    return int(count)
 
 
 def _smooth_scroll(page: Page, duration_seconds: float) -> None:
