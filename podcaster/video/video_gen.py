@@ -38,8 +38,22 @@ logger = logging.getLogger(__name__)
 
 WIDTH = 1920
 HEIGHT = 1080
-SCROLL_TICKS_PER_SEC = 4
+# Playwright records the viewport at ~25fps.  Scrolling at a coarse rate (the
+# previous 4 ticks/sec) moved the page in large ~250ms jumps, so the recorder
+# captured visible judder and motion-blurred, hard-to-read text.  Ticking faster
+# than the capture rate means each recorded frame reflects a small, fresh scroll
+# offset, producing smooth motion with crisp text (issue #359).
+SCROLL_TICKS_PER_SEC = 30
 MAX_SCROLL_VIEWPORT_MULTIPLIER = 2.5
+
+# Chromium flags that keep the compositor and timers running at full rate while
+# headless.  Without these, Chromium throttles background/occluded renderers and
+# timers, which drops recorded frames and makes scrolling stutter (issue #359).
+RECORDING_CHROMIUM_ARGS = [
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+]
 NETWORK_IDLE_TIMEOUT_MS = 10_000
 # Timeout for navigating to a repo's external website (issue #360).  Kept
 # shorter than the GitHub timeout so a slow/down website falls back quickly to
@@ -597,7 +611,9 @@ def record_episode(
     result = RecordingResult(output_dir=output_dir)
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=headless)
+        browser = pw.chromium.launch(
+            headless=headless, args=RECORDING_CHROMIUM_ARGS
+        )
         try:
             for segment in plan.segments:
                 logger.info(
