@@ -122,6 +122,10 @@ class _LockConflict(Exception):
         super().__init__(f"pipeline locked by {owner}")
 
 
+class _NoOp(Exception):
+    """Raised inside update_bytes callback to skip writing when no change is needed."""
+
+
 def release_pipeline(
     storage: StorageBackend,
     job_id: str,
@@ -150,11 +154,16 @@ def release_pipeline(
             lock = generation.get("pipeline_lock")
             if isinstance(lock, dict) and lock.get("pipeline") == pipeline:
                 generation.pop("pipeline_lock", None)
-        return json.dumps(doc, separators=(",", ":")).encode("utf-8")
+                return json.dumps(doc, separators=(",", ":")).encode("utf-8")
+        # No-op: lock not held by this pipeline
+        raise _NoOp()
 
     try:
         storage.update_bytes(_manifest_path(job_id), "application/json; charset=utf-8", _apply)
         logger.info("pipeline lock released: job_id=%s pipeline=%s", job_id, pipeline)
+        return True
+    except _NoOp:
+        logger.debug("pipeline lock release no-op: job_id=%s pipeline=%s (not held)", job_id, pipeline)
         return True
     except Exception:
         logger.warning(
