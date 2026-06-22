@@ -178,12 +178,35 @@ class TestRunVideoGeneration:
         with pytest.raises(TransientVideoError, match="no script"):
             run_video_generation("no-script", storage, config=dry_config)
 
-    def test_no_repos_skips(self, storage, dry_config):
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_no_repos_generates_generic_video(self, mock_compose, mock_record, storage, dry_config):
+        """Scripts without GitHub repos still produce a video (issue #335)."""
         storage.set_manifest("no-repos", {"generation": {}})
         storage.set_script("no-repos", "Just a plain script with no GitHub URLs")
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path,
+                duration_seconds=300.0,
+                segment_count=1,
+                has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+
         outcome = run_video_generation("no-repos", storage, config=dry_config)
-        assert outcome.status == STATUS_SKIPPED
-        assert outcome.reason == REASON_NO_REPOS
+        assert outcome.status == STATUS_COMPLETED
+        assert outcome.reason != REASON_NO_REPOS
+        # Generic plan should have been recorded
+        plan = mock_record.call_args.args[0]
+        assert len(plan.segments) == 1
+        assert plan.segments[0].is_generic
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")

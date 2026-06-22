@@ -59,6 +59,7 @@ STATUS_FAILED = "failed"
 
 REASON_ALREADY_PROCESSED = "already_processed"
 REASON_NO_REPOS = "no_repos_in_script"
+REASON_INVALID_PLAN = "invalid_plan"
 REASON_COMPOSITION_FAILED = "composition_failed"
 REASON_RETRY_EXHAUSTED = "retry_exhausted"
 REASON_PIPELINE_CONFLICT = "pipeline_locked_by_audio"
@@ -207,15 +208,16 @@ def run_video_generation(
         logger.warning("no audio duration in manifest, defaulting to %.0fs for job_id=%s",
                        audio_duration, job_id)
 
-    # Parse script and generate plan
+    # Parse script and generate plan. Scripts without GitHub repo URLs now
+    # produce a generic background plan (issue #335) instead of being skipped.
     try:
         plan = plan_from_script(script, audio_duration)
     except ValueError as exc:
-        logger.warning("video skipped job_id=%s reason=%s: %s", job_id, REASON_NO_REPOS, exc)
+        logger.warning("video skipped job_id=%s reason=%s: %s", job_id, REASON_INVALID_PLAN, exc)
         _record_video_state(storage, job_id, {
-            "status": STATUS_SKIPPED, "reason": REASON_NO_REPOS, "at": _iso(current),
+            "status": STATUS_SKIPPED, "reason": REASON_INVALID_PLAN, "at": _iso(current),
         })
-        return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_NO_REPOS)
+        return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
 
     # Compose video
     # TODO(#242): dispatch parallel ACA segment jobs instead of sequential local recording.

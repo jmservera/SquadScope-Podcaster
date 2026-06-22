@@ -189,9 +189,15 @@ class TestPlanFromScript:
         for seg in plan.segments:
             assert seg.duration_seconds == pytest.approx(60.0)
 
-    def test_raises_on_no_repos(self):
-        with pytest.raises(ValueError, match="No GitHub repository URLs"):
-            plan_from_script(SCRIPT_NO_REPOS, total_duration_seconds=60.0)
+    def test_generates_generic_plan_on_no_repos(self):
+        plan = plan_from_script(SCRIPT_NO_REPOS, total_duration_seconds=60.0)
+        assert plan.total_duration_seconds == 60.0
+        assert len(plan.segments) == 1
+        seg = plan.segments[0]
+        assert seg.is_generic
+        assert seg.repo is None
+        assert seg.start_seconds == 0.0
+        assert seg.duration_seconds == pytest.approx(60.0)
 
     def test_yaml_output_has_all_repos(self):
         plan = plan_from_script(SAMPLE_SCRIPT, total_duration_seconds=200.0)
@@ -355,9 +361,11 @@ class TestPlanFromScriptTimed:
         assert len(plan.segments) == 4
         assert plan.total_duration_seconds == 200.0
 
-    def test_raises_on_no_repos(self):
-        with pytest.raises(ValueError, match="No GitHub repository URLs"):
-            plan_from_script_timed(SCRIPT_NO_REPOS, 60.0)
+    def test_generates_generic_plan_on_no_repos(self):
+        plan = plan_from_script_timed(SCRIPT_NO_REPOS, 60.0)
+        assert len(plan.segments) == 1
+        assert plan.segments[0].is_generic
+        assert plan.total_duration_seconds == 60.0
 
     def test_ordering_matches_script(self):
         # vscode is mentioned before ruff in SAMPLE_SCRIPT
