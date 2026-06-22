@@ -913,3 +913,73 @@ class TestUploadVideoToEpisode:
         assert calls["metadata_anchor"] == 777
         assert calls["metadata_title"] == "My Show"
         assert calls["publish_behavior"] == "draft"
+
+
+class TestPollUploadErrorExtraction:
+    """#351: extract Spotify mediaValidation.failureInfo.errorCode on failure."""
+
+    def _session_for(self, data):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        process_resp = MagicMock()
+        process_resp.raise_for_status = MagicMock()
+        poll_resp = MagicMock()
+        poll_resp.status_code = 200
+        poll_resp.json.return_value = data
+        poll_resp.raise_for_status = MagicMock()
+        session.request.side_effect = [process_resp, poll_resp]
+        return pub, session
+
+    def test_failed_state_extracts_error_code(self, monkeypatch, caplog):
+        import logging
+
+        data = {
+            "request": {"state": "failed", "failureReason": ""},
+            "mediaValidation": {
+                "status": "validation_failure",
+                "failures": [],
+                "failureInfo": {"errorCode": "INCONSISTENT_COLOR_DETAILS"},
+            },
+        }
+        pub, session = self._session_for(data)
+        monkeypatch.setattr(pub.time, "sleep", lambda *a, **k: None)
+        with caplog.at_level(logging.DEBUG, logger="podcaster.publish"):
+            with pytest.raises(pub.SpotifyPublishError) as exc:
+                pub._process_upload(
+                    session,
+                    "upload-1",
+                    anchor_id=1,
+                    station_id="2",
+                    user_id="3",
+                    filename="v.mp4",
+                    content_type="video/mp4",
+                    parts_etags=[{"partNumber": 1, "etag": "e1"}],
+                )
+        assert "INCONSISTENT_COLOR_DETAILS" in str(exc.value)
+        # Full response JSON logged at debug
+        assert any("full response on failure" in r.message for r in caplog.records)
+
+    def test_validation_failure_on_completed_extracts_error_code(self, monkeypatch):
+        data = {
+            "request": {"state": "processed"},
+            "mediaValidation": {
+                "status": "validation_failure",
+                "failures": [],
+                "failureInfo": {"errorCode": "SOME_OTHER_ERROR"},
+            },
+        }
+        pub, session = self._session_for(data)
+        monkeypatch.setattr(pub.time, "sleep", lambda *a, **k: None)
+        with pytest.raises(pub.SpotifyPublishError) as exc:
+            pub._process_upload(
+                session,
+                "upload-2",
+                anchor_id=1,
+                station_id="2",
+                user_id="3",
+                filename="v.mp4",
+                content_type="video/mp4",
+                parts_etags=[{"partNumber": 1, "etag": "e1"}],
+            )
+        assert "SOME_OTHER_ERROR" in str(exc.value)
