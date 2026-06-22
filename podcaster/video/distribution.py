@@ -58,6 +58,8 @@ class VideoDistributionConfig:
     spotify_rss_enabled: bool = False
     spotify_rss_feed_path: str = ""
 
+    spotify_upload_enabled: bool = False
+
     blob_archive_enabled: bool = True
     dry_run: bool = False
 
@@ -73,6 +75,7 @@ class VideoDistributionConfig:
             youtube_privacy=os.environ.get("VIDEO_YOUTUBE_PRIVACY", "unlisted"),
             spotify_rss_enabled=os.environ.get("VIDEO_SPOTIFY_RSS_ENABLED", "").lower() == "true",
             spotify_rss_feed_path=os.environ.get("VIDEO_SPOTIFY_RSS_FEED_PATH", ""),
+            spotify_upload_enabled=os.environ.get("VIDEO_SPOTIFY_UPLOAD_ENABLED", "").lower() == "true",
             blob_archive_enabled=os.environ.get("VIDEO_BLOB_ARCHIVE_ENABLED", "true").lower() == "true",
             dry_run=os.environ.get("VIDEO_DISTRIBUTE_DRY_RUN", "").lower() == "true",
         )
@@ -86,6 +89,7 @@ class VideoDistributionConfig:
             youtube_privacy=str(payload.get("youtube_privacy", "unlisted")),
             spotify_rss_enabled=bool(payload.get("spotify_rss_enabled", False)),
             spotify_rss_feed_path=str(payload.get("spotify_rss_feed_path", "")),
+            spotify_upload_enabled=bool(payload.get("spotify_upload_enabled", False)),
             blob_archive_enabled=bool(payload.get("blob_archive_enabled", True)),
             dry_run=bool(payload.get("dry_run", False)),
         )
@@ -99,6 +103,7 @@ class DistributionResult:
     youtube_id: str | None = None
     youtube_url: str | None = None
     spotify_rss_updated: bool = False
+    spotify_upload_updated: bool = False
     blob_path: str | None = None
     errors: list[str] = field(default_factory=list)
 
@@ -447,6 +452,44 @@ def archive_to_blob(
         return None
 
 
+# --- Spotify Episode Upload (#337) ---
+
+
+def upload_to_spotify_episode(
+    video_path: Path,
+    anchor_id: int | None,
+    config: VideoDistributionConfig,
+) -> bool:
+    """Attach the MP4 to the same Spotify episode draft as the audio (#337).
+
+    Reads no manifest itself — the caller supplies ``anchor_id`` (resolved from
+    ``generation.publish_result.anchor_id``). Reuses the multipart video upload
+    path in ``podcaster.publish``. Returns True on success, False otherwise.
+    """
+    if not anchor_id:
+        logger.warning("Spotify video upload skipped: no anchor episode id available")
+        return False
+
+    if config.dry_run:
+        logger.info("Spotify video upload dry-run: anchor=%s", anchor_id)
+        return True
+
+    try:
+        from podcaster.publish import upload_video_to_episode
+
+        result = upload_video_to_episode(
+            video_path, int(anchor_id), content_type="video/mp4"
+        )
+        if result.status == "failed":
+            logger.error("Spotify video upload failed: %s", result.error)
+            return False
+        logger.info("Spotify video uploaded to episode anchorId=%s", anchor_id)
+        return True
+    except Exception as exc:
+        logger.error("Spotify video upload error: %s", exc)
+        return False
+
+
 # --- Orchestrator ---
 
 
@@ -461,27 +504,39 @@ def distribute_video(
     tags: list[str] | None = None,
     transport: HttpTransport | None = None,
     storage: StorageUploader | None = None,
+    spotify_anchor_id: int | None = None,
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
     Attempts all configured targets; failures on one target do not block others.
     Returns a DistributionResult summarizing outcomes across all targets.
 
-    Returns a failed DistributionResult if no listener-facing publish target
-    (YouTube or Spotify RSS) is configured — blob archive alone is not
-    sufficient for distribution.
+    The video is always archived to blob when blob archive is enabled (#337);
+    blob archive alone is a sufficient distribution target. Distribution only
+    aborts if no target whatsoever (YouTube, Spotify RSS, Spotify upload, or
+    blob archive) is enabled.
+
+    ``spotify_anchor_id`` is the anchor episode id (resolved by the caller from
+    ``generation.publish_result.anchor_id``) used to attach the MP4 to the same
+    Spotify episode draft as the audio.
     """
     result = DistributionResult()
 
-    # Validate at least one listener-facing target is configured (#268)
-    if not config.youtube_enabled and not config.spotify_rss_enabled:
+    # Abort only if no distribution target at all is enabled (#337)
+    if not (
+        config.youtube_enabled
+        or config.spotify_rss_enabled
+        or config.spotify_upload_enabled
+        or config.blob_archive_enabled
+    ):
         result.status = "failed"
         result.errors.append(
-            "No listener-facing publish target configured. "
-            "Enable at least one of: VIDEO_YOUTUBE_ENABLED, VIDEO_SPOTIFY_RSS_ENABLED."
+            "No distribution target configured. Enable at least one of: "
+            "VIDEO_YOUTUBE_ENABLED, VIDEO_SPOTIFY_RSS_ENABLED, "
+            "VIDEO_SPOTIFY_UPLOAD_ENABLED, VIDEO_BLOB_ARCHIVE_ENABLED."
         )
         logger.error(
-            "video distribution aborted job_id=%s: no listener-facing target configured", job_id
+            "video distribution aborted job_id=%s: no target configured", job_id
         )
         return result
 
@@ -496,7 +551,8 @@ def distribute_video(
         result.errors.append(f"Video file too small ({file_size} bytes)")
         return result
 
-    # 1. Archive to blob (needed for RSS enclosure URL)
+    # 1. Archive to blob — always done first so the video is stored even when no
+    #    listener-facing target succeeds (#337). Also provides the RSS enclosure URL.
     blob_path = archive_to_blob(video_path, job_id, storage=storage, config=config)
     result.blob_path = blob_path
 
@@ -532,15 +588,24 @@ def distribute_video(
             if not rss_ok:
                 result.errors.append("Spotify RSS update failed")
 
+    # 4. Attach MP4 to the same Spotify episode draft as the audio (#337)
+    if config.spotify_upload_enabled:
+        upload_ok = upload_to_spotify_episode(video_path, spotify_anchor_id, config)
+        result.spotify_upload_updated = upload_ok
+        if not upload_ok:
+            result.errors.append("Spotify video upload failed")
+
     # Determine overall status
     targets_attempted = sum([
         config.youtube_enabled,
         config.spotify_rss_enabled,
+        config.spotify_upload_enabled,
         config.blob_archive_enabled,
     ])
     targets_succeeded = sum([
         result.youtube_id is not None if config.youtube_enabled else False,
         result.spotify_rss_updated if config.spotify_rss_enabled else False,
+        result.spotify_upload_updated if config.spotify_upload_enabled else False,
         result.blob_path is not None if config.blob_archive_enabled else False,
     ])
 
@@ -552,8 +617,9 @@ def distribute_video(
         result.status = "completed"
 
     logger.info(
-        "video distribution job_id=%s status=%s youtube=%s rss=%s blob=%s",
-        job_id, result.status, result.youtube_id, result.spotify_rss_updated, result.blob_path,
+        "video distribution job_id=%s status=%s youtube=%s rss=%s spotify_upload=%s blob=%s",
+        job_id, result.status, result.youtube_id, result.spotify_rss_updated,
+        result.spotify_upload_updated, result.blob_path,
     )
     return result
 

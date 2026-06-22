@@ -22,6 +22,7 @@ from podcaster.video.job_runner import (
     TransientVideoError,
     VideoOutcome,
     _already_processed,
+    _resolve_anchor_id,
     _resolve_dog_logo,
     drain,
     manifest_path,
@@ -341,3 +342,29 @@ class TestResolveDogLogo:
     def test_no_request_returns_none(self):
         assert _resolve_dog_logo({}) is None
         assert _resolve_dog_logo({"request": "nope"}) is None
+
+
+class TestResolveAnchorId:
+    def test_generation_publish_result(self):
+        manifest = {"generation": {"publish_result": {"anchor_id": 314}}}
+        assert _resolve_anchor_id(manifest) == 314
+
+    def test_falls_back_to_publishing_result(self):
+        manifest = {"publishing": {"result": {"anchor_episode_id": 42}}}
+        assert _resolve_anchor_id(manifest) == 42
+
+    def test_prefers_generation_over_publishing(self):
+        manifest = {
+            "generation": {"publish_result": {"anchor_id": 1}},
+            "publishing": {"result": {"anchor_episode_id": 2}},
+        }
+        assert _resolve_anchor_id(manifest) == 1
+
+    def test_string_anchor_coerced(self):
+        manifest = {"generation": {"publish_result": {"anchor_id": "777"}}}
+        assert _resolve_anchor_id(manifest) == 777
+
+    def test_missing_returns_none(self):
+        assert _resolve_anchor_id({}) is None
+        assert _resolve_anchor_id({"generation": {"publish_result": {}}}) is None
+        assert _resolve_anchor_id({"generation": "nope"}) is None

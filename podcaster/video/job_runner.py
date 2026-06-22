@@ -263,6 +263,7 @@ def run_video_generation(
                 compose_result.duration_seconds,
                 dist_config,
                 storage=_StorageUploaderAdapter(storage),
+                spotify_anchor_id=_resolve_anchor_id(manifest),
             )
 
             # Record success in manifest
@@ -276,6 +277,7 @@ def run_video_generation(
                     "youtube_id": dist_result.youtube_id,
                     "blob_path": dist_result.blob_path,
                     "spotify_rss_updated": dist_result.spotify_rss_updated,
+                    "spotify_upload_updated": dist_result.spotify_upload_updated,
                 },
             })
 
@@ -295,6 +297,36 @@ def run_video_generation(
             "status": STATUS_FAILED, "reason": type(exc).__name__, "at": _iso(current),
         })
         raise TransientVideoError(f"video generation failed for job_id={job_id}") from exc
+
+
+def _resolve_anchor_id(manifest: dict[str, Any]) -> int | None:
+    """Resolve the Spotify anchor episode id from the audio publish result (#337).
+
+    Prefers ``generation.publish_result.anchor_id`` and falls back to the
+    canonical publish location ``publishing.result.anchor_episode_id``.
+    Returns ``None`` when no anchor id is recorded.
+    """
+    candidates: list[Any] = []
+    generation = manifest.get("generation")
+    if isinstance(generation, dict):
+        publish_result = generation.get("publish_result")
+        if isinstance(publish_result, dict):
+            candidates.append(publish_result.get("anchor_id"))
+
+    publishing = manifest.get("publishing")
+    if isinstance(publishing, dict):
+        result = publishing.get("result")
+        if isinstance(result, dict):
+            candidates.append(result.get("anchor_episode_id"))
+
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _resolve_dog_logo(manifest: dict[str, Any]):

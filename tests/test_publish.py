@@ -818,3 +818,82 @@ class TestSpotifyClientId:
         monkeypatch.setenv("SPOTIFY_CLIENT_ID", "custom-test-client-id-abc123")
         importlib.reload(pub_mod)
         assert pub_mod._SPOTIFY_CLIENT_ID == "custom-test-client-id-abc123"
+
+
+class TestUploadVideoToEpisode:
+    """Tests for upload_video_to_episode — attaching an MP4 to an existing draft (#337)."""
+
+    def _video(self, tmp_path):
+        v = tmp_path / "ep.mp4"
+        v.write_bytes(b"\x00" * 4096)
+        return v
+
+    def test_dry_run(self, tmp_path, monkeypatch):
+        from podcaster.publish import upload_video_to_episode
+
+        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
+        result = upload_video_to_episode(self._video(tmp_path), 42)
+        assert result.dry_run is True
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 42
+
+    def test_missing_file(self, tmp_path, monkeypatch):
+        from podcaster.publish import upload_video_to_episode
+
+        monkeypatch.delenv("SPOTIFY_PUBLISH_DRY_RUN", raising=False)
+        result = upload_video_to_episode(tmp_path / "missing.mp4", 42)
+        assert result.status == "failed"
+        assert "not found" in result.error
+
+    def test_missing_credentials(self, tmp_path, monkeypatch):
+        from podcaster.publish import upload_video_to_episode
+
+        monkeypatch.delenv("SPOTIFY_PUBLISH_DRY_RUN", raising=False)
+        monkeypatch.delenv("SPOTIFY_SHOW_ID", raising=False)
+        monkeypatch.delenv("SP_DC", raising=False)
+        monkeypatch.delenv("SP_KEY", raising=False)
+        result = upload_video_to_episode(self._video(tmp_path), 42)
+        assert result.status == "failed"
+        assert "credentials" in result.error.lower()
+
+    def test_success_reuses_multipart_path(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.delenv("SPOTIFY_PUBLISH_DRY_RUN", raising=False)
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+        calls = {}
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        def fake_get_url(session, anchor_id, **kwargs):
+            calls["is_video"] = kwargs.get("is_video")
+            calls["anchor_id"] = anchor_id
+            return ([{"partNumber": 1, "url": "https://gcs/part"}], "up1")
+
+        monkeypatch.setattr(pub, "_get_upload_url", fake_get_url)
+        monkeypatch.setattr(
+            pub, "_upload_video_multipart",
+            lambda s, parts, data: [{"partNumber": 1, "etag": "e1"}],
+        )
+
+        def fake_process(session, upload_id, **kwargs):
+            calls["content_type"] = kwargs.get("content_type")
+            calls["parts"] = kwargs.get("parts_etags")
+
+        monkeypatch.setattr(pub, "_process_upload", fake_process)
+        # _create_episode must NOT be called — sabotage it to ensure.
+        monkeypatch.setattr(
+            pub, "_create_episode",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not create episode")),
+        )
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555)
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 555
+        assert calls["is_video"] is True
+        assert calls["anchor_id"] == 555
+        assert calls["content_type"] == "video/mp4"
+        assert calls["parts"] == [{"partNumber": 1, "etag": "e1"}]
