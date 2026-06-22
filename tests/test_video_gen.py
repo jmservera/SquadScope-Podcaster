@@ -23,16 +23,12 @@ from podcaster.video.video_gen import (
     SCROLL_TICKS_PER_SEC,
     WIDTH,
     HEIGHT,
-    IMAGE_ZOOM_MIN_SIZE_PX,
-    ZOOM_IMAGE_CSS,
     RecordedSegment,
     RecordingResult,
     _check_gh_pages,
     _check_repo_accessible,
     _dismiss_overlays,
     _smooth_scroll,
-    _apply_image_zoom,
-    _prepare_page_for_recording,
     _render_fallback_page,
     _record_segment,
     record_episode,
@@ -229,66 +225,6 @@ class TestRenderFallbackPage:
         assert "owner/repo" in html
         assert "Repository unavailable" in html
         page.wait_for_timeout.assert_called_once_with(5000)
-
-
-# --- _apply_image_zoom tests ---
-
-
-class TestApplyImageZoom:
-    def test_tags_large_images_and_injects_css(self):
-        page = MagicMock()
-        page.evaluate.return_value = 3  # 3 large images tagged
-
-        count = _apply_image_zoom(page)
-
-        assert count == 3
-        # JS detection ran with the size threshold
-        page.evaluate.assert_called_once()
-        args = page.evaluate.call_args[0]
-        assert IMAGE_ZOOM_MIN_SIZE_PX in args
-        # Zoom CSS was injected
-        page.add_style_tag.assert_called_once_with(content=ZOOM_IMAGE_CSS)
-
-    def test_no_large_images_skips_css(self):
-        page = MagicMock()
-        page.evaluate.return_value = 0
-
-        count = _apply_image_zoom(page)
-
-        assert count == 0
-        page.add_style_tag.assert_not_called()
-
-    def test_evaluate_error_is_swallowed(self):
-        page = MagicMock()
-        page.evaluate.side_effect = RuntimeError("boom")
-
-        assert _apply_image_zoom(page) == 0
-        page.add_style_tag.assert_not_called()
-
-    def test_add_style_tag_error_is_swallowed(self):
-        page = MagicMock()
-        page.evaluate.return_value = 2
-        page.add_style_tag.side_effect = RuntimeError("boom")
-
-        assert _apply_image_zoom(page) == 0
-
-    def test_css_overrides_anti_flash_and_scales(self):
-        # Must use !important to beat the universal animation:none rule, and
-        # an element+class selector for higher specificity.
-        assert "!important" in ZOOM_IMAGE_CSS
-        assert "img.ss-zoom-target" in ZOOM_IMAGE_CSS
-        assert "scale(1)" in ZOOM_IMAGE_CSS
-        assert "scale(1.05)" in ZOOM_IMAGE_CSS
-
-    def test_prepare_page_applies_zoom(self):
-        page = MagicMock()
-        page.evaluate.return_value = 1
-        _prepare_page_for_recording(page)
-        # Both anti-flash CSS and zoom CSS injected
-        injected = [
-            c.kwargs.get("content", "") for c in page.add_style_tag.call_args_list
-        ]
-        assert any("ss-image-zoom" in css for css in injected)
 
 
 # --- _record_segment tests (mocked Playwright) ---

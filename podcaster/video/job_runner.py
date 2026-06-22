@@ -40,6 +40,7 @@ from podcaster.storage import (
     create_storage_backend,
 )
 from podcaster.failure_reporting import report_failure
+from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE
 from podcaster.pipeline_lock import PIPELINE_VIDEO, claim_pipeline
 from podcaster.video.distribution import (
     DistributionResult,
@@ -113,13 +114,6 @@ def show_notes_path(job_id: str) -> str:
     return f"jobs/{job_id}/show-notes.md"
 
 
-# Credits shown on every published video episode (issue #363). The audio
-# episode's description already carries the Claracle branding; the video draft
-# must do the same so listeners see the podcast name and website.
-PODCAST_NAME = "Claracle"
-PODCAST_WEBSITE = "www.claracle.com"
-
-
 def _extract_section(notes: str, *heading_names: str) -> str:
     """Return the paragraph text of the first matching markdown section.
 
@@ -179,7 +173,7 @@ def _build_video_description(
     hosts = _extract_hosts(notes)
     if hosts:
         credit_parts.append(f"Hosts: {hosts}")
-    credit_parts.append(f"{PODCAST_NAME} — {PODCAST_WEBSITE}")
+    credit_parts.append(f"{PODCAST_NAME} — {PODCAST_SPOKEN_SITE}")
     credits = "Credits: " + " · ".join(credit_parts)
 
     return f"{summary}\n\n{credits}" if summary else credits
