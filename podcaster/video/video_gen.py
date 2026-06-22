@@ -109,8 +109,11 @@ _IMAGE_ZOOM_JS = """
   const imgs = Array.from(document.images || []);
   let count = 0;
   for (const img of imgs) {
-    const w = img.naturalWidth || img.width || 0;
-    const h = img.naturalHeight || img.height || 0;
+    const w = img.naturalWidth || 0;
+    const h = img.naturalHeight || 0;
+    if (w === 0) {
+      continue;
+    }
     if (w > minSize && h > minSize) {
       img.classList.add('ss-zoom-target');
       count += 1;
