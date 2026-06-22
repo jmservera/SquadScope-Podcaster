@@ -748,7 +748,7 @@ class TestProcessUpload:
             )
 
         assert captured["json"]["uploadType"] == "video"
-        assert captured["json"]["isExtractedFromVideo"] is True
+        assert captured["json"]["isExtractedFromVideo"] is False
         assert captured["json"]["isMultipartUpload"] is True
         assert captured["json"]["parts"] == [{"partNumber": 1, "etag": "etag456"}]
 

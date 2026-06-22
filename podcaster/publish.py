@@ -421,7 +421,7 @@ def _process_upload(
         "uploadType": "video" if is_video else "default",
         "origin": "episode-media:upload",
         "caption": filename,
-        "isExtractedFromVideo": is_video,
+        "isExtractedFromVideo": False,
         "isMultipartUpload": is_multipart,
         "uploadId": upload_id,
         "episodeId": anchor_id,
