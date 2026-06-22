@@ -26,6 +26,19 @@ def _manifest_path(job_id: str) -> str:
     return f"jobs/{job_id}/manifest.json"
 
 
+def _synthesis_completed(generation: dict[str, Any]) -> bool:
+    """Return True if audio synthesis has finished for this job.
+
+    Video generation must run *after* audio synthesis, so a completed
+    ``synthesis_runner`` is the signal that the audio pipeline is done and the
+    video pipeline may take over the lock.
+    """
+    runner = generation.get("synthesis_runner")
+    if not isinstance(runner, dict):
+        return False
+    return runner.get("status") == "completed"
+
+
 def claim_pipeline(
     storage: StorageBackend,
     job_id: str,
@@ -61,8 +74,19 @@ def claim_pipeline(
         if isinstance(lock, dict):
             owner = lock.get("pipeline")
             if owner and owner != pipeline:
-                # Another pipeline owns it — don't modify, raise to signal failure
-                raise _LockConflict(owner)
+                # Sequential handoff: video may take over an audio-held lock once
+                # audio synthesis has completed. Without this, the lock claimed by
+                # the audio runner is never released and video generation is
+                # permanently skipped with "pipeline_locked_by_audio".
+                if (
+                    pipeline == PIPELINE_VIDEO
+                    and owner == PIPELINE_AUDIO
+                    and _synthesis_completed(generation)
+                ):
+                    pass  # fall through to claim ownership for video
+                else:
+                    # Another pipeline owns it — don't modify, raise to signal failure
+                    raise _LockConflict(owner)
 
         # Claim or re-confirm ownership
         generation["pipeline_lock"] = {
@@ -96,3 +120,53 @@ class _LockConflict(Exception):
     def __init__(self, owner: str) -> None:
         self.owner = owner
         super().__init__(f"pipeline locked by {owner}")
+
+
+class _NoOp(Exception):
+    """Raised inside update_bytes callback to skip writing when no change is needed."""
+
+
+def release_pipeline(
+    storage: StorageBackend,
+    job_id: str,
+    pipeline: str,
+) -> bool:
+    """Release the pipeline lock for a job if it is owned by ``pipeline``.
+
+    Returns True if the lock was released (or was not held / held by another
+    pipeline, in which case nothing is changed). Returns False only on storage
+    errors. Releasing a lock owned by a different pipeline is a no-op so a runner
+    cannot clobber another pipeline's claim.
+    """
+
+    def _apply(content: bytes | None) -> bytes:
+        doc: dict[str, Any] = {}
+        if content:
+            try:
+                doc = json.loads(content.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                doc = {}
+        if not isinstance(doc, dict):
+            doc = {}
+
+        generation = doc.get("generation")
+        if isinstance(generation, dict):
+            lock = generation.get("pipeline_lock")
+            if isinstance(lock, dict) and lock.get("pipeline") == pipeline:
+                generation.pop("pipeline_lock", None)
+                return json.dumps(doc, separators=(",", ":")).encode("utf-8")
+        # No-op: lock not held by this pipeline
+        raise _NoOp()
+
+    try:
+        storage.update_bytes(_manifest_path(job_id), "application/json; charset=utf-8", _apply)
+        logger.info("pipeline lock released: job_id=%s pipeline=%s", job_id, pipeline)
+        return True
+    except _NoOp:
+        logger.debug("pipeline lock release no-op: job_id=%s pipeline=%s (not held)", job_id, pipeline)
+        return True
+    except Exception:
+        logger.warning(
+            "pipeline lock release failed for job_id=%s pipeline=%s", job_id, pipeline, exc_info=True
+        )
+        return False
