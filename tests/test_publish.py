@@ -710,8 +710,8 @@ class TestProcessUpload:
 
         assert captured["json"]["uploadType"] == "default"
         assert captured["json"]["isExtractedFromVideo"] is False
-        assert captured["json"]["isMultipartUpload"] is True
-        assert captured["json"]["parts"] == [{"partNumber": 1, "etag": "abc123"}]
+        assert captured["json"]["isMultipartUpload"] is False
+        assert "parts" not in captured["json"]
 
     def test_process_upload_video_payload(self):
         """POST payload uses uploadType=video and isExtractedFromVideo=True for video."""
@@ -746,6 +746,7 @@ class TestProcessUpload:
                 user_id="3",
                 filename="ep.mp4",
                 content_type="video/mp4",
+                parts_etags=[{"partNumber": 1, "etag": "etag456"}],
             )
 
         assert captured["json"]["uploadType"] == "video"

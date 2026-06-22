@@ -409,30 +409,33 @@ def _process_upload(
 ) -> None:
     """Step 5: Trigger processing and poll until complete."""
     is_video = content_type.startswith("video/")
-    # For video multipart: use the provided parts list
-    # For audio: single part with the etag
-    if parts_etags is None:
-        parts_etags = [{"partNumber": 1, "etag": etag}]
+    # Video uses multipart GCS upload (multiple parts with ETags).
+    # Audio uses a single S3 PUT — isMultipartUpload must be False for audio
+    # or Anchor's process_upload returns HTTP 500.
+    is_multipart = is_video and parts_etags is not None
 
     url = f"{_BASE_URL}/v3/upload/{upload_id}/process_upload"
+    payload: dict[str, Any] = {
+        "userId": int(user_id),
+        "uploadType": "video" if is_video else "default",
+        "origin": "episode-media:upload",
+        "caption": filename,
+        "isExtractedFromVideo": is_video,
+        "isMultipartUpload": is_multipart,
+        "uploadId": upload_id,
+        "episodeId": anchor_id,
+        "stationId": int(station_id),
+    }
+    if is_multipart and parts_etags:
+        payload["parts"] = parts_etags
+
     _retry_request(
         session,
         "POST",
         url,
         headers=_MUTATION_HEADERS,
         params=_mums_params(),
-        json={
-            "userId": int(user_id),
-            "uploadType": "video" if is_video else "default",
-            "origin": "episode-media:upload",
-            "caption": filename,
-            "isExtractedFromVideo": is_video,
-            "isMultipartUpload": True,
-            "parts": parts_etags,
-            "uploadId": upload_id,
-            "episodeId": anchor_id,
-            "stationId": int(station_id),
-        },
+        json=payload,
         timeout=30,
     )
 
