@@ -169,10 +169,11 @@ def build_issue_body(error_message: str, *, timestamp: str | None = None) -> str
 def notify_credential_expiry(error_message: str) -> int | None:
     """Open a GitHub issue notifying operators of expired Spotify credentials.
 
-    Returns the issue number on success, or ``None`` if notification was
-    skipped (``gh`` unavailable / disabled) or a matching open issue already
-    exists / an error occurred. Never raises — credential-expiry notification
-    must not break the publish pipeline.
+    Returns the issue number on success. If a matching open issue already
+    exists, returns that existing issue's number instead of creating a
+    duplicate. Returns ``None`` if notification was skipped (``gh``
+    unavailable / disabled) or an error occurred. Never raises —
+    credential-expiry notification must not break the publish pipeline.
     """
     if os.environ.get("CREDENTIAL_EXPIRY_NOTIFY_DISABLED", "").lower() == "true":
         logger.info("credential-expiry notification disabled via env; skipping")
