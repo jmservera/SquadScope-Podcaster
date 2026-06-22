@@ -65,6 +65,17 @@ param openAiEndpoint string = ''
 @description('Azure OpenAI chat deployment (alias) name.')
 param chatDeploymentName string = ''
 
+@secure()
+@description('Spotify session cookie SP_DC for video upload.')
+param spotifySessionCookieDc string = ''
+
+@secure()
+@description('Spotify session cookie SP_KEY for video upload.')
+param spotifySessionCookieKey string = ''
+
+@description('Spotify show ID for video upload target.')
+param spotifyShowId string = ''
+
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
 
@@ -83,6 +94,16 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
       triggerType: 'Event'
       replicaTimeout: replicaTimeoutSeconds
       replicaRetryLimit: 1
+      secrets: [
+        {
+          name: 'spotify-sp-dc'
+          value: spotifySessionCookieDc
+        }
+        {
+          name: 'spotify-sp-key'
+          value: spotifySessionCookieKey
+        }
+      ]
       registries: hasContainerRegistry ? [
         {
           server: containerRegistryServer
@@ -166,6 +187,18 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED'
               value: 'true'
+            }
+            {
+              name: 'SPOTIFY_SHOW_ID'
+              value: spotifyShowId
+            }
+            {
+              name: 'SP_DC'
+              secretRef: 'spotify-sp-dc'
+            }
+            {
+              name: 'SP_KEY'
+              secretRef: 'spotify-sp-key'
             }
           ]
         }
