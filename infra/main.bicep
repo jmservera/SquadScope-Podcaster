@@ -352,6 +352,9 @@ module acaVideo 'modules/aca-video.bicep' = {
     containerRegistryServer: acrLoginServer
     openAiEndpoint: openAiEndpoint
     chatDeploymentName: chatDeploymentName
+    spotifySessionCookieDc: spotifySessionCookieDc
+    spotifySessionCookieKey: spotifySessionCookieKey
+    spotifyShowId: spotifyShowId
   }
   dependsOn: [
     artifactContainer
