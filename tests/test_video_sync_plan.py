@@ -137,6 +137,25 @@ class TestFetchReposFromArticle:
         )
         assert RepoReference("microsoft", "vscode") in repos
 
+    def test_excludes_own_project_repo(self, monkeypatch):
+        # The project's own repo must never appear in the extracted list, even
+        # when present on the article page (issue #353). Case-insensitive.
+        html = (
+            "<html><body>"
+            "<a href='https://github.com/jmservera/SquadScope'>self</a>"
+            "<a href='https://github.com/JMSERVERA/squadscope'>self2</a>"
+            "<a href='https://github.com/microsoft/vscode'>vscode</a>"
+            "</body></html>"
+        )
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.requests.get",
+            lambda url, timeout=None: _FakeResponse(200, html),
+        )
+        repos = fetch_repos_from_article("https://claracle.com/x/")
+        assert RepoReference("microsoft", "vscode") in repos
+        assert RepoReference("jmservera", "SquadScope") not in repos
+        assert all(r.name.lower() != "squadscope" for r in repos)
+
     def test_returns_empty_on_network_error(self, monkeypatch):
         import requests as _requests
 

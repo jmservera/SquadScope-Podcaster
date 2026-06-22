@@ -38,6 +38,7 @@ from podcaster.video.video_compose import (
     _build_concat_cmd,
     _build_dog_overlay_filter,
     _build_drawtext_filter,
+    _build_h264_metadata_cmd,
     _build_normalize_cmd,
     _build_xfade_filter,
     _compute_lower_thirds,
@@ -258,8 +259,8 @@ class TestComposeVideo:
         assert result.segment_count == 1
         assert result.output_path.suffix == ".mp4"
         assert result.has_audio is False
-        # Should have: 1 normalize + 1 compose call
-        assert runner.call_count == 2
+        # Should have: 1 normalize + 1 compose + 1 h264_metadata BSF
+        assert runner.call_count == 3
 
     def test_two_segments_with_xfade(self, tmp_path):
         runner = _mock_runner()
@@ -279,8 +280,8 @@ class TestComposeVideo:
         assert result.segment_count == 2
         # Duration accounts for 1 transition overlap
         assert result.duration_seconds == pytest.approx(19.0)
-        # 2 normalize + 1 compose
-        assert runner.call_count == 3
+        # 2 normalize + 1 compose + 1 h264_metadata BSF
+        assert runner.call_count == 4
 
     def test_with_audio(self, tmp_path):
         runner = _mock_runner()
@@ -297,10 +298,13 @@ class TestComposeVideo:
         )
 
         assert result.has_audio is True
-        # Final compose command should include audio encoding flags
+        # The audio overlay (penultimate call) re-encodes audio to aac; the
+        # final call is the h264_metadata BSF stream-copy pass.
+        overlay_cmd = runner.call_args_list[-2][0][0]
+        assert "-c:a" in overlay_cmd
+        assert "aac" in overlay_cmd
         final_cmd = runner.call_args_list[-1][0][0]
-        assert "-c:a" in final_cmd
-        assert "aac" in final_cmd
+        assert any("h264_metadata" in str(a) for a in final_cmd)
 
     def test_explicit_output_path(self, tmp_path):
         runner = _mock_runner()
@@ -338,8 +342,8 @@ class TestComposeVideo:
         assert result.segment_count == 3
         # 30s - 2 transitions of 1s each = 28s
         assert result.duration_seconds == pytest.approx(28.0)
-        # 3 normalize + 2 pairwise xfade passes (N-1 passes for N segments)
-        assert runner.call_count == 5
+        # 3 normalize + 2 pairwise xfade passes + 1 h264_metadata BSF
+        assert runner.call_count == 6
 
     def test_many_segments_pairwise_constant_inputs(self, tmp_path):
         """>10 segments compose without a cap; each xfade pass has 2 inputs (#349)."""
@@ -361,8 +365,8 @@ class TestComposeVideo:
         )
 
         assert result.segment_count == 18
-        # 18 normalize + 17 pairwise xfade passes
-        assert runner.call_count == 18 + 17
+        # 18 normalize + 17 pairwise xfade passes + 1 h264_metadata BSF
+        assert runner.call_count == 18 + 17 + 1
 
         # Every composition (xfade) pass must use exactly two video inputs so
         # memory stays constant regardless of segment count (no N-way graph).
@@ -385,7 +389,9 @@ class TestComposeVideo:
 
         compose_video(segments=[seg], output_dir=tmp_path / "out", runner=runner)
 
-        final_cmd = runner.call_args_list[-1][0][0]
+        # The encode settings live on the compose pass; the final call is the
+        # h264_metadata BSF stream-copy pass.
+        final_cmd = runner.call_args_list[-2][0][0]
         assert "-preset" in final_cmd
         assert ENCODE_PRESET in final_cmd
         assert "-crf" in final_cmd
@@ -545,7 +551,9 @@ class TestComposeVideoDrawtext:
         ):
             compose_video(segments=[seg], output_dir=tmp_path / "out", runner=runner)
 
-        final_cmd = runner.call_args_list[-1][0][0]
+        # The drawtext-capable binary is used on the compose pass; the final
+        # call is the h264_metadata BSF stream-copy pass.
+        final_cmd = runner.call_args_list[-2][0][0]
         assert final_cmd[0] == "/usr/bin/ffmpeg"
         # Lower third drawtext overlays must be in the filter_complex
         fc_idx = final_cmd.index("-filter_complex")
@@ -709,7 +717,7 @@ class TestComposeVideoTransitions:
             )
 
         all_calls = [call[0][0] for call in runner.call_args_list]
-        compose_cmd = all_calls[-1]
+        compose_cmd = all_calls[-2]
         fc_idx = compose_cmd.index("-filter_complex")
         assert "fadeblack" in compose_cmd[fc_idx + 1]
 
@@ -735,7 +743,7 @@ class TestComposeVideoTransitions:
             )
 
         all_calls = [call[0][0] for call in runner.call_args_list]
-        compose_cmd = all_calls[-1]
+        compose_cmd = all_calls[-2]
         fc_idx = compose_cmd.index("-filter_complex")
         assert "wipeleft" in compose_cmd[fc_idx + 1]
 
@@ -1090,6 +1098,25 @@ class TestBuildConcatCmd:
         assert "copy" in cmd
 
 
+class TestBuildH264MetadataCmd:
+    def test_normalizes_color_metadata_stream_copy(self, tmp_path):
+        cmd = _build_h264_metadata_cmd(tmp_path / "in.mp4", tmp_path / "out.mp4")
+        assert cmd[0] == "ffmpeg"
+        joined = " ".join(cmd)
+        # video and audio are stream-copied (no re-encode)
+        assert "-c:v" in cmd and "copy" in cmd
+        assert "-c:a" in cmd
+        # h264_metadata BSF forces consistent BT.709 VUI for Spotify
+        assert "-bsf:v" in cmd
+        assert (
+            "h264_metadata=colour_primaries=1:transfer_characteristics=1:"
+            "matrix_coefficients=1:video_full_range_flag=0" in joined
+        )
+        assert "+faststart" in cmd
+        assert str(tmp_path / "in.mp4") in cmd
+        assert cmd[-1] == str(tmp_path / "out.mp4")
+
+
 class TestBuildAudioOverlayCmd:
     def test_overlays_audio_as_sole_track(self, tmp_path):
         cmd = _build_audio_overlay_cmd(
@@ -1133,6 +1160,24 @@ class TestBuildAudioOverlayCmd:
         assert "copy" in cmd
         assert "tpad" not in " ".join(cmd)
         assert "-shortest" not in cmd
+        # Audio shorter than video is padded with silence to the full video
+        # length so Spotify does not reject VIDEO_DURATION_LONGER_THAN_AUDIO.
+        joined = " ".join(cmd)
+        assert "-af" in cmd
+        assert "apad=whole_dur=20.000" in joined
+
+    def test_no_audio_pad_when_audio_is_longer(self, tmp_path):
+        cmd = _build_audio_overlay_cmd(
+            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4",
+            video_duration=10.0, audio_duration=15.0,
+        )
+        assert "apad" not in " ".join(cmd)
+
+    def test_no_audio_pad_without_durations(self, tmp_path):
+        cmd = _build_audio_overlay_cmd(
+            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4"
+        )
+        assert "apad" not in " ".join(cmd)
 
     def test_fade_clamped_to_short_padding(self, tmp_path):
         # Padding (1s) is shorter than the 2s fade window: the fade must start
@@ -1168,10 +1213,14 @@ class TestComposeVideoContentVideoOnly:
         compose_cmd = next(c for c in cmds if c[-1].endswith("content.mp4"))
         assert "-an" in compose_cmd
         assert str(audio) not in compose_cmd
-        # The final command overlays the podcast MP3 onto the content
+        # The penultimate command overlays the podcast MP3 onto the content
+        overlay_cmd = cmds[-2]
+        assert str(audio) in overlay_cmd
+        assert "-shortest" not in overlay_cmd
+        assert overlay_cmd[-1].endswith("muxed.mp4")
+        # The final command is the h264_metadata BSF pass writing the output
         final_cmd = cmds[-1]
-        assert str(audio) in final_cmd
-        assert "-shortest" not in final_cmd
+        assert any("h264_metadata" in str(a) for a in final_cmd)
         assert final_cmd[-1] == str(out)
         # Reported duration is the full (untruncated) length; the runner probes
         # both audio and video as 12.0s here.
@@ -1213,9 +1262,13 @@ class TestComposeVideoContentVideoOnly:
         ]
         assert len(canon_cmds) == 3
         assert all("anullsrc" in " ".join(c) for c in canon_cmds)
-        # final command overlays the podcast MP3 on the joined video
+        # penultimate command overlays the podcast MP3 on the joined video
+        overlay_cmd = cmds[-2]
+        assert str(audio) in overlay_cmd
+        assert overlay_cmd[-1].endswith("muxed.mp4")
+        # final command is the h264_metadata BSF pass writing the output
         final_cmd = cmds[-1]
-        assert str(audio) in final_cmd
+        assert any("h264_metadata" in str(a) for a in final_cmd)
         assert final_cmd[-1] == str(out)
         # video duration = 10 (content) + 5 + 5 (bookends); audio probes as 5.0s.
         # The runner mocks every probe at 5.0s, so the reported (untruncated)
@@ -1229,8 +1282,8 @@ class TestComposeVideoIntroOutro:
         seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
         (tmp_path / "s.webm").touch()
         compose_video(segments=[seg], output_dir=tmp_path / "out", runner=runner)
-        # 1 normalize + 1 compose, no ffprobe/concat
-        assert runner.call_count == 2
+        # 1 normalize + 1 compose + 1 h264_metadata BSF, no ffprobe/concat
+        assert runner.call_count == 3
         assert all(
             c.args[0][0] != "ffprobe" for c in runner.call_args_list
         )
@@ -1257,9 +1310,13 @@ class TestComposeVideoIntroOutro:
         # content composed to a temp file, not directly to output
         compose_cmd = next(c for c in cmds if c[0] in ("ffmpeg",) and "content.mp4" in c[-1])
         assert compose_cmd[-1].endswith("content.mp4")
-        # a concat command writing the final output exists
-        concat_cmds = [c for c in cmds if "concat" in c and c[-1] == str(out)]
+        # a concat command joins intro/content/outro into joined.mp4 (video-only)
+        concat_cmds = [c for c in cmds if "concat" in c and c[-1].endswith("joined.mp4")]
         assert len(concat_cmds) == 1
+        # the final h264_metadata BSF pass writes the real output
+        final_cmd = cmds[-1]
+        assert any("h264_metadata" in str(a) for a in final_cmd)
+        assert final_cmd[-1] == str(out)
         # two ffprobe calls (intro + outro)
         probe_cmds = [c for c in cmds if c[0] == "ffprobe"]
         assert len(probe_cmds) == 2

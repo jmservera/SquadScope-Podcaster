@@ -545,6 +545,12 @@ def _build_audio_overlay_cmd(
     else:
         cmd += ["-c:v", "copy"]
 
+    # Spotify rejects with VIDEO_DURATION_LONGER_THAN_AUDIO when the video
+    # outlasts the audio. When the video is the longer stream, pad the audio
+    # track with trailing silence up to the full video duration (issue #353).
+    if 0 < audio_duration < video_duration:
+        cmd += ["-af", f"apad=whole_dur={video_duration:.3f}"]
+
     cmd += [
         "-c:a", "aac",
         "-b:a", ENCODE_AUDIO_BITRATE,
@@ -554,6 +560,29 @@ def _build_audio_overlay_cmd(
         str(output_path),
     ]
     return cmd
+
+
+def _build_h264_metadata_cmd(input_path: Path, output_path: Path) -> list[str]:
+    """Rewrite H.264 VUI colour metadata to a single consistent set (stream copy).
+
+    The concat demuxer copies H.264 NAL units from independently-encoded clips
+    whose SPS VUI data may disagree, tripping Spotify's
+    ``INCONSISTENT_COLOR_DETAILS`` check.  This final post-processing pass
+    normalises ``colour_primaries``/``transfer_characteristics``/
+    ``matrix_coefficients`` to BT.709 (value ``1``) with a limited-range flag
+    via the ``h264_metadata`` bitstream filter — no re-encode (issue #353).
+    """
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "-i", str(input_path),
+        "-c:v", "copy",
+        "-bsf:v",
+        "h264_metadata=colour_primaries=1:transfer_characteristics=1:"
+        "matrix_coefficients=1:video_full_range_flag=0",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
 
 
 def _join_intro_outro(
@@ -1130,12 +1159,12 @@ def compose_video(
     # The content is always composed **video-only**; the podcast MP3 (if any)
     # is overlaid as the sole audio track on the FINAL joined video so it spans
     # the entire output (intro + content + outro) without double audio.
+    # The content is always composed video-only and never written directly to
+    # output_path: the pipeline always ends with the h264_metadata BSF pass
+    # (issue #353), which requires a distinct input and output file.
     has_bookends = intro_path is not None or outro_path is not None
     needs_audio = audio_path is not None
-    if has_bookends or needs_audio:
-        compose_target = output_path.parent / "content.mp4"
-    else:
-        compose_target = output_path
+    compose_target = output_path.parent / "content.mp4"
 
     # Step 1: Normalize all segments to 1080p/30fps
     normalized_paths: list[Path] = []
@@ -1202,9 +1231,7 @@ def compose_video(
 
     # Prepend intro / append outro around the composed content (video-only).
     if has_bookends:
-        joined_target = (
-            output_path.parent / "joined.mp4" if needs_audio else output_path
-        )
+        joined_target = output_path.parent / "joined.mp4"
         added = _join_intro_outro(
             compose_target,
             joined_target,
@@ -1218,26 +1245,35 @@ def compose_video(
     else:
         video_only_path = compose_target
 
-    # Overlay the podcast MP3 as the sole audio track on the full video.
+    # Overlay the podcast MP3 as the sole audio track on the full video, then
+    # always run a final h264_metadata BSF pass into output_path so the colour
+    # VUI is consistent for Spotify (issue #353).
     if needs_audio:
+        muxed_target = output_path.parent / "muxed.mp4"
         _, audio_duration = _probe_media(audio_path, run)
         _, probed_video_duration = _probe_media(video_only_path, run)
         effective_video_duration = probed_video_duration or video_duration
         run(_build_audio_overlay_cmd(
             video_only_path,
             audio_path,
-            output_path,
+            muxed_target,
             video_duration=effective_video_duration,
             audio_duration=audio_duration,
         ))
-        # Audio is never truncated; the muxed output runs for the longer stream.
+        pre_final_path = muxed_target
+        # Audio is never truncated and is padded to at least the video length,
+        # so the muxed output runs for the longer stream.
         total_duration = (
             max(effective_video_duration, audio_duration)
             if audio_duration > 0
             else effective_video_duration
         )
     else:
+        pre_final_path = video_only_path
         total_duration = video_duration
+
+    # Final post-processing: normalise H.264 colour metadata (stream copy).
+    run(_build_h264_metadata_cmd(pre_final_path, output_path))
 
     return ComposeResult(
         output_path=output_path,

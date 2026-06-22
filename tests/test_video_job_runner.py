@@ -242,6 +242,78 @@ class TestRunVideoGeneration:
         assert outcome.distribution is not None
         assert outcome.distribution.youtube_id == "dry-run-id"
 
+    @patch("podcaster.video.job_runner._probe_audio_duration")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_plan_driven_by_probed_audio_duration(
+        self, mock_compose, mock_record, mock_probe, storage, dry_config
+    ):
+        """The segment plan uses the REAL MP3 duration, not the manifest value (#353)."""
+        job_id = "video-dur"
+        # Manifest says 300s, but the actual MP3 probes at 123s.
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 300.0}},
+            "request": {"article_title": "Dur Test"},
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        # Provide the audio blob so _resolve_audio_path returns a path.
+        storage._data[f"jobs/{job_id}/audio/{job_id}.mp3"] = b"\x00" * 16
+        mock_probe.return_value = 123.0
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=123.0,
+                segment_count=2, has_audio=True,
+            )
+        mock_compose.side_effect = fake_compose
+
+        outcome = run_video_generation(job_id, storage, config=dry_config)
+        assert outcome.status == STATUS_COMPLETED
+        mock_probe.assert_called_once()
+        # The plan total duration must reflect the probed 123s, not 300s.
+        plan = mock_record.call_args.args[0]
+        assert plan.total_duration_seconds == pytest.approx(123.0)
+
+    @patch("podcaster.video.job_runner._probe_audio_duration")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_plan_falls_back_to_manifest_duration(
+        self, mock_compose, mock_record, mock_probe, storage, dry_config
+    ):
+        """When the MP3 cannot be probed, the manifest duration is used (#353)."""
+        job_id = "video-fallback"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 222.0}},
+            "request": {"article_title": "Fallback"},
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        storage._data[f"jobs/{job_id}/audio/{job_id}.mp3"] = b"\x00" * 16
+        mock_probe.return_value = None  # probe failed
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=222.0,
+                segment_count=2, has_audio=True,
+            )
+        mock_compose.side_effect = fake_compose
+
+        outcome = run_video_generation(job_id, storage, config=dry_config)
+        assert outcome.status == STATUS_COMPLETED
+        plan = mock_record.call_args.args[0]
+        assert plan.total_duration_seconds == pytest.approx(222.0)
+
 
 # --- Process Message Tests ---
 
