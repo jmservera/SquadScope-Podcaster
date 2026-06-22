@@ -53,13 +53,15 @@ class VideoSegment:
     """A timed video segment in the episode plan.
 
     A segment with ``repo=None`` is a *generic* background segment: it is not
-    tied to a GitHub repository and is rendered with the background animation
-    rather than a recorded repo page.
+    tied to a GitHub repository.  When ``source_url`` is set, the generic
+    segment is recorded by navigating to (and scrolling) that page; otherwise
+    it is rendered with the static background animation.
     """
 
     start_seconds: float
     duration_seconds: float
     repo: RepoReference | None = None
+    source_url: str | None = None
 
     @property
     def end_seconds(self) -> float:
@@ -93,6 +95,7 @@ class EpisodePlan:
                     "repo_owner": seg.repo.owner if seg.repo is not None else None,
                     "repo_name": seg.repo.name if seg.repo is not None else None,
                     "generic": seg.is_generic,
+                    "source_url": seg.source_url,
                     "start_seconds": round(seg.start_seconds, 3),
                     "duration_seconds": round(seg.duration_seconds, 3),
                     "end_seconds": round(seg.end_seconds, 3),
@@ -125,6 +128,36 @@ def extract_repo_urls(script: str) -> list[RepoReference]:
             repos.append(ref)
 
     return repos
+
+
+# Matches the "Source URL:" header line, capturing the URL.
+_SOURCE_URL_RE = re.compile(
+    r"^\s*Source URL:\s*(\S+)", re.IGNORECASE | re.MULTILINE
+)
+
+
+def extract_source_url(script: str) -> str | None:
+    """Extract the ``Source URL:`` value from the script header, if present.
+
+    The podcast script header contains a line such as
+    ``Source URL: https://claracle.com/weekly/2026/W26/``.  Returns the URL
+    string, or ``None`` when the header has no such line.
+
+    Only the header section (before the first ``---`` separator) is searched,
+    and only ``https://`` URLs are accepted to prevent SSRF.
+    """
+    # Restrict to header section (before first ---)
+    header = script.split("---", 1)[0] if "---" in script else script
+    match = _SOURCE_URL_RE.search(header)
+    if not match:
+        return None
+    url = match.group(1).strip()
+    if not url:
+        return None
+    # Only allow https URLs to prevent SSRF / local-file navigation
+    if not url.startswith("https://"):
+        return None
+    return url
 
 
 def generate_episode_plan(
@@ -170,16 +203,22 @@ def generate_episode_plan(
     )
 
 
-def generate_generic_plan(total_duration_seconds: float) -> EpisodePlan:
+def generate_generic_plan(
+    total_duration_seconds: float,
+    source_url: str | None = None,
+) -> EpisodePlan:
     """Generate a plan with a single generic background segment.
 
     Used when a script contains no GitHub repository URLs (e.g. news-oriented
     episodes). The resulting segment has ``repo=None`` and spans the full audio
-    duration, so the video pipeline renders the background animation with text
-    overlays instead of skipping video generation entirely.
+    duration.  When *source_url* is provided, the video pipeline records that
+    page (navigate + scroll); otherwise it renders the static background
+    animation with text overlays.
 
     Args:
         total_duration_seconds: Total audio duration in seconds.
+        source_url: Optional fallback page URL (e.g. the article's
+            ``Source URL:``) to record instead of the static background.
 
     Returns:
         An EpisodePlan with one generic, full-length segment.
@@ -197,6 +236,7 @@ def generate_generic_plan(total_duration_seconds: float) -> EpisodePlan:
         segments=(
             VideoSegment(
                 repo=None,
+                source_url=source_url,
                 start_seconds=0.0,
                 duration_seconds=total_duration_seconds,
             ),
@@ -227,11 +267,13 @@ def plan_from_script(
     """
     repos = extract_repo_urls(script)
     if not repos:
+        source_url = extract_source_url(script)
         logger.info(
             "No GitHub repository URLs found in script; "
-            "generating generic background plan"
+            "generating generic background plan (source_url=%s)",
+            source_url,
         )
-        return generate_generic_plan(total_duration_seconds)
+        return generate_generic_plan(total_duration_seconds, source_url)
     return generate_episode_plan(repos, total_duration_seconds)
 
 
@@ -374,11 +416,13 @@ def plan_from_script_timed(
     """
     repos = extract_repo_urls(script)
     if not repos:
+        source_url = extract_source_url(script)
         logger.info(
             "No GitHub repository URLs found in script; "
-            "generating generic background plan"
+            "generating generic background plan (source_url=%s)",
+            source_url,
         )
-        return generate_generic_plan(total_duration_seconds)
+        return generate_generic_plan(total_duration_seconds, source_url)
     return generate_episode_plan_timed(
         script, repos, total_duration_seconds, min_segment_seconds
     )
@@ -578,6 +622,7 @@ def snap_episode_plan_to_audio(
         new_segments.append(
             VideoSegment(
                 repo=seg.repo,
+                source_url=seg.source_url,
                 start_seconds=new_start,
                 duration_seconds=new_dur,
             )

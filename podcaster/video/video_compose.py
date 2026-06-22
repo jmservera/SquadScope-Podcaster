@@ -476,20 +476,52 @@ def _build_concat_cmd(list_file: Path, output_path: Path) -> list[str]:
     ]
 
 
+def _build_audio_overlay_cmd(
+    video_path: Path,
+    audio_path: Path,
+    output_path: Path,
+) -> list[str]:
+    """Overlay *audio_path* as the sole audio track on *video_path*.
+
+    Copies the (already-encoded) video stream and re-encodes the podcast MP3 to
+    AAC, dropping any audio the video may carry.  ``-shortest`` trims the muxed
+    output to the shorter of the video/audio durations so the streams stay
+    aligned without truncating the podcast audio mid-stream.
+    """
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "-i", str(video_path),
+        "-i", str(audio_path),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", ENCODE_AUDIO_BITRATE,
+        "-ar", CONCAT_AUDIO_SAMPLE_RATE,
+        "-ac", CONCAT_AUDIO_CHANNELS,
+        "-shortest",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+
+
 def _join_intro_outro(
     content_path: Path,
     output_path: Path,
     intro_path: Path | None,
     outro_path: Path | None,
     *,
-    content_has_audio: bool,
     run: "CommandRunner",
     work_dir: Path,
 ) -> float:
     """Prepend *intro_path* and append *outro_path* around *content_path*.
 
-    Canonicalises each present clip to a uniform AV format, then concatenates
-    ``intro -> content -> outro`` into *output_path* using the concat demuxer.
+    Canonicalises each present clip to a uniform **video-only** AV format (a
+    silent stereo track is synthesised so the concat-demuxer copy succeeds),
+    then concatenates ``intro -> content -> outro`` into *output_path*.
+
+    Source audio on the intro/outro clips is always stripped: the podcast MP3
+    is overlaid as the sole audio track on the final joined video afterwards.
 
     Returns the total added duration (seconds) of the intro/outro clips so the
     caller can adjust the reported episode duration.
@@ -498,26 +530,26 @@ def _join_intro_outro(
     canon_dir = work_dir / "join"
     canon_dir.mkdir(parents=True, exist_ok=True)
 
-    ordered: list[tuple[str, Path, bool]] = []
+    ordered: list[tuple[str, Path]] = []
     added_duration = 0.0
 
     if intro_path is not None:
-        intro_has_audio, intro_dur = _probe_media(intro_path, run)
+        _, intro_dur = _probe_media(intro_path, run)
         added_duration += intro_dur
-        ordered.append(("intro", intro_path, intro_has_audio))
+        ordered.append(("intro", intro_path))
 
-    ordered.append(("content", content_path, content_has_audio))
+    ordered.append(("content", content_path))
 
     if outro_path is not None:
-        outro_has_audio, outro_dur = _probe_media(outro_path, run)
+        _, outro_dur = _probe_media(outro_path, run)
         added_duration += outro_dur
-        ordered.append(("outro", outro_path, outro_has_audio))
+        ordered.append(("outro", outro_path))
 
     canon_paths: list[Path] = []
-    for label, src, has_audio in ordered:
+    for label, src in ordered:
         canon_path = canon_dir / f"{label}.mp4"
         logger.info("Canonicalizing %s clip for concat: %s", label, src)
-        run(_build_canonical_av_cmd(src, canon_path, has_audio=has_audio))
+        run(_build_canonical_av_cmd(src, canon_path, has_audio=False))
         canon_paths.append(canon_path)
 
     list_file = canon_dir / "concat.txt"
@@ -743,7 +775,10 @@ def compose_video(
 
     Args:
         segments: Recorded video segments from video_gen.record_episode().
-        audio_path: Optional episode audio track to mix in.
+        audio_path: Optional podcast audio track.  When provided, it is
+            overlaid as the **sole** audio track on the final joined video
+            (intro + content + outro), trimmed to the shorter of the
+            video/audio durations.  The content itself is composed video-only.
         output_path: Explicit output file path. Overrides output_dir.
         output_dir: Directory for output. Uses temp dir if neither path is given.
         runner: Command runner (for testing). Uses subprocess if None.
@@ -805,10 +840,12 @@ def compose_video(
         cache_dir = intro_outro_cache_dir or _default_intro_outro_cache_dir()
         intro_path, outro_path = _fetch_intro_outro(storage, cache_dir)
 
-    # When intro/outro are present, compose the content to a temp file first and
-    # join the clips around it afterwards; otherwise write the content directly.
+    # The content is always composed **video-only**; the podcast MP3 (if any)
+    # is overlaid as the sole audio track on the FINAL joined video so it spans
+    # the entire output (intro + content + outro) without double audio.
     has_bookends = intro_path is not None or outro_path is not None
-    if has_bookends:
+    needs_audio = audio_path is not None
+    if has_bookends or needs_audio:
         compose_target = output_path.parent / "content.mp4"
     else:
         compose_target = output_path
@@ -870,8 +907,8 @@ def compose_video(
     if dog_logo is not None:
         dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
         dog_logo_path = _fetch_dog_logo(dog_logo.url, dog_cache)
-    # The logo input is appended after the (optional) audio input.
-    dog_input_idx = len(normalized_paths) + (1 if audio_path is not None else 0)
+    # The content is video-only here, so the logo input follows the video inputs.
+    dog_input_idx = len(normalized_paths)
     if dog_logo_path is not None:
         dog_src = video_label if filter_complex_parts else "0:v"
         filter_complex_parts.append(
@@ -879,40 +916,16 @@ def compose_video(
         )
         video_label = "dogout"
 
-    # Step 4: Build final ffmpeg command
+    # Step 4: Build the (video-only) content composition command
     cmd: list[str] = [compose_ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y"]
 
     # Add all normalized video inputs
     for norm_path in normalized_paths:
         cmd.extend(["-i", str(norm_path)])
 
-    # Add audio input if provided
-    audio_input_idx = len(normalized_paths)
-    if audio_path is not None:
-        cmd.extend(["-i", str(audio_path)])
-
-    # Add DOG logo image input (must follow the audio input to match dog_input_idx)
+    # Add DOG logo image input (follows the video inputs to match dog_input_idx)
     if dog_logo_path is not None:
         cmd.extend(["-i", str(dog_logo_path)])
-
-    # Add filter_complex if we have filters
-    audio_label: str | None = None
-    if audio_path is not None:
-        # The xfade-overlapped video is shorter than the full episode audio:
-        # each transition removes ``transition_duration`` seconds of overlap from
-        # the timeline. Spotify (and well-formed players) reject a video/audio
-        # duration mismatch, so pad the video by holding the last frame and pad
-        # the audio with trailing silence, then force both to one identical,
-        # frame-aligned duration so the muxed streams match exactly.
-        target_duration = round(sum(durations) * OUTPUT_FPS) / OUTPUT_FPS
-        video_pad = transition_duration * max(0, len(segments) - 1) + 1.0
-        video_src = f"[{video_label}]" if filter_complex_parts else "[0:v]"
-        filter_complex_parts.append(
-            f"{video_src}tpad=stop_mode=clone:stop_duration={video_pad}[vsync]"
-        )
-        video_label = "vsync"
-        filter_complex_parts.append(f"[{audio_input_idx}:a]apad[async]")
-        audio_label = "async"
 
     if filter_complex_parts:
         cmd.extend(["-filter_complex", ";".join(filter_complex_parts)])
@@ -920,44 +933,52 @@ def compose_video(
     else:
         cmd.extend(["-map", "0:v"])
 
-    # Map audio
-    if audio_path is not None:
-        cmd.extend(["-map", f"[{audio_label}]"])
-        cmd.extend(["-c:a", "aac", "-b:a", ENCODE_AUDIO_BITRATE])
-
-    # Output encoding
+    # Output encoding — video-only (audio is overlaid on the final joined video).
     cmd.extend([
+        "-an",
         "-c:v", "libx264",
         "-preset", ENCODE_PRESET,
         "-crf", str(ENCODE_CRF),
         "-pix_fmt", ENCODE_PIX_FMT,
         "-movflags", "+faststart",
     ])
-    if audio_path is not None:
-        cmd.extend(["-t", f"{target_duration:.3f}"])
     cmd.append(str(compose_target))
 
     logger.info("Composing %d segments into %s", len(segments), compose_target)
     run(cmd)
 
-    # Calculate output duration (accounting for transition overlaps)
-    if audio_path is not None:
-        total_duration = target_duration
-    else:
-        total_duration = sum(durations) - transition_duration * max(0, len(segments) - 1)
+    # Content video duration (accounting for transition overlaps).
+    video_duration = sum(durations) - transition_duration * max(0, len(segments) - 1)
 
-    # Prepend intro / append outro around the composed content (if available).
+    # Prepend intro / append outro around the composed content (video-only).
     if has_bookends:
+        joined_target = (
+            output_path.parent / "joined.mp4" if needs_audio else output_path
+        )
         added = _join_intro_outro(
             compose_target,
-            output_path,
+            joined_target,
             intro_path,
             outro_path,
-            content_has_audio=audio_path is not None,
             run=run,
             work_dir=output_path.parent,
         )
-        total_duration += added
+        video_duration += added
+        video_only_path = joined_target
+    else:
+        video_only_path = compose_target
+
+    # Overlay the podcast MP3 as the sole audio track on the full video.
+    if needs_audio:
+        _, audio_duration = _probe_media(audio_path, run)
+        run(_build_audio_overlay_cmd(video_only_path, audio_path, output_path))
+        total_duration = (
+            min(video_duration, audio_duration)
+            if audio_duration > 0
+            else video_duration
+        )
+    else:
+        total_duration = video_duration
 
     return ComposeResult(
         output_path=output_path,

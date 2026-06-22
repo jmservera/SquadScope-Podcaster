@@ -33,6 +33,7 @@ from podcaster.video.video_compose import (
     DEFAULT_DOG_LOGO_URL,
     DogLogoConfig,
     LowerThird,
+    _build_audio_overlay_cmd,
     _build_canonical_av_cmd,
     _build_concat_cmd,
     _build_dog_overlay_filter,
@@ -1048,6 +1049,99 @@ class TestBuildConcatCmd:
         assert "concat" in cmd
         assert "-safe" in cmd
         assert "copy" in cmd
+
+
+class TestBuildAudioOverlayCmd:
+    def test_overlays_audio_as_sole_track(self, tmp_path):
+        cmd = _build_audio_overlay_cmd(
+            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4"
+        )
+        assert cmd[0] == "ffmpeg"
+        # video copied, audio re-encoded to aac
+        assert "copy" in cmd
+        assert "aac" in cmd
+        # the podcast audio is mapped from the 2nd input
+        assert "0:v:0" in cmd
+        assert "1:a:0" in cmd
+        # trims to the shorter of video/audio (no audio truncation flag)
+        assert "-shortest" in cmd
+        assert "-t" not in cmd
+        assert str(tmp_path / "audio.mp3") in cmd
+        assert cmd[-1] == str(tmp_path / "out.mp4")
+
+
+class TestComposeVideoContentVideoOnly:
+    def test_content_composed_without_audio(self, tmp_path):
+        runner = _ffprobe_runner(has_audio=True, duration=12.0)
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        audio = tmp_path / "audio.mp3"
+        audio.touch()
+        out = tmp_path / "out" / "episode.mp4"
+
+        result = compose_video(
+            segments=[seg],
+            audio_path=audio,
+            output_path=out,
+            runner=runner,
+        )
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        # The content composition writes content.mp4 video-only (-an, no audio map)
+        compose_cmd = next(c for c in cmds if c[-1].endswith("content.mp4"))
+        assert "-an" in compose_cmd
+        assert str(audio) not in compose_cmd
+        # The final command overlays the podcast MP3 onto the content
+        final_cmd = cmds[-1]
+        assert str(audio) in final_cmd
+        assert "-shortest" in final_cmd
+        assert final_cmd[-1] == str(out)
+        # Reported duration trims to the shorter of video (10) / audio (12)
+        assert result.has_audio is True
+        assert result.duration_seconds == pytest.approx(10.0)
+
+    def test_bookends_and_audio_overlay_on_joined_video(self, tmp_path):
+        # _ffprobe_runner answers every probe with the same duration, so intro,
+        # outro and audio all report 5.0s here.
+        runner = _ffprobe_runner(has_audio=True, duration=5.0)
+        storage = _FakeStorage(
+            {INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"}
+        )
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        audio = tmp_path / "audio.mp3"
+        audio.touch()
+        out = tmp_path / "out" / "episode.mp4"
+
+        result = compose_video(
+            segments=[seg],
+            audio_path=audio,
+            output_path=out,
+            runner=runner,
+            storage=storage,
+            intro_outro_cache_dir=tmp_path / "cache",
+        )
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        # intro/content/outro joined video-only into joined.mp4
+        concat_cmds = [
+            c for c in cmds if "concat" in c and c[-1].endswith("joined.mp4")
+        ]
+        assert len(concat_cmds) == 1
+        # canonicalized clips all generate a silent track (has_audio=False)
+        canon_cmds = [
+            c for c in cmds
+            if "-filter_complex" in c and "join" in c[-1]
+        ]
+        assert len(canon_cmds) == 3
+        assert all("anullsrc" in " ".join(c) for c in canon_cmds)
+        # final command overlays the podcast MP3 on the joined video
+        final_cmd = cmds[-1]
+        assert str(audio) in final_cmd
+        assert final_cmd[-1] == str(out)
+        # video duration = 10 (content) + 5 + 5 (bookends) = 20; audio probes as
+        # 5.0s, so the output trims to the shorter audio duration.
+        assert result.duration_seconds == pytest.approx(5.0)
 
 
 class TestComposeVideoIntroOutro:
