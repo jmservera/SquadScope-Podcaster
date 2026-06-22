@@ -14,6 +14,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Sequence
+from urllib.parse import urlparse
 
 import requests
 import yaml
@@ -23,6 +24,10 @@ logger = logging.getLogger(__name__)
 # Timeout (seconds) for fetching the source article page when the script
 # contains no GitHub repo URLs.
 _ARTICLE_FETCH_TIMEOUT = 10
+
+# Host allowlist for article fetching (SSRF guard). Only the public Claracle
+# article pages may be fetched; any other host returns an empty repo list.
+_ARTICLE_FETCH_ALLOWED_HOSTS = frozenset({"claracle.com", "www.claracle.com"})
 
 # Matches GitHub repo URLs: https://github.com/owner/repo (with optional trailing path)
 _GITHUB_REPO_RE = re.compile(
@@ -188,6 +193,17 @@ def fetch_repos_from_article(url: str) -> list[RepoReference]:
         empty list when the page cannot be fetched or contains no repos.
     """
     if not url or not url.startswith("https://"):
+        return []
+
+    # SSRF guard: only fetch from the known public article hosts. Any other
+    # host (including internal/metadata endpoints) yields an empty list.
+    host = (urlparse(url).hostname or "").lower()
+    if host not in _ARTICLE_FETCH_ALLOWED_HOSTS:
+        logger.warning(
+            "Refusing to fetch article page from disallowed host %r (url=%s)",
+            host,
+            url,
+        )
         return []
 
     # Try lowercase first (live pages use lowercase week segments), then the
@@ -491,12 +507,16 @@ def plan_from_script_timed(
             repos = fetch_repos_from_article(source_url)
         if repos:
             logger.info(
-                "Using %d GitHub repo(s) fetched from source article for plan",
+                "Using %d GitHub repo(s) fetched from source article for plan; "
+                "using equal-split timing (repos are absent from the script, so "
+                "mention-based positions are unavailable)",
                 len(repos),
             )
-            return generate_episode_plan_timed(
-                script, repos, total_duration_seconds, min_segment_seconds
-            )
+            # Repos came from the article page, not the script. Their URLs do not
+            # appear in the script text, so _script_position() would return 1.0
+            # for every repo and clump all segments at the end. Fall back to an
+            # equal-split plan instead of mention-based timing.
+            return generate_episode_plan(repos, total_duration_seconds)
         logger.info(
             "No GitHub repository URLs found in script or source article; "
             "generating generic background plan (source_url=%s)",

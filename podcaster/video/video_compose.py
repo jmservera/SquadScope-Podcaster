@@ -522,10 +522,14 @@ def _build_audio_overlay_cmd(
     extend_video = audio_duration > video_duration > 0
     if extend_video:
         pad_duration = audio_duration - video_duration
-        fade_start = max(0.0, audio_duration - OUTRO_VIDEO_FADE_SECONDS)
+        # Fade only the held/padded region: start the fade where the original
+        # video ends and clamp its length to the padding so it never bleeds into
+        # the real footage when the padding is shorter than the fade window.
+        fade_start = video_duration
+        fade_duration = min(OUTRO_VIDEO_FADE_SECONDS, pad_duration)
         vf = (
             f"tpad=stop_mode=clone:stop_duration={pad_duration:.3f},"
-            f"fade=t=out:st={fade_start:.3f}:d={OUTRO_VIDEO_FADE_SECONDS}"
+            f"fade=t=out:st={fade_start:.3f}:d={fade_duration:.3f}"
         )
         cmd += [
             "-vf", vf,

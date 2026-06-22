@@ -1063,7 +1063,7 @@ class TestBuildAudioOverlayCmd:
         # audio is mapped from the 2nd input
         assert "0:v:0" in cmd
         assert "1:a:0" in cmd
-        # audio is NEVER truncated: no -shortest anywhere
+        # audio is NEVER truncated: no -shortest in audio overlay
         assert "-shortest" not in cmd
         assert "-t" not in cmd
         assert str(tmp_path / "audio.mp3") in cmd
@@ -1078,9 +1078,10 @@ class TestBuildAudioOverlayCmd:
         # video is re-encoded (not copied) so it can be padded + faded
         assert "-c:v" in cmd and "libx264" in cmd
         assert "copy" not in cmd
-        # final frame held for 5s then faded to black over the last 2s
+        # final frame held for 5s then faded to black over the last 2s of the
+        # held region (fade starts where the original video ends)
         assert "tpad=stop_mode=clone:stop_duration=5.000" in joined
-        assert "fade=t=out:st=13.000:d=2.0" in joined
+        assert "fade=t=out:st=10.000:d=2.000" in joined
         # explicit bt709 color flags for Spotify consistency
         assert "-colorspace" in cmd and "bt709" in cmd
         assert "-shortest" not in cmd
@@ -1093,6 +1094,18 @@ class TestBuildAudioOverlayCmd:
         assert "copy" in cmd
         assert "tpad" not in " ".join(cmd)
         assert "-shortest" not in cmd
+
+    def test_fade_clamped_to_short_padding(self, tmp_path):
+        # Padding (1s) is shorter than the 2s fade window: the fade must start
+        # where the original video ends and last only as long as the padding so
+        # it never bleeds into the real footage.
+        cmd = _build_audio_overlay_cmd(
+            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4",
+            video_duration=10.0, audio_duration=11.0,
+        )
+        joined = " ".join(cmd)
+        assert "tpad=stop_mode=clone:stop_duration=1.000" in joined
+        assert "fade=t=out:st=10.000:d=1.000" in joined
 
 
 class TestComposeVideoContentVideoOnly:
