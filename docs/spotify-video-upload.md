@@ -69,6 +69,8 @@ Every encode pass (`_build_normalize_cmd`, `_build_fit_segment_cmd`,
 These are the server-side constraints Spotify's validation enforces. Each is
 prevented by a specific stage above.
 
+> 📄 **Official reference:** [Spotify video specs](https://support.spotify.com/us/creators/article/video-specs/)
+
 | Requirement | Why | Enforced by |
 |-------------|-----|-------------|
 | **BT.709 colour, consistent across all NAL units** | Mixed/inconsistent SPS VUI colour → `INCONSISTENT_COLOR_DETAILS`. | Every encode sets bt709 flags **and** the final `h264_metadata` BSF normalises VUI (§3). |
