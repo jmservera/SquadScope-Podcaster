@@ -17,6 +17,7 @@ Security:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -472,21 +473,47 @@ def _process_upload(
         request_data = data.get("request", data)
         status = request_data.get("state") or data.get("status", "")
         if status in ("processed", "completed"):
-            logger.info("Upload %s processing completed (state=%s)", upload_id, status)
             # Check mediaValidation for video
             validation = data.get("mediaValidation", {})
             if validation.get("status") == "validation_failure":
-                reasons = [r.get("reason", "unknown") for r in validation.get("failures", [])]
-                raise SpotifyPublishError(
-                    f"Upload {upload_id} media validation failed: {reasons}"
+                logger.debug(
+                    "Upload %s full response on validation failure: %s",
+                    upload_id,
+                    json.dumps(data),
                 )
+                reasons = [r.get("reason", "unknown") for r in validation.get("failures", [])]
+                error_code = validation.get("failureInfo", {}).get("errorCode")
+                failure_info = validation.get("failureInfo")
+                detail = f"{reasons}"
+                if error_code:
+                    detail += f" (errorCode={error_code})"
+                if failure_info:
+                    detail += f" failureInfo={failure_info}"
+                raise SpotifyPublishError(
+                    f"Upload {upload_id} media validation failed: {detail}"
+                )
+            logger.info("Upload %s processing completed (state=%s)", upload_id, status)
             return
         elif status == "failed":
-            reason = request_data.get("failureReason", "unknown")
+            logger.debug(
+                "Upload %s full response on failure: %s",
+                upload_id,
+                json.dumps(data),
+            )
+            reason = request_data.get("failureReason") or "unknown"
             # Also check mediaValidation for details
             validation = data.get("mediaValidation", {})
             failures = [r.get("reason", "") for r in validation.get("failures", [])]
-            detail = f"{reason}" + (f" (validation: {failures})" if failures else "")
+            # Spotify returns the actual error at mediaValidation.failureInfo.errorCode
+            failure_info = validation.get("failureInfo", {})
+            error_code = failure_info.get("errorCode")
+            detail = f"{reason}"
+            if error_code:
+                detail += f" (errorCode={error_code})"
+            if failures:
+                detail += f" (validation: {failures})"
+            if failure_info:
+                detail += f" failureInfo={failure_info}"
             raise SpotifyPublishError(
                 f"Upload {upload_id} processing failed: {detail}"
             )
