@@ -38,12 +38,14 @@ from podcaster.video.video_compose import (
     _build_concat_cmd,
     _build_dog_overlay_filter,
     _build_drawtext_filter,
+    _build_fit_segment_cmd,
     _build_h264_metadata_cmd,
     _build_normalize_cmd,
     _build_xfade_filter,
     _compute_lower_thirds,
     _fetch_blob_cached,
     _fetch_intro_outro,
+    _fit_target_durations,
     _probe_drawtext_ffmpeg,
     compose_video,
     select_transitions,
@@ -109,8 +111,69 @@ class TestBuildNormalizeCmd:
         assert f"fps={OUTPUT_FPS}" in vf_value
 
 
-# --- Tests for _build_xfade_filter ---
+# --- Tests for _build_fit_segment_cmd ---
 
+
+class TestBuildFitSegmentCmd:
+    def test_forces_exact_duration_with_tpad(self):
+        cmd = _build_fit_segment_cmd(
+            Path("/in/clip.webm"), Path("/out/clip.mp4"), 7.5
+        )
+        assert cmd[0] == "ffmpeg"
+        # An exact output duration is enforced.
+        assert "-t" in cmd
+        assert cmd[cmd.index("-t") + 1] == "7.500"
+        # The vf both normalizes and freeze-extends short clips via tpad clone.
+        vf = cmd[cmd.index("-vf") + 1]
+        assert f"{OUTPUT_WIDTH}" in vf and f"{OUTPUT_HEIGHT}" in vf
+        assert "tpad=stop_mode=clone:stop_duration=7.500" in vf
+        assert "-an" in cmd  # video-only
+
+    def test_negative_target_clamped_to_zero(self):
+        cmd = _build_fit_segment_cmd(
+            Path("/in/clip.webm"), Path("/out/clip.mp4"), -3.0
+        )
+        assert cmd[cmd.index("-t") + 1] == "0.000"
+
+
+# --- Tests for _fit_target_durations ---
+
+
+class TestFitTargetDurations:
+    def test_scales_to_fill_window_with_overlap(self):
+        # Two equal segments, 1s transition overlap, 10s content window.
+        # Targets must sum to window + transition*(n-1) = 10 + 1 = 11.
+        targets = _fit_target_durations([5.0, 5.0], 10.0, 1.0)
+        assert sum(targets) == pytest.approx(11.0)
+        assert targets[0] == pytest.approx(5.5)
+        assert targets[1] == pytest.approx(5.5)
+
+    def test_preserves_proportions(self):
+        # 1:3 ratio is preserved after scaling.
+        targets = _fit_target_durations([5.0, 15.0], 20.0, 0.0)
+        assert sum(targets) == pytest.approx(20.0)
+        assert targets[1] / targets[0] == pytest.approx(3.0)
+
+    def test_single_segment_fills_window_no_overlap(self):
+        targets = _fit_target_durations([30.0], 12.0, 1.0)
+        assert targets == pytest.approx([12.0])
+
+    def test_floors_below_transition(self):
+        # A tiny segment is floored to just above the transition so xfade works.
+        targets = _fit_target_durations([0.01, 100.0], 50.0, 1.0)
+        assert targets[0] >= 1.5
+
+    def test_zero_source_even_split(self):
+        targets = _fit_target_durations([0.0, 0.0], 10.0, 0.0)
+        assert targets == pytest.approx([5.0, 5.0])
+
+    def test_window_floored_to_minimum(self):
+        # An audio window smaller than the floor still yields a positive target.
+        targets = _fit_target_durations([10.0], -5.0, 0.0)
+        assert targets[0] > 0
+
+
+# --- Tests for _build_xfade_filter ---
 
 class TestBuildXfadeFilter:
     def test_single_segment_no_filter(self):
@@ -1372,6 +1435,90 @@ class TestComposeVideoIntroOutro:
         probe_cmds = [c for c in cmds if c[0] == "ffprobe"]
         assert len(probe_cmds) == 1
         assert result.duration_seconds == pytest.approx(15.0)
+
+
+class TestComposeVideoFitToWindow:
+    """Fit content to the audio timeline minus intro/outro bumpers (#355)."""
+
+    def test_segments_fit_to_window_with_bookends(self, tmp_path):
+        # Every probe (intro, outro, audio, video) reports 5.0s.  With a 30s
+        # audio duration and 5s intro + 5s outro, the content window is 20s.
+        runner = _ffprobe_runner(has_audio=True, duration=5.0)
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"})
+        s1 = tmp_path / "a.webm"
+        s2 = tmp_path / "b.webm"
+        s1.touch()
+        s2.touch()
+        segs = [
+            _make_recorded_segment(owner="a", name="b", duration=50.0, video_path=s1),
+            _make_recorded_segment(owner="c", name="d", duration=50.0, video_path=s2),
+        ]
+        out = tmp_path / "out" / "episode.mp4"
+
+        compose_video(
+            segments=segs,
+            audio_path=tmp_path / "audio.mp3",
+            output_path=out,
+            runner=runner,
+            storage=storage,
+            intro_outro_cache_dir=tmp_path / "cache",
+            audio_duration=30.0,
+        )
+        (tmp_path / "audio.mp3").touch()
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        # Each segment is fit (tpad + -t), not plain-normalized.
+        fit_cmds = [
+            c for c in cmds
+            if "-t" in c and any("tpad=stop_mode=clone" in str(a) for a in c)
+            and c[-1].endswith(".mp4") and "seg_" in c[-1]
+        ]
+        assert len(fit_cmds) == 2
+        # Targets sum to content_window + transition*(n-1) = 20 + 1 = 21,
+        # split evenly across two equal segments → 10.5s each.
+        targets = [float(c[c.index("-t") + 1]) for c in fit_cmds]
+        assert sum(targets) == pytest.approx(21.0)
+        assert all(t == pytest.approx(10.5) for t in targets)
+
+    def test_single_generic_segment_trimmed_to_window(self, tmp_path):
+        runner = _ffprobe_runner(has_audio=True, duration=4.0)
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"})
+        s = tmp_path / "g.webm"
+        s.touch()
+        seg = _make_recorded_segment(duration=100.0, video_path=s)
+        out = tmp_path / "out" / "episode.mp4"
+
+        compose_video(
+            segments=[seg],
+            audio_path=tmp_path / "audio.mp3",
+            output_path=out,
+            runner=runner,
+            storage=storage,
+            intro_outro_cache_dir=tmp_path / "cache",
+            audio_duration=20.0,
+        )
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        fit_cmd = next(
+            c for c in cmds
+            if "-t" in c and any("tpad=stop_mode=clone" in str(a) for a in c)
+        )
+        # 20s audio - 4s intro - 4s outro = 12s content (single segment).
+        assert float(fit_cmd[fit_cmd.index("-t") + 1]) == pytest.approx(12.0)
+
+    def test_no_audio_duration_uses_plain_normalize(self, tmp_path):
+        # Without audio_duration, segments are normalized (no tpad/-t fit).
+        runner = _mock_runner()
+        s = tmp_path / "s.webm"
+        s.touch()
+        seg = _make_recorded_segment(duration=10.0, video_path=s)
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=runner,
+        )
+        cmds = [c.args[0] for c in runner.call_args_list]
+        assert not any("tpad=stop_mode=clone" in " ".join(c) for c in cmds)
 
 
 # --- Tests for DOG (Digital On-Screen Graphic) watermark ---

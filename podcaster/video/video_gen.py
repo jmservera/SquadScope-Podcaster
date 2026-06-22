@@ -43,8 +43,29 @@ MAX_SCROLL_VIEWPORT_MULTIPLIER = 2.5
 NETWORK_IDLE_TIMEOUT_MS = 10_000
 # Brief settle pause after navigation, before scrolling begins, so the page has
 # finished painting (fonts, images, lazy content) and the recording does not
-# capture the initial layout flash/flicker (issue #353).
-PAGE_SETTLE_MS = 600
+# capture the initial layout flash/flicker (issues #353, #355).
+PAGE_SETTLE_MS = 1000
+
+# A full-viewport dark hold page painted *before* navigation so the recording's
+# first frames are the GitHub-dark background instead of a white flash while the
+# real page loads (issue #355).
+DARK_HOLD_HTML = (
+    "<!DOCTYPE html><html><head><style>"
+    "html,body{margin:0;width:100%;height:100%;background:#0d1117;}"
+    "</style></head><body></body></html>"
+)
+
+# Injected once the page has loaded: neutralise the motion that produces awkward
+# flashes during the recorded scroll (issue #355).  Disabling CSS
+# animations/transitions stops elements popping in mid-scroll, forcing instant
+# (non-smooth) scrolling keeps motion uniform, and hiding the scrollbar removes
+# a flickering UI element.
+ANTI_FLASH_CSS = (
+    "*,*::before,*::after{"
+    "animation:none !important;transition:none !important;}"
+    "html{scroll-behavior:auto !important;}"
+    "::-webkit-scrollbar{display:none !important;}"
+)
 FALLBACK_BRAND_HTML = """\
 <!DOCTYPE html>
 <html><head><style>
@@ -151,6 +172,27 @@ def _dismiss_overlays(page: Page) -> None:
             pass
 
 
+def _prepare_page_for_recording(page: Page) -> None:
+    """Reduce flashes/flicker before the recorded scroll begins (issue #355).
+
+    Injects CSS that disables animations/transitions, forces instant scrolling
+    and hides the scrollbar, then waits for web fonts to finish loading so text
+    does not visibly re-flow once recording starts.  Best-effort: any failure is
+    swallowed so recording proceeds with the page as-is.
+    """
+    try:
+        page.add_style_tag(content=ANTI_FLASH_CSS)
+    except Exception:
+        pass
+    try:
+        page.evaluate(
+            "() => (document.fonts && document.fonts.ready) "
+            "? document.fonts.ready : Promise.resolve()"
+        )
+    except Exception:
+        pass
+
+
 def _smooth_scroll(page: Page, duration_seconds: float) -> None:
     """Auto-scroll the page smoothly over the given duration.
 
@@ -245,12 +287,18 @@ def _record_generic_segment(
         source_url = segment.source_url
         if source_url:
             try:
+                try:
+                    page.set_content(DARK_HOLD_HTML)
+                except Exception:
+                    pass
                 page.goto(
                     source_url,
                     wait_until="networkidle",
                     timeout=NETWORK_IDLE_TIMEOUT_MS,
                 )
+                page.wait_for_timeout(PAGE_SETTLE_MS)
                 _dismiss_overlays(page)
+                _prepare_page_for_recording(page)
                 _smooth_scroll(page, segment.duration_seconds)
             except Exception:
                 logger.exception(
@@ -328,6 +376,13 @@ def _record_segment(
                 page, repo.owner, repo.name, segment.duration_seconds
             )
         else:
+            # Paint a dark hold frame before navigating so the recording's
+            # opening frames are GitHub-dark rather than a white flash while
+            # the real page loads (issue #355).
+            try:
+                page.set_content(DARK_HOLD_HTML)
+            except Exception:
+                pass
             response = page.goto(repo.url, wait_until="networkidle",
                                  timeout=NETWORK_IDLE_TIMEOUT_MS)
             if response is not None and response.status == 404:
@@ -347,6 +402,7 @@ def _record_segment(
                     pass
                 page.wait_for_timeout(PAGE_SETTLE_MS)
                 _dismiss_overlays(page)
+                _prepare_page_for_recording(page)
                 _smooth_scroll(page, segment.duration_seconds)
     except Exception:
         logger.exception("Error recording %s — using fallback", repo.url)

@@ -47,7 +47,7 @@ from podcaster.video.distribution import (
     VideoDistributionConfig,
     distribute_video,
 )
-from podcaster.video.sync_plan import EpisodePlan, plan_from_script
+from podcaster.video.sync_plan import plan_from_script_timed
 
 logger = logging.getLogger("podcaster.video.job_runner")
 
@@ -255,11 +255,13 @@ def run_video_generation(
                     audio_duration, job_id,
                 )
 
-            # Parse script and generate plan. Scripts without GitHub repo URLs
-            # now produce a generic background plan (issue #335) instead of
-            # being skipped.
+            # Parse script and generate plan. Timing mirrors where each repo is
+            # mentioned in the script so the right repo is on screen while the
+            # hosts discuss it (issue #355). Scripts without GitHub repo URLs
+            # produce a generic background plan (issue #335) instead of being
+            # skipped.
             try:
-                plan = plan_from_script(script, audio_duration)
+                plan = plan_from_script_timed(script, audio_duration)
             except ValueError as exc:
                 logger.warning(
                     "video skipped job_id=%s reason=%s: %s",
@@ -284,6 +286,7 @@ def run_video_generation(
                 runner=compose_runner,
                 storage=storage,
                 dog_logo=dog_logo_cfg,
+                audio_duration=audio_duration,
             )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
