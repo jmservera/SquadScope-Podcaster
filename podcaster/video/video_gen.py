@@ -41,6 +41,10 @@ HEIGHT = 1080
 SCROLL_TICKS_PER_SEC = 4
 MAX_SCROLL_VIEWPORT_MULTIPLIER = 2.5
 NETWORK_IDLE_TIMEOUT_MS = 10_000
+# Brief settle pause after navigation, before scrolling begins, so the page has
+# finished painting (fonts, images, lazy content) and the recording does not
+# capture the initial layout flash/flicker (issue #353).
+PAGE_SETTLE_MS = 600
 FALLBACK_BRAND_HTML = """\
 <!DOCTYPE html>
 <html><head><style>
@@ -333,6 +337,15 @@ def _record_segment(
                     page, repo.owner, repo.name, segment.duration_seconds
                 )
             else:
+                # Wait for the page to fully settle (load + paint) before
+                # recording motion, avoiding the initial content flash.
+                try:
+                    page.wait_for_load_state(
+                        "networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS
+                    )
+                except Exception:
+                    pass
+                page.wait_for_timeout(PAGE_SETTLE_MS)
                 _dismiss_overlays(page)
                 _smooth_scroll(page, segment.duration_seconds)
     except Exception:

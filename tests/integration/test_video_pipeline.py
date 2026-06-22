@@ -98,8 +98,13 @@ def test_video_pipeline_generates_mp4_output(
     assert result.has_audio is with_audio
     assert result.output_path.read_bytes().startswith(b"\x00\x00\x00\x18ftyp")
 
+    # The final command is always the h264_metadata BSF stream-copy pass.
     final_command = runner.commands[-1]
+    assert any("h264_metadata" in str(a) for a in final_command)
+    assert str(fake_mp3) not in final_command
     if with_audio:
-        assert str(fake_mp3) in final_command
+        # The audio overlay (penultimate command) carries the podcast MP3.
+        overlay_command = runner.commands[-2]
+        assert str(fake_mp3) in overlay_command
     else:
-        assert str(fake_mp3) not in final_command
+        assert all(str(fake_mp3) not in cmd for cmd in runner.commands)

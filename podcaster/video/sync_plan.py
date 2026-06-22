@@ -37,6 +37,21 @@ _GITHUB_REPO_RE = re.compile(
 # Label used for generic background segments that are not tied to a repo.
 GENERIC_SEGMENT_LABEL = "__generic__"
 
+# Repositories that must never appear in generated videos. These are the
+# project's own repos: navigating to them would put SquadScope's own pages in
+# the episode content (issue #353). Compared case-insensitively as
+# ``(owner, name)`` tuples.
+_EXCLUDED_REPOS = frozenset(
+    {
+        ("jmservera", "squadscope"),
+    }
+)
+
+
+def _is_excluded_repo(repo: "RepoReference") -> bool:
+    """True when *repo* is in the project's own-repo exclusion list."""
+    return (repo.owner.lower(), repo.name.lower()) in _EXCLUDED_REPOS
+
 
 @dataclass(frozen=True)
 class RepoReference:
@@ -226,6 +241,7 @@ def fetch_repos_from_article(url: str) -> list[RepoReference]:
             )
             continue
         repos = extract_repo_urls(response.text)
+        repos = [r for r in repos if not _is_excluded_repo(r)]
         if repos:
             logger.info(
                 "Extracted %d GitHub repo(s) from article page %s",

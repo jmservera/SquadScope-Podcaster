@@ -157,6 +157,30 @@ def _get_audio_duration(manifest: dict[str, Any]) -> float | None:
     return None
 
 
+def _probe_audio_duration(audio_path: Path) -> float | None:
+    """Probe the duration (seconds) of an audio file via ffprobe.
+
+    Returns ``None`` on any probe failure so callers fall back to the manifest
+    value or the default. Reading the real MP3 duration here lets the segment
+    plan match the actual podcast length (issue #353).
+    """
+    import subprocess
+
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(audio_path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        duration = float((proc.stdout or "").strip())
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        logger.warning("failed to probe audio duration for %s", audio_path, exc_info=True)
+        return None
+    return duration if duration > 0 else None
+
+
 def run_video_generation(
     job_id: str,
     storage: StorageBackend,
@@ -201,23 +225,10 @@ def run_video_generation(
         raise TransientVideoError(f"no script for job_id={job_id}")
     script = raw_script.decode("utf-8")
 
-    # Determine duration
-    audio_duration = _get_audio_duration(manifest)
-    if audio_duration is None:
-        audio_duration = 300.0  # Default 5 minutes if no audio info
-        logger.warning("no audio duration in manifest, defaulting to %.0fs for job_id=%s",
-                       audio_duration, job_id)
-
-    # Parse script and generate plan. Scripts without GitHub repo URLs now
-    # produce a generic background plan (issue #335) instead of being skipped.
-    try:
-        plan = plan_from_script(script, audio_duration)
-    except ValueError as exc:
-        logger.warning("video skipped job_id=%s reason=%s: %s", job_id, REASON_INVALID_PLAN, exc)
-        _record_video_state(storage, job_id, {
-            "status": STATUS_SKIPPED, "reason": REASON_INVALID_PLAN, "at": _iso(current),
-        })
-        return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
+    # The target duration drives the segment plan. We prefer the REAL podcast
+    # MP3 duration (probed below, inside the temp dir) so the video length
+    # matches the audio; the manifest value is only a fallback (issue #353).
+    manifest_audio_duration = _get_audio_duration(manifest)
 
     # Compose video
     # TODO(#242): dispatch parallel ACA segment jobs instead of sequential local recording.
@@ -229,11 +240,39 @@ def run_video_generation(
 
             output_dir = Path(tmp)
 
+            # Resolve the podcast audio first so the segment plan is driven by
+            # the actual MP3 duration rather than the manifest default.
+            audio_path = _resolve_audio_path(manifest, job_id, storage, output_dir)
+            audio_duration: float | None = None
+            if audio_path is not None:
+                audio_duration = _probe_audio_duration(audio_path)
+            if audio_duration is None:
+                audio_duration = manifest_audio_duration
+            if audio_duration is None:
+                audio_duration = 300.0  # Default 5 minutes if no audio info
+                logger.warning(
+                    "no audio duration available, defaulting to %.0fs for job_id=%s",
+                    audio_duration, job_id,
+                )
+
+            # Parse script and generate plan. Scripts without GitHub repo URLs
+            # now produce a generic background plan (issue #335) instead of
+            # being skipped.
+            try:
+                plan = plan_from_script(script, audio_duration)
+            except ValueError as exc:
+                logger.warning(
+                    "video skipped job_id=%s reason=%s: %s",
+                    job_id, REASON_INVALID_PLAN, exc,
+                )
+                _record_video_state(storage, job_id, {
+                    "status": STATUS_SKIPPED, "reason": REASON_INVALID_PLAN,
+                    "at": _iso(current),
+                })
+                return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
+
             # Record segments
             recording = record_episode(plan, output_dir=output_dir, headless=True)
-
-            # Get audio track path if available
-            audio_path = _resolve_audio_path(manifest, job_id, storage, output_dir)
 
             # Compose final MP4
             output_path = output_dir / f"{job_id}.mp4"
