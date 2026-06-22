@@ -302,7 +302,7 @@ def _navigate_to_website(page: Page, url: str) -> bool:
     """Navigate to the repo's external website (issue #360).
 
     Uses a shorter timeout than GitHub so a slow/down site fails fast.  Returns
-    True if the website loaded successfully (non-404), False otherwise so the
+    True if the website loaded successfully (HTTP < 400), False otherwise so the
     caller can fall back to the GitHub page.
     """
     try:
@@ -507,6 +507,21 @@ def _record_segment(
                     page.wait_for_timeout(PAGE_SETTLE_MS)
                     _dismiss_overlays(page)
                 else:
+                    if website_url:
+                        # _navigate_to_website may have navigated the page away
+                        # from the GitHub repo (e.g. an HTTP >= 400 response
+                        # still loads a page); go back so the GitHub flow records
+                        # the right page.
+                        try:
+                            page.goto(
+                                repo.url,
+                                wait_until="networkidle",
+                                timeout=NETWORK_IDLE_TIMEOUT_MS,
+                            )
+                        except Exception:
+                            pass
+                        page.wait_for_timeout(PAGE_SETTLE_MS)
+                        _dismiss_overlays(page)
                     website_url = None
                 _prepare_page_for_recording(page)
                 _smooth_scroll(page, segment.duration_seconds)
