@@ -47,7 +47,7 @@ from podcaster.video.distribution import (
     VideoDistributionConfig,
     distribute_video,
 )
-from podcaster.video.sync_plan import EpisodePlan, plan_from_script_timed
+from podcaster.video.sync_plan import plan_from_script_timed
 
 logger = logging.getLogger("podcaster.video.job_runner")
 

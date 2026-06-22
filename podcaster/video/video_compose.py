@@ -425,7 +425,27 @@ def _fit_target_durations(
 
     # An xfade boundary needs both clips strictly longer than the transition.
     floor = transition_duration + 0.5
-    return [max(d, floor) for d in scaled]
+    floored = [max(d, floor) for d in scaled]
+
+    # Flooring can push the sum above ``target_sum``, which would make the
+    # composed content longer than the audio timeline. Re-normalize the
+    # headroom each segment has above ``floor`` so the durations sum back to
+    # exactly ``target_sum`` while keeping every clip valid for xfade.
+    floored_sum = sum(floored)
+    if floored_sum > target_sum:
+        headroom = [d - floor for d in floored]
+        headroom_total = sum(headroom)
+        excess = floored_sum - target_sum
+        # Only redistributable when there is enough headroom above the floor;
+        # otherwise the floor constraints alone exceed the target (infeasible)
+        # and the floored values are the best valid result.
+        if headroom_total >= excess > 0:
+            floored = [
+                d - excess * (h / headroom_total)
+                for d, h in zip(floored, headroom)
+            ]
+
+    return floored
 
 
 def _fetch_blob_cached(
