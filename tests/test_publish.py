@@ -700,7 +700,6 @@ class TestProcessUpload:
             _process_upload(
                 session,
                 upload_id="u123",
-                etag="abc123",
                 anchor_id=42,
                 station_id="99",
                 user_id="7",
@@ -740,7 +739,6 @@ class TestProcessUpload:
             _process_upload(
                 session,
                 upload_id="v456",
-                etag="etag456",
                 anchor_id=10,
                 station_id="5",
                 user_id="3",
@@ -786,7 +784,6 @@ class TestProcessUpload:
             _process_upload(
                 session,
                 upload_id="x789",
-                etag="etag789",
                 anchor_id=1,
                 station_id="1",
                 user_id="1",

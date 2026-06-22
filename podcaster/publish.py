@@ -398,7 +398,6 @@ def _upload_video_multipart(
 def _process_upload(
     session: requests.Session,
     upload_id: str,
-    etag: str,
     *,
     anchor_id: int,
     station_id: str,
@@ -412,7 +411,9 @@ def _process_upload(
     # Video uses multipart GCS upload (multiple parts with ETags).
     # Audio uses a single S3 PUT — isMultipartUpload must be False for audio
     # or Anchor's process_upload returns HTTP 500.
-    is_multipart = is_video and parts_etags is not None
+    if is_video and not parts_etags:
+        raise ValueError("Video uploads require non-empty parts_etags")
+    is_multipart = is_video and bool(parts_etags)
 
     url = f"{_BASE_URL}/v3/upload/{upload_id}/process_upload"
     payload: dict[str, Any] = {
@@ -852,7 +853,6 @@ def publish_episode(
         _process_upload(
             session,
             upload_id,
-            parts_etags[0]["etag"] if len(parts_etags) == 1 else parts_etags[0]["etag"],
             anchor_id=anchor_id,
             station_id=station_id,
             user_id=user_id,
