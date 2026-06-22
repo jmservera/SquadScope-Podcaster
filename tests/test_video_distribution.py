@@ -430,9 +430,21 @@ class TestSpotifyEpisodeUpload:
         config = VideoDistributionConfig.from_payload({"spotify_upload_enabled": True})
         assert config.spotify_upload_enabled is True
 
-    def test_no_anchor_id_returns_false(self, video_file):
+    def test_no_anchor_id_still_uploads(self, video_file, monkeypatch):
+        """Video upload proceeds even without an audio anchor_id (#340)."""
+        from podcaster.publish import PublishResult
+
+        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4"):
+            return PublishResult(
+                anchor_episode_id=999,
+                status="draft",
+                dry_run=False,
+                details={},
+            )
+
+        monkeypatch.setattr("podcaster.publish.upload_video_to_episode", fake_upload)
         config = VideoDistributionConfig(spotify_upload_enabled=True)
-        assert upload_to_spotify_episode(video_file, None, config) is False
+        assert upload_to_spotify_episode(video_file, None, config) is True
 
     def test_dry_run_returns_true(self, video_file):
         config = VideoDistributionConfig(spotify_upload_enabled=True, dry_run=True)

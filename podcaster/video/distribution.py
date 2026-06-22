@@ -472,9 +472,6 @@ def upload_to_spotify_episode(
     only for reference/logging. Reuses the multipart video upload path in
     ``podcaster.publish``. Returns True on success, False otherwise.
     """
-    if not anchor_id:
-        logger.warning("Spotify video upload skipped: no anchor episode id available")
-        return False
 
     if config.dry_run:
         logger.info("Spotify video upload dry-run: audio_anchor=%s", anchor_id)
@@ -485,7 +482,7 @@ def upload_to_spotify_episode(
 
         result = upload_video_to_episode(
             video_path,
-            int(anchor_id),
+            anchor_id,
             title=title,
             description=description,
             content_type="video/mp4",
