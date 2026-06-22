@@ -109,6 +109,82 @@ def video_artifact_path(job_id: str) -> str:
     return f"jobs/{job_id}/video/{job_id}.mp4"
 
 
+def show_notes_path(job_id: str) -> str:
+    return f"jobs/{job_id}/show-notes.md"
+
+
+# Credits shown on every published video episode (issue #363). The audio
+# episode's description already carries the Claracle branding; the video draft
+# must do the same so listeners see the podcast name and website.
+PODCAST_NAME = "Claracle"
+PODCAST_WEBSITE = "www.claracle.com"
+
+
+def _extract_section(notes: str, *heading_names: str) -> str:
+    """Return the paragraph text of the first matching markdown section.
+
+    Headings are matched case-insensitively against their text (ignoring the
+    leading ``#`` markers). Collection stops at the next heading of any level so
+    only the section body is returned.
+    """
+    wanted = {name.lower() for name in heading_names}
+    collecting = False
+    body: list[str] = []
+    for line in notes.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if collecting:
+                break
+            collecting = stripped.lstrip("#").strip().lower() in wanted
+            continue
+        if collecting:
+            body.append(stripped)
+    return "\n".join(body).strip()
+
+
+def _extract_hosts(notes: str) -> str:
+    """Return the host credit text from a ``**Hosts:**`` line, if present."""
+    for line in notes.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("**hosts:**"):
+            return stripped[len("**Hosts:**"):].strip()
+    return ""
+
+
+def _build_video_description(
+    storage: StorageBackend, job_id: str, fallback: str
+) -> str:
+    """Build the Spotify/YouTube video description from the episode show-notes.
+
+    Reads ``jobs/{job_id}/show-notes.md`` (issue #363), extracts the episode
+    summary and host credits, and appends the Claracle podcast name and website
+    so the published video draft carries the same metadata as the audio episode.
+    Falls back to ``fallback`` when show-notes are unavailable.
+    """
+    raw = storage.get_bytes(show_notes_path(job_id))
+    if not raw:
+        return fallback
+    try:
+        notes = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return fallback
+    if not notes:
+        return fallback
+
+    summary = _extract_section(notes, "About this episode", "Show notes")
+    if not summary:
+        summary = fallback.strip()
+
+    credit_parts: list[str] = []
+    hosts = _extract_hosts(notes)
+    if hosts:
+        credit_parts.append(f"Hosts: {hosts}")
+    credit_parts.append(f"{PODCAST_NAME} — {PODCAST_WEBSITE}")
+    credits = "Credits: " + " · ".join(credit_parts)
+
+    return f"{summary}\n\n{credits}" if summary else credits
+
+
 def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
@@ -295,7 +371,10 @@ def run_video_generation(
             # Distribute
             request = manifest.get("request", {})
             title = str(request.get("article_title", f"SquadScope Podcast — {job_id}"))
-            description = str(request.get("description", f"Video podcast episode {job_id}"))
+            fallback_description = str(
+                request.get("description", f"Video podcast episode {job_id}")
+            )
+            description = _build_video_description(storage, job_id, fallback_description)
 
             dist_result = distribute_video(
                 output_path,
