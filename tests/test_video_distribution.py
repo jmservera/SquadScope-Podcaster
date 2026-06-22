@@ -441,22 +441,27 @@ class TestSpotifyEpisodeUpload:
     def test_delegates_to_publish(self, video_file, monkeypatch):
         captured = {}
 
-        def fake_upload(path, anchor_id, *, content_type="video/mp4"):
+        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4"):
             captured["path"] = path
             captured["anchor_id"] = anchor_id
             captured["content_type"] = content_type
+            captured["title"] = title
+            captured["description"] = description
             from podcaster.publish import PublishResult
 
-            return PublishResult(anchor_episode_id=anchor_id, status="draft")
+            return PublishResult(anchor_episode_id=12345, status="draft")
 
         monkeypatch.setattr("podcaster.publish.upload_video_to_episode", fake_upload)
         config = VideoDistributionConfig(spotify_upload_enabled=True)
-        assert upload_to_spotify_episode(video_file, 99, config) is True
+        assert upload_to_spotify_episode(
+            video_file, 99, config, title="My Show", description="desc"
+        ) is True
         assert captured["anchor_id"] == 99
         assert captured["content_type"] == "video/mp4"
+        assert captured["title"] == "My Show"
 
     def test_publish_failure_returns_false(self, video_file, monkeypatch):
-        def fake_upload(path, anchor_id, *, content_type="video/mp4"):
+        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4"):
             from podcaster.publish import PublishResult
 
             return PublishResult(status="failed", error="boom")

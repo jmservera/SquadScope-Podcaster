@@ -459,31 +459,46 @@ def upload_to_spotify_episode(
     video_path: Path,
     anchor_id: int | None,
     config: VideoDistributionConfig,
+    *,
+    title: str | None = None,
+    description: str | None = None,
 ) -> bool:
-    """Attach the MP4 to the same Spotify episode draft as the audio (#337).
+    """Publish the MP4 as a NEW separate Spotify episode draft (#340).
 
-    Reads no manifest itself — the caller supplies ``anchor_id`` (resolved from
-    ``generation.publish_result.anchor_id``). Reuses the multipart video upload
-    path in ``podcaster.publish``. Returns True on success, False otherwise.
+    Spotify rejects attaching a video to an episode that already holds audio, so
+    the video is published as its own brand-new draft episode. The audio episode
+    (``anchor_id``, resolved by the caller from
+    ``generation.publish_result.anchor_id``) is never modified — it is passed
+    only for reference/logging. Reuses the multipart video upload path in
+    ``podcaster.publish``. Returns True on success, False otherwise.
     """
     if not anchor_id:
         logger.warning("Spotify video upload skipped: no anchor episode id available")
         return False
 
     if config.dry_run:
-        logger.info("Spotify video upload dry-run: anchor=%s", anchor_id)
+        logger.info("Spotify video upload dry-run: audio_anchor=%s", anchor_id)
         return True
 
     try:
         from podcaster.publish import upload_video_to_episode
 
         result = upload_video_to_episode(
-            video_path, int(anchor_id), content_type="video/mp4"
+            video_path,
+            int(anchor_id),
+            title=title,
+            description=description,
+            content_type="video/mp4",
         )
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)
             return False
-        logger.info("Spotify video uploaded to episode anchorId=%s", anchor_id)
+        logger.info(
+            "Spotify video published as new episode draft anchorId=%s "
+            "(audio episode anchorId=%s untouched)",
+            result.anchor_episode_id,
+            anchor_id,
+        )
         return True
     except Exception as exc:
         logger.error("Spotify video upload error: %s", exc)
@@ -588,9 +603,12 @@ def distribute_video(
             if not rss_ok:
                 result.errors.append("Spotify RSS update failed")
 
-    # 4. Attach MP4 to the same Spotify episode draft as the audio (#337)
+    # 4. Publish MP4 as a NEW separate Spotify episode draft (#340)
     if config.spotify_upload_enabled:
-        upload_ok = upload_to_spotify_episode(video_path, spotify_anchor_id, config)
+        upload_ok = upload_to_spotify_episode(
+            video_path, spotify_anchor_id, config,
+            title=title, description=description,
+        )
         result.spotify_upload_updated = upload_ok
         if not upload_ok:
             result.errors.append("Spotify video upload failed")

@@ -832,10 +832,10 @@ class TestUploadVideoToEpisode:
         from podcaster.publish import upload_video_to_episode
 
         monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
-        result = upload_video_to_episode(self._video(tmp_path), 42)
+        result = upload_video_to_episode(self._video(tmp_path), 42, title="My Show")
         assert result.dry_run is True
         assert result.status == "draft"
-        assert result.anchor_episode_id == 42
+        assert result.details["title"] == "My Show"
 
     def test_missing_file(self, tmp_path, monkeypatch):
         from podcaster.publish import upload_video_to_episode
@@ -856,7 +856,7 @@ class TestUploadVideoToEpisode:
         assert result.status == "failed"
         assert "credentials" in result.error.lower()
 
-    def test_success_reuses_multipart_path(self, tmp_path, monkeypatch):
+    def test_success_creates_new_video_episode(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
 
         monkeypatch.delenv("SPOTIFY_PUBLISH_DRY_RUN", raising=False)
@@ -867,6 +867,9 @@ class TestUploadVideoToEpisode:
         calls = {}
         monkeypatch.setattr(pub, "_build_session", lambda *a, **k: MagicMock())
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        # A NEW episode is created for the video (separate from the audio one).
+        monkeypatch.setattr(pub, "_create_episode", lambda s, station_id: 777)
 
         def fake_get_url(session, anchor_id, **kwargs):
             calls["is_video"] = kwargs.get("is_video")
@@ -882,18 +885,29 @@ class TestUploadVideoToEpisode:
         def fake_process(session, upload_id, **kwargs):
             calls["content_type"] = kwargs.get("content_type")
             calls["parts"] = kwargs.get("parts_etags")
+            calls["process_anchor"] = kwargs.get("anchor_id")
 
         monkeypatch.setattr(pub, "_process_upload", fake_process)
-        # _create_episode must NOT be called — sabotage it to ensure.
-        monkeypatch.setattr(
-            pub, "_create_episode",
-            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not create episode")),
-        )
 
-        result = pub.upload_video_to_episode(self._video(tmp_path), 555)
+        def fake_metadata(session, anchor_id, user_id, **kwargs):
+            calls["metadata_anchor"] = anchor_id
+            calls["metadata_title"] = kwargs.get("title")
+            calls["publish_behavior"] = kwargs.get("publish_behavior")
+
+        monkeypatch.setattr(pub, "_set_metadata", fake_metadata)
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path), 555, title="My Show"
+        )
         assert result.status == "draft"
-        assert result.anchor_episode_id == 555
+        # The NEW episode id is returned, not the audio anchor (555).
+        assert result.anchor_episode_id == 777
+        assert result.details["audio_anchor_id"] == 555
         assert calls["is_video"] is True
-        assert calls["anchor_id"] == 555
+        assert calls["anchor_id"] == 777
+        assert calls["process_anchor"] == 777
         assert calls["content_type"] == "video/mp4"
         assert calls["parts"] == [{"partNumber": 1, "etag": "e1"}]
+        assert calls["metadata_anchor"] == 777
+        assert calls["metadata_title"] == "My Show"
+        assert calls["publish_behavior"] == "draft"
