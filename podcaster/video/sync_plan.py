@@ -248,10 +248,14 @@ def generate_episode_plan(
 ) -> EpisodePlan:
     """Generate an episode plan with fixed-duration segments.
 
-    Phase 1 strategy: divides total audio duration equally among repos.
+    Phase 1 strategy: divides total audio duration equally among repos,
+    capped to ``_MAX_SEGMENTS`` to keep the ffmpeg filter graph within
+    ACA container memory limits.
 
     Args:
         repos: Ordered list of repo references for the episode.
+            If more than ``_MAX_SEGMENTS`` are provided, the list is
+            truncated and a warning is logged.
         total_duration_seconds: Total audio duration in seconds.
 
     Returns:
@@ -268,6 +272,12 @@ def generate_episode_plan(
         )
 
     # Cap repos to avoid OOM in ffmpeg filter_complex (18+ xfade chains crash ACA).
+    if len(repos) > _MAX_SEGMENTS:
+        logger.warning(
+            "Capping repos from %d to %d to avoid OOM in ffmpeg composition",
+            len(repos),
+            _MAX_SEGMENTS,
+        )
     capped_repos = repos[:_MAX_SEGMENTS]
 
     segment_duration = total_duration_seconds / len(capped_repos)
