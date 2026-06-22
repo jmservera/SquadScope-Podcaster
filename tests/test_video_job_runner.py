@@ -29,7 +29,9 @@ from podcaster.video.job_runner import (
     process_message,
     run_video_generation,
     script_path,
+    show_notes_path,
     video_artifact_path,
+    _build_video_description,
 )
 
 
@@ -134,6 +136,57 @@ class TestPaths:
 
     def test_video_artifact_path(self):
         assert video_artifact_path("j1") == "jobs/j1/video/j1.mp4"
+
+    def test_show_notes_path(self):
+        assert show_notes_path("j1") == "jobs/j1/show-notes.md"
+
+
+# --- Video Description Builder Tests (#363) ---
+
+
+class TestVideoDescription:
+    def _storage(self, job_id: str, notes: str | None):
+        s = MagicMock()
+        data = {show_notes_path(job_id): notes.encode("utf-8")} if notes is not None else {}
+        s.get_bytes.side_effect = lambda path: data.get(path)
+        return s
+
+    def test_falls_back_when_no_show_notes(self):
+        storage = self._storage("j", None)
+        assert _build_video_description(storage, "j", "fallback desc") == "fallback desc"
+
+    def test_includes_summary_and_credits_packaging_format(self):
+        notes = (
+            "# Claracle — Week W24\n\n## Title\n\n"
+            "**Hosts:** Theo (fable) & Vera (alloy)\n\n"
+            "### About this episode\n\nA dynamic AI conversation.\n\n"
+            "### Links\n\n- x\n"
+        )
+        storage = self._storage("j", notes)
+        desc = _build_video_description(storage, "j", "fallback")
+        assert "A dynamic AI conversation." in desc
+        assert "Hosts: Theo (fable) & Vera (alloy)" in desc
+        assert "Claracle — www.claracle.com" in desc
+
+    def test_includes_summary_generation_format(self):
+        notes = (
+            "# Claracle Podcast — Week W24\n\n"
+            "**Hosts:** Two AI voices — Theo and Vera\n\n"
+            "## Show notes\n\nClaracle is a weekly show about open source.\n\n"
+            "### Segment 1\n\n- detail\n"
+        )
+        storage = self._storage("j", notes)
+        desc = _build_video_description(storage, "j", "fallback")
+        assert "Claracle is a weekly show about open source." in desc
+        assert "Segment 1" not in desc
+        assert "www.claracle.com" in desc
+
+    def test_uses_fallback_summary_when_no_section(self):
+        notes = "# Heading only\n\nsome stray text\n"
+        storage = self._storage("j", notes)
+        desc = _build_video_description(storage, "j", "fallback summary")
+        assert desc.startswith("fallback summary")
+        assert "www.claracle.com" in desc
 
 
 # --- Already Processed Tests ---
@@ -241,6 +294,53 @@ class TestRunVideoGeneration:
         assert outcome.segment_count == 2
         assert outcome.distribution is not None
         assert outcome.distribution.youtube_id == "dry-run-id"
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_description_from_show_notes(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config
+    ):
+        """The video description is built from show-notes with summary + credits (#363)."""
+        job_id = "video-notes"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {"article_title": "Notes Episode"},
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        storage._data[show_notes_path(job_id)] = (
+            "# Claracle — Week 2026-W24\n\n"
+            "## My Episode\n\n"
+            "**Hosts:** Theo (fable) & Vera (alloy)\n\n"
+            "### About this episode\n\n"
+            "A joyful conversation about open source.\n\n"
+            "### Links\n\n- https://www.claracle.com\n"
+        ).encode("utf-8")
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0,
+                segment_count=2, has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+        mock_distribute.return_value = MagicMock(
+            status="completed", youtube_id=None, blob_path=None,
+            spotify_rss_updated=False, spotify_upload_updated=False,
+        )
+
+        run_video_generation(job_id, storage, config=dry_config)
+
+        description = mock_distribute.call_args.args[3]
+        assert "A joyful conversation about open source." in description
+        assert "Hosts: Theo (fable) & Vera (alloy)" in description
+        assert "Claracle" in description
+        assert "www.claracle.com" in description
 
     @patch("podcaster.video.job_runner._probe_audio_duration")
     @patch("podcaster.video.video_gen.record_episode")
