@@ -79,6 +79,16 @@ class TestExtractSourceUrl:
         # Only header-style lines (Source URL: at line start) are matched.
         assert extract_source_url(script) is None
 
+    def test_rejects_non_https_urls(self):
+        """Prevent SSRF via file://, http://, or metadata URLs."""
+        for bad_url in [
+            "file:///etc/passwd",
+            "http://169.254.169.254/latest/meta-data/",
+            "ftp://evil.com/payload",
+        ]:
+            script = f"Source URL: {bad_url}\n---\nContent"
+            assert extract_source_url(script) is None
+
 
 class TestGenerateGenericPlan:
     def test_without_source_url(self):

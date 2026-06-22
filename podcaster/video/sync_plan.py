@@ -142,12 +142,22 @@ def extract_source_url(script: str) -> str | None:
     The podcast script header contains a line such as
     ``Source URL: https://claracle.com/weekly/2026/W26/``.  Returns the URL
     string, or ``None`` when the header has no such line.
+
+    Only the header section (before the first ``---`` separator) is searched,
+    and only ``https://`` URLs are accepted to prevent SSRF.
     """
-    match = _SOURCE_URL_RE.search(script)
+    # Restrict to header section (before first ---)
+    header = script.split("---", 1)[0] if "---" in script else script
+    match = _SOURCE_URL_RE.search(header)
     if not match:
         return None
     url = match.group(1).strip()
-    return url or None
+    if not url:
+        return None
+    # Only allow https URLs to prevent SSRF / local-file navigation
+    if not url.startswith("https://"):
+        return None
+    return url
 
 
 def generate_episode_plan(
