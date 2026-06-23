@@ -31,6 +31,7 @@ from podcaster.video.video_gen import (
     _check_repo_accessible,
     _correct_repo_from_article,
     _dismiss_overlays,
+    _dismiss_cookie_consent,
     _extract_website_url,
     _is_login_redirect,
     _looks_malformed_repo_url,
@@ -144,6 +145,74 @@ class TestDismissOverlays:
         page = MagicMock()
         page.query_selector.return_value = None
         _dismiss_overlays(page)  # Should not raise
+
+
+# --- _dismiss_cookie_consent tests (issue #388) ---
+
+
+class TestDismissCookieConsent:
+    def test_clicks_first_visible_framework_selector(self):
+        page = MagicMock()
+        el = MagicMock()
+        el.is_visible.return_value = True
+        page.query_selector.return_value = el
+        assert _dismiss_cookie_consent(page) is True
+        assert el.click.called
+        # Generic JS fallback must not run once a selector matched.
+        page.evaluate.assert_not_called()
+
+    def test_first_matched_selector_is_onetrust(self):
+        page = MagicMock()
+        el = MagicMock()
+        el.is_visible.return_value = True
+        page.query_selector.return_value = el
+        _dismiss_cookie_consent(page)
+        first_selector = page.query_selector.call_args_list[0].args[0]
+        assert first_selector == "#onetrust-accept-btn-handler"
+
+    def test_skips_invisible_then_uses_text_fallback(self):
+        page = MagicMock()
+        el = MagicMock()
+        el.is_visible.return_value = False
+        page.query_selector.return_value = el
+        page.evaluate.return_value = "accept all"
+        assert _dismiss_cookie_consent(page) is True
+        assert not el.click.called
+        assert page.evaluate.called
+
+    def test_generic_text_fallback_when_no_selector_matches(self):
+        page = MagicMock()
+        page.query_selector.return_value = None
+        page.evaluate.return_value = "ok"
+        assert _dismiss_cookie_consent(page) is True
+        assert page.evaluate.called
+
+    def test_returns_false_when_no_banner(self):
+        page = MagicMock()
+        page.query_selector.return_value = None
+        page.evaluate.return_value = None
+        assert _dismiss_cookie_consent(page) is False
+
+    def test_selector_exceptions_are_swallowed(self):
+        page = MagicMock()
+        page.query_selector.side_effect = RuntimeError("bad selector")
+        page.evaluate.return_value = None
+        # Should not raise even though every selector lookup errors.
+        assert _dismiss_cookie_consent(page) is False
+
+    def test_evaluate_exception_is_swallowed(self):
+        page = MagicMock()
+        page.query_selector.return_value = None
+        page.evaluate.side_effect = RuntimeError("boom")
+        assert _dismiss_cookie_consent(page) is False
+
+    def test_respects_timeout_budget(self):
+        page = MagicMock()
+        page.query_selector.return_value = None
+        page.evaluate.return_value = None
+        # A non-positive budget short-circuits before the JS fallback.
+        assert _dismiss_cookie_consent(page, timeout_ms=0) is False
+        page.evaluate.assert_not_called()
 
 
 # --- _smooth_scroll tests ---

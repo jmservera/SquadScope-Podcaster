@@ -81,6 +81,7 @@ REPO_RETRY_BACKOFF_SECONDS = (1.0, 3.0, 5.0)
 # than the old 4 s value.  Prefer ``REPO_RETRY_BACKOFF_SECONDS`` directly.
 REPO_RETRY_DELAY_SECONDS = REPO_RETRY_BACKOFF_SECONDS[0]
 
+
 # JavaScript that extracts the repo's website/homepage URL from the GitHub
 # "About" sidebar (issue #360).  GitHub renders the homepage link as an anchor
 # immediately following the link octicon:
@@ -259,6 +260,169 @@ _OVERLAY_SELECTORS = [
     ".js-signup-prompt button[aria-label='Close']",
     ".js-notice-dismiss",
 ]
+
+# --- Cookie consent dismissal (issue #388) ---
+
+# How long (ms) to wait for a cookie consent banner to appear before giving up.
+# Kept short so sites without a banner don't stall the recording pipeline.
+COOKIE_CONSENT_TIMEOUT_MS = 2500
+# Small settle pause after clicking an accept button so the banner's dismissal
+# animation finishes before recording starts.
+COOKIE_DISMISS_SETTLE_MS = 400
+# Consent banners are often injected by JavaScript shortly after page load, so a
+# single pass can race ahead of the banner.  Poll the selectors/text fallback on
+# this interval (ms) until the timeout budget is exhausted.
+COOKIE_CONSENT_POLL_INTERVAL_MS = 100
+
+# Known "accept" button selectors for the most common consent frameworks
+# (OneTrust, Cookiebot, CookieConsent / Osano) plus widely-used generic ids and
+# data-attributes.  Tried in order; the first visible match is clicked.
+_COOKIE_CONSENT_SELECTORS = [
+    # OneTrust
+    "#onetrust-accept-btn-handler",
+    "button#onetrust-accept-btn-handler",
+    # Cookiebot
+    "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+    "#CybotCookiebotDialogBodyButtonAccept",
+    "#CybotCookiebotDialogBodyLevelButtonAccept",
+    # CookieConsent (Osano / cookieconsent)
+    ".cc-btn.cc-allow",
+    ".cc-btn.cc-dismiss",
+    # Common data-testids / attributes
+    "[data-testid='cookie-policy-dialog-accept-button']",
+    "[data-testid='uc-accept-all-button']",
+    "[aria-label='Accept all']",
+    "[aria-label='Accept All']",
+    # Generic containers
+    "[id*='cookie'] button",
+    "[class*='cookie'] button",
+    "[id*='consent'] button",
+    "[class*='consent'] button",
+]
+
+# Lower-cased button labels treated as "accept" actions for the generic
+# text-based fallback.  Ordered most→least specific so "accept all" wins over a
+# bare "accept" when both exist.
+_COOKIE_CONSENT_ACCEPT_TEXTS = [
+    "accept all cookies",
+    "accept all",
+    "allow all",
+    "accept cookies",
+    "i accept",
+    "i agree",
+    "agree",
+    "accept",
+    "allow",
+    "got it",
+    "ok",
+]
+
+# JS that finds the first *visible* clickable element (button / role=button /
+# anchor / input) whose trimmed, lower-cased text matches one of the accept
+# labels and clicks it.  Returns the matched label or null.  Used as a generic
+# fallback when none of the framework-specific selectors match (issue #388).
+_COOKIE_ACCEPT_JS = """
+(acceptTexts) => {
+  const isVisible = (el) => {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    const style = window.getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none'
+      && style.opacity !== '0';
+  };
+  const candidates = Array.from(document.querySelectorAll(
+    "button, [role='button'], a, input[type='button'], input[type='submit']"
+  ));
+  const labelOf = (el) => {
+    const t = (el.innerText || el.textContent || el.value || '').trim()
+      .toLowerCase();
+    if (t) return t;
+    const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+    return aria;
+  };
+  for (const wanted of acceptTexts) {
+    for (const el of candidates) {
+      if (!isVisible(el)) continue;
+      if (labelOf(el) === wanted) {
+        el.click();
+        return wanted;
+      }
+    }
+  }
+  return null;
+}
+"""
+
+
+def _dismiss_cookie_consent(
+    page: Page, timeout_ms: int = COOKIE_CONSENT_TIMEOUT_MS
+) -> bool:
+    """Find and accept a cookie-consent banner before recording (issue #388).
+
+    Tries, in order:
+
+    1. Known framework selectors (OneTrust, Cookiebot, CookieConsent, plus
+       common ``cookie``/``consent`` container buttons).
+    2. A generic text-based fallback that clicks the first visible button whose
+       label is an "accept" action (Accept All / Accept / OK / I agree / …).
+
+    Best-effort and non-blocking: every step swallows its own errors and the
+    whole routine is budgeted by *timeout_ms* so a site without a banner never
+    stalls recording.  Because consent UIs are frequently injected shortly after
+    load, the selectors/text fallback are polled until the budget is exhausted
+    rather than run once.  Returns ``True`` if a banner was dismissed.
+    """
+    # Non-positive budgets mean "don't wait" — short-circuit explicitly so the
+    # behaviour doesn't depend on the resolution of ``time.monotonic()``.
+    if timeout_ms <= 0:
+        return False
+
+    poll_interval_ms = COOKIE_CONSENT_POLL_INTERVAL_MS
+    # At least one pass; otherwise spread the budget across evenly-spaced polls.
+    max_passes = max(1, timeout_ms // poll_interval_ms)
+
+    for attempt in range(max_passes):
+        for selector in _COOKIE_CONSENT_SELECTORS:
+            try:
+                el = page.query_selector(selector)
+                if el and el.is_visible():
+                    el.click(timeout=500)
+                    logger.debug(
+                        "Dismissed cookie consent via selector %s", selector
+                    )
+                    try:
+                        page.wait_for_timeout(COOKIE_DISMISS_SETTLE_MS)
+                    except Exception:
+                        pass
+                    return True
+            except Exception:
+                # Selector invalid for this page, element detached, click blocked —
+                # move on to the next candidate.
+                continue
+
+        try:
+            matched = page.evaluate(_COOKIE_ACCEPT_JS, _COOKIE_CONSENT_ACCEPT_TEXTS)
+        except Exception:
+            matched = None
+        if matched:
+            logger.debug("Dismissed cookie consent via generic button '%s'", matched)
+            try:
+                page.wait_for_timeout(COOKIE_DISMISS_SETTLE_MS)
+            except Exception:
+                pass
+            return True
+
+        # No banner yet — wait a beat for a late-injected one before retrying,
+        # unless this was the final pass within the budget.
+        if attempt < max_passes - 1:
+            try:
+                page.wait_for_timeout(poll_interval_ms)
+            except Exception:
+                break
+
+    logger.debug("No cookie consent banner found")
+    return False
 
 
 @dataclass
@@ -736,6 +900,7 @@ def _record_generic_segment(
                 )
                 page.wait_for_timeout(PAGE_SETTLE_MS)
                 _dismiss_overlays(page)
+                _dismiss_cookie_consent(page)
                 _prepare_page_for_recording(page)
                 _smooth_scroll(page, segment.duration_seconds)
             except Exception:
@@ -927,6 +1092,9 @@ def _record_segment(
                         pass
                     page.wait_for_timeout(PAGE_SETTLE_MS)
                     _dismiss_overlays(page)
+                    # External sites (unlike github.com) commonly show cookie
+                    # consent banners that would overlay the recording (#388).
+                    _dismiss_cookie_consent(page)
                 else:
                     if website_url:
                         # _navigate_to_website may have navigated the page away
