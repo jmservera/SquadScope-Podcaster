@@ -20,6 +20,7 @@ from podcaster.video.sync_plan import (
 from podcaster.video.video_gen import (
     MAX_SCROLL_VIEWPORT_MULTIPLIER,
     RECORDING_CHROMIUM_ARGS,
+    SCREENSHOT_CAPTURE_FPS,
     SCROLL_TICKS_PER_SEC,
     WIDTH,
     HEIGHT,
@@ -27,8 +28,12 @@ from podcaster.video.video_gen import (
     ZOOM_IMAGE_CSS,
     RecordedSegment,
     RecordingResult,
+    _Capturer,
+    _build_frames_to_video_cmd,
+    _build_still_to_video_cmd,
     _check_gh_pages,
     _check_repo_accessible,
+    _compose_screenshot_segment,
     _correct_repo_from_article,
     _dismiss_overlays,
     _dismiss_cookie_consent,
@@ -37,6 +42,7 @@ from podcaster.video.video_gen import (
     _looks_malformed_repo_url,
     _navigate_to_website,
     _navigate_with_recovery,
+    _pad_frames,
     _smooth_scroll,
     _try_navigate_repo,
     _try_record_project_site,
@@ -47,6 +53,48 @@ from podcaster.video.video_gen import (
     _record_segment,
     record_episode,
 )
+
+
+# A tiny valid PNG (even dimensions) so mocked page.screenshot writes real,
+# ffmpeg-decodable frame files.
+def _valid_png_bytes(width: int = 64, height: int = 64) -> bytes:
+    import struct
+    import zlib
+
+    raw = bytearray()
+    row = bytes([0]) + bytes((20, 20, 30)) * width
+    for _ in range(height):
+        raw += row
+
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return (
+            struct.pack(">I", len(data))
+            + body
+            + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+        )
+
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    idat = zlib.compress(bytes(raw), 9)
+    return sig + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
+
+
+_PNG_1x1 = _valid_png_bytes()
+
+
+@pytest.fixture
+def stub_compose():
+    """Replace ffmpeg screenshot composition with a fast stub (no ffmpeg)."""
+    def fake(capturer, duration_seconds, output_path):
+        Path(output_path).write_bytes(b"\x00\x00\x00\x18ftypmp42stub")
+        return Path(output_path)
+
+    with patch(
+        "podcaster.video.video_gen._compose_screenshot_segment",
+        side_effect=fake,
+    ):
+        yield
 
 
 # --- Helpers ---
@@ -453,6 +501,7 @@ class TestNavigateToWebsite:
 # --- _record_segment tests (mocked Playwright) ---
 
 
+@pytest.mark.usefixtures("stub_compose")
 class TestRecordSegment:
     def _mock_browser(self, tmp_path: Path) -> tuple[MagicMock, Path]:
         """Create a mock browser that produces a fake video file."""
@@ -489,7 +538,7 @@ class TestRecordSegment:
 
         assert result.video_path.exists()
         assert result.video_path.name.startswith("microsoft_vscode_")
-        assert result.video_path.name.endswith(".webm")
+        assert result.video_path.name.endswith(".mp4")
         assert result.is_fallback is False
         page = browser.new_context.return_value.new_page.return_value
         page.goto.assert_called_once()
@@ -580,7 +629,25 @@ class TestRecordSegment:
 
         call_kwargs = browser.new_context.call_args[1]
         assert call_kwargs["color_scheme"] == "dark"
+        assert call_kwargs["viewport"] == {"width": WIDTH, "height": HEIGHT}
+        # Screenshot mode (default) records no Playwright screencast (#387).
+        assert "record_video_size" not in call_kwargs
+        assert "record_video_dir" not in call_kwargs
+
+    def test_context_screencast_mode_records_video(self, tmp_path):
+        # With screenshot capture disabled the legacy screencast context is used.
+        browser, out_dir = self._mock_browser(tmp_path)
+        segment = _make_segment(duration=1.0)
+
+        with patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", False), \
+             patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
+             patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
+            result = _record_segment(browser, segment, out_dir)
+
+        call_kwargs = browser.new_context.call_args[1]
+        assert call_kwargs["color_scheme"] == "dark"
         assert call_kwargs["record_video_size"] == {"width": WIDTH, "height": HEIGHT}
+        assert result.video_path.name.endswith(".webm")
 
     def test_navigates_to_website_when_available(self, tmp_path):
         browser, out_dir = self._mock_browser(tmp_path)
@@ -634,6 +701,7 @@ class TestRecordSegment:
         assert result.video_path.exists()
 
 
+@pytest.mark.usefixtures("stub_compose")
 class TestRecordGenericSegment:
     def _mock_browser(self, tmp_path: Path):
         browser = MagicMock()
@@ -965,6 +1033,7 @@ class TestNavigateWithRecovery:
 # --- _record_segment recovery integration (mocked Playwright, issue #378) ---
 
 
+@pytest.mark.usefixtures("stub_compose")
 class TestRecordSegmentRecovery:
     def _mock_browser(self, tmp_path: Path):
         browser = MagicMock()
@@ -1087,6 +1156,7 @@ class TestRecordEpisodeNoPW:
 # --- record_episode tests (mocked Playwright) ---
 
 
+@pytest.mark.usefixtures("stub_compose")
 class TestRecordEpisode:
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
@@ -1282,7 +1352,8 @@ class TestRecordEpisodeIntegration:
             assert len(result.recorded) == 3
             for rec in result.recorded:
                 assert rec.video_path.exists()
-                assert rec.video_path.suffix == ".webm"
+                # Screenshot mode composes .mp4; legacy screencast .webm (#387).
+                assert rec.video_path.suffix in (".mp4", ".webm")
                 assert rec.video_path.stat().st_size > 0
 
     def test_handles_404_repo(self):
@@ -1300,3 +1371,185 @@ class TestRecordEpisodeIntegration:
             rec = result.recorded[0]
             assert rec.is_fallback is True
             assert rec.video_path.exists()
+
+
+# --- Screenshot-based (hyperframe) capture helpers (issue #387) ---
+
+
+def _make_screenshot_page(scroll_height: int = 5000) -> MagicMock:
+    """A mock Page whose screenshot writes a real PNG to the given path."""
+    page = MagicMock()
+    page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+    page.evaluate.side_effect = lambda js: (
+        scroll_height if "scrollHeight" in js else None
+    )
+
+    def _screenshot(path):
+        Path(path).write_bytes(_PNG_1x1)
+
+    page.screenshot.side_effect = _screenshot
+    return page
+
+
+class TestCapturer:
+    def test_frame_writes_sequential_pngs(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+
+        cap.frame(page)
+        cap.frame(page)
+
+        assert cap.count == 2
+        assert (cap.frames_dir / "frame_00001.png").exists()
+        assert (cap.frames_dir / "frame_00002.png").exists()
+
+    def test_still_writes_single_png(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+
+        result = cap.still(page)
+
+        assert result == cap.still_image
+        assert cap.count == 0
+        assert (cap.frames_dir / "still.png").exists()
+
+    def test_frame_swallows_screenshot_errors(self, tmp_path):
+        page = MagicMock()
+        page.screenshot.side_effect = RuntimeError("boom")
+        cap = _Capturer(tmp_path / "frames")
+
+        assert cap.frame(page) is None
+        assert cap.count == 0
+
+    def test_reset_frames_removes_sequence(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+        cap.frame(page)
+        cap.frame(page)
+        cap.frame(page)
+
+        cap.reset_frames()
+
+        assert cap.count == 0
+        assert not list(cap.frames_dir.glob("frame_*.png"))
+
+
+class TestSmoothScrollCapture:
+    def test_captures_one_frame_per_tick(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+
+        _smooth_scroll(page, duration_seconds=2.0, capturer=cap)
+
+        assert cap.count == int(2.0 * SCREENSHOT_CAPTURE_FPS)
+        # Screenshot mode must not block on real-time waits.
+        page.wait_for_timeout.assert_not_called()
+
+    def test_non_scrollable_page_still_captures_full_run(self, tmp_path):
+        # scrollHeight <= viewport height -> no scroll, but frames still emitted.
+        page = _make_screenshot_page(scroll_height=HEIGHT)
+        cap = _Capturer(tmp_path / "frames")
+
+        _smooth_scroll(page, duration_seconds=1.0, capturer=cap)
+
+        assert cap.count == int(1.0 * SCREENSHOT_CAPTURE_FPS)
+
+    def test_very_short_duration_captures_one_frame(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+
+        _smooth_scroll(page, duration_seconds=0.001, capturer=cap)
+
+        assert cap.count == 1
+
+    def test_frame_count_follows_capture_fps_override(self, tmp_path):
+        # The captured frame count tracks SCREENSHOT_CAPTURE_FPS so the composed
+        # duration (frames / fps) stays correct under a custom FPS (#387).
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+
+        with patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_FPS", 12):
+            _smooth_scroll(page, duration_seconds=2.0, capturer=cap)
+
+        assert cap.count == int(2.0 * 12)
+
+
+class TestPadFrames:
+    def test_pads_to_target(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+        cap.frame(page)  # one real frame
+
+        _pad_frames(cap, 5)
+
+        assert cap.count == 5
+        for i in range(1, 6):
+            assert (cap.frames_dir / f"frame_{i:05d}.png").exists()
+
+    def test_noop_when_already_at_target(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+        cap.frame(page)
+        cap.frame(page)
+
+        _pad_frames(cap, 2)
+
+        assert cap.count == 2
+
+    def test_noop_when_no_frames(self, tmp_path):
+        cap = _Capturer(tmp_path / "frames")
+        _pad_frames(cap, 5)
+        assert cap.count == 0
+
+
+class TestComposeScreenshotSegment:
+    def test_raises_when_nothing_captured(self, tmp_path):
+        cap = _Capturer(tmp_path / "frames")
+        with pytest.raises(RuntimeError, match="No screenshots captured"):
+            _compose_screenshot_segment(cap, 2.0, tmp_path / "out.mp4")
+
+    def test_frames_command_uses_framerate_and_h264(self, tmp_path):
+        cmd = _build_frames_to_video_cmd(tmp_path, SCREENSHOT_CAPTURE_FPS, tmp_path / "o.mp4")
+        assert "-framerate" in cmd
+        assert str(SCREENSHOT_CAPTURE_FPS) in cmd
+        assert "libx264" in cmd
+        assert "frame_%05d.png" in cmd[cmd.index("-i") + 1]
+
+    def test_still_command_loops_for_duration(self, tmp_path):
+        cmd = _build_still_to_video_cmd(
+            tmp_path / "still.png", 3.0, SCREENSHOT_CAPTURE_FPS, tmp_path / "o.mp4"
+        )
+        assert "-loop" in cmd
+        assert "-t" in cmd
+        assert cmd[cmd.index("-t") + 1] == "3.000"
+
+    @pytest.mark.skipif(
+        not __import__("shutil").which("ffmpeg"),
+        reason="ffmpeg not available",
+    )
+    def test_real_ffmpeg_composes_frame_sequence(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+        for _ in range(5):
+            cap.frame(page)
+
+        out = tmp_path / "seg.mp4"
+        _compose_screenshot_segment(cap, 5 / SCREENSHOT_CAPTURE_FPS, out)
+
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    @pytest.mark.skipif(
+        not __import__("shutil").which("ffmpeg"),
+        reason="ffmpeg not available",
+    )
+    def test_real_ffmpeg_composes_still(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+        cap.still(page)
+
+        out = tmp_path / "seg.mp4"
+        _compose_screenshot_segment(cap, 1.0, out)
+
+        assert out.exists()
+        assert out.stat().st_size > 0

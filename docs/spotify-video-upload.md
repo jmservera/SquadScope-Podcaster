@@ -28,7 +28,7 @@ record → normalize → fit-to-window → pairwise compose → join (intro/cont
 
 | Stage | Where | What happens |
 |-------|-------|--------------|
-| **record** | `video_gen.record_episode` | Playwright records each repo page (and generic segments) as a 1920×1080 WebM via `record_video_size`/`viewport` = `WIDTH×HEIGHT` (1920×1080). |
+| **record** | `video_gen.record_episode` | Captures each repo page (and generic segments) at 1920×1080. **Default (issue #387): screenshot/hyperframe mode** — sequential lossless PNG screenshots taken while scrolling are composed by ffmpeg into an H.264 `.mp4` segment (`-framerate {SCREENSHOT_CAPTURE_FPS}`), giving pixel-perfect quality with no VP8 capture-time artefacts. Set `VIDEO_SCREENSHOT_CAPTURE=false` to fall back to the legacy Playwright screencast (1920×1080 WebM via `record_video_size`/`viewport`). |
 | **(sync)** | `video_compose.build_sync_map` / `apply_sync` | Optional: matches recordings to the timed episode plan and stream-copy trims overlong recordings to their target window (`-c copy`, no re-encode). |
 | **normalize / fit** | `_build_normalize_cmd` / `_build_fit_segment_cmd` | Each segment is scaled+padded to 1920×1080@30fps, bt709, yuv420p. When `audio_duration` is known, segments are **fit** to exact target durations (trim or freeze-extend) — see §4. |
 | **pairwise compose** | `_compose_pairwise` / `_build_xfade_step_cmd` | Segments are crossfaded **two at a time** (`xfade`), accumulating into one video. Pairwise (not N-input `filter_complex`) keeps memory constant — the old N-input filter OOMed at ~18 segments. Lower-thirds and the DOG watermark are baked in here. |
