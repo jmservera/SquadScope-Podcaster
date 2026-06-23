@@ -11,7 +11,10 @@ records the viewport as a WebM file.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
+import subprocess
 import tempfile
 import time
 from collections.abc import Sequence
@@ -81,6 +84,47 @@ REPO_RETRY_BACKOFF_SECONDS = (1.0, 3.0, 5.0)
 # than the old 4 s value.  Prefer ``REPO_RETRY_BACKOFF_SECONDS`` directly.
 REPO_RETRY_DELAY_SECONDS = REPO_RETRY_BACKOFF_SECONDS[0]
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Read a boolean environment variable (true/1/yes/on are truthy)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer environment variable, falling back to *default*."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid int for %s=%r; using default %d", name, raw, default)
+        return default
+
+
+# --- Screenshot-based (hyperframe) capture (issue #387) ---
+#
+# Playwright's screencast (page.video) encodes VP8 in real time, which is lossy
+# at capture time and produces flicker, tearing during scroll and gradient
+# banding regardless of the final compose CRF.  Instead we capture sequential
+# lossless PNG screenshots of the 1920x1080 viewport while scrolling, then let
+# ffmpeg compose them into a high-quality H.264 segment — the same lossless
+# source -> ffmpeg pattern that makes the intro/outro hyperframe clips look
+# crisp.  Set VIDEO_SCREENSHOT_CAPTURE=false to fall back to the legacy
+# screencast recorder for side-by-side comparison.
+SCREENSHOT_CAPTURE_ENABLED = _env_bool("VIDEO_SCREENSHOT_CAPTURE", True)
+# One screenshot per scroll tick keeps the scroll speed and segment duration
+# identical to the screencast behaviour (frames / fps == duration), since the
+# composed framerate equals the scroll tick rate.
+SCREENSHOT_CAPTURE_FPS = _env_int("VIDEO_SCREENSHOT_FPS", SCROLL_TICKS_PER_SEC)
+# Near-visually-lossless CRF for the intermediate screenshot->video segment; the
+# downstream compose re-encodes again, so we keep this high quality to avoid
+# compounding compression artefacts.
+SCREENSHOT_CAPTURE_CRF = _env_int("VIDEO_SCREENSHOT_CRF", 12)
+SCREENSHOT_CAPTURE_PRESET = os.environ.get("VIDEO_SCREENSHOT_PRESET", "veryfast")
 
 # JavaScript that extracts the repo's website/homepage URL from the GitHub
 # "About" sidebar (issue #360).  GitHub renders the homepage link as an anchor
