@@ -32,14 +32,17 @@ from podcaster.video.video_gen import (
     _correct_repo_from_article,
     _dismiss_overlays,
     _extract_website_url,
+    _is_login_redirect,
     _looks_malformed_repo_url,
     _navigate_to_website,
     _navigate_with_recovery,
     _smooth_scroll,
     _try_navigate_repo,
+    _try_record_project_site,
     _apply_image_zoom,
     _prepare_page_for_recording,
     _render_fallback_page,
+    _render_url_card,
     _record_segment,
     record_episode,
 )
@@ -223,18 +226,46 @@ class TestSmoothScroll:
         page.wait_for_timeout.assert_called_once_with(20)
 
 
-# --- _render_fallback_page tests ---
+# --- _render_url_card tests (issue #386) ---
 
 
-class TestRenderFallbackPage:
+class TestRenderUrlCard:
     def test_sets_content_and_waits(self):
         page = MagicMock()
-        _render_fallback_page(page, "owner", "repo", 5.0)
+        _render_url_card(page, "owner", "repo", 5.0)
         page.set_content.assert_called_once()
         html = page.set_content.call_args[0][0]
         assert "owner/repo" in html
-        assert "Repository unavailable" in html
+        # The clean URL card shows the repo URL, never an "unavailable" message.
+        assert "github.com/owner/repo" in html
+        assert "unavailable" not in html.lower()
         page.wait_for_timeout.assert_called_once_with(5000)
+
+    def test_fallback_alias_points_to_url_card(self):
+        assert _render_fallback_page is _render_url_card
+
+
+# --- _is_login_redirect tests (issue #386) ---
+
+
+class TestIsLoginRedirect:
+    def test_detects_login_path(self):
+        assert _is_login_redirect(
+            "https://github.com/login?return_to=%2Fowner%2Frepo"
+        ) is True
+
+    def test_detects_session_path(self):
+        assert _is_login_redirect("https://github.com/session") is True
+
+    def test_normal_repo_is_not_redirect(self):
+        assert _is_login_redirect("https://github.com/owner/repo") is False
+
+    def test_login_in_repo_name_is_not_redirect(self):
+        # A repo literally named "login" must not be treated as a redirect.
+        assert _is_login_redirect("https://github.com/owner/login") is False
+
+    def test_none_is_false(self):
+        assert _is_login_redirect(None) is False
 
 
 # --- _apply_image_zoom tests ---
@@ -398,7 +429,7 @@ class TestRecordSegment:
         browser, out_dir = self._mock_browser(tmp_path)
         page = browser.new_context.return_value.new_page.return_value
         # Every navigation returns 404 and no source article is available, so
-        # all recovery paths fail and we render the generic fallback (#378).
+        # all recovery paths fail and we render the clean URL card (#386).
         page.goto.return_value = MagicMock(status=404)
         segment = _make_segment(owner="gone", name="repo", duration=2.0)
 
@@ -408,6 +439,32 @@ class TestRecordSegment:
 
         assert result.is_fallback is True
         assert result.recovery_path == "fallback"
+        assert result.video_path.exists()
+        # The card shows the URL, never an "unavailable" message (#386).
+        card_html = next(
+            c.args[0]
+            for c in page.set_content.call_args_list
+            if "gone/repo" in c.args[0]
+        )
+        assert "unavailable" not in card_html.lower()
+
+    def test_404_records_github_pages_site(self, tmp_path):
+        # When the repo page 404s but the project has a GitHub Pages site, we
+        # record that site instead of showing the URL card (issue #386).
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        page.goto.return_value = MagicMock(status=404)
+        segment = _make_segment(owner="proj", name="site", duration=2.0)
+
+        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=False), \
+             patch("podcaster.video.video_gen._check_gh_pages", return_value=True), \
+             patch("podcaster.video.video_gen._navigate_to_website", return_value=True):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.is_fallback is False
+        assert result.recovery_path == "website"
+        assert result.has_pages is True
+        assert result.website_url == "https://proj.github.io/site/"
         assert result.video_path.exists()
 
     def test_fallback_on_navigation_error(self, tmp_path):
@@ -642,8 +699,53 @@ class TestTryNavigateRepo:
         page.goto.side_effect = Exception("timeout")
         assert _try_navigate_repo(page, "https://github.com/a/b") is False
 
+    def test_returns_false_on_login_redirect(self):
+        # A 200 that lands on the login page means the repo is private /
+        # login-required and must be treated as a failure (issue #386).
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=200)
+        page.url = "https://github.com/login?return_to=%2Fa%2Fb"
+        assert _try_navigate_repo(page, "https://github.com/a/b") is False
 
-class TestCorrectRepoFromArticle:
+    def test_returns_true_on_normal_final_url(self):
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=200)
+        page.url = "https://github.com/a/b"
+        assert _try_navigate_repo(page, "https://github.com/a/b") is True
+
+
+class TestTryRecordProjectSite:
+    def test_returns_none_when_no_pages(self):
+        page = MagicMock()
+        repo = RepoReference("o", "r")
+        with patch(
+            "podcaster.video.video_gen._check_gh_pages", return_value=False
+        ):
+            assert _try_record_project_site(page, repo, 2.0) is None
+        page.goto.assert_not_called()
+
+    def test_returns_none_when_pages_fails_to_load(self):
+        page = MagicMock()
+        repo = RepoReference("o", "r")
+        with patch(
+            "podcaster.video.video_gen._check_gh_pages", return_value=True
+        ), patch(
+            "podcaster.video.video_gen._navigate_to_website", return_value=False
+        ):
+            assert _try_record_project_site(page, repo, 2.0) is None
+
+    def test_records_and_returns_pages_url(self):
+        page = MagicMock()
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js: 2000 if "scrollHeight" in js else None
+        repo = RepoReference("o", "r")
+        with patch(
+            "podcaster.video.video_gen._check_gh_pages", return_value=True
+        ), patch(
+            "podcaster.video.video_gen._navigate_to_website", return_value=True
+        ):
+            url = _try_record_project_site(page, repo, 2.0)
+        assert url == "https://o.github.io/r/"
     _ARTICLE = "https://claracle.com/weekly/2026/w26/"
 
     def test_returns_none_without_source_url(self):

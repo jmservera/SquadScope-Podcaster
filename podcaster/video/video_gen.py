@@ -196,13 +196,30 @@ body {{
   width: {width}px; height: {height}px;
   background: #0d1117; color: #c9d1d9; font-family: -apple-system, sans-serif;
 }}
-.card {{ text-align: center; }}
-h1 {{ font-size: 48px; margin-bottom: 16px; }}
-p {{ font-size: 24px; color: #8b949e; }}
+.card {{ text-align: center; padding: 0 64px; }}
+.logo {{ margin-bottom: 28px; }}
+.logo svg {{ fill: #c9d1d9; }}
+h1 {{ font-size: 52px; margin: 0 0 24px; font-weight: 600; }}
+.url {{
+  display: inline-block; font-size: 34px; color: #58a6ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+  padding: 18px 32px; letter-spacing: 0.5px;
+}}
 </style></head><body>
 <div class="card">
+  <div class="logo">
+    <svg height="72" viewBox="0 0 16 16" width="72" aria-hidden="true">
+      <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38\
+ 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15\
+ .08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82\
+-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07\
+-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49\
+ 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path>
+    </svg>
+  </div>
   <h1>{owner}/{name}</h1>
-  <p>Repository unavailable</p>
+  <div class="url">{url}</div>
 </div>
 </body></html>
 """
@@ -253,10 +270,11 @@ class RecordedSegment:
     is_fallback: bool = False
     has_pages: bool = False
     website_url: str | None = None
-    # Which recovery path produced a usable recording (issue #378):
+    # Which recovery path produced a usable recording (issues #378, #386):
     # "direct" (first attempt), "retry" (second attempt after a delay),
-    # "article" (URL corrected from the source article), or "fallback"
-    # (all recovery paths failed → generic branded screen).
+    # "article" (URL corrected from the source article), "website" (the repo's
+    # GitHub Pages site, recorded when the repo page 404s/needs login), or
+    # "fallback" (all recovery paths failed → clean URL card).
     recovery_path: str = "direct"
 
 
@@ -286,6 +304,27 @@ def _check_repo_accessible(url: str, timeout: float = 5.0) -> bool:
     except Exception:
         # Network errors — assume accessible and let Playwright handle it
         return True
+
+
+# GitHub sends unauthenticated requests for private / login-required repos to a
+# login (or session) page that returns HTTP 200, so a plain status check treats
+# it as "accessible".  Detecting the redirect target lets us distinguish a
+# login wall from a genuine 404 and from a slow-loading repo (issue #386).
+_LOGIN_REDIRECT_RE = re.compile(r"github\.com/(?:login|session)(?:[/?]|$)", re.I)
+
+
+def _is_login_redirect(url: str | None) -> bool:
+    """Return True when *url* is a GitHub login/session redirect (issue #386).
+
+    Used after navigation to detect repos that are private or otherwise require
+    authentication: GitHub redirects these to ``github.com/login?return_to=…``
+    (HTTP 200), which a status-only check would mistake for a healthy page.
+    """
+    if not url:
+        return False
+    if not isinstance(url, str):
+        return False
+    return bool(_LOGIN_REDIRECT_RE.search(url))
 
 
 def _dismiss_overlays(page: Page) -> None:
@@ -433,15 +472,27 @@ def _navigate_to_website(page: Page, url: str) -> bool:
     return True
 
 
-def _render_fallback_page(
+def _render_url_card(
     page: Page, owner: str, name: str, duration_seconds: float
 ) -> None:
-    """Show a branded fallback screen for unavailable repos."""
+    """Show a clean URL card for a repo we couldn't record (issue #386).
+
+    Replaces the old "Repository unavailable" screen: instead of telling the
+    viewer something is broken, we present the repository identity and its URL
+    prominently so the segment still reads as intentional, branded content.
+    """
+    url = f"github.com/{owner}/{name}"
     html = FALLBACK_BRAND_HTML.format(
-        width=WIDTH, height=HEIGHT, owner=owner, name=name
+        width=WIDTH, height=HEIGHT, owner=owner, name=name, url=url
     )
     page.set_content(html)
     page.wait_for_timeout(int(duration_seconds * 1000))
+
+
+# Backwards-compatible alias: earlier code/tests referenced the screen shown
+# when a repo can't be recorded as the "fallback page".  It now renders the
+# clean URL card (issue #386).
+_render_fallback_page = _render_url_card
 
 
 # Valid GitHub owner/repo path segments contain only these characters.
@@ -495,6 +546,18 @@ def _try_navigate_repo(page: Page, url: str) -> bool:
     status = getattr(response, "status", None)
     if isinstance(status, int) and status >= 400:
         logger.warning("Navigation to %s returned HTTP %s", url, status)
+        return False
+    # A 200 that lands on GitHub's login/session page means the repo is private
+    # or login-required (issue #386): treat it as a failure so recovery can try
+    # the source article and, ultimately, the URL card.
+    final_url = getattr(page, "url", None)
+    if _is_login_redirect(final_url):
+        logger.warning(
+            "Navigation to %s redirected to login (%s) — repo likely "
+            "private/login-required",
+            url,
+            final_url,
+        )
         return False
     return True
 
@@ -706,6 +769,48 @@ def _record_generic_segment(
     )
 
 
+def _try_record_project_site(
+    page: Page, repo: RepoReference, duration_seconds: float
+) -> str | None:
+    """Record the repo's GitHub Pages site as a fallback (issue #386).
+
+    When the GitHub repo page itself can't be recorded (404 / login-required /
+    unreachable), the repo's *project website* is the best content we can still
+    show.  We can't read the homepage link from the (failed) About sidebar, so
+    we probe the conventional GitHub Pages URL ``https://{owner}.github.io/
+    {name}/``; if it exists and loads, we record it like a normal website
+    segment and return its URL.  Returns ``None`` (so the caller renders the URL
+    card) when there's no Pages site or it fails to load.  Best-effort: a
+    failure *after* the site loads keeps the partial recording rather than
+    stacking a card on top of it (issue #381).
+    """
+    if not _check_gh_pages(repo.owner, repo.name):
+        return None
+    pages_url = f"https://{repo.owner}.github.io/{repo.name}/"
+    if not _navigate_to_website(page, pages_url):
+        return None
+    logger.info(
+        "Repo %s unrecordable; recording project site %s instead",
+        repo.url,
+        pages_url,
+    )
+    try:
+        try:
+            page.wait_for_load_state("networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS)
+        except Exception:
+            pass
+        page.wait_for_timeout(PAGE_SETTLE_MS)
+        _dismiss_overlays(page)
+        _prepare_page_for_recording(page)
+        _smooth_scroll(page, duration_seconds)
+    except Exception:
+        logger.exception(
+            "Error while recording project site %s — keeping partial recording",
+            pages_url,
+        )
+    return pages_url
+
+
 def _record_segment(
     browser: Browser,
     segment: VideoSegment,
@@ -774,10 +879,21 @@ def _record_segment(
         outcome = _navigate_with_recovery(page, repo, source_url)
         recovery_path = outcome.recovery_path
         if not outcome.success:
-            is_fallback = True
-            _render_fallback_page(
-                page, repo.owner, repo.name, segment.duration_seconds
+            # Before showing a static card, try the repo's project website —
+            # its GitHub Pages site — so we record real content when the repo
+            # page 404s or requires login (issue #386).
+            pages_url = _try_record_project_site(
+                page, repo, segment.duration_seconds
             )
+            if pages_url is not None:
+                website_url = pages_url
+                has_pages = True
+                recovery_path = "website"
+            else:
+                is_fallback = True
+                _render_url_card(
+                    page, repo.owner, repo.name, segment.duration_seconds
+                )
         else:
             # Navigation may have corrected the repo (e.g. via the source
             # article); use the effective repo for naming and the website flow.
