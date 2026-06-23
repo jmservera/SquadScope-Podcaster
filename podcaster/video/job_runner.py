@@ -48,7 +48,7 @@ from podcaster.video.distribution import (
     VideoDistributionConfig,
     distribute_video,
 )
-from podcaster.video.sync_plan import plan_from_script_timed
+from podcaster.video.sync_plan import extract_source_url, plan_from_script_timed
 
 logger = logging.getLogger("podcaster.video.job_runner")
 
@@ -343,8 +343,15 @@ def run_video_generation(
                 })
                 return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
 
-            # Record segments
-            recording = record_episode(plan, output_dir=output_dir, headless=True)
+            # Record segments. Pass the script's Source URL so failed repo
+            # navigations can be retried and corrected against the source
+            # article before falling back to a generic screen (issue #378).
+            recording = record_episode(
+                plan,
+                output_dir=output_dir,
+                headless=True,
+                source_url=extract_source_url(script),
+            )
 
             # Compose final MP4
             output_path = output_dir / f"{job_id}.mp4"

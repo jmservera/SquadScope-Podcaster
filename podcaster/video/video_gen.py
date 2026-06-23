@@ -11,9 +11,11 @@ records the viewport as a WebM file.
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 import uuid
 
 import requests
@@ -30,7 +32,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     _PLAYWRIGHT_AVAILABLE = False
 
-from podcaster.video.sync_plan import EpisodePlan, VideoSegment
+from podcaster.video.sync_plan import (
+    EpisodePlan,
+    RepoReference,
+    VideoSegment,
+    fetch_repos_from_article,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +66,11 @@ NETWORK_IDLE_TIMEOUT_MS = 10_000
 # shorter than the GitHub timeout so a slow/down website falls back quickly to
 # the already-rendered GitHub page.
 WEBSITE_NAV_TIMEOUT_MS = 8_000
+
+# When a repo navigation fails (timeout / HTTP error), wait this long before the
+# single retry attempt (issue #378). The issue asks for a 3–5 s delay; 4 s sits
+# in the middle of that window.
+REPO_RETRY_DELAY_SECONDS = 4.0
 
 # JavaScript that extracts the repo's website/homepage URL from the GitHub
 # "About" sidebar (issue #360).  GitHub renders the homepage link as an anchor
@@ -232,6 +244,11 @@ class RecordedSegment:
     is_fallback: bool = False
     has_pages: bool = False
     website_url: str | None = None
+    # Which recovery path produced a usable recording (issue #378):
+    # "direct" (first attempt), "retry" (second attempt after a delay),
+    # "article" (URL corrected from the source article), or "fallback"
+    # (all recovery paths failed → generic branded screen).
+    recovery_path: str = "direct"
 
 
 @dataclass
@@ -418,6 +435,165 @@ def _render_fallback_page(
     page.wait_for_timeout(int(duration_seconds * 1000))
 
 
+# Valid GitHub owner/repo path segments contain only these characters.
+_VALID_REPO_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _looks_malformed_repo_url(url: str) -> bool:
+    """Heuristically detect a corrupted/malformed GitHub repo URL (issue #378).
+
+    A URL is considered malformed when it is empty, uses a non-http(s) scheme,
+    points at a non-GitHub host (when a GitHub repo is expected), is missing the
+    ``owner/name`` path segments, carries percent-encoding in the repo path, or
+    contains characters invalid for GitHub owner/repo names.
+    """
+    if not url:
+        return True
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return True
+    host = (parsed.hostname or "").lower()
+    if host != "github.com":
+        # Non-GitHub domain when expecting a GitHub repo.
+        return True
+    if "%" in parsed.path:
+        # Percent-encoding has no place in a plain owner/repo path.
+        return True
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 2:
+        # Missing path segments (e.g. truncated to just the owner).
+        return True
+    owner, name = parts[0], parts[1]
+    if not _VALID_REPO_SEGMENT_RE.match(owner) or not _VALID_REPO_SEGMENT_RE.match(name):
+        return True
+    return False
+
+
+def _try_navigate_repo(page: Page, url: str) -> bool:
+    """Attempt a single navigation to *url*; return True on success.
+
+    Success means the page loaded without raising and did not return an HTTP
+    error status (404 or any >= 400). Any exception (e.g. ``TimeoutError``) or
+    error status returns False so the caller can decide on a recovery step.
+    """
+    try:
+        response = page.goto(
+            url, wait_until="networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS
+        )
+    except Exception as exc:  # noqa: BLE001 — recovery decides next step
+        logger.warning("Navigation to %s failed: %s", url, exc)
+        return False
+    status = getattr(response, "status", None)
+    if isinstance(status, int) and status >= 400:
+        logger.warning("Navigation to %s returned HTTP %s", url, status)
+        return False
+    return True
+
+
+def _correct_repo_from_article(
+    repo: RepoReference, source_url: str | None
+) -> RepoReference | None:
+    """Find the correct repo for *repo* on the source article page (issue #378).
+
+    Fetches the article at *source_url* (the script header's ``Source URL:``)
+    and returns a repo reference found there whose name matches *repo*'s name.
+    Returns ``None`` when no source URL is available, the article cannot be
+    fetched, or no confident name match is found. An owner-only match is
+    deliberately *not* used as a fallback: it is too broad and can select an
+    unrelated repo, which would be worse than the generic fallback.
+    """
+    if not source_url:
+        return None
+    try:
+        candidates = fetch_repos_from_article(source_url)
+    except Exception:  # noqa: BLE001 — best-effort recovery
+        logger.exception("Failed to fetch repos from source article %s", source_url)
+        return None
+    if not candidates:
+        return None
+    for candidate in candidates:
+        if candidate.name.lower() == repo.name.lower():
+            return candidate
+    return None
+
+
+@dataclass
+class _NavOutcome:
+    """Result of a (possibly multi-step) repo navigation attempt."""
+
+    repo: RepoReference
+    recovery_path: str
+    success: bool
+
+
+def _navigate_with_recovery(
+    page: Page,
+    repo: RepoReference,
+    source_url: str | None,
+    *,
+    retry_delay_seconds: float = REPO_RETRY_DELAY_SECONDS,
+) -> _NavOutcome:
+    """Navigate to *repo*, retrying and validating against the source article.
+
+    Recovery order (issue #378):
+
+    1. ``direct`` — navigate to ``repo.url``.
+    2. ``retry`` — on failure, wait ``retry_delay_seconds`` and try once more.
+    3. ``article`` — if the retry fails, check whether the URL looks malformed,
+       then fetch the correct URL from the source article and try that.
+    4. ``fallback`` — only when every path above fails.
+
+    Returns a :class:`_NavOutcome` carrying the (possibly corrected) repo, the
+    recovery path used, and whether navigation ultimately succeeded.
+    """
+    if _try_navigate_repo(page, repo.url):
+        logger.info("Recovery path=direct succeeded for %s", repo.url)
+        return _NavOutcome(repo, "direct", True)
+
+    logger.info(
+        "Navigation to %s failed; retrying once after %.1fs",
+        repo.url,
+        retry_delay_seconds,
+    )
+    try:
+        page.wait_for_timeout(int(retry_delay_seconds * 1000))
+    except Exception:  # noqa: BLE001 — delay is best-effort
+        pass
+    if _try_navigate_repo(page, repo.url):
+        logger.info("Recovery path=retry succeeded for %s", repo.url)
+        return _NavOutcome(repo, "retry", True)
+
+    if _looks_malformed_repo_url(repo.url):
+        logger.warning(
+            "Repo URL %s looks malformed; consulting source article", repo.url
+        )
+    else:
+        logger.info(
+            "Repo URL %s still unreachable after retry; consulting source article",
+            repo.url,
+        )
+
+    corrected = _correct_repo_from_article(repo, source_url)
+    if corrected is not None and corrected != repo:
+        logger.info(
+            "Recovery: trying corrected URL %s (from source article %s)",
+            corrected.url,
+            source_url,
+        )
+        if _try_navigate_repo(page, corrected.url):
+            logger.info(
+                "Recovery path=article succeeded: %s -> %s",
+                repo.url,
+                corrected.url,
+            )
+            return _NavOutcome(corrected, "article", True)
+
+    logger.warning(
+        "Recovery path=fallback: all recovery attempts failed for %s", repo.url
+    )
+    return _NavOutcome(repo, "fallback", False)
+
+
 GENERIC_BACKGROUND_TITLE = "SquadScope"
 GENERIC_BACKGROUND_SUBTITLE = "Open Source Highlights"
 
@@ -508,11 +684,17 @@ def _record_segment(
     segment: VideoSegment,
     output_dir: Path,
     check_accessibility: bool = True,
+    source_url: str | None = None,
 ) -> RecordedSegment:
     """Record a single video segment for a repo.
 
     Creates a fresh browser context with video recording, navigates to the
     repo URL, scrolls, and closes the context to finalize the video file.
+
+    When the repo URL fails to load, navigation is retried and validated
+    against the episode's source article before falling back to a generic
+    branded screen (issue #378). *source_url* is the script header's
+    ``Source URL:`` used to recover a corrected repo URL.
     """
     if segment.is_generic:
         return _record_generic_segment(browser, segment, output_dir)
@@ -524,12 +706,17 @@ def _record_segment(
     is_fallback = False
     has_pages = False
     website_url: str | None = None
+    recovery_path = "direct"
 
     if check_accessibility and not _check_repo_accessible(repo.url):
-        is_fallback = True
-        logger.warning("Repo %s is not accessible, using fallback", repo.url)
-
-    if not is_fallback:
+        # A failed pre-check (404) is a strong "URL looks bad" signal; let the
+        # recovery flow retry and consult the source article (issue #378)
+        # instead of immediately rendering the generic fallback.
+        logger.warning(
+            "Repo %s failed accessibility pre-check; will attempt recovery",
+            repo.url,
+        )
+    else:
         has_pages = _check_gh_pages(repo.owner, repo.name)
         if has_pages:
             logger.info("Repo %s has GitHub Pages", repo.url)
@@ -544,72 +731,71 @@ def _record_segment(
     page: Page = context.new_page()
 
     try:
-        if is_fallback:
+        # Paint a dark hold frame before navigating so the recording's opening
+        # frames are GitHub-dark rather than a white flash while the real page
+        # loads (issue #355).
+        try:
+            page.set_content(DARK_HOLD_HTML)
+        except Exception:
+            pass
+
+        outcome = _navigate_with_recovery(page, repo, source_url)
+        recovery_path = outcome.recovery_path
+        if not outcome.success:
+            is_fallback = True
             _render_fallback_page(
                 page, repo.owner, repo.name, segment.duration_seconds
             )
         else:
-            # Paint a dark hold frame before navigating so the recording's
-            # opening frames are GitHub-dark rather than a white flash while
-            # the real page loads (issue #355).
+            # Navigation may have corrected the repo (e.g. via the source
+            # article); use the effective repo for naming and the website flow.
+            repo = outcome.repo
+            # Wait for the page to fully settle (load + paint) before
+            # recording motion, avoiding the initial content flash.
             try:
-                page.set_content(DARK_HOLD_HTML)
+                page.wait_for_load_state(
+                    "networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS
+                )
             except Exception:
                 pass
-            response = page.goto(repo.url, wait_until="networkidle",
-                                 timeout=NETWORK_IDLE_TIMEOUT_MS)
-            if response is not None and response.status == 404:
-                logger.warning("Got 404 for %s — using fallback", repo.url)
-                is_fallback = True
-                _render_fallback_page(
-                    page, repo.owner, repo.name, segment.duration_seconds
-                )
-            else:
-                # Wait for the page to fully settle (load + paint) before
-                # recording motion, avoiding the initial content flash.
+            page.wait_for_timeout(PAGE_SETTLE_MS)
+            _dismiss_overlays(page)
+            # If the repo links an external website, record that instead of
+            # the GitHub page; fall back to GitHub if it fails to load
+            # (issue #360).
+            website_url = _extract_website_url(page)
+            if website_url and _navigate_to_website(page, website_url):
                 try:
                     page.wait_for_load_state(
-                        "networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS
+                        "networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS
                     )
                 except Exception:
                     pass
                 page.wait_for_timeout(PAGE_SETTLE_MS)
                 _dismiss_overlays(page)
-                # If the repo links an external website, record that instead of
-                # the GitHub page; fall back to GitHub if it fails to load
-                # (issue #360).
-                website_url = _extract_website_url(page)
-                if website_url and _navigate_to_website(page, website_url):
+            else:
+                if website_url:
+                    # _navigate_to_website may have navigated the page away
+                    # from the GitHub repo (e.g. an HTTP >= 400 response
+                    # still loads a page); go back so the GitHub flow records
+                    # the right page.
                     try:
-                        page.wait_for_load_state(
-                            "networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS
+                        page.goto(
+                            repo.url,
+                            wait_until="networkidle",
+                            timeout=NETWORK_IDLE_TIMEOUT_MS,
                         )
                     except Exception:
                         pass
                     page.wait_for_timeout(PAGE_SETTLE_MS)
                     _dismiss_overlays(page)
-                else:
-                    if website_url:
-                        # _navigate_to_website may have navigated the page away
-                        # from the GitHub repo (e.g. an HTTP >= 400 response
-                        # still loads a page); go back so the GitHub flow records
-                        # the right page.
-                        try:
-                            page.goto(
-                                repo.url,
-                                wait_until="networkidle",
-                                timeout=NETWORK_IDLE_TIMEOUT_MS,
-                            )
-                        except Exception:
-                            pass
-                        page.wait_for_timeout(PAGE_SETTLE_MS)
-                        _dismiss_overlays(page)
-                    website_url = None
-                _prepare_page_for_recording(page)
-                _smooth_scroll(page, segment.duration_seconds)
+                website_url = None
+            _prepare_page_for_recording(page)
+            _smooth_scroll(page, segment.duration_seconds)
     except Exception:
         logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True
+        recovery_path = "fallback"
         _render_fallback_page(
             page, repo.owner, repo.name, segment.duration_seconds
         )
@@ -641,6 +827,7 @@ def _record_segment(
         is_fallback=is_fallback,
         has_pages=has_pages,
         website_url=website_url,
+        recovery_path=recovery_path,
     )
 
 
@@ -649,6 +836,7 @@ def record_episode(
     output_dir: Path | str | None = None,
     headless: bool = True,
     check_accessibility: bool = True,
+    source_url: str | None = None,
 ) -> RecordingResult:
     """Record all video segments for an episode plan.
 
@@ -657,6 +845,9 @@ def record_episode(
         output_dir: Directory for output video files. Uses a temp dir if None.
         headless: Run Chromium in headless mode (default True).
         check_accessibility: Pre-check repo URLs for 404 (default True).
+        source_url: The script header's ``Source URL:``. Used to recover a
+            corrected repo URL from the source article when a repo navigation
+            fails (issue #378).
 
     Returns:
         RecordingResult with paths to all recorded WebM files.
@@ -690,15 +881,17 @@ def record_episode(
                     segment.duration_seconds,
                 )
                 recorded = _record_segment(
-                    browser, segment, output_dir, check_accessibility
+                    browser, segment, output_dir, check_accessibility,
+                    source_url=source_url,
                 )
                 result.recorded.append(recorded)
                 logger.info(
-                    "Saved: %s (fallback=%s, pages=%s, website=%s)",
+                    "Saved: %s (fallback=%s, pages=%s, website=%s, recovery=%s)",
                     recorded.video_path.name,
                     recorded.is_fallback,
                     recorded.has_pages,
                     recorded.website_url,
+                    recorded.recovery_path,
                 )
         finally:
             browser.close()

@@ -29,10 +29,14 @@ from podcaster.video.video_gen import (
     RecordingResult,
     _check_gh_pages,
     _check_repo_accessible,
+    _correct_repo_from_article,
     _dismiss_overlays,
     _extract_website_url,
+    _looks_malformed_repo_url,
     _navigate_to_website,
+    _navigate_with_recovery,
     _smooth_scroll,
+    _try_navigate_repo,
     _apply_image_zoom,
     _prepare_page_for_recording,
     _render_fallback_page,
@@ -392,6 +396,10 @@ class TestRecordSegment:
 
     def test_fallback_on_404(self, tmp_path):
         browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        # Every navigation returns 404 and no source article is available, so
+        # all recovery paths fail and we render the generic fallback (#378).
+        page.goto.return_value = MagicMock(status=404)
         segment = _make_segment(owner="gone", name="repo", duration=2.0)
 
         with patch("podcaster.video.video_gen._check_repo_accessible", return_value=False), \
@@ -399,9 +407,8 @@ class TestRecordSegment:
             result = _record_segment(browser, segment, out_dir)
 
         assert result.is_fallback is True
+        assert result.recovery_path == "fallback"
         assert result.video_path.exists()
-        page = browser.new_context.return_value.new_page.return_value
-        page.set_content.assert_called_once()
 
     def test_fallback_on_navigation_error(self, tmp_path):
         browser, out_dir = self._mock_browser(tmp_path)
@@ -575,6 +582,259 @@ class TestRecordGenericSegment:
         assert "SquadScope" in contents[1]
 
 
+# --- repo URL recovery tests (issue #378) ---
+
+
+class TestLooksMalformedRepoUrl:
+    def test_valid_github_url(self):
+        assert _looks_malformed_repo_url("https://github.com/vercel/eve") is False
+
+    def test_valid_with_dots_and_dashes(self):
+        assert (
+            _looks_malformed_repo_url(
+                "https://github.com/astral-sh/ruff.rs"
+            )
+            is False
+        )
+
+    def test_empty_url(self):
+        assert _looks_malformed_repo_url("") is True
+
+    def test_non_http_scheme(self):
+        assert _looks_malformed_repo_url("ftp://github.com/a/b") is True
+
+    def test_non_github_host(self):
+        assert _looks_malformed_repo_url("https://example.com/a/b") is True
+
+    def test_missing_repo_name(self):
+        assert _looks_malformed_repo_url("https://github.com/vercel") is True
+
+    def test_percent_encoding_in_path(self):
+        assert (
+            _looks_malformed_repo_url("https://github.com/vercel/e%20ve") is True
+        )
+
+
+class TestTryNavigateRepo:
+    def test_returns_true_on_success(self):
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=200)
+        assert _try_navigate_repo(page, "https://github.com/a/b") is True
+        page.goto.assert_called_once()
+
+    def test_returns_true_when_no_response(self):
+        page = MagicMock()
+        page.goto.return_value = None
+        assert _try_navigate_repo(page, "https://github.com/a/b") is True
+
+    def test_returns_false_on_404(self):
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=404)
+        assert _try_navigate_repo(page, "https://github.com/a/b") is False
+
+    def test_returns_false_on_500(self):
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=503)
+        assert _try_navigate_repo(page, "https://github.com/a/b") is False
+
+    def test_returns_false_on_exception(self):
+        page = MagicMock()
+        page.goto.side_effect = Exception("timeout")
+        assert _try_navigate_repo(page, "https://github.com/a/b") is False
+
+
+class TestCorrectRepoFromArticle:
+    _ARTICLE = "https://claracle.com/weekly/2026/w26/"
+
+    def test_returns_none_without_source_url(self):
+        repo = RepoReference("vercel", "eve")
+        assert _correct_repo_from_article(repo, None) is None
+
+    @patch("podcaster.video.video_gen.fetch_repos_from_article", return_value=[])
+    def test_returns_none_when_article_has_no_repos(self, mock_fetch):
+        repo = RepoReference("vercel", "eve")
+        assert _correct_repo_from_article(repo, self._ARTICLE) is None
+
+    @patch("podcaster.video.video_gen.fetch_repos_from_article")
+    def test_prefers_name_match(self, mock_fetch):
+        mock_fetch.return_value = [
+            RepoReference("someone", "other"),
+            RepoReference("vercel", "eve"),
+        ]
+        repo = RepoReference("vercel-typo", "eve")
+        result = _correct_repo_from_article(repo, self._ARTICLE)
+        assert result == RepoReference("vercel", "eve")
+
+    @patch("podcaster.video.video_gen.fetch_repos_from_article")
+    def test_returns_none_on_owner_only_match(self, mock_fetch):
+        # Name was truncated (eve -> ev); an owner-only match is too broad to
+        # trust, so we return None instead of guessing an unrelated repo.
+        mock_fetch.return_value = [
+            RepoReference("vercel", "eve"),
+            RepoReference("other", "thing"),
+        ]
+        repo = RepoReference("vercel", "ev")
+        assert _correct_repo_from_article(repo, self._ARTICLE) is None
+
+    @patch("podcaster.video.video_gen.fetch_repos_from_article")
+    def test_returns_none_when_no_confident_match(self, mock_fetch):
+        mock_fetch.return_value = [RepoReference("foo", "bar")]
+        repo = RepoReference("vercel", "eve")
+        assert _correct_repo_from_article(repo, self._ARTICLE) is None
+
+    @patch(
+        "podcaster.video.video_gen.fetch_repos_from_article",
+        side_effect=Exception("network"),
+    )
+    def test_swallows_fetch_errors(self, mock_fetch):
+        repo = RepoReference("vercel", "eve")
+        assert _correct_repo_from_article(repo, self._ARTICLE) is None
+
+
+class TestNavigateWithRecovery:
+    def _page(self, *goto_results):
+        page = MagicMock()
+        page.goto.side_effect = list(goto_results)
+        return page
+
+    def test_direct_success(self):
+        page = self._page(MagicMock(status=200))
+        repo = RepoReference("vercel", "eve")
+        outcome = _navigate_with_recovery(
+            page, repo, None, retry_delay_seconds=0.0
+        )
+        assert outcome.success is True
+        assert outcome.recovery_path == "direct"
+        assert outcome.repo == repo
+        assert page.goto.call_count == 1
+
+    def test_retry_success(self):
+        page = self._page(MagicMock(status=503), MagicMock(status=200))
+        repo = RepoReference("vercel", "eve")
+        outcome = _navigate_with_recovery(
+            page, repo, None, retry_delay_seconds=0.0
+        )
+        assert outcome.success is True
+        assert outcome.recovery_path == "retry"
+        assert page.goto.call_count == 2
+        page.wait_for_timeout.assert_called_once()
+
+    @patch("podcaster.video.video_gen._correct_repo_from_article")
+    def test_article_recovery(self, mock_correct):
+        corrected = RepoReference("vercel", "eve")
+        mock_correct.return_value = corrected
+        page = self._page(
+            MagicMock(status=404),  # direct
+            MagicMock(status=404),  # retry
+            MagicMock(status=200),  # corrected URL
+        )
+        repo = RepoReference("vercel", "ev")
+        outcome = _navigate_with_recovery(
+            page,
+            repo,
+            "https://claracle.com/weekly/2026/w26/",
+            retry_delay_seconds=0.0,
+        )
+        assert outcome.success is True
+        assert outcome.recovery_path == "article"
+        assert outcome.repo == corrected
+        assert page.goto.call_count == 3
+        assert page.goto.call_args_list[2][0][0] == corrected.url
+
+    @patch(
+        "podcaster.video.video_gen._correct_repo_from_article",
+        return_value=None,
+    )
+    def test_all_paths_fail(self, mock_correct):
+        page = self._page(MagicMock(status=404), MagicMock(status=404))
+        repo = RepoReference("vercel", "eve")
+        outcome = _navigate_with_recovery(
+            page, repo, None, retry_delay_seconds=0.0
+        )
+        assert outcome.success is False
+        assert outcome.recovery_path == "fallback"
+        assert page.goto.call_count == 2
+
+
+# --- _record_segment recovery integration (mocked Playwright, issue #378) ---
+
+
+class TestRecordSegmentRecovery:
+    def _mock_browser(self, tmp_path: Path):
+        browser = MagicMock()
+        context = MagicMock()
+        page = MagicMock()
+        video = MagicMock()
+        browser.new_context.return_value = context
+        context.new_page.return_value = page
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js: (
+            2000 if "scrollHeight" in js else None
+        )
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        fake_video = raw_dir / "rec.webm"
+        fake_video.write_bytes(b"\x1a\x45\xdf\xa3")
+        video.path.return_value = str(fake_video)
+        page.video = video
+        return browser, page, tmp_path
+
+    def test_retry_recovers(self, tmp_path):
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        # First navigation times out, retry succeeds.
+        page.goto.side_effect = [Exception("timeout"), MagicMock(status=200)]
+        segment = _make_segment(owner="vercel", name="eve", duration=2.0)
+
+        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
+             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
+             patch("podcaster.video.video_gen._extract_website_url", return_value=None):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.is_fallback is False
+        assert result.recovery_path == "retry"
+        assert result.video_path.name.startswith("vercel_eve_")
+
+    @patch("podcaster.video.video_gen._correct_repo_from_article")
+    def test_article_recovers_and_renames(self, mock_correct, tmp_path):
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        mock_correct.return_value = RepoReference("vercel", "eve")
+        # Direct + retry fail with 404; corrected URL loads.
+        page.goto.side_effect = [
+            MagicMock(status=404),
+            MagicMock(status=404),
+            MagicMock(status=200),
+        ]
+        segment = _make_segment(owner="vercel", name="ev", duration=2.0)
+
+        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
+             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
+             patch("podcaster.video.video_gen._extract_website_url", return_value=None):
+            result = _record_segment(
+                browser,
+                segment,
+                out_dir,
+                source_url="https://claracle.com/weekly/2026/w26/",
+            )
+
+        assert result.is_fallback is False
+        assert result.recovery_path == "article"
+        # File is named after the corrected repo.
+        assert result.video_path.name.startswith("vercel_eve_")
+        mock_correct.assert_called_once()
+
+    def test_fallback_when_all_recovery_fails(self, tmp_path):
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        page.goto.return_value = MagicMock(status=404)
+        segment = _make_segment(owner="vercel", name="eve", duration=2.0)
+
+        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
+             patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.is_fallback is True
+        assert result.recovery_path == "fallback"
+
+
 # --- record_episode tests (no Playwright dependency) ---
 
 
@@ -726,6 +986,28 @@ class TestRecordEpisode:
 
         _, kwargs = pw_instance.chromium.launch.call_args
         assert kwargs.get("args") == RECORDING_CHROMIUM_ARGS
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_passes_source_url_to_record_segment(
+        self, mock_record, mock_pw, tmp_path
+    ):
+        """The episode's Source URL is forwarded for repo-URL recovery (#378)."""
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_record.return_value = RecordedSegment(
+            segment=_make_segment(duration=2.0),
+            video_path=tmp_path / "x.webm",
+        )
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        article = "https://claracle.com/weekly/2026/w26/"
+        record_episode(plan, output_dir=tmp_path, source_url=article)
+
+        assert mock_record.call_args.kwargs["source_url"] == article
 
 
 # --- Integration tests (require Playwright + network) ---
