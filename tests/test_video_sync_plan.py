@@ -705,6 +705,37 @@ class TestPrependWeeklySegment:
         )
         assert prepend_weekly_segment(plan, "podcast-2026-W26-x") is plan
 
+    def test_does_not_double_count_bridge_time(self):
+        # bridge of 18s is within [15, 20]: weekly segment occupies exactly the
+        # existing bridge, so existing segments must NOT shift and the total
+        # duration must be unchanged (issue #382).
+        plan = self._repo_plan(18.0)
+        out = prepend_weekly_segment(plan, "podcast-2026-W26-x")
+        assert out.segments[0].start_seconds == 0.0
+        assert out.segments[0].duration_seconds == 18.0
+        assert out.segments[1].start_seconds == 18.0
+        assert out.segments[2].start_seconds == 118.0
+        assert out.total_duration_seconds == plan.total_duration_seconds
+
+    def test_shifts_only_extra_clamped_time(self):
+        # bridge of 5s is clamped up to the 15s minimum: only the extra 10s is
+        # introduced, so existing segments shift by 10s and total grows by 10s.
+        plan = self._repo_plan(5.0)
+        out = prepend_weekly_segment(plan, "podcast-2026-W26-x")
+        assert out.segments[0].duration_seconds == 15.0
+        assert out.segments[1].start_seconds == 15.0
+        assert out.segments[2].start_seconds == 115.0
+        assert out.total_duration_seconds == plan.total_duration_seconds + 10.0
+
+    def test_large_bridge_clamped_without_shift(self):
+        # bridge of 40s is clamped down to the 20s maximum: the weekly segment
+        # fits within the bridge, so no shift and no total-duration change.
+        plan = self._repo_plan(40.0)
+        out = prepend_weekly_segment(plan, "podcast-2026-W26-x")
+        assert out.segments[0].duration_seconds == 20.0
+        assert out.segments[1].start_seconds == 40.0
+        assert out.total_duration_seconds == plan.total_duration_seconds
+
     def test_idempotent(self):
         plan = self._repo_plan()
         once = prepend_weekly_segment(plan, "podcast-2026-W26-x")

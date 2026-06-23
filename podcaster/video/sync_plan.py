@@ -625,10 +625,14 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
         source_url=url,
     )
 
-    # Shift the existing segments so their start times follow the weekly page.
+    # The first repo already starts at ``first_start`` (the pre-first-repo
+    # "bridge" the weekly segment is meant to occupy). Only shift existing
+    # segments by the *extra* time the clamped weekly segment introduces beyond
+    # that bridge; otherwise the bridge time is double-counted (issue #382).
+    shift = max(0.0, weekly_duration - first_start)
     shifted = [
         VideoSegment(
-            start_seconds=seg.start_seconds + weekly_duration,
+            start_seconds=seg.start_seconds + shift,
             duration_seconds=seg.duration_seconds,
             repo=seg.repo,
             source_url=seg.source_url,
@@ -637,12 +641,13 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
     ]
 
     logger.info(
-        "Inserting claracle.com weekly page %s as first segment (%.1fs)",
+        "Inserting claracle.com weekly page %s as first segment (%.1fs, shift %.1fs)",
         url,
         weekly_duration,
+        shift,
     )
     return EpisodePlan(
-        total_duration_seconds=plan.total_duration_seconds + weekly_duration,
+        total_duration_seconds=plan.total_duration_seconds + shift,
         segments=tuple([weekly_segment, *shifted]),
     )
 

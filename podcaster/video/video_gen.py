@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -753,6 +754,11 @@ def _record_segment(
 
     page: Page = context.new_page()
 
+    # Reference point for the recorded clip length. If a later step fails after
+    # the page has loaded, we pad the recording up to ``segment.duration_seconds``
+    # so the clip isn't truncated (issue #381).
+    record_start = time.monotonic()
+
     try:
         # Paint a dark hold frame before navigating so the recording's opening
         # frames are GitHub-dark rather than a white flash while the real page
@@ -829,6 +835,20 @@ def _record_segment(
                     "recorded repo page (no fallback)",
                     repo.url,
                 )
+                # A polish step (settle/scroll/website lookup) raised before the
+                # recording reached the full segment duration. Hold the already
+                # loaded page (best effort) so the clip is long enough for
+                # downstream composition/xfade assumptions, without rendering the
+                # fallback overlay on top of the good content (issue #381).
+                remaining_ms = int(
+                    (segment.duration_seconds - (time.monotonic() - record_start))
+                    * 1000
+                )
+                if remaining_ms > 0:
+                    try:
+                        page.wait_for_timeout(remaining_ms)
+                    except Exception:
+                        pass
     except Exception:
         logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True
