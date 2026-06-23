@@ -75,7 +75,10 @@ WEBSITE_NAV_TIMEOUT_MS = 8_000
 # rate-limited host more time to recover than a single fixed delay would.
 REPO_RETRY_BACKOFF_SECONDS = (1.0, 3.0, 5.0)
 
-# Backwards-compatible alias: the previous single fixed retry delay (issue #378).
+# Deprecated alias kept for external callers (issue #378).  The previous fixed
+# retry delay was 4 s; it has been intentionally replaced by the incremental
+# backoff above, so this now resolves to the *first* backoff delay (1 s) rather
+# than the old 4 s value.  Prefer ``REPO_RETRY_BACKOFF_SECONDS`` directly.
 REPO_RETRY_DELAY_SECONDS = REPO_RETRY_BACKOFF_SECONDS[0]
 
 # JavaScript that extracts the repo's website/homepage URL from the GitHub
