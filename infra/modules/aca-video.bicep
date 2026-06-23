@@ -40,16 +40,16 @@ param videoImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
 @description('Optional container registry login server for the image. When set, the job pulls with its managed identity.')
 param containerRegistryServer string = ''
 
-@description('vCPU allocated to the video replica.')
-param jobCpu string = '2.0'
+@description('vCPU allocated to the video replica (4 cores needed for ffmpeg compose of 17+ segments).')
+param jobCpu string = '4.0'
 
 @description('Memory allocated to the video replica (video compose is ffmpeg-heavy).')
-param jobMemory string = '4.0Gi'
+param jobMemory string = '8.0Gi'
 
-@description('Replica timeout (seconds) sized for full video segment generation + ffmpeg compose + distribution.')
+@description('Replica timeout (seconds) sized for full video segment generation + ffmpeg compose + distribution. 90 min covers ~65 min typical run with headroom.')
 @minValue(60)
 @maxValue(172800)
-param replicaTimeoutSeconds int = 3600
+param replicaTimeoutSeconds int = 5400
 
 @description('Queue length per replica that triggers scaling (one message per episode).')
 @minValue(1)
