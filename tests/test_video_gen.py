@@ -666,15 +666,15 @@ class TestCorrectRepoFromArticle:
         assert result == RepoReference("vercel", "eve")
 
     @patch("podcaster.video.video_gen.fetch_repos_from_article")
-    def test_falls_back_to_owner_match(self, mock_fetch):
-        # Name was truncated (eve -> ev); recover via the owner match.
+    def test_returns_none_on_owner_only_match(self, mock_fetch):
+        # Name was truncated (eve -> ev); an owner-only match is too broad to
+        # trust, so we return None instead of guessing an unrelated repo.
         mock_fetch.return_value = [
             RepoReference("vercel", "eve"),
             RepoReference("other", "thing"),
         ]
         repo = RepoReference("vercel", "ev")
-        result = _correct_repo_from_article(repo, self._ARTICLE)
-        assert result == RepoReference("vercel", "eve")
+        assert _correct_repo_from_article(repo, self._ARTICLE) is None
 
     @patch("podcaster.video.video_gen.fetch_repos_from_article")
     def test_returns_none_when_no_confident_match(self, mock_fetch):

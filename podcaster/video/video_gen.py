@@ -496,10 +496,11 @@ def _correct_repo_from_article(
     """Find the correct repo for *repo* on the source article page (issue #378).
 
     Fetches the article at *source_url* (the script header's ``Source URL:``)
-    and returns the best-matching repo reference found there: a name match is
-    preferred, then an owner match. Returns ``None`` when no source URL is
-    available, the article cannot be fetched, or no confident match is found
-    (guessing an unrelated repo would be worse than the generic fallback).
+    and returns a repo reference found there whose name matches *repo*'s name.
+    Returns ``None`` when no source URL is available, the article cannot be
+    fetched, or no confident name match is found. An owner-only match is
+    deliberately *not* used as a fallback: it is too broad and can select an
+    unrelated repo, which would be worse than the generic fallback.
     """
     if not source_url:
         return None
@@ -512,9 +513,6 @@ def _correct_repo_from_article(
         return None
     for candidate in candidates:
         if candidate.name.lower() == repo.name.lower():
-            return candidate
-    for candidate in candidates:
-        if candidate.owner.lower() == repo.owner.lower():
             return candidate
     return None
 
