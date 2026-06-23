@@ -1,17 +1,30 @@
-"""Record GitHub repo pages as WebM video segments using Playwright.
+"""Record GitHub repo pages as video segments using Playwright.
 
 Part of the Video Epic (jmservera/SquadScope-Coordinator#23).
-Phase 2: headless Chromium screen-recording with auto-scroll.
+Phase 2: headless Chromium capture with auto-scroll.
 
 Each segment navigates to a GitHub repo URL, waits for the page to load,
-then smoothly scrolls the page over the segment duration while Playwright
-records the viewport as a WebM file.
+then smoothly scrolls the page over the segment duration.
+
+Capture modes (issue #387):
+
+* **Screenshot / hyperframe (default).** While scrolling, sequential lossless
+  PNG screenshots of the 1920×1080 viewport are taken (one per scroll tick) and
+  composed by ffmpeg into a high-quality H.264 ``.mp4`` segment. Because the PNG
+  source is lossless and ffmpeg encodes offline, the result is pixel-perfect —
+  no flicker, tearing or gradient banding from VP8 real-time encoding.
+* **Legacy screencast.** Set ``VIDEO_SCREENSHOT_CAPTURE=false`` to instead let
+  Playwright record the viewport to a WebM (VP8) in real time.
 """
 
 from __future__ import annotations
 
 import logging
+import math
+import os
 import re
+import shutil
+import subprocess
 import tempfile
 import time
 from collections.abc import Sequence
@@ -81,6 +94,56 @@ REPO_RETRY_BACKOFF_SECONDS = (1.0, 3.0, 5.0)
 # than the old 4 s value.  Prefer ``REPO_RETRY_BACKOFF_SECONDS`` directly.
 REPO_RETRY_DELAY_SECONDS = REPO_RETRY_BACKOFF_SECONDS[0]
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Read a boolean environment variable (true/1/yes/on are truthy)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer environment variable, falling back to *default*."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid int for %s=%r; using default %d", name, raw, default)
+        return default
+
+
+# --- Screenshot-based (hyperframe) capture (issue #387) ---
+#
+# Playwright's screencast (page.video) encodes VP8 in real time, which is lossy
+# at capture time and produces flicker, tearing during scroll and gradient
+# banding regardless of the final compose CRF.  Instead we capture sequential
+# lossless PNG screenshots of the 1920x1080 viewport while scrolling, then let
+# ffmpeg compose them into a high-quality H.264 segment — the same lossless
+# source -> ffmpeg pattern that makes the intro/outro hyperframe clips look
+# crisp.  Set VIDEO_SCREENSHOT_CAPTURE=false to fall back to the legacy
+# screencast recorder for side-by-side comparison.
+SCREENSHOT_CAPTURE_ENABLED = _env_bool("VIDEO_SCREENSHOT_CAPTURE", True)
+# One screenshot per scroll tick keeps the scroll speed and segment duration
+# identical to the screencast behaviour (frames / fps == duration), since the
+# composed framerate equals the scroll tick rate.
+SCREENSHOT_CAPTURE_FPS = _env_int("VIDEO_SCREENSHOT_FPS", SCROLL_TICKS_PER_SEC)
+# A zero or negative framerate would break the frame-count math (division by
+# zero, negative tick intervals) and is meaningless for capture, so clamp to a
+# sane minimum of one frame per second.
+if SCREENSHOT_CAPTURE_FPS < 1:
+    logger.warning(
+        "VIDEO_SCREENSHOT_FPS=%d is invalid; clamping to minimum of 1",
+        SCREENSHOT_CAPTURE_FPS,
+    )
+    SCREENSHOT_CAPTURE_FPS = 1
+# Near-visually-lossless CRF for the intermediate screenshot->video segment; the
+# downstream compose re-encodes again, so we keep this high quality to avoid
+# compounding compression artefacts.
+SCREENSHOT_CAPTURE_CRF = _env_int("VIDEO_SCREENSHOT_CRF", 12)
+SCREENSHOT_CAPTURE_PRESET = os.environ.get("VIDEO_SCREENSHOT_PRESET", "veryfast")
 
 # JavaScript that extracts the repo's website/homepage URL from the GitHub
 # "About" sidebar (issue #360).  GitHub renders the homepage link as an anchor
@@ -263,8 +326,10 @@ _OVERLAY_SELECTORS = [
 
 # --- Cookie consent dismissal (issue #388) ---
 
-# How long (ms) to wait for a cookie consent banner to appear before giving up.
-# Kept short so sites without a banner don't stall the recording pipeline.
+# Overall time budget (ms) for matching the cookie-consent selectors against
+# the page.  Each selector is checked once and the loop bails out when this
+# deadline passes; it does not poll or wait for a banner to appear.  Kept short
+# so sites without a banner don't stall the recording pipeline.
 COOKIE_CONSENT_TIMEOUT_MS = 2500
 # Small settle pause after clicking an accept button so the banner's dismissal
 # animation finishes before recording starts.
@@ -550,20 +615,271 @@ def _apply_image_zoom(page: Page) -> int:
     return int(count)
 
 
-def _smooth_scroll(page: Page, duration_seconds: float) -> None:
+class _Capturer:
+    """Collects lossless PNG frames for screenshot-based segment composition.
+
+    Screenshots are written as ``frame_00001.png`` … into *frames_dir* for the
+    scrolling motion path, or as a single ``still.png`` for static pages
+    (fallback / generic background) that are later held for the segment
+    duration with ffmpeg's ``-loop``.  Capturing is best-effort: a failed
+    screenshot is logged and skipped rather than aborting the recording.
+    """
+
+    def __init__(self, frames_dir: Path) -> None:
+        self.frames_dir = frames_dir
+        self.frames_dir.mkdir(parents=True, exist_ok=True)
+        self.count = 0
+        self.still_image: Path | None = None
+
+    def frame(self, page: Page) -> Path | None:
+        """Capture the next sequential viewport screenshot."""
+        next_index = self.count + 1
+        path = self.frames_dir / f"frame_{next_index:05d}.png"
+        try:
+            page.screenshot(path=str(path))
+        except Exception:
+            logger.exception("Failed to capture frame %d", next_index)
+            return None
+        self.count = next_index
+        return path
+
+    def still(self, page: Page) -> Path | None:
+        """Capture a single still screenshot for a static page."""
+        path = self.frames_dir / "still.png"
+        try:
+            page.screenshot(path=str(path))
+        except Exception:
+            logger.exception("Failed to capture still screenshot")
+            return None
+        self.still_image = path
+        return path
+
+    def reset_frames(self) -> None:
+        """Discard any captured sequence frames.
+
+        Used when a partially-scrolled page is abandoned in favour of a static
+        fallback/background still, so composition holds the still rather than a
+        truncated motion sequence (issue #387).
+        """
+        for index in range(1, self.count + 1):
+            frame = self.frames_dir / f"frame_{index:05d}.png"
+            try:
+                frame.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                logger.debug("Could not remove frame %s", frame)
+        self.count = 0
+
+
+def _build_frames_to_video_cmd(
+    frames_dir: Path, fps: int, output_path: Path
+) -> list[str]:
+    """ffmpeg command composing a PNG frame sequence into an H.264 clip."""
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "-framerate", str(fps),
+        "-i", str(frames_dir / "frame_%05d.png"),
+        "-vf", "format=yuv420p",
+        "-c:v", "libx264",
+        "-preset", SCREENSHOT_CAPTURE_PRESET,
+        "-crf", str(SCREENSHOT_CAPTURE_CRF),
+        "-pix_fmt", "yuv420p",
+        "-r", str(fps),
+        str(output_path),
+    ]
+
+
+def _build_still_to_video_cmd(
+    still_path: Path, duration_seconds: float, fps: int, output_path: Path
+) -> list[str]:
+    """ffmpeg command holding a single still PNG for *duration_seconds*."""
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "-loop", "1",
+        "-framerate", str(fps),
+        "-t", f"{max(duration_seconds, 1.0 / fps):.3f}",
+        "-i", str(still_path),
+        "-vf", "format=yuv420p",
+        "-c:v", "libx264",
+        "-preset", SCREENSHOT_CAPTURE_PRESET,
+        "-crf", str(SCREENSHOT_CAPTURE_CRF),
+        "-pix_fmt", "yuv420p",
+        "-r", str(fps),
+        str(output_path),
+    ]
+
+
+def _pad_frames(capturer: _Capturer, target_count: int) -> None:
+    """Duplicate the last captured frame until *target_count* is reached.
+
+    Error paths may capture fewer frames than the segment duration requires;
+    duplicating the final frame keeps the composed clip the correct length
+    without inventing motion.
+    """
+    if capturer.count == 0 or capturer.count >= target_count:
+        return
+    last = capturer.frames_dir / f"frame_{capturer.count:05d}.png"
+    if not last.exists():
+        return
+    while capturer.count < target_count:
+        next_index = capturer.count + 1
+        dest = capturer.frames_dir / f"frame_{next_index:05d}.png"
+        shutil.copyfile(last, dest)
+        capturer.count = next_index
+
+
+def _compose_screenshot_segment(
+    capturer: _Capturer, duration_seconds: float, output_path: Path
+) -> Path:
+    """Compose captured screenshots into the segment video at *output_path*.
+
+    Uses the held-still command for static pages and the frame-sequence
+    command for scrolling motion.  Raises if nothing was captured.
+    """
+    fps = SCREENSHOT_CAPTURE_FPS
+    if capturer.count > 0:
+        expected = max(1, math.ceil(duration_seconds * fps))
+        _pad_frames(capturer, expected)
+        cmd = _build_frames_to_video_cmd(capturer.frames_dir, fps, output_path)
+    elif capturer.still_image is not None and capturer.still_image.exists():
+        cmd = _build_still_to_video_cmd(
+            capturer.still_image, duration_seconds, fps, output_path
+        )
+    else:
+        raise RuntimeError(
+            "No screenshots captured for screenshot-based segment composition"
+        )
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"ffmpeg timed out composing screenshot segment: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg failed composing screenshot segment "
+            f"(exit {result.returncode}): {result.stderr.strip()}"
+        )
+    if not output_path.exists():
+        raise RuntimeError(
+            f"ffmpeg did not produce screenshot segment at {output_path}"
+        )
+    return output_path
+
+
+def _make_recording_context(
+    browser: Browser, output_dir: Path
+) -> "tuple[BrowserContext, _Capturer | None]":
+    """Create a browser context for capture, honouring the capture mode.
+
+    In screenshot/hyperframe mode (default, issue #387) the context records no
+    video; frames are captured as PNG screenshots into a per-segment temp dir.
+    In legacy screencast mode the context records a WebM via Playwright.
+    """
+    kwargs: dict = {
+        "viewport": {"width": WIDTH, "height": HEIGHT},
+        "color_scheme": "dark",
+    }
+    capturer: _Capturer | None = None
+    if SCREENSHOT_CAPTURE_ENABLED:
+        frames_dir = output_dir / "frames" / uuid.uuid4().hex
+        capturer = _Capturer(frames_dir)
+    else:
+        video_dir = output_dir / "raw"
+        video_dir.mkdir(parents=True, exist_ok=True)
+        kwargs["record_video_dir"] = str(video_dir)
+        kwargs["record_video_size"] = {"width": WIDTH, "height": HEIGHT}
+    context = browser.new_context(**kwargs)
+    return context, capturer
+
+
+def _finalize_segment(
+    page: Page,
+    context: BrowserContext,
+    capturer: "_Capturer | None",
+    output_dir: Path,
+    dest_stem: str,
+    duration_seconds: float,
+) -> Path:
+    """Close the context and produce the segment video file.
+
+    Screenshot mode composes the captured PNG frames into an H.264 ``.mp4`` via
+    ffmpeg; screencast mode finalises and renames Playwright's WebM.
+    """
+    unique_suffix = uuid.uuid4().hex[:8]
+    if capturer is not None:
+        # No real-time video to finalise; frames are already on disk.
+        context.close()
+        dest_path = output_dir / f"{dest_stem}_{unique_suffix}.mp4"
+        _compose_screenshot_segment(capturer, duration_seconds, dest_path)
+        # Best-effort cleanup of the per-segment frame directory.
+        try:
+            shutil.rmtree(capturer.frames_dir, ignore_errors=True)
+        except Exception:
+            pass
+        return dest_path
+
+    # Legacy screencast: read the video handle before closing finalises it.
+    video = page.video
+    context.close()
+    if video is None:
+        raise RuntimeError(f"No video object for recording of {dest_stem}")
+    src_path = Path(video.path())
+    dest_path = output_dir / f"{dest_stem}_{unique_suffix}.webm"
+    if src_path.exists():
+        src_path.rename(dest_path)
+    else:
+        raise FileNotFoundError(f"Playwright video file not found at {src_path}")
+    return dest_path
+
+
+def _smooth_scroll(
+    page: Page,
+    duration_seconds: float,
+    capturer: "_Capturer | None" = None,
+) -> None:
     """Auto-scroll the page smoothly over the given duration.
 
     Scrolls at SCROLL_TICKS_PER_SEC, capping total scroll distance to
     MAX_SCROLL_VIEWPORT_MULTIPLIER × viewport height.
+
+    When *capturer* is provided (screenshot/hyperframe mode, issue #387) a
+    lossless PNG screenshot is taken after each scroll tick instead of waiting
+    in real time.  The tick rate is then SCREENSHOT_CAPTURE_FPS — identical to
+    the composed framerate — so the number of frames equals
+    ``duration_seconds * SCREENSHOT_CAPTURE_FPS`` and the captured motion plays
+    back at exactly the segment duration regardless of any custom FPS override.
     """
-    total_ticks = int(duration_seconds * SCROLL_TICKS_PER_SEC)
+    # In screenshot mode the capture rate must equal the composed framerate so
+    # frame_count / fps == duration; in screencast mode the scroll cadence is
+    # the historical SCROLL_TICKS_PER_SEC.
+    tick_rate = (
+        SCREENSHOT_CAPTURE_FPS if capturer is not None else SCROLL_TICKS_PER_SEC
+    )
+    # In screenshot mode use ceil so the tick/frame count matches the expected
+    # frame count computed by _compose_screenshot_segment (also ceil); a floor
+    # here would under-count and force the composer to pad, risking a dropped
+    # fractional final frame.  Screencast mode keeps the historical floor so a
+    # duration shorter than one tick simply waits without scrolling.
+    total_ticks = (
+        math.ceil(duration_seconds * tick_rate)
+        if capturer is not None
+        else int(duration_seconds * tick_rate)
+    )
     if total_ticks <= 0:
-        # Duration is positive but too short for a full tick — wait it out
-        if duration_seconds > 0:
+        # Duration is positive but too short for a full tick.
+        if capturer is not None:
+            # Still emit at least one frame so the segment has content.
+            capturer.frame(page)
+        elif duration_seconds > 0:
             page.wait_for_timeout(int(duration_seconds * 1000))
         return
 
-    tick_interval_ms = int(1000 / SCROLL_TICKS_PER_SEC)
+    tick_interval_ms = int(1000 / tick_rate)
 
     viewport_height = page.viewport_size["height"] if page.viewport_size else HEIGHT
     max_scroll = int(viewport_height * MAX_SCROLL_VIEWPORT_MULTIPLIER)
@@ -574,15 +890,28 @@ def _smooth_scroll(page: Page, duration_seconds: float) -> None:
     effective_scroll = min(page_scroll_distance, max_scroll)
 
     if effective_scroll <= 0:
-        # Page is not scrollable — just wait out the duration
-        page.wait_for_timeout(int(duration_seconds * 1000))
-        return
-
-    scroll_per_tick = effective_scroll / total_ticks
+        # Page is not scrollable.  In screenshot mode we still capture a full
+        # run of (identical) frames so the segment keeps its intended duration;
+        # in screencast mode we simply wait it out.
+        if capturer is None:
+            page.wait_for_timeout(int(duration_seconds * 1000))
+            return
+        scroll_per_tick = 0.0
+    else:
+        scroll_per_tick = effective_scroll / total_ticks
 
     for _ in range(total_ticks):
-        page.evaluate(f"window.scrollBy(0, {scroll_per_tick})")
-        page.wait_for_timeout(tick_interval_ms)
+        if scroll_per_tick:
+            page.evaluate(f"window.scrollBy(0, {scroll_per_tick})")
+        if capturer is not None:
+            capturer.frame(page)
+        else:
+            page.wait_for_timeout(tick_interval_ms)
+
+    if capturer is not None:
+        # Frame count (total_ticks) already encodes the duration at the
+        # composed framerate; no real-time padding is needed.
+        return
 
     # Wait out any remaining fractional duration not covered by ticks
     elapsed_ms = total_ticks * tick_interval_ms
@@ -637,20 +966,34 @@ def _navigate_to_website(page: Page, url: str) -> bool:
 
 
 def _render_url_card(
-    page: Page, owner: str, name: str, duration_seconds: float
+    page: Page,
+    owner: str,
+    name: str,
+    duration_seconds: float,
+    capturer: "_Capturer | None" = None,
 ) -> None:
     """Show a clean URL card for a repo we couldn't record (issue #386).
 
     Replaces the old "Repository unavailable" screen: instead of telling the
     viewer something is broken, we present the repository identity and its URL
     prominently so the segment still reads as intentional, branded content.
+
+    In screenshot mode (*capturer* provided) a single still is captured and the
+    clip is held for the duration during composition; otherwise the page is held
+    in real time for the screencast recorder (issue #387).
     """
     url = f"github.com/{owner}/{name}"
     html = FALLBACK_BRAND_HTML.format(
         width=WIDTH, height=HEIGHT, owner=owner, name=name, url=url
     )
     page.set_content(html)
-    page.wait_for_timeout(int(duration_seconds * 1000))
+    if capturer is not None:
+        # Discard any partially-captured frames so the fallback is held as a
+        # still rather than a truncated motion sequence (issue #387).
+        capturer.reset_frames()
+        capturer.still(page)
+    else:
+        page.wait_for_timeout(int(duration_seconds * 1000))
 
 
 # Backwards-compatible alias: earlier code/tests referenced the screen shown
@@ -852,7 +1195,11 @@ GENERIC_BACKGROUND_TITLE = "SquadScope"
 GENERIC_BACKGROUND_SUBTITLE = "Open Source Highlights"
 
 
-def _render_generic_background(page: Page, duration_seconds: float) -> None:
+def _render_generic_background(
+    page: Page,
+    duration_seconds: float,
+    capturer: "_Capturer | None" = None,
+) -> None:
     """Show the animated branded background for a generic (no-repo) segment."""
     html = GENERIC_BACKGROUND_HTML.format(
         width=WIDTH,
@@ -861,7 +1208,13 @@ def _render_generic_background(page: Page, duration_seconds: float) -> None:
         subtitle=GENERIC_BACKGROUND_SUBTITLE,
     )
     page.set_content(html)
-    page.wait_for_timeout(int(duration_seconds * 1000))
+    if capturer is not None:
+        # Abandon any partially-captured scroll frames so the static background
+        # is held as a still rather than a truncated motion sequence (#387).
+        capturer.reset_frames()
+        capturer.still(page)
+    else:
+        page.wait_for_timeout(int(duration_seconds * 1000))
 
 
 def _record_generic_segment(
@@ -875,15 +1228,7 @@ def _record_generic_segment(
     that page is navigated to and scrolled like a regular repo recording;
     otherwise the static branded background animation is shown.
     """
-    video_dir = output_dir / "raw"
-    video_dir.mkdir(parents=True, exist_ok=True)
-
-    context: BrowserContext = browser.new_context(
-        record_video_dir=str(video_dir),
-        record_video_size={"width": WIDTH, "height": HEIGHT},
-        viewport={"width": WIDTH, "height": HEIGHT},
-        color_scheme="dark",
-    )
+    context, capturer = _make_recording_context(browser, output_dir)
     page: Page = context.new_page()
     try:
         source_url = segment.source_url
@@ -902,29 +1247,27 @@ def _record_generic_segment(
                 _dismiss_overlays(page)
                 _dismiss_cookie_consent(page)
                 _prepare_page_for_recording(page)
-                _smooth_scroll(page, segment.duration_seconds)
+                _smooth_scroll(page, segment.duration_seconds, capturer)
             except Exception:
                 logger.exception(
                     "Error recording generic source %s — using background",
                     source_url,
                 )
-                _render_generic_background(page, segment.duration_seconds)
+                _render_generic_background(
+                    page, segment.duration_seconds, capturer
+                )
         else:
-            _render_generic_background(page, segment.duration_seconds)
-    finally:
-        video = page.video
-        context.close()
-
-    if video is None:
-        raise RuntimeError("No video object for generic background recording")
-
-    src_path = Path(video.path())
-    unique_suffix = uuid.uuid4().hex[:8]
-    dest_path = output_dir / f"generic_{unique_suffix}.webm"
-    if src_path.exists():
-        src_path.rename(dest_path)
-    else:
-        raise FileNotFoundError(f"Playwright video file not found at {src_path}")
+            _render_generic_background(page, segment.duration_seconds, capturer)
+        dest_path = _finalize_segment(
+            page, context, capturer, output_dir, "generic",
+            segment.duration_seconds,
+        )
+    except Exception:
+        try:
+            context.close()
+        except Exception:
+            pass
+        raise
 
     return RecordedSegment(
         segment=segment,
@@ -935,7 +1278,10 @@ def _record_generic_segment(
 
 
 def _try_record_project_site(
-    page: Page, repo: RepoReference, duration_seconds: float
+    page: Page,
+    repo: RepoReference,
+    duration_seconds: float,
+    capturer: "_Capturer | None" = None,
 ) -> str | None:
     """Record the repo's GitHub Pages site as a fallback (issue #386).
 
@@ -967,7 +1313,7 @@ def _try_record_project_site(
         page.wait_for_timeout(PAGE_SETTLE_MS)
         _dismiss_overlays(page)
         _prepare_page_for_recording(page)
-        _smooth_scroll(page, duration_seconds)
+        _smooth_scroll(page, duration_seconds, capturer)
     except Exception:
         logger.exception(
             "Error while recording project site %s — keeping partial recording",
@@ -997,8 +1343,6 @@ def _record_segment(
         return _record_generic_segment(browser, segment, output_dir)
 
     repo = segment.repo
-    video_dir = output_dir / "raw"
-    video_dir.mkdir(parents=True, exist_ok=True)
 
     is_fallback = False
     has_pages = False
@@ -1018,12 +1362,7 @@ def _record_segment(
         if has_pages:
             logger.info("Repo %s has GitHub Pages", repo.url)
 
-    context: BrowserContext = browser.new_context(
-        record_video_dir=str(video_dir),
-        record_video_size={"width": WIDTH, "height": HEIGHT},
-        viewport={"width": WIDTH, "height": HEIGHT},
-        color_scheme="dark",
-    )
+    context, capturer = _make_recording_context(browser, output_dir)
 
     page: Page = context.new_page()
 
@@ -1048,7 +1387,7 @@ def _record_segment(
             # its GitHub Pages site — so we record real content when the repo
             # page 404s or requires login (issue #386).
             pages_url = _try_record_project_site(
-                page, repo, segment.duration_seconds
+                page, repo, segment.duration_seconds, capturer
             )
             if pages_url is not None:
                 website_url = pages_url
@@ -1057,7 +1396,7 @@ def _record_segment(
             else:
                 is_fallback = True
                 _render_url_card(
-                    page, repo.owner, repo.name, segment.duration_seconds
+                    page, repo.owner, repo.name, segment.duration_seconds, capturer
                 )
         else:
             # Navigation may have corrected the repo (e.g. via the source
@@ -1113,7 +1452,7 @@ def _record_segment(
                         _dismiss_overlays(page)
                     website_url = None
                 _prepare_page_for_recording(page)
-                _smooth_scroll(page, segment.duration_seconds)
+                _smooth_scroll(page, segment.duration_seconds, capturer)
             except Exception:
                 # Keep the successfully recorded repo page; do not render a
                 # fallback on top of it (issue #381).
@@ -1123,47 +1462,41 @@ def _record_segment(
                     repo.url,
                 )
                 # A polish step (settle/scroll/website lookup) raised before the
-                # recording reached the full segment duration. Hold the already
-                # loaded page (best effort) so the clip is long enough for
-                # downstream composition/xfade assumptions, without rendering the
-                # fallback overlay on top of the good content (issue #381).
-                remaining_ms = int(
-                    (segment.duration_seconds - (time.monotonic() - record_start))
-                    * 1000
-                )
-                if remaining_ms > 0:
-                    try:
-                        page.wait_for_timeout(remaining_ms)
-                    except Exception:
-                        pass
+                # recording reached the full segment duration. In screencast
+                # mode, hold the already loaded page (best effort) so the clip is
+                # long enough for downstream composition/xfade assumptions. In
+                # screenshot mode the composition pads frames to the expected
+                # count instead, so no real-time wait is needed (issue #387).
+                if capturer is None:
+                    remaining_ms = int(
+                        (
+                            segment.duration_seconds
+                            - (time.monotonic() - record_start)
+                        )
+                        * 1000
+                    )
+                    if remaining_ms > 0:
+                        try:
+                            page.wait_for_timeout(remaining_ms)
+                        except Exception:
+                            pass
+                elif capturer.count == 0:
+                    # The scroll raised before any frame was captured; grab a
+                    # single still of the loaded repo page so the segment still
+                    # has valid (held) content to compose (issue #387).
+                    capturer.still(page)
     except Exception:
         logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True
         recovery_path = "fallback"
         _render_fallback_page(
-            page, repo.owner, repo.name, segment.duration_seconds
+            page, repo.owner, repo.name, segment.duration_seconds, capturer
         )
 
-    # Close context first to finalize the recorded video file
-    video = page.video
-    context.close()
-    if video is None:
-        raise RuntimeError(f"No video object for page recording of {repo.url}")
-
-    # Resolve path after close (Playwright finalizes on close)
-    video_path_str = video.path()
-    src_path = Path(video_path_str)
-
-    # Use a UUID suffix to avoid collisions for repeated repos
-    unique_suffix = uuid.uuid4().hex[:8]
-    dest_name = f"{repo.owner}_{repo.name}_{unique_suffix}.webm"
-    dest_path = output_dir / dest_name
-    if src_path.exists():
-        src_path.rename(dest_path)
-    else:
-        raise FileNotFoundError(
-            f"Playwright video file not found at {src_path}"
-        )
+    dest_path = _finalize_segment(
+        page, context, capturer, output_dir,
+        f"{repo.owner}_{repo.name}", segment.duration_seconds,
+    )
 
     return RecordedSegment(
         segment=segment,
