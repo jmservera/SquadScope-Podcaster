@@ -5,12 +5,14 @@ Unit tests mock ffmpeg via the CommandRunner protocol.
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from podcaster.video import video_compose as vc
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 from podcaster.video.video_gen import RecordedSegment
 from podcaster.video.video_compose import (
@@ -1181,7 +1183,52 @@ class TestBuildH264MetadataCmd:
         assert cmd[-1] == str(tmp_path / "out.mp4")
 
 
-class TestBuildAudioOverlayCmd:
+class TestEncodeConfigurability:
+    """Codec/CRF/pixel-format are env-configurable for quality tuning (#376)."""
+
+    def test_default_h264_high_profile_yuv420p_crf12(self):
+        # Defaults: H.264 High profile, yuv420p (Spotify-mandated 4:2:0),
+        # near-lossless CRF for screen content.
+        args = vc._video_encode_args("slow")
+        assert "-c:v" in args and "libx264" in args
+        assert args[args.index("-crf") + 1] == "12"
+        assert args[args.index("-pix_fmt") + 1] == "yuv420p"
+        assert "-profile:v" in args and "high" in args
+
+    def test_metadata_bsf_spec_h264_by_default(self):
+        spec = vc._metadata_bsf_spec()
+        assert spec.startswith("h264_metadata=")
+        assert "colour_primaries=1" in spec
+        assert "transfer_characteristics=1" in spec
+        assert "matrix_coefficients=1" in spec
+        assert "video_full_range_flag=0" in spec
+
+    def test_hevc_env_switches_codec_crf_and_bsf(self, monkeypatch):
+        # Switching the encoder to HEVC must flip the codec, the (higher) default
+        # CRF, and the metadata bitstream filter to hevc_metadata.
+        monkeypatch.setenv("VIDEO_ENCODE_VCODEC", "libx265")
+        monkeypatch.delenv("VIDEO_ENCODE_CRF", raising=False)
+        reloaded = importlib.reload(vc)
+        try:
+            assert reloaded.ENCODE_VCODEC == "libx265"
+            assert reloaded.ENCODE_CRF == 18
+            args = reloaded._video_encode_args("slow")
+            assert "libx265" in args
+            # No H.264-only High profile flag for HEVC.
+            assert "-profile:v" not in args
+            assert reloaded._metadata_bsf_spec().startswith("hevc_metadata=")
+        finally:
+            monkeypatch.delenv("VIDEO_ENCODE_VCODEC", raising=False)
+            importlib.reload(reloaded)
+
+    def test_crf_env_override(self, monkeypatch):
+        monkeypatch.setenv("VIDEO_ENCODE_CRF", "10")
+        reloaded = importlib.reload(vc)
+        try:
+            assert reloaded.ENCODE_CRF == 10
+        finally:
+            monkeypatch.delenv("VIDEO_ENCODE_CRF", raising=False)
+            importlib.reload(reloaded)
     def test_overlays_audio_as_sole_track(self, tmp_path):
         cmd = _build_audio_overlay_cmd(
             tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4"

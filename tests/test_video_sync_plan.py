@@ -7,6 +7,7 @@ import pytest
 
 from podcaster.video.sync_plan import (
     RepoReference,
+    EpisodePlan,
     VideoSegment,
     extract_repo_urls,
     extract_source_url,
@@ -16,6 +17,8 @@ from podcaster.video.sync_plan import (
     generate_generic_plan,
     plan_from_script,
     plan_from_script_timed,
+    prepend_weekly_segment,
+    weekly_url_from_job_id,
     sort_repos_by_mention,
     _script_position,
 )
@@ -615,6 +618,130 @@ class TestPlanFromScriptTimed:
         idx_vscode = urls.index("https://github.com/microsoft/vscode")
         idx_ruff = urls.index("https://github.com/astral-sh/ruff")
         assert idx_vscode < idx_ruff
+
+
+# --- Weekly-page first segment tests (#382) ---
+
+
+class TestWeeklyUrlFromJobId:
+    def test_derives_lowercase_padded_week(self):
+        assert (
+            weekly_url_from_job_id("podcast-2026-W26-de5f4e6e0435")
+            == "https://claracle.com/weekly/2026/w26/"
+        )
+
+    def test_pads_single_digit_week(self):
+        assert (
+            weekly_url_from_job_id("podcast-2026-W6-abc")
+            == "https://claracle.com/weekly/2026/w06/"
+        )
+
+    def test_accepts_lowercase_w(self):
+        assert (
+            weekly_url_from_job_id("podcast-2025-w03-xyz")
+            == "https://claracle.com/weekly/2025/w03/"
+        )
+
+    def test_returns_none_without_week_token(self):
+        assert weekly_url_from_job_id("nonsense-job") is None
+
+    def test_returns_none_on_empty(self):
+        assert weekly_url_from_job_id("") is None
+
+
+class TestPrependWeeklySegment:
+    def _repo_plan(self, first_start: float = 18.0) -> EpisodePlan:
+        segs = (
+            VideoSegment(
+                repo=RepoReference("microsoft", "vscode"),
+                start_seconds=first_start,
+                duration_seconds=100.0,
+            ),
+            VideoSegment(
+                repo=RepoReference("astral-sh", "ruff"),
+                start_seconds=first_start + 100.0,
+                duration_seconds=82.0,
+            ),
+        )
+        return EpisodePlan(total_duration_seconds=200.0, segments=segs)
+
+    def test_inserts_weekly_as_first_segment(self):
+        plan = self._repo_plan()
+        out = prepend_weekly_segment(plan, "podcast-2026-W26-de5f")
+        assert len(out.segments) == 3
+        first = out.segments[0]
+        assert first.is_generic
+        assert first.source_url == "https://claracle.com/weekly/2026/w26/"
+        assert first.start_seconds == 0.0
+        # repo segments shifted after the weekly segment
+        assert out.segments[1].repo == RepoReference("microsoft", "vscode")
+
+    def test_duration_proportional_to_bridge_clamped(self):
+        # bridge of 18s -> within [15, 20] -> used as-is
+        out = prepend_weekly_segment(self._repo_plan(18.0), "podcast-2026-W26-x")
+        assert out.segments[0].duration_seconds == 18.0
+        # bridge of 5s -> clamped up to the 15s minimum
+        out_low = prepend_weekly_segment(self._repo_plan(5.0), "podcast-2026-W26-x")
+        assert out_low.segments[0].duration_seconds == 15.0
+        # bridge of 40s -> clamped down to the 20s maximum
+        out_high = prepend_weekly_segment(self._repo_plan(40.0), "podcast-2026-W26-x")
+        assert out_high.segments[0].duration_seconds == 20.0
+
+    def test_no_week_token_returns_plan_unchanged(self):
+        plan = self._repo_plan()
+        assert prepend_weekly_segment(plan, "bad-job-id") is plan
+
+    def test_generic_only_plan_unchanged(self):
+        plan = EpisodePlan(
+            total_duration_seconds=60.0,
+            segments=(
+                VideoSegment(
+                    start_seconds=0.0,
+                    duration_seconds=60.0,
+                    repo=None,
+                    source_url="https://claracle.com/weekly/2026/W26/",
+                ),
+            ),
+        )
+        assert prepend_weekly_segment(plan, "podcast-2026-W26-x") is plan
+
+    def test_does_not_double_count_bridge_time(self):
+        # bridge of 18s is within [15, 20]: weekly segment occupies exactly the
+        # existing bridge, so existing segments must NOT shift and the total
+        # duration must be unchanged (issue #382).
+        plan = self._repo_plan(18.0)
+        out = prepend_weekly_segment(plan, "podcast-2026-W26-x")
+        assert out.segments[0].start_seconds == 0.0
+        assert out.segments[0].duration_seconds == 18.0
+        assert out.segments[1].start_seconds == 18.0
+        assert out.segments[2].start_seconds == 118.0
+        assert out.total_duration_seconds == plan.total_duration_seconds
+
+    def test_shifts_only_extra_clamped_time(self):
+        # bridge of 5s is clamped up to the 15s minimum: only the extra 10s is
+        # introduced, so existing segments shift by 10s and total grows by 10s.
+        plan = self._repo_plan(5.0)
+        out = prepend_weekly_segment(plan, "podcast-2026-W26-x")
+        assert out.segments[0].duration_seconds == 15.0
+        assert out.segments[1].start_seconds == 15.0
+        assert out.segments[2].start_seconds == 115.0
+        assert out.total_duration_seconds == plan.total_duration_seconds + 10.0
+
+    def test_large_bridge_clamped_without_shift(self):
+        # bridge of 40s is clamped down to the 20s maximum: the weekly segment
+        # fits within the bridge, so no shift and no total-duration change.
+        plan = self._repo_plan(40.0)
+        out = prepend_weekly_segment(plan, "podcast-2026-W26-x")
+        assert out.segments[0].duration_seconds == 20.0
+        assert out.segments[1].start_seconds == 40.0
+        assert out.total_duration_seconds == plan.total_duration_seconds
+
+    def test_idempotent(self):
+        plan = self._repo_plan()
+        once = prepend_weekly_segment(plan, "podcast-2026-W26-x")
+        twice = prepend_weekly_segment(once, "podcast-2026-W26-x")
+        assert len(twice.segments) == len(once.segments)
+        assert twice.segments[0].source_url == once.segments[0].source_url
 
 
 # --- Audio-boundary sync tests (#297) ---

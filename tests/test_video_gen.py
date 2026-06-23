@@ -701,7 +701,7 @@ class TestNavigateWithRecovery:
         page = self._page(MagicMock(status=200))
         repo = RepoReference("vercel", "eve")
         outcome = _navigate_with_recovery(
-            page, repo, None, retry_delay_seconds=0.0
+            page, repo, None, backoff_seconds=(0.0,)
         )
         assert outcome.success is True
         assert outcome.recovery_path == "direct"
@@ -712,12 +712,47 @@ class TestNavigateWithRecovery:
         page = self._page(MagicMock(status=503), MagicMock(status=200))
         repo = RepoReference("vercel", "eve")
         outcome = _navigate_with_recovery(
-            page, repo, None, retry_delay_seconds=0.0
+            page, repo, None, backoff_seconds=(0.0,)
         )
         assert outcome.success is True
         assert outcome.recovery_path == "retry"
         assert page.goto.call_count == 2
         page.wait_for_timeout.assert_called_once()
+
+    def test_incremental_backoff_delays(self):
+        # Direct + two retries fail, third retry succeeds: the backoff delays are
+        # applied in order (1s, 3s, 5s -> ms) before each retry (issue #381).
+        page = self._page(
+            MagicMock(status=503),
+            MagicMock(status=503),
+            MagicMock(status=503),
+            MagicMock(status=200),
+        )
+        repo = RepoReference("vercel", "eve")
+        outcome = _navigate_with_recovery(page, repo, None)
+        assert outcome.success is True
+        assert outcome.recovery_path == "retry"
+        assert page.goto.call_count == 4
+        waited = [c.args[0] for c in page.wait_for_timeout.call_args_list]
+        assert waited == [1000, 3000, 5000]
+
+    def test_malformed_url_skips_direct_and_retry(self):
+        # A non-GitHub host is malformed: skip direct/retry and go straight to
+        # article correction (issue #381 — validate before attempting).
+        page = self._page(MagicMock(status=200))
+        repo = RepoReference("vercel", "eve")
+        with patch(
+            "podcaster.video.video_gen._looks_malformed_repo_url",
+            return_value=True,
+        ), patch(
+            "podcaster.video.video_gen._correct_repo_from_article",
+            return_value=None,
+        ):
+            outcome = _navigate_with_recovery(page, repo, None)
+        assert outcome.success is False
+        assert outcome.recovery_path == "fallback"
+        # No navigation attempted against the malformed URL.
+        assert page.goto.call_count == 0
 
     @patch("podcaster.video.video_gen._correct_repo_from_article")
     def test_article_recovery(self, mock_correct):
@@ -733,7 +768,7 @@ class TestNavigateWithRecovery:
             page,
             repo,
             "https://claracle.com/weekly/2026/w26/",
-            retry_delay_seconds=0.0,
+            backoff_seconds=(0.0,),
         )
         assert outcome.success is True
         assert outcome.recovery_path == "article"
@@ -749,7 +784,7 @@ class TestNavigateWithRecovery:
         page = self._page(MagicMock(status=404), MagicMock(status=404))
         repo = RepoReference("vercel", "eve")
         outcome = _navigate_with_recovery(
-            page, repo, None, retry_delay_seconds=0.0
+            page, repo, None, backoff_seconds=(0.0,)
         )
         assert outcome.success is False
         assert outcome.recovery_path == "fallback"
@@ -798,11 +833,14 @@ class TestRecordSegmentRecovery:
     def test_article_recovers_and_renames(self, mock_correct, tmp_path):
         browser, page, out_dir = self._mock_browser(tmp_path)
         mock_correct.return_value = RepoReference("vercel", "eve")
-        # Direct + retry fail with 404; corrected URL loads.
+        # Direct + all three retries fail with 404; corrected URL loads (#381
+        # backoff: 1s/3s/5s -> four failed attempts before article correction).
         page.goto.side_effect = [
-            MagicMock(status=404),
-            MagicMock(status=404),
-            MagicMock(status=200),
+            MagicMock(status=404),  # direct
+            MagicMock(status=404),  # retry 1
+            MagicMock(status=404),  # retry 2
+            MagicMock(status=404),  # retry 3
+            MagicMock(status=200),  # corrected URL
         ]
         segment = _make_segment(owner="vercel", name="ev", duration=2.0)
 
@@ -833,6 +871,30 @@ class TestRecordSegmentRecovery:
 
         assert result.is_fallback is True
         assert result.recovery_path == "fallback"
+
+
+    def test_no_fallback_after_successful_navigation(self, tmp_path):
+        # Navigation succeeds, but a later recording step (smooth scroll) raises.
+        # The good repo recording must be KEPT — no "repo unavailable" fallback
+        # is rendered on top of it (issue #381).
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        page.goto.return_value = MagicMock(status=200)
+        segment = _make_segment(owner="vercel", name="eve", duration=2.0)
+
+        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
+             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
+             patch("podcaster.video.video_gen._extract_website_url", return_value=None), \
+             patch(
+                 "podcaster.video.video_gen._smooth_scroll",
+                 side_effect=RuntimeError("scroll boom"),
+             ), \
+             patch("podcaster.video.video_gen._render_fallback_page") as mock_fallback:
+            result = _record_segment(browser, segment, out_dir)
+
+        assert result.is_fallback is False
+        assert result.recovery_path == "direct"
+        mock_fallback.assert_not_called()
+        assert result.video_path.name.startswith("vercel_eve_")
 
 
 # --- record_episode tests (no Playwright dependency) ---
