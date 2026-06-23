@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -67,10 +68,14 @@ NETWORK_IDLE_TIMEOUT_MS = 10_000
 # the already-rendered GitHub page.
 WEBSITE_NAV_TIMEOUT_MS = 8_000
 
-# When a repo navigation fails (timeout / HTTP error), wait this long before the
-# single retry attempt (issue #378). The issue asks for a 3–5 s delay; 4 s sits
-# in the middle of that window.
-REPO_RETRY_DELAY_SECONDS = 4.0
+# When a repo navigation fails (timeout / HTTP error), retry with an incremental
+# backoff (issue #381): wait 1 s before the first retry, 3 s before the second,
+# and 5 s before the third.  Spacing the retries out gives a transiently slow or
+# rate-limited host more time to recover than a single fixed delay would.
+REPO_RETRY_BACKOFF_SECONDS = (1.0, 3.0, 5.0)
+
+# Backwards-compatible alias: the previous single fixed retry delay (issue #378).
+REPO_RETRY_DELAY_SECONDS = REPO_RETRY_BACKOFF_SECONDS[0]
 
 # JavaScript that extracts the repo's website/homepage URL from the GitHub
 # "About" sidebar (issue #360).  GitHub renders the homepage link as an anchor
@@ -531,46 +536,64 @@ def _navigate_with_recovery(
     repo: RepoReference,
     source_url: str | None,
     *,
-    retry_delay_seconds: float = REPO_RETRY_DELAY_SECONDS,
+    backoff_seconds: Sequence[float] = REPO_RETRY_BACKOFF_SECONDS,
 ) -> _NavOutcome:
     """Navigate to *repo*, retrying and validating against the source article.
 
-    Recovery order (issue #378):
+    Recovery order (issues #378, #381):
 
-    1. ``direct`` — navigate to ``repo.url``.
-    2. ``retry`` — on failure, wait ``retry_delay_seconds`` and try once more.
-    3. ``article`` — if the retry fails, check whether the URL looks malformed,
-       then fetch the correct URL from the source article and try that.
+    1. ``direct`` — validate the URL format, then navigate to ``repo.url``.
+       A URL that is obviously malformed (bad host/case/typo) skips the direct
+       and retry attempts and goes straight to article correction.
+    2. ``retry`` — on failure, retry with an incremental backoff
+       (``backoff_seconds``, default 1 s / 3 s / 5 s) until one attempt succeeds.
+    3. ``article`` — if every retry fails, fetch the correct URL from the source
+       article and try that.
     4. ``fallback`` — only when every path above fails.
 
     Returns a :class:`_NavOutcome` carrying the (possibly corrected) repo, the
     recovery path used, and whether navigation ultimately succeeded.
     """
-    if _try_navigate_repo(page, repo.url):
-        logger.info("Recovery path=direct succeeded for %s", repo.url)
-        return _NavOutcome(repo, "direct", True)
-
-    logger.info(
-        "Navigation to %s failed; retrying once after %.1fs",
-        repo.url,
-        retry_delay_seconds,
-    )
-    try:
-        page.wait_for_timeout(int(retry_delay_seconds * 1000))
-    except Exception:  # noqa: BLE001 — delay is best-effort
-        pass
-    if _try_navigate_repo(page, repo.url):
-        logger.info("Recovery path=retry succeeded for %s", repo.url)
-        return _NavOutcome(repo, "retry", True)
-
-    if _looks_malformed_repo_url(repo.url):
+    # Validate the URL format before attempting (issue #381). Hammering an
+    # obviously malformed URL (wrong host, bad casing, typo'd path) with retries
+    # is wasted time; jump straight to consulting the source article instead.
+    malformed = _looks_malformed_repo_url(repo.url)
+    if malformed:
         logger.warning(
-            "Repo URL %s looks malformed; consulting source article", repo.url
+            "Repo URL %s looks malformed; skipping direct/retry and consulting "
+            "source article",
+            repo.url,
         )
     else:
+        if _try_navigate_repo(page, repo.url):
+            logger.info("Recovery path=direct succeeded for %s", repo.url)
+            return _NavOutcome(repo, "direct", True)
+
+        for attempt, delay in enumerate(backoff_seconds, start=1):
+            logger.info(
+                "Navigation to %s failed; retry %d/%d after %.1fs",
+                repo.url,
+                attempt,
+                len(backoff_seconds),
+                delay,
+            )
+            try:
+                page.wait_for_timeout(int(delay * 1000))
+            except Exception:  # noqa: BLE001 — delay is best-effort
+                pass
+            if _try_navigate_repo(page, repo.url):
+                logger.info(
+                    "Recovery path=retry succeeded for %s (attempt %d)",
+                    repo.url,
+                    attempt,
+                )
+                return _NavOutcome(repo, "retry", True)
+
         logger.info(
-            "Repo URL %s still unreachable after retry; consulting source article",
+            "Repo URL %s still unreachable after %d retries; consulting source "
+            "article",
             repo.url,
+            len(backoff_seconds),
         )
 
     corrected = _correct_repo_from_article(repo, source_url)
@@ -750,48 +773,62 @@ def _record_segment(
             # Navigation may have corrected the repo (e.g. via the source
             # article); use the effective repo for naming and the website flow.
             repo = outcome.repo
-            # Wait for the page to fully settle (load + paint) before
-            # recording motion, avoiding the initial content flash.
+            # The repo page has already loaded successfully and is being
+            # recorded.  Any error from here on (settle/scroll/website lookup)
+            # must NOT append a generic "repo unavailable" fallback on top of
+            # the good recording (issue #381): we already have valid content, so
+            # we keep it and simply stop the extra polish steps.
             try:
-                page.wait_for_load_state(
-                    "networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS
-                )
-            except Exception:
-                pass
-            page.wait_for_timeout(PAGE_SETTLE_MS)
-            _dismiss_overlays(page)
-            # If the repo links an external website, record that instead of
-            # the GitHub page; fall back to GitHub if it fails to load
-            # (issue #360).
-            website_url = _extract_website_url(page)
-            if website_url and _navigate_to_website(page, website_url):
+                # Wait for the page to fully settle (load + paint) before
+                # recording motion, avoiding the initial content flash.
                 try:
                     page.wait_for_load_state(
-                        "networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS
+                        "networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS
                     )
                 except Exception:
                     pass
                 page.wait_for_timeout(PAGE_SETTLE_MS)
                 _dismiss_overlays(page)
-            else:
-                if website_url:
-                    # _navigate_to_website may have navigated the page away
-                    # from the GitHub repo (e.g. an HTTP >= 400 response
-                    # still loads a page); go back so the GitHub flow records
-                    # the right page.
+                # If the repo links an external website, record that instead of
+                # the GitHub page; fall back to GitHub if it fails to load
+                # (issue #360).
+                website_url = _extract_website_url(page)
+                if website_url and _navigate_to_website(page, website_url):
                     try:
-                        page.goto(
-                            repo.url,
-                            wait_until="networkidle",
-                            timeout=NETWORK_IDLE_TIMEOUT_MS,
+                        page.wait_for_load_state(
+                            "networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS
                         )
                     except Exception:
                         pass
                     page.wait_for_timeout(PAGE_SETTLE_MS)
                     _dismiss_overlays(page)
-                website_url = None
-            _prepare_page_for_recording(page)
-            _smooth_scroll(page, segment.duration_seconds)
+                else:
+                    if website_url:
+                        # _navigate_to_website may have navigated the page away
+                        # from the GitHub repo (e.g. an HTTP >= 400 response
+                        # still loads a page); go back so the GitHub flow records
+                        # the right page.
+                        try:
+                            page.goto(
+                                repo.url,
+                                wait_until="networkidle",
+                                timeout=NETWORK_IDLE_TIMEOUT_MS,
+                            )
+                        except Exception:
+                            pass
+                        page.wait_for_timeout(PAGE_SETTLE_MS)
+                        _dismiss_overlays(page)
+                    website_url = None
+                _prepare_page_for_recording(page)
+                _smooth_scroll(page, segment.duration_seconds)
+            except Exception:
+                # Keep the successfully recorded repo page; do not render a
+                # fallback on top of it (issue #381).
+                logger.exception(
+                    "Error after successful navigation to %s — keeping the "
+                    "recorded repo page (no fallback)",
+                    repo.url,
+                )
     except Exception:
         logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True

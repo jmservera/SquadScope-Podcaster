@@ -547,6 +547,106 @@ def plan_from_script_timed(
     )
 
 
+# --- claracle.com weekly page as the first content segment (issue #382) ---
+
+# The weekly page is shown after the intro, before the hosts discuss any repo.
+# Its on-screen time is proportional to the bridge before the first repo
+# mention, clamped to this window.
+WEEKLY_SEGMENT_MIN_SECONDS = 15.0
+WEEKLY_SEGMENT_MAX_SECONDS = 20.0
+
+# Extracts the ISO year and week from a job_id such as
+# ``podcast-2026-W26-de5f4e6e0435`` (case-insensitive ``W``).
+_JOB_ID_WEEK_RE = re.compile(r"(\d{4})-[Ww](\d{1,2})\b")
+
+
+def weekly_url_from_job_id(job_id: str) -> str | None:
+    """Derive the claracle.com weekly page URL from a *job_id* (issue #382).
+
+    ``podcast-2026-W26-de5f4e6e0435`` -> ``https://claracle.com/weekly/2026/w26/``.
+
+    The live claracle.com weekly pages use a lowercase, zero-padded week segment
+    (``/w26/``).  Returns ``None`` when *job_id* contains no ``YYYY-Www`` token.
+    """
+    if not job_id:
+        return None
+    match = _JOB_ID_WEEK_RE.search(job_id)
+    if not match:
+        return None
+    year = match.group(1)
+    week = int(match.group(2))
+    return f"https://claracle.com/weekly/{year}/w{week:02d}/"
+
+
+def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
+    """Insert the claracle.com weekly page as the first content segment (issue #382).
+
+    The weekly page (derived from *job_id*) is shown right after the intro and
+    before any repo is discussed.  It is added as a *generic* segment carrying a
+    ``source_url`` so the recorder navigates to and scrolls the page like any
+    other website segment.
+
+    Its duration is proportional to the bridge before the first repo mention
+    (the first segment's ``start_seconds``), clamped to
+    ``[WEEKLY_SEGMENT_MIN_SECONDS, WEEKLY_SEGMENT_MAX_SECONDS]``.
+
+    The plan is returned unchanged when *job_id* yields no weekly URL or the
+    weekly page is already the first segment (idempotent).
+    """
+    url = weekly_url_from_job_id(job_id)
+    if url is None:
+        logger.info(
+            "No weekly URL derivable from job_id=%s; skipping weekly segment",
+            job_id,
+        )
+        return plan
+
+    segments = list(plan.segments)
+    # A plan with no repo segments is already a generic/full-length page (often
+    # the weekly page itself); there is nothing to precede, so leave it as-is.
+    if not any(seg.repo is not None for seg in segments):
+        logger.info(
+            "Plan for job_id=%s has no repo segments; skipping weekly segment",
+            job_id,
+        )
+        return plan
+    if segments and segments[0].source_url == url and segments[0].is_generic:
+        return plan
+
+    first_start = segments[0].start_seconds if segments else WEEKLY_SEGMENT_MAX_SECONDS
+    weekly_duration = min(
+        max(first_start, WEEKLY_SEGMENT_MIN_SECONDS), WEEKLY_SEGMENT_MAX_SECONDS
+    )
+
+    weekly_segment = VideoSegment(
+        start_seconds=0.0,
+        duration_seconds=weekly_duration,
+        repo=None,
+        source_url=url,
+    )
+
+    # Shift the existing segments so their start times follow the weekly page.
+    shifted = [
+        VideoSegment(
+            start_seconds=seg.start_seconds + weekly_duration,
+            duration_seconds=seg.duration_seconds,
+            repo=seg.repo,
+            source_url=seg.source_url,
+        )
+        for seg in segments
+    ]
+
+    logger.info(
+        "Inserting claracle.com weekly page %s as first segment (%.1fs)",
+        url,
+        weekly_duration,
+    )
+    return EpisodePlan(
+        total_duration_seconds=plan.total_duration_seconds + weekly_duration,
+        segments=tuple([weekly_segment, *shifted]),
+    )
+
+
 # --- Audio-boundary sync utilities (#297) ---
 
 # Available timing granularity: TTS segment (VoiceTurn) level.

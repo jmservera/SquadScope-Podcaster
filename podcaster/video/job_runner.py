@@ -48,7 +48,11 @@ from podcaster.video.distribution import (
     VideoDistributionConfig,
     distribute_video,
 )
-from podcaster.video.sync_plan import extract_source_url, plan_from_script_timed
+from podcaster.video.sync_plan import (
+    extract_source_url,
+    plan_from_script_timed,
+    prepend_weekly_segment,
+)
 
 logger = logging.getLogger("podcaster.video.job_runner")
 
@@ -342,6 +346,11 @@ def run_video_generation(
                     "at": _iso(current),
                 })
                 return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
+
+            # Show the claracle.com weekly page (derived from the job_id) as the
+            # first content segment, right after the intro and before any repo is
+            # discussed (issue #382).
+            plan = prepend_weekly_segment(plan, job_id)
 
             # Record segments. Pass the script's Source URL so failed repo
             # navigations can be retried and corrected against the source
