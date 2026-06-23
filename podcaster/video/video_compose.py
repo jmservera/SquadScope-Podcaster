@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -87,15 +89,98 @@ LOWER_THIRD_BOX_OPACITY = 0.6
 LOWER_THIRD_Y_POSITION = "h-h/6"
 LOWER_THIRD_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-# Final encode settings (YouTube/Spotify-ready)
-ENCODE_PRESET = "slow"
-# CRF 16 keeps text edges crisp on screen-recorded, text-heavy content while
-# staying in the visually-lossless range (issue #359).  Research (SSIM/PSNR vs a
-# lossless reference) showed CRF 18 already preserved text well; 16 buys a small
-# extra margin for fine GitHub UI glyphs at negligible size cost.
-ENCODE_CRF = 16
-ENCODE_PIX_FMT = "yuv420p"
-ENCODE_AUDIO_BITRATE = "192k"
+# --- Final encode settings (YouTube/Spotify-ready) -------------------------
+# Every knob below is env-overridable so encode quality can be tuned — and the
+# codec switched to HEVC — without code changes (issue #376).  Defaults target
+# visually-lossless screen-recorded, text-heavy content while staying inside
+# Spotify's accepted spec:
+#   * Spotify accepts H.264 High Profile *or* H.265/HEVC, but mandates 8-bit
+#     4:2:0 (``yuv420p``) chroma subsampling — ``yuv444p`` is rejected, so the
+#     pixel format stays ``yuv420p`` regardless of codec.
+#   * The composition pipeline re-encodes each segment several times (normalize,
+#     pairwise xfade, canonical join) and ends in a stream-copy, so the final
+#     output quality is determined by these intermediate encodes.  Lowering the
+#     CRF therefore directly attacks the gradient banding / posterisation and
+#     soft-text artefacts reported for scrolling screen recordings.
+
+
+def _env_str(name: str, default: str) -> str:
+    """Return a stripped non-empty env override for *name*, else *default*."""
+    return os.environ.get(name, "").strip() or default
+
+
+def _env_int(name: str, default: int) -> int:
+    """Return *name* parsed as int, falling back to *default* when unset/bad."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid int for %s=%r; using default %d", name, raw, default)
+        return default
+
+
+# Video codec.  "libx264" (default, broadest Spotify compatibility) or
+# "libx265"/"hevc" for HEVC (officially accepted by Spotify, better quality per
+# bit, but higher practical risk on older clients).
+ENCODE_VCODEC = _env_str("VIDEO_ENCODE_VCODEC", "libx264")
+_IS_HEVC = ENCODE_VCODEC in ("libx265", "hevc")
+
+# HEVC reaches the same visual quality as H.264 at a CRF a few points higher, so
+# the default CRF is codec-dependent.  Both defaults sit in the
+# visually-lossless range for screen content (lower than the old 16 to remove
+# gradient banding and keep fine GitHub UI glyphs crisp — issue #376).
+ENCODE_CRF = _env_int("VIDEO_ENCODE_CRF", 18 if _IS_HEVC else 12)
+ENCODE_PRESET = _env_str("VIDEO_ENCODE_PRESET", "slow")
+# Spotify mandates 8-bit 4:2:0; do NOT change to yuv444p without confirming the
+# whole delivery chain (Spotify rejects non-4:2:0 video).
+ENCODE_PIX_FMT = _env_str("VIDEO_ENCODE_PIX_FMT", "yuv420p")
+ENCODE_AUDIO_BITRATE = _env_str("VIDEO_ENCODE_AUDIO_BITRATE", "192k")
+# Preset for the many intermediate re-encodes (segment normalize/fit).  The old
+# "ultrafast" disabled CABAC/trellis and other quality tools, so each re-encode
+# pass compounded artefacts; a slightly slower preset preserves more detail
+# feeding the final stream-copy output (issue #376).
+INTERMEDIATE_PRESET = _env_str("VIDEO_INTERMEDIATE_PRESET", "veryfast")
+# Number of segment normalizations to run in parallel.  Each is an independent
+# ffmpeg process, so this scales near-linearly with cores up to the cap and is
+# the single biggest video-generation speed-up (issue #376).
+NORMALIZE_WORKERS = max(
+    1, _env_int("VIDEO_NORMALIZE_WORKERS", min(4, os.cpu_count() or 1))
+)
+
+
+def _video_encode_args(preset: str) -> list[str]:
+    """Common video-encoder flags (codec, preset, CRF, pixel format, profile).
+
+    Honours the env-configured codec/CRF/pixel-format so every re-encode in the
+    pipeline switches consistently between H.264 and HEVC (issue #376).
+    """
+    args = [
+        "-c:v", ENCODE_VCODEC,
+        "-preset", preset,
+        "-crf", str(ENCODE_CRF),
+        "-pix_fmt", ENCODE_PIX_FMT,
+    ]
+    if ENCODE_VCODEC == "libx264":
+        # Spotify requires H.264 *High* profile; it is x264's default for
+        # yuv420p but we set it explicitly so it can never regress.
+        args += ["-profile:v", "high"]
+    return args
+
+
+def _metadata_bsf_spec() -> str:
+    """Codec-aware colour-VUI bitstream-filter spec normalising to BT.709.
+
+    Uses ``hevc_metadata`` for HEVC and ``h264_metadata`` for H.264 so the final
+    stream-copy pass tags consistent BT.709 limited-range colour for Spotify
+    (issues #353, #376).
+    """
+    name = "hevc_metadata" if _IS_HEVC else "h264_metadata"
+    return (
+        f"{name}=colour_primaries=1:transfer_characteristics=1:"
+        "matrix_coefficients=1:video_full_range_flag=0"
+    )
 
 # When the podcast audio outlasts the composed video, the final frame is held
 # (via tpad) and then faded to black over this many seconds so the outro audio
@@ -348,10 +433,7 @@ def _build_normalize_cmd(
         "-vf", f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
                f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,fps={OUTPUT_FPS}",
         "-an",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", str(ENCODE_CRF),
-        "-pix_fmt", ENCODE_PIX_FMT,
+        *_video_encode_args(INTERMEDIATE_PRESET),
         "-colorspace", "bt709",
         "-color_trc", "bt709",
         "-color_primaries", "bt709",
@@ -397,10 +479,7 @@ def _build_fit_segment_cmd(
         "-vf", vf,
         "-t", f"{target:.3f}",
         "-an",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", str(ENCODE_CRF),
-        "-pix_fmt", ENCODE_PIX_FMT,
+        *_video_encode_args(INTERMEDIATE_PRESET),
         "-colorspace", "bt709",
         "-color_trc", "bt709",
         "-color_primaries", "bt709",
@@ -583,10 +662,7 @@ def _build_canonical_av_cmd(
         "-filter_complex", f"[0:v]{vf}[v]",
         "-map", "[v]",
         "-map", audio_map,
-        "-c:v", "libx264",
-        "-preset", ENCODE_PRESET,
-        "-crf", str(ENCODE_CRF),
-        "-pix_fmt", ENCODE_PIX_FMT,
+        *_video_encode_args(ENCODE_PRESET),
         "-colorspace", "bt709",
         "-color_trc", "bt709",
         "-color_primaries", "bt709",
@@ -658,10 +734,7 @@ def _build_audio_overlay_cmd(
         )
         cmd += [
             "-vf", vf,
-            "-c:v", "libx264",
-            "-preset", ENCODE_PRESET,
-            "-crf", str(ENCODE_CRF),
-            "-pix_fmt", ENCODE_PIX_FMT,
+            *_video_encode_args(ENCODE_PRESET),
             "-colorspace", "bt709",
             "-color_trc", "bt709",
             "-color_primaries", "bt709",
@@ -688,22 +761,22 @@ def _build_audio_overlay_cmd(
 
 
 def _build_h264_metadata_cmd(input_path: Path, output_path: Path) -> list[str]:
-    """Rewrite H.264 VUI colour metadata to a single consistent set (stream copy).
+    """Rewrite the video VUI colour metadata to a consistent set (stream copy).
 
-    The concat demuxer copies H.264 NAL units from independently-encoded clips
+    The concat demuxer copies coded NAL units from independently-encoded clips
     whose SPS VUI data may disagree, tripping Spotify's
     ``INCONSISTENT_COLOR_DETAILS`` check.  This final post-processing pass
     normalises ``colour_primaries``/``transfer_characteristics``/
     ``matrix_coefficients`` to BT.709 (value ``1``) with a limited-range flag
-    via the ``h264_metadata`` bitstream filter — no re-encode (issue #353).
+    via the codec-appropriate metadata bitstream filter — ``h264_metadata`` for
+    H.264 or ``hevc_metadata`` for HEVC — with no re-encode (issues #353, #376).
     """
     return [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
         "-i", str(input_path),
         "-c:v", "copy",
         "-bsf:v",
-        "h264_metadata=colour_primaries=1:transfer_characteristics=1:"
-        "matrix_coefficients=1:video_full_range_flag=0",
+        _metadata_bsf_spec(),
         "-c:a", "copy",
         "-movflags", "+faststart",
         str(output_path),
@@ -1056,10 +1129,7 @@ def _encode_tail(preset: str) -> list[str]:
     """Common video-only libx264 encode flags (with bt709) for a given preset."""
     return [
         "-an",
-        "-c:v", "libx264",
-        "-preset", preset,
-        "-crf", str(ENCODE_CRF),
-        "-pix_fmt", ENCODE_PIX_FMT,
+        *_video_encode_args(preset),
         *_BT709_FLAGS,
         "-movflags", "+faststart",
     ]
@@ -1378,24 +1448,40 @@ def compose_video(
         )
 
     # Step 1: Normalize all segments to 1080p/30fps (fitting each to its target
-    # duration when fit-to-window is active).
-    normalized_paths: list[Path] = []
+    # duration when fit-to-window is active).  Each segment is an independent
+    # ffmpeg process, so normalization is run in parallel across cores — the
+    # single biggest video-generation speed-up (issue #376).  Output paths stay
+    # index-ordered regardless of completion order.
     norm_dir = output_path.parent / "normalized"
     norm_dir.mkdir(parents=True, exist_ok=True)
 
+    normalized_paths = [norm_dir / f"seg_{i:03d}.mp4" for i in range(len(segments))]
+    norm_cmds: list[list[str]] = []
     for i, rec in enumerate(segments):
-        norm_path = norm_dir / f"seg_{i:03d}.mp4"
         if fit_durations is not None:
-            cmd = _build_fit_segment_cmd(rec.video_path, norm_path, fit_durations[i])
+            norm_cmds.append(
+                _build_fit_segment_cmd(rec.video_path, normalized_paths[i], fit_durations[i])
+            )
             logger.info(
                 "Fitting segment %d to %.1fs: %s",
                 i, fit_durations[i], rec.video_path.name,
             )
         else:
-            cmd = _build_normalize_cmd(rec.video_path, norm_path)
+            norm_cmds.append(_build_normalize_cmd(rec.video_path, normalized_paths[i]))
             logger.info("Normalizing segment %d: %s", i, rec.video_path.name)
-        run(cmd)
-        normalized_paths.append(norm_path)
+
+    workers = min(NORMALIZE_WORKERS, len(norm_cmds))
+    if workers > 1:
+        logger.info(
+            "Normalizing %d segment(s) with %d parallel workers",
+            len(norm_cmds), workers,
+        )
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # Consume the iterator so any ffmpeg failure is re-raised here.
+            list(pool.map(run, norm_cmds))
+    else:
+        for cmd in norm_cmds:
+            run(cmd)
 
     # Step 2: Plan transitions and lower-thirds for pairwise composition.
     # When fitting, the segment durations on screen are the fitted targets, not
