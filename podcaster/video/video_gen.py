@@ -20,6 +20,7 @@ Capture modes (issue #387):
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import shutil
@@ -129,6 +130,15 @@ SCREENSHOT_CAPTURE_ENABLED = _env_bool("VIDEO_SCREENSHOT_CAPTURE", True)
 # identical to the screencast behaviour (frames / fps == duration), since the
 # composed framerate equals the scroll tick rate.
 SCREENSHOT_CAPTURE_FPS = _env_int("VIDEO_SCREENSHOT_FPS", SCROLL_TICKS_PER_SEC)
+# A zero or negative framerate would break the frame-count math (division by
+# zero, negative tick intervals) and is meaningless for capture, so clamp to a
+# sane minimum of one frame per second.
+if SCREENSHOT_CAPTURE_FPS < 1:
+    logger.warning(
+        "VIDEO_SCREENSHOT_FPS=%d is invalid; clamping to minimum of 1",
+        SCREENSHOT_CAPTURE_FPS,
+    )
+    SCREENSHOT_CAPTURE_FPS = 1
 # Near-visually-lossless CRF for the intermediate screenshot->video segment; the
 # downstream compose re-encodes again, so we keep this high quality to avoid
 # compounding compression artefacts.
@@ -316,8 +326,10 @@ _OVERLAY_SELECTORS = [
 
 # --- Cookie consent dismissal (issue #388) ---
 
-# How long (ms) to wait for a cookie consent banner to appear before giving up.
-# Kept short so sites without a banner don't stall the recording pipeline.
+# Overall time budget (ms) for matching the cookie-consent selectors against
+# the page.  Each selector is checked once and the loop bails out when this
+# deadline passes; it does not poll or wait for a banner to appear.  Kept short
+# so sites without a banner don't stall the recording pipeline.
 COOKIE_CONSENT_TIMEOUT_MS = 2500
 # Small settle pause after clicking an accept button so the banner's dismissal
 # animation finishes before recording starts.
@@ -727,7 +739,7 @@ def _compose_screenshot_segment(
     """
     fps = SCREENSHOT_CAPTURE_FPS
     if capturer.count > 0:
-        expected = max(1, round(duration_seconds * fps))
+        expected = max(1, math.ceil(duration_seconds * fps))
         _pad_frames(capturer, expected)
         cmd = _build_frames_to_video_cmd(capturer.frames_dir, fps, output_path)
     elif capturer.still_image is not None and capturer.still_image.exists():
@@ -848,7 +860,16 @@ def _smooth_scroll(
     tick_rate = (
         SCREENSHOT_CAPTURE_FPS if capturer is not None else SCROLL_TICKS_PER_SEC
     )
-    total_ticks = int(duration_seconds * tick_rate)
+    # In screenshot mode use ceil so the tick/frame count matches the expected
+    # frame count computed by _compose_screenshot_segment (also ceil); a floor
+    # here would under-count and force the composer to pad, risking a dropped
+    # fractional final frame.  Screencast mode keeps the historical floor so a
+    # duration shorter than one tick simply waits without scrolling.
+    total_ticks = (
+        math.ceil(duration_seconds * tick_rate)
+        if capturer is not None
+        else int(duration_seconds * tick_rate)
+    )
     if total_ticks <= 0:
         # Duration is positive but too short for a full tick.
         if capturer is not None:

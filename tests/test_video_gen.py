@@ -80,7 +80,7 @@ def _valid_png_bytes(width: int = 64, height: int = 64) -> bytes:
     return sig + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
 
 
-_PNG_1x1 = _valid_png_bytes()
+_PNG_64x64 = _valid_png_bytes()
 
 
 @pytest.fixture
@@ -1385,7 +1385,7 @@ def _make_screenshot_page(scroll_height: int = 5000) -> MagicMock:
     )
 
     def _screenshot(path):
-        Path(path).write_bytes(_PNG_1x1)
+        Path(path).write_bytes(_PNG_64x64)
 
     page.screenshot.side_effect = _screenshot
     return page
