@@ -33,6 +33,7 @@ from podcaster.audio import (
     MusicMixSpec,
     compute_segment_timeline,
     probe_audio,
+    probe_segment_durations,
     render_distribution_audio,
     validate_audio_outputs,
 )
@@ -638,9 +639,8 @@ def synthesize_episode(
         backchannel_tmp = output_path.parent / f".backchannels-{output_path.stem}-{uuid4().hex}"
         backchannel_tmp.mkdir(parents=True, exist_ok=False)
         try:
-            precomputed_segment_durations = _probe_existing_segment_durations(
+            precomputed_segment_durations = probe_segment_durations(
                 audio_segments,
-                backchannel_tmp / "segments",
                 runner,
                 segment_extension=effective_config.audio_extension,
             )
@@ -760,21 +760,6 @@ def _build_backchannel_mix_items(
             )
         )
     return items
-
-
-def _probe_existing_segment_durations(
-    segments: list[bytes],
-    tmp_dir: Path,
-    runner,
-    *,
-    segment_extension: str,
-) -> list[float]:
-    from podcaster.audio import _probe_duration_seconds, _run_command, _write_segments
-
-    tmp_dir.mkdir(parents=True, exist_ok=False)
-    paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
-    run = runner or _run_command
-    return [_probe_duration_seconds(path, run) for path in paths]
 
 
 def _apply_podcast_config(config: TtsConfig, podcast_config: PodcastConfig | None) -> TtsConfig:
