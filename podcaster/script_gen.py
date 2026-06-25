@@ -326,7 +326,7 @@ BREAKING NEWS (include this as a Hot off the press segment early in the episode)
 
     prompt += """
 
-Remember: write ONLY dialogue lines in the format "HostName: text". No headers, no metadata, no separators."""
+Remember: write ONLY dialogue lines in the format "HostName: text" plus the required non-spoken "## Section: <Title>" headers. No other headers, metadata, or separators."""
 
     return prompt
 

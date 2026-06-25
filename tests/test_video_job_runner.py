@@ -24,6 +24,7 @@ from podcaster.video.job_runner import (
     VideoOutcome,
     _already_processed,
     _build_section_cards,
+    _section_card_duration_seconds,
     _resolve_anchor_id,
     _resolve_dog_logo,
     drain,
@@ -779,10 +780,21 @@ class TestBuildSectionCards:
         ) as gen, patch(
             "podcaster.video.section_cards._get_drawtext_ffmpeg", return_value="ffmpeg"
         ):
-            inserts = _build_section_cards(script, recs, tmp_path)
+            inserts = _build_section_cards(
+                script,
+                recs,
+                tmp_path,
+                sections_metadata=[{"title_card": {"duration_seconds": 0.75}}],
+            )
         assert [i.name for i in inserts] == ["Trends", "Signal & Noise"]
         assert [i.before_index for i in inserts] == [0, 1]
+        assert [i.duration_seconds for i in inserts] == [0.75, 0.75]
         assert gen.call_count == 2
+
+    def test_section_card_duration_clamped_to_issue_bounds(self):
+        assert _section_card_duration_seconds([{"title_card": {"duration_seconds": 0.2}}]) == 0.5
+        assert _section_card_duration_seconds([{"title_card": {"duration_seconds": 2.5}}]) == 1.0
+        assert _section_card_duration_seconds([]) == 0.75
 
     def test_generation_failure_is_swallowed(self, tmp_path, monkeypatch):
         monkeypatch.delenv("VIDEO_SECTION_CARDS", raising=False)

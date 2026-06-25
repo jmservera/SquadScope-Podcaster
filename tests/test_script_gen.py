@@ -285,6 +285,11 @@ class TestBuildUserPrompt:
         assert "2026-W24" in prompt
         assert "Amazing Article" in prompt
 
+    def test_allows_required_section_headers(self):
+        prompt = _build_user_prompt("2026-W24", "Amazing Article", "Content here.")
+        assert 'required non-spoken "## Section: <Title>" headers' in prompt
+        assert "No other headers" in prompt
+
     def test_truncates_long_content(self):
         long = "a" * (MAX_ARTICLE_CHARS + 5000)
         prompt = _build_user_prompt("w1", "title", long)
