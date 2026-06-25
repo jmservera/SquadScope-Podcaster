@@ -504,6 +504,33 @@ def _default_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _free_compose_intermediates(content_clip: Path, norm_dir: Path) -> None:
+    """Delete composition intermediates that are no longer needed (disk relief).
+
+    Once the intro/outro have been joined around the content into ``joined.mp4``,
+    the standalone content clip and the per-segment normalized clips are never
+    read again.  With near-lossless (crf 12) intermediates these dominate disk
+    usage, and the final audio mux's video-extend branch re-encodes the whole
+    video into yet another full-size file.  On the size-limited ACA ephemeral
+    disk that peak exhausted storage and failed the job at the very last step.
+    Best-effort: any cleanup error is swallowed so it never blocks composition.
+    """
+    try:
+        if content_clip.exists():
+            content_clip.unlink()
+    except OSError:
+        logger.debug("could not remove content intermediate %s", content_clip, exc_info=True)
+    try:
+        if norm_dir.is_dir():
+            for clip in norm_dir.glob("*.mp4"):
+                try:
+                    clip.unlink()
+                except OSError:
+                    logger.debug("could not remove normalized clip %s", clip, exc_info=True)
+    except OSError:
+        logger.debug("could not scan normalized dir %s", norm_dir, exc_info=True)
+
+
 @dataclass
 class LowerThird:
     """Lower-third text overlay metadata."""
@@ -1861,6 +1888,14 @@ def compose_video(
         )
         video_duration += added
         video_only_path = joined_target
+        # Free the now-unreferenced intermediates (the composed content clip and
+        # the per-segment normalized clips) before the final audio mux.  With
+        # near-lossless intermediates these are the largest files on disk, and
+        # the mux's ``extend_video`` branch re-encodes the whole video into an
+        # additional full-size file — on the size-limited ACA ephemeral storage
+        # that combination exhausted the disk and failed the job.  joined.mp4 is
+        # the only video input the mux needs from here on.
+        _free_compose_intermediates(compose_target, norm_dir)
     else:
         video_only_path = compose_target
 

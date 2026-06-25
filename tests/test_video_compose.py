@@ -2061,3 +2061,29 @@ class TestComposeVideoSectionCards:
         )
         # 3 clips (2 content + 1 card) with 2 transition overlaps → 30 s total.
         assert result.duration_seconds == pytest.approx(30.0, abs=0.01)
+
+
+class TestFreeComposeIntermediates:
+    """Disk-relief cleanup of composition intermediates after the join step."""
+
+    def test_removes_content_and_normalized_clips(self, tmp_path):
+        content = tmp_path / "content.mp4"
+        content.write_bytes(b"x" * 16)
+        norm_dir = tmp_path / "normalized"
+        norm_dir.mkdir()
+        seg0 = norm_dir / "seg_000.mp4"
+        seg1 = norm_dir / "seg_001.mp4"
+        card0 = norm_dir / "card_000.mp4"
+        for p in (seg0, seg1, card0):
+            p.write_bytes(b"y" * 16)
+
+        vc._free_compose_intermediates(content, norm_dir)
+
+        assert not content.exists()
+        assert not seg0.exists()
+        assert not seg1.exists()
+        assert not card0.exists()
+
+    def test_is_best_effort_when_files_missing(self, tmp_path):
+        # Must never raise even if nothing exists yet.
+        vc._free_compose_intermediates(tmp_path / "content.mp4", tmp_path / "normalized")

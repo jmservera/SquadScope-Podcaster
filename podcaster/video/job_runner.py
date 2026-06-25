@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -500,6 +501,21 @@ def run_video_generation(
     except TransientVideoError:
         raise
     except Exception as exc:
+        # ffmpeg/ffprobe failures surface as CalledProcessError whose stderr
+        # carries the real cause (e.g. "No space left on device").  The default
+        # ``logger.exception`` only records the exception type, so that root
+        # cause was being silently discarded — log the failing command and its
+        # captured stderr so failures are diagnosable from the container logs.
+        if isinstance(exc, subprocess.CalledProcessError):
+            cmd = exc.cmd
+            cmd_str = " ".join(map(str, cmd)) if isinstance(cmd, (list, tuple)) else str(cmd)
+            stderr = exc.stderr
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "replace")
+            logger.error(
+                "video subprocess failed job_id=%s rc=%s cmd=%s stderr=%s",
+                job_id, exc.returncode, cmd_str, (stderr or "").strip(),
+            )
         logger.exception("video generation failed job_id=%s error=%s", job_id, type(exc).__name__)
         _record_video_state(storage, job_id, {
             "status": STATUS_FAILED, "reason": type(exc).__name__, "at": _iso(current),

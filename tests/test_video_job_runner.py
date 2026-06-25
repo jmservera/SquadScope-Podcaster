@@ -531,6 +531,40 @@ class TestRunVideoGeneration:
         plan = mock_record.call_args.args[0]
         assert plan.total_duration_seconds == pytest.approx(222.0)
 
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_ffmpeg_failure_logs_stderr(
+        self, mock_compose, mock_record, storage, dry_config, caplog
+    ):
+        """A CalledProcessError surfaces ffmpeg's stderr in the failure log (#blind-debug)."""
+        import logging
+        import subprocess
+
+        job_id = "video-ffmpeg-fail"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {"article_title": "Test Episode"},
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        mock_compose.side_effect = subprocess.CalledProcessError(
+            255, ["ffmpeg", "-i", "joined.mp4", "muxed.mp4"],
+            output="", stderr="av_interleaved_write_frame(): No space left on device",
+        )
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(TransientVideoError):
+                run_video_generation(job_id, storage, config=dry_config)
+
+        assert "No space left on device" in caplog.text
+        assert "rc=255" in caplog.text
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        assert manifest["generation"]["video_runner"]["status"] == STATUS_FAILED
+
 
 # --- Process Message Tests ---
 
