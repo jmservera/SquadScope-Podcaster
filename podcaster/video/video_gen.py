@@ -660,6 +660,141 @@ class RecordingResult:
     output_dir: Path = field(default_factory=lambda: Path("."))
 
 
+# --- Per-segment checkpoint/resume (issue #410) -------------------------------
+#
+# When an IntermediateStore is supplied, each recorded segment is checkpointed to
+# blob (the recording file plus a small JSON sidecar carrying the recording-only
+# metadata).  On a restart the recording — by far the most expensive phase, since
+# it drives a headless browser through GitHub navigation — is skipped for any
+# segment whose checkpoint already survived in blob.
+
+
+def _recording_blob_name(index: int, suffix: str) -> str:
+    return f"recording_{index:03d}{suffix}"
+
+
+def _recording_meta_name(index: int) -> str:
+    return f"recording_{index:03d}.json"
+
+
+def _serialize_recording_meta(recorded: "RecordedSegment") -> str:
+    """Serialize the recording-only metadata of a RecordedSegment to JSON.
+
+    The ``segment`` (an immutable plan entry) is intentionally excluded: the plan
+    is regenerated deterministically from the script on resume, so only the
+    fields produced *during* recording need to survive in blob.
+    """
+    import json
+
+    return json.dumps(
+        {
+            "suffix": recorded.video_path.suffix,
+            "is_fallback": recorded.is_fallback,
+            "has_pages": recorded.has_pages,
+            "website_url": recorded.website_url,
+            "is_removed": recorded.is_removed,
+            "recovery_path": recorded.recovery_path,
+        }
+    )
+
+
+def _resume_recorded_segment(
+    index: int,
+    segment: "VideoSegment",
+    output_dir: Path,
+    intermediates,
+) -> "RecordedSegment | None":
+    """Rebuild a RecordedSegment from its blob checkpoint, or return None.
+
+    Returns ``None`` (so the caller records the segment normally) when the store
+    is disabled, the sidecar metadata is missing/corrupt, or the recording file
+    cannot be downloaded.
+    """
+    import json
+
+    if intermediates is None or not intermediates.enabled:
+        return None
+    meta_text = intermediates.read_text(_recording_meta_name(index))
+    if not meta_text:
+        return None
+    try:
+        meta = json.loads(meta_text)
+    except ValueError:
+        return None
+    if not isinstance(meta, dict):
+        return None
+    suffix = meta.get("suffix") or ".mp4"
+    blob_name = _recording_blob_name(index, suffix)
+    if not intermediates.exists(blob_name):
+        return None
+    dest = output_dir / blob_name
+    if not intermediates.download(blob_name, dest):
+        return None
+    return RecordedSegment(
+        segment=segment,
+        video_path=dest,
+        is_fallback=bool(meta.get("is_fallback", False)),
+        has_pages=bool(meta.get("has_pages", False)),
+        website_url=meta.get("website_url"),
+        is_removed=bool(meta.get("is_removed", False)),
+        recovery_path=str(meta.get("recovery_path", "direct")),
+    )
+
+
+def _validate_recording(path: Path) -> None:
+    """Best-effort ffprobe sanity check of a freshly-recorded segment.
+
+    Never raises: a probe failure (e.g. no system ffprobe, or a stub file in
+    tests) is logged and ignored so it cannot block the checkpoint upload.  The
+    authoritative integrity guarantee is the size-verified blob upload.
+    """
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            logger.warning("recorded segment is empty: %s", path)
+            return
+        subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            check=True, capture_output=True, timeout=30,
+        )
+    except Exception:  # noqa: BLE001 — validation is advisory only
+        logger.debug("ffprobe validation skipped/failed for %s", path, exc_info=True)
+
+
+def _checkpoint_recorded_segment(
+    index: int,
+    recorded: "RecordedSegment",
+    intermediates,
+) -> None:
+    """Checkpoint a freshly-recorded segment to blob, then free local disk.
+
+    Validates the recording (best-effort ffprobe), uploads it (+ a JSON sidecar
+    of recovery metadata) with the upload size-verified, and — only once the
+    blob checkpoint is confirmed — deletes the local recording so the job's
+    local disk holds at most the segment currently being recorded (issue #410).
+    The recording is re-fetched from blob on demand when composition normalizes
+    it.
+    """
+    if intermediates is None or not intermediates.enabled:
+        return
+    suffix = recorded.video_path.suffix or ".mp4"
+    content_type = "video/webm" if suffix == ".webm" else "video/mp4"
+    _validate_recording(recorded.video_path)
+    if intermediates.upload(
+        _recording_blob_name(index, suffix), recorded.video_path, content_type
+    ):
+        intermediates.write_text(
+            _recording_meta_name(index), _serialize_recording_meta(recorded)
+        )
+        intermediates.mark(f"recording_{index:03d}", recovery_path=recorded.recovery_path)
+        # Upload was size-verified above; the recording now lives safely in blob
+        # so drop the local copy to keep disk usage bounded.
+        try:
+            recorded.video_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not delete local recording %s", recorded.video_path, exc_info=True)
+
+
 def _check_gh_pages(owner: str, name: str, timeout: float = 5.0) -> bool:
     """Detect whether the repo has a GitHub Pages site via HEAD request."""
     url = f"https://{owner}.github.io/{name}/"
@@ -2144,6 +2279,7 @@ def record_episode(
     headless: bool = True,
     check_accessibility: bool = True,
     source_url: str | None = None,
+    intermediates=None,
 ) -> RecordingResult:
     """Record all video segments for an episode plan.
 
@@ -2155,6 +2291,12 @@ def record_episode(
         source_url: The script header's ``Source URL:``. Used to recover a
             corrected repo URL from the source article when a repo navigation
             fails (issue #378).
+        intermediates: Optional
+            :class:`podcaster.video.intermediates.IntermediateStore` enabling
+            per-segment checkpoint/resume against blob storage (issue #410).
+            When supplied, each recorded segment is uploaded to blob and a
+            restarted job skips recording for any segment already checkpointed.
+            ``None`` (default) preserves the legacy record-everything behaviour.
 
     Returns:
         RecordingResult with paths to all recorded WebM files.
@@ -2176,30 +2318,63 @@ def record_episode(
 
     result = RecordingResult(output_dir=output_dir)
 
+    # Resolve which segments already have a blob checkpoint so the browser is
+    # only launched when there is at least one segment left to record (issue
+    # #410).  Resumed segments are rebuilt from blob without touching Playwright.
+    resumed: dict[int, RecordedSegment] = {}
+    if intermediates is not None and getattr(intermediates, "enabled", False):
+        for index, segment in enumerate(plan.segments):
+            recovered = _resume_recorded_segment(index, segment, output_dir, intermediates)
+            if recovered is not None:
+                resumed[index] = recovered
+        if resumed:
+            logger.info(
+                "Resuming recording from blob: %d/%d segment(s) already checkpointed",
+                len(resumed), len(plan.segments),
+            )
+
+    needs_browser = len(resumed) < len(plan.segments)
+
+    def _record_all(browser: "Browser | None") -> None:
+        for index, segment in enumerate(plan.segments):
+            recovered = resumed.get(index)
+            if recovered is not None:
+                result.recorded.append(recovered)
+                logger.info(
+                    "Reused checkpointed segment %d: %s (recovery=%s)",
+                    index, recovered.video_path.name, recovered.recovery_path,
+                )
+                continue
+            logger.info(
+                "Recording segment: %s (%.1fs)",
+                segment.label,
+                segment.duration_seconds,
+            )
+            recorded = _record_segment(
+                browser, segment, output_dir, check_accessibility,
+                source_url=source_url,
+            )
+            result.recorded.append(recorded)
+            _checkpoint_recorded_segment(index, recorded, intermediates)
+            logger.info(
+                "Saved: %s (fallback=%s, pages=%s, website=%s, recovery=%s)",
+                recorded.video_path.name,
+                recorded.is_fallback,
+                recorded.has_pages,
+                recorded.website_url,
+                recorded.recovery_path,
+            )
+
+    if not needs_browser:
+        _record_all(None)
+        return result
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             headless=headless, args=RECORDING_CHROMIUM_ARGS
         )
         try:
-            for segment in plan.segments:
-                logger.info(
-                    "Recording segment: %s (%.1fs)",
-                    segment.label,
-                    segment.duration_seconds,
-                )
-                recorded = _record_segment(
-                    browser, segment, output_dir, check_accessibility,
-                    source_url=source_url,
-                )
-                result.recorded.append(recorded)
-                logger.info(
-                    "Saved: %s (fallback=%s, pages=%s, website=%s, recovery=%s)",
-                    recorded.video_path.name,
-                    recorded.is_fallback,
-                    recorded.has_pages,
-                    recorded.website_url,
-                    recorded.recovery_path,
-                )
+            _record_all(browser)
         finally:
             browser.close()
 

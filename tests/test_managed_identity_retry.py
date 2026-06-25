@@ -159,3 +159,27 @@ def test_health_check_fails_exits_3(monkeypatch):
     credential_cls.assert_called_once_with()
     credential.get_token.assert_called_once_with(STORAGE_SCOPE)
     drain_mock.assert_not_called()
+
+
+def test_sdk_blob_credential_returns_access_token(monkeypatch):
+    """The azure-storage-blob credential adapter wraps the managed-identity token
+    flow into an azure-core AccessToken (identity-only, no account key)."""
+    from azure.core.credentials import AccessToken
+
+    monkeypatch.setattr(
+        storage, "_request_managed_identity_token", lambda resource: dict(TOKEN_PAYLOAD)
+    )
+    cred = storage._SdkBlobCredential()
+    token = cred.get_token(STORAGE_SCOPE)
+    assert isinstance(token, AccessToken)
+    assert token.token == "fake-token"
+    assert token.expires_on == 9999999999
+
+
+def test_sdk_blob_credential_rejects_empty_token(monkeypatch):
+    monkeypatch.setattr(
+        storage, "_request_managed_identity_token", lambda resource: {"expires_on": "1"}
+    )
+    cred = storage._SdkBlobCredential()
+    with pytest.raises(RuntimeError):
+        cred.get_token(STORAGE_SCOPE)
