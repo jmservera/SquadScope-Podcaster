@@ -811,6 +811,34 @@ def _build_intro_dog_cmd(
     ]
 
 
+def _build_outro_xfade_cmd(
+    content_path: Path,
+    outro_path: Path,
+    transition: str,
+    transition_duration: float,
+    offset: float,
+    output_path: Path,
+) -> list[str]:
+    """Crossfade the content tail into the outro head (issue #393).
+
+    Both inputs must already be canonicalised to the same resolution / fps /
+    pixel-format so the ``xfade`` filter accepts them.  Produces a **video-only**
+    clip: the podcast MP3 is overlaid as the sole audio track later, so the
+    source (silent) audio is dropped here and the crossfade never cuts audio.
+    """
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "-i", str(content_path),
+        "-i", str(outro_path),
+        "-filter_complex",
+        f"[0:v][1:v]xfade=transition={transition}"
+        f":duration={transition_duration}:offset={offset:.3f}[vx]",
+        "-map", "[vx]",
+        *_encode_tail(ENCODE_PRESET),
+        str(output_path),
+    ]
+
+
 def _join_intro_outro(
     content_path: Path,
     output_path: Path,
@@ -821,30 +849,39 @@ def _join_intro_outro(
     work_dir: Path,
     dog_logo: "DogLogoConfig | None" = None,
     dog_logo_path: Path | None = None,
+    transition_duration: float = TRANSITION_DURATION,
+    outro_transition: str = TRANSITION_FADE,
 ) -> float:
     """Prepend *intro_path* and append *outro_path* around *content_path*.
 
     Canonicalises each present clip to a uniform **video-only** AV format (a
-    silent stereo track is synthesised so the concat-demuxer copy succeeds),
-    then concatenates ``intro -> content -> outro`` into *output_path*.
+    silent stereo track is synthesised so the concat-demuxer copy succeeds).
+    The intro is hard-cut onto the content, while the content→outro boundary is
+    joined with an ``xfade`` **crossfade** (issue #393) so the ending feels
+    intentional rather than abrupt — the same xfade filter used between content
+    segments.  When either clip is too short to overlap safely, the join falls
+    back to a hard cut.
 
     Source audio on the intro/outro clips is always stripped: the podcast MP3
-    is overlaid as the sole audio track on the final joined video afterwards.
+    is overlaid as the sole audio track on the final joined video afterwards, so
+    the crossfade is purely visual and never truncates audio.
 
     When *dog_logo* and *dog_logo_path* are provided, the DOG watermark is also
     overlaid on the final :data:`DOG_INTRO_LEAD_SECONDS` seconds of the intro
     clip so it is already on screen before the intro→content join (#361).
 
-    Returns the total added duration (seconds) of the intro/outro clips so the
-    caller can adjust the reported episode duration.
+    Returns the total added duration (seconds) of the intro/outro clips —
+    accounting for the crossfade overlap — so the caller can adjust the reported
+    episode duration.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     canon_dir = work_dir / "join"
     canon_dir.mkdir(parents=True, exist_ok=True)
 
-    ordered: list[tuple[str, Path]] = []
     added_duration = 0.0
 
+    # 1. Canonicalise the intro (with optional DOG overlay).
+    intro_canon: Path | None = None
     if intro_path is not None:
         _, intro_dur = _probe_media(intro_path, run)
         added_duration += intro_dur
@@ -860,21 +897,63 @@ def _join_intro_outro(
                 intro_path, dog_logo, dog_logo_path, enable_start, dog_intro
             ))
             intro_src = dog_intro
-        ordered.append(("intro", intro_src))
+        intro_canon = canon_dir / "intro.mp4"
+        logger.info("Canonicalizing intro clip for concat: %s", intro_src)
+        run(_build_canonical_av_cmd(intro_src, intro_canon, has_audio=False))
 
-    ordered.append(("content", content_path))
+    # 2. Canonicalise the content.
+    content_canon = canon_dir / "content.mp4"
+    logger.info("Canonicalizing content clip for concat: %s", content_path)
+    run(_build_canonical_av_cmd(content_path, content_canon, has_audio=False))
 
+    # 3. Resolve the tail clip(s) representing content (+ crossfaded outro).
+    #    ``tail_clips`` is concatenated after the intro.
+    tail_clips: list[Path] = [content_canon]
     if outro_path is not None:
         _, outro_dur = _probe_media(outro_path, run)
-        added_duration += outro_dur
-        ordered.append(("outro", outro_path))
+        outro_canon = canon_dir / "outro.mp4"
+        logger.info("Canonicalizing outro clip for concat: %s", outro_path)
+        run(_build_canonical_av_cmd(outro_path, outro_canon, has_audio=False))
+
+        _, content_dur = _probe_media(content_canon, run)
+        td = transition_duration
+        if td > 0 and content_dur > td and outro_dur > td:
+            # Crossfade content tail into the outro head.  The xfade overlap
+            # shortens the timeline by ``td`` seconds, so the outro effectively
+            # contributes ``outro_dur - td`` to the total duration.
+            offset = max(0.0, content_dur - td)
+            content_outro_v = canon_dir / "content_outro_v.mp4"
+            logger.info(
+                "Crossfading content->outro (transition=%s, duration=%.2fs) "
+                "at offset %.3fs",
+                outro_transition, td, offset,
+            )
+            run(_build_outro_xfade_cmd(
+                content_canon, outro_canon, outro_transition, td, offset,
+                content_outro_v,
+            ))
+            # Re-canonicalise so the crossfaded clip carries the uniform
+            # silent-audio layout the concat demuxer needs.
+            content_outro = canon_dir / "content_outro.mp4"
+            run(_build_canonical_av_cmd(
+                content_outro_v, content_outro, has_audio=False
+            ))
+            tail_clips = [content_outro]
+            added_duration += outro_dur - td
+        else:
+            # Too short to crossfade safely — fall back to a hard cut.
+            logger.info(
+                "Skipping content->outro crossfade (content=%.2fs, "
+                "outro=%.2fs, transition=%.2fs); using hard cut",
+                content_dur, outro_dur, td,
+            )
+            tail_clips = [content_canon, outro_canon]
+            added_duration += outro_dur
 
     canon_paths: list[Path] = []
-    for label, src in ordered:
-        canon_path = canon_dir / f"{label}.mp4"
-        logger.info("Canonicalizing %s clip for concat: %s", label, src)
-        run(_build_canonical_av_cmd(src, canon_path, has_audio=False))
-        canon_paths.append(canon_path)
+    if intro_canon is not None:
+        canon_paths.append(intro_canon)
+    canon_paths.extend(tail_clips)
 
     list_file = canon_dir / "concat.txt"
     list_file.write_text(
@@ -882,7 +961,7 @@ def _join_intro_outro(
         encoding="utf-8",
     )
     logger.info(
-        "Joining %d clips (intro/content/outro) into %s",
+        "Joining %d clip(s) (intro/content/outro) into %s",
         len(canon_paths), output_path,
     )
     run(_build_concat_cmd(list_file, output_path))
@@ -1553,6 +1632,7 @@ def compose_video(
             work_dir=output_path.parent,
             dog_logo=dog_logo,
             dog_logo_path=dog_logo_path,
+            transition_duration=transition_duration,
         )
         video_duration += added
         video_only_path = joined_target
