@@ -133,13 +133,17 @@ def assign_turn_ids(segments: Iterable[tuple[str, str]]) -> list[Turn]:
 
     turns: list[Turn] = []
     for index, (speaker, text) in enumerate(segments):
-        letter = "b" if str(speaker).lower().endswith("b") else "a"
-        turns.append(Turn(turn_id=f"{letter}_{index:03d}", speaker=_normalize_speaker(speaker), text=text))
+        # Normalize once (with stripping) and derive both the turn-id letter and
+        # the stored speaker from that single value, so trailing whitespace or
+        # casing (e.g. "host_b ") can't make the id disagree with the speaker.
+        normalized = _normalize_speaker(speaker)
+        letter = "b" if normalized == HOST_B else "a"
+        turns.append(Turn(turn_id=f"{letter}_{index:03d}", speaker=normalized, text=text))
     return turns
 
 
 def _normalize_speaker(speaker: str) -> str:
-    return HOST_B if str(speaker).lower().endswith("b") else HOST_A
+    return HOST_B if str(speaker).strip().lower().endswith("b") else HOST_A
 
 
 def _other_speaker(speaker: str) -> str:
@@ -217,6 +221,13 @@ def _select_phrase_and_tone(library: tuple[str, ...], slot: int) -> tuple[str, s
     return library[slot % len(library)], tone
 
 
+#: Fractions of the ``[min_gap, max_gap]`` window used as the required spacing
+#: before each successive backchannel.  Cycling through these makes the cadence
+#: irregular (natural) instead of metronomic while staying fully deterministic;
+#: every value keeps the spacing within the configured window (issue #419).
+_GAP_WINDOW_CYCLE: tuple[float, ...] = (0.0, 0.6, 0.25, 1.0, 0.4)
+
+
 def build_interaction_map(
     turns: list[Turn],
     durations: list[float],
@@ -233,8 +244,12 @@ def build_interaction_map(
     - the feature is enabled,
     - the candidate sits at a safe clause boundary (:func:`is_safe_anchor`),
     - it is not in the final clause of a turn (punchline avoidance), and
-    - at least ``min_gap_seconds`` of speech elapsed since the last placement
-      (density rule: max one per ``min_gap``..``max_gap`` window).
+    - at least the current required gap has elapsed since the last placement.
+      The required gap varies deterministically across the
+      ``[min_gap_seconds, max_gap_seconds]`` window (see
+      :data:`_GAP_WINDOW_CYCLE`) so consecutive backchannels are spaced
+      irregularly and the rhythm sounds natural rather than metronomic — both
+      bounds therefore affect placement density.
 
     Returns an empty map when disabled, so callers can always call it safely.
     """
@@ -247,6 +262,7 @@ def build_interaction_map(
         raise ValueError("durations must be parallel to turns")
 
     gain_db = config.clamped_gain_db
+    gap_window = max(0.0, config.max_gap_seconds - config.min_gap_seconds)
     placed: list[Interaction] = []
     last_time = -float("inf")
     slot = 0
@@ -266,7 +282,11 @@ def build_interaction_map(
                 continue
             # Estimate absolute time of this pause via character proportion.
             position = start + duration * (char_index / text_len)
-            if position - last_time < config.min_gap_seconds:
+            # Required spacing varies across the [min_gap, max_gap] window so the
+            # cadence isn't metronomic (issue #419).
+            fraction = _GAP_WINDOW_CYCLE[slot % len(_GAP_WINDOW_CYCLE)]
+            required_gap = config.min_gap_seconds + gap_window * fraction
+            if position - last_time < required_gap:
                 continue
             phrase, tone = _select_phrase_and_tone(config.library, slot)
             placed.append(
@@ -326,7 +346,14 @@ def resolve_placements(
     ``clips`` maps an interaction's backchannel ``text`` to its synthesized
     audio bytes (small TTS clips from the configured library). Interactions
     whose clip is missing are skipped so a partial clip set degrades gracefully.
+
+    Raises ``ValueError`` when *durations* is not parallel to *turns* (the same
+    precondition :func:`build_interaction_map` enforces), so a length mismatch
+    fails loudly instead of silently dropping or mis-timing placements.
     """
+
+    if len(durations) != len(turns):
+        raise ValueError("durations must be parallel to turns")
 
     starts = _turn_starts(durations, gap_seconds)
     by_id = {turn.turn_id: (start, duration) for turn, start, duration in zip(turns, starts, durations)}

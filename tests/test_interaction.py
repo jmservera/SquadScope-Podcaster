@@ -12,6 +12,14 @@ def test_assign_turn_ids_uses_speaker_letter_and_index():
     assert [t.speaker for t in turns] == ["host_a", "host_b", "host_a"]
 
 
+def test_assign_turn_ids_normalizes_whitespace_consistently():
+    # Trailing whitespace/casing must not make the turn-id letter disagree with
+    # the normalized speaker.
+    turns = I.assign_turn_ids([("host_b ", "hi"), ("HOST_B", "yo"), ("host_a\t", "ok")])
+    assert [t.turn_id for t in turns] == ["b_000", "b_001", "a_002"]
+    assert [t.speaker for t in turns] == ["host_b", "host_b", "host_a"]
+
+
 def test_find_pause_points_returns_clause_boundaries():
     points = I.find_pause_points("We built it, then we shipped it.")
     anchors = [a for _, a in points]
@@ -118,3 +126,30 @@ def test_interaction_to_dict_matches_issue_schema():
         "gain_db": -14,
         "max_duration_ms": 600,
     }
+
+
+def test_resolve_placements_validates_parallel_durations():
+    turns = I.assign_turn_ids([("host_a", "hello there.")])
+    m = I.build_interaction_map(
+        turns, [40.0], BackchannelConfig(enabled=True, min_gap_seconds=1)
+    )
+    with pytest.raises(ValueError):
+        I.resolve_placements(m, turns, [40.0, 1.0], {})
+
+
+def test_build_interaction_map_max_gap_widens_spacing():
+    # max_gap_seconds must be operative: widening the window (with min_gap fixed)
+    # spaces backchannels further apart, so it is not a dead config knob.
+    segments = [
+        ("host_a" if i % 2 == 0 else "host_b", "we kept building things, and we shipped it.")
+        for i in range(12)
+    ]
+    turns = I.assign_turn_ids(segments)
+    durations = [6.0] * len(turns)
+    narrow = I.build_interaction_map(
+        turns, durations, BackchannelConfig(enabled=True, min_gap_seconds=5, max_gap_seconds=5)
+    )
+    wide = I.build_interaction_map(
+        turns, durations, BackchannelConfig(enabled=True, min_gap_seconds=5, max_gap_seconds=40)
+    )
+    assert len(narrow) > len(wide)
