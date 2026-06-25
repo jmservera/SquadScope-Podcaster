@@ -26,7 +26,8 @@ from podcaster.video.video_gen import (
     WIDTH,
     HEIGHT,
     IMAGE_ZOOM_MIN_SIZE_PX,
-    ZOOM_IMAGE_CSS,
+    PAGE_ZOOM_SCALE,
+    ZOOM_PAGE_CSS,
     RecordedSegment,
     RecordingResult,
     _Capturer,
@@ -48,7 +49,8 @@ from podcaster.video.video_gen import (
     _smooth_scroll,
     _try_navigate_repo,
     _try_record_project_site,
-    _apply_image_zoom,
+    _PAGE_ZOOM_JS,
+    _apply_page_zoom,
     _prepare_page_for_recording,
     _render_fallback_page,
     _render_url_card,
@@ -387,64 +389,75 @@ class TestIsLoginRedirect:
         assert _is_login_redirect(None) is False
 
 
-# --- _apply_image_zoom tests ---
+# --- _apply_page_zoom tests (issue #395) ---
 
 
-class TestApplyImageZoom:
-    def test_tags_large_images_and_injects_css(self):
+class TestApplyPageZoom:
+    def test_applies_full_page_zoom_and_injects_css(self):
         page = MagicMock()
-        page.evaluate.return_value = 3  # 3 large images tagged
+        page.evaluate.return_value = 1  # focal image found, zoom applied
 
-        count = _apply_image_zoom(page)
+        result = _apply_page_zoom(page)
 
-        assert count == 3
+        assert result == 1
         # JS detection ran with the size threshold
         page.evaluate.assert_called_once()
         args = page.evaluate.call_args[0]
         assert IMAGE_ZOOM_MIN_SIZE_PX in args
-        # Zoom CSS was injected
-        page.add_style_tag.assert_called_once_with(content=ZOOM_IMAGE_CSS)
+        # Full-page zoom CSS was injected
+        page.add_style_tag.assert_called_once_with(content=ZOOM_PAGE_CSS)
 
-    def test_no_large_images_skips_css(self):
+    def test_no_focal_image_skips_css(self):
         page = MagicMock()
         page.evaluate.return_value = 0
 
-        count = _apply_image_zoom(page)
+        result = _apply_page_zoom(page)
 
-        assert count == 0
+        assert result == 0
         page.add_style_tag.assert_not_called()
 
     def test_evaluate_error_is_swallowed(self):
         page = MagicMock()
         page.evaluate.side_effect = RuntimeError("boom")
 
-        assert _apply_image_zoom(page) == 0
+        assert _apply_page_zoom(page) == 0
         page.add_style_tag.assert_not_called()
 
     def test_add_style_tag_error_is_swallowed(self):
         page = MagicMock()
-        page.evaluate.return_value = 2
+        page.evaluate.return_value = 1
         page.add_style_tag.side_effect = RuntimeError("boom")
 
-        assert _apply_image_zoom(page) == 0
+        assert _apply_page_zoom(page) == 0
 
-    def test_css_overrides_anti_flash_and_scales(self):
-        # Must use !important to beat the universal animation:none rule, and
-        # an element+class selector for higher specificity.
-        assert "!important" in ZOOM_IMAGE_CSS
-        assert "img.ss-zoom-target" in ZOOM_IMAGE_CSS
-        assert "scale(1)" in ZOOM_IMAGE_CSS
-        assert "scale(1.05)" in ZOOM_IMAGE_CSS
+    def test_css_zooms_whole_page_no_bounce(self):
+        # Must use !important to beat the universal animation:none rule, and the
+        # body.ss-page-zoom selector for higher specificity.
+        assert "!important" in ZOOM_PAGE_CSS
+        assert "body.ss-page-zoom" in ZOOM_PAGE_CSS
+        # Scales the whole page from 1 up to the configured peak.
+        assert "scale(1)" in ZOOM_PAGE_CSS
+        assert f"scale({PAGE_ZOOM_SCALE})" in ZOOM_PAGE_CSS
+        # Smooth single zoom-in that holds — no bounce/rebound.
+        assert "ease-in-out" in ZOOM_PAGE_CSS
+        assert "forwards" in ZOOM_PAGE_CSS
+        assert "alternate" not in ZOOM_PAGE_CSS
+
+    def test_js_anchors_origin_on_body(self):
+        # The page zoom transforms the body (whole viewport), not an isolated img.
+        assert "document.body" in _PAGE_ZOOM_JS
+        assert "transformOrigin" in _PAGE_ZOOM_JS
+        assert "ss-page-zoom" in _PAGE_ZOOM_JS
 
     def test_prepare_page_applies_zoom(self):
         page = MagicMock()
         page.evaluate.return_value = 1
         _prepare_page_for_recording(page)
-        # Both anti-flash CSS and zoom CSS injected
+        # Both anti-flash CSS and full-page zoom CSS injected
         injected = [
             c.kwargs.get("content", "") for c in page.add_style_tag.call_args_list
         ]
-        assert any("ss-image-zoom" in css for css in injected)
+        assert any("ss-page-zoom" in css for css in injected)
 
 
 # --- _extract_website_url / _navigate_to_website tests ---
