@@ -28,6 +28,9 @@ param podcasterApiKey string
 @description('Private blob container used for generated podcaster artifacts.')
 param storageContainerName string = 'podcaster-artifacts'
 
+@description('Private blob container used for video pipeline intermediates (segment recordings, normalized clips, composed video) for checkpoint/resume (#410).')
+param videoScratchContainerName string = 'video-scratch'
+
 @description('Blob prefixes (relative to the artifacts container) holding auto-generated outputs that are safe to auto-expire.')
 param autoExpireArtifactPrefixes array = [
   'jobs/'
@@ -38,6 +41,11 @@ param autoExpireArtifactPrefixes array = [
 @minValue(1)
 @maxValue(365)
 param artifactRetentionDays int = 7
+
+@description('Days after which video pipeline intermediates in the scratch container are auto-deleted (#410).')
+@minValue(1)
+@maxValue(365)
+param videoScratchRetentionDays int = 7
 
 @description('Optional object ID of the GitHub Actions deployment service principal. When provided, it receives Storage Blob Data Contributor on the storage account for OIDC uploads.')
 param deploymentPrincipalObjectId string = ''
@@ -232,6 +240,18 @@ resource artifactContainer 'Microsoft.Storage/storageAccounts/blobServices/conta
   }
 }
 
+// Scratch container for video pipeline intermediates (#410): segment recordings,
+// normalized clips, and the composed video are checkpointed here under
+// video-jobs/{job-id}/intermediates/ so a crashed job can resume and local disk
+// only holds the file currently being processed. Auto-expired after 7 days.
+resource videoScratchContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: videoScratchContainerName
+  parent: blobService
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
 resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
   name: 'default'
   parent: storage
@@ -258,11 +278,37 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
             }
           }
         }
+        {
+          // Auto-delete video pipeline intermediates after 7 days (#410). The job
+          // deletes its own scratch blobs on successful publish; this policy is the
+          // safety net for interrupted/abandoned jobs so scratch never accumulates.
+          name: 'expire-video-scratch'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              blobTypes: [
+                'blockBlob'
+              ]
+              prefixMatch: [
+                '${videoScratchContainerName}/video-jobs/'
+              ]
+            }
+            actions: {
+              baseBlob: {
+                delete: {
+                  daysAfterModificationGreaterThan: videoScratchRetentionDays
+                }
+              }
+            }
+          }
+        }
       ]
     }
   }
   dependsOn: [
     artifactContainer
+    videoScratchContainer
   ]
 }
 
@@ -348,6 +394,7 @@ module acaVideo 'modules/aca-video.bicep' = {
     storageAccountName: storage.name
     videoQueueName: aca.outputs.videoQueueName
     storageContainerName: storageContainerName
+    videoScratchContainerName: videoScratchContainerName
     videoImage: synthesisImage
     containerRegistryServer: acrLoginServer
     openAiEndpoint: openAiEndpoint
@@ -358,6 +405,7 @@ module acaVideo 'modules/aca-video.bicep' = {
   }
   dependsOn: [
     artifactContainer
+    videoScratchContainer
   ]
 }
 
@@ -447,6 +495,7 @@ module acr 'modules/acr.bicep' = if (deployAcr) {
 
 output storageAccountName string = storage.name
 output storageContainerName string = storageContainerName
+output videoScratchContainerName string = videoScratchContainerName
 output artifactRetentionDays int = artifactRetentionDays
 output openAiEndpoint string = openAiEndpoint
 output openAiAccountName string = openAiAccountName

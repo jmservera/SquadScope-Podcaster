@@ -20,10 +20,11 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Sequence
+from typing import TYPE_CHECKING, Callable, Protocol, Sequence
 
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
-from podcaster.video.video_gen import RecordedSegment
+from podcaster.video.video_gen import RecordedSegment, _recording_blob_name
+from podcaster.video.intermediates import ensure_disk_budget
 
 if TYPE_CHECKING:
     from podcaster.storage import StorageBackend
@@ -1439,6 +1440,9 @@ def _compose_pairwise(
     compose_target: Path,
     run: "CommandRunner",
     work_dir: Path,
+    *,
+    fetch: "Callable[[Path], None] | None" = None,
+    release: "Callable[[Path], None] | None" = None,
 ) -> None:
     """Composite normalized segments pairwise into *compose_target* (video-only).
 
@@ -1448,11 +1452,27 @@ def _compose_pairwise(
     DOG overlay pass when a logo is present, otherwise the last xfade pass)
     uses :data:`ENCODE_PRESET`.  Intermediate files are deleted as soon as they
     are consumed to keep disk usage bounded.
+
+    ``fetch``/``release`` (issue #410): when supplied, each input clip is fetched
+    just-in-time before it is consumed and released immediately afterwards, so a
+    blob-checkpointed run never holds more than the accumulator, the current
+    input, and the current output on local disk.  When omitted both default to
+    no-ops and the clips are expected to already be local.
     """
+    _fetch = fetch or (lambda _p: None)
+    _release = release or (lambda _p: None)
+
+    def _budget(*paths: Path) -> None:
+        sizes = [p.stat().st_size for p in paths if p.exists()]
+        total = sum(sizes)
+        # input footprint + an xfade output of roughly the inputs' combined size.
+        ensure_disk_budget(work_dir, total * 2)
+
     n = len(normalized_paths)
     has_dog = dog_logo is not None and dog_logo_path is not None
 
     if n == 1:
+        _fetch(normalized_paths[0])
         final_lts = (
             [lower_thirds_by_index[0]] if 0 in lower_thirds_by_index else []
         )
@@ -1467,13 +1487,18 @@ def _compose_pairwise(
                 ENCODE_PRESET,
             )
         )
+        _release(normalized_paths[0])
         return
 
     pair_dir = work_dir / "pairwise"
     pair_dir.mkdir(parents=True, exist_ok=True)
 
     accumulator = normalized_paths[0]
+    _fetch(accumulator)
     accumulator_is_intermediate = False
+    # When True the accumulator is the (fetched) normalized clip at index 0 and
+    # must be released — not unlinked as a pairwise intermediate — once consumed.
+    accumulator_is_input = True
     # Length of the accumulated video so far (segments 0..i-1 with overlaps).
     cumulative = durations[0]
 
@@ -1496,6 +1521,8 @@ def _compose_pairwise(
             out_path = pair_dir / f"acc_{i:03d}.mp4"
             preset = "ultrafast"
 
+        _fetch(normalized_paths[i])
+        _budget(accumulator, normalized_paths[i])
         run(
             _build_xfade_step_cmd(
                 accumulator,
@@ -1510,10 +1537,15 @@ def _compose_pairwise(
             )
         )
 
+        # Free the just-consumed input clip and the previous accumulator.
+        _release(normalized_paths[i])
         if accumulator_is_intermediate:
             accumulator.unlink(missing_ok=True)
+        elif accumulator_is_input:
+            _release(accumulator)
         accumulator = out_path
         accumulator_is_intermediate = out_path != compose_target
+        accumulator_is_input = False
         cumulative += durations[i] - transition_duration
 
     if has_dog:
@@ -1609,6 +1641,62 @@ def _splice_section_cards(
     return new_paths, new_durs, new_trans, new_lts
 
 
+def _finalize_output(
+    *,
+    video_only_path: Path,
+    video_duration: float,
+    audio_path: Path | None,
+    output_path: Path,
+    segment_count: int,
+    run: "CommandRunner",
+) -> ComposeResult:
+    """Mux the podcast audio (if any) over the composed video and finalise.
+
+    Shared by the normal compose path and the checkpoint-resume path (issue
+    #410): given a finished video-only clip and the podcast MP3, this is the only
+    work the *final mux* needs — it downloads/uses just the composed video plus
+    the audio, never the per-segment intermediates.
+    """
+    needs_audio = audio_path is not None
+    if needs_audio:
+        muxed_target = output_path.parent / "muxed.mp4"
+        _, audio_duration = _probe_media(audio_path, run)
+        _, probed_video_duration = _probe_media(video_only_path, run)
+        effective_video_duration = probed_video_duration or video_duration
+        run(_build_audio_overlay_cmd(
+            video_only_path,
+            audio_path,
+            muxed_target,
+            video_duration=effective_video_duration,
+            audio_duration=audio_duration,
+        ))
+        pre_final_path = muxed_target
+        # Audio is never truncated and is padded to at least the video length,
+        # so the muxed output runs for the longer stream.
+        total_duration = (
+            max(effective_video_duration, audio_duration)
+            if audio_duration > 0
+            else effective_video_duration
+        )
+    else:
+        pre_final_path = video_only_path
+        total_duration = video_duration
+
+    # Final post-processing: normalise H.264 colour metadata (stream copy).
+    run(_build_h264_metadata_cmd(pre_final_path, output_path))
+
+    return ComposeResult(
+        output_path=output_path,
+        duration_seconds=total_duration,
+        segment_count=segment_count,
+        has_audio=audio_path is not None,
+    )
+
+
+# Blob checkpoint name for the finished video-only composed clip (issue #410).
+COMPOSED_VIDEO_CHECKPOINT = "composed_video.mp4"
+
+
 def compose_video(
     segments: list[RecordedSegment],
     audio_path: Path | None = None,
@@ -1623,6 +1711,7 @@ def compose_video(
     dog_logo_cache_dir: Path | None = None,
     audio_duration: float | None = None,
     section_cards: "list[SectionCardInsert] | None" = None,
+    intermediates=None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -1715,8 +1804,29 @@ def compose_video(
     # output_path: the pipeline always ends with the h264_metadata BSF pass
     # (issue #353), which requires a distinct input and output file.
     has_bookends = intro_path is not None or outro_path is not None
-    needs_audio = audio_path is not None
     compose_target = output_path.parent / "content.mp4"
+
+    # Checkpoint/resume (issue #410): when the finished video-only composed clip
+    # already survived in blob from a previous (interrupted) run, skip the whole
+    # record→normalize→compose→join pipeline and go straight to the final mux,
+    # which needs only the composed video plus the podcast audio.
+    _intermediates_enabled = intermediates is not None and getattr(intermediates, "enabled", False)
+    if _intermediates_enabled and intermediates.exists(COMPOSED_VIDEO_CHECKPOINT):
+        resumed_video = output_path.parent / COMPOSED_VIDEO_CHECKPOINT
+        if intermediates.download(COMPOSED_VIDEO_CHECKPOINT, resumed_video):
+            _, resumed_duration = _probe_media(resumed_video, run)
+            logger.info(
+                "Resumed composed video from blob checkpoint (%.1fs); skipping to final mux",
+                resumed_duration,
+            )
+            return _finalize_output(
+                video_only_path=resumed_video,
+                video_duration=resumed_duration,
+                audio_path=audio_path,
+                output_path=output_path,
+                segment_count=len(segments),
+                run=run,
+            )
 
     # Fit-to-window planning (issue #355): when the audio duration is known we
     # trim/freeze the content so it fills exactly the audio timeline minus the
@@ -1758,32 +1868,89 @@ def compose_video(
     norm_dir.mkdir(parents=True, exist_ok=True)
 
     normalized_paths = [norm_dir / f"seg_{i:03d}.mp4" for i in range(len(segments))]
-    norm_cmds: list[list[str]] = []
-    for i, rec in enumerate(segments):
-        if fit_durations is not None:
-            norm_cmds.append(
-                _build_fit_segment_cmd(rec.video_path, normalized_paths[i], fit_durations[i])
-            )
-            logger.info(
-                "Fitting segment %d to %.1fs: %s",
-                i, fit_durations[i], rec.video_path.name,
-            )
-        else:
-            norm_cmds.append(_build_normalize_cmd(rec.video_path, normalized_paths[i]))
-            logger.info("Normalizing segment %d: %s", i, rec.video_path.name)
+    # Map each per-segment normalized clip to its blob checkpoint name so the
+    # pairwise compose can fetch it just-in-time and release it immediately after
+    # use (issue #410), keeping only the clip currently being composed on disk.
+    blob_name_by_path: dict[Path, str] = {
+        normalized_paths[i]: f"normalized_{i:03d}.mp4" for i in range(len(segments))
+    }
 
-    workers = min(NORMALIZE_WORKERS, len(norm_cmds))
+    # Per-segment normalize tasks.  In the blob-checkpoint path each task resolves
+    # its raw recording (downloading it from blob on demand), normalizes it,
+    # uploads the size-verified normalized clip, and then deletes *both* local
+    # files — so the parallel normalize phase only ever holds a bounded number of
+    # clips on disk (one raw + one normalized per worker) instead of every
+    # segment at once (issue #410).  When checkpointing is disabled the legacy
+    # all-local behaviour is preserved.
+    norm_tasks: list = []
+    for i, rec in enumerate(segments):
+        norm_tasks.append((i, rec, normalized_paths[i]))
+
+    def _normalize_one(task) -> None:
+        idx, rec, dest = task
+        name = f"normalized_{idx:03d}.mp4"
+        # Already checkpointed: skip recompute.  In the enabled path we do NOT
+        # download it here — the pairwise compose fetches it just-in-time so all
+        # normalized clips never coexist on local disk.
+        if _intermediates_enabled and intermediates.exists(name):
+            logger.info("Resumed normalized segment %d from blob checkpoint", idx)
+            return
+
+        input_path = rec.video_path
+        if _intermediates_enabled and not input_path.exists():
+            # The raw recording was uploaded then freed by record_episode; pull it
+            # back transiently to normalize it.
+            suffix = rec.video_path.suffix or ".webm"
+            raw_dest = norm_dir / f"_raw_{idx:03d}{suffix}"
+            if intermediates.download(_recording_blob_name(idx, suffix), raw_dest):
+                input_path = raw_dest
+
+        if fit_durations is not None:
+            cmd = _build_fit_segment_cmd(input_path, dest, fit_durations[idx])
+            logger.info("Fitting segment %d to %.1fs: %s", idx, fit_durations[idx], input_path.name)
+        else:
+            cmd = _build_normalize_cmd(input_path, dest)
+            logger.info("Normalizing segment %d: %s", idx, input_path.name)
+
+        if _intermediates_enabled and input_path.exists():
+            # input + an estimated same-order normalized output.
+            in_size = input_path.stat().st_size
+            ensure_disk_budget(norm_dir, in_size * 2)
+
+        try:
+            run(cmd)
+            if _intermediates_enabled:
+                # Size-verified upload; only free the local normalized clip when
+                # the checkpoint is confirmed (otherwise keep it on disk so the
+                # pairwise compose can still consume it directly — a failed
+                # checkpoint must not become a hard compose failure).
+                if intermediates.upload(name, dest, "video/mp4"):
+                    try:
+                        dest.unlink(missing_ok=True)
+                    except OSError:
+                        logger.debug("could not free normalized clip %s", dest, exc_info=True)
+        finally:
+            # The raw recording is no longer needed once the normalized clip
+            # exists; free it (whether we downloaded it here or it was a resumed
+            # local) so recordings never accumulate through the compose phase.
+            if _intermediates_enabled:
+                try:
+                    input_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.debug("could not free raw recording %s", input_path, exc_info=True)
+
+    workers = min(NORMALIZE_WORKERS, len(norm_tasks))
     if workers > 1:
         logger.info(
             "Normalizing %d segment(s) with %d parallel workers",
-            len(norm_cmds), workers,
+            len(norm_tasks), workers,
         )
         with ThreadPoolExecutor(max_workers=workers) as pool:
             # Consume the iterator so any ffmpeg failure is re-raised here.
-            list(pool.map(run, norm_cmds))
+            list(pool.map(_normalize_one, norm_tasks))
     else:
-        for cmd in norm_cmds:
-            run(cmd)
+        for task in norm_tasks:
+            _normalize_one(task)
 
     # Step 2: Plan transitions and lower-thirds for pairwise composition.
     # When fitting, the segment durations on screen are the fitted targets, not
@@ -1855,6 +2022,28 @@ def compose_video(
     # Step 4: Composite the (video-only) content pairwise — each pass uses
     # exactly two video inputs so memory stays constant regardless of segment
     # count (replaces the old N-input filter_complex that OOMed at ~18 segments).
+    #
+    # In the blob-checkpoint path the per-segment normalized clips were uploaded
+    # and freed during normalize, so the pairwise pass fetches each one back
+    # just-in-time and releases it immediately after the xfade step consumes it
+    # (issue #410).  This keeps disk to ~(accumulator + one input + one output)
+    # instead of all normalized clips at once.
+    def _fetch_clip(path: Path) -> None:
+        if path.exists():
+            return
+        if _intermediates_enabled and path in blob_name_by_path:
+            if not intermediates.download(blob_name_by_path[path], path):
+                raise RuntimeError(f"could not fetch normalized clip checkpoint for {path.name}")
+
+    def _release_clip(path: Path) -> None:
+        # Only reclaim per-segment normalized clips in the enabled path; the
+        # legacy path keeps them for _free_compose_intermediates to remove later.
+        if _intermediates_enabled and path in blob_name_by_path:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("could not release normalized clip %s", path, exc_info=True)
+
     logger.info("Composing %d clips into %s", len(normalized_paths), compose_target)
     _compose_pairwise(
         normalized_paths,
@@ -1868,6 +2057,8 @@ def compose_video(
         compose_target,
         run,
         output_path.parent,
+        fetch=_fetch_clip,
+        release=_release_clip,
     )
     # Content video duration (accounting for transition overlaps).
     video_duration = sum(durations) - transition_duration * max(0, len(normalized_paths) - 1)
@@ -1899,41 +2090,22 @@ def compose_video(
     else:
         video_only_path = compose_target
 
+    # Checkpoint the finished video-only composed clip (issue #410) so a crash
+    # during the final audio mux can resume straight from here next time.
+    if _intermediates_enabled:
+        intermediates.upload(COMPOSED_VIDEO_CHECKPOINT, video_only_path, "video/mp4")
+        intermediates.mark("composed_video", duration_seconds=round(video_duration, 3))
+
     # Overlay the podcast MP3 as the sole audio track on the full video, then
     # always run a final h264_metadata BSF pass into output_path so the colour
     # VUI is consistent for Spotify (issue #353).
-    if needs_audio:
-        muxed_target = output_path.parent / "muxed.mp4"
-        _, audio_duration = _probe_media(audio_path, run)
-        _, probed_video_duration = _probe_media(video_only_path, run)
-        effective_video_duration = probed_video_duration or video_duration
-        run(_build_audio_overlay_cmd(
-            video_only_path,
-            audio_path,
-            muxed_target,
-            video_duration=effective_video_duration,
-            audio_duration=audio_duration,
-        ))
-        pre_final_path = muxed_target
-        # Audio is never truncated and is padded to at least the video length,
-        # so the muxed output runs for the longer stream.
-        total_duration = (
-            max(effective_video_duration, audio_duration)
-            if audio_duration > 0
-            else effective_video_duration
-        )
-    else:
-        pre_final_path = video_only_path
-        total_duration = video_duration
-
-    # Final post-processing: normalise H.264 colour metadata (stream copy).
-    run(_build_h264_metadata_cmd(pre_final_path, output_path))
-
-    return ComposeResult(
+    return _finalize_output(
+        video_only_path=video_only_path,
+        video_duration=video_duration,
+        audio_path=audio_path,
         output_path=output_path,
-        duration_seconds=total_duration,
         segment_count=len(segments),
-        has_audio=audio_path is not None,
+        run=run,
     )
 
 

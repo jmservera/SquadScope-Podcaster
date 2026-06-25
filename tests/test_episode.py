@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from podcaster import episode
 from podcaster.audio import MusicMixSpec
+from podcaster.config import BackchannelConfig
 from podcaster.generation import (
     AI_VOICE_DISCLOSURE,
     HOST_A_NAME,
@@ -137,6 +139,34 @@ def test_parse_script_segments_alternates_and_skips_header():
     assert all(role in {"host_a", "host_b"} for role, _ in segments)
     # Header metadata (Title:, Source URL:) must never become a spoken segment.
     assert all("Source URL" not in text for _, text in segments)
+
+
+def test_parse_script_segments_strips_section_headers():
+    """``## Section:`` headers (#417) are non-spoken and must never reach TTS."""
+    from podcaster.config import HostConfig, PodcastConfig
+    from podcaster.sections import match_section_header
+
+    config = PodcastConfig(
+        host_a=HostConfig(name="Theo", voice="fable", style=""),
+        host_b=HostConfig(name="Vera", voice="alloy", style=""),
+    )
+    script = (
+        "Title: X\n"
+        "Voices: Theo = fable; Vera = alloy\n"
+        "---\n\n"
+        "Theo: Welcome to the show today everyone.\n"
+        "## Section: AI Frameworks Showdown\n"
+        "Vera: First up, frameworks fought hard this week.\n"
+    )
+    segments = episode.parse_script_segments(script, config)
+    assert [r for r, _ in segments] == ["host_a", "host_b"]
+    # The non-spoken header marker and its title text must not leak into TTS.
+    # (Assert on the section-header marker/title specifically rather than the
+    # bare word "Section" or a stray "##", which can legitimately appear in
+    # spoken dialogue, e.g. a host reading markdown.)
+    assert all("## Section:" not in text for _, text in segments)
+    assert all("AI Frameworks Showdown" not in text for _, text in segments)
+    assert all(match_section_header(text) is None for _, text in segments)
 
 
 def test_operator_review_decision_allows_review_only_when_configured():
@@ -361,6 +391,152 @@ def test_synthesize_episode_reuses_rendered_segment_durations_for_timestamps(tmp
         "Outro",
     ]
     assert [timestamp.start_seconds for timestamp in result.timestamps] == pytest.approx([0.0, 5.4, 9.45, 13.5])
+
+
+def test_synthesize_episode_wires_enabled_backchannels_to_render(tmp_path, monkeypatch):
+    script = "\n".join(
+        [
+            "Title: Test",
+            "Voices: Alex=fable; Blake=alloy",
+            "---",
+            "Alex: We kept building things, and the result felt natural.",
+            "Blake: The whole demo landed nicely, and everyone understood it.",
+        ]
+    )
+    config = _production_config()
+    decision = episode.operator_review_decision(config)
+    output_path = tmp_path / "episode.mp3"
+    render_kwargs: dict[str, object] = {}
+    requested_inputs: list[str] = []
+    ffprobe_calls = 0
+
+    def fake_transport(request):
+        import json
+
+        payload = json.loads(request.data.decode("utf-8"))
+        requested_inputs.append(payload["input"])
+        return b"fake-wav-segment-bytes"
+
+    def fake_runner(command):
+        nonlocal ffprobe_calls
+        if command[0] == "ffprobe":
+            ffprobe_calls += 1
+            return subprocess.CompletedProcess(command, 0, stdout="20.0\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
+        render_kwargs.update(kwargs)
+        Path(wav_out).write_bytes(b"RIFFfake-wav")
+        Path(out).write_bytes(b"stitched-mp3")
+        kwargs["segment_durations_out"].extend([20.0] * len(segments))
+        return Path(wav_out), Path(out)
+
+    def fake_probe(path, sha256, runner=None):
+        from podcaster.audio import AudioMetadata
+
+        return AudioMetadata(
+            duration_seconds=300.0,
+            loudness_lufs=-16.0,
+            sample_rate_hz=44100,
+            bitrate_bps=192000,
+            channels=1,
+            content_type="audio/mpeg",
+            byte_length=Path(path).stat().st_size,
+            sha256=sha256,
+        )
+
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
+    monkeypatch.setattr(episode, "probe_audio", fake_probe)
+
+    episode.synthesize_episode(
+        script,
+        config,
+        decision,
+        output_path,
+        token_provider=lambda scope: "token",
+        transport=fake_transport,
+        runner=fake_runner,
+        backchannel_config=BackchannelConfig(enabled=True, min_gap_seconds=1, max_gap_seconds=1),
+    )
+
+    backchannels = render_kwargs["backchannels"]
+    assert backchannels
+    assert render_kwargs["precomputed_segment_durations"] == [20.0, 20.0]
+    assert ffprobe_calls == 2
+    assert "right" in requested_inputs
+
+
+@pytest.mark.parametrize("backchannel_config", [None, BackchannelConfig()])
+def test_synthesize_episode_skips_backchannels_when_disabled(tmp_path, monkeypatch, backchannel_config):
+    """Disabled-by-default contract: no extra probe pass and no overlays."""
+
+    script = "\n".join(
+        [
+            "Title: Test",
+            "Voices: Alex=fable; Blake=alloy",
+            "---",
+            "Alex: We kept building things, and the result felt natural.",
+            "Blake: The whole demo landed nicely, and everyone understood it.",
+        ]
+    )
+    config = _production_config()
+    decision = episode.operator_review_decision(config)
+    output_path = tmp_path / "episode.mp3"
+    render_kwargs: dict[str, object] = {}
+    ffprobe_calls = 0
+
+    def fake_transport(request):
+        return b"fake-wav-segment-bytes"
+
+    def fake_runner(command):
+        nonlocal ffprobe_calls
+        if command[0] == "ffprobe":
+            ffprobe_calls += 1
+            return subprocess.CompletedProcess(command, 0, stdout="20.0\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
+        render_kwargs.update(kwargs)
+        Path(wav_out).write_bytes(b"RIFFfake-wav")
+        Path(out).write_bytes(b"stitched-mp3")
+        kwargs["segment_durations_out"].extend([20.0] * len(segments))
+        return Path(wav_out), Path(out)
+
+    def fake_probe(path, sha256, runner=None):
+        from podcaster.audio import AudioMetadata
+
+        return AudioMetadata(
+            duration_seconds=300.0,
+            loudness_lufs=-16.0,
+            sample_rate_hz=44100,
+            bitrate_bps=192000,
+            channels=1,
+            content_type="audio/mpeg",
+            byte_length=Path(path).stat().st_size,
+            sha256=sha256,
+        )
+
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
+    monkeypatch.setattr(episode, "probe_audio", fake_probe)
+
+    episode.synthesize_episode(
+        script,
+        config,
+        decision,
+        output_path,
+        token_provider=lambda scope: "token",
+        transport=fake_transport,
+        runner=fake_runner,
+        backchannel_config=backchannel_config,
+    )
+
+    # Disabled path must not run the dedicated duration-probe pass and must not
+    # hand any backchannel overlays to the renderer.
+    assert ffprobe_calls == 0
+    assert render_kwargs["backchannels"] is None
+    assert render_kwargs["precomputed_segment_durations"] is None
+    # No leftover scratch directory from the backchannel branch.
+    assert not list(output_path.parent.glob(".backchannels-*"))
 
 
 def test_hosts_do_not_self_label_their_personality():

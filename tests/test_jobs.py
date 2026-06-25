@@ -129,6 +129,30 @@ def test_dry_run_preserves_response_shape_and_review_metadata() -> None:
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
+def test_backchannels_payload_is_threaded_into_request_manifest() -> None:
+    """Phase B wiring: a top-level ``backchannels`` payload reaches the request manifest."""
+
+    artifact_root = Path(".test-artifacts-backchannels")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+    backchannels = {"enabled": True, "min_gap_seconds": 30, "max_gap_seconds": 40}
+
+    with_bc = run_generation_job(
+        {"week": "2026-W23", "article_url": "https://example.com/article", "dry_run": True, "backchannels": backchannels},
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+    assert with_bc.manifest["request"]["backchannels"] == backchannels
+
+    without_bc = run_generation_job(
+        {"week": "2026-W23", "article_url": "https://example.com/article", "dry_run": True},
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+    assert "backchannels" not in without_bc.manifest["request"]
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
 def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
     artifact_root = Path(".test-artifacts-packet")
     shutil.rmtree(artifact_root, ignore_errors=True)
@@ -723,7 +747,20 @@ def test_llm_script_generation_replaces_placeholder_when_article_content_provide
     monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "managed_identity")
 
     # Mock the managed identity token and HTTP transport
-    fake_dialogue = "Theo: Welcome to Claracle! Let's dive into AI.\nVera: Both hosts on this show are AI-generated synthetic voices, not human presenters. Let's go."
+    fake_dialogue = (
+        "Theo: Welcome to Claracle! Let's dive into AI.\n"
+        "Vera: Both hosts on this show are AI-generated synthetic voices, not human presenters. Let's go.\n"
+        "## Section: AI Frameworks Showdown\n"
+        "Theo: First up, frameworks fought hard for the spotlight this week here.\n"
+        "Vera: The contrast in developer experience was genuinely striking to me.\n"
+        "Theo: Their different philosophies made the article especially interesting today.\n"
+        "Vera: Exactly, and community response tells a useful story this week.\n"
+        "## Section: Agents Move Into Production\n"
+        "Theo: Agents are finally shipping into real production workflows now.\n"
+        "Vera: Teams have moved well past demos into measurable developer impact.\n"
+        "Theo: The reliability improvements over the quarter are remarkable to watch.\n"
+        "Vera: It is a genuine shift in how software teams build together.\n"
+    )
 
     def fake_transport(request: Request) -> bytes:
         return _json.dumps({"choices": [{"message": {"content": fake_dialogue}}]}).encode()
@@ -757,7 +794,17 @@ def test_llm_script_generation_replaces_placeholder_when_article_content_provide
     script_content = script_file.read_text()
     assert "Theo: Welcome to Claracle!" in script_content
     assert "AI-generated synthetic voices" in script_content
+    assert "## Section: AI Frameworks Showdown" in script_content
     assert "---" in script_content  # Header separator present
+
+    sections_file = artifact_root / "jobs" / job_id / "sections.json"
+    sections_doc = json.loads(sections_file.read_text(encoding="utf-8"))
+    assert [s["title"] for s in sections_doc["sections"]] == [
+        "AI Frameworks Showdown",
+        "Agents Move Into Production",
+    ]
+    assert sections_doc["sections"][0]["title_card"]["duration_seconds"] == 0.75
+    assert f"jobs/{job_id}/sections.json" in result.manifest["artifacts"]
 
     shutil.rmtree(artifact_root, ignore_errors=True)
 

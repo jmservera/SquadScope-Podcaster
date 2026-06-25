@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from podcaster.audio import MusicMixSpec
-from podcaster.config import MusicMixConfig, PodcastConfig, SpotifyPublishConfig
+from podcaster.config import BackchannelConfig, MusicMixConfig, PodcastConfig, SpotifyPublishConfig
 from podcaster.failure_reporting import report_failure
 from podcaster.pipeline_lock import PIPELINE_AUDIO, claim_pipeline
 from podcaster.episode import (
@@ -225,6 +225,7 @@ def run_synthesis(
     music_mix_config = _request_music_mix(manifest)
     mix_spec = _build_mix_spec(music_mix_config)
     intro_music, outro_music = _resolve_music_paths(music_mix_config)
+    backchannel_config = _request_backchannels(manifest)
     if mix_spec and not intro_music:
         logger.warning(
             "music_mix_config specifies track=%r but music file not found at expected path; "
@@ -248,6 +249,7 @@ def run_synthesis(
                 intro_music=intro_music,
                 outro_music=outro_music,
                 music_mix_spec=mix_spec,
+                backchannel_config=backchannel_config,
             )
             mp3_bytes = output_path.read_bytes()
             wav_bytes = episode_audio.wav_output_path.read_bytes()
@@ -420,6 +422,15 @@ def _request_music_mix(manifest: dict[str, Any]) -> MusicMixConfig:
     if not isinstance(request, dict):
         return MusicMixConfig()
     return MusicMixConfig.from_payload(request)
+
+
+def _request_backchannels(manifest: dict[str, Any]) -> BackchannelConfig:
+    """Extract the optional backchannel config from the manifest request."""
+
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return BackchannelConfig()
+    return BackchannelConfig.from_payload(request)
 
 
 def _request_spotify_publish(manifest: dict[str, Any]) -> dict[str, Any] | None:

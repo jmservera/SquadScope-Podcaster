@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -67,6 +67,25 @@ HEIGHT = 1080
 # offset, producing smooth motion with crisp text (issue #359).
 SCROLL_TICKS_PER_SEC = 30
 MAX_SCROLL_VIEWPORT_MULTIPLIER = 2.5
+
+# Deterministic, frame-indexed scrolling (issue #413).
+#
+# Stepping/judder happens when the scroll distance covered by a single captured
+# frame is too large for the eye to read as continuous motion.  Two fixes:
+#   1. Absolute, frame-indexed positioning (``window.scrollTo`` to a precomputed
+#      integer Y per frame) instead of repeated fractional ``scrollBy`` calls,
+#      which the browser rounds every tick and which accumulate drift, producing
+#      uneven gaps between frames.
+#   2. Capping the per-frame scroll distance to a comfortable reading speed so
+#      short segments (or very long pages) don't fly past the content.  At 30fps
+#      6-10 px/frame (180-300 px/sec) reads as smooth and legible.
+# These are intentionally module constants so ``VIDEO_SCROLL_PX_PER_FRAME`` can
+# tune the reading speed without code changes (applied below, once ``_env_int``
+# is defined).
+READING_PX_PER_FRAME = 8
+# Hard cap on per-frame scroll distance for content reading; above ~10 px/frame
+# at 30fps text starts to look steppy (issue #413).
+MAX_READING_PX_PER_FRAME = 10
 
 # Chromium flags that keep the compositor and timers running at full rate while
 # headless.  Without these, Chromium throttles background/occluded renderers and
@@ -145,6 +164,14 @@ SCREENSHOT_CAPTURE_ENABLED = _env_bool("VIDEO_SCREENSHOT_CAPTURE", True)
 # identical to the screencast behaviour (frames / fps == duration), since the
 # composed framerate equals the scroll tick rate.
 SCREENSHOT_CAPTURE_FPS = _env_int("VIDEO_SCREENSHOT_FPS", SCROLL_TICKS_PER_SEC)
+# Apply the optional reading-speed override now that _env_int is available
+# (issue #413).  Kept here so the constant is defined alongside its default.
+# Clamp to [1, MAX_READING_PX_PER_FRAME] so an env override can't produce
+# steppy/unreadable motion above the hard cap (issue #415).
+READING_PX_PER_FRAME = min(
+    MAX_READING_PX_PER_FRAME,
+    max(1, _env_int("VIDEO_SCROLL_PX_PER_FRAME", READING_PX_PER_FRAME)),
+)
 # A zero or negative framerate would break the frame-count math (division by
 # zero, negative tick intervals) and is meaningless for capture, so clamp to a
 # sane minimum of one frame per second.
@@ -633,6 +660,141 @@ class RecordingResult:
     output_dir: Path = field(default_factory=lambda: Path("."))
 
 
+# --- Per-segment checkpoint/resume (issue #410) -------------------------------
+#
+# When an IntermediateStore is supplied, each recorded segment is checkpointed to
+# blob (the recording file plus a small JSON sidecar carrying the recording-only
+# metadata).  On a restart the recording — by far the most expensive phase, since
+# it drives a headless browser through GitHub navigation — is skipped for any
+# segment whose checkpoint already survived in blob.
+
+
+def _recording_blob_name(index: int, suffix: str) -> str:
+    return f"recording_{index:03d}{suffix}"
+
+
+def _recording_meta_name(index: int) -> str:
+    return f"recording_{index:03d}.json"
+
+
+def _serialize_recording_meta(recorded: "RecordedSegment") -> str:
+    """Serialize the recording-only metadata of a RecordedSegment to JSON.
+
+    The ``segment`` (an immutable plan entry) is intentionally excluded: the plan
+    is regenerated deterministically from the script on resume, so only the
+    fields produced *during* recording need to survive in blob.
+    """
+    import json
+
+    return json.dumps(
+        {
+            "suffix": recorded.video_path.suffix,
+            "is_fallback": recorded.is_fallback,
+            "has_pages": recorded.has_pages,
+            "website_url": recorded.website_url,
+            "is_removed": recorded.is_removed,
+            "recovery_path": recorded.recovery_path,
+        }
+    )
+
+
+def _resume_recorded_segment(
+    index: int,
+    segment: "VideoSegment",
+    output_dir: Path,
+    intermediates,
+) -> "RecordedSegment | None":
+    """Rebuild a RecordedSegment from its blob checkpoint, or return None.
+
+    Returns ``None`` (so the caller records the segment normally) when the store
+    is disabled, the sidecar metadata is missing/corrupt, or the recording file
+    cannot be downloaded.
+    """
+    import json
+
+    if intermediates is None or not intermediates.enabled:
+        return None
+    meta_text = intermediates.read_text(_recording_meta_name(index))
+    if not meta_text:
+        return None
+    try:
+        meta = json.loads(meta_text)
+    except ValueError:
+        return None
+    if not isinstance(meta, dict):
+        return None
+    suffix = meta.get("suffix") or ".mp4"
+    blob_name = _recording_blob_name(index, suffix)
+    if not intermediates.exists(blob_name):
+        return None
+    dest = output_dir / blob_name
+    if not intermediates.download(blob_name, dest):
+        return None
+    return RecordedSegment(
+        segment=segment,
+        video_path=dest,
+        is_fallback=bool(meta.get("is_fallback", False)),
+        has_pages=bool(meta.get("has_pages", False)),
+        website_url=meta.get("website_url"),
+        is_removed=bool(meta.get("is_removed", False)),
+        recovery_path=str(meta.get("recovery_path", "direct")),
+    )
+
+
+def _validate_recording(path: Path) -> None:
+    """Best-effort ffprobe sanity check of a freshly-recorded segment.
+
+    Never raises: a probe failure (e.g. no system ffprobe, or a stub file in
+    tests) is logged and ignored so it cannot block the checkpoint upload.  The
+    authoritative integrity guarantee is the size-verified blob upload.
+    """
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            logger.warning("recorded segment is empty: %s", path)
+            return
+        subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            check=True, capture_output=True, timeout=30,
+        )
+    except Exception:  # noqa: BLE001 — validation is advisory only
+        logger.debug("ffprobe validation skipped/failed for %s", path, exc_info=True)
+
+
+def _checkpoint_recorded_segment(
+    index: int,
+    recorded: "RecordedSegment",
+    intermediates,
+) -> None:
+    """Checkpoint a freshly-recorded segment to blob, then free local disk.
+
+    Validates the recording (best-effort ffprobe), uploads it (+ a JSON sidecar
+    of recovery metadata) with the upload size-verified, and — only once the
+    blob checkpoint is confirmed — deletes the local recording so the job's
+    local disk holds at most the segment currently being recorded (issue #410).
+    The recording is re-fetched from blob on demand when composition normalizes
+    it.
+    """
+    if intermediates is None or not intermediates.enabled:
+        return
+    suffix = recorded.video_path.suffix or ".mp4"
+    content_type = "video/webm" if suffix == ".webm" else "video/mp4"
+    _validate_recording(recorded.video_path)
+    if intermediates.upload(
+        _recording_blob_name(index, suffix), recorded.video_path, content_type
+    ):
+        intermediates.write_text(
+            _recording_meta_name(index), _serialize_recording_meta(recorded)
+        )
+        intermediates.mark(f"recording_{index:03d}", recovery_path=recorded.recovery_path)
+        # Upload was size-verified above; the recording now lives safely in blob
+        # so drop the local copy to keep disk usage bounded.
+        try:
+            recorded.video_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not delete local recording %s", recorded.video_path, exc_info=True)
+
+
 def _check_gh_pages(owner: str, name: str, timeout: float = 5.0) -> bool:
     """Detect whether the repo has a GitHub Pages site via HEAD request."""
     url = f"https://{owner}.github.io/{name}/"
@@ -1023,39 +1185,126 @@ def _finalize_segment(
     return dest_path
 
 
-def _smooth_scroll(
-    page: Page,
-    duration_seconds: float,
-    capturer: "_Capturer | None" = None,
-) -> None:
-    """Auto-scroll the page smoothly over the given duration.
+def _ease_linear(t: float) -> float:
+    """Identity easing — constant scroll speed (issue #413)."""
+    return t
 
-    Scrolls at SCROLL_TICKS_PER_SEC, capping total scroll distance to
-    MAX_SCROLL_VIEWPORT_MULTIPLIER × viewport height.
 
-    When *capturer* is provided (screenshot/hyperframe mode, issue #387) a
-    lossless PNG screenshot is taken after each scroll tick instead of waiting
-    in real time.  The tick rate is then SCREENSHOT_CAPTURE_FPS — identical to
-    the composed framerate — so the number of frames equals
-    ``duration_seconds * SCREENSHOT_CAPTURE_FPS`` and the captured motion plays
-    back at exactly the segment duration regardless of any custom FPS override.
+def _ease_out_cubic(t: float) -> float:
+    """easeOutCubic — fast start, gentle deceleration (issue #413).
+
+    Used for quick transitions (e.g. jumping to a README) so the motion lands
+    softly instead of stopping abruptly.
     """
-    # In screenshot mode the capture rate must equal the composed framerate so
-    # frame_count / fps == duration; in screencast mode the scroll cadence is
-    # the historical SCROLL_TICKS_PER_SEC.
+    return 1.0 - (1.0 - t) ** 3
+
+
+_EASINGS: dict[str, Callable[[float], float]] = {
+    "linear": _ease_linear,
+    "ease_out_cubic": _ease_out_cubic,
+}
+
+
+def _scroll_positions(
+    start_y: float,
+    end_y: float,
+    total_frames: int,
+    easing: str = "linear",
+) -> "list[int]":
+    """Compute deterministic integer scroll Y positions, one per frame (#413).
+
+    Returns ``total_frames`` absolute Y offsets from *start_y* to *end_y*
+    following the named *easing* curve.  Positions are produced from a single
+    continuous parameter ``t in [0, 1]`` (not by accumulating per-frame deltas)
+    so there is no rounding drift between frames — the motion plays back as
+    butter-smooth, evenly spaced steps.  For ``total_frames >= 2`` the final
+    position is ``round(end_y)``; the degenerate ``total_frames == 1`` case
+    returns ``round(start_y)`` since a single frame cannot move.
+    """
+    if total_frames <= 0:
+        return []
+    if total_frames == 1:
+        return [int(round(start_y))]
+    fn = _EASINGS.get(easing, _ease_linear)
+    span = end_y - start_y
+    last = total_frames - 1
+    return [int(round(start_y + span * fn(i / last))) for i in range(total_frames)]
+
+
+def _scroll_frame_count(
+    duration_seconds: float, capturer: "_Capturer | None"
+) -> "tuple[int, int]":
+    """Return ``(total_frames, tick_rate)`` for a scroll of *duration_seconds*.
+
+    In screenshot mode the capture rate must equal the composed framerate so
+    ``frame_count / fps == duration`` (ceil, matching the composer); in
+    screencast mode the historical SCROLL_TICKS_PER_SEC floor is used so a
+    sub-tick duration simply waits without scrolling.
+    """
     tick_rate = (
         SCREENSHOT_CAPTURE_FPS if capturer is not None else SCROLL_TICKS_PER_SEC
     )
-    # In screenshot mode use ceil so the tick/frame count matches the expected
-    # frame count computed by _compose_screenshot_segment (also ceil); a floor
-    # here would under-count and force the composer to pad, risking a dropped
-    # fractional final frame.  Screencast mode keeps the historical floor so a
-    # duration shorter than one tick simply waits without scrolling.
-    total_ticks = (
+    total_frames = (
         math.ceil(duration_seconds * tick_rate)
         if capturer is not None
         else int(duration_seconds * tick_rate)
     )
+    return total_frames, tick_rate
+
+
+def _run_scroll_positions(
+    page: Page,
+    positions: "list[int]",
+    capturer: "_Capturer | None",
+    tick_interval_ms: int,
+) -> None:
+    """Drive the page through *positions* (absolute Y), one frame each (#413).
+
+    Screenshot mode captures a frame per position; screencast mode waits one
+    tick interval per position so the motion plays back in real time.
+    """
+    for y in positions:
+        page.evaluate(f"window.scrollTo(0, {y})")
+        if capturer is not None:
+            capturer.frame(page)
+        else:
+            page.wait_for_timeout(tick_interval_ms)
+
+
+def _smooth_scroll(
+    page: Page,
+    duration_seconds: float,
+    capturer: "_Capturer | None" = None,
+    *,
+    start_y: "float | None" = None,
+    end_y: "float | None" = None,
+    easing: str = "linear",
+    max_px_per_frame: int = READING_PX_PER_FRAME,
+) -> None:
+    """Deterministically scroll the page over the given duration (issue #413).
+
+    Motion is driven by precomputed, frame-indexed absolute positions
+    (``window.scrollTo``) instead of repeated fractional ``scrollBy`` calls, so
+    every frame lands on an exact Y with no rounding drift — the playback reads
+    as smooth, evenly spaced steps rather than visible jumps.
+
+    By default the scroll distance is derived from the page height (capped to
+    MAX_SCROLL_VIEWPORT_MULTIPLIER × viewport) and further clamped to a
+    comfortable reading speed of *max_px_per_frame* per frame (default
+    READING_PX_PER_FRAME, tunable via the VIDEO_SCROLL_PX_PER_FRAME env var and
+    hard-capped at MAX_READING_PX_PER_FRAME) so short segments or very long
+    pages don't fly past the content.  The derived path always uses linear
+    spacing so each per-frame delta stays at or below the cap regardless of the
+    *easing* argument.  Callers that need an explicit range (e.g. the
+    README-first flow, issue #415) pass *start_y* / *end_y* and an *easing*
+    curve directly, bypassing the reading-speed cap.
+
+    When *capturer* is provided (screenshot/hyperframe mode, issue #387) a
+    lossless PNG screenshot is taken per frame instead of waiting in real time;
+    the frame count equals ``duration_seconds * SCREENSHOT_CAPTURE_FPS`` so the
+    captured motion plays back at exactly the segment duration.
+    """
+    total_ticks, tick_rate = _scroll_frame_count(duration_seconds, capturer)
     if total_ticks <= 0:
         # Duration is positive but too short for a full tick.
         if capturer is not None:
@@ -1066,33 +1315,43 @@ def _smooth_scroll(
         return
 
     tick_interval_ms = int(1000 / tick_rate)
-
     viewport_height = page.viewport_size["height"] if page.viewport_size else HEIGHT
-    max_scroll = int(viewport_height * MAX_SCROLL_VIEWPORT_MULTIPLIER)
 
-    # Get the actual scrollable height
-    scroll_height = page.evaluate("document.documentElement.scrollHeight")
-    page_scroll_distance = max(0, scroll_height - viewport_height)
-    effective_scroll = min(page_scroll_distance, max_scroll)
+    scroll_easing = easing
+    if end_y is not None:
+        # Explicit range requested by the caller (issue #415); no reading cap.
+        s_y = float(start_y or 0)
+        e_y = float(end_y)
+    else:
+        # Derive the scroll distance from the page, capped to a reasonable span
+        # and then to a comfortable reading speed (issue #413).  Use the
+        # configurable READING_PX_PER_FRAME default (hard-capped at
+        # MAX_READING_PX_PER_FRAME) and force linear spacing so every per-frame
+        # delta stays at or below the cap — a non-linear easing would otherwise
+        # let early-frame deltas exceed it even when the total span is bounded.
+        per_frame_cap = min(max(1, max_px_per_frame), MAX_READING_PX_PER_FRAME)
+        scroll_easing = "linear"
+        max_scroll = int(viewport_height * MAX_SCROLL_VIEWPORT_MULTIPLIER)
+        scroll_height = page.evaluate("document.documentElement.scrollHeight")
+        page_scroll_distance = max(0, scroll_height - viewport_height)
+        effective_scroll = min(page_scroll_distance, max_scroll)
+        reading_cap = max(total_ticks - 1, 1) * per_frame_cap
+        s_y = float(start_y or 0)
+        e_y = s_y + float(min(effective_scroll, reading_cap))
 
-    if effective_scroll <= 0:
-        # Page is not scrollable.  In screenshot mode we still capture a full
-        # run of (identical) frames so the segment keeps its intended duration;
-        # in screencast mode we simply wait it out.
+    if e_y <= s_y:
+        # Nothing to scroll.  In screenshot mode we still capture a full run of
+        # (identical) frames so the segment keeps its intended duration; in
+        # screencast mode we simply wait it out.
         if capturer is None:
             page.wait_for_timeout(int(duration_seconds * 1000))
             return
-        scroll_per_tick = 0.0
-    else:
-        scroll_per_tick = effective_scroll / total_ticks
-
-    for _ in range(total_ticks):
-        if scroll_per_tick:
-            page.evaluate(f"window.scrollBy(0, {scroll_per_tick})")
-        if capturer is not None:
+        for _ in range(total_ticks):
             capturer.frame(page)
-        else:
-            page.wait_for_timeout(tick_interval_ms)
+        return
+
+    positions = _scroll_positions(s_y, e_y, total_ticks, scroll_easing)
+    _run_scroll_positions(page, positions, capturer, tick_interval_ms)
 
     if capturer is not None:
         # Frame count (total_ticks) already encodes the duration at the
@@ -1103,6 +1362,195 @@ def _smooth_scroll(
     elapsed_ms = total_ticks * tick_interval_ms
     requested_ms = int(duration_seconds * 1000)
     remainder_ms = requested_ms - elapsed_ms
+    if remainder_ms > 0:
+        page.wait_for_timeout(remainder_ms)
+
+
+# --- README-first scroll for GitHub repos (issue #415) ---
+#
+# GitHub repo pages render the file tree above the README, so a plain top-to-
+# bottom scroll wastes screen time crawling through file names before reaching
+# the content viewers actually care about.  Instead we: briefly hold on the repo
+# header, do a quick eased jump down to the README, then scroll the README at
+# reading speed.  All staging is best-effort — any detection failure falls back
+# to the normal deterministic scroll so the pipeline never breaks (#415).
+
+# Header hold / jump budgets, expressed in *seconds* so the staged durations
+# stay constant regardless of the active capture rate (VIDEO_SCREENSHOT_FPS).
+# They are converted to frame counts at the live tick rate in
+# ``_scroll_github_readme``.
+GITHUB_HEADER_HOLD_SECONDS = 2.0  # issue range 1.5-2.5s
+GITHUB_JUMP_SECONDS = 0.6  # eased transition, issue range 0.5-0.9s
+# Frame-count equivalents at the default 30fps capture rate.  Kept as the
+# defaults for ``_github_scroll_plan`` (frame-indexed) and for tests.
+GITHUB_HEADER_HOLD_FRAMES = round(GITHUB_HEADER_HOLD_SECONDS * SCROLL_TICKS_PER_SEC)  # 60
+GITHUB_JUMP_FRAMES = round(GITHUB_JUMP_SECONDS * SCROLL_TICKS_PER_SEC)  # 18
+# Pixels of headroom kept above the README so its heading stays visible after
+# the jump (rather than aligning the README flush to the very top).
+GITHUB_README_TOP_MARGIN = 120
+# Jump (vs. gentle eased scroll) when the README is more than this many viewport
+# heights below the top.
+README_JUMP_VIEWPORT_THRESHOLD = 2.0
+
+# Robustly locate the README and report its document offset plus the page's max
+# scrollable Y.  Returns ``{readmeY: int|null, scrollable: int}``.
+_README_METRICS_JS = """
+() => {
+  const readme =
+    document.querySelector('#readme') ||
+    document.querySelector('article.markdown-body') ||
+    document.querySelector('[data-testid="readme"]') ||
+    (() => {
+      const h = [...document.querySelectorAll('h2, h3')].find(
+        (el) => /readme/i.test(el.textContent || '')
+      );
+      return h ? h.closest('div, section, article') : null;
+    })();
+  const docH = Math.max(
+    document.documentElement.scrollHeight,
+    document.body ? document.body.scrollHeight : 0
+  );
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const scrollable = Math.max(0, docH - vh);
+  if (!readme) return { readmeY: null, scrollable };
+  const rect = readme.getBoundingClientRect();
+  const y = Math.round(rect.top + window.scrollY);
+  return { readmeY: Math.max(0, y), scrollable };
+}
+"""
+
+
+def _github_scroll_plan(
+    readme_y: int,
+    viewport_height: int,
+    doc_scrollable: int,
+    total_frames: int,
+    *,
+    header_frames: int = GITHUB_HEADER_HOLD_FRAMES,
+    jump_frames: int = GITHUB_JUMP_FRAMES,
+    px_per_frame: int = READING_PX_PER_FRAME,
+) -> "list[int] | None":
+    """Build the per-frame Y positions for the README-first flow (issue #415).
+
+    Phases: hold on the header, an eased jump to the README, then a reading-speed
+    linear scroll through the README content.  Returns a list of exactly
+    *total_frames* absolute Y offsets, or ``None`` when there aren't enough
+    frames to stage the flow (the caller then does a plain smooth scroll).
+    """
+    if total_frames <= 0:
+        return []
+    readme_y = max(0, min(int(readme_y), max(0, int(doc_scrollable))))
+    px_per_frame = min(
+        MAX_READING_PX_PER_FRAME,
+        max(1, int(px_per_frame)),
+    )
+
+    # Never let header + jump eat more than half the segment — reading the
+    # README content is the point, so it always gets at least half the frames.
+    header = min(header_frames, total_frames // 4)
+    far = readme_y > viewport_height * README_JUMP_VIEWPORT_THRESHOLD
+    if far:
+        jump = min(jump_frames, total_frames // 4)
+    else:
+        # README is close — a slightly longer eased glide reads better than an
+        # abrupt jump.
+        jump = min(max(jump_frames, total_frames // 6), total_frames // 4)
+
+    reading = total_frames - header - jump
+    if header < 1 or jump < 1 or reading < 1:
+        return None
+
+    plan: "list[int]" = [0] * header
+    plan += _scroll_positions(0, readme_y, jump, easing="ease_out_cubic")
+    # The reading phase has ``reading`` frames, i.e. ``reading - 1`` movement
+    # intervals, so size the span off the interval count to keep the average
+    # per-frame delta at or below *px_per_frame* (issue #415).
+    read_end = min(
+        int(doc_scrollable), readme_y + max(reading - 1, 1) * px_per_frame
+    )
+    plan += _scroll_positions(readme_y, read_end, reading, easing="linear")
+
+    # Guard against off-by-one from the phase concatenation.
+    if len(plan) < total_frames:
+        plan += [plan[-1]] * (total_frames - len(plan))
+    return plan[:total_frames]
+
+
+def _scroll_github_readme(
+    page: Page,
+    duration_seconds: float,
+    capturer: "_Capturer | None" = None,
+) -> None:
+    """README-first scroll for a GitHub repo page (issue #415).
+
+    Holds on the repo header, eases down to the README, then scrolls it at
+    reading speed.  Falls back to :func:`_smooth_scroll` for non-GitHub pages,
+    when no README is found, when the README is already near the top, or on any
+    detection error — so behaviour never regresses for other pages.
+    """
+    try:
+        if not _is_github_repo_root(getattr(page, "url", None)):
+            _smooth_scroll(page, duration_seconds, capturer)
+            return
+    except Exception:  # noqa: BLE001 — treat detection failure as "not a repo root"
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    total_frames, tick_rate = _scroll_frame_count(duration_seconds, capturer)
+    if total_frames <= 0:
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    viewport_height = page.viewport_size["height"] if page.viewport_size else HEIGHT
+
+    try:
+        metrics = page.evaluate(_README_METRICS_JS)
+    except Exception:  # noqa: BLE001 — fall back to a plain scroll on JS errors
+        metrics = None
+    if not isinstance(metrics, dict) or metrics.get("readmeY") is None:
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    doc_scrollable = int(metrics.get("scrollable") or 0)
+    readme_y = max(0, int(metrics["readmeY"]) - GITHUB_README_TOP_MARGIN)
+    # Clamp to the real max scrollable Y so both the scroll plan and the log
+    # below reflect a physically reachable target (README near the bottom plus
+    # the top margin can otherwise overshoot ``doc_scrollable``).
+    readme_y = min(readme_y, max(0, doc_scrollable))
+    # README already near the top → a normal reading scroll is the right thing.
+    if readme_y <= viewport_height * 0.5:
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    # Convert the seconds-based hold/jump budgets to frame counts at the *live*
+    # tick rate so their wall-clock durations are stable even when
+    # VIDEO_SCREENSHOT_FPS overrides the capture rate (issue #415).
+    header_frames = max(1, round(GITHUB_HEADER_HOLD_SECONDS * tick_rate))
+    jump_frames = max(1, round(GITHUB_JUMP_SECONDS * tick_rate))
+    plan = _github_scroll_plan(
+        readme_y,
+        viewport_height,
+        doc_scrollable,
+        total_frames,
+        header_frames=header_frames,
+        jump_frames=jump_frames,
+    )
+    if not plan:
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    logger.info(
+        "README-first scroll: header+jump to y=%d then read to y=%d (#415)",
+        readme_y,
+        plan[-1],
+    )
+    tick_interval_ms = int(1000 / tick_rate)
+    _run_scroll_positions(page, plan, capturer, tick_interval_ms)
+
+    if capturer is not None:
+        return
+    elapsed_ms = total_frames * tick_interval_ms
+    remainder_ms = int(duration_seconds * 1000) - elapsed_ms
     if remainder_ms > 0:
         page.wait_for_timeout(remainder_ms)
 
@@ -1252,6 +1700,24 @@ def _looks_malformed_repo_url(url: str) -> bool:
     if not _VALID_REPO_SEGMENT_RE.match(owner) or not _VALID_REPO_SEGMENT_RE.match(name):
         return True
     return False
+
+
+def _is_github_repo_root(url: str | None) -> bool:
+    """Return True only for a GitHub repo *root* page (``/owner/repo``).
+
+    The README-first scroll (issue #415) is meant for repository landing pages.
+    Issues, PRs, wiki, and other deep pages share the ``github.com`` host but
+    have extra path segments and unrelated ``article.markdown-body`` content, so
+    they must fall back to the normal deterministic scroll.
+    """
+    if not _is_github_url(url):
+        return False
+    try:
+        path = urlparse(url).path
+    except Exception:  # noqa: BLE001 — malformed URLs are simply "not a repo root"
+        return False
+    segments = [seg for seg in path.split("/") if seg]
+    return len(segments) == 2
 
 
 def _is_github_url(url: str | None) -> bool:
@@ -1774,7 +2240,10 @@ def _record_segment(
                         _dismiss_overlays(page)
                     website_url = None
                 _prepare_page_for_recording(page)
-                _smooth_scroll(page, segment.duration_seconds, capturer)
+                # README-first scroll for GitHub repo pages; falls back to a
+                # plain deterministic scroll for non-GitHub pages / no README
+                # (issue #415).
+                _scroll_github_readme(page, segment.duration_seconds, capturer)
             except Exception:
                 # Keep the successfully recorded repo page; do not render a
                 # fallback on top of it (issue #381).
@@ -1836,6 +2305,7 @@ def record_episode(
     headless: bool = True,
     check_accessibility: bool = True,
     source_url: str | None = None,
+    intermediates=None,
 ) -> RecordingResult:
     """Record all video segments for an episode plan.
 
@@ -1847,6 +2317,12 @@ def record_episode(
         source_url: The script header's ``Source URL:``. Used to recover a
             corrected repo URL from the source article when a repo navigation
             fails (issue #378).
+        intermediates: Optional
+            :class:`podcaster.video.intermediates.IntermediateStore` enabling
+            per-segment checkpoint/resume against blob storage (issue #410).
+            When supplied, each recorded segment is uploaded to blob and a
+            restarted job skips recording for any segment already checkpointed.
+            ``None`` (default) preserves the legacy record-everything behaviour.
 
     Returns:
         RecordingResult with paths to all recorded WebM files.
@@ -1868,30 +2344,63 @@ def record_episode(
 
     result = RecordingResult(output_dir=output_dir)
 
+    # Resolve which segments already have a blob checkpoint so the browser is
+    # only launched when there is at least one segment left to record (issue
+    # #410).  Resumed segments are rebuilt from blob without touching Playwright.
+    resumed: dict[int, RecordedSegment] = {}
+    if intermediates is not None and getattr(intermediates, "enabled", False):
+        for index, segment in enumerate(plan.segments):
+            recovered = _resume_recorded_segment(index, segment, output_dir, intermediates)
+            if recovered is not None:
+                resumed[index] = recovered
+        if resumed:
+            logger.info(
+                "Resuming recording from blob: %d/%d segment(s) already checkpointed",
+                len(resumed), len(plan.segments),
+            )
+
+    needs_browser = len(resumed) < len(plan.segments)
+
+    def _record_all(browser: "Browser | None") -> None:
+        for index, segment in enumerate(plan.segments):
+            recovered = resumed.get(index)
+            if recovered is not None:
+                result.recorded.append(recovered)
+                logger.info(
+                    "Reused checkpointed segment %d: %s (recovery=%s)",
+                    index, recovered.video_path.name, recovered.recovery_path,
+                )
+                continue
+            logger.info(
+                "Recording segment: %s (%.1fs)",
+                segment.label,
+                segment.duration_seconds,
+            )
+            recorded = _record_segment(
+                browser, segment, output_dir, check_accessibility,
+                source_url=source_url,
+            )
+            result.recorded.append(recorded)
+            _checkpoint_recorded_segment(index, recorded, intermediates)
+            logger.info(
+                "Saved: %s (fallback=%s, pages=%s, website=%s, recovery=%s)",
+                recorded.video_path.name,
+                recorded.is_fallback,
+                recorded.has_pages,
+                recorded.website_url,
+                recorded.recovery_path,
+            )
+
+    if not needs_browser:
+        _record_all(None)
+        return result
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             headless=headless, args=RECORDING_CHROMIUM_ARGS
         )
         try:
-            for segment in plan.segments:
-                logger.info(
-                    "Recording segment: %s (%.1fs)",
-                    segment.label,
-                    segment.duration_seconds,
-                )
-                recorded = _record_segment(
-                    browser, segment, output_dir, check_accessibility,
-                    source_url=source_url,
-                )
-                result.recorded.append(recorded)
-                logger.info(
-                    "Saved: %s (fallback=%s, pages=%s, website=%s, recovery=%s)",
-                    recorded.video_path.name,
-                    recorded.is_fallback,
-                    recorded.has_pages,
-                    recorded.website_url,
-                    recorded.recovery_path,
-                )
+            _record_all(browser)
         finally:
             browser.close()
 

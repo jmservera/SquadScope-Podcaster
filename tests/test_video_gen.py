@@ -6,6 +6,7 @@ Unit tests mock Playwright and requests; the integration test class
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -26,6 +27,7 @@ from podcaster.video.video_gen import (
     WIDTH,
     HEIGHT,
     IMAGE_ZOOM_MIN_SIZE_PX,
+    MAX_READING_PX_PER_FRAME,
     PAGE_ZOOM_SCALE,
     ZOOM_PAGE_CSS,
     RecordedSegment,
@@ -51,6 +53,13 @@ from podcaster.video.video_gen import (
     _navigate_with_recovery,
     _pad_frames,
     _smooth_scroll,
+    _scroll_positions,
+    _scroll_github_readme,
+    _github_scroll_plan,
+    _ease_out_cubic,
+    _ease_linear,
+    READING_PX_PER_FRAME,
+    GITHUB_README_TOP_MARGIN,
     _try_navigate_repo,
     _try_record_project_site,
     _PAGE_ZOOM_JS,
@@ -307,18 +316,50 @@ class TestSmoothScroll:
         duration = 1.0
         _smooth_scroll(page, duration)
 
-        max_scroll = int(HEIGHT * MAX_SCROLL_VIEWPORT_MULTIPLIER)
         ticks = int(duration * SCROLL_TICKS_PER_SEC)
-        expected_per_tick = max_scroll / ticks
-
-        # Verify scrollBy calls use the capped distance
+        # Deterministic absolute positioning: one scrollTo per tick (issue #413).
         scroll_calls = [
-            c for c in page.evaluate.call_args_list
-            if "scrollBy" in str(c)
+            c for c in page.evaluate.call_args_list if "scrollTo" in str(c)
         ]
+        assert len(scroll_calls) == ticks
+
+        # Parse the target Y of each scrollTo and verify the per-frame step never
+        # exceeds the reading-speed cap (no steppy jumps) and motion is forward.
+        ys = []
         for call in scroll_calls:
-            js = call[0][0]
-            assert f"scrollBy(0, {expected_per_tick})" in js
+            m = re.search(r"scrollTo\(0,\s*(\d+)\)", call[0][0])
+            assert m is not None
+            ys.append(int(m.group(1)))
+        assert ys == sorted(ys)  # monotonic, no backwards jumps
+        for prev, cur in zip(ys, ys[1:]):
+            assert cur - prev <= READING_PX_PER_FRAME
+        # Total distance is bounded by the reading cap, not the 2.5×viewport cap.
+        # The derived path uses the configurable READING_PX_PER_FRAME default
+        # (issue #413), not the hard MAX_READING_PX_PER_FRAME ceiling.
+        assert ys[-1] <= ticks * READING_PX_PER_FRAME
+
+    def test_reading_cap_honours_max_px_per_frame_argument(self):
+        # The derived-scroll path must respect the caller-supplied per-frame cap
+        # (it previously ignored it and always used the 10px hard ceiling).
+        page = MagicMock()
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js: (
+            100_000 if "scrollHeight" in js else None
+        )
+
+        duration = 1.0
+        _smooth_scroll(page, duration, max_px_per_frame=3)
+
+        scroll_calls = [
+            c for c in page.evaluate.call_args_list if "scrollTo" in str(c)
+        ]
+        ys = []
+        for call in scroll_calls:
+            m = re.search(r"scrollTo\(0,\s*(\d+)\)", call[0][0])
+            assert m is not None
+            ys.append(int(m.group(1)))
+        for prev, cur in zip(ys, ys[1:]):
+            assert cur - prev <= 3
 
     def test_no_scroll_on_short_page(self):
         page = MagicMock()
@@ -352,6 +393,254 @@ class TestSmoothScroll:
         page.evaluate.assert_not_called()
         # Should wait for the full duration
         page.wait_for_timeout.assert_called_once_with(20)
+
+
+# --- Deterministic frame-indexed scrolling (issue #413) ---
+
+
+class TestScrollPositions:
+    def test_count_matches_frames(self):
+        assert len(_scroll_positions(0, 1000, 50)) == 50
+
+    def test_starts_and_ends_exact(self):
+        positions = _scroll_positions(100, 900, 30)
+        assert positions[0] == 100
+        assert positions[-1] == 900
+
+    def test_linear_is_evenly_spaced(self):
+        positions = _scroll_positions(0, 290, 30)  # ~10px/frame
+        deltas = [b - a for a, b in zip(positions, positions[1:])]
+        # Even spacing: every step within 1px of every other (rounding only).
+        assert max(deltas) - min(deltas) <= 1
+
+    def test_monotonic_non_decreasing(self):
+        positions = _scroll_positions(0, 500, 40)
+        assert positions == sorted(positions)
+
+    def test_single_frame_returns_start(self):
+        assert _scroll_positions(123, 999, 1) == [123]
+
+    def test_zero_frames_empty(self):
+        assert _scroll_positions(0, 100, 0) == []
+
+    def test_ease_out_cubic_decelerates(self):
+        positions = _scroll_positions(0, 1000, 50, easing="ease_out_cubic")
+        deltas = [b - a for a, b in zip(positions, positions[1:])]
+        # easeOutCubic: starts fast, ends slow.
+        assert deltas[0] > deltas[-1]
+        assert positions == sorted(positions)
+        assert positions[-1] == 1000
+
+    def test_unknown_easing_falls_back_to_linear(self):
+        assert _scroll_positions(0, 100, 11, easing="nope") == _scroll_positions(
+            0, 100, 11, easing="linear"
+        )
+
+
+class TestEasingFunctions:
+    def test_linear_endpoints(self):
+        assert _ease_linear(0.0) == 0.0
+        assert _ease_linear(1.0) == 1.0
+
+    def test_ease_out_cubic_endpoints(self):
+        assert _ease_out_cubic(0.0) == 0.0
+        assert _ease_out_cubic(1.0) == 1.0
+
+    def test_ease_out_cubic_front_loaded(self):
+        # At the midpoint easeOutCubic is already well past halfway (fast start).
+        assert _ease_out_cubic(0.5) > 0.5
+
+
+# --- README-first scroll for GitHub repos (issue #415) ---
+
+
+class TestGithubScrollPlan:
+    def test_returns_exact_frame_count(self):
+        plan = _github_scroll_plan(8000, HEIGHT, 12000, 300)
+        assert plan is not None
+        assert len(plan) == 300
+
+    def test_holds_on_header_then_jumps_then_reads(self):
+        plan = _github_scroll_plan(8000, HEIGHT, 12000, 300)
+        assert plan is not None
+        # Header hold: opening frames stay at the top.
+        assert plan[0] == 0
+        assert plan[5] == 0
+        # Ends deeper in the README than where the jump landed.
+        assert plan[-1] > 8000 - GITHUB_README_TOP_MARGIN - 1
+
+    def test_monotonic_non_decreasing(self):
+        plan = _github_scroll_plan(6000, HEIGHT, 9000, 240)
+        assert plan == sorted(plan)
+
+    def test_reading_phase_at_reading_speed(self):
+        plan = _github_scroll_plan(5000, HEIGHT, 50000, 300)
+        assert plan is not None
+        # The largest per-frame step in the reading tail stays within the
+        # reading-speed cap (no steppy crawl through README content).  The span
+        # is sized off the interval count so the cap holds exactly (issue #415).
+        tail = plan[-100:]
+        deltas = [b - a for a, b in zip(tail, tail[1:])]
+        assert max(deltas) <= READING_PX_PER_FRAME
+
+    def test_reading_phase_clamps_explicit_speed_to_hard_cap(self):
+        plan = _github_scroll_plan(
+            5000, HEIGHT, 50000, 300, px_per_frame=MAX_READING_PX_PER_FRAME * 3
+        )
+        assert plan is not None
+        tail = plan[-100:]
+        deltas = [b - a for a, b in zip(tail, tail[1:])]
+        assert max(deltas) <= MAX_READING_PX_PER_FRAME
+
+    def test_does_not_exceed_scrollable(self):
+        plan = _github_scroll_plan(5000, HEIGHT, 5200, 300)
+        assert plan is not None
+        assert max(plan) <= 5200
+
+    def test_too_few_frames_returns_none(self):
+        # Not enough frames to stage header + jump + reading (header == 0).
+        assert _github_scroll_plan(8000, HEIGHT, 12000, 2) is None
+        assert _github_scroll_plan(8000, HEIGHT, 12000, 0) == []
+
+
+class TestScrollGithubReadme:
+    def _page(self, *, url="https://github.com/owner/repo", readme_y=8000,
+              scrollable=12000):
+        page = MagicMock()
+        page.url = url
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+
+        def _eval(js, *args):
+            if "readmeY" in js:
+                return {"readmeY": readme_y, "scrollable": scrollable}
+            if "scrollHeight" in js:
+                return scrollable + HEIGHT
+            return None
+
+        page.evaluate.side_effect = _eval
+        return page
+
+    def test_non_github_falls_back_to_smooth_scroll(self):
+        page = self._page(url="https://example.com/page")
+        with patch(
+            "podcaster.video.video_gen._smooth_scroll"
+        ) as smooth:
+            _scroll_github_readme(page, 5.0)
+        smooth.assert_called_once()
+
+    def test_deep_github_page_falls_back_to_smooth_scroll(self):
+        # Issues/PRs/wiki share the github.com host but are not repo roots and
+        # must use the normal deterministic scroll (#415).
+        for url in (
+            "https://github.com/owner/repo/issues/1",
+            "https://github.com/owner/repo/pull/2",
+            "https://github.com/owner/repo/wiki",
+            "https://github.com/owner",
+        ):
+            page = self._page(url=url)
+            with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+                _scroll_github_readme(page, 5.0)
+            smooth.assert_called_once()
+
+    def test_no_readme_falls_back(self):
+        page = MagicMock()
+        page.url = "https://github.com/owner/repo"
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js, *a: (
+            {"readmeY": None, "scrollable": 9000} if "readmeY" in js else None
+        )
+        with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+            _scroll_github_readme(page, 5.0)
+        smooth.assert_called_once()
+
+    def test_readme_near_top_falls_back(self):
+        page = self._page(readme_y=100)
+        with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+            _scroll_github_readme(page, 5.0)
+        smooth.assert_called_once()
+
+    def test_github_readme_uses_staged_scroll_capture(self, tmp_path):
+        page = self._page()
+        # Drive a real screenshot capturer so we assert on the staged plan.
+        cap = _Capturer(tmp_path / "frames")
+
+        def _screenshot(path):
+            Path(path).write_bytes(_PNG_64x64)
+
+        page.screenshot.side_effect = _screenshot
+
+        _scroll_github_readme(page, 5.0, capturer=cap)
+
+        # One frame per output frame at the capture fps.
+        assert cap.count == int(5.0 * SCREENSHOT_CAPTURE_FPS)
+        # The staged flow uses absolute scrollTo positioning.
+        scroll_calls = [
+            c for c in page.evaluate.call_args_list if "scrollTo" in str(c)
+        ]
+        assert scroll_calls, "expected scrollTo calls from staged plan"
+        # Early frames hold on the header (y==0).
+        first = re.search(r"scrollTo\(0,\s*(\d+)\)", str(scroll_calls[0]))
+        assert first is not None and int(first.group(1)) == 0
+
+    def test_readme_y_clamped_to_scrollable(self, tmp_path, caplog):
+        import logging
+
+        # README sits near the bottom so readmeY - top margin overshoots the
+        # real max scrollable Y; the plan and log must clamp to scrollable.
+        page = self._page(readme_y=20000, scrollable=6000)
+        cap = _Capturer(tmp_path / "frames")
+        page.screenshot.side_effect = lambda path: Path(path).write_bytes(_PNG_64x64)
+
+        with caplog.at_level(logging.INFO, logger="podcaster.video.video_gen"):
+            _scroll_github_readme(page, 5.0, capturer=cap)
+
+        ys = [
+            int(m.group(1))
+            for c in page.evaluate.call_args_list
+            if (m := re.search(r"scrollTo\(0,\s*(\d+)\)", str(c)))
+        ]
+        assert ys, "expected scrollTo calls"
+        assert max(ys) <= 6000
+        jump_log = next(r for r in caplog.records if "README-first scroll" in r.getMessage())
+        assert "to y=6000" in jump_log.getMessage()
+
+    def test_unscrollable_page_falls_back_after_clamping_readme_y(self):
+        page = self._page(readme_y=20000, scrollable=0)
+        with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+            _scroll_github_readme(page, 5.0)
+        smooth.assert_called_once()
+
+    def _header_hold_frames(self, fps, duration, tmp_path):
+        page = self._page()
+        cap = _Capturer(tmp_path / "frames")
+        page.screenshot.side_effect = lambda path: Path(path).write_bytes(_PNG_64x64)
+        with patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_FPS", fps):
+            _scroll_github_readme(page, duration, capturer=cap)
+        ys = [
+            int(m.group(1))
+            for c in page.evaluate.call_args_list
+            if (m := re.search(r"scrollTo\(0,\s*(\d+)\)", str(c)))
+        ]
+        # Count the leading header-hold frames (y == 0).  The eased jump's first
+        # frame is also at y==0 (ease(0)==0), so subtract that single boundary
+        # frame to recover the pure header-hold count.
+        hold = 0
+        for y in ys:
+            if y != 0:
+                break
+            hold += 1
+        return hold - 1
+
+    def test_header_hold_duration_is_fps_stable(self, tmp_path):
+        # The header-hold budget is specified in seconds, so its frame count must
+        # scale with the capture rate (issue #415): doubling fps doubles frames
+        # but keeps the ~2.0s wall-clock hold constant.
+        from podcaster.video.video_gen import GITHUB_HEADER_HOLD_SECONDS
+
+        hold_30 = self._header_hold_frames(30, 10.0, tmp_path / "a")
+        hold_60 = self._header_hold_frames(60, 10.0, tmp_path / "b")
+        assert hold_30 == round(GITHUB_HEADER_HOLD_SECONDS * 30)
+        assert hold_60 == round(GITHUB_HEADER_HOLD_SECONDS * 60)
 
 
 # --- _render_url_card tests (issue #386) ---
@@ -1800,3 +2089,146 @@ class TestComposeScreenshotSegment:
 
         assert out.exists()
         assert out.stat().st_size > 0
+
+
+# --- Per-segment checkpoint/resume against blob (issue #410) ------------------
+
+
+class TestRecordEpisodeCheckpointResume:
+    def _store(self, tmp_path):
+        from podcaster.storage import LocalStorageBackend
+        from podcaster.video.intermediates import IntermediateStore
+
+        backend = LocalStorageBackend(
+            root=tmp_path / "scratch", base_url="https://example.test/scratch"
+        )
+        return IntermediateStore(backend, "job-rec")
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_full_resume_skips_browser(self, mock_record, mock_pw, tmp_path):
+        store = self._store(tmp_path)
+        # Pre-seed a checkpoint for the only segment (recording file + sidecar).
+        rec_file = tmp_path / "seed.mp4"
+        rec_file.write_bytes(b"\x00\x00\x00\x18ftypmp42seed")
+        store.upload("recording_000.mp4", rec_file, "video/mp4")
+        store.write_text(
+            "recording_000.json",
+            '{"suffix": ".mp4", "is_fallback": false, "has_pages": true, '
+            '"website_url": "https://x.test", "is_removed": false, '
+            '"recovery_path": "website"}',
+        )
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        result = record_episode(plan, output_dir=tmp_path / "out", intermediates=store)
+
+        # Browser was never launched and no segment was recorded.
+        mock_pw.assert_not_called()
+        mock_record.assert_not_called()
+        assert len(result.recorded) == 1
+        rec = result.recorded[0]
+        assert rec.recovery_path == "website"
+        assert rec.has_pages is True
+        assert rec.website_url == "https://x.test"
+        assert rec.video_path.exists()
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_records_and_checkpoints_when_absent(self, mock_record, mock_pw, tmp_path):
+        store = self._store(tmp_path)
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        out_dir = tmp_path / "out"
+
+        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+            from podcaster.video.video_gen import RecordedSegment
+
+            path = Path(output_dir) / "fresh_000.mp4"
+            path.write_bytes(b"\x00\x00\x00\x18ftypmp42new")
+            return RecordedSegment(segment=segment, video_path=path, recovery_path="direct")
+
+        mock_record.side_effect = _fake_record
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        result = record_episode(plan, output_dir=out_dir, intermediates=store)
+
+        assert len(result.recorded) == 1
+        mock_record.assert_called_once()
+        # The freshly-recorded segment was checkpointed to blob.
+        assert store.exists("recording_000.mp4") is True
+        assert store.read_text("recording_000.json") is not None
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_partial_resume_records_only_missing(self, mock_record, mock_pw, tmp_path):
+        store = self._store(tmp_path)
+        # Seed only segment 0; segment 1 must still be recorded.
+        rec_file = tmp_path / "seed.mp4"
+        rec_file.write_bytes(b"\x00\x00\x00\x18ftypmp42seed")
+        store.upload("recording_000.mp4", rec_file, "video/mp4")
+        store.write_text(
+            "recording_000.json",
+            '{"suffix": ".mp4", "recovery_path": "direct"}',
+        )
+
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+            from podcaster.video.video_gen import RecordedSegment
+
+            path = Path(output_dir) / "fresh_001.mp4"
+            path.write_bytes(b"\x00\x00\x00\x18ftypmp42new")
+            return RecordedSegment(segment=segment, video_path=path)
+
+        mock_record.side_effect = _fake_record
+
+        plan = _make_plan(
+            _make_segment("a", "b", 0, 10),
+            _make_segment("c", "d", 10, 10),
+            total=20.0,
+        )
+        result = record_episode(plan, output_dir=tmp_path / "out", intermediates=store)
+
+        assert len(result.recorded) == 2
+        # Only the missing segment (index 1) was recorded.
+        assert mock_record.call_count == 1
+        assert store.exists("recording_001.mp4") is True
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_local_recording_deleted_after_checkpoint(self, mock_record, mock_pw, tmp_path):
+        """Issue #410: a freshly-recorded segment is freed from local disk once
+        its size-verified blob checkpoint is confirmed."""
+        store = self._store(tmp_path)
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        out_dir = tmp_path / "out"
+        recorded_paths = []
+
+        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+            from podcaster.video.video_gen import RecordedSegment
+
+            path = Path(output_dir) / "fresh_000.mp4"
+            path.write_bytes(b"\x00\x00\x00\x18ftypmp42new")
+            recorded_paths.append(path)
+            return RecordedSegment(segment=segment, video_path=path, recovery_path="direct")
+
+        mock_record.side_effect = _fake_record
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        record_episode(plan, output_dir=out_dir, intermediates=store)
+
+        # Checkpointed to blob …
+        assert store.exists("recording_000.mp4") is True
+        # … and the local copy was deleted (disk holds only the current file).
+        assert recorded_paths and not recorded_paths[0].exists()

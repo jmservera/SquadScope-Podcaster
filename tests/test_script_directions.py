@@ -22,6 +22,14 @@ class TestScriptDirections:
         sd = ScriptDirections.from_payload({"week": "2026-W24"})
         assert not sd.has_content
 
+    def test_backchannels_parse_top_level_and_nested(self) -> None:
+        top_level = ScriptDirections.from_payload({"backchannels": {"enabled": True, "min_gap_seconds": 12}})
+        nested = ScriptDirections.from_payload({"script_directions": {"backchannels": {"enabled": True}}})
+
+        assert top_level.backchannels.enabled is True
+        assert top_level.backchannels.min_gap_seconds == 12
+        assert nested.backchannels.enabled is True
+
     def test_full_payload_parses(self) -> None:
         payload = {
             "script_directions": {
