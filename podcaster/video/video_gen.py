@@ -327,6 +327,38 @@ h1 {{ font-size: 52px; margin: 0 0 24px; font-weight: 600; }}
 </body></html>
 """
 
+# Card shown for a repo a pre-flight check flagged as removed from GitHub
+# (issue #394).  Distinct from FALLBACK_BRAND_HTML (a clean URL card for repos
+# we merely *couldn't* record): this explicitly tells the viewer the project was
+# taken down, matching the speaker note the hosts read.
+REMOVED_REPO_HTML = """\
+<!DOCTYPE html>
+<html><head><style>
+body {{
+  margin: 0; display: flex; align-items: center; justify-content: center;
+  width: {width}px; height: {height}px;
+  background: #0d1117; color: #c9d1d9; font-family: -apple-system, sans-serif;
+}}
+.card {{ text-align: center; padding: 0 64px; }}
+.icon {{ font-size: 96px; margin-bottom: 24px; line-height: 1; }}
+h1 {{ font-size: 52px; margin: 0 0 20px; font-weight: 600; }}
+.reason {{ font-size: 32px; color: #f85149; margin: 0 0 28px; }}
+.url {{
+  display: inline-block; font-size: 30px; color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+  padding: 16px 28px; letter-spacing: 0.5px; text-decoration: line-through;
+}}
+</style></head><body>
+<div class="card">
+  <div class="icon">&#128683;</div>
+  <h1>{owner}/{name}</h1>
+  <div class="reason">{reason}</div>
+  <div class="url">{url}</div>
+</div>
+</body></html>
+"""
+
 # Animated branded background used for generic segments (no repo to record).
 GENERIC_BACKGROUND_HTML = """\
 <!DOCTYPE html>
@@ -538,11 +570,17 @@ class RecordedSegment:
     is_fallback: bool = False
     has_pages: bool = False
     website_url: str | None = None
+    # True when the segment was a repo flagged "removed" by the planning-time
+    # pre-flight check (issue #394): no navigation was attempted; the clip is a
+    # clean "Repo removed" card.
+    is_removed: bool = False
     # Which recovery path produced a usable recording (issues #378, #386):
     # "direct" (first attempt), "retry" (second attempt after a delay),
     # "article" (URL corrected from the source article), "website" (the repo's
     # GitHub Pages site, recorded when the repo page 404s/needs login), or
-    # "fallback" (all recovery paths failed → clean URL card).
+    # "fallback" (all recovery paths failed → clean URL card), or "removed"
+    # (planning pre-flight flagged the repo as 404/removed → "Repo removed"
+    # card, no navigation attempted — issue #394).
     recovery_path: str = "direct"
 
 
@@ -1086,6 +1124,38 @@ def _render_url_card(
 _render_fallback_page = _render_url_card
 
 
+def _render_removed_card(
+    page: Page,
+    owner: str,
+    name: str,
+    reason: str,
+    duration_seconds: float,
+    capturer: "_Capturer | None" = None,
+) -> None:
+    """Show a "Repo removed" card for a repo taken down from GitHub (issue #394).
+
+    Used when planning-time pre-flight detected an HTTP 404 for the repo. Unlike
+    :func:`_render_url_card` (a neutral URL card for repos we merely couldn't
+    record), this explicitly states the project was removed so the card matches
+    the speaker note the hosts read.  No navigation is attempted, so no
+    recording time is wasted on the dead URL.
+
+    In screenshot mode (*capturer* provided) a single still is captured and held
+    for the duration during composition; otherwise the page is held in real time
+    for the screencast recorder (issue #387).
+    """
+    url = f"github.com/{owner}/{name}"
+    html = REMOVED_REPO_HTML.format(
+        width=WIDTH, height=HEIGHT, owner=owner, name=name, reason=reason, url=url
+    )
+    page.set_content(html)
+    if capturer is not None:
+        capturer.reset_frames()
+        capturer.still(page)
+    else:
+        page.wait_for_timeout(int(duration_seconds * 1000))
+
+
 # Valid GitHub owner/repo path segments contain only these characters.
 _VALID_REPO_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -1429,6 +1499,42 @@ def _record_segment(
         return _record_generic_segment(browser, segment, output_dir)
 
     repo = segment.repo
+
+    # A planning-time pre-flight check flagged this repo as removed from GitHub
+    # (HTTP 404 — e.g. a polymarket/spam bot GitHub took down).  Skip navigation
+    # entirely and render a clean "Repo removed" card so no recording time is
+    # wasted on a dead URL (issue #394).
+    if segment.is_removed:
+        logger.info(
+            "Repo %s flagged removed (%s); rendering removed card without "
+            "recording (issue #394)",
+            repo.url,
+            segment.removed_reason,
+        )
+        context, capturer = _make_recording_context(browser, output_dir)
+        page = context.new_page()
+        try:
+            _render_removed_card(
+                page,
+                repo.owner,
+                repo.name,
+                segment.removed_reason or "This repo was removed from GitHub",
+                segment.duration_seconds,
+                capturer,
+            )
+        except Exception:
+            logger.exception("Error rendering removed card for %s", repo.url)
+        dest_path = _finalize_segment(
+            page, context, capturer, output_dir,
+            f"{repo.owner}_{repo.name}", segment.duration_seconds,
+        )
+        return RecordedSegment(
+            segment=segment,
+            video_path=dest_path,
+            is_fallback=True,
+            is_removed=True,
+            recovery_path="removed",
+        )
 
     is_fallback = False
     has_pages = False
