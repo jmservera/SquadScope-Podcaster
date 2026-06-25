@@ -129,6 +129,30 @@ def test_dry_run_preserves_response_shape_and_review_metadata() -> None:
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
+def test_backchannels_payload_is_threaded_into_request_manifest() -> None:
+    """Phase B wiring: a top-level ``backchannels`` payload reaches the request manifest."""
+
+    artifact_root = Path(".test-artifacts-backchannels")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+    backchannels = {"enabled": True, "min_gap_seconds": 30, "max_gap_seconds": 40}
+
+    with_bc = run_generation_job(
+        {"week": "2026-W23", "article_url": "https://example.com/article", "dry_run": True, "backchannels": backchannels},
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+    assert with_bc.manifest["request"]["backchannels"] == backchannels
+
+    without_bc = run_generation_job(
+        {"week": "2026-W23", "article_url": "https://example.com/article", "dry_run": True},
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+    assert "backchannels" not in without_bc.manifest["request"]
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
 def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
     artifact_root = Path(".test-artifacts-packet")
     shutil.rmtree(artifact_root, ignore_errors=True)
