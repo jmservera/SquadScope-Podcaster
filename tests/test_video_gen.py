@@ -329,9 +329,34 @@ class TestSmoothScroll:
             ys.append(int(m.group(1)))
         assert ys == sorted(ys)  # monotonic, no backwards jumps
         for prev, cur in zip(ys, ys[1:]):
-            assert cur - prev <= MAX_READING_PX_PER_FRAME
+            assert cur - prev <= READING_PX_PER_FRAME
         # Total distance is bounded by the reading cap, not the 2.5×viewport cap.
-        assert ys[-1] <= ticks * MAX_READING_PX_PER_FRAME
+        # The derived path uses the configurable READING_PX_PER_FRAME default
+        # (issue #413), not the hard MAX_READING_PX_PER_FRAME ceiling.
+        assert ys[-1] <= ticks * READING_PX_PER_FRAME
+
+    def test_reading_cap_honours_max_px_per_frame_argument(self):
+        # The derived-scroll path must respect the caller-supplied per-frame cap
+        # (it previously ignored it and always used the 10px hard ceiling).
+        page = MagicMock()
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js: (
+            100_000 if "scrollHeight" in js else None
+        )
+
+        duration = 1.0
+        _smooth_scroll(page, duration, max_px_per_frame=3)
+
+        scroll_calls = [
+            c for c in page.evaluate.call_args_list if "scrollTo" in str(c)
+        ]
+        ys = []
+        for call in scroll_calls:
+            m = re.search(r"scrollTo\(0,\s*(\d+)\)", call[0][0])
+            assert m is not None
+            ys.append(int(m.group(1)))
+        for prev, cur in zip(ys, ys[1:]):
+            assert cur - prev <= 3
 
     def test_no_scroll_on_short_page(self):
         page = MagicMock()

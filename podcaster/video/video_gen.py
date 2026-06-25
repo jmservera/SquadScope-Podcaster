@@ -1077,8 +1077,9 @@ def _scroll_positions(
     following the named *easing* curve.  Positions are produced from a single
     continuous parameter ``t in [0, 1]`` (not by accumulating per-frame deltas)
     so there is no rounding drift between frames — the motion plays back as
-    butter-smooth, evenly spaced steps.  The list always ends exactly at
-    *end_y*.
+    butter-smooth, evenly spaced steps.  For ``total_frames >= 2`` the final
+    position is ``round(end_y)``; the degenerate ``total_frames == 1`` case
+    returns ``round(start_y)`` since a single frame cannot move.
     """
     if total_frames <= 0:
         return []
@@ -1138,7 +1139,7 @@ def _smooth_scroll(
     start_y: "float | None" = None,
     end_y: "float | None" = None,
     easing: str = "linear",
-    max_px_per_frame: int = MAX_READING_PX_PER_FRAME,
+    max_px_per_frame: int = READING_PX_PER_FRAME,
 ) -> None:
     """Deterministically scroll the page over the given duration (issue #413).
 
@@ -1149,10 +1150,14 @@ def _smooth_scroll(
 
     By default the scroll distance is derived from the page height (capped to
     MAX_SCROLL_VIEWPORT_MULTIPLIER × viewport) and further clamped to a
-    comfortable reading speed of *max_px_per_frame* per frame so short segments
-    or very long pages don't fly past the content.  Callers that need an
-    explicit range (e.g. the README-first flow, issue #415) pass *start_y* /
-    *end_y* and an *easing* curve directly, bypassing the reading-speed cap.
+    comfortable reading speed of *max_px_per_frame* per frame (default
+    READING_PX_PER_FRAME, tunable via the VIDEO_SCROLL_PX_PER_FRAME env var and
+    hard-capped at MAX_READING_PX_PER_FRAME) so short segments or very long
+    pages don't fly past the content.  The derived path always uses linear
+    spacing so each per-frame delta stays at or below the cap regardless of the
+    *easing* argument.  Callers that need an explicit range (e.g. the
+    README-first flow, issue #415) pass *start_y* / *end_y* and an *easing*
+    curve directly, bypassing the reading-speed cap.
 
     When *capturer* is provided (screenshot/hyperframe mode, issue #387) a
     lossless PNG screenshot is taken per frame instead of waiting in real time;
@@ -1172,18 +1177,25 @@ def _smooth_scroll(
     tick_interval_ms = int(1000 / tick_rate)
     viewport_height = page.viewport_size["height"] if page.viewport_size else HEIGHT
 
+    scroll_easing = easing
     if end_y is not None:
         # Explicit range requested by the caller (issue #415); no reading cap.
         s_y = float(start_y or 0)
         e_y = float(end_y)
     else:
         # Derive the scroll distance from the page, capped to a reasonable span
-        # and then to a comfortable reading speed (issue #413).
+        # and then to a comfortable reading speed (issue #413).  Use the
+        # configurable READING_PX_PER_FRAME default (hard-capped at
+        # MAX_READING_PX_PER_FRAME) and force linear spacing so every per-frame
+        # delta stays at or below the cap — a non-linear easing would otherwise
+        # let early-frame deltas exceed it even when the total span is bounded.
+        per_frame_cap = min(max(1, max_px_per_frame), MAX_READING_PX_PER_FRAME)
+        scroll_easing = "linear"
         max_scroll = int(viewport_height * MAX_SCROLL_VIEWPORT_MULTIPLIER)
         scroll_height = page.evaluate("document.documentElement.scrollHeight")
         page_scroll_distance = max(0, scroll_height - viewport_height)
         effective_scroll = min(page_scroll_distance, max_scroll)
-        reading_cap = max(total_ticks - 1, 1) * max_px_per_frame
+        reading_cap = max(total_ticks - 1, 1) * per_frame_cap
         s_y = float(start_y or 0)
         e_y = s_y + float(min(effective_scroll, reading_cap))
 
@@ -1198,7 +1210,7 @@ def _smooth_scroll(
             capturer.frame(page)
         return
 
-    positions = _scroll_positions(s_y, e_y, total_ticks, easing)
+    positions = _scroll_positions(s_y, e_y, total_ticks, scroll_easing)
     _run_scroll_positions(page, positions, capturer, tick_interval_ms)
 
     if capturer is not None:
