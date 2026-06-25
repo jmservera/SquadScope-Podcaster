@@ -4,8 +4,10 @@
 // Reuses the synthesis container image (ffmpeg already baked in) but overrides the entrypoint
 // command to run the video job runner instead of the audio synthesis runner. It also reuses the
 // synthesis job's user-assigned managed identity, which already holds Storage Blob Data
-// Contributor and Storage Queue Data Contributor on the storage account, so no new role
-// assignments are required.
+// Contributor (granted at the storage-account scope in aca.bicep) and Storage Queue Data
+// Contributor. Because the Blob role is account-scoped it automatically covers the new
+// video-scratch container used for intermediate checkpoint/resume (#410) — no new role
+// assignment is required.
 //
 // Identity-only data plane (Blob + Queue). No keys, tokens, or secrets logged.
 targetScope = 'resourceGroup'
@@ -33,6 +35,9 @@ param videoQueueName string = 'video-jobs'
 
 @description('Private blob container holding generated podcaster artifacts.')
 param storageContainerName string = 'podcaster-artifacts'
+
+@description('Private blob container holding video pipeline intermediates for checkpoint/resume (#410).')
+param videoScratchContainerName string = 'video-scratch'
 
 @description('Video container image. Same image as synthesis (ffmpeg baked in); only the command differs.')
 param videoImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
@@ -163,6 +168,13 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'PODCASTER_STORAGE_CONTAINER'
               value: storageContainerName
+            }
+            {
+              // Scratch container for video pipeline intermediates (#410). The job
+              // checkpoints segment recordings, normalized clips, and the composed
+              // video here under video-jobs/{job-id}/intermediates/ for resume.
+              name: 'PODCASTER_VIDEO_SCRATCH_CONTAINER'
+              value: videoScratchContainerName
             }
             {
               name: 'PODCASTER_VIDEO_QUEUE'
