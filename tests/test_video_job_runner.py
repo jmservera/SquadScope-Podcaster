@@ -27,6 +27,7 @@ from podcaster.video.job_runner import (
     drain,
     manifest_path,
     process_message,
+    removed_repos_notes_path,
     run_video_generation,
     script_path,
     show_notes_path,
@@ -93,6 +94,17 @@ def _make_message(job_id: str, dequeue_count: int = 1) -> QueueMessage:
 @pytest.fixture
 def storage() -> FakeStorage:
     return FakeStorage()
+
+
+@pytest.fixture(autouse=True)
+def _no_network_removed_check():
+    """Default removed-repo pre-flight (issue #394) to a no-op so unit tests
+    never make real HEAD requests to github.com.  Individual tests can still
+    patch ``check_repo_removed`` to exercise the removed-repo path."""
+    with patch(
+        "podcaster.video.sync_plan.check_repo_removed", return_value=False
+    ):
+        yield
 
 
 @pytest.fixture
@@ -294,6 +306,87 @@ class TestRunVideoGeneration:
         assert outcome.segment_count == 2
         assert outcome.distribution is not None
         assert outcome.distribution.youtube_id == "dry-run-id"
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_removed_repo_annotated_and_notes_persisted(
+        self, mock_compose, mock_record, storage, dry_config
+    ):
+        """Removed repos are flagged before recording and speaker cues persisted (#394)."""
+        job_id = "video-removed"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {"article_title": "Test Episode"},
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0,
+                segment_count=2, has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+
+        # facebook/react is "removed"; microsoft/vscode is present.
+        def fake_removed(url, timeout=5.0):
+            return "facebook/react" in url
+
+        with patch(
+            "podcaster.video.sync_plan.check_repo_removed", side_effect=fake_removed
+        ):
+            outcome = run_video_generation(job_id, storage, config=dry_config)
+
+        assert outcome.status == STATUS_COMPLETED
+
+        # The recorded plan carries the removed annotation, so the recorder
+        # skips navigation for the dead repo.
+        plan = mock_record.call_args.args[0]
+        removed = [s for s in plan.segments if s.removed_reason is not None]
+        assert len(removed) == 1
+        assert removed[0].repo.name == "react"
+
+        # Speaker cues for the removed repo are persisted as an artifact.
+        notes = storage.get_bytes(removed_repos_notes_path(job_id))
+        assert notes is not None
+        text = notes.decode("utf-8")
+        assert "facebook/react" in text
+        assert "removed from GitHub" in text
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_no_removed_notes_when_all_present(
+        self, mock_compose, mock_record, storage, dry_config
+    ):
+        """No removed-repo artifact is written when every repo is present (#394)."""
+        job_id = "video-allpresent"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {"article_title": "Test Episode"},
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0,
+                segment_count=2, has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+
+        outcome = run_video_generation(job_id, storage, config=dry_config)
+        assert outcome.status == STATUS_COMPLETED
+        assert storage.get_bytes(removed_repos_notes_path(job_id)) is None
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")

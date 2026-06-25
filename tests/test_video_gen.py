@@ -54,6 +54,7 @@ from podcaster.video.video_gen import (
     _prepare_page_for_recording,
     _render_fallback_page,
     _render_url_card,
+    _render_removed_card,
     _record_segment,
     record_episode,
 )
@@ -366,6 +367,35 @@ class TestRenderUrlCard:
         assert _render_fallback_page is _render_url_card
 
 
+# --- _render_removed_card tests (issue #394) ---
+
+
+class TestRenderRemovedCard:
+    def test_sets_content_and_waits(self):
+        page = MagicMock()
+        _render_removed_card(
+            page, "owner", "repo", "This repo was removed from GitHub", 4.0
+        )
+        page.set_content.assert_called_once()
+        html = page.set_content.call_args[0][0]
+        assert "owner/repo" in html
+        assert "github.com/owner/repo" in html
+        # The card explicitly states the repo was removed (not "unavailable").
+        assert "removed from GitHub" in html
+        assert "unavailable" not in html.lower()
+        page.wait_for_timeout.assert_called_once_with(4000)
+
+    def test_screenshot_mode_captures_still(self):
+        page = MagicMock()
+        capturer = MagicMock()
+        _render_removed_card(
+            page, "o", "r", "This repo was removed from GitHub", 4.0, capturer
+        )
+        capturer.reset_frames.assert_called_once()
+        capturer.still.assert_called_once_with(page)
+        page.wait_for_timeout.assert_not_called()
+
+
 # --- _is_login_redirect tests (issue #386) ---
 
 
@@ -599,6 +629,40 @@ class TestRecordSegment:
         assert result.has_pages is True
         assert result.website_url == "https://proj.github.io/site/"
         assert result.video_path.exists()
+
+    def test_removed_repo_skips_navigation_and_renders_card(self, tmp_path):
+        # A planning-time pre-flight flagged the repo as removed (issue #394):
+        # no navigation is attempted and a "Repo removed" card is rendered.
+        browser, out_dir = self._mock_browser(tmp_path)
+        page = browser.new_context.return_value.new_page.return_value
+        segment = VideoSegment(
+            repo=RepoReference(owner="someuser", name="mktail"),
+            start_seconds=0.0,
+            duration_seconds=2.0,
+            removed_reason="This repo was removed from GitHub",
+        )
+
+        with patch("podcaster.video.video_gen._check_repo_accessible") as acc, \
+             patch("podcaster.video.video_gen._check_gh_pages") as pages:
+            result = _record_segment(browser, segment, out_dir)
+
+        # No accessibility checks, no GitHub Pages probe, no navigation.
+        acc.assert_not_called()
+        pages.assert_not_called()
+        page.goto.assert_not_called()
+
+        assert result.is_removed is True
+        assert result.is_fallback is True
+        assert result.recovery_path == "removed"
+        assert result.video_path.exists()
+        assert result.video_path.name.startswith("someuser_mktail_")
+        card_html = next(
+            c.args[0]
+            for c in page.set_content.call_args_list
+            if "someuser/mktail" in c.args[0]
+        )
+        assert "removed from GitHub" in card_html
+        assert "unavailable" not in card_html.lower()
 
     def test_fallback_on_navigation_error(self, tmp_path):
         browser, out_dir = self._mock_browser(tmp_path)

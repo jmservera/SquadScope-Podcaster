@@ -49,9 +49,11 @@ from podcaster.video.distribution import (
     distribute_video,
 )
 from podcaster.video.sync_plan import (
+    annotate_removed_repos,
     extract_source_url,
     plan_from_script_timed,
     prepend_weekly_segment,
+    removed_repo_speaker_notes,
 )
 
 logger = logging.getLogger("podcaster.video.job_runner")
@@ -116,6 +118,11 @@ def video_artifact_path(job_id: str) -> str:
 
 def show_notes_path(job_id: str) -> str:
     return f"jobs/{job_id}/show-notes.md"
+
+
+def removed_repos_notes_path(job_id: str) -> str:
+    """Storage path for speaker cues about repos removed from GitHub (issue #394)."""
+    return f"jobs/{job_id}/video/removed-repos.md"
 
 
 def _extract_section(notes: str, *heading_names: str) -> str:
@@ -194,6 +201,42 @@ def _already_processed(manifest: dict[str, Any]) -> bool:
         return False
     video_state = generation.get("video_runner")
     return isinstance(video_state, dict) and video_state.get("status") == STATUS_COMPLETED
+
+
+def _persist_removed_repo_notes(
+    storage: StorageBackend,
+    job_id: str,
+    plan,
+) -> list[str]:
+    """Persist speaker cues for repos removed from GitHub (issue #394).
+
+    Writes a markdown artifact of host cues (one per removed repo) so the hosts
+    can comment on why each project was taken down.  No-op when no repo was
+    flagged removed.  Best-effort: storage failures are logged, never raised, so
+    they don't abort video generation.  Returns the notes (for logging/tests).
+    """
+    notes = removed_repo_speaker_notes(plan)
+    if not notes:
+        return []
+    body = "# Removed repos — speaker cues (issue #394)\n\n" + "\n".join(
+        f"- {note}" for note in notes
+    ) + "\n"
+    try:
+        storage.put_bytes(
+            removed_repos_notes_path(job_id),
+            body.encode("utf-8"),
+            "text/markdown; charset=utf-8",
+        )
+    except Exception:
+        logger.warning(
+            "failed to persist removed-repo notes for job_id=%s", job_id, exc_info=True
+        )
+    logger.info(
+        "job_id=%s: %d repo(s) removed from GitHub — speaker cues generated",
+        job_id,
+        len(notes),
+    )
+    return notes
 
 
 def _record_video_state(
@@ -351,6 +394,14 @@ def run_video_generation(
             # first content segment, right after the intro and before any repo is
             # discussed (issue #382).
             plan = prepend_weekly_segment(plan, job_id)
+
+            # Pre-flight each repo URL (HEAD) so repos GitHub has removed (e.g. a
+            # polymarket/spam bot like ``mktail``) are detected before recording.
+            # Removed repos get a "Repo removed" card instead of a wasted
+            # navigation, and speaker cues are persisted so the hosts can comment
+            # on why the project is gone (issue #394).
+            plan = annotate_removed_repos(plan)
+            _persist_removed_repo_notes(storage, job_id, plan)
 
             # Record segments. Pass the script's Source URL so failed repo
             # navigations can be retried and corrected against the source

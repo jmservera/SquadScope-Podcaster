@@ -5,10 +5,15 @@ from __future__ import annotations
 import yaml
 import pytest
 
+from unittest.mock import patch
+
 from podcaster.video.sync_plan import (
     RepoReference,
     EpisodePlan,
     VideoSegment,
+    REMOVED_REPO_REASON,
+    annotate_removed_repos,
+    check_repo_removed,
     extract_repo_urls,
     extract_source_url,
     fetch_repos_from_article,
@@ -18,6 +23,7 @@ from podcaster.video.sync_plan import (
     plan_from_script,
     plan_from_script_timed,
     prepend_weekly_segment,
+    removed_repo_speaker_notes,
     weekly_url_from_job_id,
     sort_repos_by_mention,
     _script_position,
@@ -952,3 +958,138 @@ class TestSnapVisualCues:
         assert result[0].time_seconds == pytest.approx(10.0)
         assert result[1].time_seconds == pytest.approx(20.0)
         assert result[2].time_seconds == pytest.approx(35.0)  # unchanged
+
+
+# --- Removed/bot repo pre-flight detection (issue #394) ---
+
+
+class _FakeResp:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class TestCheckRepoRemoved:
+    def test_404_is_removed(self):
+        with patch("podcaster.video.sync_plan.requests.head", return_value=_FakeResp(404)):
+            assert check_repo_removed("https://github.com/someuser/mktail") is True
+
+    def test_200_is_not_removed(self):
+        with patch("podcaster.video.sync_plan.requests.head", return_value=_FakeResp(200)):
+            assert check_repo_removed("https://github.com/microsoft/vscode") is False
+
+    def test_other_status_is_not_removed(self):
+        # Rate-limiting / server errors must not be mistaken for removal.
+        for status in (429, 500, 503):
+            with patch(
+                "podcaster.video.sync_plan.requests.head", return_value=_FakeResp(status)
+            ):
+                assert check_repo_removed("https://github.com/a/b") is False
+
+    def test_network_error_is_not_removed(self):
+        import requests as _requests
+
+        with patch(
+            "podcaster.video.sync_plan.requests.head",
+            side_effect=_requests.RequestException("boom"),
+        ):
+            assert check_repo_removed("https://github.com/a/b") is False
+
+    def test_empty_url_is_not_removed(self):
+        assert check_repo_removed("") is False
+
+
+class TestAnnotateRemovedRepos:
+    def _plan(self):
+        return EpisodePlan(
+            total_duration_seconds=30.0,
+            segments=(
+                VideoSegment(repo=RepoReference("microsoft", "vscode"),
+                             start_seconds=0.0, duration_seconds=10.0),
+                VideoSegment(repo=RepoReference("someuser", "mktail"),
+                             start_seconds=10.0, duration_seconds=10.0),
+                VideoSegment(repo=None, source_url="https://claracle.com/x",
+                             start_seconds=20.0, duration_seconds=10.0),
+            ),
+        )
+
+    def test_marks_only_removed_repo(self):
+        def checker(url, timeout=5.0):
+            return "mktail" in url
+
+        result = annotate_removed_repos(self._plan(), checker=checker)
+        segs = result.segments
+        assert segs[0].removed_reason is None  # vscode present
+        assert segs[1].removed_reason == REMOVED_REPO_REASON  # mktail removed
+        assert segs[1].is_removed is True
+        assert segs[2].removed_reason is None  # generic untouched
+        # Timing preserved exactly so audio stays in sync.
+        assert [s.start_seconds for s in segs] == [0.0, 10.0, 20.0]
+        assert result.total_duration_seconds == 30.0
+
+    def test_does_not_mutate_original(self):
+        plan = self._plan()
+        annotate_removed_repos(plan, checker=lambda url, timeout=5.0: True)
+        assert all(s.removed_reason is None for s in plan.segments)
+
+    def test_checker_exception_treated_as_present(self):
+        def checker(url, timeout=5.0):
+            raise RuntimeError("boom")
+
+        result = annotate_removed_repos(self._plan(), checker=checker)
+        assert all(s.removed_reason is None for s in result.segments)
+
+    def test_already_annotated_segment_left_untouched(self):
+        plan = EpisodePlan(
+            total_duration_seconds=10.0,
+            segments=(
+                VideoSegment(repo=RepoReference("a", "b"), start_seconds=0.0,
+                             duration_seconds=10.0, removed_reason="pre-set"),
+            ),
+        )
+        calls = []
+
+        def checker(url, timeout=5.0):
+            calls.append(url)
+            return False
+
+        result = annotate_removed_repos(plan, checker=checker)
+        assert calls == []  # not re-checked
+        assert result.segments[0].removed_reason == "pre-set"
+
+
+class TestRemovedRepoSpeakerNotes:
+    def test_notes_for_removed_repos_only(self):
+        plan = EpisodePlan(
+            total_duration_seconds=20.0,
+            segments=(
+                VideoSegment(repo=RepoReference("microsoft", "vscode"),
+                             start_seconds=0.0, duration_seconds=10.0),
+                VideoSegment(repo=RepoReference("someuser", "mktail"),
+                             start_seconds=10.0, duration_seconds=10.0,
+                             removed_reason=REMOVED_REPO_REASON),
+            ),
+        )
+        notes = removed_repo_speaker_notes(plan)
+        assert len(notes) == 1
+        assert "someuser/mktail" in notes[0]
+        assert REMOVED_REPO_REASON in notes[0]
+
+    def test_no_notes_when_none_removed(self):
+        plan = EpisodePlan(
+            total_duration_seconds=10.0,
+            segments=(VideoSegment(repo=RepoReference("a", "b"),
+                                   start_seconds=0.0, duration_seconds=10.0),),
+        )
+        assert removed_repo_speaker_notes(plan) == []
+
+
+class TestRemovedReasonSerialization:
+    def test_to_yaml_includes_removed_reason(self):
+        plan = EpisodePlan(
+            total_duration_seconds=10.0,
+            segments=(VideoSegment(repo=RepoReference("a", "b"), start_seconds=0.0,
+                                   duration_seconds=10.0,
+                                   removed_reason=REMOVED_REPO_REASON),),
+        )
+        data = yaml.safe_load(plan.to_yaml())
+        assert data["segments"][0]["removed_reason"] == REMOVED_REPO_REASON

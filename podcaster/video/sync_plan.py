@@ -87,6 +87,12 @@ class VideoSegment:
     duration_seconds: float
     repo: RepoReference | None = None
     source_url: str | None = None
+    # Set when a pre-flight check found the repo's GitHub page is gone (HTTP
+    # 404) — e.g. a polymarket/spam bot repo that GitHub removed (issue #394).
+    # Carries the human-readable reason shown to speakers and on the video card.
+    # The recorder skips navigation for these segments and renders a clean
+    # "Repo removed" card instead of wasting time on a dead URL.
+    removed_reason: str | None = None
 
     @property
     def end_seconds(self) -> float:
@@ -96,6 +102,11 @@ class VideoSegment:
     def is_generic(self) -> bool:
         """True when this segment has no associated repository."""
         return self.repo is None
+
+    @property
+    def is_removed(self) -> bool:
+        """True when a pre-flight check flagged the repo as removed (issue #394)."""
+        return self.removed_reason is not None
 
     @property
     def label(self) -> str:
@@ -121,6 +132,7 @@ class EpisodePlan:
                     "repo_name": seg.repo.name if seg.repo is not None else None,
                     "generic": seg.is_generic,
                     "source_url": seg.source_url,
+                    "removed_reason": seg.removed_reason,
                     "start_seconds": round(seg.start_seconds, 3),
                     "duration_seconds": round(seg.duration_seconds, 3),
                     "end_seconds": round(seg.end_seconds, 3),
@@ -547,6 +559,136 @@ def plan_from_script_timed(
     )
 
 
+# --- Removed/bot repo pre-flight detection (issue #394) ---
+
+# Speaker note + on-screen card text shown for a repo whose GitHub page returns
+# HTTP 404 during the pre-flight check.  Some repos (e.g. ``mktail``, a
+# polymarket bot) are taken down by GitHub for spam/abuse; detecting this before
+# recording avoids wasting recording time on a dead URL and lets the hosts
+# comment on why the project is gone.
+REMOVED_REPO_REASON = "This repo was removed from GitHub"
+
+# Timeout (seconds) for the per-repo HEAD pre-flight check.
+_REMOVED_CHECK_TIMEOUT = 5.0
+
+
+def check_repo_removed(url: str, timeout: float = _REMOVED_CHECK_TIMEOUT) -> bool:
+    """Return True when *url* looks like a removed GitHub repo (HTTP 404).
+
+    Issues a lightweight ``HEAD`` request and treats **only** a 404 as
+    "removed".  Any other status (200/3xx redirects, 429, 5xx, …) or a network
+    error returns ``False`` so a healthy, rate-limited, or merely slow repo is
+    never mistaken for a removed one — the recorder still attempts it and has
+    its own recovery flow (issues #378, #386).
+
+    Note: GitHub also returns 404 for *private* repos to unauthenticated
+    callers.  In this pipeline all referenced repos are public open-source
+    projects, so a 404 reliably means the repo was taken down/renamed.
+    """
+    if not url:
+        return False
+    try:
+        resp = requests.head(url, timeout=timeout, allow_redirects=True)
+    except requests.RequestException as exc:  # noqa: BLE001 — best-effort probe
+        logger.warning("Removed-repo pre-check failed for %s: %s", url, exc)
+        return False
+    return resp.status_code == 404
+
+
+def annotate_removed_repos(
+    plan: EpisodePlan,
+    *,
+    checker=None,
+    timeout: float = _REMOVED_CHECK_TIMEOUT,
+) -> EpisodePlan:
+    """Return a copy of *plan* with removed repos annotated (issue #394).
+
+    Each repo segment's URL is pre-checked (HEAD) via *checker*.  When a repo
+    is found removed (HTTP 404) the corresponding segment gets
+    ``removed_reason=REMOVED_REPO_REASON`` so the recorder skips navigation and
+    shows a "Repo removed" card instead of attempting a doomed recording.
+
+    Generic segments, already-annotated segments, and excluded repos are left
+    untouched.  Segment timing is preserved exactly so the audio stays in sync.
+
+    Args:
+        plan: The episode plan to annotate.
+        checker: Callable ``(url, timeout) -> bool`` returning True when the
+            repo is removed.  Defaults to :func:`check_repo_removed` (resolved
+            at call time so it can be monkeypatched); override in tests to avoid
+            network calls.
+        timeout: Per-repo HEAD timeout passed to *checker*.
+
+    Returns:
+        A new :class:`EpisodePlan`; the original is not mutated.
+    """
+    if checker is None:
+        checker = check_repo_removed
+    new_segments: list[VideoSegment] = []
+    removed_count = 0
+    for seg in plan.segments:
+        if seg.repo is None or seg.removed_reason is not None:
+            new_segments.append(seg)
+            continue
+        try:
+            removed = checker(seg.repo.url, timeout=timeout)
+        except Exception:  # noqa: BLE001 — never let a probe abort planning
+            logger.exception(
+                "Removed-repo check raised for %s; assuming present", seg.repo.url
+            )
+            removed = False
+        if removed:
+            removed_count += 1
+            logger.info(
+                "Repo %s pre-flight 404 — marking segment as removed (issue #394)",
+                seg.repo.url,
+            )
+            new_segments.append(
+                VideoSegment(
+                    start_seconds=seg.start_seconds,
+                    duration_seconds=seg.duration_seconds,
+                    repo=seg.repo,
+                    source_url=seg.source_url,
+                    removed_reason=REMOVED_REPO_REASON,
+                )
+            )
+        else:
+            new_segments.append(seg)
+
+    if removed_count:
+        logger.info(
+            "Annotated %d/%d repo segment(s) as removed before recording",
+            removed_count,
+            sum(1 for s in plan.segments if s.repo is not None),
+        )
+    return EpisodePlan(
+        total_duration_seconds=plan.total_duration_seconds,
+        segments=tuple(new_segments),
+    )
+
+
+def speaker_note_for_removed_repo(repo: RepoReference, reason: str) -> str:
+    """Build a one-line speaker cue for a removed repo (issue #394)."""
+    return (
+        f"[{repo.owner}/{repo.name}] {reason} — likely flagged as a "
+        f"bot/spam project. Briefly note that it's gone and move on."
+    )
+
+
+def removed_repo_speaker_notes(plan: EpisodePlan) -> list[str]:
+    """Return ordered speaker cues for every removed repo segment (issue #394).
+
+    Empty when no segment was annotated by :func:`annotate_removed_repos`.
+    These notes are surfaced to the hosts so they can comment on why a project
+    was taken down rather than silently skipping it.
+    """
+    notes: list[str] = []
+    for seg in plan.segments:
+        if seg.removed_reason is not None and seg.repo is not None:
+            notes.append(speaker_note_for_removed_repo(seg.repo, seg.removed_reason))
+    return notes
+
+
 # --- claracle.com weekly page as the first content segment (issue #382) ---
 
 # The weekly page is shown after the intro, before the hosts discuss any repo.
@@ -636,6 +778,7 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
             duration_seconds=seg.duration_seconds,
             repo=seg.repo,
             source_url=seg.source_url,
+            removed_reason=seg.removed_reason,
         )
         for seg in segments
     ]
@@ -849,6 +992,7 @@ def snap_episode_plan_to_audio(
                 source_url=seg.source_url,
                 start_seconds=new_start,
                 duration_seconds=new_dur,
+                removed_reason=seg.removed_reason,
             )
         )
 
