@@ -22,8 +22,9 @@ Pipeline integration (all graceful — a missing/dormant feature is a no-op):
    returns :class:`SectionCardInsert` records for
    :func:`podcaster.video.video_compose.compose_video`.
 
-Constraints (issue #377): cards are 2–3 s with 0.5 s fades, professional and
-consistent with the intro style, and absent sections are skipped without error.
+Constraints: section metadata from issue #417 defaults cards to 0.75 s (kept in
+the 0.5–1.0 s range), professional and consistent with the intro style, and
+absent sections are skipped without error.
 
 Related: jmservera/SquadScope-Podcaster#377 (parent epic #372, branding #295).
 """
@@ -51,9 +52,9 @@ logger = logging.getLogger(__name__)
 
 # --- Constants ---
 
-#: Default on-screen duration of a section card, in milliseconds (issue #377
-#: asks for 2–3 s).
-SECTION_CARD_DURATION_MS = 2500
+#: Default on-screen duration of a section card, in milliseconds (issue #417
+#: asks for 0.5–1.0 s with a 0.75 s default).
+SECTION_CARD_DURATION_MS = 750
 
 #: Fade-in / fade-out length for each card, in milliseconds (issue #377 asks for
 #: 0.5 s transitions).
@@ -161,7 +162,7 @@ class SectionCardInsert:
 # First GitHub repo URL after a header (mirrors sync_plan's repo detection but we
 # only need the position/owner/name to map a section to its opening segment).
 _GITHUB_URL_RE = re.compile(
-    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)",
+    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
 )
 
 # Strip leading list/heading/emphasis/bracket decoration and an optional
@@ -469,7 +470,7 @@ def generate_section_card(
         marker: A :class:`SectionMarker` or a bare section name string.  Strings
             are looked up in :data:`KNOWN_SECTIONS` for emoji/accent enrichment.
         output_path: Destination MP4 file path.
-        config: Card rendering configuration (defaults to 2.5 s / 0.5 s fades).
+        config: Card rendering configuration (defaults to 0.75 s / 0.5 s fades).
         ffmpeg_bin: Explicit drawtext-capable ffmpeg binary.  Auto-detected via
             :func:`podcaster.video.intro_outro._get_drawtext_ffmpeg` when ``None``.
         runner: Command runner for test injection.  Uses

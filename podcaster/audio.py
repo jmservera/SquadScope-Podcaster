@@ -145,6 +145,8 @@ def render_distribution_audio(
     mix_spec: MusicMixSpec | None = None,
     segment_extension: str = ".mp3",
     segment_durations_out: list[float] | None = None,
+    precomputed_segment_durations: list[float] | None = None,
+    backchannels: list["BackchannelMixItem"] | None = None,
 ) -> tuple[Path, Path]:
     runner = runner or _run_command
     wav_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,21 +156,35 @@ def render_distribution_audio(
     tmp_dir.mkdir(parents=True, exist_ok=False)
     try:
         segment_paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
-        segment_durations = None
-        if segment_durations_out is not None and not (mix_spec is not None and (intro_music or outro_music)):
+        segment_durations = list(precomputed_segment_durations) if precomputed_segment_durations is not None else None
+        if segment_durations is not None and len(segment_durations) != len(segment_paths):
+            raise ValueError("precomputed_segment_durations must be parallel to segments")
+        if (
+            segment_durations_out is not None
+            and segment_durations is None
+            and not (mix_spec is not None and (intro_music or outro_music))
+        ):
             segment_durations = [_probe_duration_seconds(path, runner) for path in segment_paths]
+        if segment_durations_out is not None and segment_durations is not None:
             segment_durations_out.extend(segment_durations)
 
         if mix_spec is not None and (intro_music or outro_music):
             _validate_mix_spec_for_segments(mix_spec, len(segment_paths), intro_music=intro_music, outro_music=outro_music)
-            segment_durations = [_probe_duration_seconds(path, runner) for path in segment_paths]
-            if segment_durations_out is not None:
+            if segment_durations is None:
+                segment_durations = [_probe_duration_seconds(path, runner) for path in segment_paths]
+                if segment_durations_out is not None:
+                    segment_durations_out.extend(segment_durations)
+            elif segment_durations_out is not None and not segment_durations_out:
                 segment_durations_out.extend(segment_durations)
             speech_intermediate = tmp_dir / "speech.wav"
             _concat_audio_files(segment_paths, speech_intermediate, runner, gap_seconds=gap_seconds)
+            # Backchannels overlay the raw speech body (before the music delay),
+            # so their speech-relative start times stay correct once the music
+            # mixer shifts the whole speech track.
+            speech_for_music = _apply_backchannels(speech_intermediate, backchannels, tmp_dir, runner)
             mixed_intermediate = tmp_dir / "episode.wav"
             _mix_music_with_speech(
-                speech_intermediate,
+                speech_for_music,
                 segment_durations,
                 mixed_intermediate,
                 runner,
@@ -178,6 +194,27 @@ def render_distribution_audio(
                 mix_spec=mix_spec,
             )
             _two_pass_loudnorm_wav(mixed_intermediate, wav_output_path, runner)
+        elif backchannels:
+            # Concatenate the speech body, overlay backchannels, then wrap with
+            # any (un-mixed) intro/outro music for backward-compatible layout.
+            speech_intermediate = tmp_dir / "speech.wav"
+            _concat_audio_files(segment_paths, speech_intermediate, runner, gap_seconds=gap_seconds)
+            speech_with_bc = _apply_backchannels(speech_intermediate, backchannels, tmp_dir, runner)
+            ordered_paths = []
+            if intro_music:
+                ordered_paths.append(Path(intro_music))
+            ordered_paths.append(speech_with_bc)
+            if outro_music:
+                ordered_paths.append(Path(outro_music))
+            if len(ordered_paths) == 1:
+                # No intro/outro music to wrap: the backchannel-mixed speech is
+                # already the full episode, so skip the redundant single-input
+                # concat pass.
+                intermediate = ordered_paths[0]
+            else:
+                intermediate = tmp_dir / "episode.wav"
+                _concat_audio_files(ordered_paths, intermediate, runner, gap_seconds=gap_seconds)
+            _two_pass_loudnorm_wav(intermediate, wav_output_path, runner)
         else:
             ordered_paths: list[Path] = []
             if intro_music:
@@ -195,6 +232,25 @@ def render_distribution_audio(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _apply_backchannels(
+    speech_path: Path,
+    backchannels: list["BackchannelMixItem"] | None,
+    tmp_dir: Path,
+    runner: CommandRunner,
+) -> Path:
+    """Overlay backchannels on ``speech_path`` when any are present.
+
+    Returns the path to use as the speech body — the original when there are no
+    backchannels, otherwise a new mixed file.
+    """
+
+    if not backchannels:
+        return speech_path
+    mixed = tmp_dir / "speech-backchannels.wav"
+    mix_backchannels(speech_path, list(backchannels), mixed, runner)
+    return mixed
+
+
 def stitch_segments(
     segments: list[bytes],
     output_path: Path,
@@ -205,6 +261,7 @@ def stitch_segments(
     outro_music: Path | None = None,
     mix_spec: MusicMixSpec | None = None,
     segment_extension: str = ".mp3",
+    backchannels: list["BackchannelMixItem"] | None = None,
 ) -> Path:
     """Concatenate per-voice audio segments into one normalized episode MP3.
 
@@ -242,6 +299,7 @@ def stitch_segments(
         outro_music=outro_music,
         mix_spec=mix_spec,
         segment_extension=segment_extension,
+        backchannels=backchannels,
     )
     return output_path
 
@@ -459,6 +517,119 @@ def _mix_music_with_speech(
             str(output_path),
         ]
     )
+
+
+@dataclass(frozen=True)
+class BackchannelMixItem:
+    """A single backchannel clip to overlay on a speech track.
+
+    ``start_seconds`` is the absolute placement time in the speech timeline;
+    ``gain_db`` is the (negative) reduction applied under the main speaker;
+    ``max_duration_ms`` hard-caps the clip length so a stray long clip cannot
+    bleed over the next sentence.
+    """
+
+    clip_path: Path
+    start_seconds: float
+    gain_db: float = -16.0
+    max_duration_ms: int = 600
+
+    def __post_init__(self) -> None:
+        if self.start_seconds < 0:
+            raise ValueError("backchannel start_seconds must be non-negative")
+        if self.gain_db > 0:
+            raise ValueError("backchannel gain_db must be 0 or a negative dB reduction")
+        if self.max_duration_ms <= 0:
+            raise ValueError("backchannel max_duration_ms must be positive")
+
+
+def build_backchannel_filter_complex(items: list[BackchannelMixItem]) -> str:
+    """Build the ffmpeg ``filter_complex`` overlaying backchannels on speech.
+
+    Input 0 is the base speech track; inputs 1..N are the backchannel clips.
+    Each clip is trimmed to its ``max_duration_ms``, gain-reduced with an
+    ``eval=frame`` volume filter (honoring the repo rule that all time-aware
+    volume filters use frame evaluation), delayed to its placement time, and
+    amixed onto the running program **two inputs at a time** — never an N-input
+    amix — so clip amplitude is not diluted.
+    """
+
+    if not items:
+        return "[0:a]aresample=44100,aformat=channel_layouts=mono[out]"
+
+    filters = ["[0:a]aresample=44100,aformat=channel_layouts=mono[base]"]
+    current = "[base]"
+    for position, item in enumerate(items):
+        input_index = position + 1
+        clip_label = f"[bc{position}]"
+        gain_expr = _backchannel_volume_expression(item)
+        filters.append(
+            f"[{input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
+            f"atrim=end={_ffmpeg_number(item.max_duration_ms / 1000.0)},asetpts=PTS-STARTPTS,"
+            f"volume='{gain_expr}':eval=frame,"
+            f"adelay={_ffmpeg_milliseconds(item.start_seconds)}:all=1{clip_label}"
+        )
+        is_last = position == len(items) - 1
+        mix_label = "[out]" if is_last else f"[mix{position}]"
+        filters.append(
+            f"{current}{clip_label}amix=inputs=2:normalize=0:duration=first:weights='1 1'{mix_label}"
+        )
+        current = mix_label
+
+    return ";".join(filters)
+
+
+def _backchannel_volume_expression(item: BackchannelMixItem) -> str:
+    """Constant gain gated to the clip window via a time expression.
+
+    Expressed as a time-conditional so the filter genuinely uses ``eval=frame``
+    and the clip is silenced past its ``max_duration_ms`` even if the source is
+    longer than the trim (belt-and-suspenders).
+    """
+
+    gain = _db_to_gain(item.gain_db)
+    window_seconds = item.max_duration_ms / 1000.0
+    return f"if(lt(t,{_ffmpeg_number(window_seconds)}),{_ffmpeg_number(gain)},0)"
+
+
+def mix_backchannels(
+    speech_path: Path,
+    items: list[BackchannelMixItem],
+    output_path: Path,
+    runner: CommandRunner | None = None,
+) -> Path:
+    """Overlay backchannel clips on ``speech_path`` and write ``output_path``.
+
+    The base speech length is preserved (``duration=first``); backchannels are
+    quiet reactions mixed under the main speaker. Returns ``output_path``. When
+    ``items`` is empty the speech is passed through unchanged (still normalized
+    to mono/44.1 kHz) so callers can call unconditionally.
+    """
+
+    runner = runner or _run_command
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    inputs: list[str] = ["-i", str(speech_path)]
+    for item in items:
+        inputs.extend(["-i", str(item.clip_path)])
+    filter_complex = build_backchannel_filter_complex(items)
+    runner(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            *inputs,
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[out]",
+            "-ac",
+            str(TARGET_CHANNELS),
+            "-ar",
+            str(TARGET_SAMPLE_RATE_HZ),
+            str(output_path),
+        ]
+    )
+    return output_path
 
 
 def _validate_mix_spec_for_segments(

@@ -49,6 +49,7 @@ from podcaster.video.distribution import (
     VideoDistributionConfig,
     distribute_video,
 )
+from podcaster.video.intermediates import create_intermediate_store
 from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
@@ -315,6 +316,11 @@ def run_video_generation(
     current = now or datetime.now(timezone.utc)
     dist_config = config or VideoDistributionConfig.from_env()
 
+    # Blob-backed checkpoint/resume store for intermediates (issue #410). When no
+    # scratch container is configured (local dev / tests) this is disabled and
+    # every operation is a no-op, preserving the legacy all-local-disk path.
+    intermediates = create_intermediate_store(job_id)
+
     # Load manifest
     raw_manifest = storage.get_bytes(manifest_path(job_id))
     if raw_manifest is None:
@@ -343,6 +349,7 @@ def run_video_generation(
     if raw_script is None:
         raise TransientVideoError(f"no script for job_id={job_id}")
     script = raw_script.decode("utf-8")
+    sections_metadata = _load_sections_metadata(storage, job_id)
 
     # The target duration drives the segment plan. We prefer the REAL podcast
     # MP3 duration (probed below, inside the temp dir) so the video length
@@ -424,6 +431,7 @@ def run_video_generation(
                     output_dir=output_dir,
                     headless=True,
                     source_url=extract_source_url(script),
+                    intermediates=intermediates,
                 )
 
             # Compose final MP4
@@ -434,7 +442,12 @@ def run_video_generation(
             # Dormant + graceful: when the script has no section headers (the
             # current default) no cards are produced and composition is
             # unchanged.  Disable explicitly with VIDEO_SECTION_CARDS=0.
-            section_cards = _build_section_cards(script, recording.recorded, output_dir)
+            section_cards = _build_section_cards(
+                script,
+                recording.recorded,
+                output_dir,
+                sections_metadata=sections_metadata,
+            )
 
             with timings.phase("composition"):
                 compose_result = compose_video(
@@ -446,6 +459,7 @@ def run_video_generation(
                     dog_logo=dog_logo_cfg,
                     audio_duration=audio_duration,
                     section_cards=section_cards,
+                    intermediates=intermediates,
                 )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
@@ -489,6 +503,11 @@ def run_video_generation(
                     "spotify_upload_updated": dist_result.spotify_upload_updated,
                 },
             })
+
+            # Intermediates are no longer needed once the episode is published;
+            # delete the job's scratch blobs (issue #410).  Best-effort — the
+            # 7-day lifecycle policy on the scratch container is the safety net.
+            intermediates.cleanup()
 
             return VideoOutcome(
                 job_id=job_id,
@@ -570,7 +589,44 @@ def _resolve_dog_logo(manifest: dict[str, Any]):
     return DogLogoConfig.from_dict(podcast_config.get("dog_logo"))
 
 
-def _build_section_cards(script: str, recorded, output_dir: Path):
+def _load_sections_metadata(storage: StorageBackend, job_id: str) -> list[dict[str, Any]]:
+    """Load persisted ``sections.json`` metadata when present."""
+    raw = storage.get_bytes(f"jobs/{job_id}/sections.json")
+    if raw is None:
+        return []
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        logger.warning("invalid sections metadata for job_id=%s; using script fallback", job_id)
+        return []
+    if isinstance(doc, dict) and isinstance(doc.get("sections"), list):
+        return [item for item in doc["sections"] if isinstance(item, dict)]
+    if isinstance(doc, list):
+        return [item for item in doc if isinstance(item, dict)]
+    return []
+
+
+def _section_card_duration_seconds(sections_metadata: list[dict[str, Any]]) -> float:
+    """Return section-card duration from metadata, clamped to issue #417 bounds."""
+    from podcaster.sections import DEFAULT_TITLE_CARD_DURATION_SECONDS
+
+    for section in sections_metadata:
+        title_card = section.get("title_card")
+        if not isinstance(title_card, dict):
+            continue
+        duration = title_card.get("duration_seconds")
+        if isinstance(duration, (int, float)):
+            return min(1.0, max(0.5, float(duration)))
+    return DEFAULT_TITLE_CARD_DURATION_SECONDS
+
+
+def _build_section_cards(
+    script: str,
+    recorded,
+    output_dir: Path,
+    *,
+    sections_metadata: list[dict[str, Any]] | None = None,
+):
     """Build section title card inserts for the recorded content (issue #377).
 
     Detects editorial section headers in *script*, maps each to the recorded
@@ -588,16 +644,19 @@ def _build_section_cards(script: str, recorded, output_dir: Path):
         return []
 
     try:
-        from podcaster.video.section_cards import build_section_card_inserts
+        from podcaster.video.section_cards import SectionCardConfig, build_section_card_inserts
 
         segment_repo_urls = [
             rec.segment.repo.url if rec.segment.repo is not None else None
             for rec in recorded
         ]
+        duration_seconds = _section_card_duration_seconds(sections_metadata or [])
+        config = SectionCardConfig(duration_ms=int(round(duration_seconds * 1000)))
         return build_section_card_inserts(
             script,
             segment_repo_urls,
             output_dir / "section_cards",
+            config=config,
         )
     except Exception:  # pragma: no cover - defensive: cards must never block video
         logger.exception("section title card generation failed; continuing without cards")

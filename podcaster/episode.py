@@ -20,20 +20,23 @@ from __future__ import annotations
 
 import logging
 import random
+import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from uuid import uuid4
 
 log = logging.getLogger(__name__)
 
 from podcaster.audio import (
     AudioValidationResult,
+    BackchannelMixItem,
     MusicMixSpec,
     compute_segment_timeline,
     probe_audio,
     render_distribution_audio,
     validate_audio_outputs,
 )
-from podcaster.config import PodcastConfig
+from podcaster.config import BackchannelConfig, PodcastConfig
 from podcaster.generation import (
     AI_VOICE_DISCLOSURE,
     HOST_A_NAME,
@@ -46,7 +49,9 @@ from podcaster.generation import (
     checksum,
 )
 from podcaster.hooks import HostHooks, _GENERIC_HOOKS
+from podcaster.interaction import assign_turn_ids, build_interaction_map, resolve_placements
 from podcaster.sanitization import flag_injection, neutralize
+from podcaster.sections import match_section_header
 from podcaster.tts import (
     AUTH_MODE_MANAGED_IDENTITY,
     PROVIDER,
@@ -292,6 +297,9 @@ def parse_script_segments(script: str, podcast_config: PodcastConfig | None = No
     for raw_line in source.splitlines():
         line = raw_line.strip()
         if not line:
+            continue
+        # Non-spoken ``## Section:`` headers (#417) must never reach TTS.
+        if match_section_header(line) is not None:
             continue
         if line.startswith(host_a_label + ":"):
             text = line[len(host_a_label) + 1 :].strip()
@@ -597,6 +605,7 @@ def synthesize_episode(
     intro_music: Path | None = None,
     outro_music: Path | None = None,
     music_mix_spec: MusicMixSpec | None = None,
+    backchannel_config: BackchannelConfig | None = None,
 ) -> EpisodeAudio:
     """Synthesize the two-voice script into validated WAV and MP3 artifacts.
 
@@ -622,20 +631,52 @@ def synthesize_episode(
 
     output_path = Path(output_path)
     wav_output_path = output_path.with_suffix(".wav")
+    backchannel_items: list[BackchannelMixItem] | None = None
+    backchannel_tmp: Path | None = None
+    precomputed_segment_durations: list[float] | None = None
+    if backchannel_config and backchannel_config.enabled:
+        backchannel_tmp = output_path.parent / f".backchannels-{output_path.stem}-{uuid4().hex}"
+        backchannel_tmp.mkdir(parents=True, exist_ok=False)
+        try:
+            precomputed_segment_durations = _probe_existing_segment_durations(
+                audio_segments,
+                backchannel_tmp / "segments",
+                runner,
+                segment_extension=effective_config.audio_extension,
+            )
+            backchannel_items = _build_backchannel_mix_items(
+                segments,
+                precomputed_segment_durations,
+                effective_config,
+                decision,
+                backchannel_config,
+                backchannel_tmp,
+                token_provider=token_provider,
+                transport=transport,
+            )
+        except Exception:
+            shutil.rmtree(backchannel_tmp, ignore_errors=True)
+            raise
     # Use provided mix_spec; fall back to default when music paths are given without one.
     effective_mix_spec = music_mix_spec or (MusicMixSpec() if (intro_music or outro_music) else None)
     segment_durations: list[float] = []
-    render_distribution_audio(
-        audio_segments,
-        wav_output_path,
-        output_path,
-        runner=runner,
-        intro_music=intro_music,
-        outro_music=outro_music,
-        mix_spec=effective_mix_spec,
-        segment_extension=effective_config.audio_extension,
-        segment_durations_out=segment_durations,
-    )
+    try:
+        render_distribution_audio(
+            audio_segments,
+            wav_output_path,
+            output_path,
+            runner=runner,
+            intro_music=intro_music,
+            outro_music=outro_music,
+            mix_spec=effective_mix_spec,
+            segment_extension=effective_config.audio_extension,
+            segment_durations_out=segment_durations,
+            precomputed_segment_durations=precomputed_segment_durations,
+            backchannels=backchannel_items,
+        )
+    finally:
+        if backchannel_tmp is not None:
+            shutil.rmtree(backchannel_tmp, ignore_errors=True)
     data = output_path.read_bytes()
     wav_data = wav_output_path.read_bytes()
     digest = checksum(data)
@@ -671,6 +712,69 @@ def synthesize_episode(
         voices=tuple(turn.voice for turn in plan),
         timestamps=section_timestamps,
     )
+
+
+def _build_backchannel_mix_items(
+    segments: list[tuple[str, str]],
+    durations: list[float],
+    config: TtsConfig,
+    decision: dict[str, object],
+    backchannel_config: BackchannelConfig,
+    tmp_dir: Path,
+    *,
+    token_provider: TokenProvider | None,
+    transport: Transport | None,
+) -> list[BackchannelMixItem]:
+    turns = assign_turn_ids(segments)
+    interaction_map = build_interaction_map(turns, durations, backchannel_config)
+    if not interaction_map:
+        return []
+
+    clips: dict[object, bytes] = {}
+    for interaction in interaction_map:
+        key = (interaction.speaker, interaction.text)
+        if key in clips:
+            continue
+        clip_plan = build_voice_plan([(interaction.speaker, interaction.text)], config)
+        clips[key] = synthesize_two_voice(
+            clip_plan,
+            config,
+            decision,
+            token_provider=token_provider,
+            transport=transport,
+        )[0]
+
+    placements = resolve_placements(interaction_map, turns, durations, clips)
+    items: list[BackchannelMixItem] = []
+    clip_dir = tmp_dir / "clips"
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    for index, placement in enumerate(placements):
+        clip_path = clip_dir / f"backchannel-{index:03d}{config.audio_extension}"
+        clip_path.write_bytes(placement.clip)
+        items.append(
+            BackchannelMixItem(
+                clip_path=clip_path,
+                start_seconds=placement.start_seconds,
+                gain_db=placement.gain_db,
+                max_duration_ms=placement.max_duration_ms,
+            )
+        )
+    return items
+
+
+def _probe_existing_segment_durations(
+    segments: list[bytes],
+    tmp_dir: Path,
+    runner,
+    *,
+    segment_extension: str,
+) -> list[float]:
+    from podcaster.audio import _probe_duration_seconds, _run_command, _write_segments
+
+    tmp_dir.mkdir(parents=True, exist_ok=False)
+    paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
+    run = runner or _run_command
+    return [_probe_duration_seconds(path, run) for path in paths]
 
 
 def _apply_podcast_config(config: TtsConfig, podcast_config: PodcastConfig | None) -> TtsConfig:

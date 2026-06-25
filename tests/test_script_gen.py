@@ -287,6 +287,11 @@ class TestBuildUserPrompt:
         assert "2026-W24" in prompt
         assert "Amazing Article" in prompt
 
+    def test_allows_required_section_headers(self):
+        prompt = _build_user_prompt("2026-W24", "Amazing Article", "Content here.")
+        assert 'required non-spoken "## Section: <Title>" headers' in prompt
+        assert "No other headers" in prompt
+
     def test_truncates_long_content(self):
         long = "a" * (MAX_ARTICLE_CHARS + 5000)
         prompt = _build_user_prompt("w1", "title", long)
@@ -727,3 +732,98 @@ class TestOwnershipToneRepairIntegration:
         )
         assert "OWNERSHIP_TONE_REVIEW_REQUIRED" in script
 
+
+class TestSectionGuidance:
+    def test_prompt_includes_section_structure(self):
+        prompt = _build_system_prompt(PodcastConfig())
+        assert "SECTION STRUCTURE" in prompt
+        assert "## Section: <Title>" in prompt
+        assert "3-5 SECTIONS" in prompt
+        assert "at least 4 host turns" in prompt
+
+    def test_format_rules_allow_section_headers(self):
+        prompt = _build_system_prompt(PodcastConfig())
+        # Rule 2 must carve out the section-header exception.
+        assert "## Section:" in prompt
+        assert "non-spoken" in prompt.lower()
+
+    def test_generate_script_with_valid_sections(self):
+        dialogue = (
+            "Theo: Welcome to Claracle, your weekly developer trends show today!\n"
+            "Vera: I am an AI-generated voice, glad to be here with you.\n"
+            "## Section: AI Frameworks Showdown\n"
+            "Theo: First up, three frameworks fought hard for the spotlight this week here.\n"
+            "Vera: The contrast in developer experience between them was genuinely striking to me.\n"
+            "Theo: I kept coming back to how different their philosophies really are here.\n"
+            "Vera: Exactly, and the community response tells an interesting story this week.\n"
+            "## Section: Agents Move Into Production\n"
+            "Theo: Speaking of momentum, agents are finally shipping to real users now.\n"
+            "Vera: Teams have moved well past the demo stage into production at last.\n"
+            "Theo: The reliability improvements over the last quarter are remarkable to watch.\n"
+            "Vera: It is a genuine shift in how we build software together now.\n"
+        )
+        script = generate_script(
+            week="2026-W24",
+            article_title="Test Article",
+            article_url="https://example.com/a",
+            article_content="An article about frameworks and agents.",
+            config=_mock_config(),
+            token_provider=_fake_token_provider,
+            transport=_make_transport(dialogue),
+        )
+        assert "## Section: AI Frameworks Showdown" in script
+        assert "## Section: Agents Move Into Production" in script
+
+    def test_generate_script_rejects_single_section(self):
+        dialogue = (
+            "## Section: The Only Section\n"
+            "Theo: We only have one section here which is not allowed at all.\n"
+            "Vera: That should trigger a blocking validation error for sure now.\n"
+            "Theo: Right, the rules require at least two sections per episode here.\n"
+            "Vera: Indeed, so this script must be rejected by the validator now.\n"
+        )
+        with pytest.raises(ValueError, match="section count"):
+            generate_script(
+                week="2026-W24",
+                article_title="Test Article",
+                article_url="https://example.com/a",
+                article_content="content",
+                config=_mock_config(),
+                token_provider=_fake_token_provider,
+                transport=_make_transport(dialogue),
+            )
+
+    def test_generate_script_rejects_thin_section(self):
+        dialogue = (
+            "## Section: AI Frameworks Showdown\n"
+            "Theo: First up, frameworks fought for the spotlight this week here today.\n"
+            "Vera: The contrast was striking between all of them this week here.\n"
+            "Theo: I kept thinking about their philosophies all week long here.\n"
+            "Vera: The community response was telling this week for sure now.\n"
+            "## Section: Agents Move Into Production\n"
+            "Theo: Agents are shipping now to real users at long last today.\n"
+            "Vera: Only two turns in this section which is too few here.\n"
+        )
+        with pytest.raises(ValueError, match="host turn"):
+            generate_script(
+                week="2026-W24",
+                article_title="Test Article",
+                article_url="https://example.com/a",
+                article_content="content",
+                config=_mock_config(),
+                token_provider=_fake_token_provider,
+                transport=_make_transport(dialogue),
+            )
+
+    def test_legacy_script_without_sections_still_works(self):
+        dialogue = "Theo: Welcome!\nVera: Great to be here."
+        script = generate_script(
+            week="2026-W24",
+            article_title="Test Article",
+            article_url="https://example.com/a",
+            article_content="content",
+            config=_mock_config(),
+            token_provider=_fake_token_provider,
+            transport=_make_transport(dialogue),
+        )
+        assert "Theo: Welcome!" in script

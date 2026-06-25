@@ -24,6 +24,7 @@ from podcaster.video.job_runner import (
     VideoOutcome,
     _already_processed,
     _build_section_cards,
+    _section_card_duration_seconds,
     _resolve_anchor_id,
     _resolve_dog_logo,
     drain,
@@ -565,6 +566,47 @@ class TestRunVideoGeneration:
         manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
         assert manifest["generation"]["video_runner"]["status"] == STATUS_FAILED
 
+    @patch("podcaster.video.job_runner.create_intermediate_store")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_cleans_up_intermediates_after_publish(
+        self, mock_compose, mock_record, mock_store_factory, storage, dry_config
+    ):
+        """Scratch intermediates are deleted once the episode publishes (#410)."""
+        job_id = "video-cleanup"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {"article_title": "Test Episode"},
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0,
+                segment_count=2, has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+
+        fake_store = MagicMock()
+        fake_store.enabled = True
+        mock_store_factory.return_value = fake_store
+
+        outcome = run_video_generation(job_id, storage, config=dry_config)
+        assert outcome.status == STATUS_COMPLETED
+
+        # The intermediates store is built for the job and cleaned up on success,
+        # and is threaded into both pipeline stages.
+        mock_store_factory.assert_called_once_with(job_id)
+        fake_store.cleanup.assert_called_once()
+        assert mock_record.call_args.kwargs["intermediates"] is fake_store
+        assert mock_compose.call_args.kwargs["intermediates"] is fake_store
+
 
 # --- Process Message Tests ---
 
@@ -738,10 +780,21 @@ class TestBuildSectionCards:
         ) as gen, patch(
             "podcaster.video.section_cards._get_drawtext_ffmpeg", return_value="ffmpeg"
         ):
-            inserts = _build_section_cards(script, recs, tmp_path)
+            inserts = _build_section_cards(
+                script,
+                recs,
+                tmp_path,
+                sections_metadata=[{"title_card": {"duration_seconds": 0.75}}],
+            )
         assert [i.name for i in inserts] == ["Trends", "Signal & Noise"]
         assert [i.before_index for i in inserts] == [0, 1]
+        assert [i.duration_seconds for i in inserts] == [0.75, 0.75]
         assert gen.call_count == 2
+
+    def test_section_card_duration_clamped_to_issue_bounds(self):
+        assert _section_card_duration_seconds([{"title_card": {"duration_seconds": 0.2}}]) == 0.5
+        assert _section_card_duration_seconds([{"title_card": {"duration_seconds": 2.5}}]) == 1.0
+        assert _section_card_duration_seconds([]) == 0.75
 
     def test_generation_failure_is_swallowed(self, tmp_path, monkeypatch):
         monkeypatch.delenv("VIDEO_SECTION_CARDS", raising=False)
