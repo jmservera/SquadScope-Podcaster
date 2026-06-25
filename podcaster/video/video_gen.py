@@ -77,6 +77,21 @@ RECORDING_CHROMIUM_ARGS = [
     "--disable-backgrounding-occluded-windows",
 ]
 NETWORK_IDLE_TIMEOUT_MS = 10_000
+# GitHub repo pages are heavy (many async network requests for avatars, code
+# navigation, telemetry) and frequently never reach the ``networkidle`` state
+# within the generic 10 s budget — even though the DOM rendered usable content
+# almost immediately.  A short timeout caused these repos to be treated as
+# navigation failures and shown as a bare URL card (issue #405).  Give
+# github.com a much larger budget so the page has time to settle, while the
+# content-loaded check below lets us proceed even if it never does.
+GITHUB_NETWORK_IDLE_TIMEOUT_MS = 60_000
+# CSS selectors whose presence means a GitHub repo page (or most websites) has
+# rendered substantial, usable content.  If any of these exist after a
+# navigation that timed out on ``networkidle``, the page is good enough to
+# record and we proceed instead of falling back to a URL card (issue #405).
+CONTENT_LOADED_SELECTOR = (
+    ".repository-content, .markdown-body, [data-testid=repo-header], main"
+)
 # Timeout for navigating to a repo's external website (issue #360).  Kept
 # shorter than the GitHub timeout so a slow/down website falls back quickly to
 # the already-rendered GitHub page.
@@ -220,6 +235,32 @@ ANTI_FLASH_CSS = (
     "html{scroll-behavior:auto !important;}"
     "::-webkit-scrollbar{display:none !important;}"
 )
+
+# Injected once the page has loaded, before the recorded scroll begins: convert
+# every position:fixed / position:sticky element to a normal in-flow element so
+# it scrolls away with the rest of the page instead of staying pinned to the
+# viewport (issue #406).  Sticky/fixed headers (claracle.com nav, GitHub's repo
+# header bar, …) otherwise stay in view while the content beneath them scrolls,
+# so their position *relative to the surrounding content* changes every frame and
+# the header appears to bounce/jump when the screenshots are composed into video.
+# Forcing ``position:static`` drops them into the normal document flow so they
+# scroll off cleanly and stay rock-steady between frames.  Inline ``cssText``
+# overrides are used (rather than an injected stylesheet) because a stylesheet
+# rule cannot beat an element's own ``style="position:fixed !important"``.
+# Returns the number of elements that were neutralised.
+_NEUTRALIZE_FIXED_STICKY_JS = """
+() => {
+  let count = 0;
+  document.querySelectorAll('*').forEach((el) => {
+    const pos = getComputedStyle(el).position;
+    if (pos === 'fixed' || pos === 'sticky') {
+      el.style.setProperty('position', 'static', 'important');
+      count += 1;
+    }
+  });
+  return count;
+}
+"""
 
 # Minimum natural width AND height (px) for an image to anchor the zoom effect.
 # Small icons/avatars are ignored; only a genuinely large image becomes the
@@ -657,6 +698,7 @@ def _prepare_page_for_recording(page: Page) -> None:
         page.add_style_tag(content=ANTI_FLASH_CSS)
     except Exception:
         pass
+    _neutralize_fixed_sticky(page)
     try:
         page.evaluate(
             "() => (document.fonts && document.fonts.ready) "
@@ -665,6 +707,28 @@ def _prepare_page_for_recording(page: Page) -> None:
     except Exception:
         pass
     _apply_page_zoom(page)
+
+
+def _neutralize_fixed_sticky(page: Page) -> int:
+    """Convert all fixed/sticky elements to static before recording (issue #406).
+
+    Sticky/fixed headers (e.g. claracle.com's nav, GitHub's repo header) stay
+    pinned to the viewport while the page scrolls, so their position relative to
+    the surrounding content shifts every frame and they appear to bounce/jump in
+    the composed video.  Forcing ``position:static`` drops them into normal flow
+    so they scroll off cleanly and stay steady between frames.  Best-effort: any
+    failure is swallowed so recording proceeds with the page as-is.  Returns the
+    number of elements neutralised (0 on error or when none were found).
+    """
+    try:
+        neutralised = page.evaluate(_NEUTRALIZE_FIXED_STICKY_JS)
+    except Exception:
+        return 0
+    if neutralised:
+        logger.debug(
+            "Neutralised %s fixed/sticky element(s) before recording", neutralised
+        )
+    return int(neutralised or 0)
 
 
 def _apply_page_zoom(page: Page) -> int:
@@ -1190,19 +1254,81 @@ def _looks_malformed_repo_url(url: str) -> bool:
     return False
 
 
+def _is_github_url(url: str | None) -> bool:
+    """Return True when *url* points at github.com (issue #405).
+
+    Used to give GitHub repo pages a longer ``networkidle`` budget than generic
+    websites, since they routinely keep background requests alive well past the
+    point the visible content has rendered.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001 — malformed URLs are simply "not github"
+        return False
+    return host == "github.com" or host.endswith(".github.com")
+
+
+def _page_has_content(page: Page) -> bool:
+    """Return True when *page* has rendered substantial, usable content.
+
+    Checks for any of :data:`CONTENT_LOADED_SELECTOR` in the live DOM.  This is
+    the signal that lets us record a page whose ``networkidle`` wait timed out
+    but which nonetheless loaded real content (issue #405).  Any error querying
+    the page is treated as "no content" so the caller falls back safely.
+    """
+    try:
+        found = page.evaluate(
+            "(sel) => !!document.querySelector(sel)", CONTENT_LOADED_SELECTOR
+        )
+    except Exception:  # noqa: BLE001 — a dead/blank page has no usable content
+        return False
+    return bool(found)
+
+
 def _try_navigate_repo(page: Page, url: str) -> bool:
     """Attempt a single navigation to *url*; return True on success.
 
     Success means the page loaded without raising and did not return an HTTP
-    error status (404 or any >= 400). Any exception (e.g. ``TimeoutError``) or
-    error status returns False so the caller can decide on a recovery step.
+    error status (404 or any >= 400).
+
+    When the ``networkidle`` wait times out (or otherwise raises) the page may
+    still have loaded usable content — common for heavy GitHub pages whose
+    background requests never go idle (issue #405).  In that case we proceed
+    with recording as long as the page isn't a login wall and actually has
+    content (:func:`_page_has_content`).  Only a truly blank/login page after a
+    timeout returns False so the caller can decide on a recovery step.
     """
+    timeout_ms = (
+        GITHUB_NETWORK_IDLE_TIMEOUT_MS
+        if _is_github_url(url)
+        else NETWORK_IDLE_TIMEOUT_MS
+    )
     try:
-        response = page.goto(
-            url, wait_until="networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS
-        )
+        response = page.goto(url, wait_until="networkidle", timeout=timeout_ms)
     except Exception as exc:  # noqa: BLE001 — recovery decides next step
-        logger.warning("Navigation to %s failed: %s", url, exc)
+        # ``networkidle`` may never settle on a heavy GitHub page even though the
+        # DOM already rendered usable content (issue #405).  Before giving up,
+        # check whether the page is a login wall or actually has content.
+        final_url = getattr(page, "url", None)
+        if _is_login_redirect(final_url):
+            logger.warning(
+                "Navigation to %s timed out on a login page (%s) — repo likely "
+                "private/login-required",
+                url,
+                final_url,
+            )
+            return False
+        if _page_has_content(page):
+            logger.info(
+                "Navigation to %s did not reach networkidle (%s) but the page "
+                "has loadable content — proceeding (issue #405)",
+                url,
+                exc,
+            )
+            return True
+        logger.warning("Navigation to %s failed with no usable content: %s", url, exc)
         return False
     status = getattr(response, "status", None)
     if isinstance(status, int) and status >= 400:
