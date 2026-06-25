@@ -1240,9 +1240,16 @@ def _smooth_scroll(
 # reading speed.  All staging is best-effort — any detection failure falls back
 # to the normal deterministic scroll so the pipeline never breaks (#415).
 
-# Header hold / jump budgets, expressed at the ~30fps capture rate.
-GITHUB_HEADER_HOLD_FRAMES = 60  # ~2.0s (issue range 1.5-2.5s / 45-75 frames)
-GITHUB_JUMP_FRAMES = 18  # ~0.6s eased transition (issue range 0.5-0.9s / 15-27)
+# Header hold / jump budgets, expressed in *seconds* so the staged durations
+# stay constant regardless of the active capture rate (VIDEO_SCREENSHOT_FPS).
+# They are converted to frame counts at the live tick rate in
+# ``_scroll_github_readme``.
+GITHUB_HEADER_HOLD_SECONDS = 2.0  # issue range 1.5-2.5s
+GITHUB_JUMP_SECONDS = 0.6  # eased transition, issue range 0.5-0.9s
+# Frame-count equivalents at the default 30fps capture rate.  Kept as the
+# defaults for ``_github_scroll_plan`` (frame-indexed) and for tests.
+GITHUB_HEADER_HOLD_FRAMES = round(GITHUB_HEADER_HOLD_SECONDS * SCROLL_TICKS_PER_SEC)  # 60
+GITHUB_JUMP_FRAMES = round(GITHUB_JUMP_SECONDS * SCROLL_TICKS_PER_SEC)  # 18
 # Pixels of headroom kept above the README so its heading stays visible after
 # the jump (rather than aligning the README flush to the very top).
 GITHUB_README_TOP_MARGIN = 120
@@ -1372,8 +1379,18 @@ def _scroll_github_readme(
         _smooth_scroll(page, duration_seconds, capturer)
         return
 
+    # Convert the seconds-based hold/jump budgets to frame counts at the *live*
+    # tick rate so their wall-clock durations are stable even when
+    # VIDEO_SCREENSHOT_FPS overrides the capture rate (issue #415).
+    header_frames = max(1, round(GITHUB_HEADER_HOLD_SECONDS * tick_rate))
+    jump_frames = max(1, round(GITHUB_JUMP_SECONDS * tick_rate))
     plan = _github_scroll_plan(
-        readme_y, viewport_height, doc_scrollable, total_frames
+        readme_y,
+        viewport_height,
+        doc_scrollable,
+        total_frames,
+        header_frames=header_frames,
+        jump_frames=jump_frames,
     )
     if not plan:
         _smooth_scroll(page, duration_seconds, capturer)

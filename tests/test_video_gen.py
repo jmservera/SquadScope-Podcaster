@@ -558,6 +558,38 @@ class TestScrollGithubReadme:
         first = re.search(r"scrollTo\(0,\s*(\d+)\)", str(scroll_calls[0]))
         assert first is not None and int(first.group(1)) == 0
 
+    def _header_hold_frames(self, fps, duration, tmp_path):
+        page = self._page()
+        cap = _Capturer(tmp_path / "frames")
+        page.screenshot.side_effect = lambda path: Path(path).write_bytes(_PNG_64x64)
+        with patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_FPS", fps):
+            _scroll_github_readme(page, duration, capturer=cap)
+        ys = [
+            int(m.group(1))
+            for c in page.evaluate.call_args_list
+            if (m := re.search(r"scrollTo\(0,\s*(\d+)\)", str(c)))
+        ]
+        # Count the leading header-hold frames (y == 0).  The eased jump's first
+        # frame is also at y==0 (ease(0)==0), so subtract that single boundary
+        # frame to recover the pure header-hold count.
+        hold = 0
+        for y in ys:
+            if y != 0:
+                break
+            hold += 1
+        return hold - 1
+
+    def test_header_hold_duration_is_fps_stable(self, tmp_path):
+        # The header-hold budget is specified in seconds, so its frame count must
+        # scale with the capture rate (issue #415): doubling fps doubles frames
+        # but keeps the ~2.0s wall-clock hold constant.
+        from podcaster.video.video_gen import GITHUB_HEADER_HOLD_SECONDS
+
+        hold_30 = self._header_hold_frames(30, 10.0, tmp_path / "a")
+        hold_60 = self._header_hold_frames(60, 10.0, tmp_path / "b")
+        assert hold_30 == round(GITHUB_HEADER_HOLD_SECONDS * 30)
+        assert hold_60 == round(GITHUB_HEADER_HOLD_SECONDS * 60)
+
 
 # --- _render_url_card tests (issue #386) ---
 
