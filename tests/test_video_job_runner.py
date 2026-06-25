@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from podcaster.queue import QueueMessage
+from podcaster.video.audio_align import TranscriptionUnavailable
 from podcaster.video.distribution import VideoDistributionConfig
 from podcaster.video.job_runner import (
     MAX_DEQUEUE_COUNT,
@@ -34,6 +35,21 @@ from podcaster.video.job_runner import (
     video_artifact_path,
     _build_video_description,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_audio_cue_transcription():
+    """Force audio-cue sync (#374) to fall back to proportional timing.
+
+    These tests provide placeholder audio bytes, not real speech, and assert on
+    proportional/mention-based plans. Patching transcription to be unavailable
+    keeps them hermetic and fast (no faster-whisper model load / download).
+    """
+    with patch(
+        "podcaster.video.audio_align.transcribe_words",
+        side_effect=TranscriptionUnavailable("disabled in tests"),
+    ):
+        yield
 
 
 class FakeStorage:

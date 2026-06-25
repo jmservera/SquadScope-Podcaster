@@ -43,6 +43,19 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 # to keep the API image lean.  Pin range matches the version used in development.
 RUN python -m pip install --no-cache-dir 'playwright>=1.53,<2'
 
+# faster-whisper powers audio-cue video sync (issue #374): word-level
+# transcription used to align repo segments to the moment the hosts discuss
+# them. Installed only here (not in the lean API image / requirements.txt);
+# the code falls back to proportional timing if it is absent.
+RUN python -m pip install --no-cache-dir 'faster-whisper>=1.0,<2'
+
+# Pre-download the "tiny" model at build time so audio-cue sync works without a
+# runtime network round-trip to the Hugging Face Hub (the synthesis container
+# may run with restricted egress). Failure is non-fatal: the code degrades to
+# proportional timing if the model is unavailable at runtime.
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu', compute_type='int8')" \
+    || echo "WARN: whisper model pre-download failed; audio-cue sync will fall back at runtime"
+
 # Install Playwright Chromium browser for the video pipeline (intro/outro
 # HTML rendering). --with-deps pulls required system libraries (libnss3,
 # libatk, etc.) so a separate apt-get layer is unnecessary.  Clean up the
