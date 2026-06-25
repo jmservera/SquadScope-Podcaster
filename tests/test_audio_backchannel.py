@@ -137,3 +137,36 @@ def test_render_distribution_audio_without_backchannels_unchanged(tmp_path):
     assert not any("[bc0]" in j for j in joined_all)
     # Concat + loudnorm measure + loudnorm apply + mp3 encode = 4 passes.
     assert len(calls) == 4
+
+
+def test_render_distribution_audio_reuses_precomputed_segment_durations(tmp_path):
+    wav = tmp_path / "episode.wav"
+    mp3 = tmp_path / "episode.mp3"
+    durations: list[float] = []
+    calls: list[list[str]] = []
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[0] == "ffprobe":
+            pytest.fail("precomputed durations should avoid ffprobe")
+        if "print_format=json" in " ".join(command):
+            return _completed(
+                stderr=(
+                    '{ "input_i" : "-17.4", "input_tp" : "-1.0", "input_lra" : "4.3", '
+                    '"input_thresh" : "-27.6", "target_offset" : "0.2" }'
+                )
+            )
+        if command[-1] == str(mp3):
+            mp3.write_bytes(b"ID3-final")
+        return _completed()
+
+    audio.render_distribution_audio(
+        [b"seg-a", b"seg-b"],
+        wav,
+        mp3,
+        runner=runner,
+        segment_durations_out=durations,
+        precomputed_segment_durations=[1.25, 2.5],
+    )
+
+    assert durations == [1.25, 2.5]

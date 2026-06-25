@@ -145,6 +145,7 @@ def render_distribution_audio(
     mix_spec: MusicMixSpec | None = None,
     segment_extension: str = ".mp3",
     segment_durations_out: list[float] | None = None,
+    precomputed_segment_durations: list[float] | None = None,
     backchannels: list["BackchannelMixItem"] | None = None,
 ) -> tuple[Path, Path]:
     runner = runner or _run_command
@@ -155,15 +156,25 @@ def render_distribution_audio(
     tmp_dir.mkdir(parents=True, exist_ok=False)
     try:
         segment_paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
-        segment_durations = None
-        if segment_durations_out is not None and not (mix_spec is not None and (intro_music or outro_music)):
+        segment_durations = list(precomputed_segment_durations) if precomputed_segment_durations is not None else None
+        if segment_durations is not None and len(segment_durations) != len(segment_paths):
+            raise ValueError("precomputed_segment_durations must be parallel to segments")
+        if (
+            segment_durations_out is not None
+            and segment_durations is None
+            and not (mix_spec is not None and (intro_music or outro_music))
+        ):
             segment_durations = [_probe_duration_seconds(path, runner) for path in segment_paths]
+        if segment_durations_out is not None and segment_durations is not None:
             segment_durations_out.extend(segment_durations)
 
         if mix_spec is not None and (intro_music or outro_music):
             _validate_mix_spec_for_segments(mix_spec, len(segment_paths), intro_music=intro_music, outro_music=outro_music)
-            segment_durations = [_probe_duration_seconds(path, runner) for path in segment_paths]
-            if segment_durations_out is not None:
+            if segment_durations is None:
+                segment_durations = [_probe_duration_seconds(path, runner) for path in segment_paths]
+                if segment_durations_out is not None:
+                    segment_durations_out.extend(segment_durations)
+            elif segment_durations_out is not None and not segment_durations_out:
                 segment_durations_out.extend(segment_durations)
             speech_intermediate = tmp_dir / "speech.wav"
             _concat_audio_files(segment_paths, speech_intermediate, runner, gap_seconds=gap_seconds)

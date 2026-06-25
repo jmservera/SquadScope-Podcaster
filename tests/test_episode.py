@@ -380,6 +380,7 @@ def test_synthesize_episode_wires_enabled_backchannels_to_render(tmp_path, monke
     output_path = tmp_path / "episode.mp3"
     render_kwargs: dict[str, object] = {}
     requested_inputs: list[str] = []
+    ffprobe_calls = 0
 
     def fake_transport(request):
         import json
@@ -389,7 +390,9 @@ def test_synthesize_episode_wires_enabled_backchannels_to_render(tmp_path, monke
         return b"fake-wav-segment-bytes"
 
     def fake_runner(command):
+        nonlocal ffprobe_calls
         if command[0] == "ffprobe":
+            ffprobe_calls += 1
             return subprocess.CompletedProcess(command, 0, stdout="20.0\n", stderr="")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
@@ -430,6 +433,8 @@ def test_synthesize_episode_wires_enabled_backchannels_to_render(tmp_path, monke
 
     backchannels = render_kwargs["backchannels"]
     assert backchannels
+    assert render_kwargs["precomputed_segment_durations"] == [20.0, 20.0]
+    assert ffprobe_calls == 2
     assert "right" in requested_inputs
 
 

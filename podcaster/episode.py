@@ -629,20 +629,26 @@ def synthesize_episode(
     wav_output_path = output_path.with_suffix(".wav")
     backchannel_items: list[BackchannelMixItem] | None = None
     backchannel_tmp: Path | None = None
+    precomputed_segment_durations: list[float] | None = None
     if backchannel_config and backchannel_config.enabled:
         backchannel_tmp = output_path.parent / f".backchannels-{output_path.stem}-{uuid4().hex}"
         backchannel_tmp.mkdir(parents=True, exist_ok=False)
         try:
+            precomputed_segment_durations = _probe_existing_segment_durations(
+                audio_segments,
+                backchannel_tmp / "segments",
+                runner,
+                segment_extension=effective_config.audio_extension,
+            )
             backchannel_items = _build_backchannel_mix_items(
                 segments,
-                audio_segments,
+                precomputed_segment_durations,
                 effective_config,
                 decision,
                 backchannel_config,
                 backchannel_tmp,
                 token_provider=token_provider,
                 transport=transport,
-                runner=runner,
             )
         except Exception:
             shutil.rmtree(backchannel_tmp, ignore_errors=True)
@@ -661,6 +667,7 @@ def synthesize_episode(
             mix_spec=effective_mix_spec,
             segment_extension=effective_config.audio_extension,
             segment_durations_out=segment_durations,
+            precomputed_segment_durations=precomputed_segment_durations,
             backchannels=backchannel_items,
         )
     finally:
@@ -705,7 +712,7 @@ def synthesize_episode(
 
 def _build_backchannel_mix_items(
     segments: list[tuple[str, str]],
-    audio_segments: list[bytes],
+    durations: list[float],
     config: TtsConfig,
     decision: dict[str, object],
     backchannel_config: BackchannelConfig,
@@ -713,15 +720,8 @@ def _build_backchannel_mix_items(
     *,
     token_provider: TokenProvider | None,
     transport: Transport | None,
-    runner=None,
 ) -> list[BackchannelMixItem]:
     turns = assign_turn_ids(segments)
-    durations = _probe_existing_segment_durations(
-        audio_segments,
-        tmp_dir / "segments",
-        runner,
-        segment_extension=config.audio_extension,
-    )
     interaction_map = build_interaction_map(turns, durations, backchannel_config)
     if not interaction_map:
         return []
