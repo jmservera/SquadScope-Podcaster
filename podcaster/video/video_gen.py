@@ -1489,10 +1489,10 @@ def _scroll_github_readme(
     detection error — so behaviour never regresses for other pages.
     """
     try:
-        if not _is_github_url(getattr(page, "url", None)):
+        if not _is_github_repo_root(getattr(page, "url", None)):
             _smooth_scroll(page, duration_seconds, capturer)
             return
-    except Exception:  # noqa: BLE001 — treat detection failure as "not GitHub"
+    except Exception:  # noqa: BLE001 — treat detection failure as "not a repo root"
         _smooth_scroll(page, duration_seconds, capturer)
         return
 
@@ -1700,6 +1700,24 @@ def _looks_malformed_repo_url(url: str) -> bool:
     if not _VALID_REPO_SEGMENT_RE.match(owner) or not _VALID_REPO_SEGMENT_RE.match(name):
         return True
     return False
+
+
+def _is_github_repo_root(url: str | None) -> bool:
+    """Return True only for a GitHub repo *root* page (``/owner/repo``).
+
+    The README-first scroll (issue #415) is meant for repository landing pages.
+    Issues, PRs, wiki, and other deep pages share the ``github.com`` host but
+    have extra path segments and unrelated ``article.markdown-body`` content, so
+    they must fall back to the normal deterministic scroll.
+    """
+    if not _is_github_url(url):
+        return False
+    try:
+        path = urlparse(url).path
+    except Exception:  # noqa: BLE001 — malformed URLs are simply "not a repo root"
+        return False
+    segments = [seg for seg in path.split("/") if seg]
+    return len(segments) == 2
 
 
 def _is_github_url(url: str | None) -> bool:

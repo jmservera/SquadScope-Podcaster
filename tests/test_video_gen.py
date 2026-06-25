@@ -528,6 +528,20 @@ class TestScrollGithubReadme:
             _scroll_github_readme(page, 5.0)
         smooth.assert_called_once()
 
+    def test_deep_github_page_falls_back_to_smooth_scroll(self):
+        # Issues/PRs/wiki share the github.com host but are not repo roots and
+        # must use the normal deterministic scroll (#415).
+        for url in (
+            "https://github.com/owner/repo/issues/1",
+            "https://github.com/owner/repo/pull/2",
+            "https://github.com/owner/repo/wiki",
+            "https://github.com/owner",
+        ):
+            page = self._page(url=url)
+            with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+                _scroll_github_readme(page, 5.0)
+            smooth.assert_called_once()
+
     def test_no_readme_falls_back(self):
         page = MagicMock()
         page.url = "https://github.com/owner/repo"
