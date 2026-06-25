@@ -337,13 +337,13 @@ def resolve_placements(
     interaction_map: InteractionMap,
     turns: list[Turn],
     durations: list[float],
-    clips: dict[str, bytes],
+    clips: dict[object, bytes],
     *,
     gap_seconds: float = 0.35,
 ) -> list[BackchannelPlacement]:
     """Resolve interactions to absolute-timed placements for :mod:`podcaster.audio`.
 
-    ``clips`` maps an interaction's backchannel ``text`` to its synthesized
+    ``clips`` maps either ``(speaker, text)`` or just ``text`` to synthesized
     audio bytes (small TTS clips from the configured library). Interactions
     whose clip is missing are skipped so a partial clip set degrades gracefully.
 
@@ -359,7 +359,7 @@ def resolve_placements(
     by_id = {turn.turn_id: (start, duration) for turn, start, duration in zip(turns, starts, durations)}
     placements: list[BackchannelPlacement] = []
     for interaction in interaction_map:
-        clip = clips.get(interaction.text)
+        clip = clips.get((interaction.speaker, interaction.text)) or clips.get(interaction.text)
         if not clip:
             continue
         located = by_id.get(interaction.under_turn_id)

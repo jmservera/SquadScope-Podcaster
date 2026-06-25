@@ -388,6 +388,7 @@ class ScriptDirections:
     corrections_path: str = ""
     source_article_link: str = ""
     historical_context: HistoricalContext = field(default_factory=HistoricalContext)
+    backchannels: BackchannelConfig = field(default_factory=lambda: BackchannelConfig())
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> "ScriptDirections":
@@ -395,9 +396,10 @@ class ScriptDirections:
 
         if not isinstance(payload, Mapping):
             return cls()
+        backchannels = BackchannelConfig.from_payload(payload)
         sd = payload.get("script_directions")
         if not isinstance(sd, Mapping):
-            return cls()
+            return cls(backchannels=backchannels)
 
         opening = sd.get("opening_cues") if isinstance(sd.get("opening_cues"), Mapping) else {}
         closing = sd.get("closing_cues") if isinstance(sd.get("closing_cues"), Mapping) else {}
@@ -411,6 +413,7 @@ class ScriptDirections:
             corrections_path=_safe_str(closing.get("corrections_path")),
             source_article_link=_safe_str(closing.get("source_article_link")),
             historical_context=HistoricalContext.from_value(sd.get("historical_context")),
+            backchannels=backchannels,
         )
 
     @property
