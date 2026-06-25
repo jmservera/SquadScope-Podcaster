@@ -39,9 +39,34 @@ scripts/intro-outro/
 │   ├── intro.html             # 18s intro
 │   ├── outro.html             # 20s outro
 │   └── intermission.html      # 10s background-only section break
+├── assets/
+│   ├── fonts/
+│   │   └── Orbitron.woff2     # title/credits typeface (vendored locally)
+│   └── max-headroom-bg.esm.js # vendored WebGL Max Headroom background module
+├── output/                    # render.sh writes intro/outro/intermission.mp4 here
 ├── render.sh                  # render all compositions to output/*.mp4
 └── package.json               # hyperframes, gsap, webgl-max-headroom
 ```
+
+## Assets
+
+Everything the compositions need is vendored **locally** under
+`scripts/intro-outro/assets/` so the render is deterministic and the HyperFrames
+linter (which rejects external font/CDN links) passes.
+
+| Asset | Path | Purpose |
+| ----- | ---- | ------- |
+| Font | `assets/fonts/Orbitron.woff2` | Geometric/tech typeface for the title and credits, loaded via a local `@font-face` |
+| Background | `assets/max-headroom-bg.esm.js` (npm `webgl-max-headroom`) | WebGL neon rotating-cube "Max Headroom" background rendered into `<max-headroom-bg>` |
+| Animation runtime | `gsap` (npm) | Drives the paused timelines registered on `window.__timelines[...]` that HyperFrames steps frame-by-frame |
+| Chrome | `chrome-headless-shell/` (auto-installed) | Deterministic virtual-clock frame capture; installed by `render.sh` on first run |
+
+> **No audio is baked into the clips.** The intro/outro/intermission MP4s are
+> **silent** — the outro only *displays* the music/license credit text. The
+> podcast MP3 (including any background music mix) is overlaid as the sole audio
+> track by the pipeline (`_build_audio_overlay_cmd`), and the pipeline strips
+> whatever audio the clips carry during canonicalisation. So no `.mp3`/`.wav`
+> clip assets are required to regenerate the videos.
 
 ## Prerequisites
 
@@ -100,6 +125,114 @@ az storage blob upload --account-name squadscopepo3f9a07d60de7 \
 > (`<tempdir>/podcaster-intro-outro-cache/`). After re-uploading new versions,
 > clear that cache on the worker (or it will reuse the previously downloaded
 > clips until the cache entry is removed).
+
+## Storage in Azure Blob Storage
+
+The clips live in the **`podcaster-artifacts`** container under the `assets/video/`
+prefix:
+
+| Clip | Blob path | Code constant |
+| ---- | --------- | ------------- |
+| Intro | `assets/video/intro.mp4` | `INTRO_BLOB_PATH` |
+| Outro | `assets/video/outro.mp4` | `OUTRO_BLOB_PATH` |
+| Intermission | `assets/video/intermission.mp4` | _(rendered/uploaded but not yet fetched by the pipeline — see below)_ |
+
+The storage backend is resolved by `create_storage_backend()` in
+`podcaster/storage.py` from these environment variables:
+
+| Variable | Meaning | Default |
+| -------- | ------- | ------- |
+| `PODCASTER_STORAGE_ACCOUNT_URL` | Blob account URL — when set, the Azure backend is used | _(unset → local stub backend)_ |
+| `PODCASTER_STORAGE_CONTAINER` | Container name | `podcaster-artifacts` |
+| `PODCASTER_LOCAL_STORAGE_PATH` | Root dir for the local stub backend (when no account URL) | `.podcaster-artifacts` |
+
+Azure auth uses managed identity (`az login --identity` on the worker). The
+`--account-name` in the upload commands above must match the account behind
+`PODCASTER_STORAGE_ACCOUNT_URL`.
+
+## How the pipeline composes them (ffmpeg)
+
+All composition lives in `compose_video()` in
+`podcaster/video/video_compose.py`. The intro/outro are joined around the
+already-composed content with the **concat demuxer** (a stream copy, not an
+`xfade` re-encode) for speed and quality:
+
+1. **Fetch + cache** — `_fetch_intro_outro()` downloads `intro.mp4`/`outro.mp4`
+   via `storage.get_bytes()` into `<tempdir>/podcaster-intro-outro-cache/`,
+   reusing the cache on subsequent runs. Missing blobs return `None` and are
+   skipped (graceful degradation — the episode still composes without bumpers).
+2. **(Intro only) DOG watermark** — when a `DogLogoConfig` is supplied,
+   `_build_intro_dog_cmd()` overlays the logo on the **final
+   `DOG_INTRO_LEAD_SECONDS` (3 s)** of the intro via
+   `overlay=…:enable='gte(t,<start>)'`, so it is on screen before the
+   intro→content join. The outro stays unbranded.
+3. **Canonicalise every clip** — `_build_canonical_av_cmd()` re-encodes intro,
+   content, and outro to an identical layout so the concat copy succeeds:
+
+   ```text
+   ffmpeg -i <clip> \
+     -filter_complex "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,\
+   pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setsar=1[v]" \
+     -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
+     -map "[v]" -map 1:a \
+     -c:v libx264 ... -colorspace bt709 -color_trc bt709 -color_primaries bt709 \
+     -color_range tv -c:a aac -b:a 192k -ar 48000 -ac 2 -shortest <canon>.mp4
+   ```
+
+   Source audio on the clips is always stripped; a silent stereo track is
+   synthesised (`anullsrc`) so every joined clip has a uniform A/V layout.
+4. **Concat join** — `_build_concat_cmd()` writes a `concat.txt` listing
+   `intro → content → outro` and stream-copies them together:
+
+   ```text
+   ffmpeg -f concat -safe 0 -i concat.txt -c copy -movflags +faststart joined.mp4
+   ```
+
+5. **Overlay the podcast audio** — `_build_audio_overlay_cmd()` maps the podcast
+   MP3 as the **sole** audio track (re-encoded to AAC, never `-shortest`, so the
+   outro audio always plays in full). If the audio outlasts the video the final
+   frame is held with `tpad=stop_mode=clone` and faded to black over the last
+   `OUTRO_VIDEO_FADE_SECONDS` (2 s); if the video is longer, the audio is padded
+   with trailing silence (`apad`) to satisfy Spotify's duration check.
+6. **Normalise colour metadata** — `_build_h264_metadata_cmd()` runs a final
+   stream-copy pass with the `h264_metadata`/`hevc_metadata` bitstream filter to
+   force consistent BT.709 VUI flags across the independently-encoded clips
+   (avoids Spotify's `INCONSISTENT_COLOR_DETAILS`).
+
+> **Fit-to-window (#355):** when `audio_duration` is known, the content segments
+> are trimmed/freeze-extended to fill exactly
+> `audio_duration − intro − outro`, so the bumpers always play in full while the
+> total runtime matches the audio.
+
+Canonical output format: **1920×1080, 30 fps, `yuv420p`, BT.709**, stereo AAC
+@ 192 kbit/s, 48 kHz (overridable via the `VIDEO_ENCODE_*` env vars).
+
+## How the video pipeline references the clips
+
+`compose_video()` only fetches the bumpers when a `storage` backend is passed:
+
+```python
+intro_path: Path | None = None
+outro_path: Path | None = None
+if storage is not None:
+    cache_dir = intro_outro_cache_dir or _default_intro_outro_cache_dir()
+    intro_path, outro_path = _fetch_intro_outro(storage, cache_dir)
+...
+_join_intro_outro(content_path, joined_path, intro_path, outro_path, ...)
+```
+
+Key reference points in `podcaster/video/video_compose.py`:
+
+- `INTRO_BLOB_PATH` / `OUTRO_BLOB_PATH` — the blob paths fetched per episode.
+- `_fetch_intro_outro()` / `_fetch_blob_cached()` — download + on-disk cache,
+  returning `None` for missing blobs (graceful degradation).
+- `_join_intro_outro()` — canonicalise + concat the clips around the content.
+- `_default_intro_outro_cache_dir()` — `<tempdir>/podcaster-intro-outro-cache/`.
+
+> **Intermission:** `intermission.mp4` is rendered and uploaded for future use as
+> a section-break asset, but the current pipeline only fetches the intro and
+> outro (there is no `INTERMISSION_BLOB_PATH` reference yet). Wiring it into the
+> segment loop is a separate change.
 
 ## AI-Assisted Modification
 
