@@ -484,7 +484,7 @@ class TestCheckOwnershipTone:
     def test_detects_in_this_report(self):
         violations = check_ownership_tone("Vera: In this report we highlighted two repos.")
         assert len(violations) >= 1
-        assert any("in the/this article" in v for v in violations)
+        assert any("in the/this article/report" in v for v in violations)
 
     def test_detects_the_report_says(self):
         violations = check_ownership_tone("Theo: The report says developers are tired.")
@@ -619,7 +619,9 @@ class TestOwnershipToneSystemPrompt:
 
     def test_ownership_tone_allows_third_party_references(self):
         prompt = _build_system_prompt(PodcastConfig())
-        assert "GitHub stars" in prompt or "third-party" in prompt or "external" in prompt
+        # The block must explicitly carve out external third-party data references
+        # ("according to GitHub stars" etc.) so the LLM knows they are permitted.
+        assert "GitHub stars" in prompt
 
 
 class TestOwnershipToneRepairIntegration:

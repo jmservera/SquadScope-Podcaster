@@ -40,6 +40,10 @@ MAX_SCRIPT_CHARS = 8000
 # subtracted internally so the body gets the remaining budget.
 MAX_HISTORICAL_CONTEXT_CHARS = 3000
 
+# Maximum token budget for a single ownership-tone repair call.  Sized to
+# match MAX_SCRIPT_CHARS (â‰ˆ2000 tokens at ~4 chars/token) with a small buffer.
+MAX_REPAIR_TOKENS = 2000
+
 DEFAULT_CHAT_API_VERSION = "2024-12-01-preview"
 
 # ---------------------------------------------------------------------------
@@ -109,7 +113,11 @@ You MAY say "according to GitHub stars" or reference external third-party data â
 
 
 def check_ownership_tone(script: str) -> list[str]:
-    """Scan *script* for banned phrases that treat Claracle as an external source.
+    """Scan *script* for banned phrases that treat the publication as an external source.
+
+    Hosts must speak as the people behind the research, not as reporters covering
+    an outside article.  Any phrase matching :data:`_BANNED_OWNERSHIP_PATTERNS`
+    is flagged.
 
     Args:
         script: The raw dialogue or full formatted script text.
@@ -459,7 +467,7 @@ def _repair_ownership_tone(
             {"role": "user", "content": repair_user},
         ],
         "temperature": 0.3,
-        "max_tokens": 2000,
+        "max_tokens": MAX_REPAIR_TOKENS,
     }
     request = Request(
         url,
