@@ -217,17 +217,19 @@ def _iso(dt: datetime) -> str:
 def _parse_week_str(week_str: str) -> tuple[int, int] | None:
     """Parse an ISO week string like ``2026-W24`` into ``(year, week)``.
 
-    Returns ``None`` when the string is not in the expected format or the week
-    number falls outside the valid ISO range (1–53).
+    Returns ``None`` when the string is not in the expected format or the
+    year-week combination is not a valid ISO calendar date.
     """
     if "-W" not in week_str:
         return None
     try:
         year_part, week_part = week_str.split("-W", 1)
         year, week = int(year_part), int(week_part)
+        # Validate using the calendar — raises ValueError for invalid combos
+        # (e.g. week 53 in a year that only has 52 weeks).
+        import datetime as _dt
+        _dt.date.fromisocalendar(year, week, 1)
     except ValueError:
-        return None
-    if not (1 <= week <= 53):
         return None
     return year, week
 
@@ -238,7 +240,7 @@ def _manifest_week_str(manifest: dict[str, Any]) -> str:
     if not isinstance(request, dict):
         return ""
     value = request.get("week")
-    return str(value) if value is not None else ""
+    return value if isinstance(value, str) else ""
 
 
 def _extract_year(manifest: dict[str, Any]) -> int | None:
