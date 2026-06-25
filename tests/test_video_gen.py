@@ -40,8 +40,10 @@ from podcaster.video.video_gen import (
     _dismiss_overlays,
     _dismiss_cookie_consent,
     _extract_website_url,
+    _is_github_url,
     _is_login_redirect,
     _looks_malformed_repo_url,
+    _page_has_content,
     _make_recording_context,
     _navigate_to_website,
     _navigate_with_recovery,
@@ -50,7 +52,9 @@ from podcaster.video.video_gen import (
     _try_navigate_repo,
     _try_record_project_site,
     _PAGE_ZOOM_JS,
+    _NEUTRALIZE_FIXED_STICKY_JS,
     _apply_page_zoom,
+    _neutralize_fixed_sticky,
     _prepare_page_for_recording,
     _render_fallback_page,
     _render_url_card,
@@ -490,6 +494,45 @@ class TestApplyPageZoom:
         assert any("ss-page-zoom" in css for css in injected)
 
 
+# --- _neutralize_fixed_sticky tests (issue #406) ---
+
+
+class TestNeutralizeFixedSticky:
+    def test_js_targets_fixed_and_sticky(self):
+        # The injected JS detects both fixed and sticky positioning and forces
+        # them static so headers stop bouncing during the scroll capture.
+        assert "fixed" in _NEUTRALIZE_FIXED_STICKY_JS
+        assert "sticky" in _NEUTRALIZE_FIXED_STICKY_JS
+        assert "getComputedStyle" in _NEUTRALIZE_FIXED_STICKY_JS
+        assert "static" in _NEUTRALIZE_FIXED_STICKY_JS
+
+    def test_returns_count_from_evaluate(self):
+        page = MagicMock()
+        page.evaluate.return_value = 3
+        assert _neutralize_fixed_sticky(page) == 3
+        page.evaluate.assert_called_once_with(_NEUTRALIZE_FIXED_STICKY_JS)
+
+    def test_returns_zero_when_none_found(self):
+        page = MagicMock()
+        page.evaluate.return_value = 0
+        assert _neutralize_fixed_sticky(page) == 0
+
+    def test_swallows_evaluate_errors(self):
+        page = MagicMock()
+        page.evaluate.side_effect = RuntimeError("boom")
+        # Best-effort: never raises, returns 0.
+        assert _neutralize_fixed_sticky(page) == 0
+
+    def test_prepare_page_neutralizes_before_scroll(self):
+        page = MagicMock()
+        page.evaluate.return_value = 2
+        _prepare_page_for_recording(page)
+        # The neutralize JS must be evaluated as part of page preparation, which
+        # runs before _smooth_scroll in every recording flow.
+        evaluated = [c.args[0] for c in page.evaluate.call_args_list if c.args]
+        assert _NEUTRALIZE_FIXED_STICKY_JS in evaluated
+
+
 # --- _extract_website_url / _navigate_to_website tests ---
 
 
@@ -911,9 +954,56 @@ class TestTryNavigateRepo:
         assert _try_navigate_repo(page, "https://github.com/a/b") is False
 
     def test_returns_false_on_exception(self):
+        # A timeout/exception with NO usable content on the page must still be
+        # treated as a failure (issue #405).
         page = MagicMock()
         page.goto.side_effect = Exception("timeout")
+        page.url = "https://github.com/a/b"
+        page.evaluate.return_value = False  # no content selectors present
         assert _try_navigate_repo(page, "https://github.com/a/b") is False
+
+    def test_returns_true_on_timeout_with_content(self):
+        # networkidle never settled, but the page rendered usable content — we
+        # record it instead of falling back to a URL card (issue #405).
+        page = MagicMock()
+        page.goto.side_effect = Exception("Timeout 60000ms exceeded")
+        page.url = "https://github.com/a/b"
+        page.evaluate.return_value = True  # .repository-content / main present
+        assert _try_navigate_repo(page, "https://github.com/a/b") is True
+
+    def test_returns_false_on_timeout_login_page(self):
+        # A timeout that lands on the login wall is a real failure even if the
+        # login page itself has a <main> element (issue #405).
+        page = MagicMock()
+        page.goto.side_effect = Exception("timeout")
+        page.url = "https://github.com/login?return_to=%2Fa%2Fb"
+        page.evaluate.return_value = True
+        assert _try_navigate_repo(page, "https://github.com/a/b") is False
+        # We must not even consult content for a login redirect.
+        page.evaluate.assert_not_called()
+
+    def test_github_url_uses_longer_timeout(self):
+        from podcaster.video.video_gen import GITHUB_NETWORK_IDLE_TIMEOUT_MS
+
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=200)
+        page.url = "https://github.com/a/b"
+        _try_navigate_repo(page, "https://github.com/a/b")
+        assert (
+            page.goto.call_args.kwargs["timeout"]
+            == GITHUB_NETWORK_IDLE_TIMEOUT_MS
+        )
+
+    def test_non_github_url_uses_default_timeout(self):
+        from podcaster.video.video_gen import NETWORK_IDLE_TIMEOUT_MS
+
+        page = MagicMock()
+        page.goto.return_value = MagicMock(status=200)
+        page.url = "https://example.com/a/b"
+        _try_navigate_repo(page, "https://example.com/a/b")
+        assert (
+            page.goto.call_args.kwargs["timeout"] == NETWORK_IDLE_TIMEOUT_MS
+        )
 
     def test_returns_false_on_login_redirect(self):
         # A 200 that lands on the login page means the repo is private /
