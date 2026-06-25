@@ -195,8 +195,14 @@ def render_distribution_audio(
             ordered_paths.append(speech_with_bc)
             if outro_music:
                 ordered_paths.append(Path(outro_music))
-            intermediate = tmp_dir / "episode.wav"
-            _concat_audio_files(ordered_paths, intermediate, runner, gap_seconds=gap_seconds)
+            if len(ordered_paths) == 1:
+                # No intro/outro music to wrap: the backchannel-mixed speech is
+                # already the full episode, so skip the redundant single-input
+                # concat pass.
+                intermediate = ordered_paths[0]
+            else:
+                intermediate = tmp_dir / "episode.wav"
+                _concat_audio_files(ordered_paths, intermediate, runner, gap_seconds=gap_seconds)
             _two_pass_loudnorm_wav(intermediate, wav_output_path, runner)
         else:
             ordered_paths: list[Path] = []
