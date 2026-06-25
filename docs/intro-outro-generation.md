@@ -288,6 +288,36 @@ registered on `window.__timelines["…"]`). Do **not** add external font/CDN lin
 The outro must also disclose AI-generated voice narration (e.g. "This episode
 uses AI-generated voice narration").
 
+## Section title cards (issue #377)
+
+Between the editorial sections of an episode (Trends, Industry, Signal & Noise,
+Blind Spots, …) the pipeline can splice brief **section title cards** — a dark
+card with the section name in large white text and a brand-accent rule, rendered
+the same ffmpeg-native way as the intro/outro bumpers (`color` + `drawtext` +
+`fade`). Cards play for ~2.5 s with 0.5 s fade-in/out.
+
+Module: `podcaster/video/section_cards.py`.
+
+- **Detection (`parse_sections`)** — recognises markdown headings (`## Trends`),
+  bracketed markers (`[SECTION: Signal & Noise]`) and bold/emoji standalone
+  lines naming a known editorial section (`**Blind Spots**`, `📡 Signal &
+  Noise`). Only the script body (after the `---` header) is scanned and dialogue
+  lines (`Name: …`) are ignored.
+- **Mapping (`plan_section_card_inserts`)** — each section is tied to the content
+  segment that opens it, matched by the first GitHub repo URL after the header.
+- **Rendering (`generate_section_card`)** — known sections carry an emoji and an
+  accent colour (Trends 🔥 orange, Industry 🏭 blue, Signal & Noise 📡 green,
+  Blind Spots 🫣 purple); unknown markdown headings use the default Claracle blue.
+- **Compositing** — `compose_video(..., section_cards=...)` reserves the card time
+  inside the fit-to-window budget (so total video length still matches the audio
+  timeline), splices the cards with fade transitions, and time-shifts each
+  segment's lower-third so overlays fire over their own segment, not the card.
+
+**Fully graceful & dormant by default:** current scripts are plain dialogue with
+no section headers, so `parse_sections` returns nothing and composition is
+unchanged. The feature activates automatically once scripts include section
+markers. Disable explicitly with `VIDEO_SECTION_CARDS=0`.
+
 ## Design Principles
 
 - **Max Headroom aesthetic:** neon colors, a rotating cube/WebGL background,

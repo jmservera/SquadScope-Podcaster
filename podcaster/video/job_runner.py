@@ -428,6 +428,13 @@ def run_video_generation(
             # Compose final MP4
             output_path = output_dir / f"{job_id}.mp4"
             dog_logo_cfg = _resolve_dog_logo(manifest)
+
+            # Section title cards between editorial sections (issue #377).
+            # Dormant + graceful: when the script has no section headers (the
+            # current default) no cards are produced and composition is
+            # unchanged.  Disable explicitly with VIDEO_SECTION_CARDS=0.
+            section_cards = _build_section_cards(script, recording.recorded, output_dir)
+
             with timings.phase("composition"):
                 compose_result = compose_video(
                     recording.recorded,
@@ -437,6 +444,7 @@ def run_video_generation(
                     storage=storage,
                     dog_logo=dog_logo_cfg,
                     audio_duration=audio_duration,
+                    section_cards=section_cards,
                 )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
@@ -544,6 +552,40 @@ def _resolve_dog_logo(manifest: dict[str, Any]):
     if not isinstance(podcast_config, dict):
         return None
     return DogLogoConfig.from_dict(podcast_config.get("dog_logo"))
+
+
+def _build_section_cards(script: str, recorded, output_dir: Path):
+    """Build section title card inserts for the recorded content (issue #377).
+
+    Detects editorial section headers in *script*, maps each to the recorded
+    segment that opens it, and renders a brief title card per section.  Fully
+    graceful: returns an empty list when the feature is disabled, when no
+    sections are detected (the current default for plain-dialogue scripts), or
+    when card generation fails for any reason — composition then proceeds
+    unchanged.
+
+    Controlled by the ``VIDEO_SECTION_CARDS`` env var (default enabled; set to
+    ``0``/``false``/``no`` to disable).
+    """
+    flag = os.environ.get("VIDEO_SECTION_CARDS", "1").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return []
+
+    try:
+        from podcaster.video.section_cards import build_section_card_inserts
+
+        segment_repo_urls = [
+            rec.segment.repo.url if rec.segment.repo is not None else None
+            for rec in recorded
+        ]
+        return build_section_card_inserts(
+            script,
+            segment_repo_urls,
+            output_dir / "section_cards",
+        )
+    except Exception:  # pragma: no cover - defensive: cards must never block video
+        logger.exception("section title card generation failed; continuing without cards")
+        return []
 
 
 def _resolve_audio_path(

@@ -52,6 +52,7 @@ from podcaster.video.video_compose import (
     _fit_target_durations,
     _join_intro_outro,
     _probe_drawtext_ffmpeg,
+    _splice_section_cards,
     compose_video,
     select_transitions,
 )
@@ -1898,3 +1899,165 @@ class TestHardwareAccelEncoding:
         # No /dev/nvidia* present → not available regardless of ffmpeg.
         with patch("podcaster.video.video_compose.os.path.exists", return_value=False):
             assert vc._nvenc_available() is False
+
+
+# --- Tests for _splice_section_cards (issue #377) ---
+
+
+class _Insert:
+    """Lightweight SectionCardInsert stand-in for splice/compose tests."""
+
+    def __init__(self, before_index, clip_path, duration_seconds, name="Card"):
+        self.before_index = before_index
+        self.clip_path = clip_path
+        self.duration_seconds = duration_seconds
+        self.name = name
+
+
+class TestSpliceSectionCards:
+    def _content(self, n):
+        paths = [Path(f"/n/seg_{i}.mp4") for i in range(n)]
+        durs = [10.0] * n
+        trans = [TRANSITION_WIPE_LEFT] * (n - 1)
+        return paths, durs, trans
+
+    def test_insert_between_segments(self):
+        paths, durs, trans = self._content(3)
+        lts = {}
+        card = Path("/n/card.mp4")
+        new_paths, new_durs, new_trans, new_lts = _splice_section_cards(
+            paths, durs, trans, lts, [(1, card, 2.5)]
+        )
+        # Card sits before original segment index 1.
+        assert new_paths == [paths[0], card, paths[1], paths[2]]
+        assert new_durs == [10.0, 2.5, 10.0, 10.0]
+        # Boundaries: seg0->card (fade), card->seg1 (fade), seg1->seg2 (original).
+        assert new_trans == [TRANSITION_FADE, TRANSITION_FADE, TRANSITION_WIPE_LEFT]
+        assert new_lts == {}
+
+    def test_insert_before_first(self):
+        paths, durs, trans = self._content(2)
+        card = Path("/n/card.mp4")
+        new_paths, _, new_trans, _ = _splice_section_cards(
+            paths, durs, trans, {}, [(0, card, 2.5)]
+        )
+        assert new_paths == [card, paths[0], paths[1]]
+        # card is first (no leading transition); card->seg0 fade; seg0->seg1 original.
+        assert new_trans == [TRANSITION_FADE, TRANSITION_WIPE_LEFT]
+
+    def test_insert_at_end_clamped(self):
+        paths, durs, trans = self._content(2)
+        card = Path("/n/card.mp4")
+        new_paths, _, new_trans, _ = _splice_section_cards(
+            paths, durs, trans, {}, [(99, card, 2.5)]
+        )
+        assert new_paths == [paths[0], paths[1], card]
+        assert new_trans == [TRANSITION_WIPE_LEFT, TRANSITION_FADE]
+
+    def test_multiple_cards(self):
+        paths, durs, trans = self._content(3)
+        c1, c2 = Path("/n/c1.mp4"), Path("/n/c2.mp4")
+        new_paths, new_durs, new_trans, _ = _splice_section_cards(
+            paths, durs, trans, {}, [(1, c1, 2.5), (2, c2, 2.5)]
+        )
+        assert new_paths == [paths[0], c1, paths[1], c2, paths[2]]
+        assert len(new_trans) == len(new_paths) - 1
+        assert all(t == TRANSITION_FADE for t in new_trans[:4])
+
+    def test_lower_thirds_reindexed(self):
+        paths, durs, trans = self._content(3)
+        lt = LowerThird(text="r", url="https://github.com/o/r", start_seconds=0.5, end_seconds=5.0)
+        lts = {0: lt, 2: lt}
+        card = Path("/n/card.mp4")
+        new_paths, _, _, new_lts = _splice_section_cards(
+            paths, durs, trans, lts, [(1, card, 2.5)], 1.0
+        )
+        # Original index 0 stays at 0; original index 2 shifts to 3 (card inserted at 1).
+        assert set(new_lts.keys()) == {0, 3}
+        assert new_paths[0] == paths[0] and new_paths[3] == paths[2]
+        # Index-0 LT precedes the card → no time shift.
+        assert new_lts[0].start_seconds == pytest.approx(0.5)
+        # Index-2 LT follows a 2.5 s card (1.0 s overlap) → +1.5 s shift.
+        assert new_lts[3].start_seconds == pytest.approx(0.5 + 1.5)
+        assert new_lts[3].end_seconds == pytest.approx(5.0 + 1.5)
+
+    def test_leading_card_shifts_following_lower_third(self):
+        paths, durs, trans = self._content(2)
+        lt = LowerThird(text="r", url="u", start_seconds=0.5, end_seconds=4.0)
+        card = Path("/n/card.mp4")
+        _, _, _, new_lts = _splice_section_cards(
+            paths, durs, trans, {0: lt}, [(0, card, 2.5)], 1.0
+        )
+        # Card before segment 0 → segment 0's LT lands at index 1, shifted +1.5 s.
+        assert set(new_lts.keys()) == {1}
+        assert new_lts[1].start_seconds == pytest.approx(2.0)
+
+    def test_no_inserts_is_identity(self):
+        paths, durs, trans = self._content(3)
+        out = _splice_section_cards(paths, durs, trans, {}, [])
+        assert out == (paths, durs, trans, {})
+
+
+class TestComposeVideoSectionCards:
+    def test_cards_normalized_and_spliced(self, tmp_path):
+        runner = _mock_runner()
+        seg1 = _make_recorded_segment(owner="a", name="b", duration=10.0,
+                                      video_path=tmp_path / "seg1.webm")
+        seg2 = _make_recorded_segment(owner="c", name="d", duration=10.0,
+                                      video_path=tmp_path / "seg2.webm")
+        (tmp_path / "seg1.webm").touch()
+        (tmp_path / "seg2.webm").touch()
+        card = tmp_path / "card.mp4"
+        card.touch()
+        inserts = [_Insert(1, card, 2.5, name="Trends")]
+
+        result = compose_video(
+            segments=[seg1, seg2],
+            output_dir=tmp_path / "out",
+            runner=runner,
+            section_cards=inserts,
+        )
+
+        # The card clip must be normalized like content (its path appears in a cmd).
+        normalize_inputs = [
+            c.args[0] for c in runner.call_args_list if str(card) in c.args[0]
+        ]
+        assert normalize_inputs, "section card was not normalized"
+        # Result content count still reflects the original content segments.
+        assert result.segment_count == 2
+
+    def test_no_cards_matches_baseline(self, tmp_path):
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        result = compose_video(
+            segments=[seg], output_dir=tmp_path / "out",
+            runner=runner, section_cards=None,
+        )
+        # 1 normalize + 1 compose + 1 h264 metadata — unchanged from baseline.
+        assert runner.call_count == 3
+        assert result.segment_count == 1
+
+    def test_cards_reserve_audio_window(self, tmp_path):
+        # With fit-to-window active, total composed video stays aligned with the
+        # audio timeline: content window shrinks by (card_dur - transition) per card.
+        runner = _mock_runner()
+        seg1 = _make_recorded_segment(owner="a", name="b", duration=10.0,
+                                      video_path=tmp_path / "seg1.webm")
+        seg2 = _make_recorded_segment(owner="c", name="d", duration=10.0,
+                                      video_path=tmp_path / "seg2.webm")
+        (tmp_path / "seg1.webm").touch()
+        (tmp_path / "seg2.webm").touch()
+        card = tmp_path / "card.mp4"
+        card.touch()
+        inserts = [_Insert(1, card, 2.5)]
+
+        result = compose_video(
+            segments=[seg1, seg2],
+            output_dir=tmp_path / "out",
+            runner=runner,
+            audio_duration=30.0,
+            section_cards=inserts,
+        )
+        # 3 clips (2 content + 1 card) with 2 transition overlaps → 30 s total.
+        assert result.duration_seconds == pytest.approx(30.0, abs=0.01)
