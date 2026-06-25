@@ -27,6 +27,7 @@ from podcaster.video.video_gen import (
     WIDTH,
     HEIGHT,
     IMAGE_ZOOM_MIN_SIZE_PX,
+    MAX_READING_PX_PER_FRAME,
     PAGE_ZOOM_SCALE,
     ZOOM_PAGE_CSS,
     RecordedSegment,
@@ -482,6 +483,15 @@ class TestGithubScrollPlan:
         deltas = [b - a for a, b in zip(tail, tail[1:])]
         assert max(deltas) <= READING_PX_PER_FRAME
 
+    def test_reading_phase_clamps_explicit_speed_to_hard_cap(self):
+        plan = _github_scroll_plan(
+            5000, HEIGHT, 50000, 300, px_per_frame=MAX_READING_PX_PER_FRAME * 3
+        )
+        assert plan is not None
+        tail = plan[-100:]
+        deltas = [b - a for a, b in zip(tail, tail[1:])]
+        assert max(deltas) <= MAX_READING_PX_PER_FRAME
+
     def test_does_not_exceed_scrollable(self):
         plan = _github_scroll_plan(5000, HEIGHT, 5200, 300)
         assert plan is not None
@@ -579,6 +589,12 @@ class TestScrollGithubReadme:
         assert max(ys) <= 6000
         jump_log = next(r for r in caplog.records if "README-first scroll" in r.getMessage())
         assert "to y=6000" in jump_log.getMessage()
+
+    def test_unscrollable_page_falls_back_after_clamping_readme_y(self):
+        page = self._page(readme_y=20000, scrollable=0)
+        with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+            _scroll_github_readme(page, 5.0)
+        smooth.assert_called_once()
 
     def _header_hold_frames(self, fps, duration, tmp_path):
         page = self._page()

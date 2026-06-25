@@ -1440,6 +1440,10 @@ def _github_scroll_plan(
     if total_frames <= 0:
         return []
     readme_y = max(0, min(int(readme_y), max(0, int(doc_scrollable))))
+    px_per_frame = min(
+        MAX_READING_PX_PER_FRAME,
+        max(1, int(px_per_frame)),
+    )
 
     # Never let header + jump eat more than half the segment — reading the
     # README content is the point, so it always gets at least half the frames.
@@ -1512,8 +1516,7 @@ def _scroll_github_readme(
     # Clamp to the real max scrollable Y so both the scroll plan and the log
     # below reflect a physically reachable target (README near the bottom plus
     # the top margin can otherwise overshoot ``doc_scrollable``).
-    if doc_scrollable > 0:
-        readme_y = min(readme_y, doc_scrollable)
+    readme_y = min(readme_y, max(0, doc_scrollable))
     # README already near the top → a normal reading scroll is the right thing.
     if readme_y <= viewport_height * 0.5:
         _smooth_scroll(page, duration_seconds, capturer)
