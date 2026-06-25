@@ -388,6 +388,7 @@ class ScriptDirections:
     corrections_path: str = ""
     source_article_link: str = ""
     historical_context: HistoricalContext = field(default_factory=HistoricalContext)
+    backchannels: BackchannelConfig = field(default_factory=lambda: BackchannelConfig())
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> "ScriptDirections":
@@ -395,9 +396,10 @@ class ScriptDirections:
 
         if not isinstance(payload, Mapping):
             return cls()
+        backchannels = BackchannelConfig.from_payload(payload)
         sd = payload.get("script_directions")
         if not isinstance(sd, Mapping):
-            return cls()
+            return cls(backchannels=backchannels)
 
         opening = sd.get("opening_cues") if isinstance(sd.get("opening_cues"), Mapping) else {}
         closing = sd.get("closing_cues") if isinstance(sd.get("closing_cues"), Mapping) else {}
@@ -411,6 +413,7 @@ class ScriptDirections:
             corrections_path=_safe_str(closing.get("corrections_path")),
             source_article_link=_safe_str(closing.get("source_article_link")),
             historical_context=HistoricalContext.from_value(sd.get("historical_context")),
+            backchannels=backchannels,
         )
 
     @property
@@ -494,6 +497,99 @@ class MusicMixConfig:
         if self.outro_start_position:
             kwargs["outro_start_offset_seconds"] = _parse_time_offset(self.outro_start_position)
         return kwargs
+
+
+# --- Backchannels (Natural audio, issue #419 Phase A) ---
+
+
+# TTS-safe backchannel library (issue #419). Pre-recorded clips ("mm-hmm",
+# "uh-huh", laughter) are future/optional work and intentionally excluded here.
+BACKCHANNEL_LIBRARY: tuple[str, ...] = (
+    "right",
+    "yeah",
+    "exactly",
+    "interesting",
+    "oh wow",
+    "hmm",
+    "that's true",
+)
+
+# Allowed mixing gain window for backchannels (dB under the main speaker).
+BACKCHANNEL_GAIN_DB_MAX = -14.0
+BACKCHANNEL_GAIN_DB_MIN = -18.0
+
+
+@dataclass(frozen=True)
+class BackchannelConfig:
+    """Parsed ``backchannels`` interaction-layer spec from the caller payload.
+
+    Phase A of issue #419 ("Natural audio"). Adds a lightweight interaction
+    layer *separate* from the main two-host script: timed backchannel reactions
+    ("right", "yeah", "exactly", ...) mixed quietly under the main speaker at
+    natural pause points.
+
+    The feature is **disabled by default** (``enabled=False``) so existing
+    callers and rendered audio are unchanged until a caller opts in. All fields
+    are optional and backward compatible with the config payload.
+    """
+
+    enabled: bool = False
+    # Density: at most one backchannel per [min_gap, max_gap] window of speech.
+    min_gap_seconds: float = 45.0
+    max_gap_seconds: float = 60.0
+    # Mixing gain in dB under the main speaker (clamped to [-18, -14]).
+    gain_db: float = -16.0
+    # Hard cap on a single backchannel clip's duration.
+    max_duration_ms: int = 600
+    # TTS-safe phrase library (overridable by the caller).
+    library: tuple[str, ...] = BACKCHANNEL_LIBRARY
+
+    def __post_init__(self) -> None:
+        if self.min_gap_seconds < 0:
+            raise ValueError("min_gap_seconds must be non-negative")
+        if self.max_gap_seconds < self.min_gap_seconds:
+            raise ValueError("max_gap_seconds must be >= min_gap_seconds")
+        if self.max_duration_ms <= 0:
+            raise ValueError("max_duration_ms must be positive")
+        if not self.library:
+            raise ValueError("backchannel library must not be empty")
+
+    @property
+    def clamped_gain_db(self) -> float:
+        """Gain clamped to the documented [-18, -14] dB window."""
+        return max(BACKCHANNEL_GAIN_DB_MIN, min(BACKCHANNEL_GAIN_DB_MAX, self.gain_db))
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any] | None) -> "BackchannelConfig":
+        """Parse ``backchannels`` (top level or nested under ``script_directions``)."""
+
+        if not isinstance(payload, Mapping):
+            return cls()
+
+        bc = payload.get("backchannels")
+        if not isinstance(bc, Mapping):
+            sd = payload.get("script_directions")
+            if isinstance(sd, Mapping):
+                bc = sd.get("backchannels")
+            if not isinstance(bc, Mapping):
+                return cls()
+
+        defaults = cls()
+        library_raw = bc.get("library")
+        library = defaults.library
+        if isinstance(library_raw, (list, tuple)):
+            phrases = tuple(p for item in library_raw if (p := _safe_str(item)))
+            if phrases:
+                library = phrases
+
+        return cls(
+            enabled=bool(bc.get("enabled", defaults.enabled)),
+            min_gap_seconds=_safe_float(bc.get("min_gap_seconds"), defaults.min_gap_seconds),
+            max_gap_seconds=_safe_float(bc.get("max_gap_seconds"), defaults.max_gap_seconds),
+            gain_db=_safe_float(bc.get("gain_db"), defaults.gain_db),
+            max_duration_ms=int(_safe_float(bc.get("max_duration_ms"), defaults.max_duration_ms)),
+            library=library,
+        )
 
 
 def _safe_str(value: object) -> str:
