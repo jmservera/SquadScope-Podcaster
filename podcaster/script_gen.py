@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Callable, Mapping
 from urllib.request import Request
@@ -40,6 +41,120 @@ MAX_SCRIPT_CHARS = 8000
 MAX_HISTORICAL_CONTEXT_CHARS = 3000
 
 DEFAULT_CHAT_API_VERSION = "2024-12-01-preview"
+
+# ---------------------------------------------------------------------------
+# Ownership-tone enforcement (#418)
+# ---------------------------------------------------------------------------
+
+# Hard-banned phrases: hosts must speak as authors, not as reporters covering
+# an external source.  Each entry is (human-readable label, compiled pattern).
+_BANNED_OWNERSHIP_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "the/this article",
+        re.compile(r"\b(the|this)\s+article\b", re.IGNORECASE),
+    ),
+    (
+        "the report says/mentions/notes/states",
+        re.compile(r"\bthe\s+report\s+(says|mentions|notes|states)\b", re.IGNORECASE),
+    ),
+    (
+        "according to the/this article/report/roundup/analysis",
+        re.compile(
+            r"\baccording\s+to\s+(the|this)\s+(article|report|roundup|analysis|piece)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "the roundup says/mentions/notes/states",
+        re.compile(r"\bthe\s+roundup\s+(says|mentions|notes|states)\b", re.IGNORECASE),
+    ),
+    (
+        "in the/this article/report",
+        re.compile(r"\bin\s+(the|this)\s+(article|report)\b", re.IGNORECASE),
+    ),
+    (
+        "as the article/report/roundup notes/says/mentions/states",
+        re.compile(
+            r"\bas\s+the\s+(article|report|roundup)\s+(notes|says|mentions|states)\b",
+            re.IGNORECASE,
+        ),
+    ),
+]
+
+# Text block added to the LLM system prompt to enforce ownership tone.
+_OWNERSHIP_TONE_BLOCK = """\
+
+OWNERSHIP TONE (MANDATORY — hosts are authors, not reporters):
+{podcast_name} is the hosts' own publication. They wrote the analysis. They are not\
+ reporting on an external article — they are experts sharing their own findings.
+
+Use ownership language:
+- "We found..." / "We noticed..."
+- "Our analysis shows..."
+- "This week we spotted..."
+- "On {podcast_name}, we're tracking..."
+- "What stood out to us..."
+
+NEVER say:
+- "the article" / "this article"
+- "the report says" / "the report mentions"
+- "according to the article/report/roundup/analysis"
+- "the roundup says/mentions"
+- "in the article" / "in this report"
+- "as the article notes"
+
+You MAY say "according to GitHub stars" or reference external third-party data — the\
+ ban applies only to treating {podcast_name}'s own content as an external source.
+"""
+
+
+def check_ownership_tone(script: str) -> list[str]:
+    """Scan *script* for banned phrases that treat Claracle as an external source.
+
+    Args:
+        script: The raw dialogue or full formatted script text.
+
+    Returns:
+        A list of human-readable violation descriptions.  Empty when the script
+        passes ownership-tone validation.
+    """
+    violations: list[str] = []
+    for line_num, line in enumerate(script.split("\n"), start=1):
+        for label, pattern in _BANNED_OWNERSHIP_PATTERNS:
+            match = pattern.search(line)
+            if match:
+                context_start = max(0, match.start() - 20)
+                context_end = min(len(line), match.end() + 20)
+                snippet = line[context_start:context_end].strip()
+                violations.append(
+                    f"Line {line_num}: banned phrase [{label}] — …{snippet}…"
+                )
+    return violations
+
+
+def _build_repair_prompt(dialogue: str, violations: list[str]) -> str:
+    """Build a repair instruction for the LLM to fix ownership-tone violations.
+
+    Only the offending lines should change; all other lines must be preserved
+    exactly so that episode structure and timing are not disrupted.
+    """
+    violation_list = "\n".join(f"  - {v}" for v in violations)
+    return (
+        "The podcast script below contains phrases that treat the publication as an "
+        "external source instead of the hosts' own work. "
+        "Rewrite ONLY the offending lines to use ownership language. "
+        "Preserve every other line exactly.\n\n"
+        f"VIOLATIONS:\n{violation_list}\n\n"
+        "REPLACEMENT GUIDE:\n"
+        "  - 'The article mentions X'           → 'We found X'\n"
+        "  - 'According to this week's roundup' → 'This week, we noticed...'\n"
+        "  - 'The report says developers...'    → 'Our analysis shows developers...'\n"
+        "  - 'In this article'                  → 'In our analysis'\n"
+        "  - 'As the article notes'             → 'What stood out to us'\n\n"
+        f"SCRIPT TO FIX:\n{dialogue}\n\n"
+        "Return ONLY the corrected dialogue lines in the exact same "
+        "'HostName: text' format — no explanations, no headers, no separators."
+    )
 
 
 @dataclass(frozen=True)
@@ -257,6 +372,9 @@ FORMAT RULES (you MUST follow these exactly):
     resolved_historical_context = historical_context or (directions.historical_context if directions else None)
     base += _build_historical_context_block(resolved_historical_context)
 
+    # Always inject ownership-tone rules — regardless of directions.
+    base += _OWNERSHIP_TONE_BLOCK.format(podcast_name=podcast_config.name)
+
     if breaking_news:
         safe_news = neutralize(breaking_news, limit=5000)
         base += (
@@ -302,6 +420,81 @@ BREAKING NEWS (include this as a Hot off the press segment early in the episode)
 Remember: write ONLY dialogue lines in the format "HostName: text". No headers, no metadata, no separators."""
 
     return prompt
+
+
+def _repair_ownership_tone(
+    *,
+    dialogue: str,
+    violations: list[str],
+    url: str,
+    token: str,
+    transport: Transport,
+) -> str:
+    """Attempt to repair ownership-tone violations via a single follow-up LLM call.
+
+    If the repaired dialogue still contains violations (or if the repair call
+    fails), the original dialogue is returned with a ``# OWNERSHIP_TONE_REVIEW_REQUIRED``
+    marker appended so that the human-review gate can catch it.
+
+    Args:
+        dialogue: The raw LLM-generated dialogue that contains violations.
+        violations: Violation descriptions from :func:`check_ownership_tone`.
+        url: The Azure OpenAI chat completions URL already built for this request.
+        token: Access token for the Authorization header.
+        transport: HTTP transport callable.
+
+    Returns:
+        Repaired dialogue string, or original dialogue with a review-required marker.
+    """
+    repair_system = (
+        "You are a podcast script editor. "
+        "Fix ownership-tone violations in the script so that the hosts speak as authors "
+        "sharing their own findings, not as reporters covering an external article. "
+        "Return ONLY the corrected dialogue lines in the same 'HostName: text' format."
+    )
+    repair_user = _build_repair_prompt(dialogue, violations)
+    payload = {
+        "messages": [
+            {"role": "system", "content": repair_system},
+            {"role": "user", "content": repair_user},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 2000,
+    }
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        raw_response = transport(request)
+        response = json.loads(raw_response.decode("utf-8"))
+        choices = response.get("choices", [])
+        if choices:
+            repaired = choices[0].get("message", {}).get("content", "").strip()
+            if repaired:
+                remaining = check_ownership_tone(repaired)
+                if remaining:
+                    logger.warning(
+                        "script_gen: ownership-tone repair incomplete "
+                        "(remaining_violations=%d); flagging for manual review",
+                        len(remaining),
+                    )
+                    return repaired + "\n# OWNERSHIP_TONE_REVIEW_REQUIRED\n"
+                logger.info("script_gen: ownership-tone repair successful")
+                return repaired
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "script_gen: ownership-tone repair call failed (%s); flagging original for manual review",
+            exc,
+        )
+
+    return dialogue + "\n# OWNERSHIP_TONE_REVIEW_REQUIRED\n"
 
 
 def generate_script(
@@ -408,6 +601,21 @@ def generate_script(
         dialogue = lines[0] if len(lines) > 1 else dialogue[:MAX_SCRIPT_CHARS]
 
     logger.info("script generated lines=%s chars=%s", dialogue.count("\n") + 1, len(dialogue))
+
+    # Validate ownership tone; attempt one automatic repair if needed.
+    violations = check_ownership_tone(dialogue)
+    if violations:
+        logger.warning(
+            "script_gen: ownership-tone violations=%d; attempting repair",
+            len(violations),
+        )
+        dialogue = _repair_ownership_tone(
+            dialogue=dialogue,
+            violations=violations,
+            url=url,
+            token=token,
+            transport=transport,
+        )
 
     # Build the full formatted script with header metadata
     script = _format_script(
