@@ -661,3 +661,34 @@ def _fake_metadata(path, sha256, runner=None):
         byte_length=4,
         sha256=sha256,
     )
+
+
+def test_request_backchannels_parses_enabled_config_from_manifest():
+    """Phase B wiring: a request manifest's backchannels payload becomes a parsed config."""
+
+    from podcaster.config import BackchannelConfig
+
+    manifest = {"request": {"backchannels": {"enabled": True, "min_gap_seconds": 30, "max_gap_seconds": 40}}}
+    config = job_runner._request_backchannels(manifest)
+    assert isinstance(config, BackchannelConfig)
+    assert config.enabled is True
+    assert config.min_gap_seconds == 30
+    assert config.max_gap_seconds == 40
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        {},
+        {"request": None},
+        {"request": {}},
+    ],
+)
+def test_request_backchannels_defaults_disabled_when_absent(manifest):
+    """Missing or malformed request yields the disabled-by-default config."""
+
+    from podcaster.config import BackchannelConfig
+
+    config = job_runner._request_backchannels(manifest)
+    assert config == BackchannelConfig()
+    assert config.enabled is False
