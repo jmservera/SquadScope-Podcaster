@@ -79,8 +79,11 @@ _SECTION_HEADER_RE = re.compile(
 )
 
 #: A GitHub repo URL — used to associate ``owner/repo`` slugs with a section.
+#: The repo group may contain internal dots (e.g. ``repo.js``) but must not end
+#: in one, so a URL followed by sentence punctuation (``.../org/repo.``) yields
+#: ``org/repo`` rather than an invalid ``org/repo.`` slug.
 _GITHUB_URL_RE = re.compile(
-    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)",
+    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
 )
 
 #: Titles that read as article headings rather than video title cards. Kept as
@@ -208,7 +211,14 @@ def _split_speaker(line: str, host_labels: tuple[str, str] | None) -> tuple[str,
 
 
 def match_section_header(line: str) -> str | None:
-    """Return the section *title* when *line* is a ``## Section:`` header."""
+    """Return the section *title* when *line* is a section header.
+
+    Matching is deliberately tolerant (see :data:`_SECTION_HEADER_RE`): it
+    accepts 1–6 leading ``#`` characters, a case-insensitive ``section`` keyword,
+    either ``:`` or ``-`` as the separator, and flexible surrounding whitespace
+    (``## Section: Title``, ``### section - Title``, …).  Returns ``None`` for
+    any line that is not a section header.
+    """
     match = _SECTION_HEADER_RE.match(line)
     return match.group("title").strip() if match else None
 
@@ -247,11 +257,14 @@ def parse_script_sections(
     *,
     title_card_duration_seconds: float = DEFAULT_TITLE_CARD_DURATION_SECONDS,
 ) -> list[ScriptSection]:
-    """Parse ``## Section:`` headers and their dialogue from *script*.
+    """Parse section headers and their dialogue from *script*.
 
-    Only headers explicitly marked with the :data:`SECTION_HEADER_PREFIX` form
-    (``## Section: <Title>``) start a new section; dialogue before the first such
-    header is not attributed to any section (it is the cold open / welcome).
+    A line is treated as a section header when it matches the tolerant
+    :data:`_SECTION_HEADER_RE` (canonically the :data:`SECTION_HEADER_PREFIX`
+    ``## Section: <Title>`` form, but also 1–6 ``#``, case-insensitive
+    ``section``, ``:`` or ``-`` separators, and flexible spacing).  Each header
+    starts a new section; dialogue before the first such header is not
+    attributed to any section (it is the cold open / welcome).
 
     Returns an empty list when the script has no section headers, so the feature
     stays dormant for legacy scripts (no error).

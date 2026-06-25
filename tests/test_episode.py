@@ -157,7 +157,11 @@ def test_parse_script_segments_strips_section_headers():
     )
     segments = episode.parse_script_segments(script, config)
     assert [r for r, _ in segments] == ["host_a", "host_b"]
-    assert all("Section" not in text for _, text in segments)
+    # The non-spoken header marker and its title text must not leak into TTS.
+    # (Assert on the marker/title specifically rather than the bare word
+    # "Section", which can legitimately appear in spoken dialogue.)
+    assert all("## Section:" not in text for _, text in segments)
+    assert all("AI Frameworks Showdown" not in text for _, text in segments)
     assert all("##" not in text for _, text in segments)
 
 

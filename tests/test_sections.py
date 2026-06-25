@@ -116,6 +116,17 @@ class TestParseScriptSections:
         assert sections[0].repo_slugs == ("microsoft/vscode", "astral-sh/ruff")
         assert sections[1].repo_slugs == ("openai/openai-python",)
 
+    def test_repo_slug_ignores_trailing_sentence_period(self):
+        from podcaster.sections import _repo_slugs
+
+        # A repo URL ending a sentence must not capture the period, and
+        # internal dots (repo.js) must be preserved.
+        turns = [
+            ("host_a", "Check out https://github.com/org/repo."),
+            ("host_b", "Also https://github.com/acme/widget.js rocks."),
+        ]
+        assert _repo_slugs(turns) == ("org/repo", "acme/widget.js")
+
     def test_title_card_defaults(self):
         sections = parse_script_sections(SCRIPT, CONFIG)
         card = sections[0].title_card
