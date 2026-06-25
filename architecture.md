@@ -92,7 +92,19 @@ Required:
 Optional:
 - AZURE_OPENAI_TTS_VOICE_HOST_A/B, AZURE_OPENAI_TTS_STYLE_HOST_A/B
 - PODCASTER_STORAGE_ACCOUNT_URL, PODCASTER_STORAGE_QUEUE_URL
+- PODCASTER_VIDEO_SCRATCH_CONTAINER (video pipeline intermediates container; enables blob checkpoint/resume, #410)
 - SPOTIFY_PUBLISH_ENABLED, SPOTIFY_PUBLISH_DRY_RUN, SP_DC, SP_KEY
+
+## Video Pipeline Intermediates (checkpoint/resume, #410)
+- The video job stores all intermediates (segment recordings, normalized clips,
+  composed video) in the `video-scratch` blob container under
+  `video-jobs/{job-id}/intermediates/` instead of local /tmp.
+- Each stage checks blob for its output and resumes from the last checkpoint on
+  restart; local disk only holds the file currently being processed.
+- Intermediates are deleted on successful publish; a 7-day storage lifecycle
+  policy reclaims any abandoned scratch blobs.
+- Disabled automatically when `PODCASTER_VIDEO_SCRATCH_CONTAINER` is unset
+  (local dev / tests fall back to the legacy all-local-disk path).
 
 ## Key Commands
 - Run tests: pytest tests/ -q

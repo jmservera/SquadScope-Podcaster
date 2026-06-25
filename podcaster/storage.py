@@ -66,6 +66,21 @@ class StorageBackend(Protocol):
     def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
         ...
 
+    def blob_exists(self, path: str) -> bool:
+        ...
+
+    def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
+        ...
+
+    def download_file(self, path: str, dest: Path) -> bool:
+        ...
+
+    def delete_blob(self, path: str) -> bool:
+        ...
+
+    def delete_prefix(self, prefix: str) -> int:
+        ...
+
 
 class LocalStorageBackend:
     def __init__(self, root: Path, base_url: str) -> None:
@@ -128,6 +143,54 @@ class LocalStorageBackend:
             https_only=self.base_url.lower().startswith("https://"),
             account_key_used=False,
         )
+
+    def blob_exists(self, path: str) -> bool:
+        return (self.root / _safe_blob_path(path)).exists()
+
+    def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
+        import shutil
+
+        safe_path = _safe_blob_path(path)
+        target = self.root / safe_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        return StoredArtifact(
+            path=safe_path,
+            url=f"{self.base_url}/{safe_path}",
+            size_bytes=target.stat().st_size,
+            content_type=content_type,
+        )
+
+    def download_file(self, path: str, dest: Path) -> bool:
+        import shutil
+
+        target = self.root / _safe_blob_path(path)
+        if not target.exists():
+            return False
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(target, dest)
+        return True
+
+    def delete_blob(self, path: str) -> bool:
+        target = self.root / _safe_blob_path(path)
+        if not target.exists():
+            return False
+        target.unlink()
+        return True
+
+    def delete_prefix(self, prefix: str) -> int:
+        safe_prefix = _safe_blob_prefix(prefix)
+        if not self.root.exists():
+            return 0
+        deleted = 0
+        for target in list(self.root.rglob("*")):
+            if not target.is_file():
+                continue
+            relative = target.relative_to(self.root).as_posix()
+            if relative == safe_prefix or relative.startswith(safe_prefix.rstrip("/") + "/"):
+                target.unlink()
+                deleted += 1
+        return deleted
 
 
 class AzureBlobStorageBackend:
@@ -330,6 +393,130 @@ class AzureBlobStorageBackend:
             account_key_used=False,
         )
 
+    def blob_exists(self, path: str) -> bool:
+        safe_path = _safe_blob_path(path)
+        encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
+        token = self._credential.get_token("https://storage.azure.com/.default")
+        request = Request(
+            f"{self._account_url}/{self._container_name}/{encoded_path}",
+            method="HEAD",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
+                "x-ms-version": "2023-11-03",
+            },
+        )
+        try:
+            with urlopen(request, timeout=30):
+                return True
+        except HTTPError as exc:
+            if exc.code == 404:
+                return False
+            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+            raise RuntimeError(f"blob existence check failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+
+    def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
+        # Stream the file from disk straight into the PUT body so the whole
+        # blob is never held in memory — intermediates can be multi-GB videos.
+        safe_path = _safe_blob_path(path)
+        size = source.stat().st_size
+        encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
+        token = self._credential.get_token("https://storage.azure.com/.default")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Length": str(size),
+            "Content-Type": content_type,
+            "x-ms-blob-type": "BlockBlob",
+            "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
+            "x-ms-version": "2023-11-03",
+        }
+        with source.open("rb") as handle:
+            request = Request(
+                f"{self._account_url}/{self._container_name}/{encoded_path}",
+                data=handle,
+                method="PUT",
+                headers=headers,
+            )
+            try:
+                with urlopen(request, timeout=300):
+                    pass
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+                raise RuntimeError(f"blob file upload failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+        return StoredArtifact(
+            path=safe_path,
+            url=f"{self._account_url}/{self._container_name}/{safe_path}",
+            size_bytes=size,
+            content_type=content_type,
+        )
+
+    def download_file(self, path: str, dest: Path) -> bool:
+        # Stream the response body to disk in chunks so the file never has to
+        # be materialised in memory.
+        import shutil
+
+        safe_path = _safe_blob_path(path)
+        encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
+        token = self._credential.get_token("https://storage.azure.com/.default")
+        request = Request(
+            f"{self._account_url}/{self._container_name}/{encoded_path}",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
+                "x-ms-version": "2023-11-03",
+            },
+        )
+        try:
+            with urlopen(request, timeout=300) as response:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with dest.open("wb") as handle:
+                    shutil.copyfileobj(response, handle, length=1024 * 1024)
+        except HTTPError as exc:
+            if exc.code == 404:
+                return False
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"blob file download failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+        return True
+
+    def delete_blob(self, path: str) -> bool:
+        safe_path = _safe_blob_path(path)
+        encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
+        token = self._credential.get_token("https://storage.azure.com/.default")
+        request = Request(
+            f"{self._account_url}/{self._container_name}/{encoded_path}",
+            method="DELETE",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
+                "x-ms-version": "2023-11-03",
+            },
+        )
+        try:
+            with urlopen(request, timeout=30):
+                return True
+        except HTTPError as exc:
+            if exc.code in (404, 202):
+                return exc.code == 202
+            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+            raise RuntimeError(f"blob delete failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+
+    def delete_prefix(self, prefix: str) -> int:
+        safe_prefix = _safe_blob_prefix(prefix)
+        deleted = 0
+        # list_blobs caps at maxresults; page until the prefix is exhausted so
+        # cleanup removes every intermediate, not just the first page.
+        while True:
+            names = self.list_blobs(safe_prefix, limit=5000)
+            if not names:
+                break
+            for name in names:
+                if self.delete_blob(name):
+                    deleted += 1
+            if len(names) < 5000:
+                break
+        return deleted
+
 
 def create_storage_backend() -> StorageBackend:
     account_url = os.environ.get("PODCASTER_STORAGE_ACCOUNT_URL")
@@ -339,6 +526,29 @@ def create_storage_backend() -> StorageBackend:
 
     root = Path(os.environ.get("PODCASTER_LOCAL_STORAGE_PATH", ".podcaster-artifacts"))
     base_url = os.environ.get("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-stub")
+    return LocalStorageBackend(root=root, base_url=base_url)
+
+
+def create_scratch_storage_backend() -> StorageBackend | None:
+    """Build a storage backend for the video *scratch* container (issue #410).
+
+    Intermediate video artifacts (segment recordings, normalized clips, composed
+    video) are checkpointed here under ``video-jobs/{job-id}/intermediates/`` so
+    the pipeline can resume after a crash and local disk only ever holds the file
+    currently being processed.
+
+    Returns ``None`` when no scratch container is configured (e.g. local dev or
+    tests), in which case callers fall back to the legacy all-local-disk path.
+    """
+    account_url = os.environ.get("PODCASTER_STORAGE_ACCOUNT_URL")
+    container = os.environ.get("PODCASTER_VIDEO_SCRATCH_CONTAINER", "").strip()
+    if not container:
+        return None
+    if account_url:
+        return AzureBlobStorageBackend(account_url=account_url, container_name=container)
+
+    root = Path(os.environ.get("PODCASTER_LOCAL_SCRATCH_PATH", ".podcaster-scratch"))
+    base_url = os.environ.get("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-scratch")
     return LocalStorageBackend(root=root, base_url=base_url)
 
 

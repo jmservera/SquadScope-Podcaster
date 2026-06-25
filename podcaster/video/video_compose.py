@@ -1609,6 +1609,62 @@ def _splice_section_cards(
     return new_paths, new_durs, new_trans, new_lts
 
 
+def _finalize_output(
+    *,
+    video_only_path: Path,
+    video_duration: float,
+    audio_path: Path | None,
+    output_path: Path,
+    segment_count: int,
+    run: "CommandRunner",
+) -> ComposeResult:
+    """Mux the podcast audio (if any) over the composed video and finalise.
+
+    Shared by the normal compose path and the checkpoint-resume path (issue
+    #410): given a finished video-only clip and the podcast MP3, this is the only
+    work the *final mux* needs — it downloads/uses just the composed video plus
+    the audio, never the per-segment intermediates.
+    """
+    needs_audio = audio_path is not None
+    if needs_audio:
+        muxed_target = output_path.parent / "muxed.mp4"
+        _, audio_duration = _probe_media(audio_path, run)
+        _, probed_video_duration = _probe_media(video_only_path, run)
+        effective_video_duration = probed_video_duration or video_duration
+        run(_build_audio_overlay_cmd(
+            video_only_path,
+            audio_path,
+            muxed_target,
+            video_duration=effective_video_duration,
+            audio_duration=audio_duration,
+        ))
+        pre_final_path = muxed_target
+        # Audio is never truncated and is padded to at least the video length,
+        # so the muxed output runs for the longer stream.
+        total_duration = (
+            max(effective_video_duration, audio_duration)
+            if audio_duration > 0
+            else effective_video_duration
+        )
+    else:
+        pre_final_path = video_only_path
+        total_duration = video_duration
+
+    # Final post-processing: normalise H.264 colour metadata (stream copy).
+    run(_build_h264_metadata_cmd(pre_final_path, output_path))
+
+    return ComposeResult(
+        output_path=output_path,
+        duration_seconds=total_duration,
+        segment_count=segment_count,
+        has_audio=audio_path is not None,
+    )
+
+
+# Blob checkpoint name for the finished video-only composed clip (issue #410).
+COMPOSED_VIDEO_CHECKPOINT = "composed_video.mp4"
+
+
 def compose_video(
     segments: list[RecordedSegment],
     audio_path: Path | None = None,
@@ -1623,6 +1679,7 @@ def compose_video(
     dog_logo_cache_dir: Path | None = None,
     audio_duration: float | None = None,
     section_cards: "list[SectionCardInsert] | None" = None,
+    intermediates=None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -1715,8 +1772,29 @@ def compose_video(
     # output_path: the pipeline always ends with the h264_metadata BSF pass
     # (issue #353), which requires a distinct input and output file.
     has_bookends = intro_path is not None or outro_path is not None
-    needs_audio = audio_path is not None
     compose_target = output_path.parent / "content.mp4"
+
+    # Checkpoint/resume (issue #410): when the finished video-only composed clip
+    # already survived in blob from a previous (interrupted) run, skip the whole
+    # record→normalize→compose→join pipeline and go straight to the final mux,
+    # which needs only the composed video plus the podcast audio.
+    _intermediates_enabled = intermediates is not None and getattr(intermediates, "enabled", False)
+    if _intermediates_enabled and intermediates.exists(COMPOSED_VIDEO_CHECKPOINT):
+        resumed_video = output_path.parent / COMPOSED_VIDEO_CHECKPOINT
+        if intermediates.download(COMPOSED_VIDEO_CHECKPOINT, resumed_video):
+            _, resumed_duration = _probe_media(resumed_video, run)
+            logger.info(
+                "Resumed composed video from blob checkpoint (%.1fs); skipping to final mux",
+                resumed_duration,
+            )
+            return _finalize_output(
+                video_only_path=resumed_video,
+                video_duration=resumed_duration,
+                audio_path=audio_path,
+                output_path=output_path,
+                segment_count=len(segments),
+                run=run,
+            )
 
     # Fit-to-window planning (issue #355): when the audio duration is known we
     # trim/freeze the content so it fills exactly the audio timeline minus the
@@ -1758,32 +1836,46 @@ def compose_video(
     norm_dir.mkdir(parents=True, exist_ok=True)
 
     normalized_paths = [norm_dir / f"seg_{i:03d}.mp4" for i in range(len(segments))]
-    norm_cmds: list[list[str]] = []
+    # Per-segment normalize tasks.  Each task either resumes the normalized clip
+    # from its blob checkpoint (issue #410) or runs ffmpeg and checkpoints the
+    # result, so a restart skips already-normalized segments and only the clip
+    # being processed lives on local disk.
+    norm_tasks: list = []
     for i, rec in enumerate(segments):
         if fit_durations is not None:
-            norm_cmds.append(
-                _build_fit_segment_cmd(rec.video_path, normalized_paths[i], fit_durations[i])
-            )
+            cmd = _build_fit_segment_cmd(rec.video_path, normalized_paths[i], fit_durations[i])
             logger.info(
                 "Fitting segment %d to %.1fs: %s",
                 i, fit_durations[i], rec.video_path.name,
             )
         else:
-            norm_cmds.append(_build_normalize_cmd(rec.video_path, normalized_paths[i]))
+            cmd = _build_normalize_cmd(rec.video_path, normalized_paths[i])
             logger.info("Normalizing segment %d: %s", i, rec.video_path.name)
+        norm_tasks.append((i, cmd, normalized_paths[i]))
 
-    workers = min(NORMALIZE_WORKERS, len(norm_cmds))
+    def _normalize_one(task) -> None:
+        idx, cmd, dest = task
+        name = f"normalized_{idx:03d}.mp4"
+        if _intermediates_enabled and intermediates.exists(name):
+            if intermediates.download(name, dest):
+                logger.info("Resumed normalized segment %d from blob", idx)
+                return
+        run(cmd)
+        if _intermediates_enabled:
+            intermediates.upload(name, dest, "video/mp4")
+
+    workers = min(NORMALIZE_WORKERS, len(norm_tasks))
     if workers > 1:
         logger.info(
             "Normalizing %d segment(s) with %d parallel workers",
-            len(norm_cmds), workers,
+            len(norm_tasks), workers,
         )
         with ThreadPoolExecutor(max_workers=workers) as pool:
             # Consume the iterator so any ffmpeg failure is re-raised here.
-            list(pool.map(run, norm_cmds))
+            list(pool.map(_normalize_one, norm_tasks))
     else:
-        for cmd in norm_cmds:
-            run(cmd)
+        for task in norm_tasks:
+            _normalize_one(task)
 
     # Step 2: Plan transitions and lower-thirds for pairwise composition.
     # When fitting, the segment durations on screen are the fitted targets, not
@@ -1899,41 +1991,22 @@ def compose_video(
     else:
         video_only_path = compose_target
 
+    # Checkpoint the finished video-only composed clip (issue #410) so a crash
+    # during the final audio mux can resume straight from here next time.
+    if _intermediates_enabled:
+        intermediates.upload(COMPOSED_VIDEO_CHECKPOINT, video_only_path, "video/mp4")
+        intermediates.mark("composed_video", duration_seconds=round(video_duration, 3))
+
     # Overlay the podcast MP3 as the sole audio track on the full video, then
     # always run a final h264_metadata BSF pass into output_path so the colour
     # VUI is consistent for Spotify (issue #353).
-    if needs_audio:
-        muxed_target = output_path.parent / "muxed.mp4"
-        _, audio_duration = _probe_media(audio_path, run)
-        _, probed_video_duration = _probe_media(video_only_path, run)
-        effective_video_duration = probed_video_duration or video_duration
-        run(_build_audio_overlay_cmd(
-            video_only_path,
-            audio_path,
-            muxed_target,
-            video_duration=effective_video_duration,
-            audio_duration=audio_duration,
-        ))
-        pre_final_path = muxed_target
-        # Audio is never truncated and is padded to at least the video length,
-        # so the muxed output runs for the longer stream.
-        total_duration = (
-            max(effective_video_duration, audio_duration)
-            if audio_duration > 0
-            else effective_video_duration
-        )
-    else:
-        pre_final_path = video_only_path
-        total_duration = video_duration
-
-    # Final post-processing: normalise H.264 colour metadata (stream copy).
-    run(_build_h264_metadata_cmd(pre_final_path, output_path))
-
-    return ComposeResult(
+    return _finalize_output(
+        video_only_path=video_only_path,
+        video_duration=video_duration,
+        audio_path=audio_path,
         output_path=output_path,
-        duration_seconds=total_duration,
         segment_count=len(segments),
-        has_audio=audio_path is not None,
+        run=run,
     )
 
 

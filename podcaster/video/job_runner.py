@@ -49,6 +49,7 @@ from podcaster.video.distribution import (
     VideoDistributionConfig,
     distribute_video,
 )
+from podcaster.video.intermediates import create_intermediate_store
 from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
@@ -315,6 +316,11 @@ def run_video_generation(
     current = now or datetime.now(timezone.utc)
     dist_config = config or VideoDistributionConfig.from_env()
 
+    # Blob-backed checkpoint/resume store for intermediates (issue #410). When no
+    # scratch container is configured (local dev / tests) this is disabled and
+    # every operation is a no-op, preserving the legacy all-local-disk path.
+    intermediates = create_intermediate_store(job_id)
+
     # Load manifest
     raw_manifest = storage.get_bytes(manifest_path(job_id))
     if raw_manifest is None:
@@ -424,6 +430,7 @@ def run_video_generation(
                     output_dir=output_dir,
                     headless=True,
                     source_url=extract_source_url(script),
+                    intermediates=intermediates,
                 )
 
             # Compose final MP4
@@ -446,6 +453,7 @@ def run_video_generation(
                     dog_logo=dog_logo_cfg,
                     audio_duration=audio_duration,
                     section_cards=section_cards,
+                    intermediates=intermediates,
                 )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
@@ -489,6 +497,11 @@ def run_video_generation(
                     "spotify_upload_updated": dist_result.spotify_upload_updated,
                 },
             })
+
+            # Intermediates are no longer needed once the episode is published;
+            # delete the job's scratch blobs (issue #410).  Best-effort — the
+            # 7-day lifecycle policy on the scratch container is the safety net.
+            intermediates.cleanup()
 
             return VideoOutcome(
                 job_id=job_id,

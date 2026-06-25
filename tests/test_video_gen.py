@@ -1800,3 +1800,114 @@ class TestComposeScreenshotSegment:
 
         assert out.exists()
         assert out.stat().st_size > 0
+
+
+# --- Per-segment checkpoint/resume against blob (issue #410) ------------------
+
+
+class TestRecordEpisodeCheckpointResume:
+    def _store(self, tmp_path):
+        from podcaster.storage import LocalStorageBackend
+        from podcaster.video.intermediates import IntermediateStore
+
+        backend = LocalStorageBackend(
+            root=tmp_path / "scratch", base_url="https://example.test/scratch"
+        )
+        return IntermediateStore(backend, "job-rec")
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_full_resume_skips_browser(self, mock_record, mock_pw, tmp_path):
+        store = self._store(tmp_path)
+        # Pre-seed a checkpoint for the only segment (recording file + sidecar).
+        rec_file = tmp_path / "seed.mp4"
+        rec_file.write_bytes(b"\x00\x00\x00\x18ftypmp42seed")
+        store.upload("recording_000.mp4", rec_file, "video/mp4")
+        store.write_text(
+            "recording_000.json",
+            '{"suffix": ".mp4", "is_fallback": false, "has_pages": true, '
+            '"website_url": "https://x.test", "is_removed": false, '
+            '"recovery_path": "website"}',
+        )
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        result = record_episode(plan, output_dir=tmp_path / "out", intermediates=store)
+
+        # Browser was never launched and no segment was recorded.
+        mock_pw.assert_not_called()
+        mock_record.assert_not_called()
+        assert len(result.recorded) == 1
+        rec = result.recorded[0]
+        assert rec.recovery_path == "website"
+        assert rec.has_pages is True
+        assert rec.website_url == "https://x.test"
+        assert rec.video_path.exists()
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_records_and_checkpoints_when_absent(self, mock_record, mock_pw, tmp_path):
+        store = self._store(tmp_path)
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        out_dir = tmp_path / "out"
+
+        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+            from podcaster.video.video_gen import RecordedSegment
+
+            path = Path(output_dir) / "fresh_000.mp4"
+            path.write_bytes(b"\x00\x00\x00\x18ftypmp42new")
+            return RecordedSegment(segment=segment, video_path=path, recovery_path="direct")
+
+        mock_record.side_effect = _fake_record
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        result = record_episode(plan, output_dir=out_dir, intermediates=store)
+
+        assert len(result.recorded) == 1
+        mock_record.assert_called_once()
+        # The freshly-recorded segment was checkpointed to blob.
+        assert store.exists("recording_000.mp4") is True
+        assert store.read_text("recording_000.json") is not None
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_partial_resume_records_only_missing(self, mock_record, mock_pw, tmp_path):
+        store = self._store(tmp_path)
+        # Seed only segment 0; segment 1 must still be recorded.
+        rec_file = tmp_path / "seed.mp4"
+        rec_file.write_bytes(b"\x00\x00\x00\x18ftypmp42seed")
+        store.upload("recording_000.mp4", rec_file, "video/mp4")
+        store.write_text(
+            "recording_000.json",
+            '{"suffix": ".mp4", "recovery_path": "direct"}',
+        )
+
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+            from podcaster.video.video_gen import RecordedSegment
+
+            path = Path(output_dir) / "fresh_001.mp4"
+            path.write_bytes(b"\x00\x00\x00\x18ftypmp42new")
+            return RecordedSegment(segment=segment, video_path=path)
+
+        mock_record.side_effect = _fake_record
+
+        plan = _make_plan(
+            _make_segment("a", "b", 0, 10),
+            _make_segment("c", "d", 10, 10),
+            total=20.0,
+        )
+        result = record_episode(plan, output_dir=tmp_path / "out", intermediates=store)
+
+        assert len(result.recorded) == 2
+        # Only the missing segment (index 1) was recorded.
+        assert mock_record.call_count == 1
+        assert store.exists("recording_001.mp4") is True

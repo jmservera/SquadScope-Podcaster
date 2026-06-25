@@ -2087,3 +2087,109 @@ class TestFreeComposeIntermediates:
     def test_is_best_effort_when_files_missing(self, tmp_path):
         # Must never raise even if nothing exists yet.
         vc._free_compose_intermediates(tmp_path / "content.mp4", tmp_path / "normalized")
+
+
+# --- Blob-backed checkpoint/resume (issue #410) ------------------------------
+
+
+def _touch_output_runner():
+    """A command runner that creates any .mp4 argument so checkpoint uploads
+    (which require the local source file to exist) succeed under mocked ffmpeg."""
+
+    def _run(cmd):
+        for arg in cmd:
+            s = str(arg)
+            if s.endswith(".mp4") and not Path(s).exists():
+                Path(s).parent.mkdir(parents=True, exist_ok=True)
+                Path(s).write_bytes(b"\x00" * 2048)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    return _run
+
+
+class TestComposeVideoCheckpointResume:
+    def _store(self, tmp_path):
+        from podcaster.storage import LocalStorageBackend
+        from podcaster.video.intermediates import IntermediateStore
+
+        backend = LocalStorageBackend(
+            root=tmp_path / "scratch", base_url="https://example.test/scratch"
+        )
+        return IntermediateStore(backend, "job-compose")
+
+    def test_intermediates_checkpointed(self, tmp_path):
+        store = self._store(tmp_path)
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").write_bytes(b"\x00" * 2048)
+
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=_touch_output_runner(),
+            intermediates=store,
+        )
+
+        # Normalized segment and composed video are checkpointed to blob.
+        assert store.exists("normalized_000.mp4") is True
+        assert store.exists("composed_video.mp4") is True
+        # Manifest tracks the composed-video stage.
+        assert "composed_video" in store.load_manifest().get("stages", {})
+
+    def test_resumes_from_composed_checkpoint(self, tmp_path):
+        from podcaster.video.video_compose import COMPOSED_VIDEO_CHECKPOINT
+
+        store = self._store(tmp_path)
+        # Pre-seed the composed-video checkpoint as if a prior run finished it.
+        composed = tmp_path / "composed_seed.mp4"
+        composed.write_bytes(b"\x00" * 4096)
+        assert store.upload(COMPOSED_VIDEO_CHECKPOINT, composed, "video/mp4") is True
+
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "seg.webm")
+        # Note: seg.webm intentionally absent — resume must not need it.
+
+        runner = _mock_runner()
+        result = compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=runner,
+            intermediates=store,
+        )
+
+        # The composed video was pulled back to local disk.
+        assert (tmp_path / "out" / COMPOSED_VIDEO_CHECKPOINT).exists()
+        assert result.segment_count == 1
+        # Only the final mux path ran (probe + h264 metadata); no normalize/compose.
+        assert runner.call_count <= 2
+        ran = [str(c[0][0]) for c in runner.call_args_list]
+        assert not any("scale" in r for r in ran)
+
+    def test_resumes_normalized_segment(self, tmp_path):
+        store = self._store(tmp_path)
+        # Pre-seed a normalized clip checkpoint.
+        norm = tmp_path / "norm_seed.mp4"
+        norm.write_bytes(b"\x00" * 2048)
+        assert store.upload("normalized_000.mp4", norm, "video/mp4") is True
+
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "seg.webm")
+        # seg.webm absent: a resumed normalize must not touch the source.
+
+        calls = []
+
+        def _run(cmd):
+            calls.append([str(a) for a in cmd])
+            for arg in cmd:
+                s = str(arg)
+                if s.endswith(".mp4") and not Path(s).exists():
+                    Path(s).parent.mkdir(parents=True, exist_ok=True)
+                    Path(s).write_bytes(b"\x00" * 2048)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=_run,
+            intermediates=store,
+        )
+
+        # No normalize command was issued for the resumed segment.
+        assert not any(any("scale" in a for a in cmd) for cmd in calls)
