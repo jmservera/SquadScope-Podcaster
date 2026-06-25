@@ -68,6 +68,25 @@ HEIGHT = 1080
 SCROLL_TICKS_PER_SEC = 30
 MAX_SCROLL_VIEWPORT_MULTIPLIER = 2.5
 
+# Deterministic, frame-indexed scrolling (issue #413).
+#
+# Stepping/judder happens when the scroll distance covered by a single captured
+# frame is too large for the eye to read as continuous motion.  Two fixes:
+#   1. Absolute, frame-indexed positioning (``window.scrollTo`` to a precomputed
+#      integer Y per frame) instead of repeated fractional ``scrollBy`` calls,
+#      which the browser rounds every tick and which accumulate drift, producing
+#      uneven gaps between frames.
+#   2. Capping the per-frame scroll distance to a comfortable reading speed so
+#      short segments (or very long pages) don't fly past the content.  At 30fps
+#      6-10 px/frame (180-300 px/sec) reads as smooth and legible.
+# These are intentionally module constants so ``VIDEO_SCROLL_PX_PER_FRAME`` can
+# tune the reading speed without code changes (applied below, once ``_env_int``
+# is defined).
+READING_PX_PER_FRAME = 8
+# Hard cap on per-frame scroll distance for content reading; above ~10 px/frame
+# at 30fps text starts to look steppy (issue #413).
+MAX_READING_PX_PER_FRAME = 10
+
 # Chromium flags that keep the compositor and timers running at full rate while
 # headless.  Without these, Chromium throttles background/occluded renderers and
 # timers, which drops recorded frames and makes scrolling stutter (issue #359).
@@ -145,6 +164,9 @@ SCREENSHOT_CAPTURE_ENABLED = _env_bool("VIDEO_SCREENSHOT_CAPTURE", True)
 # identical to the screencast behaviour (frames / fps == duration), since the
 # composed framerate equals the scroll tick rate.
 SCREENSHOT_CAPTURE_FPS = _env_int("VIDEO_SCREENSHOT_FPS", SCROLL_TICKS_PER_SEC)
+# Apply the optional reading-speed override now that _env_int is available
+# (issue #413).  Kept here so the constant is defined alongside its default.
+READING_PX_PER_FRAME = max(1, _env_int("VIDEO_SCROLL_PX_PER_FRAME", READING_PX_PER_FRAME))
 # A zero or negative framerate would break the frame-count math (division by
 # zero, negative tick intervals) and is meaningless for capture, so clamp to a
 # sane minimum of one frame per second.
@@ -1023,39 +1045,121 @@ def _finalize_segment(
     return dest_path
 
 
-def _smooth_scroll(
-    page: Page,
-    duration_seconds: float,
-    capturer: "_Capturer | None" = None,
-) -> None:
-    """Auto-scroll the page smoothly over the given duration.
+def _ease_linear(t: float) -> float:
+    """Identity easing — constant scroll speed (issue #413)."""
+    return t
 
-    Scrolls at SCROLL_TICKS_PER_SEC, capping total scroll distance to
-    MAX_SCROLL_VIEWPORT_MULTIPLIER × viewport height.
 
-    When *capturer* is provided (screenshot/hyperframe mode, issue #387) a
-    lossless PNG screenshot is taken after each scroll tick instead of waiting
-    in real time.  The tick rate is then SCREENSHOT_CAPTURE_FPS — identical to
-    the composed framerate — so the number of frames equals
-    ``duration_seconds * SCREENSHOT_CAPTURE_FPS`` and the captured motion plays
-    back at exactly the segment duration regardless of any custom FPS override.
+def _ease_out_cubic(t: float) -> float:
+    """easeOutCubic — fast start, gentle deceleration (issue #413).
+
+    Used for quick transitions (e.g. jumping to a README) so the motion lands
+    softly instead of stopping abruptly.
     """
-    # In screenshot mode the capture rate must equal the composed framerate so
-    # frame_count / fps == duration; in screencast mode the scroll cadence is
-    # the historical SCROLL_TICKS_PER_SEC.
+    return 1.0 - (1.0 - t) ** 3
+
+
+_EASINGS: "dict[str, Callable[[float], float]]" = {
+    "linear": _ease_linear,
+    "ease_out_cubic": _ease_out_cubic,
+}
+
+
+def _scroll_positions(
+    start_y: float,
+    end_y: float,
+    total_frames: int,
+    easing: str = "linear",
+) -> "list[int]":
+    """Compute deterministic integer scroll Y positions, one per frame (#413).
+
+    Returns ``total_frames`` absolute Y offsets from *start_y* to *end_y*
+    following the named *easing* curve.  Positions are produced from a single
+    continuous parameter ``t in [0, 1]`` (not by accumulating per-frame deltas)
+    so there is no rounding drift between frames — the motion plays back as
+    butter-smooth, evenly spaced steps.  The list always ends exactly at
+    *end_y*.
+    """
+    if total_frames <= 0:
+        return []
+    if total_frames == 1:
+        return [int(round(start_y))]
+    fn = _EASINGS.get(easing, _ease_linear)
+    span = end_y - start_y
+    last = total_frames - 1
+    return [int(round(start_y + span * fn(i / last))) for i in range(total_frames)]
+
+
+def _scroll_frame_count(
+    duration_seconds: float, capturer: "_Capturer | None"
+) -> "tuple[int, int]":
+    """Return ``(total_frames, tick_rate)`` for a scroll of *duration_seconds*.
+
+    In screenshot mode the capture rate must equal the composed framerate so
+    ``frame_count / fps == duration`` (ceil, matching the composer); in
+    screencast mode the historical SCROLL_TICKS_PER_SEC floor is used so a
+    sub-tick duration simply waits without scrolling.
+    """
     tick_rate = (
         SCREENSHOT_CAPTURE_FPS if capturer is not None else SCROLL_TICKS_PER_SEC
     )
-    # In screenshot mode use ceil so the tick/frame count matches the expected
-    # frame count computed by _compose_screenshot_segment (also ceil); a floor
-    # here would under-count and force the composer to pad, risking a dropped
-    # fractional final frame.  Screencast mode keeps the historical floor so a
-    # duration shorter than one tick simply waits without scrolling.
-    total_ticks = (
+    total_frames = (
         math.ceil(duration_seconds * tick_rate)
         if capturer is not None
         else int(duration_seconds * tick_rate)
     )
+    return total_frames, tick_rate
+
+
+def _run_scroll_positions(
+    page: Page,
+    positions: "list[int]",
+    capturer: "_Capturer | None",
+    tick_interval_ms: int,
+) -> None:
+    """Drive the page through *positions* (absolute Y), one frame each (#413).
+
+    Screenshot mode captures a frame per position; screencast mode waits one
+    tick interval per position so the motion plays back in real time.
+    """
+    for y in positions:
+        page.evaluate(f"window.scrollTo(0, {y})")
+        if capturer is not None:
+            capturer.frame(page)
+        else:
+            page.wait_for_timeout(tick_interval_ms)
+
+
+def _smooth_scroll(
+    page: Page,
+    duration_seconds: float,
+    capturer: "_Capturer | None" = None,
+    *,
+    start_y: "float | None" = None,
+    end_y: "float | None" = None,
+    easing: str = "linear",
+    max_px_per_frame: int = MAX_READING_PX_PER_FRAME,
+) -> None:
+    """Deterministically scroll the page over the given duration (issue #413).
+
+    Motion is driven by precomputed, frame-indexed absolute positions
+    (``window.scrollTo``) instead of repeated fractional ``scrollBy`` calls, so
+    every frame lands on an exact Y with no rounding drift — the playback reads
+    as smooth, evenly spaced steps rather than visible jumps.
+
+    By default the scroll distance is derived from the page height (capped to
+    MAX_SCROLL_VIEWPORT_MULTIPLIER × viewport) and further clamped to a
+    comfortable reading speed of *max_px_per_frame* per frame so short segments
+    or very long pages don't fly past the content.  Callers that need an
+    explicit range (e.g. the README-first flow, issue #415) pass *start_y* /
+    *end_y* and an *easing* curve directly, bypassing the reading-speed cap.
+
+    When *capturer* is provided (screenshot/hyperframe mode, issue #387) a
+    lossless PNG screenshot is taken per frame instead of waiting in real time;
+    the frame count equals ``duration_seconds * SCREENSHOT_CAPTURE_FPS`` so the
+    captured motion plays back at exactly the segment duration.
+    """
+    total_ticks, tick_rate = _scroll_frame_count(duration_seconds, capturer)
     if total_ticks <= 0:
         # Duration is positive but too short for a full tick.
         if capturer is not None:
@@ -1066,33 +1170,36 @@ def _smooth_scroll(
         return
 
     tick_interval_ms = int(1000 / tick_rate)
-
     viewport_height = page.viewport_size["height"] if page.viewport_size else HEIGHT
-    max_scroll = int(viewport_height * MAX_SCROLL_VIEWPORT_MULTIPLIER)
 
-    # Get the actual scrollable height
-    scroll_height = page.evaluate("document.documentElement.scrollHeight")
-    page_scroll_distance = max(0, scroll_height - viewport_height)
-    effective_scroll = min(page_scroll_distance, max_scroll)
+    if end_y is not None:
+        # Explicit range requested by the caller (issue #415); no reading cap.
+        s_y = float(start_y or 0)
+        e_y = float(end_y)
+    else:
+        # Derive the scroll distance from the page, capped to a reasonable span
+        # and then to a comfortable reading speed (issue #413).
+        max_scroll = int(viewport_height * MAX_SCROLL_VIEWPORT_MULTIPLIER)
+        scroll_height = page.evaluate("document.documentElement.scrollHeight")
+        page_scroll_distance = max(0, scroll_height - viewport_height)
+        effective_scroll = min(page_scroll_distance, max_scroll)
+        reading_cap = max(total_ticks - 1, 1) * max_px_per_frame
+        s_y = float(start_y or 0)
+        e_y = s_y + float(min(effective_scroll, reading_cap))
 
-    if effective_scroll <= 0:
-        # Page is not scrollable.  In screenshot mode we still capture a full
-        # run of (identical) frames so the segment keeps its intended duration;
-        # in screencast mode we simply wait it out.
+    if e_y <= s_y:
+        # Nothing to scroll.  In screenshot mode we still capture a full run of
+        # (identical) frames so the segment keeps its intended duration; in
+        # screencast mode we simply wait it out.
         if capturer is None:
             page.wait_for_timeout(int(duration_seconds * 1000))
             return
-        scroll_per_tick = 0.0
-    else:
-        scroll_per_tick = effective_scroll / total_ticks
-
-    for _ in range(total_ticks):
-        if scroll_per_tick:
-            page.evaluate(f"window.scrollBy(0, {scroll_per_tick})")
-        if capturer is not None:
+        for _ in range(total_ticks):
             capturer.frame(page)
-        else:
-            page.wait_for_timeout(tick_interval_ms)
+        return
+
+    positions = _scroll_positions(s_y, e_y, total_ticks, easing)
+    _run_scroll_positions(page, positions, capturer, tick_interval_ms)
 
     if capturer is not None:
         # Frame count (total_ticks) already encodes the duration at the

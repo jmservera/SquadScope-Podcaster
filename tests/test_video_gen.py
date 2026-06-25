@@ -6,6 +6,7 @@ Unit tests mock Playwright and requests; the integration test class
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -51,6 +52,11 @@ from podcaster.video.video_gen import (
     _navigate_with_recovery,
     _pad_frames,
     _smooth_scroll,
+    _scroll_positions,
+    _ease_out_cubic,
+    _ease_linear,
+    READING_PX_PER_FRAME,
+    MAX_READING_PX_PER_FRAME,
     _try_navigate_repo,
     _try_record_project_site,
     _PAGE_ZOOM_JS,
@@ -307,18 +313,25 @@ class TestSmoothScroll:
         duration = 1.0
         _smooth_scroll(page, duration)
 
-        max_scroll = int(HEIGHT * MAX_SCROLL_VIEWPORT_MULTIPLIER)
         ticks = int(duration * SCROLL_TICKS_PER_SEC)
-        expected_per_tick = max_scroll / ticks
-
-        # Verify scrollBy calls use the capped distance
+        # Deterministic absolute positioning: one scrollTo per tick (issue #413).
         scroll_calls = [
-            c for c in page.evaluate.call_args_list
-            if "scrollBy" in str(c)
+            c for c in page.evaluate.call_args_list if "scrollTo" in str(c)
         ]
+        assert len(scroll_calls) == ticks
+
+        # Parse the target Y of each scrollTo and verify the per-frame step never
+        # exceeds the reading-speed cap (no steppy jumps) and motion is forward.
+        ys = []
         for call in scroll_calls:
-            js = call[0][0]
-            assert f"scrollBy(0, {expected_per_tick})" in js
+            m = re.search(r"scrollTo\(0,\s*(\d+)\)", call[0][0])
+            assert m is not None
+            ys.append(int(m.group(1)))
+        assert ys == sorted(ys)  # monotonic, no backwards jumps
+        for prev, cur in zip(ys, ys[1:]):
+            assert cur - prev <= MAX_READING_PX_PER_FRAME
+        # Total distance is bounded by the reading cap, not the 2.5×viewport cap.
+        assert ys[-1] <= ticks * MAX_READING_PX_PER_FRAME
 
     def test_no_scroll_on_short_page(self):
         page = MagicMock()
@@ -352,6 +365,62 @@ class TestSmoothScroll:
         page.evaluate.assert_not_called()
         # Should wait for the full duration
         page.wait_for_timeout.assert_called_once_with(20)
+
+
+# --- Deterministic frame-indexed scrolling (issue #413) ---
+
+
+class TestScrollPositions:
+    def test_count_matches_frames(self):
+        assert len(_scroll_positions(0, 1000, 50)) == 50
+
+    def test_starts_and_ends_exact(self):
+        positions = _scroll_positions(100, 900, 30)
+        assert positions[0] == 100
+        assert positions[-1] == 900
+
+    def test_linear_is_evenly_spaced(self):
+        positions = _scroll_positions(0, 290, 30)  # ~10px/frame
+        deltas = [b - a for a, b in zip(positions, positions[1:])]
+        # Even spacing: every step within 1px of every other (rounding only).
+        assert max(deltas) - min(deltas) <= 1
+
+    def test_monotonic_non_decreasing(self):
+        positions = _scroll_positions(0, 500, 40)
+        assert positions == sorted(positions)
+
+    def test_single_frame_returns_start(self):
+        assert _scroll_positions(123, 999, 1) == [123]
+
+    def test_zero_frames_empty(self):
+        assert _scroll_positions(0, 100, 0) == []
+
+    def test_ease_out_cubic_decelerates(self):
+        positions = _scroll_positions(0, 1000, 50, easing="ease_out_cubic")
+        deltas = [b - a for a, b in zip(positions, positions[1:])]
+        # easeOutCubic: starts fast, ends slow.
+        assert deltas[0] > deltas[-1]
+        assert positions == sorted(positions)
+        assert positions[-1] == 1000
+
+    def test_unknown_easing_falls_back_to_linear(self):
+        assert _scroll_positions(0, 100, 11, easing="nope") == _scroll_positions(
+            0, 100, 11, easing="linear"
+        )
+
+
+class TestEasingFunctions:
+    def test_linear_endpoints(self):
+        assert _ease_linear(0.0) == 0.0
+        assert _ease_linear(1.0) == 1.0
+
+    def test_ease_out_cubic_endpoints(self):
+        assert _ease_out_cubic(0.0) == 0.0
+        assert _ease_out_cubic(1.0) == 1.0
+
+    def test_ease_out_cubic_front_loaded(self):
+        # At the midpoint easeOutCubic is already well past halfway (fast start).
+        assert _ease_out_cubic(0.5) > 0.5
 
 
 # --- _render_url_card tests (issue #386) ---
