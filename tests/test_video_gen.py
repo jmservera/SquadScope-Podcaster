@@ -27,6 +27,7 @@ from podcaster.video.video_gen import (
     WIDTH,
     HEIGHT,
     IMAGE_ZOOM_MIN_SIZE_PX,
+    MAX_READING_PX_PER_FRAME,
     PAGE_ZOOM_SCALE,
     ZOOM_PAGE_CSS,
     RecordedSegment,
@@ -53,9 +54,12 @@ from podcaster.video.video_gen import (
     _pad_frames,
     _smooth_scroll,
     _scroll_positions,
+    _scroll_github_readme,
+    _github_scroll_plan,
     _ease_out_cubic,
     _ease_linear,
     READING_PX_PER_FRAME,
+    GITHUB_README_TOP_MARGIN,
     _try_navigate_repo,
     _try_record_project_site,
     _PAGE_ZOOM_JS,
@@ -445,6 +449,198 @@ class TestEasingFunctions:
     def test_ease_out_cubic_front_loaded(self):
         # At the midpoint easeOutCubic is already well past halfway (fast start).
         assert _ease_out_cubic(0.5) > 0.5
+
+
+# --- README-first scroll for GitHub repos (issue #415) ---
+
+
+class TestGithubScrollPlan:
+    def test_returns_exact_frame_count(self):
+        plan = _github_scroll_plan(8000, HEIGHT, 12000, 300)
+        assert plan is not None
+        assert len(plan) == 300
+
+    def test_holds_on_header_then_jumps_then_reads(self):
+        plan = _github_scroll_plan(8000, HEIGHT, 12000, 300)
+        assert plan is not None
+        # Header hold: opening frames stay at the top.
+        assert plan[0] == 0
+        assert plan[5] == 0
+        # Ends deeper in the README than where the jump landed.
+        assert plan[-1] > 8000 - GITHUB_README_TOP_MARGIN - 1
+
+    def test_monotonic_non_decreasing(self):
+        plan = _github_scroll_plan(6000, HEIGHT, 9000, 240)
+        assert plan == sorted(plan)
+
+    def test_reading_phase_at_reading_speed(self):
+        plan = _github_scroll_plan(5000, HEIGHT, 50000, 300)
+        assert plan is not None
+        # The largest per-frame step in the reading tail stays within the
+        # reading-speed cap (no steppy crawl through README content).  The span
+        # is sized off the interval count so the cap holds exactly (issue #415).
+        tail = plan[-100:]
+        deltas = [b - a for a, b in zip(tail, tail[1:])]
+        assert max(deltas) <= READING_PX_PER_FRAME
+
+    def test_reading_phase_clamps_explicit_speed_to_hard_cap(self):
+        plan = _github_scroll_plan(
+            5000, HEIGHT, 50000, 300, px_per_frame=MAX_READING_PX_PER_FRAME * 3
+        )
+        assert plan is not None
+        tail = plan[-100:]
+        deltas = [b - a for a, b in zip(tail, tail[1:])]
+        assert max(deltas) <= MAX_READING_PX_PER_FRAME
+
+    def test_does_not_exceed_scrollable(self):
+        plan = _github_scroll_plan(5000, HEIGHT, 5200, 300)
+        assert plan is not None
+        assert max(plan) <= 5200
+
+    def test_too_few_frames_returns_none(self):
+        # Not enough frames to stage header + jump + reading (header == 0).
+        assert _github_scroll_plan(8000, HEIGHT, 12000, 2) is None
+        assert _github_scroll_plan(8000, HEIGHT, 12000, 0) == []
+
+
+class TestScrollGithubReadme:
+    def _page(self, *, url="https://github.com/owner/repo", readme_y=8000,
+              scrollable=12000):
+        page = MagicMock()
+        page.url = url
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+
+        def _eval(js, *args):
+            if "readmeY" in js:
+                return {"readmeY": readme_y, "scrollable": scrollable}
+            if "scrollHeight" in js:
+                return scrollable + HEIGHT
+            return None
+
+        page.evaluate.side_effect = _eval
+        return page
+
+    def test_non_github_falls_back_to_smooth_scroll(self):
+        page = self._page(url="https://example.com/page")
+        with patch(
+            "podcaster.video.video_gen._smooth_scroll"
+        ) as smooth:
+            _scroll_github_readme(page, 5.0)
+        smooth.assert_called_once()
+
+    def test_deep_github_page_falls_back_to_smooth_scroll(self):
+        # Issues/PRs/wiki share the github.com host but are not repo roots and
+        # must use the normal deterministic scroll (#415).
+        for url in (
+            "https://github.com/owner/repo/issues/1",
+            "https://github.com/owner/repo/pull/2",
+            "https://github.com/owner/repo/wiki",
+            "https://github.com/owner",
+        ):
+            page = self._page(url=url)
+            with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+                _scroll_github_readme(page, 5.0)
+            smooth.assert_called_once()
+
+    def test_no_readme_falls_back(self):
+        page = MagicMock()
+        page.url = "https://github.com/owner/repo"
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        page.evaluate.side_effect = lambda js, *a: (
+            {"readmeY": None, "scrollable": 9000} if "readmeY" in js else None
+        )
+        with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+            _scroll_github_readme(page, 5.0)
+        smooth.assert_called_once()
+
+    def test_readme_near_top_falls_back(self):
+        page = self._page(readme_y=100)
+        with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+            _scroll_github_readme(page, 5.0)
+        smooth.assert_called_once()
+
+    def test_github_readme_uses_staged_scroll_capture(self, tmp_path):
+        page = self._page()
+        # Drive a real screenshot capturer so we assert on the staged plan.
+        cap = _Capturer(tmp_path / "frames")
+
+        def _screenshot(path):
+            Path(path).write_bytes(_PNG_64x64)
+
+        page.screenshot.side_effect = _screenshot
+
+        _scroll_github_readme(page, 5.0, capturer=cap)
+
+        # One frame per output frame at the capture fps.
+        assert cap.count == int(5.0 * SCREENSHOT_CAPTURE_FPS)
+        # The staged flow uses absolute scrollTo positioning.
+        scroll_calls = [
+            c for c in page.evaluate.call_args_list if "scrollTo" in str(c)
+        ]
+        assert scroll_calls, "expected scrollTo calls from staged plan"
+        # Early frames hold on the header (y==0).
+        first = re.search(r"scrollTo\(0,\s*(\d+)\)", str(scroll_calls[0]))
+        assert first is not None and int(first.group(1)) == 0
+
+    def test_readme_y_clamped_to_scrollable(self, tmp_path, caplog):
+        import logging
+
+        # README sits near the bottom so readmeY - top margin overshoots the
+        # real max scrollable Y; the plan and log must clamp to scrollable.
+        page = self._page(readme_y=20000, scrollable=6000)
+        cap = _Capturer(tmp_path / "frames")
+        page.screenshot.side_effect = lambda path: Path(path).write_bytes(_PNG_64x64)
+
+        with caplog.at_level(logging.INFO, logger="podcaster.video.video_gen"):
+            _scroll_github_readme(page, 5.0, capturer=cap)
+
+        ys = [
+            int(m.group(1))
+            for c in page.evaluate.call_args_list
+            if (m := re.search(r"scrollTo\(0,\s*(\d+)\)", str(c)))
+        ]
+        assert ys, "expected scrollTo calls"
+        assert max(ys) <= 6000
+        jump_log = next(r for r in caplog.records if "README-first scroll" in r.getMessage())
+        assert "to y=6000" in jump_log.getMessage()
+
+    def test_unscrollable_page_falls_back_after_clamping_readme_y(self):
+        page = self._page(readme_y=20000, scrollable=0)
+        with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
+            _scroll_github_readme(page, 5.0)
+        smooth.assert_called_once()
+
+    def _header_hold_frames(self, fps, duration, tmp_path):
+        page = self._page()
+        cap = _Capturer(tmp_path / "frames")
+        page.screenshot.side_effect = lambda path: Path(path).write_bytes(_PNG_64x64)
+        with patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_FPS", fps):
+            _scroll_github_readme(page, duration, capturer=cap)
+        ys = [
+            int(m.group(1))
+            for c in page.evaluate.call_args_list
+            if (m := re.search(r"scrollTo\(0,\s*(\d+)\)", str(c)))
+        ]
+        # Count the leading header-hold frames (y == 0).  The eased jump's first
+        # frame is also at y==0 (ease(0)==0), so subtract that single boundary
+        # frame to recover the pure header-hold count.
+        hold = 0
+        for y in ys:
+            if y != 0:
+                break
+            hold += 1
+        return hold - 1
+
+    def test_header_hold_duration_is_fps_stable(self, tmp_path):
+        # The header-hold budget is specified in seconds, so its frame count must
+        # scale with the capture rate (issue #415): doubling fps doubles frames
+        # but keeps the ~2.0s wall-clock hold constant.
+        from podcaster.video.video_gen import GITHUB_HEADER_HOLD_SECONDS
+
+        hold_30 = self._header_hold_frames(30, 10.0, tmp_path / "a")
+        hold_60 = self._header_hold_frames(60, 10.0, tmp_path / "b")
+        assert hold_30 == round(GITHUB_HEADER_HOLD_SECONDS * 30)
+        assert hold_60 == round(GITHUB_HEADER_HOLD_SECONDS * 60)
 
 
 # --- _render_url_card tests (issue #386) ---
