@@ -42,6 +42,8 @@ from podcaster.video.video_gen import (
     _extract_website_url,
     _is_github_url,
     _is_login_redirect,
+    _is_github_url,
+    _page_has_content,
     _looks_malformed_repo_url,
     _page_has_content,
     _make_recording_context,
@@ -1018,6 +1020,42 @@ class TestTryNavigateRepo:
         page.goto.return_value = MagicMock(status=200)
         page.url = "https://github.com/a/b"
         assert _try_navigate_repo(page, "https://github.com/a/b") is True
+
+
+class TestIsGithubUrl:
+    def test_bare_github(self):
+        assert _is_github_url("https://github.com/a/b") is True
+
+    def test_subdomain_github(self):
+        assert _is_github_url("https://gist.github.com/a/b") is True
+
+    def test_non_github(self):
+        assert _is_github_url("https://example.com/a/b") is False
+
+    def test_lookalike_not_matched(self):
+        # A host that merely contains "github.com" as a substring must not match.
+        assert _is_github_url("https://github.com.evil.test/a/b") is False
+
+    def test_none_and_garbage(self):
+        assert _is_github_url(None) is False
+        assert _is_github_url("not a url") is False
+
+
+class TestPageHasContent:
+    def test_true_when_selector_found(self):
+        page = MagicMock()
+        page.evaluate.return_value = True
+        assert _page_has_content(page) is True
+
+    def test_false_when_selector_absent(self):
+        page = MagicMock()
+        page.evaluate.return_value = False
+        assert _page_has_content(page) is False
+
+    def test_false_on_evaluate_error(self):
+        page = MagicMock()
+        page.evaluate.side_effect = Exception("execution context destroyed")
+        assert _page_has_content(page) is False
 
 
 class TestTryRecordProjectSite:

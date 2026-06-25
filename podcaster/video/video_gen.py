@@ -78,10 +78,10 @@ RECORDING_CHROMIUM_ARGS = [
 ]
 NETWORK_IDLE_TIMEOUT_MS = 10_000
 # GitHub repo pages are heavy (many async network requests for avatars, code
-# navigation, telemetry) and frequently never reach the ``networkidle`` state
-# within the generic 10 s budget — even though the DOM rendered usable content
-# almost immediately.  A short timeout caused these repos to be treated as
-# navigation failures and shown as a bare URL card (issue #405).  Give
+# navigation widgets, telemetry) and frequently never reach the ``networkidle``
+# state within the generic 10 s budget — even though the DOM rendered usable
+# content almost immediately.  A short timeout caused these repos to be treated
+# as navigation failures and shown as a bare URL card (issue #405).  Give
 # github.com a much larger budget so the page has time to settle, while the
 # content-loaded check below lets us proceed even if it never does.
 GITHUB_NETWORK_IDLE_TIMEOUT_MS = 60_000
@@ -1328,7 +1328,9 @@ def _try_navigate_repo(page: Page, url: str) -> bool:
                 exc,
             )
             return True
-        logger.warning("Navigation to %s failed with no usable content: %s", url, exc)
+        logger.warning(
+            "Navigation to %s failed with no usable content: %s", url, exc
+        )
         return False
     status = getattr(response, "status", None)
     if isinstance(status, int) and status >= 400:
