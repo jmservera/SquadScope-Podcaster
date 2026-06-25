@@ -249,8 +249,8 @@ class TestBuildSectionCardCmd:
         assert "Trends" in vf
         assert "fade=t=in:st=0:d=0.500" in vf
         assert "fade=t=out" in vf
-        # 2.5 s total card duration.
-        assert cmd[cmd.index("-t") + 1] == "2.500"
+        # 0.75 s total card duration (issue #417 default).
+        assert cmd[cmd.index("-t") + 1] == "0.750"
 
     def test_uses_section_accent_for_rule(self):
         marker = _marker_from_name("Signal & Noise")
@@ -348,5 +348,5 @@ class TestBuildSectionCardInserts:
 
 
 def test_default_durations():
-    assert SECTION_CARD_DURATION_MS == 2500
+    assert SECTION_CARD_DURATION_MS == 750
     assert SECTION_CARD_FADE_MS == 500

@@ -27,6 +27,7 @@ from podcaster.generation import generate_artifacts, manifest_bytes, checksum
 from podcaster.prior_episodes import fetch_prior_episode_themes
 from podcaster.queue import enqueue_synthesis_job
 from podcaster.script_gen import ScriptGenConfig, generate_script
+from podcaster.sections import parse_script_sections, sections_to_metadata
 from podcaster.storage import StoredArtifact, StorageBackend, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
 
@@ -119,6 +120,7 @@ def run_generation_job(
     # When article_content is provided, attempt LLM script generation (#140)
     # and claim extraction (#141).
     llm_script: str | None = None
+    llm_sections_json: str | None = None
     llm_claims_json: str | None = None
     llm_generation_engine = "local-deterministic-placeholder"
     script_directions = ScriptDirections.from_payload(payload)
@@ -155,6 +157,13 @@ def run_generation_job(
                     breaking_news=payload.get("breaking_news") or None,
                 )
                 llm_generation_engine = "llm-script-gen"
+                sections = parse_script_sections(llm_script, podcast_config)
+                if sections:
+                    llm_sections_json = json.dumps(
+                        {"sections": sections_to_metadata(sections)},
+                        ensure_ascii=False,
+                        indent=2,
+                    ) + "\n"
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
             except Exception:
                 logging.exception("LLM script generation failed job_id=%s; falling back to placeholder", job_id)
@@ -211,6 +220,18 @@ def run_generation_job(
             if not isinstance(loaded_cost_ledger, dict):
                 raise RuntimeError("generated cost ledger was not a JSON object")
             cost_ledger = loaded_cost_ledger
+    if llm_sections_json:
+        from podcaster.generation import GeneratedArtifact
+
+        artifact = GeneratedArtifact(
+            f"jobs/{job_id}/sections.json",
+            llm_sections_json.encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
+        artifact_checksum = checksum(artifact.content)
+        stored_artifact = storage.put_bytes(artifact.path, artifact.content, artifact.content_type)
+        stored[artifact.path] = stored_artifact
+        checksums[artifact.path] = artifact_checksum
     if cost_ledger is None:
         raise RuntimeError("generated artifacts did not include cost-ledger.json")
     if audio_validation is None:

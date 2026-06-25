@@ -51,6 +51,7 @@ from podcaster.generation import (
 from podcaster.hooks import HostHooks, _GENERIC_HOOKS
 from podcaster.interaction import assign_turn_ids, build_interaction_map, resolve_placements
 from podcaster.sanitization import flag_injection, neutralize
+from podcaster.sections import match_section_header
 from podcaster.tts import (
     AUTH_MODE_MANAGED_IDENTITY,
     PROVIDER,
@@ -296,6 +297,9 @@ def parse_script_segments(script: str, podcast_config: PodcastConfig | None = No
     for raw_line in source.splitlines():
         line = raw_line.strip()
         if not line:
+            continue
+        # Non-spoken ``## Section:`` headers (#417) must never reach TTS.
+        if match_section_header(line) is not None:
             continue
         if line.startswith(host_a_label + ":"):
             text = line[len(host_a_label) + 1 :].strip()
