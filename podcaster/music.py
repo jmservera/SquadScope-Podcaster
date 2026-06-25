@@ -15,6 +15,7 @@ TRACK_LICENSE = "CC-BY-SA-3.0"
 TRACK_ATTRIBUTION = (
     "Summer Sport by AudioCoffee | https://www.audiocoffee.net/ | "
     "Music promoted by https://www.chosic.com/free-music/all/ | "
+    "Creative Commons CC BY-SA 3.0 | "
     "https://creativecommons.org/licenses/by-sa/3.0/"
 )
 TRACK_DURATION_SECONDS = 105.0

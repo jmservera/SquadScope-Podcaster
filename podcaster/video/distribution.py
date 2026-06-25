@@ -462,6 +462,8 @@ def upload_to_spotify_episode(
     *,
     title: str | None = None,
     description: str | None = None,
+    season_number: int | None = None,
+    episode_number: int | None = None,
 ) -> bool:
     """Publish the MP4 as a NEW separate Spotify episode draft (#340).
 
@@ -486,6 +488,8 @@ def upload_to_spotify_episode(
             title=title,
             description=description,
             content_type="video/mp4",
+            season_number=season_number,
+            episode_number=episode_number,
         )
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)
@@ -517,6 +521,8 @@ def distribute_video(
     transport: HttpTransport | None = None,
     storage: StorageUploader | None = None,
     spotify_anchor_id: int | None = None,
+    season_number: int | None = None,
+    episode_number: int | None = None,
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
@@ -531,6 +537,10 @@ def distribute_video(
     ``spotify_anchor_id`` is the anchor episode id (resolved by the caller from
     ``generation.publish_result.anchor_id``) used to create a NEW separate video
     draft episode on Spotify (#340).
+
+    ``season_number`` and ``episode_number`` are passed to the Spotify video
+    episode upload so the video episode carries the same numbering as the audio
+    episode (season = year, episode = ISO week number).
     """
     result = DistributionResult()
 
@@ -605,6 +615,7 @@ def distribute_video(
         upload_ok = upload_to_spotify_episode(
             video_path, spotify_anchor_id, config,
             title=title, description=description,
+            season_number=season_number, episode_number=episode_number,
         )
         result.spotify_upload_updated = upload_ok
         if not upload_ok:

@@ -35,6 +35,7 @@ from podcaster.video.job_runner import (
     script_path,
     show_notes_path,
     video_artifact_path,
+    _DEFAULT_MUSIC_CREDITS,
     _build_video_description,
 )
 
@@ -183,7 +184,10 @@ class TestVideoDescription:
 
     def test_falls_back_when_no_show_notes(self):
         storage = self._storage("j", None)
-        assert _build_video_description(storage, "j", "fallback desc") == "fallback desc"
+        desc = _build_video_description(storage, "j", "fallback desc")
+        # Fallback text is still present; music credits are always appended
+        assert "fallback desc" in desc
+        assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_includes_summary_and_credits_packaging_format(self):
         notes = (
@@ -197,6 +201,7 @@ class TestVideoDescription:
         assert "A dynamic AI conversation." in desc
         assert "Hosts: Theo (fable) & Vera (alloy)" in desc
         assert "Claracle — www.claracle.com" in desc
+        assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_includes_summary_generation_format(self):
         notes = (
@@ -210,6 +215,7 @@ class TestVideoDescription:
         assert "Claracle is a weekly show about open source." in desc
         assert "Segment 1" not in desc
         assert "www.claracle.com" in desc
+        assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_uses_fallback_summary_when_no_section(self):
         notes = "# Heading only\n\nsome stray text\n"
@@ -217,6 +223,16 @@ class TestVideoDescription:
         desc = _build_video_description(storage, "j", "fallback summary")
         assert desc.startswith("fallback summary")
         assert "www.claracle.com" in desc
+        assert _DEFAULT_MUSIC_CREDITS in desc
+
+    def test_custom_music_credits_override(self):
+        """Custom music_credits parameter overrides the default attribution."""
+        notes = "# Title\n\n### About this episode\n\nSummary text.\n"
+        storage = self._storage("j", notes)
+        desc = _build_video_description(storage, "j", "fallback", music_credits="My Custom Credits")
+        assert "My Custom Credits" in desc
+        # Default attribution must NOT appear when custom credits provided
+        assert _DEFAULT_MUSIC_CREDITS not in desc
 
 
 # --- Already Processed Tests ---
@@ -459,6 +475,166 @@ class TestRunVideoGeneration:
         assert "Hosts: Theo (fable) & Vera (alloy)" in description
         assert "Claracle" in description
         assert "www.claracle.com" in description
+        # Music credits must be present (default attribution from TRACK_ATTRIBUTION)
+        assert _DEFAULT_MUSIC_CREDITS in description
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_description_uses_description_template_as_music_credits(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config
+    ):
+        """description_template from the request is appended as music credits (#412)."""
+        job_id = "video-template"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {
+                "article_title": "Template Episode",
+                "week": "2026-W24",
+                "description_template": "Custom music credit from SquadScope config",
+            },
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0,
+                segment_count=2, has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+        mock_distribute.return_value = MagicMock(
+            status="completed", youtube_id=None, blob_path=None,
+            spotify_rss_updated=False, spotify_upload_updated=False,
+        )
+
+        run_video_generation(job_id, storage, config=dry_config)
+
+        description = mock_distribute.call_args.args[3]
+        assert "Custom music credit from SquadScope config" in description
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_malformed_request_falls_back_to_default_credits(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config
+    ):
+        """A non-string description_template is ignored (no crash) and the default
+        music attribution is used instead (#412 review hardening)."""
+        job_id = "video-malformed"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {
+                "article_title": "Malformed Episode",
+                "week": "2026-W24",
+                "description_template": {"unexpected": "object"},
+            },
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0,
+                segment_count=2, has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+        mock_distribute.return_value = MagicMock(
+            status="completed", youtube_id=None, blob_path=None,
+            spotify_rss_updated=False, spotify_upload_updated=False,
+        )
+
+        run_video_generation(job_id, storage, config=dry_config)
+
+        description = mock_distribute.call_args.args[3]
+        assert _DEFAULT_MUSIC_CREDITS in description
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_season_episode_numbers_from_manifest_week(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config
+    ):
+        """Season (year) and episode (week) are resolved from manifest and passed to distribute_video (#412)."""
+        job_id = "video-season"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {
+                "article_title": "Season Episode",
+                "week": "2026-W24",
+            },
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0,
+                segment_count=2, has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+        mock_distribute.return_value = MagicMock(
+            status="completed", youtube_id=None, blob_path=None,
+            spotify_rss_updated=False, spotify_upload_updated=False,
+        )
+
+        run_video_generation(job_id, storage, config=dry_config)
+
+        kwargs = mock_distribute.call_args.kwargs
+        assert kwargs.get("season_number") == 2026
+        assert kwargs.get("episode_number") == 24
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_season_episode_none_when_no_week(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config
+    ):
+        """When no week is in the manifest, season/episode are None (#412)."""
+        job_id = "video-noweek"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {"article_title": "No Week"},
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0,
+                segment_count=2, has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+        mock_distribute.return_value = MagicMock(
+            status="completed", youtube_id=None, blob_path=None,
+            spotify_rss_updated=False, spotify_upload_updated=False,
+        )
+
+        run_video_generation(job_id, storage, config=dry_config)
+
+        kwargs = mock_distribute.call_args.kwargs
+        assert kwargs.get("season_number") is None
+        assert kwargs.get("episode_number") is None
 
     @patch("podcaster.video.job_runner._probe_audio_duration")
     @patch("podcaster.video.video_gen.record_episode")
