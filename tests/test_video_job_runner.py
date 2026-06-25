@@ -307,6 +307,13 @@ class TestRunVideoGeneration:
         assert outcome.distribution is not None
         assert outcome.distribution.youtube_id == "dry-run-id"
 
+        # Per-phase performance breakdown is persisted to the manifest (#396).
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        perf = manifest["generation"]["video_runner"]["performance"]
+        phase_names = {p["name"] for p in perf["phases"]}
+        assert {"recording", "composition", "distribution"} <= phase_names
+        assert perf["total_wall_seconds"] >= 0.0
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_removed_repo_annotated_and_notes_persisted(

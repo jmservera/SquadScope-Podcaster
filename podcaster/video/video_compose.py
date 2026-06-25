@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, Sequence
@@ -155,7 +157,17 @@ def _video_encode_args(preset: str) -> list[str]:
 
     Honours the env-configured codec/CRF/pixel-format so every re-encode in the
     pipeline switches consistently between H.264 and HEVC (issue #376).
+
+    When NVENC hardware acceleration is available and enabled (issue #396), the
+    equivalent GPU encoder is used instead — this offloads the heavy compose
+    re-encodes (the pipeline's #1 bottleneck) to the GPU.  On the CPU-only ACA
+    runtime (no GPU) this is a transparent no-op: detection fails and the exact
+    libx264/libx265 flags below are returned unchanged, so production output is
+    byte-for-byte identical until a GPU runner is provisioned.
     """
+    hw = _select_hwaccel_encoder()
+    if hw is not None:
+        return _hwaccel_encode_args(hw, preset)
     args = [
         "-c:v", ENCODE_VCODEC,
         "-preset", preset,
@@ -167,6 +179,98 @@ def _video_encode_args(preset: str) -> list[str]:
         # yuv420p but we set it explicitly so it can never regress.
         args += ["-profile:v", "high"]
     return args
+
+
+# --- Hardware-accelerated encoding (NVENC) — issue #396 ----------------------
+#
+# Composition is the pipeline bottleneck (~33 min): every pairwise xfade pass
+# re-encodes the growing accumulator on the CPU.  When an NVIDIA GPU + an
+# NVENC-capable ffmpeg are present, routing those encodes through NVENC cuts
+# encode time dramatically.  ACA currently provisions no GPU, so this defaults
+# to OFF via auto-detection — it never changes the CPU path unless a GPU is
+# actually available *and* opted in.
+#
+# VIDEO_HWACCEL: "auto" (default) — use NVENC only when truly available;
+#                "nvenc"          — force NVENC (assume available);
+#                "none"/"off"     — always use the CPU encoder.
+_HWACCEL_MODE = _env_str("VIDEO_HWACCEL", "auto").lower()
+
+# NVENC equivalents of the software codecs.  HEVC maps to hevc_nvenc; everything
+# else (H.264) maps to h264_nvenc.
+_NVENC_CODEC = "hevc_nvenc" if _IS_HEVC else "h264_nvenc"
+
+# Map the x264/x265 preset names used elsewhere to NVENC's p1..p7 presets
+# (p1=fastest, p7=slowest/best).  Intermediate "ultrafast"/"veryfast" passes map
+# to a fast NVENC preset; the final "slow" pass maps to a high-quality one.
+_NVENC_PRESET_MAP = {
+    "ultrafast": "p1",
+    "superfast": "p1",
+    "veryfast": "p2",
+    "faster": "p3",
+    "fast": "p4",
+    "medium": "p4",
+    "slow": "p6",
+    "slower": "p7",
+    "veryslow": "p7",
+}
+
+
+def _nvenc_available() -> bool:
+    """True when an NVIDIA GPU device and an NVENC-capable ffmpeg are present."""
+    # A GPU character device is the cheapest reliable presence signal.
+    if not any(os.path.exists(f"/dev/nvidia{i}") for i in range(4)):
+        if not os.path.exists("/dev/nvidiactl"):
+            return False
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return False
+    try:
+        out = subprocess.run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except Exception:  # pragma: no cover - defensive
+        return False
+    return _NVENC_CODEC in (out.stdout or "")
+
+
+@lru_cache(maxsize=1)
+def _select_hwaccel_encoder() -> str | None:
+    """Return the NVENC codec name to use, or ``None`` for the CPU path.
+
+    Cached: detection runs at most once per process.
+    """
+    if _HWACCEL_MODE in ("none", "off", ""):
+        return None
+    if _HWACCEL_MODE == "nvenc":
+        logger.info("VIDEO_HWACCEL=nvenc — forcing %s encoder", _NVENC_CODEC)
+        return _NVENC_CODEC
+    # "auto": only when actually available.
+    if _nvenc_available():
+        logger.info("NVENC detected — using %s for video encodes (issue #396)", _NVENC_CODEC)
+        return _NVENC_CODEC
+    return None
+
+
+def _hwaccel_encode_args(codec: str, preset: str) -> list[str]:
+    """Build NVENC encoder flags equivalent to the software encode settings.
+
+    Uses constant-quality rate control (``-rc constqp -qp``) so the quality
+    target mirrors the software CRF, keeping the 8-bit 4:2:0 / H.264 High
+    constraints Spotify requires (issue #376).
+    """
+    nv_preset = _NVENC_PRESET_MAP.get(preset, "p4")
+    args = [
+        "-c:v", codec,
+        "-preset", nv_preset,
+        "-rc", "constqp",
+        "-qp", str(ENCODE_CRF),
+        "-pix_fmt", ENCODE_PIX_FMT,
+    ]
+    if codec == "h264_nvenc":
+        args += ["-profile:v", "high"]
+    return args
+
 
 
 def _metadata_bsf_spec() -> str:

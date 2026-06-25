@@ -48,6 +48,7 @@ from podcaster.video.distribution import (
     VideoDistributionConfig,
     distribute_video,
 )
+from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
     extract_source_url,
@@ -357,6 +358,11 @@ def run_video_generation(
 
             output_dir = Path(tmp)
 
+            # Per-phase timing/resource instrumentation for the performance
+            # review (issue #396).  Persisted into the manifest so before/after
+            # comparisons need no re-instrumentation.
+            timings = PipelineTimings()
+
             # Resolve the podcast audio first so the segment plan is driven by
             # the actual MP3 duration rather than the manifest default.
             audio_path = _resolve_audio_path(manifest, job_id, storage, output_dir)
@@ -406,25 +412,27 @@ def run_video_generation(
             # Record segments. Pass the script's Source URL so failed repo
             # navigations can be retried and corrected against the source
             # article before falling back to a generic screen (issue #378).
-            recording = record_episode(
-                plan,
-                output_dir=output_dir,
-                headless=True,
-                source_url=extract_source_url(script),
-            )
+            with timings.phase("recording"):
+                recording = record_episode(
+                    plan,
+                    output_dir=output_dir,
+                    headless=True,
+                    source_url=extract_source_url(script),
+                )
 
             # Compose final MP4
             output_path = output_dir / f"{job_id}.mp4"
             dog_logo_cfg = _resolve_dog_logo(manifest)
-            compose_result = compose_video(
-                recording.recorded,
-                audio_path=audio_path,
-                output_path=output_path,
-                runner=compose_runner,
-                storage=storage,
-                dog_logo=dog_logo_cfg,
-                audio_duration=audio_duration,
-            )
+            with timings.phase("composition"):
+                compose_result = compose_video(
+                    recording.recorded,
+                    audio_path=audio_path,
+                    output_path=output_path,
+                    runner=compose_runner,
+                    storage=storage,
+                    dog_logo=dog_logo_cfg,
+                    audio_duration=audio_duration,
+                )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
                 raise RuntimeError(f"composition produced invalid output for job_id={job_id}")
@@ -437,16 +445,20 @@ def run_video_generation(
             )
             description = _build_video_description(storage, job_id, fallback_description)
 
-            dist_result = distribute_video(
-                output_path,
-                job_id,
-                title,
-                description,
-                compose_result.duration_seconds,
-                dist_config,
-                storage=_StorageUploaderAdapter(storage),
-                spotify_anchor_id=_resolve_anchor_id(manifest),
-            )
+            with timings.phase("distribution"):
+                dist_result = distribute_video(
+                    output_path,
+                    job_id,
+                    title,
+                    description,
+                    compose_result.duration_seconds,
+                    dist_config,
+                    storage=_StorageUploaderAdapter(storage),
+                    spotify_anchor_id=_resolve_anchor_id(manifest),
+                )
+
+            # Emit the per-phase timing/resource breakdown (issue #396).
+            timings.log_summary(logger)
 
             # Record success in manifest
             _record_video_state(storage, job_id, {
@@ -454,6 +466,7 @@ def run_video_generation(
                 "at": _iso(current),
                 "segment_count": compose_result.segment_count,
                 "duration_seconds": compose_result.duration_seconds,
+                "performance": timings.to_dict(),
                 "distribution": {
                     "status": dist_result.status,
                     "youtube_id": dist_result.youtube_id,
