@@ -45,10 +45,12 @@ from podcaster.video.video_compose import (
     _build_intro_dog_cmd,
     _build_normalize_cmd,
     _build_xfade_filter,
+    _build_outro_xfade_cmd,
     _compute_lower_thirds,
     _fetch_blob_cached,
     _fetch_intro_outro,
     _fit_target_durations,
+    _join_intro_outro,
     _probe_drawtext_ffmpeg,
     compose_video,
     select_transitions,
@@ -1086,7 +1088,78 @@ def _ffprobe_runner(has_audio: bool = True, duration: float = 6.0) -> MagicMock:
     return runner
 
 
-class TestFetchBlobCached:
+class TestJoinIntroOutroCrossfade:
+    """content→outro crossfade and its short-clip fallback (issue #393)."""
+
+    def test_build_outro_xfade_cmd_uses_xfade_filter(self, tmp_path):
+        cmd = _build_outro_xfade_cmd(
+            tmp_path / "content.mp4",
+            tmp_path / "outro.mp4",
+            TRANSITION_FADE,
+            1.0,
+            4.0,
+            tmp_path / "out.mp4",
+        )
+        joined = " ".join(cmd)
+        assert "xfade" in joined
+        assert "transition=fade" in joined
+        assert "duration=1.0" in joined
+        assert "offset=4.000" in joined
+        # Video-only: the podcast MP3 is overlaid later, so audio is never cut.
+        assert "-an" in cmd
+
+    def test_crossfades_content_into_outro(self, tmp_path):
+        runner = _ffprobe_runner(has_audio=False, duration=5.0)
+        content = tmp_path / "content.mp4"
+        content.touch()
+        outro = tmp_path / "outro.mp4"
+        outro.touch()
+        out = tmp_path / "joined.mp4"
+
+        added = _join_intro_outro(
+            content,
+            out,
+            intro_path=None,
+            outro_path=outro,
+            run=runner,
+            work_dir=tmp_path / "work",
+            transition_duration=1.0,
+        )
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        xfade_cmds = [c for c in cmds if "xfade" in " ".join(c)]
+        assert len(xfade_cmds) == 1
+        # outro (5s) added minus the 1s crossfade overlap.
+        assert added == pytest.approx(4.0)
+
+    def test_falls_back_to_hard_cut_when_outro_too_short(self, tmp_path):
+        # Outro shorter than the transition cannot be crossfaded safely.
+        runner = _ffprobe_runner(has_audio=False, duration=0.5)
+        content = tmp_path / "content.mp4"
+        content.touch()
+        outro = tmp_path / "outro.mp4"
+        outro.touch()
+        out = tmp_path / "joined.mp4"
+
+        added = _join_intro_outro(
+            content,
+            out,
+            intro_path=None,
+            outro_path=outro,
+            run=runner,
+            work_dir=tmp_path / "work",
+            transition_duration=1.0,
+        )
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        assert not any("xfade" in " ".join(c) for c in cmds)
+        concat_cmds = [c for c in cmds if "concat" in c]
+        assert len(concat_cmds) == 1
+        # Hard cut: full outro duration is added, no overlap subtracted.
+        assert added == pytest.approx(0.5)
+
+
+
     def test_downloads_and_caches(self, tmp_path):
         storage = _FakeStorage({INTRO_BLOB_PATH: b"intro-bytes"})
         cache = tmp_path / "intro.mp4"
@@ -1366,13 +1439,19 @@ class TestComposeVideoContentVideoOnly:
             c for c in cmds if "concat" in c and c[-1].endswith("joined.mp4")
         ]
         assert len(concat_cmds) == 1
-        # canonicalized clips all generate a silent track (has_audio=False)
+        # canonicalized clips all generate a silent track (has_audio=False):
+        # intro, content, outro, plus the re-canonicalised content+outro
+        # crossfade clip (issue #393) = 4.
         canon_cmds = [
             c for c in cmds
-            if "-filter_complex" in c and "join" in c[-1]
+            if "-filter_complex" in c and "join" in c[-1] and "anullsrc" in " ".join(c)
         ]
-        assert len(canon_cmds) == 3
+        assert len(canon_cmds) == 4
         assert all("anullsrc" in " ".join(c) for c in canon_cmds)
+        # content->outro is joined with a crossfade (issue #393), not a hard cut.
+        xfade_cmds = [c for c in cmds if "xfade" in " ".join(c)]
+        assert len(xfade_cmds) == 1
+        assert "transition=fade" in " ".join(xfade_cmds[0])
         # penultimate command overlays the podcast MP3 on the joined video
         overlay_cmd = cmds[-2]
         assert str(audio) in overlay_cmd
@@ -1421,22 +1500,31 @@ class TestComposeVideoIntroOutro:
         # content composed to a temp file, not directly to output
         compose_cmd = next(c for c in cmds if c[0] in ("ffmpeg",) and "content.mp4" in c[-1])
         assert compose_cmd[-1].endswith("content.mp4")
-        # a concat command joins intro/content/outro into joined.mp4 (video-only)
+        # a concat command joins intro + (content⨯outro crossfade) into
+        # joined.mp4 (video-only)
         concat_cmds = [c for c in cmds if "concat" in c and c[-1].endswith("joined.mp4")]
         assert len(concat_cmds) == 1
+        # content→outro is crossfaded with the same xfade filter used between
+        # content segments (issue #393).
+        xfade_cmds = [c for c in cmds if "xfade" in " ".join(c)]
+        assert len(xfade_cmds) == 1
+        assert "transition=fade" in " ".join(xfade_cmds[0])
         # the final h264_metadata BSF pass writes the real output
         final_cmd = cmds[-1]
         assert any("h264_metadata" in str(a) for a in final_cmd)
         assert final_cmd[-1] == str(out)
-        # two ffprobe calls (intro + outro)
+        # three ffprobe calls (intro + outro + content, the latter to compute
+        # the crossfade offset)
         probe_cmds = [c for c in cmds if c[0] == "ffprobe"]
-        assert len(probe_cmds) == 2
-        # canonical re-encodes for intro, content, outro (3 canonicalize calls)
-        canon_cmds = [c for c in cmds if "-filter_complex" in c and "[0:v]" in " ".join(c)
+        assert len(probe_cmds) == 3
+        # canonical re-encodes for intro, content, outro and the crossfaded
+        # content+outro clip (4 canonicalize calls)
+        canon_cmds = [c for c in cmds if "-filter_complex" in c and "anullsrc" in " ".join(c)
                       and "join" in c[-1]]
-        assert len(canon_cmds) == 3
-        # duration includes the two 5s clips added to the 10s content
-        assert result.duration_seconds == pytest.approx(20.0)
+        assert len(canon_cmds) == 4
+        # duration = 10s content + 5s intro + 5s outro, minus the 1s crossfade
+        # overlap between content and outro (issue #393).
+        assert result.duration_seconds == pytest.approx(19.0)
 
     def test_missing_intro_outro_graceful_fallback(self, tmp_path):
         runner = _mock_runner()
