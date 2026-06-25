@@ -21,6 +21,7 @@ from podcaster.video.video_gen import (
     MAX_SCROLL_VIEWPORT_MULTIPLIER,
     RECORDING_CHROMIUM_ARGS,
     SCREENSHOT_CAPTURE_FPS,
+    SCREENSHOT_CAPTURE_TUNE,
     SCROLL_TICKS_PER_SEC,
     WIDTH,
     HEIGHT,
@@ -40,6 +41,7 @@ from podcaster.video.video_gen import (
     _extract_website_url,
     _is_login_redirect,
     _looks_malformed_repo_url,
+    _make_recording_context,
     _navigate_to_website,
     _navigate_with_recovery,
     _pad_frames,
@@ -1376,6 +1378,41 @@ class TestRecordEpisodeIntegration:
 # --- Screenshot-based (hyperframe) capture helpers (issue #387) ---
 
 
+class TestMakeRecordingContext:
+    def test_hyperframe_mode_sets_native_scale_and_logs(self, tmp_path, caplog):
+        browser = MagicMock()
+        with patch(
+            "podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", True
+        ), caplog.at_level("INFO"):
+            context, capturer = _make_recording_context(
+                browser, tmp_path, segment_label="repo x/y"
+            )
+        assert capturer is not None
+        kwargs = browser.new_context.call_args.kwargs
+        # Native 1920x1080 capture, no HiDPI scaling (issue #392).
+        assert kwargs["viewport"] == {"width": WIDTH, "height": HEIGHT}
+        assert kwargs["device_scale_factor"] == 1
+        # No real-time screencast recording in hyperframe mode.
+        assert "record_video_dir" not in kwargs
+        assert any(
+            "Hyperframe capture mode active" in r.message and "repo x/y" in r.message
+            for r in caplog.records
+        )
+
+    def test_screencast_mode_records_video_and_logs(self, tmp_path, caplog):
+        browser = MagicMock()
+        with patch(
+            "podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", False
+        ), caplog.at_level("INFO"):
+            context, capturer = _make_recording_context(browser, tmp_path)
+        assert capturer is None
+        kwargs = browser.new_context.call_args.kwargs
+        assert "record_video_dir" in kwargs
+        assert any(
+            "screencast capture mode active" in r.message for r in caplog.records
+        )
+
+
 def _make_screenshot_page(scroll_height: int = 5000) -> MagicMock:
     """A mock Page whose screenshot writes a real PNG to the given path."""
     page = MagicMock()
@@ -1514,6 +1551,9 @@ class TestComposeScreenshotSegment:
         assert str(SCREENSHOT_CAPTURE_FPS) in cmd
         assert "libx264" in cmd
         assert "frame_%05d.png" in cmd[cmd.index("-i") + 1]
+        # Hyperframe quality tuning for screen content (issue #392).
+        assert "-tune" in cmd
+        assert cmd[cmd.index("-tune") + 1] == SCREENSHOT_CAPTURE_TUNE
 
     def test_still_command_loops_for_duration(self, tmp_path):
         cmd = _build_still_to_video_cmd(
@@ -1522,6 +1562,8 @@ class TestComposeScreenshotSegment:
         assert "-loop" in cmd
         assert "-t" in cmd
         assert cmd[cmd.index("-t") + 1] == "3.000"
+        assert "-tune" in cmd
+        assert cmd[cmd.index("-tune") + 1] == SCREENSHOT_CAPTURE_TUNE
 
     @pytest.mark.skipif(
         not __import__("shutil").which("ffmpeg"),
