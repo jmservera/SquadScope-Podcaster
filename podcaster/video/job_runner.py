@@ -525,12 +525,15 @@ def run_video_generation(
                 raise RuntimeError(f"composition produced invalid output for job_id={job_id}")
 
             # Distribute
-            request = manifest.get("request", {})
+            request = manifest.get("request")
+            if not isinstance(request, dict):
+                request = {}
             title = str(request.get("article_title", f"SquadScope Podcast — {job_id}"))
             fallback_description = str(
                 request.get("description", f"Video podcast episode {job_id}")
             )
-            music_credits = request.get("description_template") or None
+            template = request.get("description_template")
+            music_credits = template if isinstance(template, str) and template.strip() else None
             description = _build_video_description(
                 storage, job_id, fallback_description, music_credits=music_credits
             )

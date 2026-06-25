@@ -521,6 +521,47 @@ class TestRunVideoGeneration:
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
+    def test_malformed_request_falls_back_to_default_credits(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config
+    ):
+        """A non-string description_template is ignored (no crash) and the default
+        music attribution is used instead (#412 review hardening)."""
+        job_id = "video-malformed"
+        storage.set_manifest(job_id, {
+            "generation": {"validation": {"duration_seconds": 60.0}},
+            "request": {
+                "article_title": "Malformed Episode",
+                "week": "2026-W24",
+                "description_template": {"unexpected": "object"},
+            },
+        })
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0,
+                segment_count=2, has_audio=False,
+            )
+        mock_compose.side_effect = fake_compose
+        mock_distribute.return_value = MagicMock(
+            status="completed", youtube_id=None, blob_path=None,
+            spotify_rss_updated=False, spotify_upload_updated=False,
+        )
+
+        run_video_generation(job_id, storage, config=dry_config)
+
+        description = mock_distribute.call_args.args[3]
+        assert _DEFAULT_MUSIC_CREDITS in description
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
     def test_season_episode_numbers_from_manifest_week(
         self, mock_compose, mock_record, mock_distribute, storage, dry_config
     ):

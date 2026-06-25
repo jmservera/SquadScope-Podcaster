@@ -51,3 +51,11 @@ def test_attribution_lines_cover_every_asset():
     assert len(lines) == len(music.load_registry()["assets"])
     assert all("summer-sport.mp3" in line for line in lines)
     assert all("license:" in line for line in lines)
+
+
+def test_track_attribution_names_creative_commons_license():
+    """TRACK_ATTRIBUTION must carry the human-readable CC BY-SA 3.0 license text
+    mandated by assets/music/ATTRIBUTION.md (issue #412)."""
+    assert "Creative Commons CC BY-SA 3.0" in music.TRACK_ATTRIBUTION
+    assert "https://creativecommons.org/licenses/by-sa/3.0/" in music.TRACK_ATTRIBUTION
+
