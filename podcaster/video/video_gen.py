@@ -143,7 +143,17 @@ if SCREENSHOT_CAPTURE_FPS < 1:
 # downstream compose re-encodes again, so we keep this high quality to avoid
 # compounding compression artefacts.
 SCREENSHOT_CAPTURE_CRF = _env_int("VIDEO_SCREENSHOT_CRF", 12)
-SCREENSHOT_CAPTURE_PRESET = os.environ.get("VIDEO_SCREENSHOT_PRESET", "veryfast")
+# Use a slower x264 preset by default for the intermediate screenshot->video
+# segment: screen content (text, gradients, dark-theme UI) benefits from the
+# better motion estimation / rate-distortion of a slower preset, and this clip
+# is short-lived so the extra encode time is acceptable (issue #392).
+SCREENSHOT_CAPTURE_PRESET = os.environ.get("VIDEO_SCREENSHOT_PRESET", "slow")
+# x264 ``-tune`` for the PNG->video compose.  ``stillimage`` is optimised for
+# high-detail static screen content (sharp text, flat gradients) and avoids the
+# psychovisual blurring ``-tune film`` would apply, which is exactly what the
+# scrolling-screenshot frames are (issue #392).  Set to an empty string to
+# disable tuning entirely.
+SCREENSHOT_CAPTURE_TUNE = os.environ.get("VIDEO_SCREENSHOT_TUNE", "stillimage")
 
 # JavaScript that extracts the repo's website/homepage URL from the GitHub
 # "About" sidebar (issue #360).  GitHub renders the homepage link as an anchor
@@ -676,25 +686,30 @@ def _build_frames_to_video_cmd(
     frames_dir: Path, fps: int, output_path: Path
 ) -> list[str]:
     """ffmpeg command composing a PNG frame sequence into an H.264 clip."""
-    return [
+    cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
         "-framerate", str(fps),
         "-i", str(frames_dir / "frame_%05d.png"),
         "-vf", "format=yuv420p",
         "-c:v", "libx264",
         "-preset", SCREENSHOT_CAPTURE_PRESET,
+    ]
+    if SCREENSHOT_CAPTURE_TUNE:
+        cmd += ["-tune", SCREENSHOT_CAPTURE_TUNE]
+    cmd += [
         "-crf", str(SCREENSHOT_CAPTURE_CRF),
         "-pix_fmt", "yuv420p",
         "-r", str(fps),
         str(output_path),
     ]
+    return cmd
 
 
 def _build_still_to_video_cmd(
     still_path: Path, duration_seconds: float, fps: int, output_path: Path
 ) -> list[str]:
     """ffmpeg command holding a single still PNG for *duration_seconds*."""
-    return [
+    cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
         "-loop", "1",
         "-framerate", str(fps),
@@ -703,11 +718,16 @@ def _build_still_to_video_cmd(
         "-vf", "format=yuv420p",
         "-c:v", "libx264",
         "-preset", SCREENSHOT_CAPTURE_PRESET,
+    ]
+    if SCREENSHOT_CAPTURE_TUNE:
+        cmd += ["-tune", SCREENSHOT_CAPTURE_TUNE]
+    cmd += [
         "-crf", str(SCREENSHOT_CAPTURE_CRF),
         "-pix_fmt", "yuv420p",
         "-r", str(fps),
         str(output_path),
     ]
+    return cmd
 
 
 def _pad_frames(capturer: _Capturer, target_count: int) -> None:
@@ -772,27 +792,54 @@ def _compose_screenshot_segment(
 
 
 def _make_recording_context(
-    browser: Browser, output_dir: Path
+    browser: Browser, output_dir: Path, segment_label: str = ""
 ) -> "tuple[BrowserContext, _Capturer | None]":
     """Create a browser context for capture, honouring the capture mode.
 
     In screenshot/hyperframe mode (default, issue #387) the context records no
     video; frames are captured as PNG screenshots into a per-segment temp dir.
     In legacy screencast mode the context records a WebM via Playwright.
+
+    A per-segment INFO line confirms which capture path is active so production
+    logs make it obvious that the high-quality hyperframe path — not the lossy
+    VP8 screencast fallback — is being used (issue #392).
     """
+    label = f" for {segment_label}" if segment_label else ""
     kwargs: dict = {
         "viewport": {"width": WIDTH, "height": HEIGHT},
+        # Pin a 1.0 device scale factor so screenshots are captured at the
+        # native 1920x1080 viewport resolution with no HiDPI up/down-scaling
+        # (issue #392) — scaled captures would soften text and gradients.
+        "device_scale_factor": 1,
         "color_scheme": "dark",
     }
     capturer: _Capturer | None = None
     if SCREENSHOT_CAPTURE_ENABLED:
         frames_dir = output_dir / "frames" / uuid.uuid4().hex
         capturer = _Capturer(frames_dir)
+        logger.info(
+            "Hyperframe capture mode active%s: lossless PNG screenshots at "
+            "%dx%d, composed at %d fps (preset=%s, tune=%s, crf=%d)",
+            label,
+            WIDTH,
+            HEIGHT,
+            SCREENSHOT_CAPTURE_FPS,
+            SCREENSHOT_CAPTURE_PRESET,
+            SCREENSHOT_CAPTURE_TUNE or "none",
+            SCREENSHOT_CAPTURE_CRF,
+        )
     else:
         video_dir = output_dir / "raw"
         video_dir.mkdir(parents=True, exist_ok=True)
         kwargs["record_video_dir"] = str(video_dir)
         kwargs["record_video_size"] = {"width": WIDTH, "height": HEIGHT}
+        logger.info(
+            "Legacy VP8 screencast capture mode active%s (VIDEO_SCREENSHOT_"
+            "CAPTURE=false): real-time WebM at %dx%d — hyperframe disabled",
+            label,
+            WIDTH,
+            HEIGHT,
+        )
     context = browser.new_context(**kwargs)
     return context, capturer
 
@@ -1228,7 +1275,9 @@ def _record_generic_segment(
     that page is navigated to and scrolled like a regular repo recording;
     otherwise the static branded background animation is shown.
     """
-    context, capturer = _make_recording_context(browser, output_dir)
+    context, capturer = _make_recording_context(
+        browser, output_dir, segment_label="generic segment"
+    )
     page: Page = context.new_page()
     try:
         source_url = segment.source_url
@@ -1362,7 +1411,9 @@ def _record_segment(
         if has_pages:
             logger.info("Repo %s has GitHub Pages", repo.url)
 
-    context, capturer = _make_recording_context(browser, output_dir)
+    context, capturer = _make_recording_context(
+        browser, output_dir, segment_label=f"repo {repo.url}"
+    )
 
     page: Page = context.new_page()
 
