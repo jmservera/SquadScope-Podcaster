@@ -1507,8 +1507,13 @@ def _scroll_github_readme(
         _smooth_scroll(page, duration_seconds, capturer)
         return
 
-    readme_y = max(0, int(metrics["readmeY"]) - GITHUB_README_TOP_MARGIN)
     doc_scrollable = int(metrics.get("scrollable") or 0)
+    readme_y = max(0, int(metrics["readmeY"]) - GITHUB_README_TOP_MARGIN)
+    # Clamp to the real max scrollable Y so both the scroll plan and the log
+    # below reflect a physically reachable target (README near the bottom plus
+    # the top margin can otherwise overshoot ``doc_scrollable``).
+    if doc_scrollable > 0:
+        readme_y = min(readme_y, doc_scrollable)
     # README already near the top → a normal reading scroll is the right thing.
     if readme_y <= viewport_height * 0.5:
         _smooth_scroll(page, duration_seconds, capturer)

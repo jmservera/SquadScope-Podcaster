@@ -558,6 +558,28 @@ class TestScrollGithubReadme:
         first = re.search(r"scrollTo\(0,\s*(\d+)\)", str(scroll_calls[0]))
         assert first is not None and int(first.group(1)) == 0
 
+    def test_readme_y_clamped_to_scrollable(self, tmp_path, caplog):
+        import logging
+
+        # README sits near the bottom so readmeY - top margin overshoots the
+        # real max scrollable Y; the plan and log must clamp to scrollable.
+        page = self._page(readme_y=20000, scrollable=6000)
+        cap = _Capturer(tmp_path / "frames")
+        page.screenshot.side_effect = lambda path: Path(path).write_bytes(_PNG_64x64)
+
+        with caplog.at_level(logging.INFO, logger="podcaster.video.video_gen"):
+            _scroll_github_readme(page, 5.0, capturer=cap)
+
+        ys = [
+            int(m.group(1))
+            for c in page.evaluate.call_args_list
+            if (m := re.search(r"scrollTo\(0,\s*(\d+)\)", str(c)))
+        ]
+        assert ys, "expected scrollTo calls"
+        assert max(ys) <= 6000
+        jump_log = next(r for r in caplog.records if "README-first scroll" in r.getMessage())
+        assert "to y=6000" in jump_log.getMessage()
+
     def _header_hold_frames(self, fps, duration, tmp_path):
         page = self._page()
         cap = _Capturer(tmp_path / "frames")
