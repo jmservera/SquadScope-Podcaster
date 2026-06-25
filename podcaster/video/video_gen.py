@@ -1226,6 +1226,165 @@ def _smooth_scroll(
         page.wait_for_timeout(remainder_ms)
 
 
+# --- README-first scroll for GitHub repos (issue #415) ---
+#
+# GitHub repo pages render the file tree above the README, so a plain top-to-
+# bottom scroll wastes screen time crawling through file names before reaching
+# the content viewers actually care about.  Instead we: briefly hold on the repo
+# header, do a quick eased jump down to the README, then scroll the README at
+# reading speed.  All staging is best-effort — any detection failure falls back
+# to the normal deterministic scroll so the pipeline never breaks (#415).
+
+# Header hold / jump budgets, expressed at the ~30fps capture rate.
+GITHUB_HEADER_HOLD_FRAMES = 60  # ~2.0s (issue range 1.5-2.5s / 45-75 frames)
+GITHUB_JUMP_FRAMES = 18  # ~0.6s eased transition (issue range 0.5-0.9s / 15-27)
+# Pixels of headroom kept above the README so its heading stays visible after
+# the jump (rather than aligning the README flush to the very top).
+GITHUB_README_TOP_MARGIN = 120
+# Jump (vs. gentle eased scroll) when the README is more than this many viewport
+# heights below the top.
+README_JUMP_VIEWPORT_THRESHOLD = 2.0
+
+# Robustly locate the README and report its document offset plus the page's max
+# scrollable Y.  Returns ``{readmeY: int|null, scrollable: int}``.
+_README_METRICS_JS = """
+() => {
+  const readme =
+    document.querySelector('#readme') ||
+    document.querySelector('article.markdown-body') ||
+    document.querySelector('[data-testid="readme"]') ||
+    (() => {
+      const h = [...document.querySelectorAll('h2, h3')].find(
+        (el) => /readme/i.test(el.textContent || '')
+      );
+      return h ? h.closest('div, section, article') : null;
+    })();
+  const docH = Math.max(
+    document.documentElement.scrollHeight,
+    document.body ? document.body.scrollHeight : 0
+  );
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const scrollable = Math.max(0, docH - vh);
+  if (!readme) return { readmeY: null, scrollable };
+  const rect = readme.getBoundingClientRect();
+  const y = Math.round(rect.top + window.scrollY);
+  return { readmeY: Math.max(0, y), scrollable };
+}
+"""
+
+
+def _github_scroll_plan(
+    readme_y: int,
+    viewport_height: int,
+    doc_scrollable: int,
+    total_frames: int,
+    *,
+    header_frames: int = GITHUB_HEADER_HOLD_FRAMES,
+    jump_frames: int = GITHUB_JUMP_FRAMES,
+    px_per_frame: int = READING_PX_PER_FRAME,
+) -> "list[int] | None":
+    """Build the per-frame Y positions for the README-first flow (issue #415).
+
+    Phases: hold on the header, an eased jump to the README, then a reading-speed
+    linear scroll through the README content.  Returns a list of exactly
+    *total_frames* absolute Y offsets, or ``None`` when there aren't enough
+    frames to stage the flow (the caller then does a plain smooth scroll).
+    """
+    if total_frames <= 0:
+        return []
+    readme_y = max(0, min(int(readme_y), max(0, int(doc_scrollable))))
+
+    # Never let header + jump eat more than half the segment — reading the
+    # README content is the point, so it always gets at least half the frames.
+    header = min(header_frames, total_frames // 4)
+    far = readme_y > viewport_height * README_JUMP_VIEWPORT_THRESHOLD
+    if far:
+        jump = min(jump_frames, total_frames // 4)
+    else:
+        # README is close — a slightly longer eased glide reads better than an
+        # abrupt jump.
+        jump = min(max(jump_frames, total_frames // 6), total_frames // 4)
+
+    reading = total_frames - header - jump
+    if header < 1 or jump < 1 or reading < 1:
+        return None
+
+    plan: "list[int]" = [0] * header
+    plan += _scroll_positions(0, readme_y, jump, easing="ease_out_cubic")
+    read_end = min(int(doc_scrollable), readme_y + reading * px_per_frame)
+    plan += _scroll_positions(readme_y, read_end, reading, easing="linear")
+
+    # Guard against off-by-one from the phase concatenation.
+    if len(plan) < total_frames:
+        plan += [plan[-1]] * (total_frames - len(plan))
+    return plan[:total_frames]
+
+
+def _scroll_github_readme(
+    page: Page,
+    duration_seconds: float,
+    capturer: "_Capturer | None" = None,
+) -> None:
+    """README-first scroll for a GitHub repo page (issue #415).
+
+    Holds on the repo header, eases down to the README, then scrolls it at
+    reading speed.  Falls back to :func:`_smooth_scroll` for non-GitHub pages,
+    when no README is found, when the README is already near the top, or on any
+    detection error — so behaviour never regresses for other pages.
+    """
+    try:
+        if not _is_github_url(getattr(page, "url", None)):
+            _smooth_scroll(page, duration_seconds, capturer)
+            return
+    except Exception:  # noqa: BLE001 — treat detection failure as "not GitHub"
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    total_frames, tick_rate = _scroll_frame_count(duration_seconds, capturer)
+    if total_frames <= 0:
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    viewport_height = page.viewport_size["height"] if page.viewport_size else HEIGHT
+
+    try:
+        metrics = page.evaluate(_README_METRICS_JS)
+    except Exception:  # noqa: BLE001 — fall back to a plain scroll on JS errors
+        metrics = None
+    if not isinstance(metrics, dict) or metrics.get("readmeY") is None:
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    readme_y = max(0, int(metrics["readmeY"]) - GITHUB_README_TOP_MARGIN)
+    doc_scrollable = int(metrics.get("scrollable") or 0)
+    # README already near the top → a normal reading scroll is the right thing.
+    if readme_y <= viewport_height * 0.5:
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    plan = _github_scroll_plan(
+        readme_y, viewport_height, doc_scrollable, total_frames
+    )
+    if not plan:
+        _smooth_scroll(page, duration_seconds, capturer)
+        return
+
+    logger.info(
+        "README-first scroll: header+jump to y=%d then read to y=%d (#415)",
+        readme_y,
+        plan[-1],
+    )
+    tick_interval_ms = int(1000 / tick_rate)
+    _run_scroll_positions(page, plan, capturer, tick_interval_ms)
+
+    if capturer is not None:
+        return
+    elapsed_ms = total_frames * tick_interval_ms
+    remainder_ms = int(duration_seconds * 1000) - elapsed_ms
+    if remainder_ms > 0:
+        page.wait_for_timeout(remainder_ms)
+
+
 def _extract_website_url(page: Page) -> str | None:
     """Extract the repo's external website URL from the GitHub page (issue #360).
 
@@ -1893,7 +2052,10 @@ def _record_segment(
                         _dismiss_overlays(page)
                     website_url = None
                 _prepare_page_for_recording(page)
-                _smooth_scroll(page, segment.duration_seconds, capturer)
+                # README-first scroll for GitHub repo pages; falls back to a
+                # plain deterministic scroll for non-GitHub pages / no README
+                # (issue #415).
+                _scroll_github_readme(page, segment.duration_seconds, capturer)
             except Exception:
                 # Keep the successfully recorded repo page; do not render a
                 # fallback on top of it (issue #381).
