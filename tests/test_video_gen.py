@@ -56,7 +56,6 @@ from podcaster.video.video_gen import (
     _ease_out_cubic,
     _ease_linear,
     READING_PX_PER_FRAME,
-    MAX_READING_PX_PER_FRAME,
     _try_navigate_repo,
     _try_record_project_site,
     _PAGE_ZOOM_JS,

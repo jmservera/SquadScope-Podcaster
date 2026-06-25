@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -1059,7 +1059,7 @@ def _ease_out_cubic(t: float) -> float:
     return 1.0 - (1.0 - t) ** 3
 
 
-_EASINGS: "dict[str, Callable[[float], float]]" = {
+_EASINGS: dict[str, Callable[[float], float]] = {
     "linear": _ease_linear,
     "ease_out_cubic": _ease_out_cubic,
 }
