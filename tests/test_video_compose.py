@@ -1833,3 +1833,68 @@ class TestComposeVideoDogLogo:
         )
         for c in runner.call_args_list:
             assert "overlay=" not in " ".join(c.args[0])
+
+
+# --- Hardware-accelerated encoding (NVENC) — issue #396 ---
+
+
+class TestHardwareAccelEncoding:
+    def setup_method(self):
+        vc._select_hwaccel_encoder.cache_clear()
+
+    def teardown_method(self):
+        vc._select_hwaccel_encoder.cache_clear()
+
+    def test_default_cpu_path_unchanged(self):
+        # auto-mode with no GPU device must return the exact libx264 flags.
+        with patch.object(vc, "_HWACCEL_MODE", "auto"), \
+             patch.object(vc, "_nvenc_available", return_value=False):
+            vc._select_hwaccel_encoder.cache_clear()
+            args = vc._video_encode_args("slow")
+        assert args == [
+            "-c:v", "libx264", "-preset", "slow", "-crf", str(vc.ENCODE_CRF),
+            "-pix_fmt", vc.ENCODE_PIX_FMT, "-profile:v", "high",
+        ]
+
+    def test_off_mode_never_uses_nvenc(self):
+        with patch.object(vc, "_HWACCEL_MODE", "off"), \
+             patch.object(vc, "_nvenc_available", return_value=True):
+            vc._select_hwaccel_encoder.cache_clear()
+            assert vc._select_hwaccel_encoder() is None
+
+    def test_auto_uses_nvenc_when_available(self):
+        with patch.object(vc, "_HWACCEL_MODE", "auto"), \
+             patch.object(vc, "_nvenc_available", return_value=True):
+            vc._select_hwaccel_encoder.cache_clear()
+            codec = vc._select_hwaccel_encoder()
+        assert codec == vc._NVENC_CODEC
+
+    def test_forced_nvenc_skips_detection(self):
+        with patch.object(vc, "_HWACCEL_MODE", "nvenc"), \
+             patch.object(vc, "_nvenc_available", return_value=False) as avail:
+            vc._select_hwaccel_encoder.cache_clear()
+            codec = vc._select_hwaccel_encoder()
+        avail.assert_not_called()
+        assert codec == vc._NVENC_CODEC
+
+    def test_nvenc_encode_args_use_constqp_and_profile(self):
+        args = vc._hwaccel_encode_args("h264_nvenc", "slow")
+        assert "h264_nvenc" in args
+        assert "-rc" in args and "constqp" in args
+        assert "-qp" in args
+        # Quality target mirrors the software CRF.
+        assert str(vc.ENCODE_CRF) in args
+        assert "-profile:v" in args and "high" in args
+        # 8-bit 4:2:0 chroma preserved for Spotify compatibility.
+        assert "yuv420p" in args
+
+    def test_nvenc_preset_mapping(self):
+        fast = vc._hwaccel_encode_args("h264_nvenc", "ultrafast")
+        slow = vc._hwaccel_encode_args("h264_nvenc", "slow")
+        assert "p1" in fast  # fastest NVENC preset for intermediates
+        assert "p6" in slow  # high-quality preset for the final pass
+
+    def test_nvenc_unavailable_without_gpu_device(self):
+        # No /dev/nvidia* present → not available regardless of ffmpeg.
+        with patch("podcaster.video.video_compose.os.path.exists", return_value=False):
+            assert vc._nvenc_available() is False
