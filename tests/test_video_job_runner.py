@@ -475,7 +475,7 @@ class TestRunVideoGeneration:
         assert "www.claracle.com" in description
         # Music credits must be present (default attribution from TRACK_ATTRIBUTION)
         assert "AudioCoffee" in description
-        assert "audiocoffee.net" in description
+        assert "https://www.audiocoffee.net/" in description
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")

@@ -182,15 +182,18 @@ def _build_video_description(
     """
     attribution = (music_credits or _DEFAULT_MUSIC_CREDITS).strip()
 
+    def _with_attribution(base: str) -> str:
+        return f"{base}\n\n{attribution}" if attribution else base
+
     raw = storage.get_bytes(show_notes_path(job_id))
     if not raw:
-        return f"{fallback}\n\n{attribution}" if attribution else fallback
+        return _with_attribution(fallback)
     try:
         notes = raw.decode("utf-8").strip()
     except UnicodeDecodeError:
-        return f"{fallback}\n\n{attribution}" if attribution else fallback
+        return _with_attribution(fallback)
     if not notes:
-        return f"{fallback}\n\n{attribution}" if attribution else fallback
+        return _with_attribution(fallback)
 
     summary = _extract_section(notes, "About this episode", "Show notes")
     if not summary:
@@ -204,11 +207,22 @@ def _build_video_description(
     credits = "Credits: " + " · ".join(credit_parts)
 
     body = f"{summary}\n\n{credits}" if summary else credits
-    return f"{body}\n\n{attribution}" if attribution else body
+    return _with_attribution(body)
 
 
 def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
+
+
+def _parse_week_str(week_str: str) -> tuple[int, int] | None:
+    """Parse an ISO week string like ``2026-W24`` into ``(year, week)``."""
+    if "-W" not in week_str:
+        return None
+    try:
+        year_part, week_part = week_str.split("-W", 1)
+        return int(year_part), int(week_part)
+    except ValueError:
+        return None
 
 
 def _extract_year(manifest: dict[str, Any]) -> int | None:
@@ -216,13 +230,8 @@ def _extract_year(manifest: dict[str, Any]) -> int | None:
     request = manifest.get("request")
     if not isinstance(request, dict):
         return None
-    week_str = str(request.get("week") or "")
-    if "-W" not in week_str:
-        return None
-    try:
-        return int(week_str.split("-W", 1)[0])
-    except ValueError:
-        return None
+    parsed = _parse_week_str(str(request.get("week") or ""))
+    return parsed[0] if parsed is not None else None
 
 
 def _extract_week(manifest: dict[str, Any]) -> int | None:
@@ -230,13 +239,8 @@ def _extract_week(manifest: dict[str, Any]) -> int | None:
     request = manifest.get("request")
     if not isinstance(request, dict):
         return None
-    week_str = str(request.get("week") or "")
-    if "-W" not in week_str:
-        return None
-    try:
-        return int(week_str.split("-W", 1)[1])
-    except ValueError:
-        return None
+    parsed = _parse_week_str(str(request.get("week") or ""))
+    return parsed[1] if parsed is not None else None
 
 
 def _already_processed(manifest: dict[str, Any]) -> bool:
