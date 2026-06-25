@@ -139,6 +139,34 @@ def test_parse_script_segments_alternates_and_skips_header():
     assert all("Source URL" not in text for _, text in segments)
 
 
+def test_parse_script_segments_strips_section_headers():
+    """``## Section:`` headers (#417) are non-spoken and must never reach TTS."""
+    from podcaster.config import HostConfig, PodcastConfig
+    from podcaster.sections import match_section_header
+
+    config = PodcastConfig(
+        host_a=HostConfig(name="Theo", voice="fable", style=""),
+        host_b=HostConfig(name="Vera", voice="alloy", style=""),
+    )
+    script = (
+        "Title: X\n"
+        "Voices: Theo = fable; Vera = alloy\n"
+        "---\n\n"
+        "Theo: Welcome to the show today everyone.\n"
+        "## Section: AI Frameworks Showdown\n"
+        "Vera: First up, frameworks fought hard this week.\n"
+    )
+    segments = episode.parse_script_segments(script, config)
+    assert [r for r, _ in segments] == ["host_a", "host_b"]
+    # The non-spoken header marker and its title text must not leak into TTS.
+    # (Assert on the section-header marker/title specifically rather than the
+    # bare word "Section" or a stray "##", which can legitimately appear in
+    # spoken dialogue, e.g. a host reading markdown.)
+    assert all("## Section:" not in text for _, text in segments)
+    assert all("AI Frameworks Showdown" not in text for _, text in segments)
+    assert all(match_section_header(text) is None for _, text in segments)
+
+
 def test_operator_review_decision_allows_review_only_when_configured():
     decision = episode.operator_review_decision(_production_config())
     assert decision["allowed"] is True
