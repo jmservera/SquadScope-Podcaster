@@ -16,7 +16,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
@@ -27,6 +27,7 @@ from podcaster.video.video_gen import RecordedSegment
 
 if TYPE_CHECKING:
     from podcaster.storage import StorageBackend
+    from podcaster.video.section_cards import SectionCardInsert
 
 logger = logging.getLogger(__name__)
 
@@ -1504,6 +1505,83 @@ def _compose_pairwise(
             accumulator.unlink(missing_ok=True)
 
 
+def _splice_section_cards(
+    normalized_paths: list[Path],
+    durations: list[float],
+    transitions: list[str],
+    lower_thirds_by_index: dict[int, LowerThird],
+    inserts: list[tuple[int, Path, float]],
+    transition_duration: float = TRANSITION_DURATION,
+) -> tuple[list[Path], list[float], list[str], dict[int, LowerThird]]:
+    """Splice section title cards into the normalized content stream (#377).
+
+    Each entry in *inserts* is ``(before_index, card_path, card_duration)`` and
+    places a card immediately *before* content segment ``before_index`` (clamped
+    to ``[0, len(content)]``; ``len(content)`` appends at the end).  Every
+    boundary adjacent to a card uses a fade transition; original content↔content
+    boundaries keep their selected transition.  Cards carry no lower-third, and
+    each content lower-third is re-keyed to its new position *and* time-shifted
+    by the card time inserted ahead of it (each card advances the absolute
+    timeline by ``card_duration - transition_duration``) so overlays still fire
+    over their own segment rather than the preceding card.
+
+    Args:
+        normalized_paths: Content segment clip paths (already normalized).
+        durations: On-screen duration per content segment, parallel to paths.
+        transitions: Selected transition per content boundary
+            (``len == len(normalized_paths) - 1``).
+        lower_thirds_by_index: Lower-third overlays keyed by content index.
+        inserts: Card insertions ``(before_index, card_path, card_duration)``.
+        transition_duration: xfade overlap length, used to time-shift overlays.
+
+    Returns:
+        ``(paths, durations, transitions, lower_thirds_by_index)`` for the
+        combined content+card stream, ready for :func:`_compose_pairwise`.
+    """
+    n = len(normalized_paths)
+    by_idx: dict[int, list[tuple[Path, float]]] = {}
+    for before, card_path, card_dur in inserts:
+        clamped = max(0, min(before, n))
+        by_idx.setdefault(clamped, []).append((card_path, card_dur))
+
+    new_paths: list[Path] = []
+    new_durs: list[float] = []
+    new_trans: list[str] = []
+    new_lts: dict[int, LowerThird] = {}
+    # Running absolute-timeline shift introduced by the cards emitted so far.
+    time_shift = 0.0
+
+    def emit(path: Path, dur: float, lt: LowerThird | None, trans_in: str | None) -> None:
+        if new_paths and trans_in is not None:
+            new_trans.append(trans_in)
+        idx = len(new_paths)
+        new_paths.append(path)
+        new_durs.append(dur)
+        if lt is not None:
+            new_lts[idx] = replace(
+                lt,
+                start_seconds=lt.start_seconds + time_shift,
+                end_seconds=lt.end_seconds + time_shift,
+            )
+
+    for k in range(n):
+        had_card_before = k in by_idx
+        for card_path, card_dur in by_idx.get(k, []):
+            emit(card_path, card_dur, None, TRANSITION_FADE)
+            time_shift += card_dur - transition_duration
+        if k == 0:
+            t_in = TRANSITION_FADE if had_card_before else None
+        else:
+            t_in = TRANSITION_FADE if had_card_before else transitions[k - 1]
+        emit(normalized_paths[k], durations[k], lower_thirds_by_index.get(k), t_in)
+
+    # Trailing cards appended after the final content segment.
+    for card_path, card_dur in by_idx.get(n, []):
+        emit(card_path, card_dur, None, TRANSITION_FADE)
+
+    return new_paths, new_durs, new_trans, new_lts
+
+
 def compose_video(
     segments: list[RecordedSegment],
     audio_path: Path | None = None,
@@ -1517,6 +1595,7 @@ def compose_video(
     dog_logo: "DogLogoConfig | None" = None,
     dog_logo_cache_dir: Path | None = None,
     audio_duration: float | None = None,
+    section_cards: "list[SectionCardInsert] | None" = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -1561,6 +1640,11 @@ def compose_video(
             keeps its proportional slice of the timeline so the right repo is on
             screen while the hosts discuss it.  When ``None`` the legacy
             behaviour (content length follows the recordings) is preserved.
+        section_cards: Optional section title cards (issue #377) to splice into
+            the content stream at section boundaries.  Each entry names the
+            content segment it precedes and a pre-rendered card clip; the cards
+            play at their fixed duration (they are excluded from fit-to-window)
+            with fade transitions on both sides.  ``None``/empty is a no-op.
 
     Returns:
         ComposeResult with path to the final MP4.
@@ -1613,11 +1697,19 @@ def compose_video(
     # durations up front so the content window can be computed.
     fit_to_window = audio_duration is not None and audio_duration > 0
     fit_durations: list[float] | None = None
+    # Total wall-clock the section cards add to the timeline.  Each spliced card
+    # contributes one *net* extra xfade boundary, so the content window is shrunk
+    # by (sum of card durations − transition per card) to keep total video length
+    # aligned with the audio timeline (issue #377).
+    section_cards = section_cards or []
+    card_reserve = sum(
+        max(0.0, c.duration_seconds - transition_duration) for c in section_cards
+    )
     if fit_to_window:
         intro_dur = _probe_media(intro_path, run)[1] if intro_path else 0.0
         outro_dur = _probe_media(outro_path, run)[1] if outro_path else 0.0
         content_window = max(
-            audio_duration - intro_dur - outro_dur,
+            audio_duration - intro_dur - outro_dur - card_reserve,
             MIN_CONTENT_WINDOW_SECONDS,
         )
         plan_durations = [seg.segment.duration_seconds for seg in segments]
@@ -1704,10 +1796,39 @@ def compose_video(
         dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
         dog_logo_path = _fetch_dog_logo(dog_logo.url, dog_cache)
 
+    # Step 3.6: Splice section title cards into the content stream (#377).  Cards
+    # are normalized to the canonical layout (so the xfade copy path stays valid)
+    # and inserted at their section boundaries with fade transitions.  They play
+    # at their fixed duration — excluded from the fit-to-window scaling above.
+    if section_cards:
+        card_norm_paths: list[Path] = []
+        for ci, card in enumerate(section_cards):
+            dest = norm_dir / f"card_{ci:03d}.mp4"
+            card_norm_paths.append(dest)
+            run(_build_normalize_cmd(card.clip_path, dest))
+        inserts = [
+            (card.before_index, card_norm_paths[ci], card.duration_seconds)
+            for ci, card in enumerate(section_cards)
+        ]
+        normalized_paths, durations, chosen_transitions, lower_thirds_by_index = (
+            _splice_section_cards(
+                normalized_paths,
+                durations,
+                chosen_transitions,
+                lower_thirds_by_index,
+                inserts,
+                transition_duration,
+            )
+        )
+        logger.info(
+            "Spliced %d section title card(s) into content (%d clips total)",
+            len(section_cards), len(normalized_paths),
+        )
+
     # Step 4: Composite the (video-only) content pairwise — each pass uses
     # exactly two video inputs so memory stays constant regardless of segment
     # count (replaces the old N-input filter_complex that OOMed at ~18 segments).
-    logger.info("Composing %d segments into %s", len(segments), compose_target)
+    logger.info("Composing %d clips into %s", len(normalized_paths), compose_target)
     _compose_pairwise(
         normalized_paths,
         durations,
@@ -1722,7 +1843,7 @@ def compose_video(
         output_path.parent,
     )
     # Content video duration (accounting for transition overlaps).
-    video_duration = sum(durations) - transition_duration * max(0, len(segments) - 1)
+    video_duration = sum(durations) - transition_duration * max(0, len(normalized_paths) - 1)
 
     # Prepend intro / append outro around the composed content (video-only).
     if has_bookends:

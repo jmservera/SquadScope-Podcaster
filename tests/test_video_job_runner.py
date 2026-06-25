@@ -23,6 +23,7 @@ from podcaster.video.job_runner import (
     TransientVideoError,
     VideoOutcome,
     _already_processed,
+    _build_section_cards,
     _resolve_anchor_id,
     _resolve_dog_logo,
     drain,
@@ -656,3 +657,65 @@ class TestResolveAnchorId:
         assert _resolve_anchor_id({}) is None
         assert _resolve_anchor_id({"generation": {"publish_result": {}}}) is None
         assert _resolve_anchor_id({"generation": "nope"}) is None
+
+
+class TestBuildSectionCards:
+    """_build_section_cards wiring (issue #377)."""
+
+    def _recorded(self, *urls):
+        from podcaster.video.sync_plan import RepoReference, VideoSegment
+        from podcaster.video.video_gen import RecordedSegment
+
+        recs = []
+        for i, url in enumerate(urls):
+            repo = None
+            if url is not None:
+                owner, name = url.split("github.com/")[1].split("/")[:2]
+                repo = RepoReference(owner=owner, name=name)
+            seg = VideoSegment(repo=repo, start_seconds=float(i), duration_seconds=5.0)
+            recs.append(RecordedSegment(segment=seg, video_path=Path(f"/tmp/s{i}.webm")))
+        return recs
+
+    def test_disabled_via_env_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("VIDEO_SECTION_CARDS", "0")
+        recs = self._recorded("https://github.com/o/r")
+        assert _build_section_cards("## Trends\nx", recs, tmp_path) == []
+
+    def test_no_sections_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("VIDEO_SECTION_CARDS", raising=False)
+        recs = self._recorded("https://github.com/o/r")
+        script = "Title: X\n---\n\nAda: just dialogue here.\n"
+        assert _build_section_cards(script, recs, tmp_path) == []
+
+    def test_builds_inserts_when_sections_present(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("VIDEO_SECTION_CARDS", raising=False)
+        recs = self._recorded(
+            "https://github.com/microsoft/vscode",
+            "https://github.com/astral-sh/ruff",
+        )
+        script = (
+            "Title: X\nSource: https://github.com/o/r\n---\n\n"
+            "## Trends\nAda: https://github.com/microsoft/vscode\n\n"
+            "## Signal & Noise\nBeto: https://github.com/astral-sh/ruff\n"
+        )
+        # Avoid invoking real ffmpeg: stub the card renderer.
+        with patch(
+            "podcaster.video.section_cards.generate_section_card"
+        ) as gen, patch(
+            "podcaster.video.section_cards._get_drawtext_ffmpeg", return_value="ffmpeg"
+        ):
+            inserts = _build_section_cards(script, recs, tmp_path)
+        assert [i.name for i in inserts] == ["Trends", "Signal & Noise"]
+        assert [i.before_index for i in inserts] == [0, 1]
+        assert gen.call_count == 2
+
+    def test_generation_failure_is_swallowed(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("VIDEO_SECTION_CARDS", raising=False)
+        recs = self._recorded("https://github.com/microsoft/vscode")
+        script = "Title: X\n---\n\n## Trends\nAda: https://github.com/microsoft/vscode\n"
+        with patch(
+            "podcaster.video.section_cards.build_section_card_inserts",
+            side_effect=RuntimeError("boom"),
+        ):
+            # Must never raise — composition proceeds without cards.
+            assert _build_section_cards(script, recs, tmp_path) == []
