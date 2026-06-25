@@ -221,33 +221,46 @@ ANTI_FLASH_CSS = (
     "::-webkit-scrollbar{display:none !important;}"
 )
 
-# Minimum natural width AND height (px) for an image to receive the zoom effect.
-# Small icons/avatars stay still; only genuinely large images get emphasis.
+# Minimum natural width AND height (px) for an image to anchor the zoom effect.
+# Small icons/avatars are ignored; only a genuinely large image becomes the
+# focal point of the camera zoom.
 IMAGE_ZOOM_MIN_SIZE_PX = 200
 
-# A subtle Ken Burns / zoom-in effect applied to large images during recording
-# (issue #362) to give the video visual dynamics.  ANTI_FLASH_CSS disables all
-# animations via the universal selector with !important, so this rule must also
-# use !important *and* a higher-specificity element+class selector
-# (`img.ss-zoom-target`) to win the cascade and keep animating.  Only images
-# tagged by _IMAGE_ZOOM_JS receive the class, so pages without large images are
-# unaffected.  `alternate` keeps the motion smooth (zoom in then back) without a
-# hard jump that would cause flickering.
-ZOOM_IMAGE_CSS = (
-    "@keyframes ss-image-zoom{"
-    "from{transform:scale(1);}to{transform:scale(1.05);}}"
-    "img.ss-zoom-target{"
-    "animation:ss-image-zoom 2.5s ease-in-out infinite alternate !important;"
-    "transform-origin:center center !important;will-change:transform;}"
+# Peak zoom level for the full-page camera zoom (issue #395).  1.25× makes the
+# focal area fill ~80% of the viewport (1 / 0.8 = 1.25) — enough to feel like a
+# camera pushing in without cropping so far that surrounding context is lost.
+PAGE_ZOOM_SCALE = 1.25
+# Duration of the smooth ease-in-out zoom, in seconds.
+PAGE_ZOOM_DURATION_S = 2.5
+
+# A full-page "camera zoom" applied during recording (issue #395, supersedes the
+# image-only bounce from #362/#373).  Instead of scaling a single <img>, the
+# ENTIRE viewport is scaled via a transform on ``document.body`` with
+# ``transform-origin`` anchored at the focal image's centre (set inline by
+# _PAGE_ZOOM_JS), so everything zooms toward that point like a camera pushing in.
+# ANTI_FLASH_CSS disables all animations via the universal selector with
+# !important, so this rule must also use !important *and* the higher-specificity
+# ``body.ss-page-zoom`` selector to win the cascade.  ``ease-in-out … forwards``
+# gives a single smooth zoom-in that holds — no bounce / rebound.
+ZOOM_PAGE_CSS = (
+    "@keyframes ss-page-zoom{"
+    f"from{{transform:scale(1);}}to{{transform:scale({PAGE_ZOOM_SCALE});}}}}"
+    "body.ss-page-zoom{"
+    f"animation:ss-page-zoom {PAGE_ZOOM_DURATION_S}s ease-in-out forwards "
+    "!important;will-change:transform;}"
 )
 
-# Flags large images (both natural dimensions above the threshold) with the
-# ss-zoom-target class so ZOOM_IMAGE_CSS applies only to them.  Returns the
-# number of images tagged.
-_IMAGE_ZOOM_JS = """
+# Finds the largest qualifying image (both natural dimensions above the
+# threshold), anchors the page-zoom ``transform-origin`` at its centre — expressed
+# as a percentage of the full document so it stays correct while the page scrolls
+# — and tags ``document.body`` with the ``ss-page-zoom`` class so ZOOM_PAGE_CSS
+# animates the whole viewport.  Returns 1 when a focal image was found and the
+# zoom was applied, 0 otherwise.
+_PAGE_ZOOM_JS = """
 (minSize) => {
   const imgs = Array.from(document.images || []);
-  let count = 0;
+  let best = null;
+  let bestArea = 0;
   for (const img of imgs) {
     const w = img.naturalWidth || 0;
     const h = img.naturalHeight || 0;
@@ -255,11 +268,27 @@ _IMAGE_ZOOM_JS = """
       continue;
     }
     if (w > minSize && h > minSize) {
-      img.classList.add('ss-zoom-target');
-      count += 1;
+      const area = w * h;
+      if (area > bestArea) {
+        bestArea = area;
+        best = img;
+      }
     }
   }
-  return count;
+  const body = document.body;
+  if (!best || !body) {
+    return 0;
+  }
+  const rect = best.getBoundingClientRect();
+  const docW = Math.max(document.documentElement.scrollWidth, 1);
+  const docH = Math.max(document.documentElement.scrollHeight, 1);
+  const cx = rect.left + window.scrollX + rect.width / 2;
+  const cy = rect.top + window.scrollY + rect.height / 2;
+  const ox = Math.min(100, Math.max(0, (cx / docW) * 100));
+  const oy = Math.min(100, Math.max(0, (cy / docH) * 100));
+  body.style.transformOrigin = ox.toFixed(2) + '% ' + oy.toFixed(2) + '%';
+  body.classList.add('ss-page-zoom');
+  return 1;
 }
 """
 FALLBACK_BRAND_HTML = """\
@@ -597,32 +626,40 @@ def _prepare_page_for_recording(page: Page) -> None:
         )
     except Exception:
         pass
-    _apply_image_zoom(page)
+    _apply_page_zoom(page)
 
 
-def _apply_image_zoom(page: Page) -> int:
-    """Apply a subtle zoom (Ken Burns) effect to large images (issue #362).
+def _apply_page_zoom(page: Page) -> int:
+    """Apply a full-page "camera zoom" toward a focal image (issue #395).
 
-    Detects ``<img>`` elements whose natural width *and* height both exceed
-    ``IMAGE_ZOOM_MIN_SIZE_PX``, tags them, then injects keyframe CSS that scales
-    them 1.0 → 1.05 on a smooth loop.  The CSS deliberately overrides the
-    universal ``animation:none`` rule from ANTI_FLASH_CSS via a higher
-    specificity selector plus ``!important``.  Best-effort: any failure is
-    swallowed and no style is injected.  Returns the number of images affected
-    (0 if none were found or an error occurred).
+    Supersedes the image-only bounce (#362/#373): instead of scaling a single
+    ``<img>``, the largest qualifying image (natural width *and* height above
+    ``IMAGE_ZOOM_MIN_SIZE_PX``) becomes the focal point and the **entire
+    viewport** is zoomed toward it.  ``_PAGE_ZOOM_JS`` anchors the
+    ``transform-origin`` at that image's centre and tags ``document.body`` so
+    ZOOM_PAGE_CSS scales the whole page with a smooth ease-in-out that holds (no
+    bounce).  The CSS overrides the universal ``animation:none`` rule from
+    ANTI_FLASH_CSS via the higher-specificity ``body.ss-page-zoom`` selector plus
+    ``!important``.  Best-effort: any failure is swallowed and no zoom is applied.
+    Returns 1 when the page zoom was applied, 0 otherwise.
     """
     try:
-        count = page.evaluate(_IMAGE_ZOOM_JS, IMAGE_ZOOM_MIN_SIZE_PX)
+        applied = page.evaluate(_PAGE_ZOOM_JS, IMAGE_ZOOM_MIN_SIZE_PX)
     except Exception:
         return 0
-    if not count:
+    if not applied:
         return 0
     try:
-        page.add_style_tag(content=ZOOM_IMAGE_CSS)
+        page.add_style_tag(content=ZOOM_PAGE_CSS)
     except Exception:
         return 0
-    logger.debug("Applied zoom effect to %d large image(s)", count)
-    return int(count)
+    logger.debug("Applied full-page camera zoom toward focal image")
+    return int(applied)
+
+
+# Backwards-compatible alias: earlier code/tests referenced the in-browser zoom
+# as ``_apply_image_zoom``; it now performs a full-page camera zoom (issue #395).
+_apply_image_zoom = _apply_page_zoom
 
 
 class _Capturer:
