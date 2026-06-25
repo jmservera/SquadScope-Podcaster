@@ -646,6 +646,8 @@ def upload_video_to_episode(
     show_id: str | None = None,
     sp_dc: str | None = None,
     sp_key: str | None = None,
+    season_number: int | None = None,
+    episode_number: int | None = None,
 ) -> PublishResult:
     """Publish a video as a NEW separate Spotify episode draft (#340).
 
@@ -657,6 +659,9 @@ def upload_video_to_episode(
     The existing audio episode (``anchor_id``, kept only for logging/reference)
     is never modified — the result is two independent drafts on Spotify, one
     audio and one video.
+
+    ``season_number`` and ``episode_number`` are forwarded to Spotify's episode
+    metadata so the video episode carries the same numbering as the audio episode.
 
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
     status is "draft" on success and "failed" otherwise.
@@ -736,6 +741,8 @@ def upload_video_to_episode(
             description=video_description,
             publish_behavior="draft",
             publish_on=None,
+            season_number=season_number,
+            episode_number=episode_number,
         )
 
         logger.info(

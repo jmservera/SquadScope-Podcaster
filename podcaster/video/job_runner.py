@@ -42,6 +42,7 @@ from podcaster.storage import (
 )
 from podcaster.failure_reporting import report_failure
 from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE
+from podcaster.music import TRACK_ATTRIBUTION
 from podcaster.pipeline_lock import PIPELINE_VIDEO, claim_pipeline
 from podcaster.video.distribution import (
     DistributionResult,
@@ -77,6 +78,12 @@ MAX_DEQUEUE_COUNT = 5
 
 # Minimum valid MP4 byte size
 _MIN_VALID_MP4_BYTES = 1024
+
+# Fallback music credit appended to the video description when the caller's
+# request payload does not supply a ``description_template``.
+_DEFAULT_MUSIC_CREDITS = (
+    f"Intro and Outro: {TRACK_ATTRIBUTION}"
+)
 
 
 @dataclass(frozen=True)
@@ -159,7 +166,8 @@ def _extract_hosts(notes: str) -> str:
 
 
 def _build_video_description(
-    storage: StorageBackend, job_id: str, fallback: str
+    storage: StorageBackend, job_id: str, fallback: str,
+    music_credits: str | None = None,
 ) -> str:
     """Build the Spotify/YouTube video description from the episode show-notes.
 
@@ -167,16 +175,22 @@ def _build_video_description(
     summary and host credits, and appends the Claracle podcast name and website
     so the published video draft carries the same metadata as the audio episode.
     Falls back to ``fallback`` when show-notes are unavailable.
+
+    ``music_credits`` is appended after the credits line so the video description
+    matches the audio episode structure (summary + credits + music attribution).
+    When omitted, the default music attribution constant is used.
     """
+    attribution = (music_credits or _DEFAULT_MUSIC_CREDITS).strip()
+
     raw = storage.get_bytes(show_notes_path(job_id))
     if not raw:
-        return fallback
+        return f"{fallback}\n\n{attribution}" if attribution else fallback
     try:
         notes = raw.decode("utf-8").strip()
     except UnicodeDecodeError:
-        return fallback
+        return f"{fallback}\n\n{attribution}" if attribution else fallback
     if not notes:
-        return fallback
+        return f"{fallback}\n\n{attribution}" if attribution else fallback
 
     summary = _extract_section(notes, "About this episode", "Show notes")
     if not summary:
@@ -189,11 +203,40 @@ def _build_video_description(
     credit_parts.append(f"{PODCAST_NAME} — {PODCAST_SPOKEN_SITE}")
     credits = "Credits: " + " · ".join(credit_parts)
 
-    return f"{summary}\n\n{credits}" if summary else credits
+    body = f"{summary}\n\n{credits}" if summary else credits
+    return f"{body}\n\n{attribution}" if attribution else body
 
 
 def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
+
+
+def _extract_year(manifest: dict[str, Any]) -> int | None:
+    """Extract the ISO year from ``request.week`` (e.g. ``2026-W24`` → 2026)."""
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return None
+    week_str = str(request.get("week") or "")
+    if "-W" not in week_str:
+        return None
+    try:
+        return int(week_str.split("-W", 1)[0])
+    except ValueError:
+        return None
+
+
+def _extract_week(manifest: dict[str, Any]) -> int | None:
+    """Extract the ISO week number from ``request.week`` (e.g. ``2026-W24`` → 24)."""
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return None
+    week_str = str(request.get("week") or "")
+    if "-W" not in week_str:
+        return None
+    try:
+        return int(week_str.split("-W", 1)[1])
+    except ValueError:
+        return None
 
 
 def _already_processed(manifest: dict[str, Any]) -> bool:
@@ -457,7 +500,13 @@ def run_video_generation(
             fallback_description = str(
                 request.get("description", f"Video podcast episode {job_id}")
             )
-            description = _build_video_description(storage, job_id, fallback_description)
+            music_credits = request.get("description_template") or None
+            description = _build_video_description(
+                storage, job_id, fallback_description, music_credits=music_credits
+            )
+
+            season_number = _extract_year(manifest)
+            episode_number = _extract_week(manifest)
 
             with timings.phase("distribution"):
                 dist_result = distribute_video(
@@ -469,6 +518,8 @@ def run_video_generation(
                     dist_config,
                     storage=_StorageUploaderAdapter(storage),
                     spotify_anchor_id=_resolve_anchor_id(manifest),
+                    season_number=season_number,
+                    episode_number=episode_number,
                 )
 
             # Emit the per-phase timing/resource breakdown (issue #396).

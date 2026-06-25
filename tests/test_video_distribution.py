@@ -434,7 +434,7 @@ class TestSpotifyEpisodeUpload:
         """Video upload proceeds even without an audio anchor_id (#340)."""
         from podcaster.publish import PublishResult
 
-        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4"):
+        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4", season_number=None, episode_number=None):
             return PublishResult(
                 anchor_episode_id=999,
                 status="draft",
@@ -453,12 +453,14 @@ class TestSpotifyEpisodeUpload:
     def test_delegates_to_publish(self, video_file, monkeypatch):
         captured = {}
 
-        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4"):
+        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4", season_number=None, episode_number=None):
             captured["path"] = path
             captured["anchor_id"] = anchor_id
             captured["content_type"] = content_type
             captured["title"] = title
             captured["description"] = description
+            captured["season_number"] = season_number
+            captured["episode_number"] = episode_number
             from podcaster.publish import PublishResult
 
             return PublishResult(anchor_episode_id=12345, status="draft")
@@ -466,14 +468,17 @@ class TestSpotifyEpisodeUpload:
         monkeypatch.setattr("podcaster.publish.upload_video_to_episode", fake_upload)
         config = VideoDistributionConfig(spotify_upload_enabled=True)
         assert upload_to_spotify_episode(
-            video_file, 99, config, title="My Show", description="desc"
+            video_file, 99, config, title="My Show", description="desc",
+            season_number=2026, episode_number=24,
         ) is True
         assert captured["anchor_id"] == 99
         assert captured["content_type"] == "video/mp4"
         assert captured["title"] == "My Show"
+        assert captured["season_number"] == 2026
+        assert captured["episode_number"] == 24
 
     def test_publish_failure_returns_false(self, video_file, monkeypatch):
-        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4"):
+        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4", season_number=None, episode_number=None):
             from podcaster.publish import PublishResult
 
             return PublishResult(status="failed", error="boom")
