@@ -215,31 +215,41 @@ def _iso(dt: datetime) -> str:
 
 
 def _parse_week_str(week_str: str) -> tuple[int, int] | None:
-    """Parse an ISO week string like ``2026-W24`` into ``(year, week)``."""
+    """Parse an ISO week string like ``2026-W24`` into ``(year, week)``.
+
+    Returns ``None`` when the string is not in the expected format or the week
+    number falls outside the valid ISO range (1–53).
+    """
     if "-W" not in week_str:
         return None
     try:
         year_part, week_part = week_str.split("-W", 1)
-        return int(year_part), int(week_part)
+        year, week = int(year_part), int(week_part)
     except ValueError:
         return None
+    if not (1 <= week <= 53):
+        return None
+    return year, week
+
+
+def _manifest_week_str(manifest: dict[str, Any]) -> str:
+    """Return the raw week string from ``manifest.request.week``, or ``""``."""
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return ""
+    value = request.get("week")
+    return str(value) if value is not None else ""
 
 
 def _extract_year(manifest: dict[str, Any]) -> int | None:
     """Extract the ISO year from ``request.week`` (e.g. ``2026-W24`` → 2026)."""
-    request = manifest.get("request")
-    if not isinstance(request, dict):
-        return None
-    parsed = _parse_week_str(str(request.get("week") or ""))
+    parsed = _parse_week_str(_manifest_week_str(manifest))
     return parsed[0] if parsed is not None else None
 
 
 def _extract_week(manifest: dict[str, Any]) -> int | None:
     """Extract the ISO week number from ``request.week`` (e.g. ``2026-W24`` → 24)."""
-    request = manifest.get("request")
-    if not isinstance(request, dict):
-        return None
-    parsed = _parse_week_str(str(request.get("week") or ""))
+    parsed = _parse_week_str(_manifest_week_str(manifest))
     return parsed[1] if parsed is not None else None
 
 

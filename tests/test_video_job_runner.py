@@ -34,6 +34,7 @@ from podcaster.video.job_runner import (
     script_path,
     show_notes_path,
     video_artifact_path,
+    _DEFAULT_MUSIC_CREDITS,
     _build_video_description,
 )
 
@@ -185,7 +186,7 @@ class TestVideoDescription:
         desc = _build_video_description(storage, "j", "fallback desc")
         # Fallback text is still present; music credits are always appended
         assert "fallback desc" in desc
-        assert "AudioCoffee" in desc
+        assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_includes_summary_and_credits_packaging_format(self):
         notes = (
@@ -199,7 +200,7 @@ class TestVideoDescription:
         assert "A dynamic AI conversation." in desc
         assert "Hosts: Theo (fable) & Vera (alloy)" in desc
         assert "Claracle — www.claracle.com" in desc
-        assert "AudioCoffee" in desc
+        assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_includes_summary_generation_format(self):
         notes = (
@@ -213,7 +214,7 @@ class TestVideoDescription:
         assert "Claracle is a weekly show about open source." in desc
         assert "Segment 1" not in desc
         assert "www.claracle.com" in desc
-        assert "AudioCoffee" in desc
+        assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_uses_fallback_summary_when_no_section(self):
         notes = "# Heading only\n\nsome stray text\n"
@@ -221,7 +222,7 @@ class TestVideoDescription:
         desc = _build_video_description(storage, "j", "fallback summary")
         assert desc.startswith("fallback summary")
         assert "www.claracle.com" in desc
-        assert "AudioCoffee" in desc
+        assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_custom_music_credits_override(self):
         """Custom music_credits parameter overrides the default attribution."""
@@ -230,7 +231,7 @@ class TestVideoDescription:
         desc = _build_video_description(storage, "j", "fallback", music_credits="My Custom Credits")
         assert "My Custom Credits" in desc
         # Default attribution must NOT appear when custom credits provided
-        assert "AudioCoffee" not in desc
+        assert _DEFAULT_MUSIC_CREDITS not in desc
 
 
 # --- Already Processed Tests ---
@@ -474,8 +475,7 @@ class TestRunVideoGeneration:
         assert "Claracle" in description
         assert "www.claracle.com" in description
         # Music credits must be present (default attribution from TRACK_ATTRIBUTION)
-        assert "AudioCoffee" in description
-        assert "https://www.audiocoffee.net/" in description
+        assert _DEFAULT_MUSIC_CREDITS in description
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")
