@@ -92,7 +92,33 @@ Required:
 Optional:
 - AZURE_OPENAI_TTS_VOICE_HOST_A/B, AZURE_OPENAI_TTS_STYLE_HOST_A/B
 - PODCASTER_STORAGE_ACCOUNT_URL, PODCASTER_STORAGE_QUEUE_URL
+- PODCASTER_VIDEO_SCRATCH_CONTAINER (video pipeline intermediates container; enables blob checkpoint/resume, #410)
 - SPOTIFY_PUBLISH_ENABLED, SPOTIFY_PUBLISH_DRY_RUN, SP_DC, SP_KEY
+
+## Video Pipeline Intermediates (checkpoint/resume, #410)
+- The video job stores all intermediates (segment recordings, normalized clips,
+  composed video) in the `video-scratch` blob container under
+  `video-jobs/{job-id}/intermediates/` instead of local /tmp.
+- **Strict upload-then-delete lifecycle** — local disk only ever holds the file
+  currently being processed (peak ~5.4 GB at the final compose, well within the
+  8 GB container disk):
+  - Recording: record one segment → upload → verify blob size → delete local.
+  - Normalization: fetch one raw recording from blob → normalize → upload the
+    normalized clip → delete both local files (clips are re-fetched on demand,
+    never all materialized at once).
+  - Pairwise compose: fetch the two needed clips → xfade → write output →
+    release the consumed inputs immediately.
+- Uploads stream through the `azure-storage-blob` SDK (`upload_blob`/
+  `download_blob`, `max_concurrency=2`) — the multi-GB blob is never buffered in
+  memory. Each upload is **size-verified** (blob size == local size) before the
+  local copy is trusted/deleted; a `500 MB`-margin disk-budget guard fails fast
+  (resumably) before any stage that would not fit.
+- Each stage checks blob for its output and resumes from the last checkpoint on
+  restart.
+- Intermediates are deleted on successful publish; a 7-day storage lifecycle
+  policy reclaims any abandoned scratch blobs.
+- Disabled automatically when `PODCASTER_VIDEO_SCRATCH_CONTAINER` is unset
+  (local dev / tests fall back to the legacy all-local-disk path).
 
 ## Key Commands
 - Run tests: pytest tests/ -q
