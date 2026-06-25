@@ -179,3 +179,79 @@ class TestIntermediateStoreEnabled:
 
         store = IntermediateStore(_Broken(), "job-err")
         assert store.exists("x") is False
+
+
+# --- Verified upload + disk budget (issue #410 upload safety) -----------------
+
+
+class TestVerifiedUpload:
+    def test_upload_rejects_size_mismatch_and_drops_blob(self, tmp_path):
+        """A truncated upload (blob size != local size) is not trusted, and the
+        unverified blob is deleted so resume never reuses it."""
+
+        class _ShortBackend:
+            def __init__(self):
+                self.deleted: list[str] = []
+
+            def upload_file(self, path, source, content_type):
+                return None
+
+            def blob_size(self, path):
+                return 1  # lies: shorter than the real source
+
+            def delete_blob(self, path):
+                self.deleted.append(path)
+                return True
+
+        backend = _ShortBackend()
+        store = IntermediateStore(backend, "job-v")
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"\x00" * 4096)
+
+        assert store.upload("normalized_000.mp4", src, "video/mp4") is False
+        # The unverified checkpoint was dropped.
+        assert backend.deleted == ["video-jobs/job-v/intermediates/normalized_000.mp4"]
+
+    def test_upload_succeeds_when_size_matches(self, backend, tmp_path):
+        store = IntermediateStore(backend, "job-v")
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"\x00" * 4096)
+        assert store.upload("normalized_000.mp4", src, "video/mp4") is True
+        assert backend.blob_size("video-jobs/job-v/intermediates/normalized_000.mp4") == 4096
+
+    def test_upload_passes_when_backend_cannot_report_size(self, tmp_path):
+        class _NoSizeBackend:
+            def upload_file(self, path, source, content_type):
+                return None
+
+        store = IntermediateStore(_NoSizeBackend(), "job-v")
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"x")
+        # No blob_size method → best-effort: the upload is trusted.
+        assert store.upload("x.mp4", src, "video/mp4") is True
+
+
+class TestDiskBudget:
+    def test_raises_when_insufficient(self, tmp_path):
+        from podcaster.video.intermediates import (
+            InsufficientDiskError,
+            ensure_disk_budget,
+        )
+
+        with pytest.raises(InsufficientDiskError):
+            ensure_disk_budget(tmp_path, 10**18)  # ~1 EB required
+
+    def test_passes_with_small_requirement(self, tmp_path):
+        from podcaster.video.intermediates import ensure_disk_budget
+
+        # Plenty of headroom; should not raise.
+        ensure_disk_budget(tmp_path, 1024, margin=0)
+
+
+class TestBlobSize:
+    def test_local_blob_size_roundtrip(self, backend, tmp_path):
+        src = tmp_path / "in.bin"
+        src.write_bytes(b"abcdef")
+        backend.upload_file("a/b/c.mp4", src, "video/mp4")
+        assert backend.blob_size("a/b/c.mp4") == 6
+        assert backend.blob_size("a/b/missing.mp4") is None

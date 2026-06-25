@@ -714,16 +714,45 @@ def _resume_recorded_segment(
     )
 
 
+def _validate_recording(path: Path) -> None:
+    """Best-effort ffprobe sanity check of a freshly-recorded segment.
+
+    Never raises: a probe failure (e.g. no system ffprobe, or a stub file in
+    tests) is logged and ignored so it cannot block the checkpoint upload.  The
+    authoritative integrity guarantee is the size-verified blob upload.
+    """
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            logger.warning("recorded segment is empty: %s", path)
+            return
+        subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            check=True, capture_output=True, timeout=30,
+        )
+    except Exception:  # noqa: BLE001 — validation is advisory only
+        logger.debug("ffprobe validation skipped/failed for %s", path, exc_info=True)
+
+
 def _checkpoint_recorded_segment(
     index: int,
     recorded: "RecordedSegment",
     intermediates,
 ) -> None:
-    """Upload a freshly-recorded segment (+ sidecar metadata) to blob."""
+    """Checkpoint a freshly-recorded segment to blob, then free local disk.
+
+    Validates the recording (best-effort ffprobe), uploads it (+ a JSON sidecar
+    of recovery metadata) with the upload size-verified, and — only once the
+    blob checkpoint is confirmed — deletes the local recording so the job's
+    local disk holds at most the segment currently being recorded (issue #410).
+    The recording is re-fetched from blob on demand when composition normalizes
+    it.
+    """
     if intermediates is None or not intermediates.enabled:
         return
     suffix = recorded.video_path.suffix or ".mp4"
     content_type = "video/webm" if suffix == ".webm" else "video/mp4"
+    _validate_recording(recorded.video_path)
     if intermediates.upload(
         _recording_blob_name(index, suffix), recorded.video_path, content_type
     ):
@@ -731,6 +760,12 @@ def _checkpoint_recorded_segment(
             _recording_meta_name(index), _serialize_recording_meta(recorded)
         )
         intermediates.mark(f"recording_{index:03d}", recovery_path=recorded.recovery_path)
+        # Upload was size-verified above; the recording now lives safely in blob
+        # so drop the local copy to keep disk usage bounded.
+        try:
+            recorded.video_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not delete local recording %s", recorded.video_path, exc_info=True)
 
 
 def _check_gh_pages(owner: str, name: str, timeout: float = 5.0) -> bool:

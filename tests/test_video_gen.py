@@ -1911,3 +1911,35 @@ class TestRecordEpisodeCheckpointResume:
         # Only the missing segment (index 1) was recorded.
         assert mock_record.call_count == 1
         assert store.exists("recording_001.mp4") is True
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_local_recording_deleted_after_checkpoint(self, mock_record, mock_pw, tmp_path):
+        """Issue #410: a freshly-recorded segment is freed from local disk once
+        its size-verified blob checkpoint is confirmed."""
+        store = self._store(tmp_path)
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        out_dir = tmp_path / "out"
+        recorded_paths = []
+
+        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+            from podcaster.video.video_gen import RecordedSegment
+
+            path = Path(output_dir) / "fresh_000.mp4"
+            path.write_bytes(b"\x00\x00\x00\x18ftypmp42new")
+            recorded_paths.append(path)
+            return RecordedSegment(segment=segment, video_path=path, recovery_path="direct")
+
+        mock_record.side_effect = _fake_record
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        record_episode(plan, output_dir=out_dir, intermediates=store)
+
+        # Checkpointed to blob …
+        assert store.exists("recording_000.mp4") is True
+        # … and the local copy was deleted (disk holds only the current file).
+        assert recorded_paths and not recorded_paths[0].exists()

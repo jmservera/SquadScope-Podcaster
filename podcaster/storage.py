@@ -69,6 +69,9 @@ class StorageBackend(Protocol):
     def blob_exists(self, path: str) -> bool:
         ...
 
+    def blob_size(self, path: str) -> int | None:
+        ...
+
     def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
         ...
 
@@ -147,13 +150,25 @@ class LocalStorageBackend:
     def blob_exists(self, path: str) -> bool:
         return (self.root / _safe_blob_path(path)).exists()
 
+    def blob_size(self, path: str) -> int | None:
+        target = self.root / _safe_blob_path(path)
+        if not target.exists():
+            return None
+        return target.stat().st_size
+
     def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
+        import os
         import shutil
 
         safe_path = _safe_blob_path(path)
         target = self.root / safe_path
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        # Write to a sibling .tmp file then atomically promote it into place so a
+        # crash mid-copy never leaves a partial blob that resume would mistake
+        # for a complete checkpoint (issue #410 upload safety).
+        tmp_target = target.with_name(target.name + ".tmp")
+        shutil.copyfile(source, tmp_target)
+        os.replace(tmp_target, target)
         return StoredArtifact(
             path=safe_path,
             url=f"{self.base_url}/{safe_path}",
@@ -202,6 +217,7 @@ class AzureBlobStorageBackend:
         sas_command_runner: Callable[[list[str]], str] | None = None,
     ) -> None:
         self._credential = ManagedIdentityTokenCredential()
+        self._sdk_credential: "_SdkBlobCredential | None" = None
         self._container_name = container_name
         self._account_url = normalize_artifact_base_url(account_url)
         self._account_name = _account_name_from_url(self._account_url)
@@ -415,34 +431,79 @@ class AzureBlobStorageBackend:
             detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
             raise RuntimeError(f"blob existence check failed for {safe_path}: HTTP {exc.code} {detail}") from exc
 
-    def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
-        # Stream the file from disk straight into the PUT body so the whole
-        # blob is never held in memory — intermediates can be multi-GB videos.
+    def blob_size(self, path: str) -> int | None:
+        """Return the blob's Content-Length, or None when it does not exist.
+
+        Used to verify a streamed upload landed intact (blob size == local file
+        size) before the local copy is deleted (issue #410 upload safety).
+        """
         safe_path = _safe_blob_path(path)
-        size = source.stat().st_size
         encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
         token = self._credential.get_token("https://storage.azure.com/.default")
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Length": str(size),
-            "Content-Type": content_type,
-            "x-ms-blob-type": "BlockBlob",
-            "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
-            "x-ms-version": "2023-11-03",
-        }
-        with source.open("rb") as handle:
-            request = Request(
-                f"{self._account_url}/{self._container_name}/{encoded_path}",
-                data=handle,
-                method="PUT",
-                headers=headers,
-            )
-            try:
-                with urlopen(request, timeout=300):
-                    pass
-            except HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")[:500]
-                raise RuntimeError(f"blob file upload failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+        request = Request(
+            f"{self._account_url}/{self._container_name}/{encoded_path}",
+            method="HEAD",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
+                "x-ms-version": "2023-11-03",
+            },
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                length = response.headers.get("Content-Length")
+                return int(length) if length is not None else None
+        except HTTPError as exc:
+            if exc.code == 404:
+                return None
+            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+            raise RuntimeError(f"blob size probe failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+
+    def _sdk_blob_client(self, safe_path: str):
+        """Build a streaming azure-storage-blob ``BlobClient`` for ``safe_path``.
+
+        The SDK uploads/downloads in chunks (true streaming) instead of buffering
+        the whole multi-GB intermediate in memory like the urllib data=handle path
+        did.  Auth reuses the identity-only managed-identity token flow via
+        :class:`_SdkBlobCredential` — never an account key.
+        """
+        from azure.storage.blob import BlobClient
+
+        if self._sdk_credential is None:
+            self._sdk_credential = _SdkBlobCredential()
+        # Cap block/single-put size so large blobs are chunked (streamed) and a
+        # bounded amount of memory is used per concurrent block.
+        chunk = 8 * 1024 * 1024
+        return BlobClient(
+            account_url=self._account_url,
+            container_name=self._container_name,
+            blob_name=safe_path,
+            credential=self._sdk_credential,
+            max_block_size=chunk,
+            max_single_put_size=chunk,
+        )
+
+    def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
+        # Stream the file straight off disk through the azure-storage-blob SDK so
+        # the whole blob is never held in memory — intermediates can be multi-GB
+        # videos.  ``max_concurrency=2`` uploads two blocks in parallel for
+        # throughput while keeping the in-flight memory bounded (issue #410).
+        from azure.storage.blob import ContentSettings
+
+        safe_path = _safe_blob_path(path)
+        size = source.stat().st_size
+        client = self._sdk_blob_client(safe_path)
+        try:
+            with source.open("rb") as handle:
+                client.upload_blob(
+                    handle,
+                    overwrite=True,
+                    length=size,
+                    max_concurrency=2,
+                    content_settings=ContentSettings(content_type=content_type),
+                )
+        except Exception as exc:  # noqa: BLE001 — surface a clear upload failure
+            raise RuntimeError(f"blob file upload failed for {safe_path}: {exc}") from exc
         return StoredArtifact(
             path=safe_path,
             url=f"{self._account_url}/{self._container_name}/{safe_path}",
@@ -451,32 +512,31 @@ class AzureBlobStorageBackend:
         )
 
     def download_file(self, path: str, dest: Path) -> bool:
-        # Stream the response body to disk in chunks so the file never has to
-        # be materialised in memory.
-        import shutil
+        # Stream the blob to disk via the SDK's StorageStreamDownloader
+        # (``readinto``) so the file is written in chunks and never fully
+        # materialised in memory (issue #410).  Stream into a sibling .part file
+        # and atomically promote it only after the transfer completes, so a
+        # mid-download failure never leaves a partial file that resume would
+        # mistake for a complete checkpoint.
+        import os
+
+        from azure.core.exceptions import ResourceNotFoundError
 
         safe_path = _safe_blob_path(path)
-        encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
-        token = self._credential.get_token("https://storage.azure.com/.default")
-        request = Request(
-            f"{self._account_url}/{self._container_name}/{encoded_path}",
-            method="GET",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
-                "x-ms-version": "2023-11-03",
-            },
-        )
+        client = self._sdk_blob_client(safe_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp_dest = dest.with_name(dest.name + ".part")
         try:
-            with urlopen(request, timeout=300) as response:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with dest.open("wb") as handle:
-                    shutil.copyfileobj(response, handle, length=1024 * 1024)
-        except HTTPError as exc:
-            if exc.code == 404:
-                return False
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"blob file download failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+            downloader = client.download_blob(max_concurrency=2)
+            with tmp_dest.open("wb") as handle:
+                downloader.readinto(handle)
+        except ResourceNotFoundError:
+            tmp_dest.unlink(missing_ok=True)
+            return False
+        except Exception as exc:  # noqa: BLE001 — surface a clear download failure
+            tmp_dest.unlink(missing_ok=True)
+            raise RuntimeError(f"blob file download failed for {safe_path}: {exc}") from exc
+        os.replace(tmp_dest, dest)
         return True
 
     def delete_blob(self, path: str) -> bool:
@@ -561,6 +621,29 @@ class ManagedIdentityTokenCredential:
             raise RuntimeError("managed identity token response did not include an access token")
         _token_expires_on(token_payload)
         return token
+
+
+class _SdkBlobCredential:
+    """Adapts the urllib managed-identity token flow to the azure-core
+    ``TokenCredential`` protocol so ``azure-storage-blob`` can stream uploads and
+    downloads using the same identity-only auth path (never an account key).
+
+    The SDK calls ``get_token(*scopes, **kwargs)`` and expects an
+    ``azure.core.credentials.AccessToken`` (token + epoch expiry), whereas the
+    project's :class:`ManagedIdentityTokenCredential` returns a bare string, so
+    this thin adapter bridges the two.
+    """
+
+    def get_token(self, *scopes: str, **kwargs):  # noqa: ANN003 - SDK passes extras
+        from azure.core.credentials import AccessToken
+
+        scope = scopes[0] if scopes else "https://storage.azure.com/.default"
+        resource = _managed_identity_resource(scope)
+        payload = _request_managed_identity_token(resource)
+        token = payload.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise RuntimeError("managed identity token response did not include an access token")
+        return AccessToken(token, _token_expires_on(payload))
 
 
 def _managed_identity_resource(scope: str) -> str:

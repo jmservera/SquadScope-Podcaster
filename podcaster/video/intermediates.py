@@ -45,6 +45,46 @@ MANIFEST_NAME = "manifest.json"
 
 _OCTET_STREAM = "application/octet-stream"
 
+# Safety margin kept free on local disk on top of an operation's estimated
+# input+output footprint (issue #410 disk-budget guard).
+DISK_MARGIN_BYTES = 500 * 1024 * 1024
+
+
+class InsufficientDiskError(RuntimeError):
+    """Raised when local disk cannot fit a pipeline stage's input+output.
+
+    Surfaced as a *resumable* failure: the job aborts cleanly and a later run
+    resumes from the blob checkpoints already written, so no work is lost.
+    """
+
+
+def ensure_disk_budget(
+    work_dir: "Path | str",
+    required_bytes: int,
+    *,
+    margin: int = DISK_MARGIN_BYTES,
+) -> None:
+    """Fail fast (resumable) when ``work_dir`` cannot fit ``required_bytes``.
+
+    ``required_bytes`` is the caller's estimate of the operation's peak local
+    footprint (sum of input sizes + estimated output).  A fixed ``margin`` is
+    held back on top.  When the free space cannot be determined the check is
+    skipped (best-effort).
+    """
+    import shutil
+
+    try:
+        usage = shutil.disk_usage(str(work_dir))
+    except OSError:
+        return
+    needed = int(required_bytes) + int(margin)
+    if usage.free < needed:
+        raise InsufficientDiskError(
+            "insufficient local disk for video stage: "
+            f"need ~{needed} bytes (required={int(required_bytes)} + margin={int(margin)}), "
+            f"free={usage.free} at {work_dir}"
+        )
+
 
 class IntermediateStore:
     """Blob-backed checkpoint store for one video job's intermediate files.
@@ -118,9 +158,14 @@ class IntermediateStore:
     def upload(self, name: str, source: Path, content_type: str = _OCTET_STREAM) -> bool:
         """Checkpoint local file ``source`` as intermediate ``name``.
 
-        Returns True on a successful upload, False when the store is disabled.
-        Upload failures are logged and swallowed: a missing checkpoint only costs
-        a recompute on resume and must never fail an otherwise-healthy job.
+        After the streamed upload the blob's size is verified against the local
+        file size (issue #410 upload safety): the checkpoint is only trusted —
+        and the caller only deletes the local copy — when the two match, so a
+        truncated upload never masquerades as a complete checkpoint on resume.
+
+        Returns True on a successful, verified upload, False when the store is
+        disabled.  Upload failures are logged and swallowed: a missing checkpoint
+        only costs a recompute on resume and must never fail a healthy job.
         """
         if self._backend is None:
             return False
@@ -131,6 +176,7 @@ class IntermediateStore:
                 self._job_id, name, source,
             )
             return False
+        expected = source.stat().st_size
         try:
             self._backend.upload_file(self.blob_path(name), source, content_type)
         except Exception:
@@ -139,8 +185,41 @@ class IntermediateStore:
                 self._job_id, name, exc_info=True,
             )
             return False
+        if not self._verify_size(name, expected):
+            logger.warning(
+                "intermediate upload size mismatch job_id=%s name=%s expected=%d; "
+                "discarding unverified checkpoint",
+                self._job_id, name, expected,
+            )
+            # Best-effort: drop the unverified blob so resume won't reuse it.
+            deleter = getattr(self._backend, "delete_blob", None)
+            if deleter is not None:
+                try:
+                    deleter(self.blob_path(name))
+                except Exception:
+                    logger.debug("could not delete unverified blob %s", name, exc_info=True)
+            return False
         logger.info("checkpointed intermediate to blob job_id=%s name=%s", self._job_id, name)
         return True
+
+    def _verify_size(self, name: str, expected: int) -> bool:
+        """Verify the uploaded blob's size equals ``expected`` local bytes.
+
+        Returns True when sizes match.  When the backend cannot report a size
+        (older backend) or the probe itself errors, the check passes (best
+        effort) — the upload itself already succeeded.
+        """
+        getter = getattr(self._backend, "blob_size", None)
+        if getter is None:
+            return True
+        try:
+            actual = getter(self.blob_path(name))
+        except Exception:
+            logger.debug("blob size probe failed job_id=%s name=%s", self._job_id, name, exc_info=True)
+            return True
+        if actual is None:
+            return False
+        return int(actual) == int(expected)
 
     def read_text(self, name: str) -> str | None:
         """Return the UTF-8 text of intermediate ``name`` (sidecar metadata)."""

@@ -2193,3 +2193,66 @@ class TestComposeVideoCheckpointResume:
 
         # No normalize command was issued for the resumed segment.
         assert not any(any("scale" in a for a in cmd) for cmd in calls)
+
+    def test_normalized_clips_freed_locally_in_pairwise(self, tmp_path):
+        """Issue #410 (comment 3): the per-segment normalized clips are uploaded
+        and removed from local disk during normalize, fetched just-in-time by the
+        pairwise compose, and released after use — so they never all coexist on
+        local disk."""
+        store = self._store(tmp_path)
+        s0 = tmp_path / "s0.webm"
+        s1 = tmp_path / "s1.webm"
+        s0.write_bytes(b"\x00" * 2048)
+        s1.write_bytes(b"\x00" * 2048)
+        seg0 = _make_recorded_segment(name="r0", duration=10.0, video_path=s0)
+        seg1 = _make_recorded_segment(name="r1", duration=10.0, video_path=s1)
+
+        compose_video(
+            segments=[seg0, seg1],
+            output_dir=tmp_path / "out",
+            runner=_touch_output_runner(),
+            intermediates=store,
+        )
+
+        # Both normalized clips were checkpointed to blob …
+        assert store.exists("normalized_000.mp4") is True
+        assert store.exists("normalized_001.mp4") is True
+        # … and none were left lingering on local disk.
+        norm_dir = tmp_path / "out" / "normalized"
+        leftover = list(norm_dir.glob("seg_*.mp4")) if norm_dir.exists() else []
+        assert leftover == []
+
+    def test_normalize_fetches_raw_recording_from_blob(self, tmp_path):
+        """Issue #410 (comment 2): when record_episode has already freed the
+        local recording, normalize pulls the raw clip back from its blob
+        checkpoint on demand rather than requiring it on local disk."""
+        store = self._store(tmp_path)
+        # Seed the raw recording checkpoint; the local file is intentionally absent.
+        raw = tmp_path / "raw_seed.webm"
+        raw.write_bytes(b"\x00" * 2048)
+        assert store.upload("recording_000.webm", raw, "video/webm") is True
+
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "absent.webm")
+        assert not seg.video_path.exists()
+
+        calls = []
+
+        def _run(cmd):
+            calls.append([str(a) for a in cmd])
+            for arg in cmd:
+                s = str(arg)
+                if s.endswith(".mp4") and not Path(s).exists():
+                    Path(s).parent.mkdir(parents=True, exist_ok=True)
+                    Path(s).write_bytes(b"\x00" * 2048)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=_run,
+            intermediates=store,
+        )
+
+        # Normalization ran (a scale command was issued) against the fetched raw.
+        assert any(any("scale" in a for a in cmd) for cmd in calls)
+        assert store.exists("normalized_000.mp4") is True
