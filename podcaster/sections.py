@@ -32,7 +32,8 @@ requested in the issue::
 
 Validation (:func:`validate_sections`) enforces the blocking rules from the
 issue (section count 2–6, every section has a title and at least four host
-turns, no empty sections, and the TTS input never contains section headers) and
+turns, and no empty sections), and — when the caller passes the rendered
+``tts_segments`` — that the TTS input never contains section headers; it also
 logs the soft warnings (very short sections, over-long titles, generic titles).
 
 Related: jmservera/SquadScope-Podcaster#417 (title-card rendering: #377).
