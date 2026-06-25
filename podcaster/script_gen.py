@@ -22,7 +22,7 @@ from urllib.request import Request
 
 from podcaster.config import HistoricalContext, PodcastConfig, ScriptDirections
 from podcaster.sanitization import cap_length, neutralize
-from podcaster.sections import parse_script_sections, validate_sections
+from podcaster.sections import parse_script_sections, sections_to_metadata, validate_sections
 from podcaster.storage import ManagedIdentityTokenCredential
 from podcaster.tts import OPENAI_SCOPE, TtsConfig, TokenProvider, Transport
 
@@ -452,7 +452,15 @@ def generate_script(
     sections = parse_script_sections(script, podcast_config)
     if sections:
         validate_sections(sections)
-        logger.info("script generated with %d section(s)", len(sections))
+        # Emit the section metadata (issue #417: JSON ``sections`` array) so the
+        # video pipeline / callers can consume title cards and per-section repo
+        # slugs without re-parsing the script body.
+        metadata = sections_to_metadata(sections)
+        logger.info(
+            "script generated with %d section(s); metadata=%s",
+            len(sections),
+            json.dumps(metadata, ensure_ascii=False),
+        )
 
     return script
 

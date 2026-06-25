@@ -183,14 +183,44 @@ def _script_body(script: str) -> str:
     return after if sep else script
 
 
-def _host_labels(podcast_config: Any) -> tuple[str, str] | None:
-    """Best-effort ``(host_a, host_b)`` labels from a podcast config."""
-    if podcast_config is None:
-        return None
-    try:
-        return podcast_config.host_a.name, podcast_config.host_b.name
-    except AttributeError:
-        return None
+def _host_labels_from_script(script: str) -> tuple[str, str] | None:
+    """Parse ``(host_a, host_b)`` from the script header's ``Voices:`` line.
+
+    Mirrors :func:`podcaster.episode._host_labels` so section parsing can still
+    identify the spoken hosts (and ignore non-host markers such as
+    ``Host outro:``) even when no :class:`PodcastConfig` is supplied.
+    """
+    for raw_line in script.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("Voices:"):
+            continue
+        voices = line.removeprefix("Voices:").split(";")
+        if len(voices) < 2:
+            break
+        labels: list[str] = []
+        for voice in voices[:2]:
+            label, separator, _ = voice.partition("=")
+            if separator and label.strip():
+                labels.append(label.strip())
+        if len(labels) == 2:
+            return labels[0], labels[1]
+        break
+    return None
+
+
+def _host_labels(script: str, podcast_config: Any) -> tuple[str, str] | None:
+    """Best-effort ``(host_a, host_b)`` labels for the script's hosts.
+
+    Prefers the explicit :class:`PodcastConfig` when present and falls back to
+    the script header's ``Voices:`` line so non-host markers are still filtered
+    out when parsing without a config.
+    """
+    if podcast_config is not None:
+        try:
+            return podcast_config.host_a.name, podcast_config.host_b.name
+        except AttributeError:
+            pass
+    return _host_labels_from_script(script)
 
 
 def _split_speaker(line: str, host_labels: tuple[str, str] | None) -> tuple[str, str] | None:
@@ -273,7 +303,7 @@ def parse_script_sections(
     if not script or not script.strip():
         return []
 
-    host_labels = _host_labels(podcast_config)
+    host_labels = _host_labels(script, podcast_config)
     body = _script_body(script)
 
     current_title: str | None = None

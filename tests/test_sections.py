@@ -151,6 +151,12 @@ class TestParseScriptSections:
             "AI Frameworks Showdown",
             "Agents Move Into Production",
         ]
+        # Without a config, the host labels are recovered from the script's
+        # ``Voices:`` header so non-host markers like ``Host outro:`` are not
+        # mistaken for dialogue turns.
+        assert [s.host_turn_count for s in sections] == [4, 4]
+        joined = " ".join(t for s in sections for _, t in s.host_turns)
+        assert "Manual review is required" not in joined
 
 
 class TestMetadata:
