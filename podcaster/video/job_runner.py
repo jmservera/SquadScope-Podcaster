@@ -52,7 +52,7 @@ from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
     extract_source_url,
-    plan_from_script_timed,
+    plan_from_script_aligned,
     prepend_weekly_segment,
     removed_repo_speaker_notes,
 )
@@ -378,13 +378,18 @@ def run_video_generation(
                     audio_duration, job_id,
                 )
 
-            # Parse script and generate plan. Timing mirrors where each repo is
-            # mentioned in the script so the right repo is on screen while the
-            # hosts discuss it (issue #355). Scripts without GitHub repo URLs
-            # produce a generic background plan (issue #335) instead of being
-            # skipped.
+            # Parse script and generate plan. Timing is synced to the audio via
+            # forced alignment (issue #374): each repo appears exactly when the
+            # hosts begin discussing it. Falls back automatically to
+            # proportional, mention-based timing (issue #355) when audio-cue
+            # sync is unavailable. Scripts without GitHub repo URLs produce a
+            # generic background plan (issue #335) instead of being skipped.
             try:
-                plan = plan_from_script_timed(script, audio_duration)
+                plan = plan_from_script_aligned(
+                    script,
+                    audio_duration,
+                    str(audio_path) if audio_path is not None else None,
+                )
             except ValueError as exc:
                 logger.warning(
                     "video skipped job_id=%s reason=%s: %s",

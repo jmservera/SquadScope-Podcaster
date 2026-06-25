@@ -689,6 +689,167 @@ def removed_repo_speaker_notes(plan: EpisodePlan) -> list[str]:
     return notes
 
 
+# --- Audio-cue (forced-alignment) sync planning (#374) ---
+
+
+def generate_episode_plan_from_times(
+    repos: Sequence[RepoReference],
+    mention_times: dict[RepoReference, float],
+    total_duration_seconds: float,
+    min_segment_seconds: float = 5.0,
+) -> EpisodePlan:
+    """Generate a plan from explicit per-repo audio timestamps.
+
+    Unlike :func:`generate_episode_plan_timed` (which estimates timing from
+    character positions in the script), this uses real audio timestamps — e.g.
+    obtained via forced alignment in
+    :func:`podcaster.video.audio_align.repo_audio_timestamps` — so each repo
+    appears exactly when the hosts begin discussing it.
+
+    Repos missing from *mention_times* are still included: each is placed
+    immediately after the previous segment using the minimum-segment floor, so
+    no repo is dropped just because its mention could not be aligned.
+
+    Args:
+        repos: Repo references to include.
+        mention_times: Map of repo → audio start time (seconds). May cover only
+            a subset of *repos*.
+        total_duration_seconds: Total audio duration in seconds.
+        min_segment_seconds: Minimum duration for any single segment.
+
+    Returns:
+        EpisodePlan with segment timing derived from the supplied timestamps.
+
+    Raises:
+        ValueError: If *repos* is empty or *total_duration_seconds* is
+            non-positive.
+    """
+    if not repos:
+        raise ValueError("No repos provided for episode plan generation")
+    if total_duration_seconds <= 0:
+        raise ValueError(
+            f"Total duration must be positive, got {total_duration_seconds}"
+        )
+
+    n = len(repos)
+    effective_min = min(min_segment_seconds, total_duration_seconds / n)
+
+    # Compute an effective time for every repo. *repos* is in script-mention
+    # order, so a repo without an aligned timestamp inherits the previous
+    # repo's time (leading unaligned repos default to 0.0). This keeps unaligned
+    # repos in their natural position instead of dumping them at the end.
+    effective: dict[RepoReference, float] = {}
+    carried = 0.0
+    for repo in repos:
+        t = mention_times.get(repo)
+        if t is not None:
+            carried = t
+        effective[repo] = carried
+
+    # Stable sort by effective time preserves input order for equal times.
+    indexed = list(enumerate(repos))
+    indexed.sort(key=lambda pair: (effective[pair[1]], pair[0]))
+    ordered = [repo for _, repo in indexed]
+
+    start_times: list[float] = []
+    for i, repo in enumerate(ordered):
+        # Leave room for this segment and every subsequent one.
+        max_start = total_duration_seconds - (n - i) * effective_min
+        base = effective[repo]
+        start = max(0.0, min(base, max_start))
+        if i > 0:
+            start = max(start, start_times[i - 1] + effective_min)
+        start_times.append(start)
+
+    segments: list[VideoSegment] = []
+    for i, (repo, start) in enumerate(zip(ordered, start_times)):
+        if i < n - 1:
+            duration = start_times[i + 1] - start
+        else:
+            duration = total_duration_seconds - start
+        duration = max(duration, effective_min)
+        segments.append(
+            VideoSegment(repo=repo, start_seconds=start, duration_seconds=duration)
+        )
+
+    return EpisodePlan(
+        total_duration_seconds=total_duration_seconds,
+        segments=tuple(segments),
+    )
+
+
+def plan_from_script_aligned(
+    script: str,
+    total_duration_seconds: float,
+    audio_path: str | None,
+    min_segment_seconds: float = 5.0,
+    model_size: str | None = None,
+) -> EpisodePlan:
+    """End-to-end planner that syncs segments to the audio via forced alignment.
+
+    Transcribes *audio_path*, aligns it to *script*, and times each repo
+    segment to the moment the hosts actually begin discussing it (issue #374).
+
+    Falls back to :func:`plan_from_script_timed` (proportional, mention-based
+    timing) whenever audio-cue sync is unavailable or unreliable:
+
+    * *audio_path* is ``None`` (no audio resolved),
+    * the script contains no GitHub repo URLs,
+    * faster-whisper is missing / transcription fails,
+    * alignment confidence is too low, or no repo mention could be aligned.
+
+    Args:
+        script: Full podcast script text (header + body).
+        total_duration_seconds: Total audio duration in seconds.
+        audio_path: Path to the synthesised episode audio, or ``None``.
+        min_segment_seconds: Minimum segment duration. Default 5.0 s.
+        model_size: Optional faster-whisper model override.
+
+    Returns:
+        EpisodePlan synced to the audio, or the proportional fallback plan.
+
+    Raises:
+        ValueError: If duration is non-positive.
+    """
+    if audio_path is None:
+        return plan_from_script_timed(
+            script, total_duration_seconds, min_segment_seconds
+        )
+
+    repos = extract_repo_urls(script)
+    if not repos:
+        # No repos anywhere in the script (header or body) → alignment can't
+        # help. Reuse the existing article-fetch / generic fallbacks.
+        return plan_from_script_timed(
+            script, total_duration_seconds, min_segment_seconds
+        )
+
+    # Import lazily so the heavy faster-whisper dependency is only touched when
+    # audio-cue sync is actually attempted.
+    from podcaster.video.audio_align import repo_audio_timestamps
+
+    kwargs = {"model_size": model_size} if model_size else {}
+    mention_times = repo_audio_timestamps(script, repos, audio_path, **kwargs)
+    if not mention_times:
+        logger.info(
+            "audio-cue sync produced no timings; using proportional timing for "
+            "%d repo(s)",
+            len(repos),
+        )
+        return generate_episode_plan_timed(
+            script, repos, total_duration_seconds, min_segment_seconds
+        )
+
+    logger.info(
+        "audio-cue sync: timed %d/%d repo segment(s) from audio",
+        len(mention_times),
+        len(repos),
+    )
+    return generate_episode_plan_from_times(
+        repos, mention_times, total_duration_seconds, min_segment_seconds
+    )
+
+
 # --- claracle.com weekly page as the first content segment (issue #382) ---
 
 # The weekly page is shown after the intro, before the hosts discuss any repo.

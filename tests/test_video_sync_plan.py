@@ -19,9 +19,11 @@ from podcaster.video.sync_plan import (
     fetch_repos_from_article,
     generate_episode_plan,
     generate_episode_plan_timed,
+    generate_episode_plan_from_times,
     generate_generic_plan,
     plan_from_script,
     plan_from_script_timed,
+    plan_from_script_aligned,
     prepend_weekly_segment,
     removed_repo_speaker_notes,
     weekly_url_from_job_id,
@@ -1093,3 +1095,130 @@ class TestRemovedReasonSerialization:
         )
         data = yaml.safe_load(plan.to_yaml())
         assert data["segments"][0]["removed_reason"] == REMOVED_REPO_REASON
+
+
+# --- Audio-cue (forced-alignment) sync planning (#374) ---
+
+
+class TestGenerateEpisodePlanFromTimes:
+    """Tests for generate_episode_plan_from_times()."""
+
+    R1 = RepoReference("acme", "alpha")
+    R2 = RepoReference("acme", "beta")
+    R3 = RepoReference("acme", "gamma")
+
+    def test_segments_start_at_aligned_times(self):
+        times = {self.R1: 10.0, self.R2: 40.0, self.R3: 80.0}
+        plan = generate_episode_plan_from_times(
+            [self.R1, self.R2, self.R3], times, total_duration_seconds=120.0
+        )
+        starts = [s.start_seconds for s in plan.segments]
+        assert starts == pytest.approx([10.0, 40.0, 80.0])
+        # Durations fill the gaps; last extends to total.
+        durs = [s.duration_seconds for s in plan.segments]
+        assert durs == pytest.approx([30.0, 40.0, 40.0])
+
+    def test_orders_by_aligned_time_not_input_order(self):
+        times = {self.R1: 90.0, self.R2: 20.0, self.R3: 50.0}
+        plan = generate_episode_plan_from_times(
+            [self.R1, self.R2, self.R3], times, total_duration_seconds=120.0
+        )
+        labels = [s.repo for s in plan.segments]
+        assert labels == [self.R2, self.R3, self.R1]
+
+    def test_unaligned_repo_packed_after_previous(self):
+        # R2 has no timestamp: it should trail R1 by the min segment floor.
+        times = {self.R1: 10.0, self.R3: 80.0}
+        plan = generate_episode_plan_from_times(
+            [self.R1, self.R2, self.R3],
+            times,
+            total_duration_seconds=120.0,
+            min_segment_seconds=5.0,
+        )
+        by_repo = {s.repo: s for s in plan.segments}
+        assert by_repo[self.R2].start_seconds == pytest.approx(15.0)
+        # No repo is dropped.
+        assert set(by_repo) == {self.R1, self.R2, self.R3}
+
+    def test_enforces_monotonic_starts_with_min_gap(self):
+        # Two repos aligned to nearly the same time get separated by the floor.
+        times = {self.R1: 10.0, self.R2: 10.2}
+        plan = generate_episode_plan_from_times(
+            [self.R1, self.R2], times, total_duration_seconds=60.0,
+            min_segment_seconds=5.0,
+        )
+        starts = [s.start_seconds for s in plan.segments]
+        assert starts[1] - starts[0] >= 5.0 - 1e-6
+
+    def test_all_segments_fit_within_total(self):
+        times = {self.R1: 110.0, self.R2: 115.0, self.R3: 118.0}
+        plan = generate_episode_plan_from_times(
+            [self.R1, self.R2, self.R3], times, total_duration_seconds=120.0,
+            min_segment_seconds=5.0,
+        )
+        for s in plan.segments:
+            assert s.end_seconds <= 120.0 + 1e-6
+            assert s.duration_seconds > 0
+
+    def test_empty_repos_raises(self):
+        with pytest.raises(ValueError):
+            generate_episode_plan_from_times([], {}, 60.0)
+
+    def test_non_positive_duration_raises(self):
+        with pytest.raises(ValueError):
+            generate_episode_plan_from_times([self.R1], {self.R1: 0.0}, 0.0)
+
+
+class TestPlanFromScriptAligned:
+    """Tests for plan_from_script_aligned() including the fallback paths."""
+
+    SCRIPT = (
+        "Title: T\n---\n"
+        "Theo: First https://github.com/acme/alpha then "
+        "https://github.com/acme/beta later.\n"
+    )
+
+    def test_no_audio_path_falls_back_to_proportional(self):
+        plan = plan_from_script_aligned(self.SCRIPT, 100.0, audio_path=None)
+        # Falls back to plan_from_script_timed → two repo segments.
+        assert len(plan.segments) == 2
+        assert all(s.repo is not None for s in plan.segments)
+
+    def test_uses_aligned_times_when_available(self, monkeypatch):
+        alpha = RepoReference("acme", "alpha")
+        beta = RepoReference("acme", "beta")
+        monkeypatch.setattr(
+            "podcaster.video.audio_align.repo_audio_timestamps",
+            lambda *_a, **_k: {alpha: 12.0, beta: 60.0},
+        )
+        plan = plan_from_script_aligned(self.SCRIPT, 100.0, audio_path="a.mp3")
+        starts = {s.repo: s.start_seconds for s in plan.segments}
+        assert starts[alpha] == pytest.approx(12.0)
+        assert starts[beta] == pytest.approx(60.0)
+
+    def test_falls_back_when_alignment_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            "podcaster.video.audio_align.repo_audio_timestamps",
+            lambda *_a, **_k: None,
+        )
+        plan = plan_from_script_aligned(self.SCRIPT, 100.0, audio_path="a.mp3")
+        # Proportional fallback still produces both repo segments.
+        assert len(plan.segments) == 2
+
+    def test_script_without_repos_falls_back(self, monkeypatch):
+        # Should not even attempt transcription when there are no repos.
+        called = {"n": 0}
+
+        def _spy(*_a, **_k):
+            called["n"] += 1
+            return None
+
+        monkeypatch.setattr(
+            "podcaster.video.audio_align.repo_audio_timestamps", _spy
+        )
+        script = "Title: T\nSource URL: https://claracle.com/x\n---\nHi there.\n"
+        plan = plan_from_script_aligned(script, 100.0, audio_path="a.mp3")
+        assert called["n"] == 0
+        # Generic background plan (single full-length segment).
+        assert len(plan.segments) == 1
+        assert plan.segments[0].is_generic
