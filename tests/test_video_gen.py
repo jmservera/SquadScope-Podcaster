@@ -476,10 +476,11 @@ class TestGithubScrollPlan:
         plan = _github_scroll_plan(5000, HEIGHT, 50000, 300)
         assert plan is not None
         # The largest per-frame step in the reading tail stays within the
-        # reading-speed cap (no steppy crawl through README content).
+        # reading-speed cap (no steppy crawl through README content).  The span
+        # is sized off the interval count so the cap holds exactly (issue #415).
         tail = plan[-100:]
         deltas = [b - a for a, b in zip(tail, tail[1:])]
-        assert max(deltas) <= READING_PX_PER_FRAME + 1
+        assert max(deltas) <= READING_PX_PER_FRAME
 
     def test_does_not_exceed_scrollable(self):
         plan = _github_scroll_plan(5000, HEIGHT, 5200, 300)

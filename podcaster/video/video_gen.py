@@ -166,7 +166,12 @@ SCREENSHOT_CAPTURE_ENABLED = _env_bool("VIDEO_SCREENSHOT_CAPTURE", True)
 SCREENSHOT_CAPTURE_FPS = _env_int("VIDEO_SCREENSHOT_FPS", SCROLL_TICKS_PER_SEC)
 # Apply the optional reading-speed override now that _env_int is available
 # (issue #413).  Kept here so the constant is defined alongside its default.
-READING_PX_PER_FRAME = max(1, _env_int("VIDEO_SCROLL_PX_PER_FRAME", READING_PX_PER_FRAME))
+# Clamp to [1, MAX_READING_PX_PER_FRAME] so an env override can't produce
+# steppy/unreadable motion above the hard cap (issue #415).
+READING_PX_PER_FRAME = min(
+    MAX_READING_PX_PER_FRAME,
+    max(1, _env_int("VIDEO_SCROLL_PX_PER_FRAME", READING_PX_PER_FRAME)),
+)
 # A zero or negative framerate would break the frame-count math (division by
 # zero, negative tick intervals) and is meaningless for capture, so clamp to a
 # sane minimum of one frame per second.
@@ -1311,7 +1316,12 @@ def _github_scroll_plan(
 
     plan: "list[int]" = [0] * header
     plan += _scroll_positions(0, readme_y, jump, easing="ease_out_cubic")
-    read_end = min(int(doc_scrollable), readme_y + reading * px_per_frame)
+    # The reading phase has ``reading`` frames, i.e. ``reading - 1`` movement
+    # intervals, so size the span off the interval count to keep the average
+    # per-frame delta at or below *px_per_frame* (issue #415).
+    read_end = min(
+        int(doc_scrollable), readme_y + max(reading - 1, 1) * px_per_frame
+    )
     plan += _scroll_positions(readme_y, read_end, reading, easing="linear")
 
     # Guard against off-by-one from the phase concatenation.
