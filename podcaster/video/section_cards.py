@@ -47,6 +47,7 @@ from podcaster.video.intro_outro import (
     _escape_drawtext,
     _get_drawtext_ffmpeg,
 )
+from podcaster.video.localization import localize_section_name
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,7 @@ class SectionCardConfig:
     height: int = HEIGHT
     background: str = CARD_BG
     font_size: int = 108
+    locale: str = "en"
 
 
 @dataclass(frozen=True)
@@ -427,11 +429,13 @@ def _build_section_card_cmd(
     rule_h = 6
     rule_y = "(ih/2)+70"
 
+    display_name = localize_section_name(marker.name, config.locale)
+
     filters: list[str] = [
         # Section name — large white headline, the focal point.
         (
             f"drawtext=fontfile={TITLE_FONT}"
-            f":text='{_escape_drawtext(marker.name)}'"
+            f":text='{_escape_drawtext(display_name)}'"
             f":fontsize={config.font_size}:fontcolor=white"
             f":x=(w-text_w)/2:y=(h-text_h)/2-30"
             f":enable='gte(t,0.15)'"
