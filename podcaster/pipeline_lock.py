@@ -163,10 +163,17 @@ def release_pipeline(
         logger.info("pipeline lock released: job_id=%s pipeline=%s", job_id, pipeline)
         return True
     except _NoOp:
-        logger.debug("pipeline lock release no-op: job_id=%s pipeline=%s (not held)", job_id, pipeline)
+        logger.debug(
+            "pipeline lock release no-op: job_id=%s pipeline=%s (not held)",
+            job_id,
+            pipeline,
+        )
         return True
     except Exception:
         logger.warning(
-            "pipeline lock release failed for job_id=%s pipeline=%s", job_id, pipeline, exc_info=True
+            "pipeline lock release failed for job_id=%s pipeline=%s",
+            job_id,
+            pipeline,
+            exc_info=True,
         )
         return False

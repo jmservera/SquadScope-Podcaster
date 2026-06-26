@@ -125,7 +125,11 @@ class EpisodeBrief:
                 claim_id=str(item.get("claim_id", "")),
                 statement=str(item.get("statement", "")).strip(),
                 source_url=str(item.get("source_url", "")),
-                source_quote=item.get("source_quote") if isinstance(item.get("source_quote"), str) else None,
+                source_quote=(
+                    item.get("source_quote")
+                    if isinstance(item.get("source_quote"), str)
+                    else None
+                ),
                 verified=bool(item.get("verified", False)),
             )
             for item in data.get("claims", [])

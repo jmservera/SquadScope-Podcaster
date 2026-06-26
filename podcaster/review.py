@@ -76,10 +76,14 @@ def apply_review_decision(
     existing_blockers = [
         blocker
         for blocker in _blocked_by(tts_synthesis)
-        if blocker != "human_review" and blocker not in cost_blockers and blocker not in PROVIDER_TTS_BLOCKERS
+        if blocker != "human_review"
+        and blocker not in cost_blockers
+        and blocker not in PROVIDER_TTS_BLOCKERS
     ]
     remaining_blockers = list(existing_blockers)
-    synthesis_blockers = cost_blockers if synthesized_audio else [*provider_blockers, *cost_blockers]
+    synthesis_blockers = (
+        cost_blockers if synthesized_audio else [*provider_blockers, *cost_blockers]
+    )
     for blocker in synthesis_blockers:
         remaining_blockers = _append_blocker(remaining_blockers, blocker)
     if decision == APPROVED:
@@ -134,13 +138,22 @@ def _append_blocker(blockers: list[str], reason: str) -> list[str]:
 
 def _provider_selection_complete(manifest: dict[str, Any]) -> bool:
     generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else {}
-    tts_synthesis = generation.get("tts_synthesis") if isinstance(generation.get("tts_synthesis"), dict) else {}
-    provider_selection = generation.get("provider_selection") or tts_synthesis.get("provider_selection")
+    tts_synthesis = (
+        generation.get("tts_synthesis")
+        if isinstance(generation.get("tts_synthesis"), dict)
+        else {}
+    )
+    provider_selection = (
+        generation.get("provider_selection") or tts_synthesis.get("provider_selection")
+    )
     if isinstance(provider_selection, dict):
         status = provider_selection.get("status")
         if status in {"complete", "completed", "configured", "selected"}:
             return True
-    if tts_synthesis.get("provider_selection_complete") is True or generation.get("provider_selection_complete") is True:
+    if (
+        tts_synthesis.get("provider_selection_complete") is True
+        or generation.get("provider_selection_complete") is True
+    ):
         return True
 
     provider = generation.get("tts_provider") or manifest.get("tts_provider")
@@ -168,7 +181,11 @@ def _has_synthesized_audio(manifest: dict[str, Any]) -> bool:
 def _audio_validation_ready(manifest: dict[str, Any]) -> bool:
     generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else {}
     validation = generation.get("audio_validation")
-    return isinstance(validation, dict) and validation.get("ready") is True and validation.get("status") == "passed"
+    return (
+        isinstance(validation, dict)
+        and validation.get("ready") is True
+        and validation.get("status") == "passed"
+    )
 
 
 def _has_value(value: Any) -> bool:

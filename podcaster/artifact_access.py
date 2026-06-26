@@ -23,8 +23,14 @@ def artifact_access_metadata(job_id: str, created_at: str, expires_at: str) -> d
         },
         "operator_access": {
             "method": "Azure RBAC or local filesystem access",
-            "azure_identity": "ACA managed identity writes artifacts; operators read with explicitly granted storage permissions.",
-            "local_development": "PODCASTER_ARTIFACT_BASE_URL is a development locator only, not a public distribution URL.",
+            "azure_identity": (
+                "ACA managed identity writes artifacts; operators read with explicitly granted "
+                "storage permissions."
+            ),
+            "local_development": (
+                "PODCASTER_ARTIFACT_BASE_URL is a development locator only, not a public "
+                "distribution URL."
+            ),
         },
         "retention": {
             "temporary": True,
@@ -35,7 +41,10 @@ def artifact_access_metadata(job_id: str, created_at: str, expires_at: str) -> d
         "audit": {
             "correlation_id": job_id,
             "safe_log_fields": ["job_id", "week", "status", "artifact_count", "dry_run"],
-            "trail": "Use the job manifest, review audit trail, Application Insights correlation_id, and Azure Storage diagnostics for access review.",
+            "trail": (
+                "Use the job manifest, review audit trail, Application Insights correlation_id, "
+                "and Azure Storage diagnostics for access review."
+            ),
         },
         "publication": {
             "eligible": False,
@@ -92,8 +101,14 @@ def operator_download_access_metadata(generated_at: str, expires_at: str) -> dic
         },
         "operator_access": {
             "method": "Time-limited Azure AD user-delegation SAS (read-only).",
-            "azure_identity": "Managed identity uploads artifacts and mints user-delegation SAS; no account keys are used.",
-            "secret_handling": "SAS URLs are short-lived secrets; deliver them to the operator out-of-band and never commit them.",
+            "azure_identity": (
+                "Managed identity uploads artifacts and mints user-delegation SAS; no account "
+                "keys are used."
+            ),
+            "secret_handling": (
+                "SAS URLs are short-lived secrets; deliver them to the operator out-of-band "
+                "and never commit them."
+            ),
         },
         "retention": {
             "temporary": True,

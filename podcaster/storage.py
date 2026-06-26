@@ -57,7 +57,12 @@ class StorageBackend(Protocol):
     def get_bytes(self, path: str) -> bytes | None:
         ...
 
-    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> StoredArtifact:
+    def update_bytes(
+        self,
+        path: str,
+        content_type: str,
+        update: Callable[[bytes | None], bytes],
+    ) -> StoredArtifact:
         ...
 
     def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
@@ -95,7 +100,12 @@ class LocalStorageBackend:
         target = self.root / safe_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
-        return StoredArtifact(path=safe_path, url=f"{self.base_url}/{safe_path}", size_bytes=len(content), content_type=content_type)
+        return StoredArtifact(
+            path=safe_path,
+            url=f"{self.base_url}/{safe_path}",
+            size_bytes=len(content),
+            content_type=content_type,
+        )
 
     def get_bytes(self, path: str) -> bytes | None:
         safe_path = _safe_blob_path(path)
@@ -104,7 +114,12 @@ class LocalStorageBackend:
             return None
         return target.read_bytes()
 
-    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> StoredArtifact:
+    def update_bytes(
+        self,
+        path: str,
+        content_type: str,
+        update: Callable[[bytes | None], bytes],
+    ) -> StoredArtifact:
         import fcntl
 
         safe_path = _safe_blob_path(path)
@@ -118,7 +133,12 @@ class LocalStorageBackend:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(updated)
             fcntl.flock(lock_file, fcntl.LOCK_UN)
-        return StoredArtifact(path=safe_path, url=f"{self.base_url}/{safe_path}", size_bytes=len(updated), content_type=content_type)
+        return StoredArtifact(
+            path=safe_path,
+            url=f"{self.base_url}/{safe_path}",
+            size_bytes=len(updated),
+            content_type=content_type,
+        )
 
     def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
         safe_prefix = _safe_blob_prefix(prefix)
@@ -276,7 +296,12 @@ class AzureBlobStorageBackend:
         content, _etag = self._get_blob_state(safe_path)
         return content
 
-    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> StoredArtifact:
+    def update_bytes(
+        self,
+        path: str,
+        content_type: str,
+        update: Callable[[bytes | None], bytes],
+    ) -> StoredArtifact:
         safe_path = _safe_blob_path(path)
         for _attempt in range(5):
             content, etag = self._get_blob_state(safe_path)
@@ -299,8 +324,12 @@ class AzureBlobStorageBackend:
                 if exc.code == 412:
                     continue
                 detail = exc.read().decode("utf-8", errors="replace")[:500]
-                raise RuntimeError(f"conditional blob update failed for {safe_path}: HTTP {exc.code} {detail}") from exc
-        raise RuntimeError(f"conditional blob update failed for {safe_path}: concurrent updates did not settle")
+                raise RuntimeError(
+                    f"conditional blob update failed for {safe_path}: HTTP {exc.code} {detail}"
+                ) from exc
+        raise RuntimeError(
+            f"conditional blob update failed for {safe_path}: concurrent updates did not settle"
+        )
 
     def _get_blob_state(self, safe_path: str) -> tuple[bytes | None, str | None]:
         encoded_path = "/".join(quote(part, safe="") for part in safe_path.split("/"))
@@ -321,7 +350,9 @@ class AzureBlobStorageBackend:
             if exc.code == 404:
                 return None, None
             detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"blob read failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+            raise RuntimeError(
+                f"blob read failed for {safe_path}: HTTP {exc.code} {detail}"
+            ) from exc
 
     def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
         safe_prefix = _safe_blob_prefix(prefix)
@@ -350,7 +381,9 @@ class AzureBlobStorageBackend:
                 root = ET.fromstring(response.read())
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"blob list failed for {safe_prefix}: HTTP {exc.code} {detail}") from exc
+            raise RuntimeError(
+                f"blob list failed for {safe_prefix}: HTTP {exc.code} {detail}"
+            ) from exc
 
         names: list[str] = []
         for blob in root.iter():
@@ -398,7 +431,9 @@ class AzureBlobStorageBackend:
         ]
         url = self._sas_command_runner(command).strip()
         if not url or not url.lower().startswith("https://"):
-            raise RuntimeError(f"user-delegation SAS generation returned no https URL for {safe_path}")
+            raise RuntimeError(
+                f"user-delegation SAS generation returned no https URL for {safe_path}"
+            )
         return SignedDownloadUrl(
             path=safe_path,
             url=url,
@@ -428,8 +463,12 @@ class AzureBlobStorageBackend:
         except HTTPError as exc:
             if exc.code == 404:
                 return False
-            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
-            raise RuntimeError(f"blob existence check failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+            detail = (
+                exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+            )
+            raise RuntimeError(
+                f"blob existence check failed for {safe_path}: HTTP {exc.code} {detail}"
+            ) from exc
 
     def blob_size(self, path: str) -> int | None:
         """Return the blob's Content-Length, or None when it does not exist.
@@ -456,8 +495,12 @@ class AzureBlobStorageBackend:
         except HTTPError as exc:
             if exc.code == 404:
                 return None
-            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
-            raise RuntimeError(f"blob size probe failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+            detail = (
+                exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+            )
+            raise RuntimeError(
+                f"blob size probe failed for {safe_path}: HTTP {exc.code} {detail}"
+            ) from exc
 
     def _sdk_blob_client(self, safe_path: str):
         """Build a streaming azure-storage-blob ``BlobClient`` for ``safe_path``.
@@ -558,8 +601,12 @@ class AzureBlobStorageBackend:
         except HTTPError as exc:
             if exc.code in (404, 202):
                 return exc.code == 202
-            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
-            raise RuntimeError(f"blob delete failed for {safe_path}: HTTP {exc.code} {detail}") from exc
+            detail = (
+                exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
+            )
+            raise RuntimeError(
+                f"blob delete failed for {safe_path}: HTTP {exc.code} {detail}"
+            ) from exc
 
     def delete_prefix(self, prefix: str) -> int:
         safe_prefix = _safe_blob_prefix(prefix)
@@ -660,7 +707,10 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
             params["client_id"] = client_id
         query = urlencode(params)
         separator = "&" if "?" in app_service_endpoint else "?"
-        request = Request(f"{app_service_endpoint}{separator}{query}", headers={"X-IDENTITY-HEADER": app_service_header})
+        request = Request(
+            f"{app_service_endpoint}{separator}{query}",
+            headers={"X-IDENTITY-HEADER": app_service_header},
+        )
     else:
         params = {"api-version": "2018-02-01", "resource": resource}
         if client_id:
@@ -685,7 +735,8 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
             if exc.code in retryable_status_codes and attempt < max_attempts:
                 delay = backoff_delays[attempt - 1]
                 logger.warning(
-                    "managed identity token request retrying after HTTP %s on attempt %s/%s; sleeping %.0fs",
+                    "managed identity token request retrying after HTTP %s on attempt "
+                    "%s/%s; sleeping %.0fs",
                     exc.code,
                     attempt,
                     max_attempts,
@@ -707,7 +758,8 @@ def _request_managed_identity_token(resource: str) -> dict[str, object]:
             if attempt < max_attempts:
                 delay = backoff_delays[attempt - 1]
                 logger.warning(
-                    "managed identity token request retrying after network error on attempt %s/%s; sleeping %.0fs: %s",
+                    "managed identity token request retrying after network error on attempt "
+                    "%s/%s; sleeping %.0fs: %s",
                     attempt,
                     max_attempts,
                     delay,
@@ -756,7 +808,9 @@ def normalize_artifact_base_url(base_url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("artifact base URL must be an http or https URL")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError("artifact base URL must not contain credentials, query strings, or fragments")
+        raise ValueError(
+            "artifact base URL must not contain credentials, query strings, or fragments"
+        )
     return base_url.rstrip("/")
 
 

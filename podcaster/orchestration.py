@@ -97,7 +97,12 @@ def publish_staged_job(
     backend = storage or create_storage_backend()
     manifest = load_manifest(backend, job_id)
     timestamp = requested_at or _iso(datetime.now(timezone.utc))
-    manifest = _mark_publish_requested(manifest, actor=actor, trigger=trigger, requested_at=timestamp)
+    manifest = _mark_publish_requested(
+        manifest,
+        actor=actor,
+        trigger=trigger,
+        requested_at=timestamp,
+    )
     persist_manifest(backend, job_id, manifest)
     publishing = manifest.get("publishing") if isinstance(manifest.get("publishing"), dict) else {}
     result_state = publishing.get("result") if isinstance(publishing, dict) else {}
@@ -187,7 +192,10 @@ def _prepare_audio_files(
     return (mp3_path, wav_path), scratch_dir
 
 
-def _publish_from_manifest(audio_paths: tuple[Path, Path | None], manifest: dict[str, Any]) -> PublishResult:
+def _publish_from_manifest(
+    audio_paths: tuple[Path, Path | None],
+    manifest: dict[str, Any],
+) -> PublishResult:
     mp3_path, wav_path = audio_paths
     request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
     spotify_publish = request.get("spotify_publish") if isinstance(request, dict) else None
@@ -196,7 +204,10 @@ def _publish_from_manifest(audio_paths: tuple[Path, Path | None], manifest: dict
         if isinstance(spotify_publish, dict)
         else None
     )
-    title = str(request.get("article_title") or f"Claracle Podcast — Week {request.get('week') or manifest.get('job_id')}")
+    title = str(
+        request.get("article_title")
+        or f"Claracle Podcast — Week {request.get('week') or manifest.get('job_id')}"
+    )
     description = _show_notes_text(manifest, mp3_path, wav_path)
     year, week = _parse_week(str(request.get("week") or ""))
     return publish_episode(
@@ -206,7 +217,11 @@ def _publish_from_manifest(audio_paths: tuple[Path, Path | None], manifest: dict
         spotify_publish_config=spotify_publish_config,
         year=year,
         week=week,
-        article_title=request.get("article_title") if isinstance(request.get("article_title"), str) else None,
+        article_title=(
+            request.get("article_title")
+            if isinstance(request.get("article_title"), str)
+            else None
+        ),
         wav_path=wav_path,
         language=_request_language(manifest),
     )
@@ -226,7 +241,11 @@ def _show_notes_text(manifest: dict[str, Any], mp3_path: Path, wav_path: Path | 
 
 def _audio_artifact_paths(manifest: dict[str, Any], job_id: str) -> tuple[str, str | None]:
     generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else {}
-    runner = generation.get("synthesis_runner") if isinstance(generation.get("synthesis_runner"), dict) else {}
+    runner = (
+        generation.get("synthesis_runner")
+        if isinstance(generation.get("synthesis_runner"), dict)
+        else {}
+    )
     audio = runner.get("audio") if isinstance(runner.get("audio"), dict) else {}
     artifacts = audio.get("artifacts") if isinstance(audio.get("artifacts"), dict) else {}
     mp3_path = None
@@ -333,7 +352,11 @@ def _apply_publish_result(
         {
             "at": completed_at,
             "to": final_status,
-            "reason": "spotify_publish_completed" if publish_result.status != "failed" else "spotify_publish_failed",
+            "reason": (
+                "spotify_publish_completed"
+                if publish_result.status != "failed"
+                else "spotify_publish_failed"
+            ),
             "actor": actor,
         }
     )
@@ -374,7 +397,11 @@ def _audio_validation_ready(manifest: dict[str, Any]) -> bool:
     if not isinstance(generation, dict):
         return False
     validation = generation.get("audio_validation")
-    return isinstance(validation, dict) and validation.get("ready") is True and validation.get("status") == "passed"
+    return (
+        isinstance(validation, dict)
+        and validation.get("ready") is True
+        and validation.get("status") == "passed"
+    )
 
 
 def _request_language(manifest: dict[str, Any]) -> str:

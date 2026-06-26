@@ -133,7 +133,11 @@ class GenerateHandler(BaseHTTPRequestHandler):
         # Read body
         content_length = int(self.headers.get("Content-Length", "0"))
         if content_length > MAX_REQUEST_BODY:
-            _json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request body too large"})
+            _json_response(
+                self,
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"error": "request body too large"},
+            )
             return
 
         try:
@@ -184,23 +188,39 @@ class GenerateHandler(BaseHTTPRequestHandler):
 
         content_length = int(self.headers.get("Content-Length", "0"))
         if content_length > MAX_REQUEST_BODY:
-            _json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request body too large"})
+            _json_response(
+                self,
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"error": "request body too large"},
+            )
             return
 
         try:
             raw_body = self.rfile.read(content_length)
             payload = json.loads(raw_body)
         except (json.JSONDecodeError, ValueError):
-            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "request body must be valid JSON"})
+            _json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"error": "request body must be valid JSON"},
+            )
             return
         if not isinstance(payload, dict):
-            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "request body must be a JSON object"})
+            _json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"error": "request body must be a JSON object"},
+            )
             return
 
         username = str(payload.get("username") or "").strip()
         password = str(payload.get("password") or "").strip()
         if not username or not password:
-            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "username and password are required"})
+            _json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"error": "username and password are required"},
+            )
             return
 
         expected_user, expected_pass, secret = creds
@@ -291,7 +311,11 @@ class GenerateHandler(BaseHTTPRequestHandler):
         try:
             response = CredentialStore(create_storage_backend()).list_credentials()
         except RuntimeError as exc:
-            status = HTTPStatus.NOT_IMPLEMENTED if "UI_AUTH_SECRET" in str(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            status = (
+                HTTPStatus.NOT_IMPLEMENTED
+                if "UI_AUTH_SECRET" in str(exc)
+                else HTTPStatus.INTERNAL_SERVER_ERROR
+            )
             _json_response(self, status, {"error": str(exc)})
             return
         _json_response(self, HTTPStatus.OK, response)
@@ -304,7 +328,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
         if error is not None:
             _json_response(
                 self,
-                HTTPStatus.REQUEST_ENTITY_TOO_LARGE if error == "request body too large" else HTTPStatus.BAD_REQUEST,
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+                if error == "request body too large"
+                else HTTPStatus.BAD_REQUEST,
                 {"error": error},
             )
             return
@@ -315,7 +341,11 @@ class GenerateHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
         except RuntimeError as exc:
-            status = HTTPStatus.NOT_IMPLEMENTED if "UI_AUTH_SECRET" in str(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            status = (
+                HTTPStatus.NOT_IMPLEMENTED
+                if "UI_AUTH_SECRET" in str(exc)
+                else HTTPStatus.INTERNAL_SERVER_ERROR
+            )
             _json_response(self, status, {"error": str(exc)})
             return
         _json_response(self, HTTPStatus.OK, summary)
@@ -328,18 +358,27 @@ class GenerateHandler(BaseHTTPRequestHandler):
         if error is not None:
             _json_response(
                 self,
-                HTTPStatus.REQUEST_ENTITY_TOO_LARGE if error == "request body too large" else HTTPStatus.BAD_REQUEST,
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+                if error == "request body too large"
+                else HTTPStatus.BAD_REQUEST,
                 {"error": error},
             )
             return
         assert payload is not None
         try:
-            summary = CredentialStore(create_storage_backend()).update_credential(credential_id, payload)
+            summary = CredentialStore(create_storage_backend()).update_credential(
+                credential_id,
+                payload,
+            )
         except ValueError as exc:
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
         except RuntimeError as exc:
-            status = HTTPStatus.NOT_IMPLEMENTED if "UI_AUTH_SECRET" in str(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            status = (
+                HTTPStatus.NOT_IMPLEMENTED
+                if "UI_AUTH_SECRET" in str(exc)
+                else HTTPStatus.INTERNAL_SERVER_ERROR
+            )
             _json_response(self, status, {"error": str(exc)})
             return
         if summary is None:
@@ -354,7 +393,11 @@ class GenerateHandler(BaseHTTPRequestHandler):
         try:
             deleted = CredentialStore(create_storage_backend()).delete_credential(credential_id)
         except RuntimeError as exc:
-            status = HTTPStatus.NOT_IMPLEMENTED if "UI_AUTH_SECRET" in str(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
+            status = (
+                HTTPStatus.NOT_IMPLEMENTED
+                if "UI_AUTH_SECRET" in str(exc)
+                else HTTPStatus.INTERNAL_SERVER_ERROR
+            )
             _json_response(self, status, {"error": str(exc)})
             return
         if not deleted:
@@ -381,7 +424,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
         if error is not None:
             _json_response(
                 self,
-                HTTPStatus.REQUEST_ENTITY_TOO_LARGE if error == "request body too large" else HTTPStatus.BAD_REQUEST,
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+                if error == "request body too large"
+                else HTTPStatus.BAD_REQUEST,
                 {"error": error},
             )
             return
@@ -436,7 +481,13 @@ class GenerateHandler(BaseHTTPRequestHandler):
         decision = str(payload.get("decision") or "").strip()
         notes = str(payload.get("notes") or "")
         run_url = str(payload.get("run_url") or "").strip() or None
-        reviewed_at = str(payload.get("reviewed_at") or "").strip() or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        reviewed_at = (
+            str(payload.get("reviewed_at") or "").strip()
+            or datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         publish_on_approval = payload.get("publish_on_approval", True) is not False
         errors: list[str] = []
         if not job_id:
@@ -468,7 +519,11 @@ class GenerateHandler(BaseHTTPRequestHandler):
                 error_type="ReviewEndpointError",
                 error_message="Unhandled exception in /api/review",
             )
-            _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal server error"})
+            _json_response(
+                self,
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": "internal server error"},
+            )
             return
 
         publish_result = outcome.publish_result

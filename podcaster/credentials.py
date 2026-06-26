@@ -73,7 +73,11 @@ def _load_records(current: bytes | None, secret: str) -> list[dict[str, Any]]:
 
 
 def _dump_records(records: list[dict[str, Any]], secret: str) -> bytes:
-    document = json.dumps({"credentials": records}, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    document = json.dumps(
+        {"credentials": records},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
     return _fernet(secret).encrypt(document)
 
 
@@ -134,7 +138,11 @@ class CredentialStore:
         assert summary is not None
         return summary
 
-    def update_credential(self, credential_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def update_credential(
+        self,
+        credential_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
         data = validate_credential_payload(payload)
         summary: dict[str, Any] | None = None
 

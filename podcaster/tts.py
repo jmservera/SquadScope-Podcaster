@@ -45,7 +45,9 @@ HOST_B_ROLE = "host_b"
 
 # Map free-form speaker labels parsed from a script onto the two configured hosts.
 _HOST_A_LABELS = frozenset({"host_a", "hosta", "host a", "a", "fable", "narrator", "host"})
-_HOST_B_LABELS = frozenset({"host_b", "hostb", "host b", "b", "alloy", "guest", "cohost", "co-host"})
+_HOST_B_LABELS = frozenset(
+    {"host_b", "hostb", "host b", "b", "alloy", "guest", "cohost", "co-host"}
+)
 
 TokenProvider = Callable[[str], str]
 Transport = Callable[[Request], bytes]
@@ -269,7 +271,10 @@ def synthesize_turn(
         raise RuntimeError("managed identity returned an empty token for Azure OpenAI")
 
     base = config.endpoint if config.endpoint.endswith("/") else f"{config.endpoint}/"
-    url = f"{base}openai/deployments/{config.tts_deployment}/audio/speech?api-version={config.api_version}"
+    url = (
+        f"{base}openai/deployments/{config.tts_deployment}/audio/speech"
+        f"?api-version={config.api_version}"
+    )
 
     def _request(include_style: bool) -> Request:
         payload: dict[str, object] = {

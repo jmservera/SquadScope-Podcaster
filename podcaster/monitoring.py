@@ -318,13 +318,21 @@ def _extract_summary(manifest: dict[str, Any]) -> JobSummary:
         status=manifest.get("status", "unknown"),
         created_at=manifest.get("created_at"),
         week=str(request.get("week", "")) if request.get("week") else None,
-        article_title=request.get("article_title") if isinstance(request.get("article_title"), str) else None,
+        article_title=(
+            request.get("article_title")
+            if isinstance(request.get("article_title"), str)
+            else None
+        ),
     )
 
 
 def _extract_detail(manifest: dict[str, Any]) -> JobDetailResponse:
     request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
-    generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else None
+    generation = (
+        manifest.get("generation")
+        if isinstance(manifest.get("generation"), dict)
+        else None
+    )
 
     # Derive a quality score from audio validation if available.
     quality_score: float | None = None
@@ -341,11 +349,27 @@ def _extract_detail(manifest: dict[str, Any]) -> JobDetailResponse:
         created_at=manifest.get("created_at"),
         expires_at=manifest.get("expires_at"),
         week=str(request.get("week", "")) if request.get("week") else None,
-        article_url=request.get("article_url") if isinstance(request.get("article_url"), str) else None,
-        article_title=request.get("article_title") if isinstance(request.get("article_title"), str) else None,
+        article_url=(
+            request.get("article_url")
+            if isinstance(request.get("article_url"), str)
+            else None
+        ),
+        article_title=(
+            request.get("article_title")
+            if isinstance(request.get("article_title"), str)
+            else None
+        ),
         generation=generation,
-        publishing=manifest.get("publishing") if isinstance(manifest.get("publishing"), dict) else None,
-        lifecycle=manifest.get("lifecycle") if isinstance(manifest.get("lifecycle"), dict) else None,
+        publishing=(
+            manifest.get("publishing")
+            if isinstance(manifest.get("publishing"), dict)
+            else None
+        ),
+        lifecycle=(
+            manifest.get("lifecycle")
+            if isinstance(manifest.get("lifecycle"), dict)
+            else None
+        ),
         quality_score=quality_score,
         warnings=manifest.get("warnings") if isinstance(manifest.get("warnings"), list) else None,
     )
@@ -365,7 +389,12 @@ def _extract_logs(manifest: dict[str, Any]) -> list[LogEntry]:
     """Extract log-like entries from lifecycle transitions and runner state."""
     logs: list[LogEntry] = []
 
-    def _add(timestamp: str | None, event: str, detail: str | None, stage: str | None = None) -> None:
+    def _add(
+        timestamp: str | None,
+        event: str,
+        detail: str | None,
+        stage: str | None = None,
+    ) -> None:
         logs.append(
             LogEntry(
                 timestamp=timestamp,
@@ -521,9 +550,13 @@ async def api_review(request: Request):
     decision = str(payload.get("decision") or "").strip()
     notes = str(payload.get("notes") or "")
     run_url = str(payload.get("run_url") or "").strip() or None
-    reviewed_at = str(payload.get("reviewed_at") or "").strip() or datetime.now(timezone.utc).replace(
-        microsecond=0
-    ).isoformat().replace("+00:00", "Z")
+    reviewed_at = (
+        str(payload.get("reviewed_at") or "").strip()
+        or datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
     publish_on_approval = payload.get("publish_on_approval", True) is not False
 
     errors: list[str] = []
@@ -601,7 +634,11 @@ def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(
     return JobListResponse(jobs=summaries[offset : offset + limit], total=len(summaries))
 
 
-@app.get("/api/jobs/{job_id}", response_model=JobDetailResponse, dependencies=[Depends(verify_auth)])
+@app.get(
+    "/api/jobs/{job_id}",
+    response_model=JobDetailResponse,
+    dependencies=[Depends(verify_auth)],
+)
 def get_job(job_id: str):
     """Get detailed information for a specific job."""
     storage = get_storage()
@@ -615,10 +652,17 @@ def get_job(job_id: str):
     return _extract_detail(manifest)
 
 
-@app.get("/api/jobs/{job_id}/logs", response_model=JobLogsResponse, dependencies=[Depends(verify_auth)])
+@app.get(
+    "/api/jobs/{job_id}/logs",
+    response_model=JobLogsResponse,
+    dependencies=[Depends(verify_auth)],
+)
 def get_job_logs(
     job_id: str,
-    level: str | None = Query(default=None, description="Minimum severity: debug|info|warning|error"),
+    level: str | None = Query(
+        default=None,
+        description="Minimum severity: debug|info|warning|error",
+    ),
     search: str | None = Query(default=None, description="Case-insensitive substring filter"),
 ):
     """Get log entries for a job, merging durable structured logs (#472) with
@@ -666,7 +710,11 @@ def _job_exists(storage: StorageBackend, job_id: str) -> bool:
     return storage.blob_exists(f"jobs/{job_id}/manifest.json")
 
 
-@app.get("/api/jobs/{job_id}/progress", response_model=ProgressResponse, dependencies=[Depends(verify_auth)])
+@app.get(
+    "/api/jobs/{job_id}/progress",
+    response_model=ProgressResponse,
+    dependencies=[Depends(verify_auth)],
+)
 def get_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
     """Poll real-time progress events for a job (issue #469).
 
@@ -681,7 +729,13 @@ def get_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
 
     document = read_progress(storage, job_id)
     if document is None:
-        return ProgressResponse(job_id=job_id, current=None, events=[], last_seq=since, terminal=False)
+        return ProgressResponse(
+            job_id=job_id,
+            current=None,
+            events=[],
+            last_seq=since,
+            terminal=False,
+        )
 
     new_events = filter_events_since(document.get("events") or [], since)
     last_seq = new_events[-1]["seq"] if new_events else since
@@ -1045,7 +1099,9 @@ def stream_blob(blob_path: str):
         raise HTTPException(status_code=400, detail="blob_path must not be empty")
 
     content_type = _content_type_for_path(blob_path)
-    if content_type is None or not any(content_type.startswith(prefix) for prefix in _STREAMABLE_PREFIXES):
+    if content_type is None or not any(
+        content_type.startswith(prefix) for prefix in _STREAMABLE_PREFIXES
+    ):
         raise HTTPException(
             status_code=403,
             detail=f"Content type {content_type!r} is not streamable",
@@ -1191,7 +1247,11 @@ def _collect_artifacts(
 
 def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
     """Extract episode summary from a manifest. Returns None if no audio."""
-    generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else None
+    generation = (
+        manifest.get("generation")
+        if isinstance(manifest.get("generation"), dict)
+        else None
+    )
     if generation is None:
         return None
 
@@ -1205,7 +1265,11 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
             audio_path = audio
 
     if not audio_path:
-        audio_path = generation.get("audio_file") if isinstance(generation.get("audio_file"), str) else None
+        audio_path = (
+            generation.get("audio_file")
+            if isinstance(generation.get("audio_file"), str)
+            else None
+        )
 
     # Check synthesis_runner manifest shape (how audio is recorded in real runs)
     if not audio_path:
@@ -1225,7 +1289,11 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
         return None
 
     request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
-    publishing = manifest.get("publishing") if isinstance(manifest.get("publishing"), dict) else None
+    publishing = (
+        manifest.get("publishing")
+        if isinstance(manifest.get("publishing"), dict)
+        else None
+    )
 
     video_path = _extract_video_path(generation)
     artifacts = _collect_artifacts(generation, exclude={audio_path, video_path or ""})
@@ -1240,7 +1308,11 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
 
     return EpisodeSummary(
         job_id=manifest.get("job_id", ""),
-        title=request.get("article_title") if isinstance(request.get("article_title"), str) else None,
+        title=(
+            request.get("article_title")
+            if isinstance(request.get("article_title"), str)
+            else None
+        ),
         created_at=manifest.get("created_at"),
         status=manifest.get("status", "unknown"),
         audio_path=audio_path,
@@ -1253,8 +1325,15 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
     )
 
 
-@app.get("/api/episodes", response_model=EpisodeListResponse, dependencies=[Depends(verify_auth)])
-def list_episodes(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)):
+@app.get(
+    "/api/episodes",
+    response_model=EpisodeListResponse,
+    dependencies=[Depends(verify_auth)],
+)
+def list_episodes(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
     """List generated episodes that have audio artifacts."""
     storage = get_storage()
     _BLOB_LISTING_CAP = 10000
