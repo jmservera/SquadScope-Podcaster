@@ -513,7 +513,7 @@ def _enforce_ownership_tone(
     """
 
     for soft in find_soft_flags(dialogue):
-        logger.info(
+        logger.warning(
             "script ownership soft-flag line=%d phrase=%r", soft.line_number, soft.phrase
         )
 

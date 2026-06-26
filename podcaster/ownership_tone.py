@@ -104,9 +104,11 @@ def _is_spoken_line(line: str) -> bool:
         return False
     if set(stripped) <= {"-"}:  # "---" style separators
         return False
-    # Header metadata lines such as "Week: 2026-W26" or "Source: https://...".
-    # Spoken turns are "Host: <text>"; metadata keys are single tokens. We only
-    # skip a small set of known metadata keys to avoid hiding real dialogue.
+    # Header metadata lines such as "Week: 2026-W26" or "Source URL: https://...".
+    # Spoken turns are "Host: <text>". We only skip a small set of known
+    # metadata keys (matched case-insensitively with internal whitespace
+    # collapsed, so multi-word keys like "Source URL" / "Source SHA256" match)
+    # to avoid hiding real dialogue.
     head, sep, _ = stripped.partition(":")
     if sep and re.sub(r"\s+", " ", head.strip()).lower() in _METADATA_KEYS:
         return False
