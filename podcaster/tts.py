@@ -333,10 +333,12 @@ def synthesize_two_voice(
     :class:`PermissionError`, so synthesis can never run for a dry run, an
     unconfigured environment, or an unreviewed episode.
 
-    When ``pool`` is supplied, segments are synthesized concurrently through the
-    bounded :func:`podcaster.tts_pool.synthesize_plan_concurrent` pool (results
-    stay in plan order). With ``pool`` omitted the calls run sequentially, which
-    is the historical behaviour.
+    When ``pool`` is supplied, segments are synthesized through the bounded
+    :func:`podcaster.tts_pool.synthesize_plan_concurrent` pool, which owns both
+    concurrency *and* the retry/backoff policy and keeps results in plan order.
+    A pool sized to one worker (or a single-turn plan) still runs sequentially
+    but retains the pool's rate-limit retry handling. With ``pool`` omitted the
+    calls run sequentially with no retries, which is the historical behaviour.
     """
 
     if not decision.get("allowed"):
@@ -344,7 +346,7 @@ def synthesize_two_voice(
         raise PermissionError(f"tts synthesis is blocked: {', '.join(map(str, blocked_by))}")
     if not plan:
         raise ValueError("voice plan is empty")
-    if pool is not None and pool.concurrency > 1 and len(plan) > 1:
+    if pool is not None:
         # Lazy import keeps tts_pool's dependency on this module one-directional.
         from podcaster.tts_pool import synthesize_plan_concurrent
 

@@ -171,13 +171,23 @@ def test_concurrent_is_faster_than_sequential():
         time.sleep(0.05)
         return b"audio"
 
-    start = time.monotonic()
+    # Measure sequential and concurrent runs in the *same* environment and
+    # compare the ratio, rather than asserting an absolute wall-clock budget
+    # that can be flaky on slow/contended CI runners.
+    seq_start = time.monotonic()
+    synthesize_plan_concurrent(
+        plan, config, decision, pool=TtsPoolConfig(concurrency=1), synthesize=synth
+    )
+    sequential = time.monotonic() - seq_start
+
+    conc_start = time.monotonic()
     synthesize_plan_concurrent(
         plan, config, decision, pool=TtsPoolConfig(concurrency=8), synthesize=synth
     )
-    elapsed = time.monotonic() - start
-    # 8 * 0.05s = 0.4s sequential; with 8 workers it should be well under half.
-    assert elapsed < 0.2
+    concurrent = time.monotonic() - conc_start
+
+    # 8 workers should finish meaningfully faster than the sequential baseline.
+    assert concurrent < sequential / 2
 
 
 # --- retry / backoff --------------------------------------------------------

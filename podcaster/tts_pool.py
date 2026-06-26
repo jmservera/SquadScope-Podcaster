@@ -172,7 +172,11 @@ def synthesize_plan_concurrent(
     pool = pool or load_tts_pool_config()
     turns = list(plan)
 
-    if pool.concurrency <= 1 or len(turns) <= 1:
+    # Fast path: a single worker / single turn with no retry policy can run as a
+    # plain sequential loop without spinning up an event loop. When retries are
+    # configured we must NOT bypass the pool, otherwise concurrency=1 would
+    # silently drop the rate-limit/backoff handling the pool is meant to own.
+    if (pool.concurrency <= 1 or len(turns) <= 1) and pool.max_retries == 0:
         return [
             synthesize(turn, config, token_provider=token_provider, transport=transport)
             for turn in turns
@@ -223,7 +227,12 @@ async def _synthesize_all(
         pool.max_retries,
     )
     await asyncio.gather(*(worker(i, turn) for i, turn in enumerate(turns)))
-    # Every slot is populated when gather completes without raising.
+    # Every slot must be populated once gather completes without raising; a None
+    # here would mean a worker silently skipped its segment and would break the
+    # order-preserving contract, so fail loudly instead of dropping entries.
+    missing = [i for i, audio in enumerate(results) if audio is None]
+    if missing:
+        raise RuntimeError(f"tts pool left segments unsynthesized: {missing}")
     return [audio for audio in results if audio is not None]
 
 
