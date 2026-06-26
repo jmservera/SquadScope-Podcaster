@@ -8,6 +8,14 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
+# Re-exported so callers can reach the per-locale localization QA gate (#440)
+# through the validation surface alongside payload validation.
+from podcaster.localization_qa import (  # noqa: F401
+    LocalizationQAResult,
+    evaluate_localization,
+    localization_gate,
+)
+
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 WEEK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 SOURCE_ARTIFACT_OBJECT_FIELDS = {
