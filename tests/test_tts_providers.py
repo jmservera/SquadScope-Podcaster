@@ -101,6 +101,10 @@ def test_build_provider_plan_assigns_provider_and_voice_per_turn():
     assert plan[0].voice == "es-MX-JorgeMultilingualNeural"
     assert plan[1].voice == "es-MX-DaliaMultilingualNeural"
     assert all(t.provider == PROVIDER_AZURE_NEURAL for t in plan)
+    # Raw text is excluded; only char_count is recorded for smoke/manifest safety.
+    assert plan[0].char_count == len("Hola")
+    assert plan[1].char_count == len("Qué tal")
+    assert not hasattr(plan[0], "text")
 
 
 def test_build_provider_plan_validates_inputs():
@@ -113,6 +117,14 @@ def test_build_provider_plan_validates_inputs():
     missing = ProviderRouting(provider=PROVIDER_OPENAI, locale="en-US", voice_host_a="", voice_host_b="alloy")
     with pytest.raises(ValueError, match="both host voices"):
         build_provider_plan([("a", "x")], missing)
+
+
+def test_for_language_rejects_mixed_providers():
+    """host_a on OpenAI and host_b on Azure must fail at routing time."""
+    mixed = _Block("xx", "xx-XX", "fable", "es-MX-DaliaMultilingualNeural")
+    with pytest.raises(ValueError, match="same TTS provider"):
+        ProviderRouting.for_language(mixed)
+
 
 
 def test_openai_synthesizer_is_wired_natives_are_gated():

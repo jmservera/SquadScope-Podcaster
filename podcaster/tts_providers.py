@@ -31,7 +31,7 @@ from podcaster.tts import (
     HOST_B_ROLE,
     TtsConfig,
     VoiceTurn,
-    _normalize_role,
+    normalize_role,
     synthesize_turn,
 )
 
@@ -96,7 +96,7 @@ class ProviderRouting:
         return self.provider == DEFAULT_PROVIDER
 
     def voice_for(self, role: str) -> str:
-        return self.voice_host_b if _normalize_role(role) == HOST_B_ROLE else self.voice_host_a
+        return self.voice_host_b if normalize_role(role) == HOST_B_ROLE else self.voice_host_a
 
     @classmethod
     def for_language(cls, block: Any) -> "ProviderRouting":
@@ -108,8 +108,18 @@ class ProviderRouting:
         host_b = getattr(block, "host_b", None)
         voice_a = getattr(host_a, "voice", "") if host_a is not None else ""
         voice_b = getattr(host_b, "voice", "") if host_b is not None else ""
-        # Provider is inferred from the host-A voice; both hosts share a provider.
+        # Infer provider from host-A voice; when host-B is also configured,
+        # validate that both voices resolve to the same provider so a mixed
+        # OpenAI + Azure config is caught at plan time, not synthesis time.
         provider = infer_provider(voice_a, locale)
+        if voice_b:
+            provider_b = infer_provider(voice_b, locale)
+            if provider_b != provider:
+                raise ValueError(
+                    f"host_a voice {voice_a!r} maps to provider {provider!r} but "
+                    f"host_b voice {voice_b!r} maps to {provider_b!r}; "
+                    "both hosts must use the same TTS provider for a language block."
+                )
         return cls(
             provider=provider,
             locale=locale,
@@ -132,12 +142,18 @@ class ProviderRouting:
 
 @dataclass(frozen=True)
 class ProviderVoiceTurn:
-    """A turn assigned to a provider + voice (dry-run-safe; no audio yet)."""
+    """A turn assigned to a provider + voice (dry-run-safe; no audio, no raw text).
+
+    Only metadata needed for smoke/validation is kept here — role, provider,
+    voice, and character count.  Raw script text is intentionally omitted so
+    this plan structure stays safe for manifests and logging output (consistent
+    with the "secret-free" design stated in the module docstring).
+    """
 
     provider: str
     role: str
     voice: str
-    text: str
+    char_count: int
 
 
 def build_provider_plan(
@@ -159,13 +175,13 @@ def build_provider_plan(
 
     plan: list[ProviderVoiceTurn] = []
     for label, text in segments:
-        role = HOST_B_ROLE if _normalize_role(label) == HOST_B_ROLE else HOST_A_ROLE
+        role = HOST_B_ROLE if normalize_role(label) == HOST_B_ROLE else HOST_A_ROLE
         plan.append(
             ProviderVoiceTurn(
                 provider=routing.provider,
                 role=role,
                 voice=routing.voice_for(role),
-                text=text,
+                char_count=len(text),
             )
         )
     return plan
@@ -192,6 +208,7 @@ def _gated_synthesizer(provider: str) -> Synthesizer:
             f"it (#435) but native-voice synthesis + credentials land in a follow-up."
         )
 
+    _synth._is_gated = True  # type: ignore[attr-defined]
     return _synth
 
 
@@ -223,4 +240,4 @@ def is_provider_wired(provider: str) -> bool:
     """True when a provider has a real (non-gated) synthesizer registered."""
 
     synth = _REGISTRY.get(provider)
-    return synth is not None and getattr(synth, "__name__", "") != "_synth"
+    return synth is not None and not getattr(synth, "_is_gated", False)
