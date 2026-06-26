@@ -1035,3 +1035,64 @@ class TestProgressSummary:
         assert data["stage"] == PipelineStage.COMPLETED
         assert data["terminal"] is True
         assert data["eta_seconds"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /api/jobs/{id}/assets (issue #471)
+# ---------------------------------------------------------------------------
+
+
+class TestJobAssets:
+    def test_unknown_job_404(self, client, storage):
+        resp = client.get("/api/jobs/missing/assets")
+        assert resp.status_code == 404
+
+    def test_job_without_media_returns_empty(self, client, storage):
+        _store_manifest(storage, "job-1")
+        resp = client.get("/api/jobs/job-1/assets")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["job_id"] == "job-1"
+        assert data["assets"] == []
+        assert data["total"] == 0
+
+    def test_lists_media_and_skips_non_media(self, client, storage):
+        _store_manifest(storage, "job-1")
+        storage.put_bytes("jobs/job-1/video/job-1.mp4", b"v", "video/mp4")
+        storage.put_bytes("jobs/job-1/episode.mp3", b"a", "audio/mpeg")
+        storage.put_bytes("jobs/job-1/segments/seg-01.wav", b"a", "audio/wav")
+        storage.put_bytes("jobs/job-1/thumbnail.png", b"i", "image/png")
+        # Non-media blobs must be excluded.
+        storage.put_bytes("jobs/job-1/progress.json", b"{}", "application/json")
+        storage.put_bytes("jobs/job-1/script.txt", b"x", "text/plain")
+
+        resp = client.get("/api/jobs/job-1/assets")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 4
+        paths = {a["path"] for a in data["assets"]}
+        assert "jobs/job-1/progress.json" not in paths
+        assert "jobs/job-1/script.txt" not in paths
+        assert "jobs/job-1/manifest.json" not in paths
+
+    def test_orders_video_then_audio_then_image(self, client, storage):
+        _store_manifest(storage, "job-1")
+        storage.put_bytes("jobs/job-1/thumbnail.png", b"i", "image/png")
+        storage.put_bytes("jobs/job-1/episode.mp3", b"a", "audio/mpeg")
+        storage.put_bytes("jobs/job-1/video/job-1.mp4", b"v", "video/mp4")
+
+        resp = client.get("/api/jobs/job-1/assets")
+        kinds = [a["kind"] for a in resp.json()["assets"]]
+        assert kinds == ["video", "audio", "image"]
+
+    def test_asset_fields_use_stream_proxy(self, client, storage):
+        _store_manifest(storage, "job-1")
+        storage.put_bytes("jobs/job-1/video/job-1.mp4", b"v", "video/mp4")
+
+        resp = client.get("/api/jobs/job-1/assets")
+        asset = resp.json()["assets"][0]
+        assert asset["name"] == "video/job-1.mp4"
+        assert asset["path"] == "jobs/job-1/video/job-1.mp4"
+        assert asset["url"] == "/api/stream/jobs/job-1/video/job-1.mp4"
+        assert asset["content_type"] == "video/mp4"
+        assert asset["kind"] == "video"

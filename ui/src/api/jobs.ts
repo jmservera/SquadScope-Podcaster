@@ -95,6 +95,20 @@ export async function fetchJobLogs(jobId: string): Promise<JobLogsResponse> {
   return resp.json();
 }
 
+export interface JobAsset {
+  name: string;
+  path: string;
+  url: string;
+  content_type: string | null;
+  kind: string;
+}
+
+export interface JobAssetsResponse {
+  job_id: string;
+  assets: JobAsset[];
+  total: number;
+}
+
 export async function fetchJobProgress(jobId: string, since = 0): Promise<ProgressResponse> {
   const resp = await authenticatedFetch(
     `${API_BASE}/api/jobs/${encodeURIComponent(jobId)}/progress?since=${since}`
@@ -108,5 +122,13 @@ export async function fetchJobProgressSummary(jobId: string): Promise<StageProgr
     `${API_BASE}/api/jobs/${encodeURIComponent(jobId)}/progress/summary`
   );
   if (!resp.ok) throw new Error(`Failed to fetch progress summary for ${jobId}: ${resp.status}`);
+  return resp.json();
+}
+
+export async function fetchJobAssets(jobId: string): Promise<JobAssetsResponse> {
+  const resp = await authenticatedFetch(
+    `${API_BASE}/api/jobs/${encodeURIComponent(jobId)}/assets`
+  );
+  if (!resp.ok) throw new Error(`Failed to fetch assets for ${jobId}: ${resp.status}`);
   return resp.json();
 }
