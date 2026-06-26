@@ -65,6 +65,7 @@ from podcaster.progress import (
     progress_path,
     read_progress,
 )
+from podcaster.stage_progress import summarize as summarize_stage_progress
 from podcaster.queue import enqueue_video_job
 from podcaster.storage import StorageBackend, create_storage_backend
 from podcaster.validation import validate_payload_details
@@ -156,6 +157,29 @@ class ProgressResponse(BaseModel):
     events: list[dict[str, Any]] = []
     last_seq: int = 0
     terminal: bool = False
+
+
+class StageProgressResponse(BaseModel):
+    """Stage-progress summary with ETA for an in-flight job (issue #470).
+
+    Derived from the durable progress stream (#469): the current pipeline
+    ``stage``, the segment counter (``segment_index``/``segment_total``, e.g.
+    "recording 12/18"), the ``phase``, a derived completion ``percent``, and an
+    ``eta`` extrapolated from observed segment timings.  ``phase`` is ``pending``
+    when no progress has been reported yet.
+    """
+
+    job_id: str
+    stage: str | None = None
+    phase: str | None = "pending"
+    segment_index: int | None = None
+    segment_total: int | None = None
+    percent: float | None = None
+    message: str | None = None
+    updated_at: str | None = None
+    terminal: bool = False
+    eta: str | None = None
+    eta_seconds: float | None = None
 
 
 # Server-sent-events stream tuning. The loop polls the durable store rather than
@@ -634,6 +658,28 @@ def get_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
         last_seq=last_seq,
         terminal=is_terminal(document),
     )
+
+
+@app.get(
+    "/api/jobs/{job_id}/progress/summary",
+    response_model=StageProgressResponse,
+    dependencies=[Depends(verify_auth)],
+)
+def get_job_progress_summary(job_id: str):
+    """Stage-progress summary with segment N/M, phase and ETA (issue #470).
+
+    A higher-level view over the #469 event stream: the current pipeline stage,
+    the segment counter, the phase, a derived completion percent, and an ETA
+    extrapolated from observed segment timings.  The job must exist (have a
+    manifest); a job with no progress yet returns a ``pending`` summary.
+    """
+    storage = get_storage()
+    if not _job_exists(storage, job_id):
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+
+    document = read_progress(storage, job_id)
+    summary = summarize_stage_progress(document)
+    return StageProgressResponse(job_id=job_id, **summary)
 
 
 def _sse_pack(event_id: int | None, data: dict[str, Any]) -> str:
