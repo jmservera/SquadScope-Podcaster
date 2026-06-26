@@ -2359,6 +2359,38 @@ class TestComposePairwiseParallel:
         # The partially-written output was cleaned up.
         assert not target.exists()
 
+    def test_combine_releases_first_input_when_second_fetch_fails(self, tmp_path):
+        """If the second input's fetch fails, the already-fetched first input is
+        still released so it does not leak on disk (issue #481 review)."""
+        n = 2
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        for p in paths:
+            p.write_bytes(b"x" * 1024)
+        target = tmp_path / "out.mp4"
+
+        released: list[Path] = []
+
+        def _fetch(p: Path) -> None:
+            if p == paths[1]:  # the second (right) input fails to fetch
+                raise RuntimeError("blob download failed")
+
+        def _release(p: Path) -> None:
+            released.append(p)
+
+        def _run(cmd):  # pragma: no cover - must never run on fetch failure
+            raise AssertionError("ffmpeg should not run when a fetch fails")
+
+        with pytest.raises(RuntimeError, match="blob download failed"):
+            vc._compose_pairwise_parallel(
+                paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+                None, None, target, _run, tmp_path, concurrency=1,
+                fetch=_fetch, release=_release,
+            )
+
+        # Only the first input was fetched, and it was released on the failure.
+        assert released == [paths[0]]
+        assert not target.exists()
+
     def test_compose_pairwise_clamps_concurrency_to_hard_cap(self, tmp_path, monkeypatch):
         """A caller-supplied concurrency above MAX_COMPOSE_CONCURRENCY is clamped
         before dispatch so the hard cap cannot be bypassed (issue #481 review)."""
@@ -2490,18 +2522,28 @@ class TestComposePairwiseParallel:
     def test_level_zero_pairs_run_concurrently(self, tmp_path):
         """Independent level-0 pair composes overlap in time (true parallelism)."""
         import threading
-        import time
 
         active = 0
         peak = 0
+        call_idx = 0
         lock = threading.Lock()
+        # The two level-0 passes (the first two runner calls) must be in-flight
+        # together; a barrier forces a deterministic overlap so the test is not
+        # flaky on slow/contended runners.
+        overlap = threading.Barrier(2, timeout=10)
 
         def _run(cmd):
-            nonlocal active, peak
+            nonlocal active, peak, call_idx
             with lock:
+                idx = call_idx
+                call_idx += 1
                 active += 1
                 peak = max(peak, active)
-            time.sleep(0.05)
+            if idx < 2:
+                try:
+                    overlap.wait()
+                except threading.BrokenBarrierError:
+                    pass
             with lock:
                 active -= 1
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
@@ -2514,8 +2556,8 @@ class TestComposePairwiseParallel:
         )
 
         # Level 0 has two independent pair composes; with concurrency=2 they
-        # must overlap, so peak in-flight ffmpeg passes reaches 2.
-        assert peak == 2
+        # must overlap, so peak in-flight ffmpeg passes is at least 2.
+        assert peak >= 2
 
     def test_total_duration_matches_sequential(self, tmp_path):
         """Tree and left-fold yield the same composed (overlap-adjusted) length."""

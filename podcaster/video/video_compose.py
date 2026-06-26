@@ -1662,9 +1662,14 @@ def _compose_pairwise_parallel(
         transition = transitions[left.last_seg]
         offset = left.duration - transition_duration
 
-        _fetch(left.path)
-        _fetch(right.path)
+        fetched: list[_ComposeItem] = []
         try:
+            # Fetch inside the try so that if the *second* fetch fails the
+            # already-fetched first input is still reclaimed (#481 review).
+            _fetch(left.path)
+            fetched.append(left)
+            _fetch(right.path)
+            fetched.append(right)
             _budget(left.path, right.path)
 
             # Bake both items' pending lower-thirds, shifted into this node's
@@ -1687,12 +1692,12 @@ def _compose_pairwise_parallel(
                 )
             )
         except BaseException:
-            # On any failure (budget shortfall or ffmpeg error) reclaim disk:
-            # drop the partially-written output and release/unlink the fetched
-            # inputs so a failed pass does not leak intermediates (#481 review).
+            # On any failure (fetch, budget shortfall or ffmpeg error) reclaim
+            # disk: drop the partially-written output and release/unlink only the
+            # inputs we actually fetched so a failed pass leaks nothing.
             out_path.unlink(missing_ok=True)
-            _consume(left)
-            _consume(right)
+            for item in fetched:
+                _consume(item)
             raise
         _consume(left)
         _consume(right)
