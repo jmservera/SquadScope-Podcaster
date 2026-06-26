@@ -2323,6 +2323,42 @@ class TestComposePairwiseParallel:
         for cmd in xfades:
             assert cmd.count("-i") == 2  # constant memory: 2 inputs per pass
 
+    def test_combine_failure_releases_inputs_and_drops_partial_output(self, tmp_path):
+        """A failed xfade pass must reclaim disk: release the fetched leaf inputs
+        and remove any partially-written output (issue #481 review)."""
+        n = 2
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        for p in paths:
+            p.write_bytes(b"x" * 1024)
+        target = tmp_path / "out.mp4"
+
+        fetched: list[Path] = []
+        released: list[Path] = []
+
+        def _fetch(p: Path) -> None:
+            fetched.append(p)
+
+        def _release(p: Path) -> None:
+            released.append(p)
+
+        def _run(cmd):
+            # Simulate ffmpeg writing a partial output then failing.
+            out = Path(str(cmd[-1]))
+            out.write_bytes(b"partial")
+            raise subprocess.CalledProcessError(1, cmd, stderr="boom")
+
+        with pytest.raises(subprocess.CalledProcessError):
+            vc._compose_pairwise_parallel(
+                paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+                None, None, target, _run, tmp_path, concurrency=1,
+                fetch=_fetch, release=_release,
+            )
+
+        # Both leaf inputs were fetched and then released back on failure.
+        assert set(released) == set(paths)
+        # The partially-written output was cleaned up.
+        assert not target.exists()
+
     def test_each_boundary_transition_used_once(self, tmp_path):
         """Every boundary's distinct transition is applied exactly once."""
         runner = _recording_runner()
@@ -2544,7 +2580,12 @@ class TestComposeTreeRealFfmpeg:
         # Composed length = sum(durations) - 3 overlaps = 11 - 3 = 8s.
         expected = sum(durations) - td * (len(durations) - 1)
         # Parse "Duration: HH:MM:SS.xx" from ffmpeg stderr.
-        line = [ln for ln in probe.stderr.splitlines() if "Duration:" in ln][0]
+        duration_lines = [ln for ln in probe.stderr.splitlines() if "Duration:" in ln]
+        assert duration_lines, (
+            "ffprobe stderr did not contain a 'Duration:' line; "
+            f"stderr was:\n{probe.stderr}"
+        )
+        line = duration_lines[0]
         hms = line.split("Duration:", 1)[1].split(",", 1)[0].strip()
         h, m, s = hms.split(":")
         actual = int(h) * 3600 + int(m) * 60 + float(s)

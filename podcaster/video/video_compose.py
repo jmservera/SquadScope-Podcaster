@@ -1605,7 +1605,11 @@ def _compose_pairwise_parallel(
 
     def _budget(*paths: Path) -> None:
         sizes = [p.stat().st_size for p in paths if p.exists()]
-        ensure_disk_budget(work_dir, sum(sizes) * 2)
+        # Up to ``concurrency`` pair-composes run simultaneously, each holding
+        # roughly its inputs + output on disk.  Budget for that concurrent peak
+        # so the check does not under-estimate when several workers run together
+        # (issue #481 review).
+        ensure_disk_budget(work_dir, sum(sizes) * 2 * max(1, concurrency))
 
     n = len(normalized_paths)
     has_dog = dog_logo is not None and dog_logo_path is not None
@@ -1655,27 +1659,36 @@ def _compose_pairwise_parallel(
 
         _fetch(left.path)
         _fetch(right.path)
-        _budget(left.path, right.path)
+        try:
+            _budget(left.path, right.path)
 
-        # Bake both items' pending lower-thirds, shifted into this node's local
-        # time (its local origin is the left item's absolute start).
-        step_lts = [
-            _shift_lower_third(lt, left.abs_start)
-            for lt in (left.pending_lts + right.pending_lts)
-        ]
-        run(
-            _build_xfade_step_cmd(
-                left.path,
-                right.path,
-                transition,
-                transition_duration,
-                offset,
-                step_lts,
-                drawtext_bin,
-                out_path,
-                preset,
+            # Bake both items' pending lower-thirds, shifted into this node's
+            # local time (its local origin is the left item's absolute start).
+            step_lts = [
+                _shift_lower_third(lt, left.abs_start)
+                for lt in (left.pending_lts + right.pending_lts)
+            ]
+            run(
+                _build_xfade_step_cmd(
+                    left.path,
+                    right.path,
+                    transition,
+                    transition_duration,
+                    offset,
+                    step_lts,
+                    drawtext_bin,
+                    out_path,
+                    preset,
+                )
             )
-        )
+        except BaseException:
+            # On any failure (budget shortfall or ffmpeg error) reclaim disk:
+            # drop the partially-written output and release/unlink the fetched
+            # inputs so a failed pass does not leak intermediates (#481 review).
+            out_path.unlink(missing_ok=True)
+            _consume(left)
+            _consume(right)
+            raise
         _consume(left)
         _consume(right)
         return _ComposeItem(
