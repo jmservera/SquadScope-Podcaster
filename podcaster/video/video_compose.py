@@ -152,6 +152,22 @@ INTERMEDIATE_PRESET = _env_str("VIDEO_INTERMEDIATE_PRESET", "veryfast")
 NORMALIZE_WORKERS = max(
     1, _env_int("VIDEO_NORMALIZE_WORKERS", min(4, os.cpu_count() or 1))
 )
+# Number of independent pairwise-compose passes to run in parallel within each
+# level of the composition tree (issue #481).  Each xfade pass is its own ffmpeg
+# process (CPU + disk-I/O bound), so a small pool is used: the default of 2
+# overlaps two compose passes without saturating the 4-vCPU ACA job (which also
+# runs the Python process and leaves headroom for normalize/record phases).  A
+# hard cap guards against an over-eager override OOMing/thrashing the container,
+# and ``concurrency=1`` restores the original fully-sequential left-fold.
+DEFAULT_COMPOSE_CONCURRENCY = 2
+MAX_COMPOSE_CONCURRENCY = 4
+COMPOSE_CONCURRENCY = max(
+    1,
+    min(
+        MAX_COMPOSE_CONCURRENCY,
+        _env_int("VIDEO_COMPOSE_CONCURRENCY", DEFAULT_COMPOSE_CONCURRENCY),
+    ),
+)
 
 
 def _video_encode_args(preset: str) -> list[str]:
@@ -1429,6 +1445,308 @@ def _build_finalize_cmd(
 
 
 def _compose_pairwise(
+    normalized_paths: list[Path],
+    durations: list[float],
+    transition_duration: float,
+    transitions: list[str],
+    lower_thirds_by_index: dict[int, LowerThird],
+    drawtext_bin: str | None,
+    dog_logo: "DogLogoConfig | None",
+    dog_logo_path: Path | None,
+    compose_target: Path,
+    run: "CommandRunner",
+    work_dir: Path,
+    *,
+    fetch: "Callable[[Path], None] | None" = None,
+    release: "Callable[[Path], None] | None" = None,
+    concurrency: int = COMPOSE_CONCURRENCY,
+) -> None:
+    """Composite normalized segments pairwise into *compose_target* (video-only).
+
+    Dispatches between two functionally-equivalent strategies:
+
+    * ``concurrency <= 1`` (or fewer than three clips, where there is nothing to
+      parallelise): the original **sequential left-fold** —
+      :func:`_compose_pairwise_sequential`.
+    * otherwise: a **balanced bottom-up tree** —
+      :func:`_compose_pairwise_parallel` — which runs the independent compose
+      passes within each tree level concurrently (issue #481).
+
+    Both produce ``len(clips) - 1`` two-input xfade passes (constant memory per
+    pass), crossfade each boundary once with the same transition between the same
+    two neighbouring segments, bake every lower-third exactly once, and yield the
+    same on-screen duration.  The tree merely re-orders the passes so level-0
+    pairs run in parallel — and, as a side benefit, passes each segment through
+    ``~log2(N)`` re-encode generations instead of up to ``N`` in the left-fold.
+    """
+    if concurrency > 1 and len(normalized_paths) >= 3:
+        _compose_pairwise_parallel(
+            normalized_paths,
+            durations,
+            transition_duration,
+            transitions,
+            lower_thirds_by_index,
+            drawtext_bin,
+            dog_logo,
+            dog_logo_path,
+            compose_target,
+            run,
+            work_dir,
+            fetch=fetch,
+            release=release,
+            concurrency=concurrency,
+        )
+        return
+    _compose_pairwise_sequential(
+        normalized_paths,
+        durations,
+        transition_duration,
+        transitions,
+        lower_thirds_by_index,
+        drawtext_bin,
+        dog_logo,
+        dog_logo_path,
+        compose_target,
+        run,
+        work_dir,
+        fetch=fetch,
+        release=release,
+    )
+
+
+def _shift_lower_third(lt: LowerThird, delta: float) -> LowerThird:
+    """Return *lt* with its enable window shifted by ``-delta`` seconds.
+
+    Lower-thirds are timed against the **absolute** final-video timeline.  When
+    one is baked inside a subtree whose local timeline starts at absolute time
+    ``delta`` (the tree compose path, issue #481), its enable window must be
+    expressed in that subtree's local time so the ``between(t, ...)`` drawtext
+    expression fires over the right frames.  The constant offset telescopes back
+    to the correct absolute position through the parent xfade offsets.
+    """
+    return replace(
+        lt,
+        start_seconds=lt.start_seconds - delta,
+        end_seconds=lt.end_seconds - delta,
+    )
+
+
+@dataclass
+class _ComposeItem:
+    """One node in the bottom-up pairwise composition tree (issue #481).
+
+    ``path`` is a contiguous, already-composed clip covering content segments
+    ``[first_seg, last_seg]``.  ``abs_start`` is where that clip begins on the
+    absolute final-video timeline; ``duration`` is its own length (overlaps
+    already subtracted).  ``pending_lts`` are absolute-timed lower-thirds for
+    segments in this item that have not yet been baked into pixels — they are
+    baked (shifted to node-local time) at the next xfade that consumes the item.
+    ``is_intermediate`` distinguishes a tree-owned temp clip (delete after use)
+    from a fetched leaf input (release via the caller's ``release`` hook).
+    """
+
+    path: Path
+    first_seg: int
+    last_seg: int
+    duration: float
+    abs_start: float
+    pending_lts: list[LowerThird]
+    is_intermediate: bool
+
+
+def _compose_pairwise_parallel(
+    normalized_paths: list[Path],
+    durations: list[float],
+    transition_duration: float,
+    transitions: list[str],
+    lower_thirds_by_index: dict[int, LowerThird],
+    drawtext_bin: str | None,
+    dog_logo: "DogLogoConfig | None",
+    dog_logo_path: Path | None,
+    compose_target: Path,
+    run: "CommandRunner",
+    work_dir: Path,
+    *,
+    fetch: "Callable[[Path], None] | None" = None,
+    release: "Callable[[Path], None] | None" = None,
+    concurrency: int = COMPOSE_CONCURRENCY,
+) -> None:
+    """Composite segments via a balanced bottom-up xfade tree (issue #481).
+
+    The classic left-fold serialises every xfade pass behind the previous one.
+    A balanced tree exposes the parallelism already present *within* each level:
+    at level 0 the ``N/2`` pair-composes are independent, at level 1 ``N/4``,
+    and so on.  Each level's pairs are run concurrently through a small
+    ``ThreadPoolExecutor`` (``concurrency`` workers, each a separate ffmpeg
+    process); the next level only starts once the current one finishes, so the
+    final root combine — the single :data:`ENCODE_PRESET` pass that writes
+    ``compose_target`` (or the temp feeding the DOG finalize) — always runs last
+    and alone.
+
+    Output is functionally equivalent to :func:`_compose_pairwise_sequential`:
+    the same ``N-1`` two-input xfade passes, the same per-boundary transition
+    between the same two neighbouring segments, the same lower-thirds, and the
+    same total duration.  ``fetch``/``release`` keep the blob-checkpoint disk
+    footprint bounded (issue #410); they operate on distinct paths per worker so
+    they are safe to call concurrently.
+    """
+    _fetch = fetch or (lambda _p: None)
+    _release = release or (lambda _p: None)
+
+    def _budget(*paths: Path) -> None:
+        sizes = [p.stat().st_size for p in paths if p.exists()]
+        ensure_disk_budget(work_dir, sum(sizes) * 2)
+
+    n = len(normalized_paths)
+    has_dog = dog_logo is not None and dog_logo_path is not None
+
+    # Absolute start time of each segment on the final timeline (xfade overlaps
+    # subtracted), used to express subtree-local lower-third enable windows.
+    abs_start: list[float] = [0.0] * n
+    for i in range(1, n):
+        abs_start[i] = abs_start[i - 1] + durations[i - 1] - transition_duration
+
+    pair_dir = work_dir / "pairwise"
+    pair_dir.mkdir(parents=True, exist_ok=True)
+
+    # Leaf level: each normalized clip, carrying its own (absolute-timed)
+    # lower-third as pending until the first xfade that consumes it bakes it in.
+    items: list[_ComposeItem] = [
+        _ComposeItem(
+            path=normalized_paths[i],
+            first_seg=i,
+            last_seg=i,
+            duration=durations[i],
+            abs_start=abs_start[i],
+            pending_lts=(
+                [lower_thirds_by_index[i]] if i in lower_thirds_by_index else []
+            ),
+            is_intermediate=False,
+        )
+        for i in range(n)
+    ]
+
+    def _consume(item: _ComposeItem) -> None:
+        # Free an input once its xfade pass has consumed it: tree-owned temps are
+        # deleted, fetched leaf inputs are handed back to the caller's release.
+        if item.is_intermediate:
+            item.path.unlink(missing_ok=True)
+        else:
+            _release(item.path)
+
+    def _combine(
+        left: _ComposeItem, right: _ComposeItem, out_path: Path, preset: str
+    ) -> _ComposeItem:
+        # The boundary between the two contiguous ranges is left.last_seg, so it
+        # uses that boundary's selected transition; the xfade offset is relative
+        # to the (left) accumulator's own local timeline.
+        transition = transitions[left.last_seg]
+        offset = left.duration - transition_duration
+
+        _fetch(left.path)
+        _fetch(right.path)
+        _budget(left.path, right.path)
+
+        # Bake both items' pending lower-thirds, shifted into this node's local
+        # time (its local origin is the left item's absolute start).
+        step_lts = [
+            _shift_lower_third(lt, left.abs_start)
+            for lt in (left.pending_lts + right.pending_lts)
+        ]
+        run(
+            _build_xfade_step_cmd(
+                left.path,
+                right.path,
+                transition,
+                transition_duration,
+                offset,
+                step_lts,
+                drawtext_bin,
+                out_path,
+                preset,
+            )
+        )
+        _consume(left)
+        _consume(right)
+        return _ComposeItem(
+            path=out_path,
+            first_seg=left.first_seg,
+            last_seg=right.last_seg,
+            duration=left.duration + right.duration - transition_duration,
+            abs_start=left.abs_start,
+            pending_lts=[],
+            is_intermediate=True,
+        )
+
+    level = 0
+    while len(items) > 1:
+        n_pairs = len(items) // 2
+        carry = items[-1] if len(items) % 2 else None
+        # The single root combine (the level that collapses two items into one)
+        # is the final pass: full preset, written straight to compose_target
+        # unless a DOG overlay still has to be applied afterwards.
+        is_root_level = len(items) == 2
+
+        tasks: list[tuple[int, _ComposeItem, _ComposeItem, Path, str]] = []
+        for k in range(n_pairs):
+            left, right = items[2 * k], items[2 * k + 1]
+            if is_root_level and not has_dog:
+                out_path, preset = compose_target, ENCODE_PRESET
+            elif is_root_level:
+                # The DOG finalize re-encodes at full preset, so the root xfade
+                # feeding it stays cheap — mirrors the sequential last pass.
+                out_path, preset = pair_dir / "root.mp4", "ultrafast"
+            else:
+                out_path = pair_dir / f"L{level:02d}_{k:03d}.mp4"
+                preset = "ultrafast"
+            tasks.append((k, left, right, out_path, preset))
+
+        results: list[_ComposeItem | None] = [None] * n_pairs
+        workers = min(concurrency, len(tasks))
+        if workers > 1:
+            logger.info(
+                "Composing tree level %d: %d pair(s) with %d parallel workers",
+                level, n_pairs, workers,
+            )
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = {
+                    pool.submit(_combine, left, right, out_path, preset): k
+                    for k, left, right, out_path, preset in tasks
+                }
+                for fut in futs:
+                    results[futs[fut]] = fut.result()
+        else:
+            for k, left, right, out_path, preset in tasks:
+                results[k] = _combine(left, right, out_path, preset)
+
+        next_items = [r for r in results if r is not None]
+        if carry is not None:
+            next_items.append(carry)
+        items = next_items
+        level += 1
+
+    root = items[0]
+
+    # A lone pending lower-third only survives when there was a single clip and
+    # therefore no xfade pass to carry it; bake it (and any DOG) in a final pass.
+    if has_dog or root.pending_lts:
+        _fetch(root.path)
+        final_lts = [_shift_lower_third(lt, root.abs_start) for lt in root.pending_lts]
+        run(
+            _build_finalize_cmd(
+                root.path,
+                dog_logo if has_dog else None,
+                dog_logo_path if has_dog else None,
+                final_lts,
+                drawtext_bin,
+                compose_target,
+                ENCODE_PRESET,
+            )
+        )
+        _consume(root)
+
+
+def _compose_pairwise_sequential(
     normalized_paths: list[Path],
     durations: list[float],
     transition_duration: float,
