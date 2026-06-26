@@ -190,6 +190,24 @@ def test_validate_malformed_repo_url_raises():
         validate_script_plan(plan)
 
 
+@pytest.mark.parametrize(
+    "repo_url",
+    [
+        "https://github.com/owner/repo/blob/main/README.md",
+        "https://github.com/owner/repo/tree/main",
+        "https://github.com/owner/repo/issues/1",
+        "https://github.com/owner",
+        "https://gitlab.com/owner/repo",
+    ],
+)
+def test_validate_non_root_github_url_raises(repo_url):
+    plan = ScriptPlan(
+        segments=(ScriptPlanSegment(0, "Theo", "hi", VisualMode.REPO, repo_url=repo_url),)
+    )
+    with pytest.raises(ScriptPlanValidationError, match="not a GitHub repo URL"):
+        validate_script_plan(plan)
+
+
 def test_validate_warns_when_no_repo_visuals():
     plan = ScriptPlan(
         segments=(ScriptPlanSegment(0, "Theo", "hi", VisualMode.ARTICLE),)

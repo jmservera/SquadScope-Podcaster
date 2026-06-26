@@ -55,11 +55,11 @@ from typing import Any, Sequence
 from podcaster.sections import (
     DEFAULT_TITLE_CARD_DURATION_SECONDS,
     ScriptSection,
-    _host_labels,
-    _script_body,
-    _split_speaker,
+    host_labels as _host_labels,
     match_section_header,
     parse_script_sections,
+    script_body as _script_body,
+    split_speaker as _split_speaker,
 )
 
 logger = logging.getLogger("podcaster.script_plan")
@@ -86,6 +86,15 @@ _VISUAL_MARKER_RE = re.compile(
 #: trailing-dot slug.
 _GITHUB_URL_RE = re.compile(
     r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
+)
+
+#: Anchored variant used to validate that a ``repo_url`` is a canonical repo
+#: *root* (``https://github.com/owner/repo``) rather than any URL that merely
+#: *starts* with one (e.g. ``.../blob/main/...``). An optional trailing slash is
+#: tolerated. Downstream layers expect a clean repo root, so validation is
+#: strict where extraction (:data:`_GITHUB_URL_RE`) is lenient.
+_GITHUB_REPO_ROOT_RE = re.compile(
+    r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]*[A-Za-z0-9_-]/?$",
 )
 
 
@@ -400,7 +409,7 @@ def validate_script_plan(plan: ScriptPlan) -> list[str]:
             repo_segment_count += 1
             if not seg.repo_url:
                 errors.append(f"segment {seg.index} is mode 'repo' but declares no repo_url")
-            elif _GITHUB_URL_RE.match(seg.repo_url) is None:
+            elif _GITHUB_REPO_ROOT_RE.match(seg.repo_url) is None:
                 errors.append(
                     f"segment {seg.index} repo_url {seg.repo_url!r} is not a GitHub repo URL"
                 )
