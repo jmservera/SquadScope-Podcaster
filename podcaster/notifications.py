@@ -34,7 +34,7 @@ import logging
 import os
 import socket
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -71,6 +71,19 @@ class NotificationError(ValueError):
     that opt into strict validation; the normal path logs and no-ops)."""
 
 
+class _Transport(Protocol):
+    """Call signature shared by :func:`urllib.request.urlopen` and test doubles.
+
+    ``notify_failure`` invokes the transport as ``send(request, timeout=...)``
+    and uses the result as a context manager, so injected callables must accept
+    the ``timeout`` keyword. Declaring it here (rather than a bare
+    ``Callable[[Request], Any]``) keeps test doubles honest about the real
+    call signature.
+    """
+
+    def __call__(self, request: Request, timeout: float = ...) -> Any: ...
+
+
 def _host_is_blocked(hostname: str) -> bool:
     """Return True if *hostname* is loopback / private / link-local / metadata."""
     host = hostname.strip().lower().rstrip(".")
@@ -92,15 +105,23 @@ def _host_is_blocked(hostname: str) -> bool:
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
-        # Cannot resolve now; allow — the POST will simply fail and be logged.
-        return False
+        # Fail closed: if we cannot resolve the host now we cannot prove it is
+        # safe, and urlopen() may still resolve+connect later (possibly to a
+        # private/loopback/metadata IP). Treat unresolvable hosts as blocked.
+        return True
     for info in infos:
         addr = info[4][0]
         try:
             ip = ipaddress.ip_address(addr.split("%")[0])
         except ValueError:
             continue
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
             return True
     return False
 
@@ -222,7 +243,7 @@ def notify_failure(
     error_summary: str,
     error_type: str | None = None,
     config: NotificationConfig | None = None,
-    transport: Callable[[Request], Any] | None = None,
+    transport: _Transport | None = None,
 ) -> bool:
     """Send a failure alert to the configured webhook.
 
@@ -237,7 +258,8 @@ def notify_failure(
             stripped before sending.
         error_type: Short error class/type (e.g. ``RetryExhausted``).
         config: Resolved config; defaults to :meth:`NotificationConfig.from_env`.
-        transport: Injectable ``urlopen``-like callable for tests.
+        transport: Injectable ``urlopen``-like callable for tests; must accept
+            ``transport(request, timeout=...)`` (see :class:`_Transport`).
     """
     if config is None:
         config = NotificationConfig.from_env()
