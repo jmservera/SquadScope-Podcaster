@@ -27,6 +27,8 @@ from typing import Any, Protocol
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
+
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
@@ -523,6 +525,7 @@ def distribute_video(
     spotify_anchor_id: int | None = None,
     season_number: int | None = None,
     episode_number: int | None = None,
+    locale: str | None = None,
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
@@ -541,6 +544,9 @@ def distribute_video(
     ``season_number`` and ``episode_number`` are passed to the Spotify video
     episode upload so the video episode carries the same numbering as the audio
     episode (season = year, episode = ISO week number).
+
+    ``locale`` is forwarded to :func:`~podcaster.video.youtube_playlist.add_to_show_playlist`
+    to select the per-language playlist after a successful YouTube upload (#449).
     """
     result = DistributionResult()
 
@@ -589,6 +595,14 @@ def distribute_video(
             result.youtube_url = video_url
             if not video_id:
                 result.errors.append("YouTube upload failed after retries")
+            elif not config.dry_run:
+                # 2a. Add to show playlist — idempotent, failure is non-fatal (#449)
+                try:
+                    _http = transport or _DefaultTransport()
+                    _token = _get_youtube_access_token(config, _http)
+                    _add_to_show_playlist(config, locale, video_id, _token, transport=transport)
+                except Exception as exc:
+                    logger.warning("Playlist add skipped for %s: %s", video_id, exc)
         except Exception as exc:
             result.errors.append(f"YouTube upload error: {exc}")
             logger.error("YouTube distribution failed: %s", exc)

@@ -14,8 +14,10 @@ Idempotency: before inserting, :func:`playlist_contains_video` queries
 re-adds the same video is a no-op (``skipped=True``) rather than a duplicate.
 
 Locale routing: :func:`resolve_playlist_id` picks the playlist for a locale from
-config / environment. The default (``en``) playlist applies when no per-locale
-override is configured, so single-language behavior is unchanged.
+config / environment. Unknown or unsupported locales fall back to ``en``.
+Known non-default locales (``es``, ``fr``) without a per-locale override return no
+playlist ID, so the caller skips the playlist step — single-language behavior is
+unchanged because only ``en`` callers will hit the default playlist.
 """
 
 from __future__ import annotations
@@ -144,7 +146,7 @@ def playlist_contains_video(
             method="GET",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-    except Exception as exc:  # pragma: no cover - network/transport failure
+    except Exception as exc:
         logger.warning("playlistItems.list error for %s: %s", video_id, exc)
         return False
     if status != 200:
@@ -196,7 +198,7 @@ def add_video_to_playlist(
             },
             data=payload,
         )
-    except Exception as exc:  # pragma: no cover - network/transport failure
+    except Exception as exc:
         logger.warning("playlistItems.insert error for %s: %s", video_id, exc)
         return PlaylistAddResult(
             video_id=video_id, playlist_id=playlist_id, succeeded=False, error=str(exc)

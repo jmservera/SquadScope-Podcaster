@@ -499,3 +499,99 @@ class TestSpotifyEpisodeUpload:
         )
         assert result.spotify_upload_updated is True
         assert result.status == "completed"
+
+
+class TestPlaylistIntegration:
+    """distribute_video calls add_to_show_playlist after successful YouTube upload (#449)."""
+
+    def test_playlist_add_called_on_youtube_success(self, video_file, youtube_config, monkeypatch):
+        """add_to_show_playlist is invoked with correct args after a real upload."""
+        calls: list[dict] = []
+
+        def fake_add(config, locale, video_id, token, *, transport=None, position=None):
+            calls.append({"locale": locale, "video_id": video_id})
+            from podcaster.video.youtube_playlist import PlaylistAddResult
+            return PlaylistAddResult(video_id=video_id, playlist_id="PLen", succeeded=True)
+
+        monkeypatch.setattr("podcaster.video.distribution._add_to_show_playlist", fake_add)
+
+        transport = FakeTransport(responses=[
+            (200, json.dumps({"access_token": "tok"}).encode()),  # token (upload)
+        ])
+        # upload_to_youtube: token, init, upload; then token again for playlist
+        transport._responses = [
+            (200, json.dumps({"access_token": "tok"}).encode()),  # token for upload
+        ]
+
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_client_id="id", youtube_client_secret="sec",
+            youtube_refresh_token="ref",
+            blob_archive_enabled=False,
+            dry_run=True,  # skip real HTTP; dry_run returns "dry-run-id"
+        )
+        # dry_run skips playlist call — use a monkeypatched upload_to_youtube instead
+        captured_upload: list = []
+
+        def fake_upload(path, title, desc, cfg, *, tags=None, transport=None):
+            captured_upload.append(True)
+            return "yt-vid-001", "https://youtube.com/watch?v=yt-vid-001"
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fake_upload)
+
+        # Also patch _get_youtube_access_token so playlist token fetch doesn't need network
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token",
+            lambda cfg, http: "fake-access-token",
+        )
+
+        config_real = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_client_id="id", youtube_client_secret="sec",
+            youtube_refresh_token="ref",
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+        result = distribute_video(
+            video_file, "job1", "title", "desc", 120.0, config_real,
+            locale="es",
+        )
+        assert result.youtube_id == "yt-vid-001"
+        assert len(calls) == 1
+        assert calls[0]["video_id"] == "yt-vid-001"
+        assert calls[0]["locale"] == "es"
+
+    def test_playlist_skipped_on_dry_run(self, video_file, monkeypatch):
+        """Playlist add is not called when dry_run=True."""
+        calls: list = []
+        monkeypatch.setattr(
+            "podcaster.video.distribution._add_to_show_playlist",
+            lambda *a, **kw: calls.append(True),
+        )
+        config = VideoDistributionConfig(
+            youtube_enabled=True, blob_archive_enabled=False, dry_run=True,
+        )
+        distribute_video(video_file, "job1", "title", "desc", 120.0, config)
+        assert calls == []
+
+    def test_playlist_failure_does_not_abort_distribution(self, video_file, monkeypatch):
+        """A playlist error is logged but does not fail the distribution result."""
+
+        def fake_upload(path, title, desc, cfg, *, tags=None, transport=None):
+            return "yt-vid-002", "https://youtube.com/watch?v=yt-vid-002"
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fake_upload)
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token",
+            lambda cfg, http: "tok",
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution._add_to_show_playlist",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("network down")),
+        )
+        config = VideoDistributionConfig(
+            youtube_enabled=True, blob_archive_enabled=False, dry_run=False,
+        )
+        result = distribute_video(video_file, "job1", "title", "desc", 120.0, config)
+        assert result.youtube_id == "yt-vid-002"
+        assert result.status == "completed"
