@@ -123,3 +123,49 @@ Passed: 94, Failed: 1, Skipped: 0. No CRITICAL/HIGH findings.
 > has no dedicated `docker_compose` framework, so it is not separately gated;
 > container hardening is covered via the Dockerfile framework above and Trivy
 > config scans already in CI.
+
+## Zizmor (GitHub Actions security) — #520
+
+[zizmor](https://docs.zizmor.sh) audits GitHub Actions workflows for
+supply-chain risks: template injection, dangerous triggers, unpinned actions,
+and overly-permissive `permissions:`. Phase A runs it in **non-blocking** mode.
+
+### CI
+
+`.github/workflows/zizmor.yml` runs `zizmorcore/zizmor-action` (pinned to commit
+`5f14fd08f7cf1cb1609c1e344975f152c7ee938d`, v0.5.6) on changes under
+`.github/workflows/`. The job is `continue-on-error: true` and uploads SARIF to
+GitHub Code Scanning. Generated Squad workflows (`squad-*`, `sync-squad-labels`)
+are excluded since they are produced upstream. Mirrors the SquadScope setup.
+
+### Local usage
+
+```bash
+# One-time install:
+pip install zizmor==1.25.2   # or: brew install zizmor / cargo install zizmor
+
+# Scan the repository-owned workflows (excluding generated Squad files):
+files=$(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) \
+  ! -name 'squad-*.yml' ! -name 'squad-*.yaml' ! -name 'sync-squad-labels.yml' | sort)
+zizmor $files
+
+# Machine-readable output:
+zizmor --format json $files
+```
+
+### Baseline report (2026-06-26)
+
+`zizmor` over 11 repository-owned workflows — **17** findings (32 suppressed):
+
+| Count | Audit | Notes |
+| ----: | ----- | ----- |
+| 8 | `secrets-inherit` | reusable workflows called with `secrets: inherit` |
+| 4 | `template-injection` | `${{ inputs.* }}` expanded into `run:` blocks |
+| 3 | `unpinned-uses` | actions not pinned to a commit SHA |
+| 1 | `artipacked` | checkout credential persistence |
+| 1 | `excessive-permissions` | broader `permissions:` than required |
+
+By severity: **7 High, 9 Medium, 1 Informational**.
+
+> Fixes are deferred to Phase B (#521); blocking enforcement to Phase C.
+

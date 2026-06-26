@@ -1,0 +1,65 @@
+# GitHub Actions supply-chain security scanning (zizmor).
+#
+# Phase A of the DevSecOps Guardrails epic (#520): warning-only baseline.
+# zizmor focuses on Actions-specific risks — template injection, dangerous
+# triggers, unpinned actions, and overly-permissive `permissions:`.
+#
+# This lane is NON-BLOCKING (`continue-on-error: true`); SARIF is uploaded to
+# GitHub Code Scanning so findings are visible without failing CI. Blocking
+# enforcement is deferred to Phase C. Mirrors the SquadScope setup for
+# cross-repo parity. See jmservera/SquadScope-Coordinator#33.
+name: Zizmor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor-scan:
+    name: GitHub Actions Security Scan (zizmor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        # actions/checkout v6.0.3
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
+        with:
+          persist-credentials: false
+
+      - name: Collect zizmor workflow inputs
+        id: zizmor-inputs
+        # Squad workflows are generated upstream; scan all repository-owned
+        # workflows while excluding the generated Squad workflow files.
+        run: |
+          {
+            echo "inputs<<EOF"
+            find .github/workflows -maxdepth 1 -type f \
+              \( -name "*.yml" -o -name "*.yaml" \) \
+              ! -name "squad-*.yml" \
+              ! -name "squad-*.yaml" \
+              ! -name "sync-squad-labels.yml" \
+              ! -name "sync-squad-labels.yaml" \
+              | sort
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run zizmor security scan
+        # zizmorcore/zizmor-action v0.5.6
+        uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d
+        with:
+          inputs: ${{ steps.zizmor-inputs.outputs.inputs }}
+          # SARIF is uploaded to GitHub Code Scanning automatically.
+          advanced-security: true
