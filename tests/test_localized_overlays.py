@@ -121,7 +121,7 @@ def test_section_card_cmd_localizes_text_spanish():
         marker, Path("/tmp/card.mp4"), SectionCardConfig(locale="es")
     )
     joined = " ".join(cmd)
-    assert "Se" in joined and "al y Ruido" in joined  # Señal y Ruido (escaped)
+    assert "Se" in joined and "al y Ruido" in joined  # Señal y Ruido split across join boundaries
     assert "Signal & Noise" not in joined
 
 

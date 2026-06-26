@@ -4,10 +4,11 @@ All on-screen text in the video overlay path is parameterized per locale so a
 Spanish or French episode renders Spanish/French intro, outro, CTA, and section
 cards while reusing the language-independent browser recordings unchanged.
 
-The show name comes from the per-language config (#432, ``LanguageConfig``); the
-remaining overlay copy (outro CTA, default episode title, section-card names) is
-Farnsworth-supplied translated/rewritten copy and lives here as the single
-source of truth. English copy is identical to the previous hard-coded values so
+This module defines per-locale ``show_name`` defaults (e.g. "Claracle Semanal"
+for ``es``); callers may override them via per-language config (#432,
+``LanguageConfig``). The remaining overlay copy (outro CTA, default episode
+title, section-card names) is Farnsworth-supplied translated/rewritten copy and
+lives here as the single source of truth. English copy is identical to the previous hard-coded values so
 existing English renders are byte-for-byte unchanged.
 """
 
