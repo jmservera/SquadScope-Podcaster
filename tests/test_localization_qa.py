@@ -152,6 +152,28 @@ def test_missing_cta_fails_gate() -> None:
     assert any("call-to-action" in err for err in result.errors)
 
 
+def test_early_site_mention_does_not_satisfy_closing_cta() -> None:
+    # Regression: production scripts mention the site (www.claracle.com) in the
+    # opening welcome/disclosure (see script_gen.py / episode.py). An early
+    # mention must NOT satisfy the *closing* CTA requirement — only a CTA in the
+    # closing turns should pass the gate.
+    script = (
+        "Voices: HOST_A=es-MX-JorgeMultilingualNeural; HOST_B=es-MX-DaliaMultilingualNeural\n"
+        "---\n"
+        f"HOST_B: {ES.disclosure}\n"
+        "HOST_A: Bienvenidos, pueden seguirnos en www.claracle.com cada semana.\n"
+        "## Section: Frameworks de IA\n"
+        "HOST_B: Esta semana encontramos un proyecto que destaca por su arquitectura.\n"
+        "HOST_A: Su integración con GitHub y la API es notable.\n"
+        "HOST_B: El equipo usa CI/CD de forma ejemplar.\n"
+        "HOST_A: Gracias por acompañarnos hoy, nos vemos la próxima semana.\n"
+    )
+    result = evaluate_localization(script, config=ES)
+    assert not result.passed
+    assert not result.checks["cta_present"]
+    assert any("call-to-action" in err for err in result.errors)
+
+
 # --- Advisory checks ---------------------------------------------------------
 
 

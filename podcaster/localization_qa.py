@@ -58,6 +58,12 @@ _CLARACLE_URL_ANCHOR = "claracle com"
 #: gate while still catching genuinely untranslated dialogue.
 LEAKAGE_THRESHOLD = 2
 
+#: How many trailing spoken turns count as the "closing" of an episode. The
+#: closing CTA must appear here — an opening site mention (the required
+#: disclosure/welcome already references the site) must NOT satisfy the closing
+#: call-to-action requirement.
+CLOSING_TURN_WINDOW = 4
+
 #: High-signal English function words that do not occur as standalone words in
 #: genuine Spanish/French copy. Deliberately excludes tokens that collide with
 #: es/fr vocabulary (``on``/``but`` in French; ``son``/``no``/``a``/``y``/``o``
@@ -322,12 +328,22 @@ def evaluate_localization(
         errors.append(f"{locale}: no AI-voice disclosure configured for this locale")
 
     # --- Hard-fail: closing CTA present ----------------------------------------
-    cta_anchor = _CLARACLE_URL_ANCHOR in full_normalized
-    cta_text_present = bool(cta) and _normalize(cta).strip() in full_normalized
+    # The CTA must appear in the *closing* of the episode, not merely anywhere in
+    # the script. The required opening disclosure/welcome already mentions the
+    # site (see script_gen.py / episode.py), so an intro mention must not satisfy
+    # the "closing call-to-action" requirement. Restrict the search to the last
+    # few spoken turns.
+    closing_turns = turns[-CLOSING_TURN_WINDOW:] if turns else []
+    closing_normalized = _normalize(" ".join(text for _, text in closing_turns))
+    cta_anchor = _CLARACLE_URL_ANCHOR in closing_normalized
+    cta_text_present = bool(cta) and _normalize(cta).strip() in closing_normalized
     cta_present = cta_anchor or cta_text_present
     checks["cta_present"] = cta_present
     if not cta_present:
-        errors.append(f"{locale}: closing call-to-action (Claracle site) not found in the script")
+        errors.append(
+            f"{locale}: closing call-to-action (Claracle site) not found in the "
+            f"closing turns of the script"
+        )
 
     # --- Advisory: host-persona consistency ------------------------------------
     if host_labels:
