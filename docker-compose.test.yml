@@ -1,0 +1,83 @@
+# docker-compose.test.yml
+#
+# Local integration-testing stack for SquadScope-Podcaster.
+#
+# Brings up an Azurite emulator (Blob + Queue + Table) so the storage-backed
+# parts of the pipeline can be exercised locally without touching a real Azure
+# Storage account, plus a `podcaster` runner service for executing the test
+# suite inside the same container image that ships to production.
+#
+# NOTE on auth: in production the app is identity-only (managed identity / IMDS)
+# for Blob + Queue. Azurite does not speak Azure AD, so the well-known Azurite
+# *connection string* below is provided for tests/tooling that talk to Azurite
+# directly (e.g. azure-storage-blob `from_connection_string`, the Azure CLI, or
+# `azurite`-aware fixtures). The production `AzureBlobStorageBackend` managed-
+# identity path is intentionally not wired to Azurite.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d azurite   # start emulator
+#   docker compose -f docker-compose.test.yml run --rm podcaster   # run tests
+#   docker compose -f docker-compose.test.yml down -v          # tear down
+
+services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: podcaster-azurite
+    command: >-
+      azurite
+      --blobHost 0.0.0.0 --blobPort 10000
+      --queueHost 0.0.0.0 --queuePort 10001
+      --tableHost 0.0.0.0 --tablePort 10002
+      --location /data --skipApiVersionCheck
+    ports:
+      - "10000:10000"   # Blob
+      - "10001:10001"   # Queue
+      - "10002:10002"   # Table
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      # Azurite returns HTTP 400 on a bare GET of the blob endpoint once it is
+      # listening; that is enough to prove the port is up.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "10000"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  podcaster:
+    # Reuse the production synthesis image (ffmpeg/ffprobe baked in) so the
+    # integration suite runs against the same runtime as production.
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: podcaster-synthesis:test
+    container_name: podcaster-test-runner
+    depends_on:
+      azurite:
+        condition: service_healthy
+    environment:
+      # Azurite well-known dev account connection string (Blob/Queue/Table all
+      # routed at the azurite service). 127.0.0.1 is rewritten to the compose
+      # service hostname so containers reach the emulator.
+      AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1;"
+      # Storage / queue endpoints used by the podcaster modules.
+      PODCASTER_STORAGE_ACCOUNT_URL: "http://azurite:10000/devstoreaccount1"
+      PODCASTER_STORAGE_QUEUE_URL: "http://azurite:10001/devstoreaccount1"
+      PODCASTER_STORAGE_CONTAINER: "podcaster-artifacts"
+      PODCASTER_SYNTHESIS_QUEUE: "synthesis-jobs"
+      # Keep artifacts on the local filesystem backend for offline integration
+      # tests (the managed-identity blob path cannot authenticate to Azurite).
+      PODCASTER_LOCAL_STORAGE_PATH: "/app/.podcaster-artifacts"
+      PODCASTER_API_KEY: "local-dev-key"
+      AZURE_OPENAI_AUTH_MODE: "managed_identity"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # Mount the working tree so tests run against current sources without a
+      # rebuild; the image still provides ffmpeg/ffprobe + Python deps.
+      - .:/workspace:rw
+    working_dir: /workspace
+    # Override the synthesis entrypoint to run the test suite instead.
+    entrypoint: ["python", "-m", "pytest"]
+    command: ["tests/", "-v", "--tb=short"]
+
+volumes:
+  azurite-data:
