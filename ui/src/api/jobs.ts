@@ -33,13 +33,22 @@ export interface JobDetailResponse {
 
 export interface LogEntry {
   timestamp: string | null;
+  level: string;
   event: string;
+  message: string | null;
   detail: string | null;
+  task_id: string | null;
+  stage: string | null;
+  seq: number | null;
+  source: string;
 }
 
 export interface JobLogsResponse {
   job_id: string;
   logs: LogEntry[];
+  total: number;
+  level: string | null;
+  search: string | null;
 }
 
 export async function fetchJobs(limit = 20, offset = 0): Promise<JobListResponse> {
@@ -56,8 +65,16 @@ export async function fetchJobDetail(jobId: string): Promise<JobDetailResponse> 
   return resp.json();
 }
 
-export async function fetchJobLogs(jobId: string): Promise<JobLogsResponse> {
-  const resp = await authenticatedFetch(`${API_BASE}/api/jobs/${encodeURIComponent(jobId)}/logs`);
+export async function fetchJobLogs(
+  jobId: string,
+  options: { level?: string; search?: string } = {}
+): Promise<JobLogsResponse> {
+  const params = new URLSearchParams();
+  if (options.level) params.set('level', options.level);
+  if (options.search) params.set('search', options.search);
+  const query = params.toString();
+  const url = `${API_BASE}/api/jobs/${encodeURIComponent(jobId)}/logs${query ? `?${query}` : ''}`;
+  const resp = await authenticatedFetch(url);
   if (!resp.ok) throw new Error(`Failed to fetch logs for ${jobId}: ${resp.status}`);
   return resp.json();
 }

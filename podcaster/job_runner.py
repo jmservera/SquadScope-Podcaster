@@ -34,6 +34,7 @@ from podcaster.config import BackchannelConfig, MusicMixConfig, PodcastConfig, S
 from podcaster.failure_reporting import report_failure
 from podcaster.notifications import notify_failure
 from podcaster.pipeline_lock import PIPELINE_AUDIO, claim_pipeline
+from podcaster.job_logs import LogLevel, emit_log
 from podcaster.progress import PipelineStage, emit_progress
 from podcaster.episode import (
     operator_review_decision,
@@ -236,6 +237,17 @@ def run_synthesis(
             job_id,
         )
         mix_spec = None
+        emit_log(
+            storage,
+            job_id,
+            level=LogLevel.WARNING,
+            stage=PipelineStage.SYNTHESIS,
+            message=(
+                f"music_mix_config track={music_mix_config.track!r} requested but file not found; "
+                "music mixing skipped"
+            ),
+            at=current,
+        )
     try:
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / f"{job_id}.mp3"
@@ -247,6 +259,17 @@ def run_synthesis(
                 phase="recording",
                 segment_total=segment_total or None,
                 message=f"recording {segment_total} segments" if segment_total else "recording",
+                at=current,
+            )
+            emit_log(
+                storage,
+                job_id,
+                level=LogLevel.INFO,
+                stage=PipelineStage.SYNTHESIS,
+                message=(
+                    f"recording {segment_total} segments" if segment_total else "recording started"
+                ),
+                context={"segment_total": segment_total} if segment_total else None,
                 at=current,
             )
 
@@ -302,6 +325,15 @@ def run_synthesis(
                     stage=PipelineStage.FAILED,
                     phase="synthesis",
                     message="synthesis produced empty audio",
+                    at=current,
+                )
+                emit_log(
+                    storage,
+                    job_id,
+                    level=LogLevel.ERROR,
+                    stage=PipelineStage.SYNTHESIS,
+                    message="synthesis produced empty/trivial audio output",
+                    context={"mp3_bytes": len(mp3_bytes), "wav_bytes": len(wav_bytes)},
                     at=current,
                 )
                 raise TransientSynthesisError(
@@ -435,6 +467,19 @@ def run_synthesis(
                 message="synthesis completed",
                 at=current,
             )
+            emit_log(
+                storage,
+                job_id,
+                level=LogLevel.INFO,
+                stage=PipelineStage.COMPLETED,
+                message=f"synthesis completed ({episode_audio.segment_count} segments)",
+                context={
+                    "segment_count": episode_audio.segment_count,
+                    "validation_status": episode_audio.validation.status,
+                    "publishable": validation_ready,
+                },
+                at=current,
+            )
             return SynthesisOutcome(
                 job_id,
                 STATUS_COMPLETED,
@@ -452,6 +497,15 @@ def run_synthesis(
             stage=PipelineStage.FAILED,
             phase="synthesis",
             message=f"synthesis failed: {type(exc).__name__}",
+            at=current,
+        )
+        emit_log(
+            storage,
+            job_id,
+            level=LogLevel.ERROR,
+            stage=PipelineStage.FAILED,
+            message=f"synthesis failed: {type(exc).__name__}",
+            context={"error_type": type(exc).__name__},
             at=current,
         )
         _record_runner_state(
