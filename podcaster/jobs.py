@@ -60,7 +60,12 @@ def run_generation_job(
     validation_warnings: list[str] | None = None,
 ) -> JobResult:
     current = now or datetime.now(timezone.utc)
-    expires_at = (current + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    expires_at = (
+        (current + timedelta(days=7))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
     job_id = build_job_id(payload)
     podcast_config = PodcastConfig.from_payload(payload)
     storage = storage or create_storage_backend()
@@ -71,7 +76,9 @@ def run_generation_job(
 
     def reserve_monthly_budget(content: bytes | None) -> bytes:
         monthly_ledger = load_monthly_ledger(content, month=month)
-        prior_episode_count, prior_monthly_spend = monthly_budget_inputs(monthly_ledger, job_id=job_id)
+        prior_episode_count, prior_monthly_spend = monthly_budget_inputs(
+            monthly_ledger, job_id=job_id
+        )
         # Detect retry: if the job_id already has a ledger entry, this is a
         # re-submission and the budget slot is already allocated. Skip the
         # budget guard so retries of the same job are not blocked by other
@@ -97,23 +104,31 @@ def run_generation_job(
         )
 
     try:
-        storage.update_bytes(monthly_path, "application/json; charset=utf-8", reserve_monthly_budget)
+        storage.update_bytes(
+            monthly_path, "application/json; charset=utf-8", reserve_monthly_budget
+        )
     except MonthlyBudgetExceeded as exc:
         logging.warning(
-            "podcaster job blocked by monthly budget job_id=%s week=%s projected_episode_count=%s projected_monthly_spend_usd=%s",
+            "podcaster job blocked by monthly budget job_id=%s week=%s "
+            "projected_episode_count=%s projected_monthly_spend_usd=%s",
             job_id,
             payload.get("week"),
             exc.budget["projected_episode_count"],
             exc.budget["projected_monthly_spend_usd"],
         )
         return JobResult(
-            response=failed_response(["monthly podcast budget exceeded; explicit operator override required"]),
+            response=failed_response(
+                ["monthly podcast budget exceeded; explicit operator override required"]
+            ),
             manifest={"job_id": job_id, "status": "failed", "budget": exc.budget},
         )
     prior_episode_count = int(budget_context["prior_episode_count"])
     prior_monthly_spend = budget_context["prior_monthly_spend"]
 
-    warnings = [*(validation_warnings or []), "artifact URLs are private operator paths, not public publishing links"]
+    warnings = [
+        *(validation_warnings or []),
+        "artifact URLs are private operator paths, not public publishing links",
+    ]
     if payload.get("callback"):
         warnings.append("callback accepted by contract but not invoked yet")
 
@@ -125,7 +140,9 @@ def run_generation_job(
     llm_generation_engine = "local-deterministic-placeholder"
     script_directions = ScriptDirections.from_payload(payload)
     historical_context: HistoricalContext | None = (
-        script_directions.historical_context if script_directions.historical_context.has_content else None
+        script_directions.historical_context
+        if script_directions.historical_context.has_content
+        else None
     )
     if not script_directions.historical_context.prior_episode_themes:
         try:
@@ -166,7 +183,10 @@ def run_generation_job(
                     ) + "\n"
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
             except Exception:
-                logging.exception("LLM script generation failed job_id=%s; falling back to placeholder", job_id)
+                logging.exception(
+                    "LLM script generation failed job_id=%s; falling back to placeholder",
+                    job_id,
+                )
                 warnings.append("LLM script generation failed; using placeholder script")
                 llm_script = None
             # Extract claims from article content (#141)
@@ -178,12 +198,17 @@ def run_generation_job(
                 )
                 if claims:
                     llm_claims_json = claims_to_ledger_json(claims)
-                    logging.info("podcaster job extracted %d claims job_id=%s", len(claims), job_id)
+                    logging.info(
+                        "podcaster job extracted %d claims job_id=%s", len(claims), job_id
+                    )
             except Exception:
                 logging.exception("claim extraction failed job_id=%s; using stub ledger", job_id)
                 warnings.append("claim extraction failed; using stub claim ledger")
         else:
-            warnings.append("article_content provided but chat endpoint not configured; using placeholder script")
+            warnings.append(
+                "article_content provided but chat endpoint not configured; using "
+                "placeholder script"
+            )
     if llm_script is None:
         warnings.append("audio is a deterministic placeholder pending TTS implementation")
 
@@ -204,14 +229,20 @@ def run_generation_job(
         # Replace the deterministic script with the LLM-generated one if available.
         if llm_script and artifact.path.endswith("/script.txt"):
             from podcaster.generation import GeneratedArtifact
-            artifact = GeneratedArtifact(artifact.path, llm_script.encode("utf-8"), artifact.content_type)
+            artifact = GeneratedArtifact(
+                artifact.path, llm_script.encode("utf-8"), artifact.content_type
+            )
         # Replace the stub claim ledger with LLM-extracted claims if available.
         if llm_claims_json and artifact.path.endswith("/claim-ledger.json"):
             from podcaster.generation import GeneratedArtifact
-            artifact = GeneratedArtifact(artifact.path, llm_claims_json.encode("utf-8"), artifact.content_type)
+            artifact = GeneratedArtifact(
+                artifact.path, llm_claims_json.encode("utf-8"), artifact.content_type
+            )
         artifact_checksum = checksum(artifact.content)
         if artifact.path.endswith(".mp3"):
-            audio_validation = placeholder_audio_validation(byte_length=len(artifact.content), sha256=artifact_checksum)
+            audio_validation = placeholder_audio_validation(
+                byte_length=len(artifact.content), sha256=artifact_checksum
+            )
         stored_artifact = storage.put_bytes(artifact.path, artifact.content, artifact.content_type)
         stored[artifact.path] = stored_artifact
         checksums[artifact.path] = artifact_checksum
@@ -274,7 +305,11 @@ def run_generation_job(
             "auto_publish_enabled": auto_publish,
             "packet_ready": False,
             "eligible": False,
-            "blocked_by": ["human_review", "synthesis_not_completed", "audio_validation_not_passed"],
+            "blocked_by": [
+                "human_review",
+                "synthesis_not_completed",
+                "audio_validation_not_passed",
+            ],
             "readiness_checks": {
                 "cost_ledger_complete": bool(cost_ledger.get("readiness", {}).get("complete"))
                 if isinstance(cost_ledger.get("readiness"), dict)
@@ -308,10 +343,15 @@ def run_generation_job(
         "warnings": warnings,
     }
     manifest_path = f"jobs/{job_id}/manifest.json"
-    manifest_artifact = storage.put_bytes(manifest_path, manifest_bytes(manifest), "application/json; charset=utf-8")
+    manifest_artifact = storage.put_bytes(
+        manifest_path, manifest_bytes(manifest), "application/json; charset=utf-8"
+    )
+
     def finalize_monthly_budget(content: bytes | None) -> bytes:
         monthly_ledger = load_monthly_ledger(content, month=month)
-        updated_monthly_ledger = update_monthly_ledger(monthly_ledger, job_id=job_id, episode_ledger=cost_ledger)
+        updated_monthly_ledger = update_monthly_ledger(
+            monthly_ledger, job_id=job_id, episode_ledger=cost_ledger
+        )
         return manifest_bytes(updated_monthly_ledger)
 
     storage.update_bytes(monthly_path, "application/json; charset=utf-8", finalize_monthly_budget)
@@ -370,15 +410,25 @@ def _enqueue_synthesis(job_id: str, enqueue: Callable[[str], bool] | None) -> di
     try:
         enqueued = bool(send(job_id))
         if enqueued:
-            return {"status": "enqueued", "enqueued_at": current, "detail": None, "warning": None}
+            return {
+                "status": "enqueued",
+                "enqueued_at": current,
+                "detail": None,
+                "warning": None,
+            }
         return {
             "status": "not_configured",
             "enqueued_at": current,
             "detail": "synthesis queue not configured",
-            "warning": "synthesis queue not configured; job will remain staged until synthesis is replayed",
+            "warning": (
+                "synthesis queue not configured; job will remain staged until synthesis "
+                "is replayed"
+            ),
         }
     except Exception:
-        logging.exception("synthesis enqueue failed job_id=%s; continuing with staged placeholder", job_id)
+        logging.exception(
+            "synthesis enqueue failed job_id=%s; continuing with staged placeholder", job_id
+        )
         return {
             "status": "failed",
             "enqueued_at": current,
@@ -424,7 +474,9 @@ def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "callback": {
             "requested": bool(payload.get("callback")),
             "url_host": urlparse(callback_url).netloc if isinstance(callback_url, str) else None,
-            "secret_name_provided": bool(callback.get("secret_name")) if isinstance(callback, dict) else False,
+            "secret_name_provided": bool(callback.get("secret_name"))
+            if isinstance(callback, dict)
+            else False,
         },
     }
     if isinstance(payload.get("podcast_config"), dict):
@@ -447,14 +499,29 @@ def _cost_override(payload: dict[str, Any]) -> dict[str, Any] | None:
     actor = override.get("actor")
     reason = override.get("reason")
     recorded_at = override.get("recorded_at")
-    if all(isinstance(value, str) and bool(value.strip()) for value in (actor, reason, recorded_at)):
+    if all(
+        isinstance(value, str) and bool(value.strip()) for value in (actor, reason, recorded_at)
+    ):
         return {"actor": actor, "reason": reason, "recorded_at": recorded_at}
     return None
 
 
-def _lifecycle_metadata(payload: dict[str, Any], created_at: str, status: str) -> dict[str, Any]:
-    transitions = [{"at": created_at, "to": "dry_run" if payload.get("dry_run") else "accepted", "reason": "request_validated"}]
-    return {"status": status, "revision": 1, "force": bool(payload.get("force")), "transitions": transitions}
+def _lifecycle_metadata(
+    payload: dict[str, Any], created_at: str, status: str
+) -> dict[str, Any]:
+    transitions = [
+        {
+            "at": created_at,
+            "to": "dry_run" if payload.get("dry_run") else "accepted",
+            "reason": "request_validated",
+        }
+    ]
+    return {
+        "status": status,
+        "revision": 1,
+        "force": bool(payload.get("force")),
+        "transitions": transitions,
+    }
 
 
 def _review_metadata(payload: dict[str, Any]) -> dict[str, Any]:
@@ -529,7 +596,9 @@ def _response_from_artifacts(
     )
 
 
-def _record_enqueue_state(storage: StorageBackend, manifest_path: str, state: dict[str, Any]) -> None:
+def _record_enqueue_state(
+    storage: StorageBackend, manifest_path: str, state: dict[str, Any]
+) -> None:
     content = storage.get_bytes(manifest_path)
     document = json.loads(content.decode("utf-8")) if content else {}
     if not isinstance(document, dict):
