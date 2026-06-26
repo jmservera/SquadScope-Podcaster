@@ -5,8 +5,8 @@ import type { ProgressEvent, StageProgressSummary } from '../api/jobs';
  * the component file only exports a component (React Fast Refresh friendly).
  *
  * Derives a timeline/Gantt view of the pipeline stages
- * (brief → script → record → compose → mux → publish) from the durable progress
- * event stream (#469) and the stage-progress summary (#470).
+ * (queued → brief → script → record → compose → mux → publish) from the durable
+ * progress event stream (#469) and the stage-progress summary (#470).
  */
 
 export type StageStatus = 'completed' | 'in_progress' | 'pending' | 'skipped' | 'failed';
@@ -22,6 +22,7 @@ export interface StageRow {
 
 /** Canonical working stages shown on the timeline, in pipeline order. */
 export const PIPELINE_STAGES: { stage: string; label: string }[] = [
+  { stage: 'queued', label: 'Queued' },
   { stage: 'brief', label: 'Brief' },
   { stage: 'script', label: 'Script' },
   { stage: 'synthesis', label: 'Record' },
@@ -124,6 +125,13 @@ export function buildStageRows(
     // or beyond the furthest reached stage with no events (e.g. on a terminal
     // job whose progress events aged out of the retained window) are left
     // neutral/"pending" rather than mislabelled "skipped" (#474 review).
+    //
+    // The implicit `queued` stage always precedes any real work, so once work
+    // has started (or the job is terminal) treat it as completed rather than
+    // skipped — it was never an optional/bypassed step.
+    if (stage === 'queued' && (maxReached >= 0 || terminal)) {
+      return { stage, label, status: 'completed', startMs: null, endMs: null, durationMs: null };
+    }
     const skipped = index < maxReached;
     return {
       stage,

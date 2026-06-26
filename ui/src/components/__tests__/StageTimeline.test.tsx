@@ -96,6 +96,17 @@ describe('buildStageRows', () => {
     expect(byStage.publish.status).toBe('pending');
   });
 
+  it('renders a queued job with the queued stage active, not all-pending', () => {
+    const events = [ev(1, 'queued', '2026-06-26T12:00:00Z')];
+    const s = summary({ stage: 'queued', updated_at: '2026-06-26T12:00:10Z' });
+    const rows = buildStageRows(events, s);
+    const byStage = Object.fromEntries(rows.map((r) => [r.stage, r]));
+    expect(byStage.queued.status).toBe('in_progress');
+    expect(byStage.brief.status).toBe('pending');
+    // A queued job is not misrepresented as having no progress.
+    expect(rows.some((r) => r.status === 'in_progress')).toBe(true);
+  });
+
   it('does not mark uninstrumented later stages as skipped on a terminal job', () => {
     // Only the brief stage emitted an event before the job reached a terminal
     // state (e.g. later progress events aged out of the retained window). The
