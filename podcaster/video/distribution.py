@@ -275,10 +275,8 @@ def upload_to_youtube(
     # Use the resumable session URI returned in the Location header
     upload_url = resp_headers.get("location", init_url)
 
-    # Files above the single-request ceiling (and any file when the resumable
-    # chunked uploader is available) are uploaded via chunked resumable upload
-    # (#442). Falls back to the single-request path below for small files when
-    # the chunked module is unavailable.
+    # Files above the single-request ceiling are uploaded via the resumable
+    # chunked uploader (#442). Small files use the single-request path below.
     _MAX_SINGLE_UPLOAD_BYTES = 128 * 1024 * 1024
     if file_size > _MAX_SINGLE_UPLOAD_BYTES:
         chunked = _try_chunked_upload(
@@ -533,7 +531,7 @@ def _try_chunked_upload(
     """
     try:
         from podcaster.video.youtube import upload_video
-    except Exception:  # noqa: BLE001 - optional module; degrade gracefully
+    except ImportError:  # noqa: BLE001 - optional module; degrade gracefully
         return None
 
     result = upload_video(
