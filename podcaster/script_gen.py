@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
-from typing import Callable, Mapping
+from dataclasses import dataclass, replace as _dataclass_replace
+from typing import Any, Callable, Mapping
 from urllib.request import Request
 
-from podcaster.config import HistoricalContext, PodcastConfig, ScriptDirections
+from podcaster.config import HistoricalContext, HostConfig, PodcastConfig, ScriptDirections
 from podcaster.sanitization import cap_length, neutralize
 from podcaster.sections import parse_script_sections, sections_to_metadata, validate_sections
 from podcaster.storage import ManagedIdentityTokenCredential
@@ -202,11 +202,122 @@ def _build_section_guidance() -> str:
     )
 
 
+# Human-readable English display names for the script-gen directive, keyed by
+# both bare language code and full locale. The directive instructs the model to
+# author the podcast ORIGINALLY in this language — never to translate English.
+_LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "en-US": "English (US)",
+    "es": "Spanish (Latin American)",
+    "es-419": "Spanish (Latin American)",
+    "es-ES": "Spanish (Spain)",
+    "es-MX": "Spanish (Mexican / Latin American)",
+    "fr": "French",
+    "fr-FR": "French (France)",
+}
+
+
+def language_display_name(language: str, locale: str) -> str:
+    """Best human-readable English display name for a code/locale pair."""
+
+    for key in (locale, language, (language or "").split("-", 1)[0]):
+        if key and key in _LANGUAGE_NAMES:
+            return _LANGUAGE_NAMES[key]
+    return locale or language or "the target language"
+
+
+@dataclass(frozen=True)
+class GenerationContext:
+    """Locale + host personas that drive direct target-language authoring (#434).
+
+    The script is written *originally* in ``language`` — never translated from an
+    English draft. Host personas are language-specific (names + cultural style),
+    not voice-swapped Theo/Vera. ``disclosure`` and ``cta`` are the localized
+    AI-voice disclosure and closing call-to-action; the website itself stays
+    English so the CTA sets that expectation.
+
+    ``from_language_config`` accepts the per-language config block from #432
+    (duck-typed) so the two features compose without a hard import dependency.
+    """
+
+    language: str = "en"
+    locale: str = "en-US"
+    host_a: HostConfig | None = None
+    host_b: HostConfig | None = None
+    disclosure: str = ""
+    cta: str = ""
+
+    @property
+    def is_default_language(self) -> bool:
+        short = (self.language or "").split("-", 1)[0].lower()
+        return short in ("", "en")
+
+    @property
+    def display_name(self) -> str:
+        return language_display_name(self.language, self.locale)
+
+    @classmethod
+    def from_language_config(cls, block: Any) -> "GenerationContext":
+        """Build from a #432 LanguageConfig-shaped object (duck-typed)."""
+
+        return cls(
+            language=getattr(block, "language", "en"),
+            locale=getattr(block, "locale", "en-US"),
+            host_a=getattr(block, "host_a", None),
+            host_b=getattr(block, "host_b", None),
+            disclosure=getattr(block, "disclosure", "") or "",
+            cta=getattr(block, "cta", "") or "",
+        )
+
+    def apply_to(self, podcast_config: PodcastConfig) -> PodcastConfig:
+        """Overlay localized hosts + disclosure onto a base podcast config."""
+
+        updates: dict[str, Any] = {}
+        if self.host_a is not None:
+            updates["host_a"] = self.host_a
+        if self.host_b is not None:
+            updates["host_b"] = self.host_b
+        if self.disclosure.strip():
+            updates["ai_voice_disclosure"] = neutralize(self.disclosure, limit=500)
+        if not updates:
+            return podcast_config
+        return _dataclass_replace(podcast_config, **updates)
+
+
+def _build_language_directive(
+    context: "GenerationContext", podcast_config: PodcastConfig
+) -> str:
+    """Strong instruction block: author originally in the target language."""
+
+    name = neutralize(context.display_name, limit=100)
+    locale = neutralize(context.locale, limit=20)
+    cta = neutralize(context.cta, limit=200)
+    cta_line = (
+        f'   When you point listeners to the site, phrase it like: "{cta}".\n'
+        if cta
+        else ""
+    )
+    return (
+        "\nLANGUAGE (CRITICAL — overrides any English assumption above):\n"
+        f"- Write this ENTIRE podcast ORIGINALLY in {name}. This is NOT a translation: "
+        "do not draft it in English and translate. Compose it natively.\n"
+        f"- Use idioms, humor, rhythm, and cultural references natural to a {locale} "
+        "audience. It must read as authored by native speakers, not localized.\n"
+        "- Keep product names, technical terms, and proper nouns in their original form "
+        "(e.g. GitHub, OIDC, Azure, repository names) — do not translate them.\n"
+        "- All dialogue, section titles, and the AI-voice disclosure must be in "
+        f"{name}.\n"
+        f"- The website {podcast_config.spoken_site} is English. Set that expectation when "
+        "you reference it.\n" + cta_line
+    )
+
+
 def _build_system_prompt(
     podcast_config: PodcastConfig,
     directions: ScriptDirections | None = None,
     historical_context: HistoricalContext | None = None,
     breaking_news: str | None = None,
+    generation_context: "GenerationContext | None" = None,
 ) -> str:
     """Build the system prompt for script generation.
 
@@ -294,6 +405,11 @@ FORMAT RULES (you MUST follow these exactly):
             "Format it naturally — one host announces it, both react and briefly discuss its significance.\n"
         )
 
+    # Direct target-language authoring (#434). Appended last so it overrides any
+    # implicit English assumption earlier in the prompt.
+    if generation_context is not None and not generation_context.is_default_language:
+        base += _build_language_directive(generation_context, podcast_config)
+
     return base
 
 
@@ -343,6 +459,7 @@ def generate_script(
     script_directions: ScriptDirections | None = None,
     historical_context: HistoricalContext | None = None,
     breaking_news: str | None = None,
+    generation_context: GenerationContext | None = None,
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
 ) -> str:
@@ -365,6 +482,11 @@ def generate_script(
 
     podcast_config = podcast_config or PodcastConfig()
 
+    # Overlay localized hosts + disclosure for direct target-language authoring
+    # (#434). English contexts are a no-op, preserving existing behaviour.
+    if generation_context is not None:
+        podcast_config = generation_context.apply_to(podcast_config)
+
     # Sanitize article content (untrusted)
     safe_title = neutralize(article_title, limit=200)
     safe_content = neutralize(article_content, limit=MAX_ARTICLE_CHARS)
@@ -378,6 +500,7 @@ def generate_script(
         script_directions,
         historical_context=historical_context,
         breaking_news=breaking_news,
+        generation_context=generation_context,
     )
     user_prompt = _build_user_prompt(safe_week, safe_title, safe_content, breaking_news=breaking_news)
 
