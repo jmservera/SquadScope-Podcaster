@@ -312,6 +312,45 @@ jobs:
             --output tsv 2>/dev/null || echo "")
           echo "ui_app_fqdn=$ui_fqdn" >> "$GITHUB_OUTPUT"
 
+      - name: Smoke check deployed UI
+        if: ${{ steps.get_fqdn.outputs.ui_app_fqdn != '' }}
+        env:
+          UI_FQDN: ${{ steps.get_fqdn.outputs.ui_app_fqdn }}
+        run: |
+          set -euo pipefail
+          base="https://${UI_FQDN}"
+          echo "Smoke-checking deployed UI at ${base}"
+          # ACA scales to zero — the first request after idle triggers a cold
+          # start, so retry with backoff before declaring the UI unreachable.
+          attempts=10
+          delay=6
+          check() {
+            url="$1"
+            expect_substr="$2"
+            for i in $(seq 1 "$attempts"); do
+              body="$(curl -fsS --max-time 30 "$url" 2>/dev/null || true)"
+              code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$url" 2>/dev/null || echo 000)"
+              if [ "$code" = "200" ] && printf '%s' "$body" | grep -q "$expect_substr"; then
+                echo "OK  ${url} -> 200 (matched '${expect_substr}')"
+                return 0
+              fi
+              echo "  attempt ${i}/${attempts}: ${url} -> ${code} (waiting ${delay}s)"
+              sleep "$delay"
+            done
+            echo "FAIL ${url}: did not return 200 with '${expect_substr}' after ${attempts} attempts" >&2
+            return 1
+          }
+          # SPA shell must be served by nginx.
+          check "${base}/" "<div id=\"root\""
+          # Runtime config must be injected by docker-entrypoint.sh.
+          check "${base}/env-config.js" "window.__ENV"
+          {
+            echo "### UI smoke check passed"
+            echo "- URL: ${base}/"
+            echo "- SPA shell served (200, #root present)"
+            echo "- Runtime env-config.js served (window.__ENV present)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Optionally sync values to SquadScope
         if: ${{ inputs.sync_squadscope == 'true' }}
         env:
