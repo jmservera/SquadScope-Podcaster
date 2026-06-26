@@ -355,6 +355,11 @@ def _normalize_role(role: str) -> str:
     return HOST_A_ROLE
 
 
+# Public alias — tts_providers.py and other modules should import this rather
+# than the private underscore form so internal refactors don't silently break them.
+normalize_role = _normalize_role
+
+
 def _clean(value: str | None) -> str | None:
     if value is None:
         return None
