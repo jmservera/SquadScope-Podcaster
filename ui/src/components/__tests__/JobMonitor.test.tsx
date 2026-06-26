@@ -6,14 +6,25 @@ vi.mock('../../api/jobs', () => ({
   fetchJobs: vi.fn(),
   fetchJobDetail: vi.fn(),
   fetchJobLogs: vi.fn(),
+  fetchJobProgress: vi.fn(),
+  fetchJobProgressSummary: vi.fn(),
 }));
 
-import { fetchJobs, fetchJobDetail, fetchJobLogs, type LogEntry } from '../../api/jobs';
+import {
+  fetchJobs,
+  fetchJobDetail,
+  fetchJobLogs,
+  fetchJobProgress,
+  fetchJobProgressSummary,
+  type LogEntry,
+} from '../../api/jobs';
 import JobMonitor from '../JobMonitor';
 
 const mockFetchJobs = vi.mocked(fetchJobs);
 const mockFetchJobDetail = vi.mocked(fetchJobDetail);
 const mockFetchJobLogs = vi.mocked(fetchJobLogs);
+const mockFetchJobProgress = vi.mocked(fetchJobProgress);
+const mockFetchJobProgressSummary = vi.mocked(fetchJobProgressSummary);
 
 const job = {
   job_id: 'job-1',
@@ -65,6 +76,26 @@ describe('JobMonitor log viewer', () => {
     mockFetchJobs.mockResolvedValue({ jobs: [job], total: 1 });
     mockFetchJobDetail.mockResolvedValue(detail);
     mockFetchJobLogs.mockResolvedValue({ job_id: 'job-1', logs, total: 3, level: null, search: null });
+    mockFetchJobProgress.mockResolvedValue({
+      job_id: 'job-1',
+      current: null,
+      events: [],
+      last_seq: 0,
+      terminal: false,
+    });
+    mockFetchJobProgressSummary.mockResolvedValue({
+      job_id: 'job-1',
+      stage: null,
+      phase: null,
+      segment_index: null,
+      segment_total: null,
+      percent: null,
+      message: null,
+      updated_at: null,
+      terminal: false,
+      eta: null,
+      eta_seconds: null,
+    });
   });
 
   async function openJob() {
