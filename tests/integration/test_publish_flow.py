@@ -69,6 +69,7 @@ def test_audio_only_publish_flow_calls_publish_episode(
                 "week": 25,
                 "article_title": "Audio-only integration",
                 "wav_path": None,
+                "language": "en",
             },
         }
     ]
