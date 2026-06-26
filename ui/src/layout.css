@@ -255,6 +255,61 @@
   background: #2563eb;
 }
 
+.badge-muted {
+  background: #6b7280;
+}
+
+/* Structured log viewer (issue #472) */
+.log-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.log-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.log-filter-field select,
+.log-filter-field input {
+  padding: 6px 8px;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.log-filter-search {
+  flex: 1 1 220px;
+}
+
+.log-filter-search input {
+  width: 100%;
+}
+
+.log-filter-count {
+  margin-left: auto;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.log-row-error {
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.log-row-warning {
+  background: rgba(217, 119, 6, 0.08);
+}
+
+.log-row-debug {
+  opacity: 0.75;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

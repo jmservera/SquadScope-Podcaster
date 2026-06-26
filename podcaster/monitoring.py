@@ -10,7 +10,7 @@ Endpoints:
   POST /api/review                — process review decisions
   GET /api/jobs                   — list recent jobs (paginated)
   GET /api/jobs/{id}              — job detail (manifest + derived status)
-  GET /api/jobs/{id}/logs         — job logs (runner state transitions)
+  GET /api/jobs/{id}/logs         — job logs (structured + runner state), level/search filter
   GET /api/jobs/{id}/progress     — poll real-time progress events (issue #469)
   GET /api/jobs/{id}/progress/stream — SSE stream of progress events (issue #469)
   POST /api/jobs/{id}/video/generate — manually enqueue a video job
@@ -55,6 +55,7 @@ from podcaster.auth import (
 )
 from podcaster.credentials import CredentialStore
 from podcaster.failure_reporting import report_failure
+from podcaster.job_logs import LogLevel, read_logs
 from podcaster.jobs import failed_response, run_generation_job
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
@@ -124,13 +125,22 @@ class JobDetailResponse(BaseModel):
 
 class LogEntry(BaseModel):
     timestamp: str | None = None
+    level: str = LogLevel.INFO
     event: str
+    message: str | None = None
     detail: str | None = None
+    task_id: str | None = None
+    stage: str | None = None
+    seq: int | None = None
+    source: str = "manifest"
 
 
 class JobLogsResponse(BaseModel):
     job_id: str
     logs: list[LogEntry]
+    total: int = 0
+    level: str | None = None
+    search: str | None = None
 
 
 class ProgressResponse(BaseModel):
@@ -315,9 +325,32 @@ def _extract_detail(manifest: dict[str, Any]) -> JobDetailResponse:
     )
 
 
+def _derive_level(event: str, detail: str | None) -> str:
+    """Infer a severity level for a manifest-derived log entry."""
+    haystack = f"{event} {detail or ''}".lower()
+    if any(token in haystack for token in ("failed", "error", "empty_audio")):
+        return LogLevel.ERROR
+    if any(token in haystack for token in ("warning", "warn", "skipped", "drift")):
+        return LogLevel.WARNING
+    return LogLevel.INFO
+
+
 def _extract_logs(manifest: dict[str, Any]) -> list[LogEntry]:
     """Extract log-like entries from lifecycle transitions and runner state."""
     logs: list[LogEntry] = []
+
+    def _add(timestamp: str | None, event: str, detail: str | None, stage: str | None = None) -> None:
+        logs.append(
+            LogEntry(
+                timestamp=timestamp,
+                level=_derive_level(event, detail),
+                event=event,
+                message=detail,
+                detail=detail,
+                stage=stage,
+                source="manifest",
+            )
+        )
 
     # Lifecycle transitions
     lifecycle = manifest.get("lifecycle")
@@ -326,39 +359,82 @@ def _extract_logs(manifest: dict[str, Any]) -> list[LogEntry]:
         if isinstance(transitions, list):
             for t in transitions:
                 if isinstance(t, dict):
-                    logs.append(
-                        LogEntry(
-                            timestamp=t.get("at"),
-                            event=f"transition:{t.get('to', 'unknown')}",
-                            detail=t.get("reason"),
-                        )
-                    )
+                    _add(t.get("at"), f"transition:{t.get('to', 'unknown')}", t.get("reason"))
 
     # Synthesis runner state
     generation = manifest.get("generation")
     if isinstance(generation, dict):
         runner = generation.get("synthesis_runner")
         if isinstance(runner, dict):
-            logs.append(
-                LogEntry(
-                    timestamp=runner.get("completed_at") or runner.get("at"),
-                    event=f"synthesis:{runner.get('status', 'unknown')}",
-                    detail=runner.get("reason"),
-                )
+            _add(
+                runner.get("completed_at") or runner.get("at"),
+                f"synthesis:{runner.get('status', 'unknown')}",
+                runner.get("reason"),
+                stage="synthesis",
             )
 
         # Synthesis queue state
         queue = generation.get("synthesis_queue")
         if isinstance(queue, dict):
-            logs.append(
-                LogEntry(
-                    timestamp=queue.get("enqueued_at"),
-                    event=f"queue:{queue.get('status', 'unknown')}",
-                    detail=queue.get("detail"),
-                )
+            _add(
+                queue.get("enqueued_at"),
+                f"queue:{queue.get('status', 'unknown')}",
+                queue.get("detail"),
             )
 
-    return sorted(logs, key=lambda e: e.timestamp or "")
+    return logs
+
+
+def _structured_logs(document: dict[str, Any] | None) -> list[LogEntry]:
+    """Convert a durable structured-log document into ``LogEntry`` items."""
+    if not document:
+        return []
+    records = document.get("records")
+    if not isinstance(records, list):
+        return []
+    entries: list[LogEntry] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        message = record.get("message")
+        stage = record.get("stage")
+        entries.append(
+            LogEntry(
+                timestamp=record.get("at"),
+                level=LogLevel.normalize(record.get("level")),
+                event=str(stage or record.get("level") or "log"),
+                message=str(message) if message is not None else None,
+                detail=str(message) if message is not None else None,
+                task_id=record.get("task_id"),
+                stage=stage if isinstance(stage, str) else None,
+                seq=record.get("seq") if isinstance(record.get("seq"), int) else None,
+                source="structured",
+            )
+        )
+    return entries
+
+
+def _filter_log_entries(
+    entries: list[LogEntry], *, level: str | None, search: str | None
+) -> list[LogEntry]:
+    """Apply minimum-severity and case-insensitive substring filtering."""
+    min_rank = LogLevel.rank(level) if level else None
+    needle = search.strip().lower() if isinstance(search, str) and search.strip() else None
+
+    out: list[LogEntry] = []
+    for entry in entries:
+        if min_rank is not None and LogLevel.rank(entry.level) < min_rank:
+            continue
+        if needle is not None:
+            haystack = " ".join(
+                str(part)
+                for part in (entry.event, entry.message, entry.detail, entry.task_id, entry.stage)
+                if part
+            ).lower()
+            if needle not in haystack:
+                continue
+        out.append(entry)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -514,8 +590,19 @@ def get_job(job_id: str):
 
 
 @app.get("/api/jobs/{job_id}/logs", response_model=JobLogsResponse, dependencies=[Depends(verify_auth)])
-def get_job_logs(job_id: str):
-    """Get log entries for a specific job (lifecycle transitions + runner state)."""
+def get_job_logs(
+    job_id: str,
+    level: str | None = Query(default=None, description="Minimum severity: debug|info|warning|error"),
+    search: str | None = Query(default=None, description="Case-insensitive substring filter"),
+):
+    """Get log entries for a job, merging durable structured logs (#472) with
+    manifest-derived lifecycle/runner state.
+
+    Supports minimum-severity filtering via ``level`` (e.g. ``warning`` returns
+    warnings and errors) and free-text ``search`` across event/message/task/stage.
+    Entries are ordered by timestamp, then ``seq`` for stable ordering of
+    structured records sharing a timestamp.
+    """
     storage = get_storage()
     manifest_path = f"jobs/{job_id}/manifest.json"
     raw = storage.get_bytes(manifest_path)
@@ -524,7 +611,29 @@ def get_job_logs(job_id: str):
     manifest = _parse_manifest(raw)
     if manifest is None:
         raise HTTPException(status_code=500, detail="Manifest is corrupt")
-    return JobLogsResponse(job_id=job_id, logs=_extract_logs(manifest))
+
+    # Treat blank/whitespace-only params as "not provided" so `?level=%20`
+    # does not silently apply the `info` default and drop `debug` entries, and
+    # the echoed-back filters reflect what was actually applied (#472 review).
+    normalized_level = (
+        LogLevel.normalize(level) if isinstance(level, str) and level.strip() else None
+    )
+    normalized_search = (
+        search.strip() if isinstance(search, str) and search.strip() else None
+    )
+
+    entries = _extract_logs(manifest)
+    entries.extend(_structured_logs(read_logs(storage, job_id)))
+    entries.sort(key=lambda e: (e.timestamp or "", e.seq if e.seq is not None else 0))
+
+    filtered = _filter_log_entries(entries, level=normalized_level, search=normalized_search)
+    return JobLogsResponse(
+        job_id=job_id,
+        logs=filtered,
+        total=len(filtered),
+        level=normalized_level,
+        search=normalized_search,
+    )
 
 
 def _job_exists(storage: StorageBackend, job_id: str) -> bool:
