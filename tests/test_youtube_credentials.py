@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import json
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 import pytest
 
 from podcaster.youtube_credentials import (
+    _UrllibTransport,
     DEFAULT_SECRET_NAME,
     KeyVaultSecretLoader,
     YouTubeCredentialError,
@@ -69,6 +73,42 @@ def test_keyvault_loader_http_error():
     )
     with pytest.raises(YouTubeCredentialError, match="HTTP 403"):
         loader.get_secret("x")
+
+
+# --- _UrllibTransport HTTPError handling --------------------------------------
+
+
+def test_urllib_transport_returns_status_body_on_http_error():
+    """urlopen raises HTTPError for non-2xx; transport must catch and return (code, body)."""
+    err = HTTPError(
+        url="https://example.com",
+        code=403,
+        msg="Forbidden",
+        hdrs={},  # type: ignore[arg-type]
+        fp=io.BytesIO(b"forbidden"),
+    )
+    with patch("podcaster.youtube_credentials.urlopen", side_effect=err):
+        status, body = _UrllibTransport().request("https://example.com")
+    assert status == 403
+    assert body == b"forbidden"
+
+
+def test_urllib_transport_returns_status_body_on_invalid_grant():
+    """HTTPError with 400 + invalid_grant body is surfaced so callers can detect it."""
+    payload = b'{"error":"invalid_grant"}'
+    err = HTTPError(
+        url="https://oauth2.googleapis.com/token",
+        code=400,
+        msg="Bad Request",
+        hdrs={},  # type: ignore[arg-type]
+        fp=io.BytesIO(payload),
+    )
+    with patch("podcaster.youtube_credentials.urlopen", side_effect=err):
+        status, body = _UrllibTransport().request(
+            "https://oauth2.googleapis.com/token", method="POST", data=b"x=y"
+        )
+    assert status == 400
+    assert b"invalid_grant" in body
 
 
 # --- load_youtube_refresh_token -----------------------------------------------

@@ -27,6 +27,7 @@ import json
 import logging
 import os
 from typing import Mapping, Protocol
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -72,8 +73,12 @@ class _Transport(Protocol):
 class _UrllibTransport:
     def request(self, url, *, method="GET", headers=None, data=None):
         req = Request(url, data=data, method=method, headers=headers or {})
-        with urlopen(req, timeout=30) as resp:
-            return resp.status, resp.read()
+        try:
+            with urlopen(req, timeout=30) as resp:
+                return resp.status, resp.read()
+        except HTTPError as exc:
+            body = exc.read()
+            return exc.code, body
 
 
 def _default_credential() -> _TokenCredential:
