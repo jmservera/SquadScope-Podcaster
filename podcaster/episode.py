@@ -23,6 +23,7 @@ import random
 import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ from podcaster.tts import (
     build_voice_plan,
     synthesize_two_voice,
 )
+from podcaster.tts_pool import TtsPoolConfig, load_tts_pool_config
 
 # Per-field caps for sanitized article-derived text embedded in the script.
 _TOPIC_LIMIT = 160
@@ -606,6 +608,8 @@ def synthesize_episode(
     outro_music: Path | None = None,
     music_mix_spec: MusicMixSpec | None = None,
     backchannel_config: BackchannelConfig | None = None,
+    progress: "Callable[[int, int], None] | None" = None,
+    pool: TtsPoolConfig | None = None,
 ) -> EpisodeAudio:
     """Synthesize the two-voice script into validated WAV and MP3 artifacts.
 
@@ -613,6 +617,14 @@ def synthesize_episode(
     turn through the gated :func:`podcaster.tts.synthesize_two_voice` (fails
     closed when ``decision['allowed']`` is false), renders a normalized WAV for
     Spotify upload plus a 192 kbps MP3 for distribution, and validates both.
+
+    ``progress`` (issue #470): forwarded to :func:`synthesize_two_voice` so each
+    synthesized turn reports a live ``(completed, total)`` segment counter.
+
+    The body segments are synthesized through the bounded-concurrency TTS pool
+    (configured via ``PODCASTER_TTS_CONCURRENCY``; default ~6 workers) so a
+    multi-segment episode's TTS wall-clock time drops to roughly ``1/N`` of the
+    sequential time. Pass ``pool`` to override; ``concurrency=1`` is sequential.
     """
 
     effective_config = _apply_podcast_config(config, podcast_config)
@@ -620,6 +632,7 @@ def synthesize_episode(
     if not segments:
         raise ValueError("script produced no spoken segments to synthesize")
 
+    effective_pool = pool or load_tts_pool_config()
     plan = build_voice_plan(segments, effective_config)
     audio_segments = synthesize_two_voice(
         plan,
@@ -627,6 +640,8 @@ def synthesize_episode(
         decision,
         token_provider=token_provider,
         transport=transport,
+        progress=progress,
+        pool=effective_pool,
     )
 
     output_path = Path(output_path)

@@ -29,11 +29,14 @@ network calls are mocked).
 python -m pytest tests/ -v --tb=short | tail -50
 ```
 
-Expected (current `main`):
+Expected: **no failures**. The suite ends with a green summary line such as:
 
 ```
-1880 passed, 1 skipped, 2 deselected in ~48s
+<N> passed, 1 skipped, 2 deselected in ~48s
 ```
+
+(Exact counts grow as tests are added — as of June 2026 / `main` this was
+`1880 passed, 1 skipped, 2 deselected`. Treat any *failed* as a regression.)
 
 - The 2 *deselected* tests are `slow`-marked (Playwright/network).
 - The 1 *skipped* test is environment-gated.

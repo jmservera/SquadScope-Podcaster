@@ -32,6 +32,7 @@ from typing import Any
 from podcaster.audio import MusicMixSpec
 from podcaster.config import BackchannelConfig, MusicMixConfig, PodcastConfig, SpotifyPublishConfig
 from podcaster.failure_reporting import report_failure
+from podcaster.notifications import notify_failure
 from podcaster.pipeline_lock import PIPELINE_AUDIO, claim_pipeline
 from podcaster.progress import PipelineStage, emit_progress
 from podcaster.episode import (
@@ -248,6 +249,22 @@ def run_synthesis(
                 message=f"recording {segment_total} segments" if segment_total else "recording",
                 at=current,
             )
+
+            # Per-segment in-flight progress (issue #470): each synthesized turn
+            # advances the "recording N/M" counter so the stage-progress summary
+            # and its ETA reflect real progress rather than a single coarse start
+            # event.  Best-effort — emit_progress already swallows failures.
+            def _on_segment(completed: int, total: int) -> None:
+                emit_progress(
+                    storage,
+                    job_id,
+                    stage=PipelineStage.SYNTHESIS,
+                    phase="recording",
+                    segment_index=completed,
+                    segment_total=total,
+                    message=f"recording {completed}/{total} segments",
+                )
+
             episode_audio = synthesize_episode(
                 script,
                 config,
@@ -261,6 +278,7 @@ def run_synthesis(
                 outro_music=outro_music,
                 music_mix_spec=mix_spec,
                 backchannel_config=backchannel_config,
+                progress=_on_segment,
             )
             mp3_bytes = output_path.read_bytes()
             wav_bytes = episode_audio.wav_output_path.read_bytes()
@@ -610,6 +628,15 @@ def process_message(
                 error_type="RetryExhausted",
                 error_message=f"Synthesis failed after {message.dequeue_count} attempts for job_id={job_id}",
                 details={"job_id": job_id, "dequeue_count": message.dequeue_count},
+            )
+            notify_failure(
+                job_id=job_id,
+                stage="synthesis",
+                error_type="RetryExhausted",
+                error_summary=(
+                    f"Synthesis failed after {message.dequeue_count} attempts "
+                    f"for job_id={job_id}"
+                ),
             )
             queue.delete_message(message)
             return SynthesisOutcome(job_id, STATUS_FAILED, reason=REASON_RETRY_EXHAUSTED)
