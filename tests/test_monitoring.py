@@ -872,3 +872,103 @@ class TestPodcastConfigMonitoring:
             headers=headers,
         )
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /api/jobs/{id}/progress and /progress/stream (issue #469)
+# ---------------------------------------------------------------------------
+
+from podcaster.progress import PipelineStage, emit_progress  # noqa: E402
+
+
+def _store_manifest(storage, job_id: str) -> None:
+    manifest = _make_manifest(job_id)
+    storage.put_bytes(
+        f"jobs/{job_id}/manifest.json",
+        json.dumps(manifest).encode(),
+        "application/json",
+    )
+
+
+class TestProgressPoll:
+    def test_unknown_job_404(self, client, storage):
+        resp = client.get("/api/jobs/missing/progress")
+        assert resp.status_code == 404
+
+    def test_job_without_progress_returns_empty(self, client, storage):
+        _store_manifest(storage, "job-1")
+        resp = client.get("/api/jobs/job-1/progress")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["job_id"] == "job-1"
+        assert data["current"] is None
+        assert data["events"] == []
+        assert data["terminal"] is False
+
+    def test_returns_events_and_current(self, client, storage):
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=3)
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=2, segment_total=3)
+
+        resp = client.get("/api/jobs/job-1/progress")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["events"]) == 2
+        assert data["last_seq"] == 2
+        assert data["current"]["segment_index"] == 2
+        assert data["terminal"] is False
+
+    def test_since_cursor_filters_events(self, client, storage):
+        _store_manifest(storage, "job-1")
+        for _ in range(4):
+            emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS)
+
+        resp = client.get("/api/jobs/job-1/progress", params={"since": 2})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [e["seq"] for e in data["events"]] == [3, 4]
+        assert data["last_seq"] == 4
+
+    def test_terminal_flag_set_on_completion(self, client, storage):
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS)
+        emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED, percent=100.0)
+
+        resp = client.get("/api/jobs/job-1/progress")
+        assert resp.json()["terminal"] is True
+
+
+class TestProgressStream:
+    def test_unknown_job_404(self, client, storage):
+        resp = client.get("/api/jobs/missing/progress/stream")
+        assert resp.status_code == 404
+
+    def test_stream_emits_terminal_events_and_closes(self, client, storage):
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=2)
+        emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED, percent=100.0)
+
+        # The stream terminates immediately because the latest event is terminal.
+        resp = client.get("/api/jobs/job-1/progress/stream")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        body = resp.text
+        data_lines = [line for line in body.splitlines() if line.startswith("data: ")]
+        assert len(data_lines) == 2
+        first = json.loads(data_lines[0][len("data: "):])
+        assert first["stage"] == PipelineStage.SYNTHESIS
+        last = json.loads(data_lines[1][len("data: "):])
+        assert last["stage"] == PipelineStage.COMPLETED
+        assert ": end" in body
+
+    def test_stream_resumes_from_since(self, client, storage):
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS)
+        emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED)
+
+        resp = client.get("/api/jobs/job-1/progress/stream", params={"since": 1})
+        assert resp.status_code == 200
+        data_lines = [line for line in resp.text.splitlines() if line.startswith("data: ")]
+        # Only the event after seq=1 should be replayed.
+        assert len(data_lines) == 1
+        assert json.loads(data_lines[0][len("data: "):])["stage"] == PipelineStage.COMPLETED
