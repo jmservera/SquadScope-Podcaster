@@ -2323,6 +2323,39 @@ class TestComposePairwiseParallel:
         for cmd in xfades:
             assert cmd.count("-i") == 2  # constant memory: 2 inputs per pass
 
+    def test_disk_budget_scales_with_per_level_workers(self, tmp_path, monkeypatch):
+        """The disk-budget estimate uses each level's *actual* concurrency, so the
+        single-pair root level budgets for one pass — not the global concurrency
+        (issue #481 review: avoid over-estimating and spurious disk errors)."""
+        size = 1024
+        n = 4  # level 0 -> 2 pairs (workers=2); root -> 1 pair (workers=1)
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        for p in paths:
+            p.write_bytes(b"x" * size)
+
+        requested: list[int] = []
+
+        def _fake_budget(work_dir, needed):
+            requested.append(needed)
+
+        monkeypatch.setattr(vc, "ensure_disk_budget", _fake_budget)
+
+        def _run(cmd):
+            # Materialize the output so intermediate inputs exist for the next
+            # level's budget computation, at the same fixed size.
+            Path(str(cmd[-1])).write_bytes(b"x" * size)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        vc._compose_pairwise_parallel(
+            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+            None, None, tmp_path / "out.mp4", _run, tmp_path, concurrency=2,
+        )
+
+        # Each pair has two inputs of ``size`` -> sum*2 == 4*size per pass.
+        # Level-0 pairs (workers=2) request 2x that; the root pass (workers=1) 1x.
+        assert max(requested) == 4 * size * 2  # a level-0 pass with 2 workers
+        assert requested[-1] == 4 * size * 1   # the final root pass, 1 worker
+
     def test_combine_failure_releases_inputs_and_drops_partial_output(self, tmp_path):
         """A failed xfade pass must reclaim disk: release the fetched leaf inputs
         and remove any partially-written output (issue #481 review)."""

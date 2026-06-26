@@ -1608,13 +1608,14 @@ def _compose_pairwise_parallel(
     _fetch = fetch or (lambda _p: None)
     _release = release or (lambda _p: None)
 
-    def _budget(*paths: Path) -> None:
+    def _budget(*paths: Path, workers: int = 1) -> None:
         sizes = [p.stat().st_size for p in paths if p.exists()]
-        # Up to ``concurrency`` pair-composes run simultaneously, each holding
-        # roughly its inputs + output on disk.  Budget for that concurrent peak
-        # so the check does not under-estimate when several workers run together
-        # (issue #481 review).
-        ensure_disk_budget(work_dir, sum(sizes) * 2 * max(1, concurrency))
+        # ``workers`` pair-composes run simultaneously at this level, each holding
+        # roughly its inputs + output on disk.  Budget for that level's actual
+        # concurrent peak so the check neither under-estimates when several
+        # workers run together nor over-estimates on sparse levels such as the
+        # single-pair root (issue #481 review).
+        ensure_disk_budget(work_dir, sum(sizes) * 2 * max(1, workers))
 
     n = len(normalized_paths)
     has_dog = dog_logo is not None and dog_logo_path is not None
@@ -1654,7 +1655,8 @@ def _compose_pairwise_parallel(
             _release(item.path)
 
     def _combine(
-        left: _ComposeItem, right: _ComposeItem, out_path: Path, preset: str
+        left: _ComposeItem, right: _ComposeItem, out_path: Path, preset: str,
+        workers: int = 1,
     ) -> _ComposeItem:
         # The boundary between the two contiguous ranges is left.last_seg, so it
         # uses that boundary's selected transition; the xfade offset is relative
@@ -1670,7 +1672,7 @@ def _compose_pairwise_parallel(
             fetched.append(left)
             _fetch(right.path)
             fetched.append(right)
-            _budget(left.path, right.path)
+            _budget(left.path, right.path, workers=workers)
 
             # Bake both items' pending lower-thirds, shifted into this node's
             # local time (its local origin is the left item's absolute start).
@@ -1743,14 +1745,14 @@ def _compose_pairwise_parallel(
             )
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futs = {
-                    pool.submit(_combine, left, right, out_path, preset): k
+                    pool.submit(_combine, left, right, out_path, preset, workers): k
                     for k, left, right, out_path, preset in tasks
                 }
                 for fut in futs:
                     results[futs[fut]] = fut.result()
         else:
             for k, left, right, out_path, preset in tasks:
-                results[k] = _combine(left, right, out_path, preset)
+                results[k] = _combine(left, right, out_path, preset, workers)
 
         next_items = [r for r in results if r is not None]
         if carry is not None:
