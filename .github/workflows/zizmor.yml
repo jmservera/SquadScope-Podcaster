@@ -20,8 +20,9 @@ on:
       - '.github/workflows/**'
   workflow_dispatch:
 
-permissions:
-  contents: read
+# No workflow-wide token permissions: each job declares the minimum it needs.
+# Keeping this empty prevents future jobs from silently inheriting scopes.
+permissions: {}
 
 jobs:
   zizmor-scan:
@@ -30,12 +31,11 @@ jobs:
     permissions:
       contents: read
       security-events: write
-      actions: read
     continue-on-error: true
     steps:
       - name: Checkout repository
-        # actions/checkout v6.0.3
-        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
+        # actions/checkout v6.0.3 (commit SHA, not the annotated tag object)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           persist-credentials: false
 
@@ -61,5 +61,8 @@ jobs:
         uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d
         with:
           inputs: ${{ steps.zizmor-inputs.outputs.inputs }}
+          # Pin the zizmor CLI so findings stay stable across Phases A/B/C
+          # (matches the documented baseline in docs/linting.md).
+          version: 1.25.2
           # SARIF is uploaded to GitHub Code Scanning automatically.
           advanced-security: true
