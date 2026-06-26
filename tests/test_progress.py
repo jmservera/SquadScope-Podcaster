@@ -12,6 +12,7 @@ from podcaster.progress import (
     PipelineStage,
     emit_progress,
     events_since,
+    filter_events_since,
     is_terminal,
     progress_path,
     read_progress,
@@ -167,3 +168,60 @@ def test_document_is_valid_json_bytes():
     assert raw is not None
     parsed = json.loads(raw.decode("utf-8"))
     assert parsed["events"][0]["message"] == "done"
+
+
+def test_emit_recovers_from_malformed_seq_in_existing_events():
+    storage = MemoryStorageBackend()
+    storage._blobs[progress_path("job-1")] = json.dumps(
+        {
+            "schema_version": PROGRESS_SCHEMA_VERSION,
+            "job_id": "job-1",
+            "events": [
+                {"seq": 1, "stage": "brief"},
+                {"seq": "x", "stage": "script"},  # corrupted seq
+                {"seq": 3, "stage": "synthesis"},
+            ],
+        }
+    ).encode("utf-8")
+    event = emit_progress(storage, "job-1", stage=PipelineStage.COMPOSE, at=_at(0))
+    # next_seq derived from highest valid seq (3), not crashing on "x".
+    assert event is not None and event.seq == 4
+
+
+def test_events_since_skips_malformed_seq():
+    storage = MemoryStorageBackend()
+    storage._blobs[progress_path("job-1")] = json.dumps(
+        {
+            "events": [
+                {"seq": 1, "stage": "brief"},
+                {"seq": "bad", "stage": "script"},
+                {"seq": 2, "stage": "synthesis"},
+            ],
+        }
+    ).encode("utf-8")
+    # No raise; malformed event skipped, valid ones returned.
+    out = events_since(storage, "job-1", 0)
+    assert [e["seq"] for e in out] == [1, 2]
+
+
+def test_filter_events_since_filters_and_skips_bad():
+    events = [
+        {"seq": 1},
+        {"seq": "x"},
+        {"seq": 5},
+        "not-a-dict",
+    ]
+    assert [e["seq"] for e in filter_events_since(events, 1)] == [5]
+
+
+def test_derive_percent_clamps_negative_segment_index():
+    storage = MemoryStorageBackend()
+    event = emit_progress(
+        storage,
+        "job-1",
+        stage=PipelineStage.SYNTHESIS,
+        segment_index=-1,
+        segment_total=10,
+        at=_at(0),
+    )
+    assert event is not None and event.percent == 0.0

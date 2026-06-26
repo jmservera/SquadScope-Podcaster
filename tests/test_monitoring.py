@@ -33,6 +33,9 @@ class MemoryStorageBackend:
     def get_bytes(self, path: str) -> bytes | None:
         return self._blobs.get(path)
 
+    def blob_exists(self, path: str) -> bool:
+        return path in self._blobs
+
     def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> Any:
         current = self._blobs.get(path)
         updated = update(current)
