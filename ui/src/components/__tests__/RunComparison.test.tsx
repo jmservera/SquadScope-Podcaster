@@ -165,6 +165,32 @@ describe('RunComparison component', () => {
     expect(screen.getByText('70%')).toBeInTheDocument();
   });
 
+  it('falls back to list metadata when job detail fails', async () => {
+    // Detail call fails for job-a; its label/order must still come from the list.
+    mockFetchJobDetail.mockImplementation((id: string) =>
+      id === 'job-a'
+        ? Promise.reject(new Error('boom'))
+        : Promise.resolve({
+            job_id: id,
+            status: 'published',
+            created_at: '2026-06-26T10:00:00Z',
+            expires_at: null,
+            week: null,
+            article_url: null,
+            article_title: id.toUpperCase(),
+            generation: null,
+            publishing: null,
+            lifecycle: null,
+            quality_score: 0.7,
+            warnings: null,
+          })
+    );
+    render(<RunComparison />);
+    // Falls back to the list's article_title ('A') rather than missing metadata.
+    await waitFor(() => expect(screen.getByText('A')).toBeInTheDocument());
+    expect(screen.getByText('JOB-B')).toBeInTheDocument();
+  });
+
   it('reloads when the run count selector changes', async () => {
     render(<RunComparison />);
     await waitFor(() => expect(mockFetchJobs).toHaveBeenCalledWith(5, 0));
