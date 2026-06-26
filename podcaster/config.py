@@ -322,13 +322,33 @@ def validate_language_block(language: str, payload: object) -> None:
             raise ValueError(f"language {language!r}: {key} must be an object")
 
     hosts = payload.get("hosts")
-    if hosts is not None and not isinstance(hosts, (list, tuple)):
-        raise ValueError(f"language {language!r}: hosts must be an array")
+    if hosts is not None:
+        if not isinstance(hosts, (list, tuple)):
+            raise ValueError(f"language {language!r}: hosts must be an array")
+        for i, entry in enumerate(hosts):
+            if not isinstance(entry, Mapping):
+                raise ValueError(f"language {language!r}: hosts[{i}] must be an object")
 
-    for key in ("voices", "prompts"):
-        value = payload.get(key)
-        if value is not None and not isinstance(value, Mapping):
-            raise ValueError(f"language {language!r}: {key} must be an object")
+    voices = payload.get("voices")
+    if voices is not None:
+        if not isinstance(voices, Mapping):
+            raise ValueError(f"language {language!r}: voices must be an object")
+        for vkey in ("host_a", "host_b"):
+            vval = voices.get(vkey)
+            if vval is not None and (not isinstance(vval, str) or not vval.strip()):
+                raise ValueError(
+                    f"language {language!r}: voices.{vkey} must be a non-empty string"
+                )
+
+    prompts = payload.get("prompts")
+    if prompts is not None:
+        if not isinstance(prompts, Mapping):
+            raise ValueError(f"language {language!r}: prompts must be an object")
+        for pkey, pval in prompts.items():
+            if not isinstance(pval, str) or not pval.strip():
+                raise ValueError(
+                    f"language {language!r}: prompts[{pkey!r}] must be a non-empty string"
+                )
 
     for key in ("show_name", "showName", "disclosure", "cta"):
         value = payload.get(key)

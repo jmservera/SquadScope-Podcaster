@@ -131,6 +131,30 @@ def test_validate_language_block_rejects_malformed():
         validate_language_block("", {})
 
 
+def test_validate_language_block_rejects_malformed_contents():
+    # hosts[] entries must be objects.
+    with pytest.raises(ValueError, match=r"hosts\[0\].*must be an object"):
+        validate_language_block("es", {"hosts": ["not-an-object"]})
+    with pytest.raises(ValueError, match=r"hosts\[1\].*must be an object"):
+        validate_language_block("es", {"hosts": [{"name": "A"}, 42]})
+
+    # voices.host_a / voices.host_b must be non-empty strings when provided.
+    with pytest.raises(ValueError, match=r"voices\.host_a.*non-empty string"):
+        validate_language_block("es", {"voices": {"host_a": ""}})
+    with pytest.raises(ValueError, match=r"voices\.host_b.*non-empty string"):
+        validate_language_block("es", {"voices": {"host_b": 123}})
+    # Omitting a voice key is fine (no override).
+    validate_language_block("es", {"voices": {"host_a": "v-es-1"}})
+
+    # prompts values must be non-empty strings.
+    with pytest.raises(ValueError, match=r"prompts\[.*\].*non-empty string"):
+        validate_language_block("es", {"prompts": {"intro": ""}})
+    with pytest.raises(ValueError, match=r"prompts\[.*\].*non-empty string"):
+        validate_language_block("es", {"prompts": {"intro": None}})
+    # Well-formed prompts don't raise.
+    validate_language_block("es", {"prompts": {"intro": "Hola", "outro": "Hasta luego"}})
+
+
 def test_default_for_unknown_language_uses_english_voices_and_code_locale():
     block = LanguageConfig.default_for("pt")
     assert block.locale == "pt"  # unknown code: locale defaults to the code
