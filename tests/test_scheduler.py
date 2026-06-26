@@ -229,7 +229,10 @@ def test_failure_blocks_only_dependents():
     result = run_dag(tasks)
     assert not result.succeeded
     assert result.tasks["fail"].state == TaskState.FAILED
-    assert "kaboom" in (result.tasks["fail"].error or "")
+    # Error records only the exception type (no message), so secrets in
+    # exception text can never leak into results/logs.
+    assert result.tasks["fail"].error == "RuntimeError"
+    assert "kaboom" not in (result.tasks["fail"].error or "")
     assert result.tasks["downstream"].state == TaskState.BLOCKED
     # The independent branch still ran to completion.
     assert result.tasks["independent"].state == TaskState.COMPLETED

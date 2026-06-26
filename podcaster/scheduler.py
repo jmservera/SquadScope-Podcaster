@@ -505,9 +505,12 @@ def run_dag(
         try:
             value = task.run()
             state = TaskState.COMPLETED
-        except BaseException as exc:  # noqa: BLE001 — record any failure
+        except Exception as exc:  # noqa: BLE001 — record any task failure
             state = TaskState.FAILED
-            error = f"{type(exc).__name__}: {exc}"
+            # Record only the exception type — never the message, which may
+            # contain secrets (repo policy: API keys must not appear in logs
+            # or error strings). Mirrors podcaster/job_runner.py.
+            error = type(exc).__name__
             logger.warning("task %s failed: %s", task.id, error)
         finished = _now_iso()
         with cond:
