@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 
 import StageTimeline from '../StageTimeline';
-import { buildStageRows, PIPELINE_STAGES } from '../stageTimeline';
+import { buildStageRows, stageStatusBadge, PIPELINE_STAGES } from '../stageTimeline';
 import type { ProgressEvent, StageProgressSummary } from '../../api/jobs';
 
 function ev(seq: number, stage: string, at: string): ProgressEvent {
@@ -94,6 +94,28 @@ describe('buildStageRows', () => {
     expect(byStage.synthesis.status).toBe('skipped');
     expect(byStage.compose.status).toBe('in_progress');
     expect(byStage.publish.status).toBe('pending');
+  });
+
+  it('does not mark uninstrumented later stages as skipped on a terminal job', () => {
+    // Only the brief stage emitted an event before the job reached a terminal
+    // state (e.g. later progress events aged out of the retained window). The
+    // un-observed later stages must stay neutral/"pending", not "skipped",
+    // since the data does not prove they were skipped (#474 review).
+    const events = [ev(1, 'brief', '2026-06-26T12:00:00Z')];
+    const s = summary({ stage: 'completed', terminal: true, updated_at: '2026-06-26T12:05:00Z' });
+    const rows = buildStageRows(events, s);
+    const byStage = Object.fromEntries(rows.map((r) => [r.stage, r]));
+    expect(byStage.brief.status).toBe('completed');
+    expect(byStage.script.status).toBe('pending');
+    expect(byStage.synthesis.status).toBe('pending');
+    expect(byStage.publish.status).toBe('pending');
+    expect(rows.some((r) => r.status === 'skipped')).toBe(false);
+  });
+
+  it('maps skipped to a neutral badge matching the grey bar', () => {
+    expect(stageStatusBadge('skipped')).toBe('badge-muted');
+    expect(stageStatusBadge('completed')).toBe('badge-success');
+    expect(stageStatusBadge('failed')).toBe('badge-error');
   });
 });
 

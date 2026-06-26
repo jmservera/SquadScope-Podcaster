@@ -119,8 +119,12 @@ export function buildStageRows(
       return { stage, label, status, startMs: iv.startMs, endMs, durationMs };
     }
 
-    // Stage never produced an event.
-    const skipped = index < maxReached || (terminal && !failed);
+    // Stage never produced an event. Only infer "skipped" when a *later* stage
+    // produced an event — that proves this earlier stage was passed. Stages at
+    // or beyond the furthest reached stage with no events (e.g. on a terminal
+    // job whose progress events aged out of the retained window) are left
+    // neutral/"pending" rather than mislabelled "skipped" (#474 review).
+    const skipped = index < maxReached;
     return {
       stage,
       label,
@@ -158,7 +162,9 @@ export function stageStatusBadge(status: StageStatus): string {
     case 'failed':
       return 'badge-error';
     case 'skipped':
-      return 'badge-warning';
+      // Neutral grey to match the grey `.stage-bar-skipped` bar — a skipped
+      // stage was not run, not an alert/warning state (#474 review).
+      return 'badge-muted';
     default:
       return 'badge-muted';
   }

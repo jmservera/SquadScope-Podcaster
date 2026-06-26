@@ -65,6 +65,7 @@ const JobMonitor: React.FC = () => {
   const [logsLoading, setLogsLoading] = useState(false);
   const [progressEvents, setProgressEvents] = useState<ProgressEvent[]>([]);
   const [progressSummary, setProgressSummary] = useState<StageProgressSummary | null>(null);
+  const [progressWarning, setProgressWarning] = useState<string | null>(null);
 
   useEffect(() => {
     loadJobs();
@@ -86,20 +87,33 @@ const JobMonitor: React.FC = () => {
 
   async function selectJob(jobId: string) {
     setDetailError(null);
+    setProgressWarning(null);
     setLogsLoading(true);
     setProgressEvents([]);
     setProgressSummary(null);
     try {
+      // Progress is optional: a job may have no progress document yet. Capture
+      // failures separately so an errored progress call surfaces a warning
+      // instead of being indistinguishable from "no progress" (#474 review),
+      // while job detail and logs still render.
+      let progressFailed = false;
+      const onProgressError = () => {
+        progressFailed = true;
+        return null;
+      };
       const [detail, logsData, progress, summary] = await Promise.all([
         fetchJobDetail(jobId),
         fetchJobLogs(jobId),
-        fetchJobProgress(jobId).catch(() => null),
-        fetchJobProgressSummary(jobId).catch(() => null),
+        fetchJobProgress(jobId).catch(onProgressError),
+        fetchJobProgressSummary(jobId).catch(onProgressError),
       ]);
       setSelectedJob(detail);
       setLogs(logsData.logs);
       setProgressEvents(progress?.events ?? []);
       setProgressSummary(summary);
+      if (progressFailed) {
+        setProgressWarning('Stage progress could not be loaded; the timeline may be incomplete.');
+      }
     } catch (err) {
       setDetailError(err instanceof Error ? err.message : 'Failed to load job detail');
     } finally {
@@ -206,6 +220,9 @@ const JobMonitor: React.FC = () => {
           </dl>
 
           <h3>Pipeline Stages</h3>
+          {progressWarning && (
+            <p className="warning-text section-spacing" role="status">{progressWarning}</p>
+          )}
           <StageTimeline events={progressEvents} summary={progressSummary} />
 
           <h3>Logs</h3>
