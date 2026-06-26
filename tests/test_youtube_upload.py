@@ -92,7 +92,11 @@ class _FakeTransport:
         if crange == f"bytes */{self.total}":
             if self.received >= self.total:
                 return 200, {}, json.dumps({"id": self.video_id}).encode()
-            return 308, {"range": f"bytes=0-{self.received - 1}"}, b""
+            # Only include Range header when at least one byte has been received;
+            # "bytes=0--1" is invalid per the resumable-upload spec.
+            if self.received > 0:
+                return 308, {"range": f"bytes=0-{self.received - 1}"}, b""
+            return 308, {}, b""
 
         # A data chunk: "bytes {start}-{end}/{total}".
         prefix, rng = crange.split(" ", 1)
@@ -170,6 +174,60 @@ def test_upload_chunked_resumes_after_transient_failure(tmp_path):
     assert any(
         r[1].get("Content-Range") == f"bytes */{total}" for r in t.requests
     )
+
+
+def test_upload_chunked_308_without_range_header_re_queries_offset(tmp_path):
+    """A 308 with no Range header must re-query the server offset, not advance blindly."""
+
+    total = 3 * _GRANULE
+    path = _make_file(tmp_path, total)
+
+    class _NoRangeTransport:
+        """Returns 308 without Range on the first chunk, then normal 308/200."""
+
+        def __init__(self):
+            self.received = 0
+            self.calls = 0
+            self.session_uri = "https://upload.example/no-range-session"
+
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            headers = headers or {}
+            crange = headers.get("Content-Range", "")
+
+            if "uploadType=resumable" in url:
+                return 200, {"location": self.session_uri}, b""
+
+            # Status query
+            if crange == f"bytes */{total}":
+                if self.received > 0:
+                    return 308, {"range": f"bytes=0-{self.received - 1}"}, b""
+                return 308, {}, b""
+
+            # Data chunk
+            span = crange.split(" ", 1)[1].split("/")[0]
+            start, end = (int(x) for x in span.split("-"))
+            self.calls += 1
+
+            # First chunk: return 308 WITHOUT a Range header
+            if self.calls == 1:
+                return 308, {}, b""
+
+            # Subsequent chunks: accept normally
+            self.received = end + 1
+            if self.received >= total:
+                import json as _json
+                return 200, {}, _json.dumps({"id": "vid-norange"}).encode()
+            return 308, {"range": f"bytes=0-{end}"}, b""
+
+    t = _NoRangeTransport()
+    result = upload_chunked(
+        t, t.session_uri, "tok", path, total, chunk_size=_GRANULE, sleep=lambda s: None
+    )
+    # Upload must still complete successfully; the missing-Range 308 must not
+    # cause bytes to be silently skipped.
+    assert result.succeeded
+    assert result.video_id == "vid-norange"
+    assert result.bytes_uploaded == total
 
 
 def test_upload_chunked_non_retryable_fails(tmp_path):

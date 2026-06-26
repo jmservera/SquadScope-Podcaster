@@ -274,7 +274,15 @@ def upload_chunked(
                 return _finalize(body, total_size)
             if status == 308:
                 end_ack = parse_range_end(headers.get("range"))
-                start = end_ack + 1 if end_ack is not None else end + 1
+                if end_ack is not None:
+                    start = end_ack + 1
+                else:
+                    # No Range header means the server's acknowledged offset is
+                    # unknown (could be 0).  Query the real offset rather than
+                    # blindly advancing past the chunk we just sent.
+                    start = _resume_after_failure(
+                        http, session_uri, access_token, total_size, fallback=start
+                    )
                 transient_retries = 0
                 continue
             if status in _TRANSIENT_STATUSES:
