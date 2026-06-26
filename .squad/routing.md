@@ -9,6 +9,7 @@ How to decide who handles what.
 | API, ACA, Bicep, CI/CD, secrets automation | Bender | `podcaster/api.py`, `infra/main.bicep`, deploy workflow, contract wiring |
 | Script, transcript, show notes, TTS-ready copy | Farnsworth | Episode scripts, prompts, transcript standards, TTS bakeoff criteria |
 | Secrets, logging policy, permissions, threat model | Hermes | API-key handling, workflow permission scoping, release safety checklist |
+| DevSecOps guardrails (lint/security CI, hooks, dependency & secret scanning) | Hermes | Ruff/Checkov/zizmor/Trivy config, pre-commit hooks, `docs/linting.md`, infra/Dockerfile/workflow security review |
 | SquadScope integration UX, publishing packet, distribution research | Amy | Link-only integration, packet usability, Spotify/host research framing |
 | Test coverage, dry runs, response-shape regression | Fry | `tests/`, edge cases, smoke scripts, validation scenarios |
 | Code review | Fry / Leela / Hermes | Review PRs, check quality, security, contract stability |

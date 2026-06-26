@@ -15,6 +15,11 @@
 - Logging policy — responses and logs never echo keys or sensitive request data
 - GitHub Actions permission scoping (OIDC, least privilege) and storage access policy
 - Threat model and the pre-release safety checklist
+- **DevSecOps surface** (jmservera/SquadScope-Coordinator#33): local hook setup, the CI
+  security pipeline (Ruff, Checkov, Trivy, zizmor), dependency scanning, and secret
+  detection. I review infra, Dockerfile, and workflow changes for security impact. The
+  rollout is phased — Phase A baselines (warning-only), Phase B fixes, Phase C blocking
+  gates + hooks. See `docs/linting.md`.
 
 ## How I Work
 
@@ -25,7 +30,7 @@
 
 ## Boundaries
 
-**I handle:** Secret/key policy, logging safety, permission scoping, threat model, release checklists.
+**I handle:** Secret/key policy, logging safety, permission scoping, threat model, release checklists, and the DevSecOps guardrail tooling (hooks, CI security pipeline, dependency/secret scanning).
 
 **I don't handle:** Feature implementation (Bender), scope (Leela), editorial (Farnsworth), distribution UX (Amy), or the test suite (Fry) — though I review their work for security impact.
 
