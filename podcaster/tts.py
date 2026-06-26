@@ -21,11 +21,14 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Callable, Mapping, TYPE_CHECKING
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from podcaster.storage import ManagedIdentityTokenCredential
+
+if TYPE_CHECKING:
+    from podcaster.tts_pool import TtsPoolConfig
 
 PROVIDER = "openai-tts"
 AUTH_MODE_MANAGED_IDENTITY = "managed_identity"
@@ -323,6 +326,7 @@ def synthesize_two_voice(
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
     progress: Callable[[int, int], None] | None = None,
+    pool: "TtsPoolConfig | None" = None,
 ) -> list[bytes]:
     """Synthesize every turn, but only when the gating decision allows it.
 
@@ -334,6 +338,14 @@ def synthesize_two_voice(
     ``progress(completed, total)`` after each turn so callers can surface a live
     "recording N/M" counter for an in-flight job.  A failing callback never
     aborts synthesis.
+
+    When ``pool`` is supplied, segments are synthesized through the bounded
+    :func:`podcaster.tts_pool.synthesize_plan_concurrent` pool, which owns both
+    concurrency *and* the retry/backoff policy and keeps results in plan order
+    (``progress`` is forwarded and fires as each segment completes). A pool
+    sized to one worker (or a single-turn plan) still runs sequentially but
+    retains the pool's rate-limit retry handling. With ``pool`` omitted the
+    calls run sequentially with no retries, which is the historical behaviour.
     """
 
     if not decision.get("allowed"):
@@ -341,6 +353,19 @@ def synthesize_two_voice(
         raise PermissionError(f"tts synthesis is blocked: {', '.join(map(str, blocked_by))}")
     if not plan:
         raise ValueError("voice plan is empty")
+    if pool is not None:
+        # Lazy import keeps tts_pool's dependency on this module one-directional.
+        from podcaster.tts_pool import synthesize_plan_concurrent
+
+        return synthesize_plan_concurrent(
+            plan,
+            config,
+            decision,
+            pool=pool,
+            token_provider=token_provider,
+            transport=transport,
+            progress=progress,
+        )
     total = len(plan)
     outputs: list[bytes] = []
     for turn in plan:
