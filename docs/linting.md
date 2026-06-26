@@ -64,3 +64,62 @@ Captured with `ruff check podcaster tests --statistics`:
 
 > Note: the single `F821` (undefined-name) finding may indicate a real defect —
 > flagged for the Phase B fix work (#521), not addressed here.
+
+## Checkov (IaC / container security) — #519
+
+Checkov scans infrastructure-as-code and container definitions. It **already**
+gated `infra/` (Bicep) in `.github/workflows/reusable-ci.yml`; Phase A extends it
+to the container images (`Containerfile`, `Containerfile.api`, `ui/Dockerfile`)
+in **non-blocking** mode.
+
+### Baseline file
+
+`.checkov.baseline` (repo root) records the existing Dockerfile findings so CI
+only surfaces *new* issues. Regenerate it after intentionally accepting a finding:
+
+```bash
+checkov --directory . --framework dockerfile \
+  --skip-path .worktrees --skip-path ui/node_modules \
+  --create-baseline --soft-fail --compact
+```
+
+### Local usage
+
+```bash
+# One-time install (already pinned in CI):
+pip install checkov==3.2.533
+
+# Scan the Dockerfiles against the recorded baseline (non-blocking):
+checkov --directory . --framework dockerfile \
+  --skip-path .worktrees --skip-path ui/node_modules \
+  --baseline .checkov.baseline --soft-fail --compact
+
+# Scan the Bicep infra (matches the existing gating step):
+checkov --directory infra --framework bicep --compact
+
+# Full report WITHOUT the baseline (to see everything):
+checkov --directory . --framework dockerfile \
+  --skip-path .worktrees --skip-path ui/node_modules --compact
+```
+
+### CI
+
+The `infrastructure` job runs a Checkov Dockerfile step with `--soft-fail` and
+`--baseline .checkov.baseline`. In Phase A this lane is **non-blocking**.
+
+### Baseline report (2026-06-26)
+
+Dockerfile framework (`Containerfile`, `Containerfile.api`, `ui/Dockerfile`):
+
+| Severity | Count | Findings |
+| -------- | ----: | -------- |
+| CRITICAL | 0 | — |
+| HIGH | 0 | — |
+| Other | 1 | `CKV_DOCKER_2` — missing `HEALTHCHECK` in `ui/Dockerfile` |
+
+Passed: 94, Failed: 1, Skipped: 0. No CRITICAL/HIGH findings.
+
+> `docker-compose.test.yml` is a local-only integration-test stack. Checkov 3.2.x
+> has no dedicated `docker_compose` framework, so it is not separately gated;
+> container hardening is covered via the Dockerfile framework above and Trivy
+> config scans already in CI.
