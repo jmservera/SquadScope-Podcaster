@@ -322,12 +322,18 @@ def synthesize_two_voice(
     *,
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> list[bytes]:
     """Synthesize every turn, but only when the gating decision allows it.
 
     Fails closed: if ``decision['allowed']`` is not truthy the call raises
     :class:`PermissionError`, so synthesis can never run for a dry run, an
     unconfigured environment, or an unreviewed episode.
+
+    ``progress`` (issue #470): when supplied, it is called as
+    ``progress(completed, total)`` after each turn so callers can surface a live
+    "recording N/M" counter for an in-flight job.  A failing callback never
+    aborts synthesis.
     """
 
     if not decision.get("allowed"):
@@ -335,10 +341,18 @@ def synthesize_two_voice(
         raise PermissionError(f"tts synthesis is blocked: {', '.join(map(str, blocked_by))}")
     if not plan:
         raise ValueError("voice plan is empty")
-    return [
-        synthesize_turn(turn, config, token_provider=token_provider, transport=transport)
-        for turn in plan
-    ]
+    total = len(plan)
+    outputs: list[bytes] = []
+    for turn in plan:
+        outputs.append(
+            synthesize_turn(turn, config, token_provider=token_provider, transport=transport)
+        )
+        if progress is not None:
+            try:
+                progress(len(outputs), total)
+            except Exception:  # noqa: BLE001 - progress reporting must not break synthesis
+                logging.warning("tts progress callback failed", exc_info=True)
+    return outputs
 
 
 def _default_transport(request: Request) -> bytes:

@@ -23,6 +23,7 @@ import random
 import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 log = logging.getLogger(__name__)
@@ -606,6 +607,7 @@ def synthesize_episode(
     outro_music: Path | None = None,
     music_mix_spec: MusicMixSpec | None = None,
     backchannel_config: BackchannelConfig | None = None,
+    progress: "Callable[[int, int], None] | None" = None,
 ) -> EpisodeAudio:
     """Synthesize the two-voice script into validated WAV and MP3 artifacts.
 
@@ -613,6 +615,9 @@ def synthesize_episode(
     turn through the gated :func:`podcaster.tts.synthesize_two_voice` (fails
     closed when ``decision['allowed']`` is false), renders a normalized WAV for
     Spotify upload plus a 192 kbps MP3 for distribution, and validates both.
+
+    ``progress`` (issue #470): forwarded to :func:`synthesize_two_voice` so each
+    synthesized turn reports a live ``(completed, total)`` segment counter.
     """
 
     effective_config = _apply_podcast_config(config, podcast_config)
@@ -627,6 +632,7 @@ def synthesize_episode(
         decision,
         token_provider=token_provider,
         transport=transport,
+        progress=progress,
     )
 
     output_path = Path(output_path)
