@@ -64,7 +64,8 @@ def retry_call(
             below 1 are treated as 1.
         base_delay: Delay before the first retry, in seconds.
         backoff: Multiplier applied to the delay after each failed attempt.
-        max_delay: Upper bound for any single backoff delay.
+        max_delay: Upper bound for any single backoff delay, applied after
+            jitter so the effective sleep never exceeds it.
         jitter: Fraction (0..1) of the delay added as uniform random jitter to
             avoid thundering-herd retries across parallel workers.  Negative
             values are clamped to ``0``.
@@ -108,7 +109,9 @@ def retry_call(
                 raise
             delay = min(max_delay, base_delay * (backoff ** (attempt - 1)))
             if jitter:
-                delay += random.uniform(0.0, jitter * delay)
+                # Re-cap after jitter so the effective delay (the value actually
+                # slept) never exceeds ``max_delay``, honouring its contract.
+                delay = min(max_delay, delay + random.uniform(0.0, jitter * delay))
             logger.warning(
                 "%s failed on attempt %d/%d (%s); retrying in %.2fs",
                 description, attempt, attempts, exc, delay,

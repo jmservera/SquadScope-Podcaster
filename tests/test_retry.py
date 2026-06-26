@@ -204,3 +204,22 @@ class TestRetryCall:
             )
         # Negative jitter clamped to 0 → delay never drops below base_delay.
         assert all(d == 1.0 for d in delays)
+
+    def test_jitter_never_exceeds_max_delay(self):
+        delays: list[float] = []
+
+        def fn():
+            raise RuntimeError("fail")
+
+        with pytest.raises(RuntimeError):
+            retry_call(
+                fn,
+                attempts=6,
+                base_delay=10.0,
+                backoff=10.0,
+                max_delay=15.0,
+                jitter=1.0,  # up to +100% jitter
+                sleep=delays.append,
+            )
+        # Even with full jitter, no slept delay exceeds max_delay.
+        assert all(d <= 15.0 for d in delays)
