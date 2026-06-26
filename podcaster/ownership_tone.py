@@ -108,19 +108,31 @@ def _is_spoken_line(line: str) -> bool:
     # Spoken turns are "Host: <text>"; metadata keys are single tokens. We only
     # skip a small set of known metadata keys to avoid hiding real dialogue.
     head, sep, _ = stripped.partition(":")
-    if sep and head.strip().lower() in _METADATA_KEYS:
+    if sep and re.sub(r"\s+", " ", head.strip()).lower() in _METADATA_KEYS:
         return False
     return True
 
 
+# Known header metadata keys. These mirror the header emitted by
+# ``script_gen._format_script`` so ``find_violations()`` stays correct even when
+# run on a full formatted script (header + dialogue), not just raw dialogue.
+# Keys are compared case-insensitively with internal whitespace collapsed, so
+# multi-word keys like ``Source URL:`` / ``Source SHA256:`` match.
 _METADATA_KEYS = {
     "week",
     "source",
+    "source url",
+    "source sha256",
     "article",
     "article_url",
     "article_sha256",
     "sha256",
     "title",
+    "episode",
+    "podcast",
+    "voices",
+    "safety",
+    "generator",
     "generated",
     "generated_at",
 }

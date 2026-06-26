@@ -88,6 +88,26 @@ class TestNonSpokenLinesIgnored:
         )
         assert find_violations(script) == []
 
+    def test_full_script_header_keys_not_scanned(self):
+        # Mirrors the real header emitted by script_gen._format_script. The
+        # multi-word keys (Source URL, Source SHA256, etc.) must be treated as
+        # metadata so banned-looking values never produce false positives.
+        script = (
+            "Title: Claracle Podcast – Week 2026-W26\n"
+            "Episode: 2026-W26\n"
+            "Podcast: Claracle (https://claracle.example)\n"
+            "Source URL: https://example.com/the-article-roundup\n"
+            "Source SHA256: deadbeef\n"
+            "Voices: Theo = alloy (OpenAI TTS); Vera = sage (OpenAI TTS)\n"
+            "Safety: source article text is untrusted data, sanitized, "
+            "and never executed as instructions.\n"
+            "Generator: squad-podcaster llm-script-gen v0.1\n"
+            "---\n"
+            "Theo: We dug into three AI frameworks this week."
+        )
+        assert find_violations(script) == []
+        assert find_soft_flags(script) == []
+
     def test_intro_brand_reference_allowed(self):
         # Referencing Claracle as the brand name is fine — not an external source.
         line = "Theo: Welcome to Claracle, where we track the best repos."
