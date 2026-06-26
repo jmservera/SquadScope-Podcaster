@@ -336,6 +336,44 @@
   text-align: right;
 }
 
+/* Historical run comparison dashboard (#475) */
+.comparison-table th[scope='row'] {
+  text-align: left;
+  white-space: nowrap;
+}
+
+.comparison-run-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.comparison-run-date {
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.comparison-delta {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.comparison-total-row td,
+.comparison-total-row th {
+  border-top: 2px solid #e2e8f0;
+}
+
+.run-count-select {
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.run-count-select select {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
