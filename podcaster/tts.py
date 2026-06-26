@@ -368,15 +368,22 @@ def synthesize_two_voice(
         )
     total = len(plan)
     outputs: list[bytes] = []
+    progress_failed = False
     for turn in plan:
         outputs.append(
             synthesize_turn(turn, config, token_provider=token_provider, transport=transport)
         )
-        if progress is not None:
+        if progress is not None and not progress_failed:
             try:
                 progress(len(outputs), total)
             except Exception:  # noqa: BLE001 - progress reporting must not break synthesis
-                logging.warning("tts progress callback failed", exc_info=True)
+                # Log once and stop calling back so a consistently-failing
+                # callback can't spam a warning per segment (issue #470).
+                progress_failed = True
+                logging.warning(
+                    "tts progress callback failed; disabling further progress reports",
+                    exc_info=True,
+                )
     return outputs
 
 

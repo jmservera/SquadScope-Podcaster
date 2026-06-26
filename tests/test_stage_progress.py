@@ -129,6 +129,25 @@ def test_compute_eta_extrapolates_from_stage_start():
     assert eta == _iso(START + timedelta(seconds=100))
 
 
+def test_compute_eta_zero_when_all_segments_done_non_terminal():
+    # Final per-segment event arrived (done == total) but the stage hasn't
+    # advanced yet: remaining work is known to be 0, so ETA is now, not None.
+    events = [
+        {"seq": 1, "at": _iso(START), "stage": PipelineStage.SYNTHESIS, "segment_total": 8},
+        {
+            "seq": 2,
+            "at": _iso(START + timedelta(seconds=40)),
+            "stage": PipelineStage.SYNTHESIS,
+            "segment_index": 8,
+            "segment_total": 8,
+        },
+    ]
+    now = START + timedelta(seconds=40)
+    remaining, eta = compute_eta(_doc(events), now=now)
+    assert remaining == 0.0
+    assert eta == _iso(now)
+
+
 def test_compute_eta_none_when_no_elapsed_time():
     events = [
         {"seq": 1, "at": _iso(START), "stage": PipelineStage.SYNTHESIS, "segment_index": 2, "segment_total": 10},

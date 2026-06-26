@@ -83,7 +83,7 @@ def compute_eta(
     since the stage began, divided by the number of segments completed so far,
     projected over the segments still to do.  Returns ``(None, None)`` when there
     is not enough signal (e.g. no segment counter yet), and ``(0.0, now)`` once a
-    terminal stage is reached.
+    terminal stage is reached or every segment of the current stage is done.
     """
     current = _current(document)
     stage = current.get("stage")
@@ -93,8 +93,13 @@ def compute_eta(
 
     total = current.get("segment_total")
     done = current.get("segment_index")
-    if not (isinstance(total, int) and total > 0 and isinstance(done, int) and 0 < done < total):
+    if not (isinstance(total, int) and total > 0 and isinstance(done, int) and 0 < done <= total):
         return None, None
+
+    # All segments for this stage are accounted for but the stage hasn't emitted
+    # its terminal/next event yet: the remaining work is known to be zero.
+    if done >= total:
+        return 0.0, _iso(now)
 
     started = _stage_started_at(_events(document), stage)
     if started is None:
@@ -105,9 +110,11 @@ def compute_eta(
         return None, None
 
     per_segment = elapsed / done
-    remaining = per_segment * (total - done)
+    # Round first so eta and eta_seconds are derived from the same value and
+    # can never disagree.
+    remaining = round(per_segment * (total - done), 1)
     eta = now + timedelta(seconds=remaining)
-    return round(remaining, 1), _iso(eta)
+    return remaining, _iso(eta)
 
 
 def summarize(document: dict[str, Any] | None, *, now: datetime | None = None) -> dict[str, Any]:

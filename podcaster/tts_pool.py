@@ -177,6 +177,7 @@ def synthesize_plan_concurrent(
     pool = pool or load_tts_pool_config()
     turns = list(plan)
     total = len(turns)
+    progress = _guard_progress(progress)
 
     # Fast path: a single worker / single turn with no retry policy can run as a
     # plain sequential loop without spinning up an event loop. When retries are
@@ -204,17 +205,39 @@ def synthesize_plan_concurrent(
     return _run_coro(coro)
 
 
+def _guard_progress(
+    progress: "Callable[[int, int], None] | None",
+) -> "Callable[[int, int], None] | None":
+    """Wrap a progress callback so a failing callback can never break synthesis.
+
+    On the first exception it logs a single warning and then disables itself for
+    the rest of the run, so a consistently-failing callback can't spam a WARNING
+    (with traceback) for every segment of a long episode (issue #470)."""
+    if progress is None:
+        return None
+    state = {"disabled": False}
+
+    def guarded(completed: int, total: int) -> None:
+        if state["disabled"]:
+            return
+        try:
+            progress(completed, total)
+        except Exception:  # noqa: BLE001 - progress reporting must not break synthesis
+            state["disabled"] = True
+            logging.warning(
+                "tts progress callback failed; disabling further progress reports",
+                exc_info=True,
+            )
+
+    return guarded
+
+
 def _report_progress(
     progress: "Callable[[int, int], None] | None", completed: int, total: int
 ) -> None:
-    """Invoke a progress callback, swallowing any error so reporting can never
-    break synthesis (issue #470)."""
-    if progress is None:
-        return
-    try:
+    """Invoke an already-:func:`_guard_progress`-wrapped callback if present."""
+    if progress is not None:
         progress(completed, total)
-    except Exception:  # noqa: BLE001 - progress reporting must not break synthesis
-        logging.warning("tts progress callback failed", exc_info=True)
 
 
 async def _synthesize_all(
