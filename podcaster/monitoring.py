@@ -182,6 +182,33 @@ class StageProgressResponse(BaseModel):
     eta_seconds: float | None = None
 
 
+class JobAsset(BaseModel):
+    """A streamable media artifact produced for a job (issue #471).
+
+    ``url`` points at the authenticated streaming proxy (``/api/stream/...``).
+    Note this is **not** a SAS URL: the proxy is gated by the standard Podcaster
+    bearer token (``verify_auth``) on every request and is not an
+    artifact-scoped capability — any caller holding a valid token can stream any
+    blob path. Bytes are proxied through the API rather than served directly
+    from storage. If a short-lived, per-artifact access model is required, mint
+    SAS URLs (or add a dedicated SAS issuance endpoint) instead.
+    """
+
+    name: str
+    path: str
+    url: str
+    content_type: str | None = None
+    kind: str  # "video" | "audio" | "image"
+
+
+class JobAssetsResponse(BaseModel):
+    """Per-job asset listing for the UI asset browser (issue #471)."""
+
+    job_id: str
+    assets: list[JobAsset] = []
+    total: int = 0
+
+
 # Server-sent-events stream tuning. The loop polls the durable store rather than
 # holding in-memory state so it is correct on stateless/serverless ACA workers.
 _SSE_POLL_SECONDS = float(os.environ.get("MONITORING_SSE_POLL_SECONDS", "1.0"))
@@ -688,6 +715,66 @@ def get_job_progress_summary(job_id: str):
     document = read_progress(storage, job_id)
     summary = summarize_stage_progress(document)
     return StageProgressResponse(job_id=job_id, **summary)
+
+
+_ASSET_KIND_ORDER = {"video": 0, "audio": 1, "image": 2}
+
+
+def _asset_kind(content_type: str | None) -> str | None:
+    """Map a streamable content type to a coarse asset kind, else None."""
+    if not content_type:
+        return None
+    for kind in ("video", "audio", "image"):
+        if content_type.startswith(f"{kind}/"):
+            return kind
+    return None
+
+
+@app.get(
+    "/api/jobs/{job_id}/assets",
+    response_model=JobAssetsResponse,
+    dependencies=[Depends(verify_auth)],
+)
+def list_job_assets(job_id: str):
+    """List the streamable media assets (video/audio/thumbnails) for a job (#471).
+
+    Discovers every media blob under ``jobs/{job_id}/`` and returns playable
+    URLs via the authenticated streaming proxy (``/api/stream/...``). These are
+    authenticated proxy URLs gated by the standard Podcaster bearer token on
+    every request — **not** SAS URLs and not artifact-scoped capabilities. The
+    job must exist (have a manifest); a job with no media yet returns an empty
+    list.
+    """
+    storage = get_storage()
+    if not _job_exists(storage, job_id):
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+
+    prefix = f"jobs/{job_id}/"
+    blobs = storage.list_blobs(prefix, limit=10000)
+
+    assets: list[JobAsset] = []
+    seen: set[str] = set()
+    for path in blobs:
+        if path in seen:
+            continue
+        content_type = _content_type_for_path(path)
+        kind = _asset_kind(content_type)
+        if kind is None:
+            continue  # skip manifests, logs, progress docs and other non-media
+        seen.add(path)
+        name = path[len(prefix):] if path.startswith(prefix) else path.rsplit("/", 1)[-1]
+        assets.append(
+            JobAsset(
+                name=name,
+                path=path,
+                url=f"/api/stream/{path}",
+                content_type=content_type,
+                kind=kind,
+            )
+        )
+
+    assets.sort(key=lambda a: (_ASSET_KIND_ORDER.get(a.kind, 9), a.name))
+    return JobAssetsResponse(job_id=job_id, assets=assets, total=len(assets))
 
 
 def _sse_pack(event_id: int | None, data: dict[str, Any]) -> str:
