@@ -32,26 +32,101 @@ function QualityScore({ score }: { score: number | null }) {
   return <span className={className}>{pct}%</span>;
 }
 
+const LOG_LEVELS = ['debug', 'info', 'warning', 'error'] as const;
+const LEVEL_RANK: Record<string, number> = { debug: 10, info: 20, warning: 30, error: 40 };
+
+function levelRank(level: string): number {
+  return LEVEL_RANK[level?.toLowerCase()] ?? LEVEL_RANK.info;
+}
+
+function levelBadgeClass(level: string): string {
+  const normalized = level?.toLowerCase();
+  if (normalized === 'error') return 'badge badge-error';
+  if (normalized === 'warning') return 'badge badge-warning';
+  if (normalized === 'debug') return 'badge badge-muted';
+  return 'badge badge-info';
+}
+
 function LogViewer({ logs }: { logs: LogEntry[] }) {
+  const [minLevel, setMinLevel] = useState<string>('');
+  const [search, setSearch] = useState<string>('');
+
+  const filtered = logs.filter((log) => {
+    if (minLevel && levelRank(log.level) < levelRank(minLevel)) return false;
+    if (search.trim()) {
+      const needle = search.trim().toLowerCase();
+      const haystack = [log.event, log.message, log.detail, log.task_id, log.stage]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!haystack.includes(needle)) return false;
+    }
+    return true;
+  });
+
   return (
-    <table className="styled-table">
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Event</th>
-          <th>Detail</th>
-        </tr>
-      </thead>
-      <tbody>
-        {logs.map((log, i) => (
-          <tr key={i}>
-            <td className="mono-text">{log.timestamp || '—'}</td>
-            <td>{log.event}</td>
-            <td className="muted-text">{log.detail || ''}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div>
+      <div className="log-filter-bar">
+        <label className="log-filter-field">
+          <span>Min level</span>
+          <select
+            aria-label="Filter logs by minimum level"
+            value={minLevel}
+            onChange={(e) => setMinLevel(e.target.value)}
+          >
+            <option value="">All</option>
+            {LOG_LEVELS.map((lvl) => (
+              <option key={lvl} value={lvl}>
+                {lvl}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="log-filter-field log-filter-search">
+          <span>Search</span>
+          <input
+            type="search"
+            aria-label="Search logs"
+            placeholder="Filter by message, stage, task…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </label>
+        <span className="log-filter-count muted-text">
+          {filtered.length} / {logs.length}
+        </span>
+      </div>
+      {filtered.length === 0 ? (
+        <p className="muted-text">No log entries match the current filters.</p>
+      ) : (
+        <table className="styled-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Level</th>
+              <th>Stage</th>
+              <th>Event</th>
+              <th>Message</th>
+              <th>Task</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((log, i) => (
+              <tr key={log.seq ?? i} className={`log-row log-row-${(log.level || 'info').toLowerCase()}`}>
+                <td className="mono-text">{log.timestamp || '—'}</td>
+                <td>
+                  <span className={levelBadgeClass(log.level)}>{log.level || 'info'}</span>
+                </td>
+                <td>{log.stage || '—'}</td>
+                <td>{log.event}</td>
+                <td className="muted-text">{log.message || log.detail || ''}</td>
+                <td className="mono-text">{log.task_id || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 
@@ -216,7 +291,7 @@ const JobMonitor: React.FC = () => {
           {logsLoading ? (
             <p>Loading logs…</p>
           ) : logs.length > 0 ? (
-            <LogViewer logs={logs} />
+            <LogViewer key={selectedJob.job_id} logs={logs} />
           ) : (
             <p>No log entries.</p>
           )}
