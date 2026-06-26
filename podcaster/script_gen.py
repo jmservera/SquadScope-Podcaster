@@ -202,7 +202,7 @@ def _build_section_guidance() -> str:
     )
 
 
-# Human-readable native language names for the script-gen directive, keyed by
+# Human-readable English display names for the script-gen directive, keyed by
 # both bare language code and full locale. The directive instructs the model to
 # author the podcast ORIGINALLY in this language — never to translate English.
 _LANGUAGE_NAMES: dict[str, str] = {
@@ -218,7 +218,7 @@ _LANGUAGE_NAMES: dict[str, str] = {
 
 
 def language_display_name(language: str, locale: str) -> str:
-    """Best human-readable native language name for a code/locale pair."""
+    """Best human-readable English display name for a code/locale pair."""
 
     for key in (locale, language, (language or "").split("-", 1)[0]):
         if key and key in _LANGUAGE_NAMES:
@@ -278,7 +278,7 @@ class GenerationContext:
         if self.host_b is not None:
             updates["host_b"] = self.host_b
         if self.disclosure.strip():
-            updates["ai_voice_disclosure"] = self.disclosure.strip()
+            updates["ai_voice_disclosure"] = neutralize(self.disclosure, limit=500)
         if not updates:
             return podcast_config
         return _dataclass_replace(podcast_config, **updates)
@@ -289,8 +289,9 @@ def _build_language_directive(
 ) -> str:
     """Strong instruction block: author originally in the target language."""
 
-    name = context.display_name
-    cta = context.cta.strip()
+    name = neutralize(context.display_name, limit=100)
+    locale = neutralize(context.locale, limit=20)
+    cta = neutralize(context.cta, limit=200)
     cta_line = (
         f'   When you point listeners to the site, phrase it like: "{cta}".\n'
         if cta
@@ -300,7 +301,7 @@ def _build_language_directive(
         "\nLANGUAGE (CRITICAL — overrides any English assumption above):\n"
         f"- Write this ENTIRE podcast ORIGINALLY in {name}. This is NOT a translation: "
         "do not draft it in English and translate. Compose it natively.\n"
-        f"- Use idioms, humor, rhythm, and cultural references natural to a {context.locale} "
+        f"- Use idioms, humor, rhythm, and cultural references natural to a {locale} "
         "audience. It must read as authored by native speakers, not localized.\n"
         "- Keep product names, technical terms, and proper nouns in their original form "
         "(e.g. GitHub, OIDC, Azure, repository names) — do not translate them.\n"
