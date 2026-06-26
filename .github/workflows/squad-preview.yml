@@ -18,7 +18,7 @@ jobs:
         run: |
           # TODO: Add your python build/test commands here
           # Go:            go test ./...
-          # Python:        pip install -r requirements.txt && pytest
+          # Python:        pip install -e ".[dev]" && pytest
           # .NET:          dotnet test
           # Java (Maven):  mvn test
           # Java (Gradle): ./gradlew test

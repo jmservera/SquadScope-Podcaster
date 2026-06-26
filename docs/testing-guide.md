@@ -174,7 +174,7 @@ docker compose -f docker-compose.test.yml down -v
 runs four jobs on every PR/push:
 
 - **infrastructure** — `az bicep build` + Checkov scan of `infra/`
-- **test** — `pip install -r requirements.txt && pip install -e ".[dev]"`,
+- **test** — `pip install -e ".[dev,video]"`,
   then `pytest`, then `python -m compileall podcaster`
 - **ui** — `npm ci`, `npm test`, `npm run build`
 - **synthesis-image** — `docker build -f Containerfile` and verify

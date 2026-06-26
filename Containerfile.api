@@ -28,12 +28,12 @@ WORKDIR /app
 RUN groupadd --system api \
     && useradd --system --gid api --home-dir /app --shell /usr/sbin/nologin api
 
-COPY requirements.txt ./
-RUN python -m pip install --no-cache-dir -r requirements.txt \
-    && python -m pip uninstall -y pip setuptools wheel
-
-# Application code.
+# Install from pyproject.toml (single source of dependency truth). The API only
+# needs the core deps — no [video]/[dev] extras — so the image stays lean.
+COPY pyproject.toml ./
 COPY podcaster ./podcaster
+RUN python -m pip install --no-cache-dir . \
+    && python -m pip uninstall -y pip setuptools wheel
 
 USER api
 
