@@ -8,8 +8,13 @@ and the show-level language tag, in a config-driven (#432), network-free way.
 
 Resolution order for a language's show id:
 1. ``language_config.spotify_show_id`` (duck-typed per-language config, #432)
-2. ``SPOTIFY_SHOW_ID_<LANG>`` environment variable (e.g. ``SPOTIFY_SHOW_ID_ES``)
-3. English only: ``SPOTIFY_SHOW_ID`` (preserves the existing single-show env)
+2. ``SPOTIFY_SHOW_ID_<LANG>`` environment variable — for English this is
+   ``SPOTIFY_SHOW_ID``; for other languages ``SPOTIFY_SHOW_ID_ES`` etc.
+
+There is **no cross-language fallback**: if a non-English env var is absent the
+show id is left empty, which causes ``_get_credentials()`` to raise with the
+exact variable name operators need to set.  This prevents silent misrouting of
+Spanish/French episodes into the English show.
 
 English behavior is unchanged: ``resolve_show_target("en")`` reads
 ``SPOTIFY_SHOW_ID`` exactly as before.
@@ -91,12 +96,12 @@ def resolve_show_target(
 
     # 1) explicit per-language config show id (duck-typed, #432)
     show_id = _getattr_str(language_config, "spotify_show_id")
-    # 2) per-language env var
+    # 2) per-language env var (English resolves SPOTIFY_SHOW_ID; others resolve
+    #    SPOTIFY_SHOW_ID_<LANG>). No cross-language fallback: a missing var for
+    #    a non-English language leaves show_id empty so _get_credentials() raises
+    #    a clear error rather than silently publishing into the English show.
     if not show_id:
         show_id = (env.get(env_var) or "").strip()
-    # 3) English-only fallback to the legacy single-show env var
-    if not show_id and key != DEFAULT_LANGUAGE:
-        show_id = (env.get("SPOTIFY_SHOW_ID") or "").strip()
 
     language_tag = _getattr_str(language_config, "spotify_language_tag")
     if not language_tag:

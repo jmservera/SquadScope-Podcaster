@@ -361,6 +361,7 @@ def run_synthesis(
                         if isinstance(request.get("article_title"), str)
                         else None,
                         wav_path=episode_audio.wav_output_path,
+                        language=_request_language(manifest),
                     )
                     logger.info(
                         "draft publish attempted job_id=%s status=%s error=%s",
@@ -441,6 +442,20 @@ def _request_spotify_publish(manifest: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(spotify_publish, dict):
         return None
     return {"spotify_publish": spotify_publish}
+
+
+def _request_language(manifest: dict[str, Any]) -> str:
+    """Extract the target language from the manifest request payload.
+
+    Reads ``request.language`` (set by per-language fanout, #439).
+    Falls back to ``"en"`` so callers that pre-date the language field continue
+    to publish to the English show as before.
+    """
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return "en"
+    lang = request.get("language")
+    return str(lang).strip() if isinstance(lang, str) and lang.strip() else "en"
 
 
 def _extract_year(manifest: dict[str, Any]) -> int | None:

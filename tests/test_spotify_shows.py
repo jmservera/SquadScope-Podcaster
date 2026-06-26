@@ -40,10 +40,12 @@ def test_french_full_locale_code():
     assert target.show_name == "Claracle Hebdo"
 
 
-def test_non_english_falls_back_to_legacy_env_when_specific_missing():
+def test_non_english_unresolved_when_specific_env_missing():
+    """Missing per-language env var leaves show_id empty; no cross-language fallback."""
     target = resolve_show_target("es", env={"SPOTIFY_SHOW_ID": "show-en"})
-    assert target.show_id == "show-en"
-    # The reported env var is still the per-language one for operator guidance.
+    assert target.show_id == ""
+    assert not target.is_resolved
+    # env_var still points to the per-language name for accurate error messages.
     assert target.env_var == "SPOTIFY_SHOW_ID_ES"
 
 

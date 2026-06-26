@@ -33,8 +33,12 @@ per language.
 `podcaster/spotify_shows.py` resolves the show target for a language, in order:
 
 1. `language_config.spotify_show_id` — explicit per-language config (#432).
-2. `SPOTIFY_SHOW_ID_<LANG>` environment variable.
-3. English only: legacy `SPOTIFY_SHOW_ID` (unchanged behavior).
+2. `SPOTIFY_SHOW_ID_<LANG>` environment variable (English uses `SPOTIFY_SHOW_ID`).
+
+There is **no cross-language fallback** — if `SPOTIFY_SHOW_ID_ES` is absent
+the show id stays empty and `_get_credentials()` raises with the exact variable
+name to set.  This prevents silently publishing Spanish/French episodes into the
+English show.
 
 ```python
 from podcaster.spotify_shows import resolve_show_target
