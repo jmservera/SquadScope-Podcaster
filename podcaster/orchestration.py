@@ -208,6 +208,7 @@ def _publish_from_manifest(audio_paths: tuple[Path, Path | None], manifest: dict
         week=week,
         article_title=request.get("article_title") if isinstance(request.get("article_title"), str) else None,
         wav_path=wav_path,
+        language=_request_language(manifest),
     )
 
 
@@ -374,6 +375,20 @@ def _audio_validation_ready(manifest: dict[str, Any]) -> bool:
         return False
     validation = generation.get("audio_validation")
     return isinstance(validation, dict) and validation.get("ready") is True and validation.get("status") == "passed"
+
+
+def _request_language(manifest: dict[str, Any]) -> str:
+    """Extract the target language from the manifest request payload.
+
+    Reads ``request.language`` (set by per-language fanout, #439).
+    Falls back to ``"en"`` so callers that pre-date the language field continue
+    to publish to the English show as before.
+    """
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return "en"
+    lang = request.get("language")
+    return str(lang).strip() if isinstance(lang, str) and lang.strip() else "en"
 
 
 def _parse_week(value: str) -> tuple[int | None, int | None]:
