@@ -44,9 +44,12 @@ degraded = degrade_for_render(
     screenshots=...,        # repo_url → fallback_image_id
     repo_labels=...,        # repo_url → friendly card text
     section_titles=...,
-    check_files=False,      # also drop clips whose file is absent on disk
+    check_files=True,       # also drop clips whose file is absent on disk
 )
 ```
+
+(Pass `check_files=False` to skip the on-disk existence check and only degrade
+segments already marked unavailable.)
 
 Timeline bounds, crossfades, title cards and section grouping are preserved, so
 the result stays gap-free and the same length. Pass `degrade_missing=False` to

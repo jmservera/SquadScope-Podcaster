@@ -432,7 +432,7 @@ def degrade_for_render(
             chain=chain,
         )
         logger.warning(
-            "clip unavailable for %s segment (repo_url=%s) — degrading to %s fallback",
+            "source unavailable for %s segment (repo_url=%s) — degrading to %s fallback",
             segment.visual_mode.value,
             segment.repo_url,
             resolution.kind.value,

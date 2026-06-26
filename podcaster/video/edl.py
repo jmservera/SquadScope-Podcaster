@@ -94,12 +94,6 @@ DEFAULT_FALLBACK_CHAIN: tuple[EdlSegmentKind, ...] = (
     EdlSegmentKind.INTERMISSION,
 )
 
-#: Kinds that carry no source material (rendered as fills/stills, not trims).
-_FILL_KINDS = frozenset(
-    {EdlSegmentKind.SCREENSHOT, EdlSegmentKind.CARD, EdlSegmentKind.INTERMISSION}
-)
-
-
 @dataclass(frozen=True)
 class SourceRange:
     """A sub-range (ms) of a source clip, played as part of a segment."""
