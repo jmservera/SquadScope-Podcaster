@@ -36,7 +36,7 @@ SOURCE_ARTIFACT_OBJECT_FIELDS = {
     "url",
     "week",
 }
-PODCAST_CONFIG_FIELDS = {"ai_voice_disclosure", "dog_logo", "host_a", "host_b", "hosts", "name", "spoken_site", "style_guide", "url"}
+PODCAST_CONFIG_FIELDS = {"ai_voice_disclosure", "dog_logo", "host_a", "host_b", "hosts", "languages", "name", "spoken_site", "style_guide", "url"}
 HOST_CONFIG_FIELDS = {"name", "style", "voice"}
 
 RESPONSE_KEYS = (
@@ -266,6 +266,19 @@ def _validate_podcast_config(podcast_config: Any) -> tuple[list[str], list[str]]
             value = host.get(field)
             if value is not None and not _is_non_empty_string(value):
                 errors.append(f"podcast_config.{host_field}.{field} must be a non-empty string")
+
+    languages = podcast_config.get("languages")
+    if languages is not None:
+        if not isinstance(languages, dict):
+            errors.append("podcast_config.languages must be an object")
+        else:
+            from podcaster.config import validate_language_block
+
+            for code, block in languages.items():
+                try:
+                    validate_language_block(str(code), block)
+                except ValueError as exc:
+                    errors.append(f"podcast_config.{exc}")
 
     return errors, warnings
 

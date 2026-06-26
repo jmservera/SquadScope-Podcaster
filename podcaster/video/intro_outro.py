@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from podcaster.video.localization import overlay_copy_for
+
 try:
     from playwright.sync_api import sync_playwright
 
@@ -179,7 +181,7 @@ body {{
   <div class="links">
     {links_html}
   </div>
-  <div class="cta">Subscribe &amp; Follow</div>
+  <div class="cta">{cta}</div>
 </div>
 </body></html>
 """
@@ -198,6 +200,40 @@ class IntroConfig:
     duration_ms: int = INTRO_DURATION_MS
     width: int = WIDTH
     height: int = HEIGHT
+    locale: str = "en"
+
+    @classmethod
+    def for_locale(
+        cls,
+        locale: str,
+        *,
+        episode_title: str | None = None,
+        subtitle: str = "",
+        show_name: str | None = None,
+        duration_ms: int = INTRO_DURATION_MS,
+        width: int = WIDTH,
+        height: int = HEIGHT,
+    ) -> "IntroConfig":
+        """Build an intro config with localized defaults for *locale*.
+
+        ``show_name``/``episode_title`` override the localized defaults when
+        provided (e.g. a per-language ``LanguageConfig.show_name`` from #432).
+        """
+
+        copy = overlay_copy_for(locale)
+        return cls(
+            show_name=show_name if show_name is not None else copy.show_name,
+            episode_title=(
+                episode_title
+                if episode_title is not None
+                else copy.default_episode_title
+            ),
+            subtitle=subtitle,
+            duration_ms=duration_ms,
+            width=width,
+            height=height,
+            locale=locale,
+        )
 
 
 @dataclass
@@ -210,10 +246,39 @@ class OutroConfig:
     duration_ms: int = OUTRO_DURATION_MS
     width: int = WIDTH
     height: int = HEIGHT
+    cta: str = "Subscribe & Follow"
+    locale: str = "en"
 
     def __post_init__(self) -> None:
         if self.links is None:
             self.links = list(REPO_LINKS)
+
+    @classmethod
+    def for_locale(
+        cls,
+        locale: str,
+        *,
+        show_name: str | None = None,
+        url: str = CLARACLE_URL,
+        links: list[tuple[str, str]] | None = None,
+        cta: str | None = None,
+        duration_ms: int = OUTRO_DURATION_MS,
+        width: int = WIDTH,
+        height: int = HEIGHT,
+    ) -> "OutroConfig":
+        """Build an outro config with localized defaults for *locale*."""
+
+        copy = overlay_copy_for(locale)
+        return cls(
+            show_name=show_name if show_name is not None else copy.show_name,
+            url=url,
+            links=links,
+            cta=cta if cta is not None else copy.outro_cta,
+            duration_ms=duration_ms,
+            width=width,
+            height=height,
+            locale=locale,
+        )
 
 
 @dataclass
@@ -252,6 +317,7 @@ def _render_outro_html(config: OutroConfig) -> str:
         show_name=html_mod.escape(config.show_name),
         url=html_mod.escape(config.url),
         links_html=links_html,
+        cta=html_mod.escape(config.cta),
     )
 
 
