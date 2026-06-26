@@ -39,6 +39,13 @@ pytest
 python -m compileall podcaster
 ```
 
+Lint and format with [Ruff](docs/linting.md) (warning-only in CI today):
+
+```bash
+ruff check podcaster tests        # lint
+ruff format --check podcaster tests  # formatting check
+```
+
 Run the synthesis job locally:
 
 ```bash
