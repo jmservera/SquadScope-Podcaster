@@ -102,11 +102,24 @@ def test_production_candidate_excluded_from_bakeoff_comparison_plan():
 def test_blob_paths_are_deterministic_and_safe():
     plan = build_plan(SCRIPT_TEXT, "2026-W23")
     paths = [spec.blob_path for spec in plan]
-    assert paths[0] == "bakeoff/2026-w23/azure-speech-standard/en-us-andrewmultilingualneural.mp3"
+    assert paths[0] == "bakeoff/2026-w23/azure-speech-standard/en-us/en-us-andrewmultilingualneural.mp3"
     for path in paths:
         assert path == path.lower()
         assert " " not in path
         assert path.endswith(".mp3")
+
+
+def test_blob_paths_unique_across_languages_for_shared_voice_ids():
+    # ElevenLabs es/fr placeholders share a voice id; locale in the path must
+    # keep their blob paths distinct so samples/manifests never collide.
+    from podcaster.tts_bakeoff import native_voice_candidates, blob_path_for
+
+    es = [c for c in native_voice_candidates("es") if c.provider == "elevenlabs"]
+    fr = [c for c in native_voice_candidates("fr") if c.provider == "elevenlabs"]
+    assert es and fr
+    es_path = blob_path_for("2026-W23", es[0])
+    fr_path = blob_path_for("2026-W23", fr[0])
+    assert es_path != fr_path
 
 
 def test_build_plan_rejects_script_without_segments():

@@ -315,7 +315,10 @@ def _path_token(value: str) -> str:
 
 
 def blob_path_for(week: str, candidate: BakeoffCandidate) -> str:
-    return f"bakeoff/{_path_token(week)}/{_path_token(candidate.provider)}/{_path_token(candidate.narrator_voice)}.mp3"
+    return (
+        f"bakeoff/{_path_token(week)}/{_path_token(candidate.provider)}/"
+        f"{_path_token(candidate.locale)}/{_path_token(candidate.narrator_voice)}.mp3"
+    )
 
 
 def escape_ssml_text(text: str) -> str:
