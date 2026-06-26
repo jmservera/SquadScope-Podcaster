@@ -540,6 +540,7 @@ def run_video_generation(
 
             season_number = _extract_year(manifest)
             episode_number = _extract_week(manifest)
+            job_language = str(request.get("language", "en"))
 
             with timings.phase("distribution"):
                 dist_result = distribute_video(
@@ -553,6 +554,7 @@ def run_video_generation(
                     spotify_anchor_id=_resolve_anchor_id(manifest),
                     season_number=season_number,
                     episode_number=episode_number,
+                    language=job_language,
                 )
 
             # Emit the per-phase timing/resource breakdown (issue #396).

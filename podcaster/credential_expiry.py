@@ -30,6 +30,9 @@ logger = logging.getLogger("podcaster.credential_expiry")
 CREDENTIALS_EXPIRED_LABEL = "credentials-expired"
 DEFAULT_REPO = "jmservera/SquadScope-Podcaster"
 ISSUE_TITLE = "[Spotify] SP_DC/SP_KEY credentials expired — refresh required"
+YOUTUBE_ISSUE_TITLE = (
+    "[YouTube] OAuth refresh token revoked/expired — re-authentication required"
+)
 
 _GH_TIMEOUT = 30
 
@@ -52,7 +55,7 @@ def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _find_open_issue(repo: str) -> int | None:
+def _find_open_issue(repo: str, title: str = ISSUE_TITLE) -> int | None:
     """Return the number of an open ``credentials-expired`` issue, or None."""
     try:
         result = _run_gh(
@@ -82,7 +85,7 @@ def _find_open_issue(repo: str) -> int | None:
     if not isinstance(issues, list):
         return None
     for issue in issues:
-        if issue.get("title") == ISSUE_TITLE:
+        if issue.get("title") == title:
             return int(issue["number"])
     return None
 
@@ -231,3 +234,121 @@ def _parse_issue_number(issue_url: str) -> int | None:
         return None
     tail = issue_url.rstrip("/").rsplit("/", 1)[-1]
     return int(tail) if tail.isdigit() else None
+
+
+# --- YouTube OAuth refresh-token expiry/revocation (#443) ---------------------
+
+
+def build_youtube_issue_body(error_message: str, *, timestamp: str | None = None) -> str:
+    """Build the Markdown body with YouTube re-authentication instructions."""
+    now = timestamp or (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    return "\n".join(
+        [
+            "## YouTube OAuth refresh token revoked/expired",
+            "",
+            "Google rejected the stored YouTube OAuth2 refresh token "
+            "(`invalid_grant`). Access tokens can no longer be minted, so video "
+            "uploads to YouTube will keep failing until the token is renewed.",
+            "",
+            "| Field | Value |",
+            "|-------|-------|",
+            f"| **Detected at** | {now} |",
+            "| **Detector** | `podcaster.youtube_credentials` token refresh |",
+            "",
+            "### Error",
+            "```",
+            (error_message or "(no message)")[:2000],
+            "```",
+            "",
+            "### Why this happens",
+            "",
+            "A YouTube refresh token only stops working if it is revoked — e.g. "
+            "the Google account password changed, consent was withdrawn, the "
+            "OAuth client secret was rotated, or the token went unused for 6 "
+            "months. It does **not** expire on a fixed schedule otherwise.",
+            "",
+            "### How to re-authenticate",
+            "",
+            "1. Run the one-time consent flow to mint a fresh refresh token "
+            "(see `docs/youtube-oauth-setup.md` / `scripts/youtube_oauth_setup.py`).",
+            "2. Store the new refresh token in Azure Key Vault, updating the "
+            "secret referenced by `VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET` (default "
+            "`youtube-oauth-refresh-token`) in the vault at "
+            "`VIDEO_YOUTUBE_KEYVAULT_URL`:",
+            "",
+            "```bash",
+            "az keyvault secret set \\",
+            "  --vault-name <vault> \\",
+            "  --name youtube-oauth-refresh-token \\",
+            '  --value "<new-refresh-token>"',
+            "```",
+            "",
+            "3. Re-run the failed video distribution, or wait for the next run. "
+            "No code or app restart is required — the token is read from Key "
+            "Vault at runtime.",
+            "",
+            "---",
+            "_Automatically reported by the YouTube credential-expiry detector "
+            "(#443)._",
+        ]
+    )
+
+
+def notify_youtube_credential_expiry(error_message: str) -> int | None:
+    """Open a GitHub issue alerting operators that the YouTube token is revoked.
+
+    Mirrors :func:`notify_credential_expiry` (de-duplicates against an existing
+    open issue, never raises). Returns the issue number or ``None``.
+    """
+    if os.environ.get("CREDENTIAL_EXPIRY_NOTIFY_DISABLED", "").lower() == "true":
+        logger.info("credential-expiry notification disabled via env; skipping")
+        return None
+
+    if not _gh_available():
+        logger.warning(
+            "gh CLI not available — cannot open YouTube re-auth issue. "
+            "Re-authenticate the YouTube OAuth token manually."
+        )
+        return None
+
+    repo = _repo()
+    try:
+        existing = _find_open_issue(repo, YOUTUBE_ISSUE_TITLE)
+        if existing is not None:
+            logger.info(
+                "YouTube re-auth issue already open (#%d) — not creating a duplicate",
+                existing,
+            )
+            return existing
+
+        _ensure_label(repo)
+        body = build_youtube_issue_body(error_message)
+        result = _run_gh(
+            [
+                "issue",
+                "create",
+                "--repo",
+                repo,
+                "--title",
+                YOUTUBE_ISSUE_TITLE,
+                "--body",
+                body,
+                "--label",
+                CREDENTIALS_EXPIRED_LABEL,
+            ]
+        )
+        issue_url = (result.stdout or "").strip()
+        logger.error(
+            "YouTube refresh token revoked — opened GitHub issue: %s", issue_url
+        )
+        return _parse_issue_number(issue_url)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        logger.warning(
+            "failed to open YouTube re-auth issue via gh CLI", exc_info=True
+        )
+        return None

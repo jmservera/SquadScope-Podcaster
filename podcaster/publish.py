@@ -30,6 +30,7 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig
+from podcaster.spotify_shows import resolve_show_target
 
 try:
     from spotifyconnector import SpotifyConnector
@@ -92,18 +93,29 @@ def _is_dry_run() -> bool:
     return os.environ.get("SPOTIFY_PUBLISH_DRY_RUN", "").lower() == "true"
 
 
-def _get_credentials() -> tuple[str, str, str]:
-    """Return (show_id, sp_dc, sp_key) from environment.
+def _get_credentials(
+    language: str = "en",
+    *,
+    language_config: object | None = None,
+) -> tuple[str, str, str]:
+    """Return (show_id, sp_dc, sp_key) from environment / per-language config.
+
+    ``language`` selects the per-language Spotify show (#438): each language
+    publishes to its own show (Claracle Weekly/Semanal/Hebdo). English resolves
+    ``SPOTIFY_SHOW_ID`` exactly as before; other languages resolve
+    ``SPOTIFY_SHOW_ID_<LANG>`` (falling back to ``SPOTIFY_SHOW_ID``) or an
+    explicit ``language_config.spotify_show_id``.
 
     Raises ValueError if any credential is missing.
     """
-    show_id = os.environ.get("SPOTIFY_SHOW_ID", "")
+    target = resolve_show_target(language, language_config=language_config)
+    show_id = target.show_id
     sp_dc = os.environ.get("SP_DC", "")
     sp_key = os.environ.get("SP_KEY", "")
 
     missing = []
     if not show_id:
-        missing.append("SPOTIFY_SHOW_ID")
+        missing.append(target.env_var)
     if not sp_dc:
         missing.append("SP_DC")
     if not sp_key:
@@ -251,13 +263,21 @@ def _retry_request(
     ) from last_exc
 
 
-def verify_spotify_auth() -> tuple[bool, str]:
+def verify_spotify_auth(
+    language: str = "en",
+    *,
+    language_config: object | None = None,
+) -> tuple[bool, str]:
     """Health-check: verify Spotify auth is valid without side effects.
+
+    ``language`` selects the per-language show to verify (#438).
 
     Returns (is_valid, message).
     """
     try:
-        show_id, sp_dc, sp_key = _get_credentials()
+        show_id, sp_dc, sp_key = _get_credentials(
+            language, language_config=language_config
+        )
     except ValueError as exc:
         return False, str(exc)
 
@@ -899,6 +919,8 @@ def publish_episode(
     *,
     wav_path: Path | None = None,
     timestamps_html: str = "",
+    language: str = "en",
+    language_config: object | None = None,
 ) -> PublishResult:
     """Publish an episode to Spotify for Creators.
 
@@ -976,10 +998,14 @@ def publish_episode(
 
     # Dry-run mode
     if _is_dry_run():
+        target = resolve_show_target(language, language_config=language_config)
         logger.info(
-            "DRY RUN: Would publish %s as '%s' (%s, format=%s, content_type=%s)",
+            "DRY RUN: Would publish %s as '%s' to show '%s' (lang=%s, tag=%s, %s, format=%s, content_type=%s)",
             upload_path,
             resolved_title,
+            target.show_name,
+            target.language,
+            target.language_tag,
             publish_behavior,
             format_label,
             content_type,
@@ -996,12 +1022,17 @@ def publish_episode(
                 "upload_format": format_label.lower(),
                 "content_type": content_type,
                 "publish_behavior": publish_behavior,
+                "language": target.language,
+                "language_tag": target.language_tag,
+                "show_name": target.show_name,
             },
         )
 
     # Resolve credentials
     try:
-        env_show_id, env_sp_dc, env_sp_key = _get_credentials()
+        env_show_id, env_sp_dc, env_sp_key = _get_credentials(
+            language, language_config=language_config
+        )
         show_id = show_id or env_show_id
         sp_dc = sp_dc or env_sp_dc
         sp_key = sp_key or env_sp_key
