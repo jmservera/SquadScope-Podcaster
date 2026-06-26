@@ -22,10 +22,14 @@ from podcaster.tts_bakeoff import (  # noqa: E402
     build_ssml,
     default_candidates,
     escape_ssml_text,
+    french_candidates,
+    native_voice_candidates,
     parse_segments,
     production_candidate,
+    recommended_voice_pair,
     redact_url,
     script_sha256,
+    spanish_candidates,
 )
 
 SCRIPT_PATH = REPO_ROOT / "docs" / "tts-bakeoff-test-script.txt"
@@ -98,11 +102,24 @@ def test_production_candidate_excluded_from_bakeoff_comparison_plan():
 def test_blob_paths_are_deterministic_and_safe():
     plan = build_plan(SCRIPT_TEXT, "2026-W23")
     paths = [spec.blob_path for spec in plan]
-    assert paths[0] == "bakeoff/2026-w23/azure-speech-standard/en-us-andrewmultilingualneural.mp3"
+    assert paths[0] == "bakeoff/2026-w23/azure-speech-standard/en-us/en-us-andrewmultilingualneural.mp3"
     for path in paths:
         assert path == path.lower()
         assert " " not in path
         assert path.endswith(".mp3")
+
+
+def test_blob_paths_unique_across_languages_for_shared_voice_ids():
+    # ElevenLabs es/fr placeholders share a voice id; locale in the path must
+    # keep their blob paths distinct so samples/manifests never collide.
+    from podcaster.tts_bakeoff import native_voice_candidates, blob_path_for
+
+    es = [c for c in native_voice_candidates("es") if c.provider == "elevenlabs"]
+    fr = [c for c in native_voice_candidates("fr") if c.provider == "elevenlabs"]
+    assert es and fr
+    es_path = blob_path_for("2026-W23", es[0])
+    fr_path = blob_path_for("2026-W23", fr[0])
+    assert es_path != fr_path
 
 
 def test_build_plan_rejects_script_without_segments():
@@ -226,3 +243,57 @@ def test_default_candidates_disable_unreviewed_providers():
     by_provider = {c.provider: c for c in default_candidates()}
     assert by_provider["azure-speech-standard"].enabled is True
     assert by_provider["openai-tts"].enabled is False
+
+
+def test_native_candidates_use_locale_and_multilingual_voices():
+    es = spanish_candidates()
+    fr = french_candidates()
+    assert all(c.locale == "es-MX" for c in es)
+    assert all(c.locale == "fr-FR" for c in fr)
+    # Preferred (first) candidate is an enabled Azure multilingual neural pair.
+    assert es[0].enabled is True
+    assert es[0].provider == "azure-speech-standard"
+    assert es[0].narrator_voice == "es-MX-JorgeMultilingualNeural"
+    assert es[0].guest_voice == "es-MX-DaliaMultilingualNeural"
+    assert fr[0].narrator_voice == "fr-FR-RemyMultilingualNeural"
+    assert fr[0].guest_voice == "fr-FR-VivienneMultilingualNeural"
+    # Host pairs must contrast (narrator != guest) for two-voice conversation.
+    assert es[0].narrator_voice != es[0].guest_voice
+    assert fr[0].narrator_voice != fr[0].guest_voice
+
+
+def test_native_candidates_disable_unreviewed_elevenlabs():
+    for candidates in (spanish_candidates(), french_candidates()):
+        eleven = [c for c in candidates if c.provider == "elevenlabs"]
+        assert eleven and all(c.enabled is False for c in eleven)
+
+
+def test_native_voice_candidates_dispatch_and_reject_unknown():
+    assert native_voice_candidates("es") == spanish_candidates()
+    assert native_voice_candidates("fr") == french_candidates()
+    with pytest.raises(ValueError):
+        native_voice_candidates("de")
+
+
+def test_recommended_voice_pair_feeds_config():
+    es = recommended_voice_pair("es")
+    assert es["locale"] == "es-MX"
+    assert es["narrator_voice"] == "es-MX-JorgeMultilingualNeural"
+    assert es["guest_voice"] == "es-MX-DaliaMultilingualNeural"
+    fr = recommended_voice_pair("fr")
+    assert fr["locale"] == "fr-FR"
+    assert fr["narrator_voice"] == "fr-FR-RemyMultilingualNeural"
+    # Returned mapping is a copy; mutating it must not corrupt the source.
+    es["narrator_voice"] = "tampered"
+    assert recommended_voice_pair("es")["narrator_voice"] == "es-MX-JorgeMultilingualNeural"
+    with pytest.raises(ValueError):
+        recommended_voice_pair("de")
+
+
+def test_native_candidate_plan_builds_safe_blob_paths():
+    plan = build_plan(SCRIPT_TEXT, "2026-W23", candidates=spanish_candidates())
+    assert plan  # at least the enabled Azure pair
+    for spec in plan:
+        assert spec.blob_path == spec.blob_path.lower()
+        assert spec.blob_path.endswith(".mp3")
+        assert " " not in spec.blob_path
