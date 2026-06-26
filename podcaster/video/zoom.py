@@ -23,12 +23,12 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from podcaster.video.video_gen import RecordedSegment
 from podcaster.video.sync_plan import VideoSegment
+from podcaster.video.video_gen import RecordedSegment
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +149,6 @@ def _zoompan_exprs(
     eoe = str(ease_out_end)
     ei_s = str(ei)
     eo_s = str(eo)
-    hf_s = str(hold_frames)
 
     # z: ramps from 1.0 at start_frame to zoom_level, holds, ramps back
     z_expr = (

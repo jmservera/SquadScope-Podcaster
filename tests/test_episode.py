@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -14,7 +14,6 @@ from podcaster.generation import (
     HOST_B_NAME,
     PODCAST_NAME,
     PODCAST_SPOKEN_SITE,
-    PODCAST_URL,
 )
 from podcaster.tts import load_tts_config
 

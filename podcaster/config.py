@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 MAX_SPOTIFY_TITLE_CHARS = 200

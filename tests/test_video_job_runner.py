@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +12,7 @@ from podcaster.queue import QueueMessage
 from podcaster.video.audio_align import TranscriptionUnavailable
 from podcaster.video.distribution import VideoDistributionConfig
 from podcaster.video.job_runner import (
+    _DEFAULT_MUSIC_CREDITS,
     MAX_DEQUEUE_COUNT,
     REASON_ALREADY_PROCESSED,
     REASON_NO_REPOS,
@@ -21,12 +21,12 @@ from podcaster.video.job_runner import (
     STATUS_FAILED,
     STATUS_SKIPPED,
     TransientVideoError,
-    VideoOutcome,
     _already_processed,
     _build_section_cards,
-    _section_card_duration_seconds,
+    _build_video_description,
     _resolve_anchor_id,
     _resolve_dog_logo,
+    _section_card_duration_seconds,
     drain,
     manifest_path,
     process_message,
@@ -35,8 +35,6 @@ from podcaster.video.job_runner import (
     script_path,
     show_notes_path,
     video_artifact_path,
-    _DEFAULT_MUSIC_CREDITS,
-    _build_video_description,
 )
 
 

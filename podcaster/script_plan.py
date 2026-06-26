@@ -55,10 +55,16 @@ from typing import Any, Sequence
 from podcaster.sections import (
     DEFAULT_TITLE_CARD_DURATION_SECONDS,
     ScriptSection,
-    host_labels as _host_labels,
     match_section_header,
     parse_script_sections,
+)
+from podcaster.sections import (
+    host_labels as _host_labels,
+)
+from podcaster.sections import (
     script_body as _script_body,
+)
+from podcaster.sections import (
     split_speaker as _split_speaker,
 )
 

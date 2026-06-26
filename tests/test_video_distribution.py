@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import json
-import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -523,13 +520,6 @@ class TestPlaylistIntegration:
             (200, json.dumps({"access_token": "tok"}).encode()),  # token for upload
         ]
 
-        config = VideoDistributionConfig(
-            youtube_enabled=True,
-            youtube_client_id="id", youtube_client_secret="sec",
-            youtube_refresh_token="ref",
-            blob_archive_enabled=False,
-            dry_run=True,  # skip real HTTP; dry_run returns "dry-run-id"
-        )
         # dry_run skips playlist call — use a monkeypatched upload_to_youtube instead
         captured_upload: list = []
 

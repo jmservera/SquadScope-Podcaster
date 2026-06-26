@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 from http.client import HTTPConnection
+from http.server import HTTPServer
 from pathlib import Path
 from threading import Thread
-from http.server import HTTPServer
 
 import pytest
 

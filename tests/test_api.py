@@ -6,13 +6,12 @@ import io
 import json
 import os
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from podcaster.api import GenerateHandler, _json_response
+from podcaster.api import GenerateHandler
 from podcaster.auth import create_token
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult

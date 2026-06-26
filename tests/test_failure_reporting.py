@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 from typing import Any
 from unittest.mock import patch
-
-import pytest
 
 from podcaster.failure_reporting import (
     FAILURE_LABEL,

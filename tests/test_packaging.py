@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from zipfile import ZipFile
 from io import BytesIO
+from zipfile import ZipFile
 
 from podcaster.packaging import (
     build_publishing_packet,

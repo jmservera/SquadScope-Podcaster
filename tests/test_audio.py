@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from podcaster.audio import (
-    AudioMetadata,
     MAX_FILE_SIZE_BYTES_MP3,
+    AudioMetadata,
     compute_segment_timeline,
     normalize_audio,
     placeholder_audio_validation,

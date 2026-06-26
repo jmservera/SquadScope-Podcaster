@@ -11,7 +11,6 @@ import pytest
 from podcaster.video.distribution import VideoDistributionConfig
 from podcaster.video.youtube import (
     RESUMABLE_CHUNK_SIZE,
-    YouTubeUploadResult,
     align_chunk_size,
     build_video_metadata,
     initiate_resumable_session,

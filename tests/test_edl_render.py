@@ -89,7 +89,7 @@ def test_build_plan_basic_argv_and_graph():
     assert "trim=start=0.000:end=10.000" in plan.filter_complex
     assert "color=c=black" in plan.filter_complex
     assert plan.final_label == "vout"
-    assert f"-map" in plan.argv and "[vout]" in plan.argv
+    assert "-map" in plan.argv and "[vout]" in plan.argv
     assert plan.output_path == "/out/ep.mp4"
 
 

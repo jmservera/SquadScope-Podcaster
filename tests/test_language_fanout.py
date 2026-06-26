@@ -17,7 +17,6 @@ from podcaster.language_fanout import (
     shared_artifact_path,
 )
 
-
 # --- artifact layout ----------------------------------------------------------
 
 

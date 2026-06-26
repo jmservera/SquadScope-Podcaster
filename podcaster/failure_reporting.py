@@ -102,10 +102,10 @@ def _build_issue_body(
     details: dict[str, Any] | None = None,
 ) -> str:
     lines = [
-        f"## ACA Container Failure",
+        "## ACA Container Failure",
         "",
-        f"| Field | Value |",
-        f"|-------|-------|",
+        "| Field | Value |",
+        "|-------|-------|",
         f"| **Container** | `{container}` |",
         f"| **Failure type** | `{error_type}` |",
         f"| **Timestamp** | {timestamp} |",

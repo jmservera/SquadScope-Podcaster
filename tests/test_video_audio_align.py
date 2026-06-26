@@ -13,16 +13,15 @@ import pytest
 from podcaster.video.audio_align import (
     TranscriptionUnavailable,
     WordTimestamp,
+    _first_mention_index,
     align_token_times,
     build_transcript_tokens,
     map_repo_times,
     normalize_tokens,
     repo_audio_timestamps,
     transcribe_words,
-    _first_mention_index,
 )
 from podcaster.video.sync_plan import RepoReference
-
 
 # --- normalize_tokens ---
 

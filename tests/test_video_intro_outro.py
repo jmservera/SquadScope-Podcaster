@@ -8,7 +8,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,35 +16,33 @@ pytest.importorskip("playwright", reason="playwright not installed — skipping 
 
 from podcaster.video.intro_outro import (
     CLARACLE_URL,
-    DEFAULT_SHOW_NAME,
     DEFAULT_CREDITS_DURATION_MS,
+    DEFAULT_CREDITS_ENTRIES,
+    DEFAULT_SHOW_NAME,
+    HEIGHT,
     INTRO_DURATION_MS,
     OUTRO_DURATION_MS,
-    TITLE_FONT,
+    REPO_LINKS,
     WIDTH,
-    HEIGHT,
     ClipResult,
     CreditsConfig,
     CreditsEntry,
-    DEFAULT_CREDITS_ENTRIES,
     IntroConfig,
     OutroConfig,
     _build_credits_ffmpeg_cmd,
     _build_intro_ffmpeg_cmd,
     _build_outro_ffmpeg_cmd,
     _escape_drawtext,
+    _record_html_to_video,
     _render_intro_html,
     _render_outro_html,
-    _record_html_to_video,
     derive_intro_duration,
     generate_credits_ffmpeg,
     generate_intro,
     generate_intro_ffmpeg,
     generate_outro,
     generate_outro_ffmpeg,
-    REPO_LINKS,
 )
-
 
 # --- HTML Rendering Tests ---
 
@@ -300,7 +298,7 @@ class TestGenerateIntro:
 
                 # Need to create the dir before mock writes to it
                 output_dir.mkdir(parents=True, exist_ok=True)
-                result = generate_intro(output_dir=output_dir)
+                generate_intro(output_dir=output_dir)
 
             assert output_dir.exists()
 

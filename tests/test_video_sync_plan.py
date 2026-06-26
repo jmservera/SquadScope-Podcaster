@@ -2,35 +2,34 @@
 
 from __future__ import annotations
 
-import yaml
-import pytest
-
 from unittest.mock import patch
 
+import pytest
+import yaml
+
 from podcaster.video.sync_plan import (
-    RepoReference,
-    EpisodePlan,
-    VideoSegment,
     REMOVED_REPO_REASON,
+    EpisodePlan,
+    RepoReference,
+    VideoSegment,
+    _script_position,
     annotate_removed_repos,
     check_repo_removed,
     extract_repo_urls,
     extract_source_url,
     fetch_repos_from_article,
     generate_episode_plan,
-    generate_episode_plan_timed,
     generate_episode_plan_from_times,
+    generate_episode_plan_timed,
     generate_generic_plan,
     plan_from_script,
-    plan_from_script_timed,
     plan_from_script_aligned,
+    plan_from_script_timed,
     prepend_weekly_segment,
     removed_repo_speaker_notes,
-    weekly_url_from_job_id,
     sort_repos_by_mention,
-    _script_position,
+    weekly_url_from_job_id,
 )
-
 
 # --- Fixtures ---
 
@@ -756,17 +755,16 @@ class TestPrependWeeklySegment:
 
 
 from podcaster.video.sync_plan import (
-    AudioCuePoint,
-    VisualCue,
     VISUAL_KIND_IMAGE,
     VISUAL_KIND_RECORDING,
     VISUAL_KIND_SCREENSHOT,
+    AudioCuePoint,
+    VisualCue,
     build_audio_cue_points,
-    snap_to_audio_boundary,
     snap_episode_plan_to_audio,
+    snap_to_audio_boundary,
     snap_visual_cues,
 )
-from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 
 
 class TestBuildAudioCuePoints:

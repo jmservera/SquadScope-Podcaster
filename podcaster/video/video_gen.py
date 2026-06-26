@@ -28,11 +28,11 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
-import uuid
 
 import requests
 
@@ -41,6 +41,7 @@ try:
         Browser,
         BrowserContext,
         Page,
+        Playwright,
         sync_playwright,
     )
 

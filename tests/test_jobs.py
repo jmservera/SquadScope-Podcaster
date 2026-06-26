@@ -74,7 +74,6 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     assert "artifact URLs are private operator paths, not public publishing links" in result.response["warnings"]
 
     job_dir = artifact_root / "jobs" / result.response["job_id"]
-    manifest_file = job_dir / "manifest.json"
     packet_file = job_dir / "packets" / f"{result.response['job_id']}.zip"
     assert (job_dir / "script.txt").exists()
     assert (job_dir / "claim-ledger.json").exists()
