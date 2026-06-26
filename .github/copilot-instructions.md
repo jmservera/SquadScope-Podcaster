@@ -36,3 +36,37 @@ This repo receives configuration via the API payload. The config schema (Podcast
 - Run `pytest tests/ -q` (297+ tests)
 - CI: `.github/workflows/ci.yml`
 - Smoke coverage is the caller's responsibility
+
+## DevSecOps Guardrails
+
+Part of the DevSecOps Guardrails epic (jmservera/SquadScope-Coordinator#33). Rollout is
+**phased**: Phase A = warning-only baselines (current), Phase B = fix findings,
+Phase C = blocking gates + local hooks. See `docs/linting.md` for full details.
+Hermes (Safety & Security) owns the DevSecOps surface; route hook/CI-security/
+dependency-scan/secret-detection work and infra/Dockerfile/workflow security
+review through Hermes.
+
+**Before pushing, run locally:**
+- `pytest tests/ -q` — tests must pass.
+- `docker build -f Containerfile -t podcaster-synthesis:ci .` (and `Containerfile.api`,
+  `ui/Dockerfile`) when you touch container definitions or their dependencies.
+- `ruff check podcaster tests` and `ruff format --check podcaster tests` for Python
+  lint/format. Auto-fix with `ruff check --fix` and `ruff format`.
+- `checkov --directory . --framework dockerfile --skip-path .worktrees --skip-path ui/node_modules --baseline .checkov.baseline --soft-fail --compact`
+  when you change `Containerfile*`/`ui/Dockerfile`; `checkov --directory infra --framework bicep` for infra.
+- `zizmor <repo-owned workflow files>` when you change anything under `.github/workflows/`.
+
+**Installing the tools locally:**
+```bash
+pip install ruff==0.15.7 checkov==3.2.533 zizmor==1.25.2
+```
+
+**Local hooks (Phase C):** pre-commit/pre-push hooks will run ruff (and the security
+scanners on relevant paths). Until then, run the commands above manually.
+
+**Emergencies (skip checks):** prefer fixing the finding. If a hotfix genuinely must
+bypass local hooks, use `git commit --no-verify` / `git push --no-verify` and call it
+out in the PR so Hermes can follow up. CI scanners are non-blocking in Phase A, so a
+push is never silently gated — but never weaken or delete a check to make CI green
+(**CI must be correct, not just green**).
+

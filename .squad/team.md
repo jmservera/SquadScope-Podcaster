@@ -15,7 +15,7 @@
 | Leela | Producer Lead | `.squad/agents/leela/charter.md` | 🏗️ Active |
 | Bender | Platform / Backend | `.squad/agents/bender/charter.md` | 🔧 Active |
 | Farnsworth | Script & Audio Editor | `.squad/agents/farnsworth/charter.md` | 📝 Active |
-| Hermes | Safety & Security | `.squad/agents/hermes/charter.md` | 🔒 Active |
+| Hermes | Safety & Security · DevSecOps | `.squad/agents/hermes/charter.md` | 🔒 Active |
 | Amy | Distribution UX | `.squad/agents/amy/charter.md` | ⚛️ Active |
 | Fry | QA / Tester | `.squad/agents/fry/charter.md` | 🧪 Active |
 | Scribe | Session Logger | `.squad/agents/scribe/charter.md` | 📋 Silent |
