@@ -183,6 +183,132 @@ def production_candidate() -> BakeoffCandidate:
     )
 
 
+# --- Multilanguage native-voice bakeoff (#436) ------------------------------
+#
+# The multilanguage epic (parent: SquadScope-Coordinator#27) needs native es and
+# fr host voice pairs. Azure *multilingual* neural voices are the preferred
+# candidates because they pronounce embedded English proper nouns and tech terms
+# (API, CI/CD, OIDC, GitHub, Azure, OpenAI) natively while speaking the target
+# language — a hard requirement for SquadScope tech podcasts. DragonHD variants
+# are added as higher-fidelity comparison candidates. ElevenLabs stays disabled
+# until voice rights, data retention, and per-minute spend are reviewed (Hermes
+# gate), mirroring the OpenAI gate in ``default_candidates``.
+#
+# Azure has no ``es-419`` voice; ``es-MX`` is the agreed Latin-American proxy and
+# is broadly intelligible across LatAm. The selected pairs feed the per-language
+# config voice fields in #432 via ``recommended_voice_pair``.
+
+# Latin-American Spanish (es-419 proxy: es-MX) and France French (fr-FR) locales.
+ES_LOCALE = "es-MX"
+FR_LOCALE = "fr-FR"
+
+# Operator-selectable recommendation from the bakeoff (#436). Host A = narrator
+# (male), Host B = guest (female), matching the Claracle two-voice format. These
+# IDs are the single source of truth consumed by the per-language config (#432).
+RECOMMENDED_VOICE_PAIRS: dict[str, dict[str, str]] = {
+    "es": {
+        "locale": ES_LOCALE,
+        "provider": "azure-speech-standard",
+        "narrator_voice": "es-MX-JorgeMultilingualNeural",
+        "guest_voice": "es-MX-DaliaMultilingualNeural",
+    },
+    "fr": {
+        "locale": FR_LOCALE,
+        "provider": "azure-speech-standard",
+        "narrator_voice": "fr-FR-RemyMultilingualNeural",
+        "guest_voice": "fr-FR-VivienneMultilingualNeural",
+    },
+}
+
+
+def spanish_candidates() -> list[BakeoffCandidate]:
+    """Native Latin-American Spanish (es-MX) host-pair candidates for #436."""
+
+    return [
+        BakeoffCandidate(
+            provider="azure-speech-standard",
+            locale=ES_LOCALE,
+            narrator_voice="es-MX-JorgeMultilingualNeural",
+            guest_voice="es-MX-DaliaMultilingualNeural",
+            notes="Preferred es-419 pair; multilingual neural keeps English tech "
+            "terms and proper nouns native while speaking Spanish.",
+        ),
+        BakeoffCandidate(
+            provider="azure-speech-dragonhd",
+            locale=ES_LOCALE,
+            narrator_voice="es-MX-Tristan:DragonHDLatestNeural",
+            guest_voice="es-MX-Ximena:DragonHDLatestNeural",
+            notes="DragonHD higher-fidelity comparison pair for es-MX.",
+        ),
+        BakeoffCandidate(
+            provider="elevenlabs",
+            locale=ES_LOCALE,
+            narrator_voice="eleven_multilingual_v2",
+            guest_voice="eleven_multilingual_v2",
+            enabled=False,
+            notes="Comparison only; disabled pending voice-rights, retention, and "
+            "spend review (Hermes gate). Voice IDs assigned at consent time.",
+        ),
+    ]
+
+
+def french_candidates() -> list[BakeoffCandidate]:
+    """Native France French (fr-FR) host-pair candidates for #436."""
+
+    return [
+        BakeoffCandidate(
+            provider="azure-speech-standard",
+            locale=FR_LOCALE,
+            narrator_voice="fr-FR-RemyMultilingualNeural",
+            guest_voice="fr-FR-VivienneMultilingualNeural",
+            notes="Preferred fr-FR pair; multilingual neural keeps English tech "
+            "terms and proper nouns native while speaking French.",
+        ),
+        BakeoffCandidate(
+            provider="azure-speech-standard",
+            locale=FR_LOCALE,
+            narrator_voice="fr-FR-LucienMultilingualNeural",
+            guest_voice="fr-FR-VivienneMultilingualNeural",
+            notes="Alternate male narrator for host-pair contrast.",
+        ),
+        BakeoffCandidate(
+            provider="azure-speech-dragonhd",
+            locale=FR_LOCALE,
+            narrator_voice="fr-FR-Remy:DragonHDLatestNeural",
+            guest_voice="fr-FR-Vivienne:DragonHDLatestNeural",
+            notes="DragonHD higher-fidelity comparison pair for fr-FR.",
+        ),
+        BakeoffCandidate(
+            provider="elevenlabs",
+            locale=FR_LOCALE,
+            narrator_voice="eleven_multilingual_v2",
+            guest_voice="eleven_multilingual_v2",
+            enabled=False,
+            notes="Comparison only; disabled pending voice-rights, retention, and "
+            "spend review (Hermes gate). Voice IDs assigned at consent time.",
+        ),
+    ]
+
+
+def native_voice_candidates(language: str) -> list[BakeoffCandidate]:
+    """Return native-voice bakeoff candidates for ``es`` or ``fr`` (#436)."""
+
+    builders = {"es": spanish_candidates, "fr": french_candidates}
+    try:
+        return builders[language]()
+    except KeyError:
+        raise ValueError(f"unsupported bakeoff language: {language!r}") from None
+
+
+def recommended_voice_pair(language: str) -> dict[str, str]:
+    """Bakeoff-selected voice pair for ``language`` (feeds per-language config #432)."""
+
+    try:
+        return dict(RECOMMENDED_VOICE_PAIRS[language])
+    except KeyError:
+        raise ValueError(f"no recommended voice pair for language: {language!r}") from None
+
+
 def _path_token(value: str) -> str:
     token = _PATH_TOKEN_RE.sub("-", value.strip().lower()).strip("-")
     return token or "unknown"
