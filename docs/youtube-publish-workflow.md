@@ -8,7 +8,8 @@ metadata/thumbnail generation (#445), and playlist management (#449).
 
 Fresh uploads are **always** drafts. The upload request sets
 `status.privacyStatus = unlisted` (or `private`) — never `public`
-(`podcaster/video/youtube_metadata.py`, default `unlisted`). The publish module
+(`podcaster/video/distribution.py`, `VideoDistributionConfig.youtube_privacy`,
+default `unlisted`). The publish module
 (`podcaster/video/youtube_publish.py`) refuses to construct a packet whose
 `draft_privacy` is `public`.
 

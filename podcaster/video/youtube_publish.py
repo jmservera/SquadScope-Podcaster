@@ -53,7 +53,11 @@ def _utc_now() -> datetime:
 
 
 def _to_rfc3339(value: datetime | str) -> str:
-    """Render a datetime (or pre-formatted string) as RFC-3339 UTC (``...Z``)."""
+    """Render a datetime as RFC-3339 UTC (``...Z``), or pass a string through unchanged.
+
+    When a ``str`` is provided it is returned as-is — callers are responsible
+    for supplying a valid RFC-3339 / ISO-8601 string (e.g. ``"2025-01-01T00:00:00Z"``).
+    """
     if isinstance(value, str):
         return value
     dt = value
@@ -114,8 +118,11 @@ class PublishingPacket:
         """Mark the packet approved (the explicit review gate passing)."""
         self.approved = True
         self.approved_by = by
-        logger.info("Publishing packet approved for video %s by %s",
-                    self.video_id, by or "<unspecified>")
+        logger.info(
+            "Publishing packet approved for video %s by %s",
+            self.video_id,
+            by or "<unspecified>",
+        )
         return self
 
     def to_dict(self) -> dict[str, object]:
