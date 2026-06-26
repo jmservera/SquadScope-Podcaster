@@ -283,6 +283,117 @@ class TestGetJobLogs:
 
 
 # ---------------------------------------------------------------------------
+# Tests: GET /api/jobs/{id}/logs — structured logs (#472) + filtering
+# ---------------------------------------------------------------------------
+
+
+def _write_structured_logs(storage, job_id, records):
+    doc = {
+        "schema_version": "squadscope-podcaster-logs-v1",
+        "job_id": job_id,
+        "updated_at": records[-1]["at"] if records else None,
+        "records": records,
+    }
+    storage.put_bytes(f"jobs/{job_id}/logs.json", json.dumps(doc).encode(), "application/json")
+
+
+class TestStructuredJobLogs:
+    JOB = "podcast-2026-W24-abc123"
+
+    def _setup(self, storage):
+        m = _make_manifest(self.JOB)
+        m["lifecycle"]["transitions"] = [
+            {"at": "2026-06-15T12:00:00Z", "to": "accepted", "reason": "initial_staging"},
+        ]
+        storage.put_bytes(f"jobs/{self.JOB}/manifest.json", json.dumps(m).encode(), "application/json")
+        _write_structured_logs(
+            storage,
+            self.JOB,
+            [
+                {"seq": 1, "at": "2026-06-15T12:02:00Z", "level": "info", "message": "recording 5 segments", "stage": "synthesis"},
+                {"seq": 2, "at": "2026-06-15T12:03:00Z", "level": "warning", "message": "music skipped", "task_id": "mix-1"},
+                {"seq": 3, "at": "2026-06-15T12:04:00Z", "level": "error", "message": "synthesis failed", "stage": "synthesis"},
+            ],
+        )
+
+    def test_merges_structured_and_manifest_logs(self, client, storage):
+        self._setup(storage)
+        resp = client.get(f"/api/jobs/{self.JOB}/logs")
+        assert resp.status_code == 200
+        data = resp.json()
+        sources = {log["source"] for log in data["logs"]}
+        assert sources == {"manifest", "structured"}
+        messages = [log["message"] for log in data["logs"]]
+        assert "recording 5 segments" in messages
+        assert data["total"] == len(data["logs"])
+
+    def test_structured_logs_carry_level_and_fields(self, client, storage):
+        self._setup(storage)
+        resp = client.get(f"/api/jobs/{self.JOB}/logs")
+        data = resp.json()
+        by_msg = {log["message"]: log for log in data["logs"]}
+        assert by_msg["music skipped"]["level"] == "warning"
+        assert by_msg["music skipped"]["task_id"] == "mix-1"
+        assert by_msg["synthesis failed"]["level"] == "error"
+        assert by_msg["synthesis failed"]["stage"] == "synthesis"
+
+    def test_level_filter_minimum_severity(self, client, storage):
+        self._setup(storage)
+        resp = client.get(f"/api/jobs/{self.JOB}/logs?level=warning")
+        data = resp.json()
+        levels = {log["level"] for log in data["logs"]}
+        assert levels <= {"warning", "error"}
+        assert "info" not in levels
+        assert data["level"] == "warning"
+
+    def test_level_filter_error_only(self, client, storage):
+        self._setup(storage)
+        resp = client.get(f"/api/jobs/{self.JOB}/logs?level=error")
+        data = resp.json()
+        assert all(log["level"] == "error" for log in data["logs"])
+        assert any(log["message"] == "synthesis failed" for log in data["logs"])
+
+    def test_search_filter(self, client, storage):
+        self._setup(storage)
+        resp = client.get(f"/api/jobs/{self.JOB}/logs?search=recording")
+        data = resp.json()
+        assert len(data["logs"]) == 1
+        assert data["logs"][0]["message"] == "recording 5 segments"
+        assert data["search"] == "recording"
+
+    def test_search_is_case_insensitive(self, client, storage):
+        self._setup(storage)
+        resp = client.get(f"/api/jobs/{self.JOB}/logs?search=MUSIC")
+        data = resp.json()
+        assert len(data["logs"]) == 1
+        assert data["logs"][0]["task_id"] == "mix-1"
+
+    def test_level_and_search_combined(self, client, storage):
+        self._setup(storage)
+        resp = client.get(f"/api/jobs/{self.JOB}/logs?level=warning&search=synthesis")
+        data = resp.json()
+        assert len(data["logs"]) == 1
+        assert data["logs"][0]["message"] == "synthesis failed"
+
+    def test_manifest_failed_transition_inferred_error(self, client, storage):
+        m = _make_manifest(self.JOB)
+        m["lifecycle"]["transitions"] = [
+            {"at": "2026-06-15T12:00:00Z", "to": "failed", "reason": "synthesis_failed"},
+        ]
+        storage.put_bytes(f"jobs/{self.JOB}/manifest.json", json.dumps(m).encode(), "application/json")
+        resp = client.get(f"/api/jobs/{self.JOB}/logs?level=error")
+        data = resp.json()
+        assert any(log["event"] == "transition:failed" for log in data["logs"])
+
+    def test_no_structured_logs_still_returns_manifest(self, client, storage):
+        m = _make_manifest(self.JOB)
+        storage.put_bytes(f"jobs/{self.JOB}/manifest.json", json.dumps(m).encode(), "application/json")
+        resp = client.get(f"/api/jobs/{self.JOB}/logs")
+        assert resp.status_code == 200
+        assert resp.json()["total"] >= 1
+
+
+# ---------------------------------------------------------------------------
 # Tests: POST /api/jobs/{id}/video/generate
 # ---------------------------------------------------------------------------
 
