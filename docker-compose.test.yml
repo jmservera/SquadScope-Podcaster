@@ -36,9 +36,14 @@ services:
     volumes:
       - azurite-data:/data
     healthcheck:
-      # Azurite returns HTTP 400 on a bare GET of the blob endpoint once it is
-      # listening; that is enough to prove the port is up.
-      test: ["CMD", "nc", "-z", "127.0.0.1", "10000"]
+      # The Azurite image is minimal and ships no `nc`/`curl`, but it does bundle
+      # Node.js. Use a tiny Node TCP probe against the blob port to prove the
+      # emulator is listening.
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('net').connect(10000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
       interval: 5s
       timeout: 3s
       retries: 10
@@ -51,22 +56,27 @@ services:
       dockerfile: Containerfile
     image: podcaster-synthesis:test
     container_name: podcaster-test-runner
+    # Run as the host UID/GID (override via `UID`/`GID` env vars) so files the
+    # container writes under the bind-mounted /workspace (.pytest_cache, local
+    # artifacts) stay writable and owned by the host user.
+    user: "${UID:-1000}:${GID:-1000}"
     depends_on:
       azurite:
         condition: service_healthy
     environment:
       # Azurite well-known dev account connection string (Blob/Queue/Table all
-      # routed at the azurite service). 127.0.0.1 is rewritten to the compose
-      # service hostname so containers reach the emulator.
+      # routed at the azurite service). Provided for tests/tooling that talk to
+      # Azurite directly (e.g. `from_connection_string`). The production
+      # managed-identity Blob/Queue backends are deliberately NOT wired here,
+      # because Azurite does not speak Azure AD.
       AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1;"
-      # Storage / queue endpoints used by the podcaster modules.
-      PODCASTER_STORAGE_ACCOUNT_URL: "http://azurite:10000/devstoreaccount1"
-      PODCASTER_STORAGE_QUEUE_URL: "http://azurite:10001/devstoreaccount1"
       PODCASTER_STORAGE_CONTAINER: "podcaster-artifacts"
       PODCASTER_SYNTHESIS_QUEUE: "synthesis-jobs"
       # Keep artifacts on the local filesystem backend for offline integration
-      # tests (the managed-identity blob path cannot authenticate to Azurite).
-      PODCASTER_LOCAL_STORAGE_PATH: "/app/.podcaster-artifacts"
+      # tests; the path lives under the writable /workspace mount. The
+      # managed-identity blob/queue URLs are intentionally omitted so no code
+      # path attempts Azure AD auth against Azurite.
+      PODCASTER_LOCAL_STORAGE_PATH: "/workspace/.podcaster-artifacts"
       PODCASTER_API_KEY: "local-dev-key"
       AZURE_OPENAI_AUTH_MODE: "managed_identity"
       PYTHONUNBUFFERED: "1"
