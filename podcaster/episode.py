@@ -26,8 +26,6 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
-log = logging.getLogger(__name__)
-
 from podcaster.audio import (
     AudioValidationResult,
     BackchannelMixItem,
@@ -55,6 +53,8 @@ from podcaster.tts import (
     synthesize_two_voice,
 )
 from podcaster.tts_pool import TtsPoolConfig, load_tts_pool_config
+
+log = logging.getLogger(__name__)
 
 # Per-field caps for sanitized article-derived text embedded in the script.
 _TOPIC_LIMIT = 160

@@ -89,6 +89,31 @@ Remaining baseline (deferred to follow-up Phase B passes, by directory):
 changes and are intentionally left for subsequent incremental PRs so each stays
 small and reviewable. The full test suite (2049 passed) is green after this pass.
 
+### Phase B progress (#521) — E402 follow-up
+
+Second incremental pass: cleared `E402` (module-import-not-at-top-of-file)
+entirely. These were imports placed after early `logging.getLogger(__name__)`
+module-level statements or a mid-file import block:
+
+- **`podcaster/episode.py`** / **`podcaster/monitoring.py`** — the
+  `log`/`logger = logging.getLogger(__name__)` assignment sat between the stdlib
+  imports and the first-party `podcaster.*` imports, pushing every following
+  import past a non-import statement. Moved the logger assignment below the
+  import block.
+- **`tests/test_video_sync_plan.py`** — a second `from podcaster.video.sync_plan
+  import (...)` block lived mid-file (after the test classes started); merged its
+  names into the single top-of-file import block.
+
+Remaining baseline after this pass:
+
+| Count | Rule  | Description |
+| ----: | ----- | ----------- |
+| 533   | E501  | line-too-long |
+| **533** | **total** | |
+
+`E501` (line length) remains the last category, deferred to a subsequent
+incremental pass. The full test suite is green after this pass.
+
 ## Checkov (IaC / container security) — #519
 
 Checkov scans infrastructure-as-code and container definitions. It **already**
