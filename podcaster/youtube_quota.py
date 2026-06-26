@@ -161,7 +161,7 @@ def quota_preflight(
     usable = max(daily_quota - max(reserve, 0), 0)
     projected = consumed + planned_units
     allowed = projected <= usable
-    remaining = max(usable - consumed, 0)
+    remaining = max(usable - projected, 0)
     if allowed:
         reason = "within_quota"
     elif consumed >= usable:
