@@ -19,8 +19,8 @@ under `[tool.ruff]`. Phase A uses a conservative rule subset (`E`, `F`, `I`) wit
 ### Local usage
 
 ```bash
-# One-time install (already available in CI):
-pip install ruff==0.15.7
+# One-time install — Ruff ships in the `dev` extra (also installed in CI):
+pip install -e ".[dev]"   # or: pip install ruff==0.15.7
 
 # Lint (report only):
 ruff check podcaster tests
