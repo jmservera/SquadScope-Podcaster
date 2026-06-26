@@ -44,7 +44,10 @@ SOURCE_ARTIFACT_OBJECT_FIELDS = {
     "url",
     "week",
 }
-PODCAST_CONFIG_FIELDS = {"ai_voice_disclosure", "dog_logo", "host_a", "host_b", "hosts", "languages", "name", "spoken_site", "style_guide", "url"}
+PODCAST_CONFIG_FIELDS = {
+    "ai_voice_disclosure", "dog_logo", "host_a", "host_b", "hosts", "languages",
+    "name", "spoken_site", "style_guide", "url",
+}
 HOST_CONFIG_FIELDS = {"name", "style", "voice"}
 
 RESPONSE_KEYS = (
@@ -139,7 +142,10 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
         errors.append("callback must be an object")
     elif isinstance(callback, dict):
         callback_url = callback.get("url")
-        if callback_url is not None and (not isinstance(callback_url, str) or urlparse(callback_url).scheme not in {"http", "https"}):
+        if callback_url is not None and (
+            not isinstance(callback_url, str)
+            or urlparse(callback_url).scheme not in {"http", "https"}
+        ):
             errors.append("callback.url must be an http or https URL")
         secret_name = callback.get("secret_name")
         if secret_name is not None and not isinstance(secret_name, str):
@@ -190,7 +196,11 @@ def _validate_source_artifact_object(label: str, artifact: dict[Any, Any]) -> li
     if not artifact:
         return [f"{label} must include path, url, href, uri, or name"]
 
-    unknown_fields = sorted(str(key) for key in artifact if isinstance(key, str) and key not in SOURCE_ARTIFACT_OBJECT_FIELDS)
+    unknown_fields = sorted(
+        str(key)
+        for key in artifact
+        if isinstance(key, str) and key not in SOURCE_ARTIFACT_OBJECT_FIELDS
+    )
     if unknown_fields:
         errors.append(f"{label} contains unsupported fields: {', '.join(unknown_fields)}")
 
@@ -199,15 +209,21 @@ def _validate_source_artifact_object(label: str, artifact: dict[Any, Any]) -> li
         errors.append(f"{label} must include path, url, href, uri, or name")
     for url_field in ("url", "href", "uri"):
         value = artifact.get(url_field)
-        if value is not None and (not isinstance(value, str) or urlparse(value).scheme not in {"http", "https"}):
+        if value is not None and (
+            not isinstance(value, str) or urlparse(value).scheme not in {"http", "https"}
+        ):
             errors.append(f"{label}.{url_field} must be an http or https URL")
 
-    for string_field in ("role", "path", "name", "week", "generated_at", "crawled_at", "source_status"):
+    for string_field in (
+        "role", "path", "name", "week", "generated_at", "crawled_at", "source_status"
+    ):
         value = artifact.get(string_field)
         if value is not None and not isinstance(value, str):
             errors.append(f"{label}.{string_field} must be a string")
 
-    for digest_field in ("sha256", "artifact_checksum", "schema_checksum", "source_config_checksum"):
+    for digest_field in (
+        "sha256", "artifact_checksum", "schema_checksum", "source_config_checksum"
+    ):
         value = artifact.get(digest_field)
         if value is not None and (not isinstance(value, str) or not SHA256_RE.match(value)):
             errors.append(f"{label}.{digest_field} must be a lowercase hex SHA-256 digest")
@@ -217,7 +233,11 @@ def _validate_source_artifact_object(label: str, artifact: dict[Any, Any]) -> li
         errors.append(f"{label}.exists must be a boolean")
 
     size_bytes = artifact.get("size_bytes")
-    if size_bytes is not None and (not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0):
+    if size_bytes is not None and (
+        not isinstance(size_bytes, int)
+        or isinstance(size_bytes, bool)
+        or size_bytes < 0
+    ):
         errors.append(f"{label}.size_bytes must be a non-negative integer")
 
     for object_field in (
@@ -269,7 +289,9 @@ def _validate_podcast_config(podcast_config: Any) -> tuple[list[str], list[str]]
         if not isinstance(host, dict):
             errors.append(f"podcast_config.{host_field} must be an object")
             continue
-        warnings.extend(_unknown_field_warnings(f"podcast_config.{host_field}", host, HOST_CONFIG_FIELDS))
+        warnings.extend(
+            _unknown_field_warnings(f"podcast_config.{host_field}", host, HOST_CONFIG_FIELDS)
+        )
         for field in ("name", "voice", "style"):
             value = host.get(field)
             if value is not None and not _is_non_empty_string(value):
@@ -292,7 +314,9 @@ def _validate_podcast_config(podcast_config: Any) -> tuple[list[str], list[str]]
 
 
 def _unknown_field_warnings(label: str, obj: dict[Any, Any], allowed_fields: set[str]) -> list[str]:
-    unknown_fields = sorted(str(key) for key in obj if isinstance(key, str) and key not in allowed_fields)
+    unknown_fields = sorted(
+        str(key) for key in obj if isinstance(key, str) and key not in allowed_fields
+    )
     if not unknown_fields:
         return []
     return [f"{label} contains unsupported fields: {', '.join(unknown_fields)}"]
@@ -325,4 +349,6 @@ def build_stub_response(payload: dict[str, Any], now: datetime | None = None) ->
         base_url=os.environ.get("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-stub"),
     )
     validation = validate_payload_details(payload)
-    return run_generation_job(payload, storage=storage, now=now, validation_warnings=validation.warnings).response
+    return run_generation_job(
+        payload, storage=storage, now=now, validation_warnings=validation.warnings
+    ).response

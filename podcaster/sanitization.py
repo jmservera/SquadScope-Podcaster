@@ -44,20 +44,20 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # Indirect prompt-injection markers. Detection is for *flagging only*; matched
 # text is still neutralized and never acted upon.
 _INJECTION_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
-    ("ignore_instructions", re.compile(r"\bignore\b[^.\n]{0,40}\b(?:previous|prior|above|earlier|all)\b[^.\n]{0,20}\binstructions?\b", re.IGNORECASE)),
-    ("disregard_instructions", re.compile(r"\bdisregard\b[^.\n]{0,40}\binstructions?\b", re.IGNORECASE)),
-    ("override_directive", re.compile(r"\b(?:override|forget|reset|bypass)\b[^.\n]{0,30}\b(?:instructions?|prompt|rules?|guardrails?)\b", re.IGNORECASE)),
+    ("ignore_instructions", re.compile(r"\bignore\b[^.\n]{0,40}\b(?:previous|prior|above|earlier|all)\b[^.\n]{0,20}\binstructions?\b", re.IGNORECASE)),  # noqa: E501
+    ("disregard_instructions", re.compile(r"\bdisregard\b[^.\n]{0,40}\binstructions?\b", re.IGNORECASE)),  # noqa: E501
+    ("override_directive", re.compile(r"\b(?:override|forget|reset|bypass)\b[^.\n]{0,30}\b(?:instructions?|prompt|rules?|guardrails?)\b", re.IGNORECASE)),  # noqa: E501
     ("role_injection", re.compile(r"\b(?:system|assistant|developer)\s*:", re.IGNORECASE)),
     ("identity_override", re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE)),
     ("new_instructions", re.compile(r"\bnew\s+instructions?\b", re.IGNORECASE)),
     ("prompt_reference", re.compile(r"\bsystem\s+prompt\b", re.IGNORECASE)),
     ("jailbreak", re.compile(r"\b(?:jailbreak|do\s+anything\s+now|DAN\b)", re.IGNORECASE)),
-    ("publish_directive", re.compile(r"\b(?:publish|deploy|exfiltrate|leak|send)\b[^.\n]{0,30}\b(?:secret|token|key|credential|now)\b", re.IGNORECASE)),
+    ("publish_directive", re.compile(r"\b(?:publish|deploy|exfiltrate|leak|send)\b[^.\n]{0,30}\b(?:secret|token|key|credential|now)\b", re.IGNORECASE)),  # noqa: E501
 )
 
 # Long opaque tokens are a common carrier for encoded injection payloads
 # (e.g. base64 of "Ignore previous instructions").
-_ENCODED_BLOB_RE = re.compile(r"(?:[A-Za-z0-9+/]{24,}={0,2}|(?:%[0-9A-Fa-f]{2}){8,}|(?:\\u[0-9A-Fa-f]{4}){6,})")
+_ENCODED_BLOB_RE = re.compile(r"(?:[A-Za-z0-9+/]{24,}={0,2}|(?:%[0-9A-Fa-f]{2}){8,}|(?:\\u[0-9A-Fa-f]{4}){6,})")  # noqa: E501
 
 # A hex digest may be echoed plainly; anything else is fenced as untrusted.
 _HEX_RE = re.compile(r"[0-9a-fA-F]{1,64}")
@@ -153,7 +153,9 @@ def sanitize_source_artifact(item: object) -> SanitizedSourceArtifact:
         sha256 = ""
     elif isinstance(item, dict):
         raw_for_flags = " ".join(
-            str(value) for key, value in item.items() if isinstance(key, str) and key in _SOURCE_ARTIFACT_ECHO_FIELDS
+            str(value)
+            for key, value in item.items()
+            if isinstance(key, str) and key in _SOURCE_ARTIFACT_ECHO_FIELDS
         )
         role_value = item.get("role")
         role = role_value if isinstance(role_value, str) else ""

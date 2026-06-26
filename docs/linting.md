@@ -114,6 +114,27 @@ Remaining baseline after this pass:
 `E501` (line length) remains the last category, deferred to a subsequent
 incremental pass. The full test suite is green after this pass.
 
+### Phase B progress (#521) — E501 follow-up (core slice 1)
+
+Third incremental pass: started clearing `E501` (line-too-long) by module,
+beginning with the `podcaster/` config/validation core. Code lines were wrapped
+to the 100-column limit; intentional string literals that must not be reflowed
+(injection-detection regexes in `sanitization.py`, the visual-intent prompt text
+in `script_plan.py`) carry a justified `# noqa: E501` instead.
+
+Files cleared in this slice: `podcaster/config.py`, `podcaster/costs.py`,
+`podcaster/validation.py`, `podcaster/sanitization.py`, `podcaster/script_plan.py`.
+
+Remaining baseline after this pass:
+
+| Count | Rule  | Description |
+| ----: | ----- | ----------- |
+| 494   | E501  | line-too-long |
+| **494** | **total** | |
+
+The remaining `E501` violations are deferred to subsequent by-module passes so
+each PR stays small and reviewable. The full test suite is green after this pass.
+
 ## Checkov (IaC / container security) — #519
 
 Checkov scans infrastructure-as-code and container definitions. It **already**
