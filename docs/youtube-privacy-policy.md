@@ -22,8 +22,8 @@ Contact: **[SUPPORT EMAIL]**
 
 The app generates a weekly, AI-voiced technology-news podcast and an accompanying
 video, and — after an editorial review gate — uploads the finished video to the
-authorizing user's own YouTube channel as an **unlisted draft** for that user to
-review and publish manually.
+authorizing user's own YouTube channel as an **unlisted video** for that user to
+review and then change its visibility to public (publish) manually.
 
 ## Google user data we access
 

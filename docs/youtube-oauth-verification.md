@@ -17,12 +17,18 @@ request a quota increase.
 | | Our app |
 | --- | --- |
 | Requested scope | `https://www.googleapis.com/auth/youtube.upload` (only) |
-| Google classification | **Sensitive** scope (not *restricted*) |
+| Google classification | **Sensitive** scope at time of writing (not *restricted*) — **re-confirm** in Google's verification flow |
 | App verification required | **Yes** |
 | Brand verification (logo + domain ownership) | **Yes** |
 | Privacy policy URL | **Yes** |
 | Demo video | **Yes** (full OAuth + upload workflow) |
-| Third-party security assessment (CASA / restricted-scope audit) | **No** — not required for sensitive YouTube scopes |
+| Third-party security assessment (CASA / restricted-scope audit) | Not required for *sensitive* scopes at time of writing — **verify current requirement** in the Google verification flow before assuming none is needed |
+
+> **Important:** Google can change OAuth scope classifications and assessment
+> requirements over time. Treat the table above as a starting point and **verify
+> the current classification and any CASA / security-assessment requirement for
+> `youtube.upload` directly in the Google Cloud verification flow** before
+> concluding that an audit is not needed.
 
 Keeping the **single narrowest scope** (`youtube.upload`) is the deliberate
 choice that keeps us in the *sensitive* lane and out of the much heavier
@@ -85,8 +91,8 @@ text (Hermes owns the wording; keep it truthful and specific):
 > **What the app does:** SquadScope/Claracle automatically generates a weekly,
 > AI-voiced tech news podcast and an accompanying video. After the episode is
 > produced and passes an editorial review gate, the app uploads the finished
-> video to the channel owner's own YouTube channel as an **unlisted draft** for
-> the owner to review and publish manually.
+> video to the channel owner's own YouTube channel as an **unlisted video** for
+> the owner to review and publish (change visibility to public) manually.
 >
 > **Why this scope:** `youtube.upload` is the single narrowest scope that permits
 > programmatic upload of a finished video. The app does not read, list, modify,
@@ -115,14 +121,18 @@ Keep it **under 5 minutes**, screen-recorded, narrated. The reviewer must see th
 
 1. **Intro (15s):** State the app name and that it uploads an AI-generated weekly
    tech podcast video to the owner's YouTube channel using `youtube.upload`.
-2. **OAuth flow (60–90s):** Run `python scripts/youtube_oauth_setup.py`. Show:
+2. **OAuth flow (60–90s):** Run `python scripts/youtube_oauth_setup.py`
+   (pre-set `VIDEO_YOUTUBE_CLIENT_ID` and `VIDEO_YOUTUBE_CLIENT_SECRET` in the
+   environment **off-camera before recording** — never type or display secrets
+   on screen). Show:
    - The Google sign-in.
    - The **consent screen** clearly displaying the app name **and the
      `.../auth/youtube.upload` scope**.
    - Granting consent and the success result.
 3. **What we do with the grant (60s):** Show the pipeline performing an upload
    (`distribute_video()` / `podcaster/video/distribution.py`) and the resulting
-   **unlisted draft** appearing in YouTube Studio.
+   **unlisted video** appearing in YouTube Studio (which the owner can later make
+   public manually).
 4. **Data handling (30s):** State on-camera that the refresh token is stored in
    Azure Key Vault, never logged, and used only to mint short-lived upload
    tokens. Show the privacy policy page briefly.
