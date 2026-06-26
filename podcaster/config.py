@@ -157,6 +157,189 @@ class HostConfig:
     style: str
 
 
+# Default language is the existing English show. Spanish (es-419, Latin-American)
+# and French (fr-FR) are the first localized targets for the multilanguage epic
+# (jmservera/SquadScope-Coordinator#27). The voice IDs are the bakeoff-selected
+# Azure multilingual neural pairs from #436; locales are intentionally specific
+# (es-419 vs es-ES) so downstream selection can branch on them.
+DEFAULT_LANGUAGE = "en"
+
+_DEFAULT_LOCALES: dict[str, str] = {
+    "en": "en-US",
+    "es": "es-419",
+    "fr": "fr-FR",
+}
+
+# Bakeoff-selected native host-pair voices (#436). es-419 has no dedicated Azure
+# voice; es-MX is the agreed Latin-American proxy.
+_DEFAULT_LANGUAGE_VOICES: dict[str, tuple[str, str]] = {
+    "es": ("es-MX-JorgeMultilingualNeural", "es-MX-DaliaMultilingualNeural"),
+    "fr": ("fr-FR-RemyMultilingualNeural", "fr-FR-VivienneMultilingualNeural"),
+}
+
+# Native-language AI-voice disclosure and closing CTA. Brand ("Claracle") and
+# spoken site stay universal; only functional strings are localized.
+_DEFAULT_DISCLOSURES: dict[str, str] = {
+    "es": (
+        "Las dos voces de este programa son generadas por inteligencia "
+        "artificial, no son presentadores humanos."
+    ),
+    "fr": (
+        "Les deux voix de cette émission sont générées par intelligence "
+        "artificielle, ce ne sont pas des présentateurs humains."
+    ),
+}
+
+_DEFAULT_CTAS: dict[str, str] = {
+    "en": "Read more at www.claracle.com",
+    "es": "Lee más en www.claracle.com",
+    "fr": "Pour en savoir plus, rendez-vous sur www.claracle.com",
+}
+
+
+@dataclass(frozen=True)
+class LanguageConfig:
+    """Per-language configuration block for the multilanguage pipeline (#432).
+
+    Drives language fan-out: each entry carries its own locale, host voice pair,
+    script-generation prompt overrides, AI-voice disclosure, and closing CTA. The
+    brand name stays universal; only functional/English strings are externalized.
+    """
+
+    language: str
+    locale: str
+    show_name: str
+    host_a: HostConfig
+    host_b: HostConfig
+    prompts: Mapping[str, str] = field(default_factory=dict)
+    disclosure: str = ""
+    cta: str = ""
+    enabled: bool = True
+
+    @classmethod
+    def default_for(cls, language: str) -> "LanguageConfig":
+        """Documented per-locale defaults for a known language code."""
+
+        gen = _generation_defaults()
+        locale = _DEFAULT_LOCALES.get(language, language)
+        voices = _DEFAULT_LANGUAGE_VOICES.get(language)
+        if voices is None:
+            host_a = HostConfig(gen.HOST_A_NAME, gen.HOST_A_VOICE, gen.HOST_A_STYLE)
+            host_b = HostConfig(gen.HOST_B_NAME, gen.HOST_B_VOICE, gen.HOST_B_STYLE)
+        else:
+            host_a = HostConfig(gen.HOST_A_NAME, voices[0], gen.HOST_A_STYLE)
+            host_b = HostConfig(gen.HOST_B_NAME, voices[1], gen.HOST_B_STYLE)
+        return cls(
+            language=language,
+            locale=locale,
+            show_name=gen.PODCAST_NAME,
+            host_a=host_a,
+            host_b=host_b,
+            prompts={},
+            disclosure=_DEFAULT_DISCLOSURES.get(language, gen.AI_VOICE_DISCLOSURE),
+            cta=_DEFAULT_CTAS.get(language, _DEFAULT_CTAS["en"]),
+            enabled=True,
+        )
+
+    @classmethod
+    def from_payload(cls, language: str, payload: object) -> "LanguageConfig":
+        """Build a language block, falling back to documented defaults per field."""
+
+        defaults = cls.default_for(language)
+        if not isinstance(payload, Mapping):
+            return defaults
+
+        hosts_array = payload.get("hosts")
+        host_a_payload = payload.get("host_a")
+        host_b_payload = payload.get("host_b")
+        if isinstance(hosts_array, (list, tuple)) and len(hosts_array) >= 1:
+            if host_a_payload is None:
+                host_a_payload = hosts_array[0]
+            if host_b_payload is None and len(hosts_array) >= 2:
+                host_b_payload = hosts_array[1]
+
+        # A dedicated "voices" map ({"host_a": id, "host_b": id}) overrides voices
+        # without restating the full host blocks.
+        voices = payload.get("voices")
+        if isinstance(voices, Mapping):
+            host_a_payload = _merge_voice(host_a_payload, voices.get("host_a"))
+            host_b_payload = _merge_voice(host_b_payload, voices.get("host_b"))
+
+        prompts_payload = payload.get("prompts")
+        prompts = {
+            str(k): v.strip()
+            for k, v in prompts_payload.items()
+            if isinstance(v, str) and v.strip()
+        } if isinstance(prompts_payload, Mapping) else dict(defaults.prompts)
+
+        enabled = payload.get("enabled")
+        return cls(
+            language=language,
+            locale=_string_or_default(payload.get("locale"), defaults.locale),
+            show_name=_string_or_default(payload.get("show_name") or payload.get("showName"), defaults.show_name),
+            host_a=_host_from_payload(host_a_payload, defaults.host_a),
+            host_b=_host_from_payload(host_b_payload, defaults.host_b),
+            prompts=prompts,
+            disclosure=_string_or_default(payload.get("disclosure"), defaults.disclosure),
+            cta=_string_or_default(payload.get("cta"), defaults.cta),
+            enabled=enabled if isinstance(enabled, bool) else defaults.enabled,
+        )
+
+
+def _merge_voice(host_payload: object, voice: object) -> object:
+    """Overlay a voice id onto a host payload mapping."""
+
+    if not (isinstance(voice, str) and voice.strip()):
+        return host_payload
+    base = dict(host_payload) if isinstance(host_payload, Mapping) else {}
+    base["voice"] = voice.strip()
+    return base
+
+
+def _default_languages() -> dict[str, LanguageConfig]:
+    return {code: LanguageConfig.default_for(code) for code in _DEFAULT_LOCALES}
+
+
+def validate_language_block(language: str, payload: object) -> None:
+    """Raise ``ValueError`` if a language block is malformed.
+
+    Lenient parsing (``from_payload``) silently falls back to defaults; this
+    strict check is for API ingest where a malformed block should be rejected.
+    """
+
+    if not isinstance(language, str) or not language.strip():
+        raise ValueError("language code must be a non-empty string")
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"language block {language!r} must be an object")
+
+    locale = payload.get("locale")
+    if locale is not None and (not isinstance(locale, str) or not locale.strip()):
+        raise ValueError(f"language {language!r}: locale must be a non-empty string")
+
+    for key in ("host_a", "host_b"):
+        host = payload.get(key)
+        if host is not None and not isinstance(host, Mapping):
+            raise ValueError(f"language {language!r}: {key} must be an object")
+
+    hosts = payload.get("hosts")
+    if hosts is not None and not isinstance(hosts, (list, tuple)):
+        raise ValueError(f"language {language!r}: hosts must be an array")
+
+    for key in ("voices", "prompts"):
+        value = payload.get(key)
+        if value is not None and not isinstance(value, Mapping):
+            raise ValueError(f"language {language!r}: {key} must be an object")
+
+    for key in ("show_name", "showName", "disclosure", "cta"):
+        value = payload.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"language {language!r}: {key} must be a string")
+
+    enabled = payload.get("enabled")
+    if enabled is not None and not isinstance(enabled, bool):
+        raise ValueError(f"language {language!r}: enabled must be a boolean")
+
+
 @dataclass(frozen=True)
 class PodcastConfig:
     name: str = field(default_factory=_default_name)
@@ -166,6 +349,7 @@ class PodcastConfig:
     host_a: HostConfig = field(default_factory=_default_host_a)
     host_b: HostConfig = field(default_factory=_default_host_b)
     style_guide: str = ""
+    languages: Mapping[str, LanguageConfig] = field(default_factory=_default_languages)
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any] | None) -> "PodcastConfig":
@@ -195,6 +379,16 @@ class PodcastConfig:
 
         style_guide_raw = config_payload.get("style_guide")
         style_guide = style_guide_raw.strip() if isinstance(style_guide_raw, str) else ""
+
+        languages = dict(defaults.languages)
+        languages_payload = config_payload.get("languages")
+        if isinstance(languages_payload, Mapping):
+            for code, block in languages_payload.items():
+                key = str(code).strip()
+                if not key:
+                    continue
+                languages[key] = LanguageConfig.from_payload(key, block)
+
         return cls(
             name=_string_or_default(config_payload.get("name"), defaults.name),
             url=_string_or_default(config_payload.get("url"), defaults.url),
@@ -205,7 +399,29 @@ class PodcastConfig:
             host_a=_host_from_payload(host_a_payload, defaults.host_a),
             host_b=_host_from_payload(host_b_payload, defaults.host_b),
             style_guide=style_guide,
+            languages=languages,
         )
+
+    def language_for(self, code: str | None) -> LanguageConfig:
+        """Return the language block for ``code``, falling back to the default.
+
+        Accepts a bare language code (``"es"``) or a full locale (``"es-419"``);
+        unknown codes fall back to the English default block.
+        """
+
+        if isinstance(code, str) and code.strip():
+            requested = code.strip()
+            if requested in self.languages:
+                return self.languages[requested]
+            short = requested.split("-", 1)[0]
+            if short in self.languages:
+                return self.languages[short]
+            for block in self.languages.values():
+                if block.locale == requested:
+                    return block
+        if DEFAULT_LANGUAGE in self.languages:
+            return self.languages[DEFAULT_LANGUAGE]
+        return LanguageConfig.default_for(DEFAULT_LANGUAGE)
 
 
 @dataclass(frozen=True)
