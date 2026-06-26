@@ -121,3 +121,36 @@ def test_cli_refuses_without_client_context(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "VIDEO_YOUTUBE_CLIENT_ID" in err
     assert "Refusing to start" in err
+
+
+def test_cli_json_mode_emits_clean_json_on_stdout(monkeypatch, capsys):
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_ID", "cid.apps.googleusercontent.com")
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_SECRET", "secret")
+
+    from podcaster.youtube_oauth import TokenResult
+
+    def fake_run_consent_flow(client, **kwargs):
+        # Simulate the interactive progress output the real flow prints.
+        print("Open this URL in a browser ...", file=sys.stderr)
+        print("Waiting for the consent redirect ...", file=sys.stderr)
+        return TokenResult(
+            refresh_token="1//refresh-token",
+            access_token="ya29.access",
+            expires_in=3599,
+            scope=YOUTUBE_UPLOAD_SCOPE,
+            token_type="Bearer",
+        )
+
+    monkeypatch.setattr(cli, "run_consent_flow", fake_run_consent_flow)
+
+    rc = cli.main(["--json", "--no-browser"])
+    assert rc == 0
+
+    out = capsys.readouterr()
+    # stdout must be parseable JSON with only the token payload — nothing else.
+    payload = json.loads(out.out)
+    assert payload["refresh_token"] == "1//refresh-token"
+    assert payload["scope"] == YOUTUBE_UPLOAD_SCOPE
+    # The access token must never leak into the JSON payload.
+    assert "access_token" not in payload
+    assert "ya29.access" not in out.out

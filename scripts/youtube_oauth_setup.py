@@ -106,15 +106,15 @@ def run_consent_flow(client: OAuthClient, *, host: str = "127.0.0.1", open_brows
     consent_url = build_consent_url(
         client, redirect_uri, scopes=[YOUTUBE_UPLOAD_SCOPE], state=state
     )
-    print("\nOpen this URL in a browser signed in to the YouTube channel owner:\n")
-    print(consent_url + "\n")
+    print("\nOpen this URL in a browser signed in to the YouTube channel owner:\n", file=sys.stderr)
+    print(consent_url + "\n", file=sys.stderr)
     if open_browser:
         try:
             webbrowser.open(consent_url)
         except Exception:
             pass
 
-    print(f"Waiting for the consent redirect on {redirect_uri} ...")
+    print(f"Waiting for the consent redirect on {redirect_uri} ...", file=sys.stderr)
     server.handle_request()  # blocks until the single callback arrives
     server.server_close()
 
