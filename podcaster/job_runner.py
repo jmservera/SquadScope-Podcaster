@@ -249,6 +249,22 @@ def run_synthesis(
                 message=f"recording {segment_total} segments" if segment_total else "recording",
                 at=current,
             )
+
+            # Per-segment in-flight progress (issue #470): each synthesized turn
+            # advances the "recording N/M" counter so the stage-progress summary
+            # and its ETA reflect real progress rather than a single coarse start
+            # event.  Best-effort — emit_progress already swallows failures.
+            def _on_segment(completed: int, total: int) -> None:
+                emit_progress(
+                    storage,
+                    job_id,
+                    stage=PipelineStage.SYNTHESIS,
+                    phase="recording",
+                    segment_index=completed,
+                    segment_total=total,
+                    message=f"recording {completed}/{total} segments",
+                )
+
             episode_audio = synthesize_episode(
                 script,
                 config,
@@ -262,6 +278,7 @@ def run_synthesis(
                 outro_music=outro_music,
                 music_mix_spec=mix_spec,
                 backchannel_config=backchannel_config,
+                progress=_on_segment,
             )
             mp3_bytes = output_path.read_bytes()
             wav_bytes = episode_audio.wav_output_path.read_bytes()

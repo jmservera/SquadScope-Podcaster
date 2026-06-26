@@ -151,6 +151,7 @@ def synthesize_plan_concurrent(
     transport: Transport | None = None,
     synthesize: SynthesizeFn = synthesize_turn,
     sleeper: Sleeper | None = None,
+    progress: "Callable[[int, int], None] | None" = None,
 ) -> list[bytes]:
     """Synthesize ``plan`` concurrently, returning audio bytes in plan order.
 
@@ -159,6 +160,10 @@ def synthesize_plan_concurrent(
     before any network access. Falls back to a simple sequential loop when the
     pool is sized to one worker or there is a single turn, so the concurrent
     machinery (and event loop) is only spun up when it can help.
+
+    ``progress`` (issue #470): when supplied it is called ``progress(completed,
+    total)`` as each segment finishes so callers can surface a live "recording
+    N/M" counter. A failing callback never aborts synthesis.
     """
 
     if not decision.get("allowed"):
@@ -171,16 +176,21 @@ def synthesize_plan_concurrent(
 
     pool = pool or load_tts_pool_config()
     turns = list(plan)
+    total = len(turns)
+    progress = _guard_progress(progress)
 
     # Fast path: a single worker / single turn with no retry policy can run as a
     # plain sequential loop without spinning up an event loop. When retries are
     # configured we must NOT bypass the pool, otherwise concurrency=1 would
     # silently drop the rate-limit/backoff handling the pool is meant to own.
     if (pool.concurrency <= 1 or len(turns) <= 1) and pool.max_retries == 0:
-        return [
-            synthesize(turn, config, token_provider=token_provider, transport=transport)
-            for turn in turns
-        ]
+        outputs: list[bytes] = []
+        for turn in turns:
+            outputs.append(
+                synthesize(turn, config, token_provider=token_provider, transport=transport)
+            )
+            _report_progress(progress, len(outputs), total)
+        return outputs
 
     coro = _synthesize_all(
         turns,
@@ -190,8 +200,44 @@ def synthesize_plan_concurrent(
         transport=transport,
         synthesize=synthesize,
         sleeper=sleeper or asyncio.sleep,
+        progress=progress,
     )
     return _run_coro(coro)
+
+
+def _guard_progress(
+    progress: "Callable[[int, int], None] | None",
+) -> "Callable[[int, int], None] | None":
+    """Wrap a progress callback so a failing callback can never break synthesis.
+
+    On the first exception it logs a single warning and then disables itself for
+    the rest of the run, so a consistently-failing callback can't spam a WARNING
+    (with traceback) for every segment of a long episode (issue #470)."""
+    if progress is None:
+        return None
+    state = {"disabled": False}
+
+    def guarded(completed: int, total: int) -> None:
+        if state["disabled"]:
+            return
+        try:
+            progress(completed, total)
+        except Exception:  # noqa: BLE001 - progress reporting must not break synthesis
+            state["disabled"] = True
+            logging.warning(
+                "tts progress callback failed; disabling further progress reports",
+                exc_info=True,
+            )
+
+    return guarded
+
+
+def _report_progress(
+    progress: "Callable[[int, int], None] | None", completed: int, total: int
+) -> None:
+    """Invoke an already-:func:`_guard_progress`-wrapped callback if present."""
+    if progress is not None:
+        progress(completed, total)
 
 
 async def _synthesize_all(
@@ -203,13 +249,16 @@ async def _synthesize_all(
     transport: Transport | None,
     synthesize: SynthesizeFn,
     sleeper: Sleeper,
+    progress: "Callable[[int, int], None] | None" = None,
 ) -> list[bytes]:
     semaphore = asyncio.Semaphore(pool.concurrency)
     results: list[bytes | None] = [None] * len(turns)
+    completed = 0
 
     async def worker(index: int, turn: VoiceTurn) -> None:
+        nonlocal completed
         async with semaphore:
-            results[index] = await _synthesize_one(
+            audio = await _synthesize_one(
                 index,
                 turn,
                 config,
@@ -219,6 +268,11 @@ async def _synthesize_all(
                 synthesize=synthesize,
                 sleeper=sleeper,
             )
+            results[index] = audio
+            # Runs on the single event-loop thread, so this counter needs no
+            # lock; it reports live completion order, not plan order.
+            completed += 1
+            _report_progress(progress, completed, len(turns))
 
     logging.info(
         "tts pool synthesizing segments=%s concurrency=%s max_retries=%s",
