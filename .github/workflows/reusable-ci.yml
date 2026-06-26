@@ -42,6 +42,18 @@ jobs:
           checkov --directory infra --framework bicep \
             --skip-check CKV_AZURE_35,CKV_AZURE_43,CKV_AZURE_206,CKV_AZURE_225,CKV_AZURE_15,CKV_AZURE_212,CKV_AZURE_78,CKV_AZURE_213,CKV_AZURE_222,CKV_AZURE_67,CKV_AZURE_18,CKV_AZURE_17,CKV_AZURE_59,CKV_AZURE_134,CKV_AZURE_233,CKV_AZURE_139,CKV_AZURE_163,CKV_AZURE_166
 
+      - name: Run Checkov (Dockerfiles, warning-only)
+        # Phase A of the DevSecOps Guardrails epic (#519): extend Checkov from
+        # infra/ (Bicep) to the container images. `--soft-fail` keeps this lane
+        # non-blocking and `.checkov.baseline` records the existing findings so
+        # only NEW issues surface. Enforcement is deferred to Phase C.
+        # See jmservera/SquadScope-Coordinator#33.
+        run: |
+          checkov --directory . --framework dockerfile \
+            --skip-path .worktrees --skip-path ui/node_modules \
+            --baseline .checkov.baseline \
+            --soft-fail --compact
+
   test:
     runs-on: ubuntu-latest
     steps:
