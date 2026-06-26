@@ -59,6 +59,32 @@ class ClipManifestError(ValueError):
     """Raised when a clip manifest cannot be built or is internally inconsistent."""
 
 
+_TRUE_TOKENS = frozenset({"true", "t", "yes", "y", "1"})
+_FALSE_TOKENS = frozenset({"false", "f", "no", "n", "0", ""})
+
+
+def _parse_bool(value: Any, *, field: str) -> bool:
+    """Coerce *value* to ``bool`` without the foot-gun of ``bool("false")``.
+
+    Accepts real booleans, ints (``0``/``1``) and common string forms so
+    manifests serialised by other languages round-trip safely. Raises
+    :class:`ClipManifestError` on anything ambiguous.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if value in (0, 1):
+            return bool(value)
+        raise ClipManifestError(f"{field} has non-boolean int value {value!r}")
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _TRUE_TOKENS:
+            return True
+        if token in _FALSE_TOKENS:
+            return False
+    raise ClipManifestError(f"{field} has unrecognized boolean value {value!r}")
+
+
 def required_clip_seconds(discussion_seconds: float) -> float:
     """Length (seconds) a repo clip must be recorded to, per *discussion_seconds*.
 
@@ -199,7 +225,7 @@ class ClipManifest:
             loop_sections=tuple(
                 LoopSection.from_dict(s) for s in data.get("loop_sections", [])
             ),
-            is_fallback=bool(data.get("is_fallback", False)),
+            is_fallback=_parse_bool(data.get("is_fallback", False), field="is_fallback"),
             schema_version=str(
                 data.get("schema_version", CLIP_MANIFEST_SCHEMA_VERSION)
             ),
@@ -249,6 +275,10 @@ def build_clip_manifest(
         raise ClipManifestError(f"clip {clip_id!r} must have a positive duration")
 
     chapters = tuple(chapters or ())
+    if is_fallback and (chapters or repo_url):
+        raise ClipManifestError(
+            f"fallback clip {clip_id!r} must be a static card with no chapters or repo_url"
+        )
     _validate_chapters(clip_id, chapters, duration_ms)
 
     trim_ranges: list[TrimRange] = []
@@ -280,10 +310,12 @@ def build_clip_manifest(
     )
 
     if not is_fallback and not manifest.trim_ranges:
+        reason = "no chapters" if not chapters else "chapters too short"
         logger.warning(
-            "clip %s has no safe trim ranges (chapters too short) — EDL must trim "
+            "clip %s has no safe trim ranges (%s) — EDL must trim "
             "at the edges or loop instead",
             clip_id,
+            reason,
         )
     return manifest
 
