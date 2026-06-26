@@ -11,7 +11,10 @@ MAX_SPOTIFY_DESCRIPTION_CHARS = 4_000
 DEFAULT_SPOTIFY_UPLOAD_FORMAT = "mp3"
 _SPOTIFY_UPLOAD_FORMATS = frozenset({"wav", "mp3"})
 _VOID_HTML_TAGS = frozenset(
-    {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+    {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
 )
 
 
@@ -39,12 +42,16 @@ def _default_disclosure() -> str:
 
 def _default_host_a() -> "HostConfig":
     defaults = _generation_defaults()
-    return HostConfig(name=defaults.HOST_A_NAME, voice=defaults.HOST_A_VOICE, style=defaults.HOST_A_STYLE)
+    return HostConfig(
+        name=defaults.HOST_A_NAME, voice=defaults.HOST_A_VOICE, style=defaults.HOST_A_STYLE
+    )
 
 
 def _default_host_b() -> "HostConfig":
     defaults = _generation_defaults()
-    return HostConfig(name=defaults.HOST_B_NAME, voice=defaults.HOST_B_VOICE, style=defaults.HOST_B_STYLE)
+    return HostConfig(
+        name=defaults.HOST_B_NAME, voice=defaults.HOST_B_VOICE, style=defaults.HOST_B_STYLE
+    )
 
 
 def _string_or_default(value: object, default: str) -> str:
@@ -276,7 +283,9 @@ class LanguageConfig:
         return cls(
             language=language,
             locale=_string_or_default(payload.get("locale"), defaults.locale),
-            show_name=_string_or_default(payload.get("show_name") or payload.get("showName"), defaults.show_name),
+            show_name=_string_or_default(
+                payload.get("show_name") or payload.get("showName"), defaults.show_name
+            ),
             host_a=_host_from_payload(host_a_payload, defaults.host_a),
             host_b=_host_from_payload(host_b_payload, defaults.host_b),
             prompts=prompts,
@@ -454,11 +463,15 @@ class SpotifyPublishConfig:
     upload_format: str = DEFAULT_SPOTIFY_UPLOAD_FORMAT
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "title", _truncate_with_warning("title", self.title, MAX_SPOTIFY_TITLE_CHARS))
+        object.__setattr__(
+            self, "title", _truncate_with_warning("title", self.title, MAX_SPOTIFY_TITLE_CHARS)
+        )
         object.__setattr__(
             self,
             "description",
-            _truncate_html_with_warning("description", self.description, MAX_SPOTIFY_DESCRIPTION_CHARS),
+            _truncate_html_with_warning(
+                "description", self.description, MAX_SPOTIFY_DESCRIPTION_CHARS
+            ),
         )
         object.__setattr__(self, "upload_format", _normalize_upload_format(self.upload_format))
 
@@ -482,12 +495,18 @@ class SpotifyPublishConfig:
         return cls(
             title=_string_or_default(config_payload.get("title"), defaults.title),
             description=_string_or_default(config_payload.get("description"), defaults.description),
-            season_number=_string_or_int_or_default(config_payload.get("season_number"), defaults.season_number),
+            season_number=_string_or_int_or_default(
+                config_payload.get("season_number"), defaults.season_number
+            ),
             episode_number=_string_or_int_or_default(
                 config_payload.get("episode_number"), defaults.episode_number
             ),
-            publish_mode=_string_or_default(config_payload.get("publish_mode"), defaults.publish_mode),
-            upload_format=_string_or_default(config_payload.get("upload_format"), defaults.upload_format),
+            publish_mode=_string_or_default(
+                config_payload.get("publish_mode"), defaults.publish_mode
+            ),
+            upload_format=_string_or_default(
+                config_payload.get("upload_format"), defaults.upload_format
+            ),
         )
 
     def resolve_season(self, year: int, week: int) -> int:

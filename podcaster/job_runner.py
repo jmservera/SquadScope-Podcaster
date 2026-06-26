@@ -142,7 +142,9 @@ def run_synthesis(
     try:
         manifest = json.loads(raw_manifest.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
-        raise TransientSynthesisError(f"staged manifest for job_id={job_id} is not valid JSON") from exc
+        raise TransientSynthesisError(
+            f"staged manifest for job_id={job_id} is not valid JSON"
+        ) from exc
     if not isinstance(manifest, dict):
         raise TransientSynthesisError(f"staged manifest for job_id={job_id} is not a JSON object")
 
@@ -205,7 +207,9 @@ def run_synthesis(
     mp3_blob_path = _mp3_artifact_path(manifest, job_id)
     wav_blob_path = _wav_artifact_path(manifest, job_id)
     request_podcast_config = _request_podcast_config(manifest)
-    podcast_config = PodcastConfig.from_payload(request_podcast_config) if request_podcast_config else None
+    podcast_config = (
+        PodcastConfig.from_payload(request_podcast_config) if request_podcast_config else None
+    )
 
     # Warn on voice config drift between request payload and environment.
     if podcast_config is not None:
@@ -228,7 +232,9 @@ def run_synthesis(
 
     request_spotify_publish = _request_spotify_publish(manifest)
     spotify_publish_config = (
-        SpotifyPublishConfig.from_payload(request_spotify_publish) if request_spotify_publish else None
+        SpotifyPublishConfig.from_payload(request_spotify_publish)
+        if request_spotify_publish
+        else None
     )
     upload_format = spotify_publish_config.upload_format if spotify_publish_config else "wav"
     music_mix_config = _request_music_mix(manifest)
@@ -416,7 +422,9 @@ def run_synthesis(
 
             if spotify_publish_config is not None and validation_ready and not auto_publish:
                 try:
-                    request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
+                    request = (
+                        manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
+                    )
                     pub_title = str(
                         request.get("article_title")
                         or f"Claracle Podcast — Week {request.get('week') or job_id}"
@@ -456,7 +464,8 @@ def run_synthesis(
                 _enqueue_video(job_id, enqueue_video)
 
             logger.info(
-                "synthesis completed job_id=%s segments=%s validation=%s real_audio=true publishable=%s",
+                "synthesis completed job_id=%s segments=%s validation=%s real_audio=true "
+                "publishable=%s",
                 job_id,
                 episode_audio.segment_count,
                 episode_audio.validation.status,
@@ -686,7 +695,9 @@ def process_message(
             report_failure(
                 container="podcaster-synth",
                 error_type="RetryExhausted",
-                error_message=f"Synthesis failed after {message.dequeue_count} attempts for job_id={job_id}",
+                error_message=(
+                    f"Synthesis failed after {message.dequeue_count} attempts for job_id={job_id}"
+                ),
                 details={"job_id": job_id, "dequeue_count": message.dequeue_count},
             )
             notify_failure(
@@ -701,7 +712,8 @@ def process_message(
             queue.delete_message(message)
             return SynthesisOutcome(job_id, STATUS_FAILED, reason=REASON_RETRY_EXHAUSTED)
         logger.warning(
-            "synthesis audit event=failure job_id=%s reason=transient dequeue_count=%s terminal=false",
+            "synthesis audit event=failure job_id=%s reason=transient dequeue_count=%s "
+            "terminal=false",
             job_id,
             message.dequeue_count,
         )
@@ -743,10 +755,14 @@ def drain(
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     queue = create_queue_backend()
     if queue is None:
-        logger.error("PODCASTER_STORAGE_QUEUE_URL is not configured; cannot consume synthesis queue")
+        logger.error(
+            "PODCASTER_STORAGE_QUEUE_URL is not configured; cannot consume synthesis queue"
+        )
         return 2
     storage = create_storage_backend()
     config = load_tts_config()
@@ -968,16 +984,25 @@ def _record_runner_state(storage: StorageBackend, job_id: str, state: dict[str, 
             raise TransientSynthesisError(f"no staged manifest for job_id={job_id}")
         document = json.loads(content.decode("utf-8"))
         if not isinstance(document, dict):
-            raise TransientSynthesisError(f"staged manifest for job_id={job_id} is not a JSON object")
+            raise TransientSynthesisError(
+                f"staged manifest for job_id={job_id} is not a JSON object"
+            )
         generation = document.setdefault("generation", {})
         if isinstance(generation, dict):
-            generation["synthesis_runner"] = {"schema_version": SYNTHESIS_SCHEMA_VERSION, **state}
+            generation["synthesis_runner"] = {
+                "schema_version": SYNTHESIS_SCHEMA_VERSION,
+                **state,
+            }
         publishing = document.get("publishing")
         if isinstance(publishing, dict):
             publishing["eligible"] = False
         lifecycle = document.setdefault("lifecycle", {})
         if isinstance(lifecycle, dict):
-            status = "synthesis_failed" if state.get("status") == STATUS_FAILED else "synthesis_skipped"
+            status = (
+                "synthesis_failed"
+                if state.get("status") == STATUS_FAILED
+                else "synthesis_skipped"
+            )
             document["status"] = status
             lifecycle["status"] = status
             transitions = lifecycle.setdefault("transitions", [])

@@ -447,13 +447,13 @@ def build_visual_marker_guidance() -> str:
     """
     return (
         "\nVISUAL INTENT (REQUIRED — declare what the video shows, do not leave it to inference):\n"
-        "- Before the host turns that discuss a specific GitHub repository, emit a non-spoken line:\n"
+        "- Before the host turns that discuss a specific GitHub repository, emit a non-spoken line:\n"  # noqa: E501
         '  "## Visual: repo https://github.com/<owner>/<repo>" (use the real repo URL).\n'
-        '- When the hosts step back to the weekly rundown or source article, emit "## Visual: article".\n'
+        '- When the hosts step back to the weekly rundown or source article, emit "## Visual: article".\n'  # noqa: E501
         '- For an intentional breather between topic clusters, emit "## Visual: intermission".\n'
-        "- A \"## Visual:\" marker stays in effect for every following host turn until the next marker.\n"
-        "- Place a marker whenever the on-screen focus changes; every repo you discuss MUST have its own\n"
-        '  "## Visual: repo <url>" marker — never rely on the URL merely appearing in the dialogue.\n'
-        "- Intermission is an EXPLICIT choice, never just the absence of a repo. Only use it deliberately.\n"
+        "- A \"## Visual:\" marker stays in effect for every following host turn until the next marker.\n"  # noqa: E501
+        "- Place a marker whenever the on-screen focus changes; every repo you discuss MUST have its own\n"  # noqa: E501
+        '  "## Visual: repo <url>" marker — never rely on the URL merely appearing in the dialogue.\n'  # noqa: E501
+        "- Intermission is an EXPLICIT choice, never just the absence of a repo. Only use it deliberately.\n"  # noqa: E501
         '- The "## Visual:" lines are NON-SPOKEN and are stripped before audio synthesis.\n'
     )

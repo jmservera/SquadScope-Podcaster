@@ -77,7 +77,9 @@ hand-fixed the real-defect categories. Cleared `I001`, `F401`, `F541`, `F811`,
 - **F841** — removed dead assignments (e.g. unused `hf_s` in `zoom.py` and
   leftover constructions/locals in tests), keeping any side-effecting calls.
 
-Remaining baseline (deferred to follow-up Phase B passes, by directory):
+Remaining baseline *after this first pass* (point-in-time snapshot; deferred to
+follow-up Phase B passes, by directory — see "Remaining baseline (current)"
+below for the live count):
 
 | Count | Rule  | Description |
 | ----: | ----- | ----------- |
@@ -89,12 +91,50 @@ Remaining baseline (deferred to follow-up Phase B passes, by directory):
 changes and are intentionally left for subsequent incremental PRs so each stays
 small and reviewable. The full test suite (2049 passed) is green after this pass.
 
+### Phase B progress (#521) — E501 follow-up (jobs subsystem)
+
+Incremental `E501` pass over the job/script subsystem. Cleared
+`podcaster/script_gen.py` (29), `podcaster/jobs.py` (22), and
+`podcaster/job_runner.py` (10) — **61** `line-too-long` violations total.
+
+As with the other E501 slices, every fix is pure re-wrapping (string-concat
+splits with boundary whitespace preserved, Black-style call/comprehension
+wrapping). The parsed AST of all three modules is byte-for-byte identical to
+before, so there is no string-content or logic change. No `# noqa: E501` was
+needed. `ruff check` reports no `E501` on these files; the full suite
+(2049 passed, 1 skipped) stays green.
+
+### Phase B progress (#521) — E402 follow-up
+
+Cleared `E402` (module-import-not-at-top-of-file) entirely. These were imports
+placed after early `logging.getLogger(__name__)` module-level statements or a
+mid-file import block:
+
+- **`podcaster/episode.py`** / **`podcaster/monitoring.py`** — the
+  `log`/`logger = logging.getLogger(__name__)` assignment sat between the stdlib
+  imports and the first-party `podcaster.*` imports, pushing every following
+  import past a non-import statement. Moved the logger assignment below the
+  import block.
+- **`tests/test_video_sync_plan.py`** — a second `from podcaster.video.sync_plan
+  import (...)` block lived mid-file (after the test classes started); merged its
+  names into the single top-of-file import block.
+
+### Phase B progress (#521) — E501 follow-up (core slice 1)
+
+Started clearing `E501` (line-too-long) by module, beginning with the
+`podcaster/` config/validation core. Code lines were wrapped to the 100-column
+limit; intentional string literals that must not be reflowed (injection-detection
+regexes in `sanitization.py`, the visual-intent prompt text in `script_plan.py`)
+carry a justified `# noqa: E501` instead.
+
+Files cleared in this slice: `podcaster/config.py`, `podcaster/costs.py`,
+`podcaster/validation.py`, `podcaster/sanitization.py`, `podcaster/script_plan.py`.
+
 ### Phase B progress (#521) — E501 follow-up (generation core)
 
 Incremental `E501` pass over the episode-generation core. Cleared
-`podcaster/generation.py` (47) and `podcaster/episode.py` (18 — the E501 subset
-only; its pre-existing `E402` import-placement findings are handled separately),
-**65** `line-too-long` violations in total.
+`podcaster/generation.py` (47) and `podcaster/episode.py` (18), **65**
+`line-too-long` violations in total.
 
 All fixes are pure re-wrapping: over-length spoken-script f-strings were split
 into Python implicit string concatenation with the boundary whitespace preserved
@@ -102,9 +142,19 @@ exactly, and long call/comprehension lines were wrapped Black-style. The parsed
 AST of both modules is byte-for-byte identical to before the pass, so there is
 no string-content or logic change. No `# noqa: E501` was needed.
 
-`ruff check` on both files reports no `E501`; the full suite (2049 passed,
-1 skipped) stays green. Remaining `E501` lives in other modules and tests,
-deferred to subsequent slices.
+### Remaining baseline (current)
+
+After the passes above (imports/dead-code, jobs `E501`, `E402`, the config-core
+`E501` slice, and the generation-core `E501` slice), the live
+`ruff check podcaster tests --statistics` count is:
+
+| Count | Rule  | Description |
+| ----: | ----- | ----------- |
+| 368   | E501  | line-too-long |
+| **368** | **total** | |
+
+`E501` (line length) is the last remaining category, being cleared in further
+incremental by-module slices. The full test suite stays green after this pass.
 
 ## Checkov (IaC / container security) — #519
 

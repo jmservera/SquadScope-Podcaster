@@ -9,11 +9,17 @@ import yaml
 
 from podcaster.video.sync_plan import (
     REMOVED_REPO_REASON,
+    VISUAL_KIND_IMAGE,
+    VISUAL_KIND_RECORDING,
+    VISUAL_KIND_SCREENSHOT,
+    AudioCuePoint,
     EpisodePlan,
     RepoReference,
     VideoSegment,
+    VisualCue,
     _script_position,
     annotate_removed_repos,
+    build_audio_cue_points,
     check_repo_removed,
     extract_repo_urls,
     extract_source_url,
@@ -27,6 +33,9 @@ from podcaster.video.sync_plan import (
     plan_from_script_timed,
     prepend_weekly_segment,
     removed_repo_speaker_notes,
+    snap_episode_plan_to_audio,
+    snap_to_audio_boundary,
+    snap_visual_cues,
     sort_repos_by_mention,
     weekly_url_from_job_id,
 )
@@ -754,17 +763,6 @@ class TestPrependWeeklySegment:
 # --- Audio-boundary sync tests (#297) ---
 
 
-from podcaster.video.sync_plan import (
-    VISUAL_KIND_IMAGE,
-    VISUAL_KIND_RECORDING,
-    VISUAL_KIND_SCREENSHOT,
-    AudioCuePoint,
-    VisualCue,
-    build_audio_cue_points,
-    snap_episode_plan_to_audio,
-    snap_to_audio_boundary,
-    snap_visual_cues,
-)
 
 
 class TestBuildAudioCuePoints:
