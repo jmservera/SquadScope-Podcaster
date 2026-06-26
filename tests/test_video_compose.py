@@ -2258,6 +2258,81 @@ class TestComposeVideoCheckpointResume:
         assert store.exists("normalized_000.mp4") is True
 
 
+# --- Per-task normalize retry (issue #483) ---
+
+
+class _FlakyNormalizeRunner:
+    """Command runner that fails the normalize of one segment a fixed number of
+    times before succeeding; all other commands succeed.
+
+    A normalize/fit command is identified by its output path (the last arg)
+    ending in ``seg_<idx>.mp4`` under the ``normalized`` directory.
+    """
+
+    def __init__(self, *, fail_seg: str, fail_times: int):
+        self.fail_seg = fail_seg
+        self.fail_times = fail_times
+        self.calls: list[list[str]] = []
+        self.norm_calls: dict[str, int] = {}
+
+    def __call__(self, cmd):
+        self.calls.append([str(a) for a in cmd])
+        out = str(cmd[-1])
+        if "normalized" in out and out.endswith(".mp4"):
+            seg = Path(out).stem  # e.g. seg_001
+            self.norm_calls[seg] = self.norm_calls.get(seg, 0) + 1
+            if seg == self.fail_seg and self.norm_calls[seg] <= self.fail_times:
+                raise subprocess.CalledProcessError(1, cmd, stderr="transient ffmpeg error")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+
+@pytest.fixture
+def _instant_retry(monkeypatch):
+    """Make retry backoff instantaneous for tests."""
+    monkeypatch.setattr("podcaster.retry.time.sleep", lambda _s: None)
+
+
+class TestNormalizeTaskRetry:
+    def test_single_transient_failure_retries_only_that_task(self, tmp_path, _instant_retry):
+        runner = _FlakyNormalizeRunner(fail_seg="seg_001", fail_times=1)
+        seg0 = _make_recorded_segment(owner="a", name="b", duration=10.0,
+                                      video_path=tmp_path / "seg0.webm")
+        seg1 = _make_recorded_segment(owner="c", name="d", duration=10.0,
+                                      video_path=tmp_path / "seg1.webm")
+        (tmp_path / "seg0.webm").touch()
+        (tmp_path / "seg1.webm").touch()
+
+        result = compose_video(
+            segments=[seg0, seg1],
+            output_dir=tmp_path / "out",
+            runner=runner,
+        )
+
+        # Pipeline completed despite the transient failure.
+        assert result.segment_count == 2
+        # The failing segment was normalized twice (1 failure + 1 success);
+        # the healthy segment ran exactly once — only the failing task retried.
+        assert runner.norm_calls["seg_001"] == 2
+        assert runner.norm_calls["seg_000"] == 1
+
+    def test_exhausted_retries_propagate(self, tmp_path, monkeypatch, _instant_retry):
+        monkeypatch.setattr(vc, "NORMALIZE_TASK_RETRIES", 2)
+        # Force the single-thread path so the failure surfaces deterministically.
+        monkeypatch.setattr(vc, "NORMALIZE_WORKERS", 1)
+        runner = _FlakyNormalizeRunner(fail_seg="seg_000", fail_times=99)
+        seg0 = _make_recorded_segment(duration=10.0, video_path=tmp_path / "seg0.webm")
+        (tmp_path / "seg0.webm").touch()
+
+        with pytest.raises(subprocess.CalledProcessError):
+            compose_video(
+                segments=[seg0],
+                output_dir=tmp_path / "out",
+                runner=runner,
+            )
+        # Attempted exactly NORMALIZE_TASK_RETRIES times, then gave up.
+        assert runner.norm_calls["seg_000"] == 2
+
+
 class TestNormalizeTaskReporter:
     """Per-worker task progress wiring for the parallel normalize stage (#482)."""
 
