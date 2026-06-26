@@ -10,10 +10,14 @@ from podcaster.progress import (
     MAX_EVENTS,
     PROGRESS_SCHEMA_VERSION,
     PipelineStage,
+    TaskStatus,
     emit_progress,
+    emit_task_progress,
     events_since,
     filter_events_since,
+    in_flight_tasks,
     is_terminal,
+    make_task_reporter,
     progress_path,
     read_progress,
 )
@@ -225,3 +229,146 @@ def test_derive_percent_clamps_negative_segment_index():
         at=_at(0),
     )
     assert event is not None and event.percent == 0.0
+
+
+# --- Per-worker parallel task progress (issue #482) -------------------------
+
+
+def test_empty_document_has_tasks_map():
+    storage = MemoryStorageBackend()
+    emit_progress(storage, "job-1", stage=PipelineStage.COMPOSE, at=_at(0))
+    document = read_progress(storage, "job-1")
+    assert document is not None
+    assert document["tasks"] == {}
+
+
+def test_running_task_is_visible_in_tasks_map():
+    storage = MemoryStorageBackend()
+    event = emit_task_progress(
+        storage,
+        "job-1",
+        stage=PipelineStage.COMPOSE,
+        task_id="norm_007",
+        status=TaskStatus.RUNNING,
+        segment_index=8,
+        segment_total=12,
+        at=_at(0),
+    )
+    assert event is not None
+    assert event.task_id == "norm_007"
+    assert event.task_status == TaskStatus.RUNNING
+
+    document = read_progress(storage, "job-1")
+    tasks = in_flight_tasks(document)
+    assert set(tasks) == {"norm_007"}
+    assert tasks["norm_007"]["task_status"] == TaskStatus.RUNNING
+    assert tasks["norm_007"]["segment_index"] == 8
+    assert "seq" not in tasks["norm_007"]
+
+
+def test_done_task_is_removed_from_in_flight_map():
+    storage = MemoryStorageBackend()
+    emit_task_progress(
+        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_001",
+        status=TaskStatus.RUNNING, at=_at(0),
+    )
+    emit_task_progress(
+        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_001",
+        status=TaskStatus.DONE, at=_at(1),
+    )
+    document = read_progress(storage, "job-1")
+    assert in_flight_tasks(document) == {}
+    # Both lifecycle events remain in the durable log for audit.
+    statuses = [e.get("task_status") for e in document["events"] if e.get("task_id") == "norm_001"]
+    assert statuses == [TaskStatus.RUNNING, TaskStatus.DONE]
+
+
+def test_orphan_task_status_without_task_id_is_dropped():
+    # task_status is only meaningful paired with a task_id; an orphan status
+    # must not leak into the event/current snapshot (consumers can't attribute
+    # it to a task).
+    storage = MemoryStorageBackend()
+    event = emit_progress(
+        storage,
+        "job-1",
+        stage=PipelineStage.COMPOSE,
+        task_status=TaskStatus.RUNNING,
+        at=_at(0),
+    )
+    assert event is not None
+    assert event.task_id is None
+    assert event.task_status is None
+    document = read_progress(storage, "job-1")
+    assert document["current"].get("task_status") is None
+    assert in_flight_tasks(document) == {}
+
+
+def test_failed_task_is_removed_from_in_flight_map():
+    storage = MemoryStorageBackend()
+    emit_task_progress(
+        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_002",
+        status=TaskStatus.RUNNING, at=_at(0),
+    )
+    emit_task_progress(
+        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_002",
+        status=TaskStatus.FAILED, at=_at(1),
+    )
+    assert in_flight_tasks(read_progress(storage, "job-1")) == {}
+
+
+def test_multiple_in_flight_tasks_are_individually_visible():
+    storage = MemoryStorageBackend()
+    for i in range(3):
+        emit_task_progress(
+            storage, "job-1", stage=PipelineStage.COMPOSE, task_id=f"norm_{i:03d}",
+            status=TaskStatus.RUNNING, segment_index=i + 1, segment_total=3, at=_at(i),
+        )
+    # One of them finishes; the other two stay in flight.
+    emit_task_progress(
+        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_001",
+        status=TaskStatus.DONE, at=_at(5),
+    )
+    tasks = in_flight_tasks(read_progress(storage, "job-1"))
+    assert set(tasks) == {"norm_000", "norm_002"}
+
+
+def test_task_id_defaults_to_running_status():
+    storage = MemoryStorageBackend()
+    event = emit_progress(
+        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_009", at=_at(0),
+    )
+    assert event is not None and event.task_status == TaskStatus.RUNNING
+    assert "norm_009" in in_flight_tasks(read_progress(storage, "job-1"))
+
+
+def test_make_task_reporter_emits_and_tracks():
+    storage = MemoryStorageBackend()
+    reporter = make_task_reporter(storage, "job-1", stage=PipelineStage.COMPOSE)
+    reporter("norm_004", TaskStatus.RUNNING, segment_index=5, segment_total=10)
+    assert set(in_flight_tasks(read_progress(storage, "job-1"))) == {"norm_004"}
+    reporter("norm_004", TaskStatus.DONE)
+    assert in_flight_tasks(read_progress(storage, "job-1")) == {}
+
+
+def test_make_task_reporter_is_noop_without_storage_or_job():
+    noop_a = make_task_reporter(None, "job-1", stage=PipelineStage.COMPOSE)
+    noop_b = make_task_reporter(MemoryStorageBackend(), "", stage=PipelineStage.COMPOSE)
+    # Must not raise and must return None.
+    assert noop_a("norm_000", TaskStatus.RUNNING) is None
+    assert noop_b("norm_000", TaskStatus.RUNNING) is None
+
+
+def test_in_flight_tasks_handles_missing_and_malformed():
+    assert in_flight_tasks(None) == {}
+    assert in_flight_tasks({}) == {}
+    assert in_flight_tasks({"tasks": "nope"}) == {}
+
+
+def test_task_reporter_swallows_storage_errors():
+    class BrokenStorage(MemoryStorageBackend):
+        def update_bytes(self, path, content_type, update):  # type: ignore[override]
+            raise RuntimeError("boom")
+
+    reporter = make_task_reporter(BrokenStorage(), "job-1", stage=PipelineStage.COMPOSE)
+    # Best-effort: a storage failure must never raise into the worker.
+    assert reporter("norm_000", TaskStatus.RUNNING) is None

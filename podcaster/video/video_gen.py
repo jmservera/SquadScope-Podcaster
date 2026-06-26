@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -48,6 +49,12 @@ except ModuleNotFoundError:  # pragma: no cover
     _PLAYWRIGHT_AVAILABLE = False
 
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
+from podcaster.video.recording_pool import (
+    MAX_RECORDING_CONCURRENCY,
+    RecordingPoolConfig,
+    load_recording_pool_config,
+    record_segments_parallel,
+)
 from podcaster.video.sync_plan import (
     EpisodePlan,
     RepoReference,
@@ -2315,6 +2322,7 @@ def record_episode(
     check_accessibility: bool = True,
     source_url: str | None = None,
     intermediates=None,
+    concurrency: int | None = None,
 ) -> RecordingResult:
     """Record all video segments for an episode plan.
 
@@ -2332,6 +2340,11 @@ def record_episode(
             When supplied, each recorded segment is uploaded to blob and a
             restarted job skips recording for any segment already checkpointed.
             ``None`` (default) preserves the legacy record-everything behaviour.
+        concurrency: Optional override for the number of browsers recording in
+            parallel (issue #479). ``None`` (default) loads
+            :data:`PODCASTER_RECORDING_CONCURRENCY` from the environment; ``1``
+            forces fully-sequential recording. Values are clamped to the
+            RAM-safe pool maximum.
 
     Returns:
         RecordingResult with paths to all recorded WebM files.
@@ -2370,50 +2383,97 @@ def record_episode(
 
     needs_browser = len(resumed) < len(plan.segments)
 
-    def _record_all(browser: "Browser | None") -> None:
-        for index, segment in enumerate(plan.segments):
+    # ``IntermediateStore.mark`` does a read-modify-write of a single shared
+    # manifest blob, so checkpointing must be serialized when several browsers
+    # record concurrently (issue #479).
+    checkpoint_lock = threading.Lock()
+
+    def _record_one(
+        browser: "Browser", index: int, segment: VideoSegment
+    ) -> RecordedSegment:
+        """Record + checkpoint a single (non-resumed) segment."""
+        logger.info(
+            "Recording segment: %s (%.1fs)",
+            segment.label,
+            segment.duration_seconds,
+        )
+        recorded = retry_call(
+            lambda: _record_segment(
+                browser, segment, output_dir, check_accessibility,
+                source_url=source_url,
+            ),
+            attempts=RECORD_TASK_RETRIES,
+            description=f"record segment {index} ({segment.label})",
+        )
+        with checkpoint_lock:
+            _checkpoint_recorded_segment(index, recorded, intermediates)
+        logger.info(
+            "Saved: %s (fallback=%s, pages=%s, website=%s, recovery=%s)",
+            recorded.video_path.name,
+            recorded.is_fallback,
+            recorded.has_pages,
+            recorded.website_url,
+            recorded.recovery_path,
+        )
+        return recorded
+
+    def _log_reused(index: int, recovered: RecordedSegment) -> None:
+        logger.info(
+            "Reused checkpointed segment %d: %s (recovery=%s)",
+            index, recovered.video_path.name, recovered.recovery_path,
+        )
+
+    if not needs_browser:
+        for index in range(len(plan.segments)):
+            recovered = resumed[index]
+            result.recorded.append(recovered)
+            _log_reused(index, recovered)
+        return result
+
+    pool_config = (
+        load_recording_pool_config()
+        if concurrency is None
+        else RecordingPoolConfig(
+            concurrency=max(1, min(concurrency, MAX_RECORDING_CONCURRENCY))
+        )
+    )
+    pending = [
+        (index, segment)
+        for index, segment in enumerate(plan.segments)
+        if index not in resumed
+    ]
+
+    def _launch(pw: "Playwright") -> "Browser":
+        return pw.chromium.launch(headless=headless, args=RECORDING_CHROMIUM_ARGS)
+
+    if pool_config.parallel and len(pending) > 1:
+        # Record the outstanding segments concurrently, each worker driving its
+        # own browser; results come back keyed by plan index (issue #479).
+        recorded_map = record_segments_parallel(
+            pending, _record_one, _launch, pool_config,
+            playwright_factory=sync_playwright,
+        )
+        for index in range(len(plan.segments)):
             recovered = resumed.get(index)
             if recovered is not None:
                 result.recorded.append(recovered)
-                logger.info(
-                    "Reused checkpointed segment %d: %s (recovery=%s)",
-                    index, recovered.video_path.name, recovered.recovery_path,
-                )
-                continue
-            logger.info(
-                "Recording segment: %s (%.1fs)",
-                segment.label,
-                segment.duration_seconds,
-            )
-            recorded = retry_call(
-                lambda: _record_segment(
-                    browser, segment, output_dir, check_accessibility,
-                    source_url=source_url,
-                ),
-                attempts=RECORD_TASK_RETRIES,
-                description=f"record segment {index} ({segment.label})",
-            )
-            result.recorded.append(recorded)
-            _checkpoint_recorded_segment(index, recorded, intermediates)
-            logger.info(
-                "Saved: %s (fallback=%s, pages=%s, website=%s, recovery=%s)",
-                recorded.video_path.name,
-                recorded.is_fallback,
-                recorded.has_pages,
-                recorded.website_url,
-                recorded.recovery_path,
-            )
-
-    if not needs_browser:
-        _record_all(None)
+                _log_reused(index, recovered)
+            else:
+                result.recorded.append(recorded_map[index])
         return result
 
+    # Sequential path: a single browser records every outstanding segment in
+    # plan order (concurrency == 1, or only one segment left to record).
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=headless, args=RECORDING_CHROMIUM_ARGS
-        )
+        browser = _launch(pw)
         try:
-            _record_all(browser)
+            for index, segment in enumerate(plan.segments):
+                recovered = resumed.get(index)
+                if recovered is not None:
+                    result.recorded.append(recovered)
+                    _log_reused(index, recovered)
+                    continue
+                result.recorded.append(_record_one(browser, index, segment))
         finally:
             browser.close()
 

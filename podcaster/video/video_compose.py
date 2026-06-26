@@ -20,9 +20,10 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
+from podcaster.progress import TaskStatus
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 from podcaster.video.video_gen import RecordedSegment, _recording_blob_name
 from podcaster.video.intermediates import ensure_disk_budget
@@ -1721,6 +1722,7 @@ def compose_video(
     audio_duration: float | None = None,
     section_cards: "list[SectionCardInsert] | None" = None,
     intermediates=None,
+    task_reporter: "Callable[..., None] | None" = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -1770,6 +1772,12 @@ def compose_video(
             content segment it precedes and a pre-rendered card clip; the cards
             play at their fixed duration (they are excluded from fit-to-window)
             with fade transitions on both sides.  ``None``/empty is a no-op.
+        task_reporter: Optional per-worker progress callback (issue #482) with
+            the signature ``reporter(task_id, status, **kwargs)``.  The parallel
+            normalize phase reports each segment as a ``norm_NNN`` task moving
+            ``running`` → ``done`` / ``failed`` so overlapping workers stay
+            individually observable.  Defaults to a no-op when omitted, so the
+            composition path is unchanged when no reporter is supplied.
 
     Returns:
         ComposeResult with path to the final MP4.
@@ -1792,6 +1800,16 @@ def compose_video(
         )
 
     run = runner or _default_runner
+
+    # Per-worker task progress (issue #482): no-op when no reporter is supplied
+    # so the composition path stays unchanged for callers that don't observe it.
+    def _report_task(task_id: str, status: str, **kwargs: Any) -> None:
+        if task_reporter is None:
+            return
+        try:
+            task_reporter(task_id, status, **kwargs)
+        except Exception:  # noqa: BLE001 - progress must never break composition
+            logger.debug("task progress report failed for %s", task_id, exc_info=True)
 
     if output_path is None:
         if output_dir is None:
@@ -1898,12 +1916,29 @@ def compose_video(
     def _normalize_one(task) -> None:
         idx, rec, dest = task
         name = f"normalized_{idx:03d}.mp4"
+        task_id = f"norm_{idx:03d}"
+        total = len(norm_tasks)
         # Already checkpointed: skip recompute.  In the enabled path we do NOT
         # download it here — the pairwise compose fetches it just-in-time so all
         # normalized clips never coexist on local disk.
         if _intermediates_enabled and intermediates.exists(name):
             logger.info("Resumed normalized segment %d from blob checkpoint", idx)
+            _report_task(
+                task_id,
+                TaskStatus.DONE,
+                segment_index=idx + 1,
+                segment_total=total,
+                message=f"resumed normalized segment {idx} from checkpoint",
+            )
             return
+
+        _report_task(
+            task_id,
+            TaskStatus.RUNNING,
+            segment_index=idx + 1,
+            segment_total=total,
+            message=f"normalizing segment {idx}",
+        )
 
         input_path = rec.video_path
         if _intermediates_enabled and not input_path.exists():
@@ -1938,6 +1973,23 @@ def compose_video(
                         dest.unlink(missing_ok=True)
                     except OSError:
                         logger.debug("could not free normalized clip %s", dest, exc_info=True)
+        except BaseException:
+            _report_task(
+                task_id,
+                TaskStatus.FAILED,
+                segment_index=idx + 1,
+                segment_total=total,
+                message=f"normalize failed for segment {idx}",
+            )
+            raise
+        else:
+            _report_task(
+                task_id,
+                TaskStatus.DONE,
+                segment_index=idx + 1,
+                segment_total=total,
+                message=f"normalized segment {idx}",
+            )
         finally:
             # The raw recording is no longer needed once the normalized clip
             # exists; free it (whether we downloaded it here or it was a resumed

@@ -21,11 +21,14 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Callable, Mapping, TYPE_CHECKING
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from podcaster.storage import ManagedIdentityTokenCredential
+
+if TYPE_CHECKING:
+    from podcaster.tts_pool import TtsPoolConfig
 
 PROVIDER = "openai-tts"
 AUTH_MODE_MANAGED_IDENTITY = "managed_identity"
@@ -322,12 +325,27 @@ def synthesize_two_voice(
     *,
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
+    progress: Callable[[int, int], None] | None = None,
+    pool: "TtsPoolConfig | None" = None,
 ) -> list[bytes]:
     """Synthesize every turn, but only when the gating decision allows it.
 
     Fails closed: if ``decision['allowed']`` is not truthy the call raises
     :class:`PermissionError`, so synthesis can never run for a dry run, an
     unconfigured environment, or an unreviewed episode.
+
+    ``progress`` (issue #470): when supplied, it is called as
+    ``progress(completed, total)`` after each turn so callers can surface a live
+    "recording N/M" counter for an in-flight job.  A failing callback never
+    aborts synthesis.
+
+    When ``pool`` is supplied, segments are synthesized through the bounded
+    :func:`podcaster.tts_pool.synthesize_plan_concurrent` pool, which owns both
+    concurrency *and* the retry/backoff policy and keeps results in plan order
+    (``progress`` is forwarded and fires as each segment completes). A pool
+    sized to one worker (or a single-turn plan) still runs sequentially but
+    retains the pool's rate-limit retry handling. With ``pool`` omitted the
+    calls run sequentially with no retries, which is the historical behaviour.
     """
 
     if not decision.get("allowed"):
@@ -335,10 +353,38 @@ def synthesize_two_voice(
         raise PermissionError(f"tts synthesis is blocked: {', '.join(map(str, blocked_by))}")
     if not plan:
         raise ValueError("voice plan is empty")
-    return [
-        synthesize_turn(turn, config, token_provider=token_provider, transport=transport)
-        for turn in plan
-    ]
+    if pool is not None:
+        # Lazy import keeps tts_pool's dependency on this module one-directional.
+        from podcaster.tts_pool import synthesize_plan_concurrent
+
+        return synthesize_plan_concurrent(
+            plan,
+            config,
+            decision,
+            pool=pool,
+            token_provider=token_provider,
+            transport=transport,
+            progress=progress,
+        )
+    total = len(plan)
+    outputs: list[bytes] = []
+    progress_failed = False
+    for turn in plan:
+        outputs.append(
+            synthesize_turn(turn, config, token_provider=token_provider, transport=transport)
+        )
+        if progress is not None and not progress_failed:
+            try:
+                progress(len(outputs), total)
+            except Exception:  # noqa: BLE001 - progress reporting must not break synthesis
+                # Log once and stop calling back so a consistently-failing
+                # callback can't spam a warning per segment (issue #470).
+                progress_failed = True
+                logging.warning(
+                    "tts progress callback failed; disabling further progress reports",
+                    exc_info=True,
+                )
+    return outputs
 
 
 def _default_transport(request: Request) -> bytes:
