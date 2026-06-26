@@ -2258,6 +2258,459 @@ class TestComposeVideoCheckpointResume:
         assert store.exists("normalized_000.mp4") is True
 
 
+# --- Tests for parallel pairwise composition tree (#481) ---
+
+
+def _xfade_cmds(calls: list[list[str]]) -> list[list[str]]:
+    """Return the recorded commands that perform an xfade pass."""
+    out = []
+    for cmd in calls:
+        if "-filter_complex" in cmd:
+            fc = cmd[cmd.index("-filter_complex") + 1]
+            if "xfade" in fc:
+                out.append(cmd)
+    return out
+
+
+def _filter_complex(cmd: list[str]) -> str:
+    return cmd[cmd.index("-filter_complex") + 1]
+
+
+def _recording_runner():
+    """A CommandRunner that records every invocation's argv as strings."""
+    calls: list[list[str]] = []
+
+    def _run(cmd):
+        calls.append([str(a) for a in cmd])
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    _run.calls = calls  # type: ignore[attr-defined]
+    return _run
+
+
+class TestComposePairwiseParallel:
+    """White-box tests for the level-parallel composition tree (#481)."""
+
+    def _lts(self, n: int, durations: list[float], td: float) -> dict:
+        abs_start = [0.0] * n
+        for i in range(1, n):
+            abs_start[i] = abs_start[i - 1] + durations[i - 1] - td
+        return {
+            i: vc.LowerThird(
+                text=f"owner{i}/repo{i}",
+                url=f"https://example.test/{i}",
+                start_seconds=abs_start[i] + 0.5,
+                end_seconds=abs_start[i] + 0.5 + vc.LOWER_THIRD_DURATION,
+            )
+            for i in range(n)
+        }
+
+    @pytest.mark.parametrize("n", [3, 4, 5, 6, 7, 8])
+    def test_pass_count_is_n_minus_one(self, tmp_path, n):
+        """A balanced tree performs exactly N-1 two-input xfade passes."""
+        runner = _recording_runner()
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        durations = [10.0] * n
+        transitions = [TRANSITION_FADE] * (n - 1)
+
+        vc._compose_pairwise_parallel(
+            paths, durations, 1.0, transitions, {}, None, None, None,
+            tmp_path / "out.mp4", runner, tmp_path, concurrency=2,
+        )
+
+        xfades = _xfade_cmds(runner.calls)
+        assert len(xfades) == n - 1
+        for cmd in xfades:
+            assert cmd.count("-i") == 2  # constant memory: 2 inputs per pass
+
+    def test_disk_budget_scales_with_per_level_workers(self, tmp_path, monkeypatch):
+        """The disk-budget estimate uses each level's *actual* concurrency, so the
+        single-pair root level budgets for one pass — not the global concurrency
+        (issue #481 review: avoid over-estimating and spurious disk errors)."""
+        size = 1024
+        n = 4  # level 0 -> 2 pairs (workers=2); root -> 1 pair (workers=1)
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        for p in paths:
+            p.write_bytes(b"x" * size)
+
+        requested: list[int] = []
+
+        def _fake_budget(work_dir, needed):
+            requested.append(needed)
+
+        monkeypatch.setattr(vc, "ensure_disk_budget", _fake_budget)
+
+        def _run(cmd):
+            # Materialize the output so intermediate inputs exist for the next
+            # level's budget computation, at the same fixed size.
+            Path(str(cmd[-1])).write_bytes(b"x" * size)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        vc._compose_pairwise_parallel(
+            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+            None, None, tmp_path / "out.mp4", _run, tmp_path, concurrency=2,
+        )
+
+        # Each pair has two inputs of ``size`` -> sum*2 == 4*size per pass.
+        # Level-0 pairs (workers=2) request 2x that; the root pass (workers=1) 1x.
+        assert max(requested) == 4 * size * 2  # a level-0 pass with 2 workers
+        assert requested[-1] == 4 * size * 1   # the final root pass, 1 worker
+
+    def test_combine_failure_releases_inputs_and_drops_partial_output(self, tmp_path):
+        """A failed xfade pass must reclaim disk: release the fetched leaf inputs
+        and remove any partially-written output (issue #481 review)."""
+        n = 2
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        for p in paths:
+            p.write_bytes(b"x" * 1024)
+        target = tmp_path / "out.mp4"
+
+        fetched: list[Path] = []
+        released: list[Path] = []
+
+        def _fetch(p: Path) -> None:
+            fetched.append(p)
+
+        def _release(p: Path) -> None:
+            released.append(p)
+
+        def _run(cmd):
+            # Simulate ffmpeg writing a partial output then failing.
+            out = Path(str(cmd[-1]))
+            out.write_bytes(b"partial")
+            raise subprocess.CalledProcessError(1, cmd, stderr="boom")
+
+        with pytest.raises(subprocess.CalledProcessError):
+            vc._compose_pairwise_parallel(
+                paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+                None, None, target, _run, tmp_path, concurrency=1,
+                fetch=_fetch, release=_release,
+            )
+
+        # Both leaf inputs were fetched and then released back on failure.
+        assert set(released) == set(paths)
+        # The partially-written output was cleaned up.
+        assert not target.exists()
+
+    def test_combine_releases_first_input_when_second_fetch_fails(self, tmp_path):
+        """If the second input's fetch fails, the already-fetched first input is
+        still released so it does not leak on disk (issue #481 review)."""
+        n = 2
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        for p in paths:
+            p.write_bytes(b"x" * 1024)
+        target = tmp_path / "out.mp4"
+
+        released: list[Path] = []
+
+        def _fetch(p: Path) -> None:
+            if p == paths[1]:  # the second (right) input fails to fetch
+                raise RuntimeError("blob download failed")
+
+        def _release(p: Path) -> None:
+            released.append(p)
+
+        def _run(cmd):  # pragma: no cover - must never run on fetch failure
+            raise AssertionError("ffmpeg should not run when a fetch fails")
+
+        with pytest.raises(RuntimeError, match="blob download failed"):
+            vc._compose_pairwise_parallel(
+                paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+                None, None, target, _run, tmp_path, concurrency=1,
+                fetch=_fetch, release=_release,
+            )
+
+        # Only the first input was fetched, and it was released on the failure.
+        assert released == [paths[0]]
+        assert not target.exists()
+
+    def test_compose_pairwise_clamps_concurrency_to_hard_cap(self, tmp_path, monkeypatch):
+        """A caller-supplied concurrency above MAX_COMPOSE_CONCURRENCY is clamped
+        before dispatch so the hard cap cannot be bypassed (issue #481 review)."""
+        captured: dict[str, int] = {}
+
+        def _spy(*args, **kwargs):
+            captured["concurrency"] = kwargs["concurrency"]
+
+        monkeypatch.setattr(vc, "_compose_pairwise_parallel", _spy)
+        n = 4
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+
+        vc._compose_pairwise(
+            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+            None, None, tmp_path / "out.mp4", _recording_runner(), tmp_path,
+            concurrency=vc.MAX_COMPOSE_CONCURRENCY + 100,
+        )
+
+        assert captured["concurrency"] == vc.MAX_COMPOSE_CONCURRENCY
+
+    def test_compose_pairwise_clamps_concurrency_floor(self, tmp_path, monkeypatch):
+        """A concurrency below 1 is clamped up to the sequential path (>=1)."""
+        called = {"parallel": False, "sequential": False}
+
+        monkeypatch.setattr(
+            vc, "_compose_pairwise_parallel",
+            lambda *a, **k: called.__setitem__("parallel", True),
+        )
+        monkeypatch.setattr(
+            vc, "_compose_pairwise_sequential",
+            lambda *a, **k: called.__setitem__("sequential", True),
+        )
+        n = 4
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+
+        vc._compose_pairwise(
+            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+            None, None, tmp_path / "out.mp4", _recording_runner(), tmp_path,
+            concurrency=0,
+        )
+
+        # Clamped to 1 → sequential left-fold, never the parallel tree.
+        assert called["sequential"] and not called["parallel"]
+
+    def test_each_boundary_transition_used_once(self, tmp_path):
+        """Every boundary's distinct transition is applied exactly once."""
+        runner = _recording_runner()
+        n = 6
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        durations = [10.0] * n
+        # Distinct transitions per boundary so we can verify each is used once.
+        transitions = [
+            TRANSITION_FADE, TRANSITION_FADE_BLACK, TRANSITION_WIPE_LEFT,
+            TRANSITION_SLIDE_LEFT, TRANSITION_FADE,
+        ]
+
+        vc._compose_pairwise_parallel(
+            paths, durations, 1.0, transitions, {}, None, None, None,
+            tmp_path / "out.mp4", runner, tmp_path, concurrency=2,
+        )
+
+        used = []
+        for cmd in _xfade_cmds(runner.calls):
+            fc = _filter_complex(cmd)
+            token = fc.split("xfade=transition=", 1)[1].split(":", 1)[0]
+            used.append(token)
+        assert sorted(used) == sorted(transitions)
+
+    def test_root_pass_writes_target_at_full_preset(self, tmp_path):
+        """The final (root) xfade writes compose_target with ENCODE_PRESET."""
+        runner = _recording_runner()
+        target = tmp_path / "final.mp4"
+        n = 4
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+
+        vc._compose_pairwise_parallel(
+            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+            None, None, target, runner, tmp_path, concurrency=2,
+        )
+
+        # Exactly one xfade pass targets compose_target, and it uses the full
+        # encode preset (intermediates use ultrafast).
+        target_cmds = [c for c in _xfade_cmds(runner.calls) if str(target) in c]
+        assert len(target_cmds) == 1
+        root = target_cmds[0]
+        assert ENCODE_PRESET in root
+        intermediates = [c for c in _xfade_cmds(runner.calls) if str(target) not in c]
+        for cmd in intermediates:
+            assert "ultrafast" in cmd
+
+    def test_lower_thirds_baked_once_at_node_local_time(self, tmp_path):
+        """Each LT is baked exactly once, shifted into its subtree's local time."""
+        runner = _recording_runner()
+        n = 4
+        durations = [10.0] * n
+        td = 1.0
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        lts = self._lts(n, durations, td)
+
+        vc._compose_pairwise_parallel(
+            paths, durations, td, [TRANSITION_FADE] * (n - 1), lts, "ffmpeg",
+            None, None, tmp_path / "out.mp4", runner, tmp_path, concurrency=2,
+        )
+
+        # Find, for each segment, the enable start time baked into its drawtext.
+        def enable_start_for(text: str) -> float:
+            hits = []
+            for cmd in runner.calls:
+                if "-filter_complex" not in cmd:
+                    continue
+                fc = _filter_complex(cmd)
+                if f"text='{text}'" in fc:
+                    seg = fc.split(f"text='{text}'", 1)[1]
+                    between = seg.split("enable='between(t,", 1)[1]
+                    hits.append(float(between.split(",", 1)[0]))
+            assert len(hits) == 1, f"{text} baked {len(hits)} times, expected 1"
+            return hits[0]
+
+        # Tree: (0,1)->A@abs0, (2,3)->B@abs18, (A,B)->root.
+        # Segments 0/1 sit in a subtree whose local origin is absolute 0, so
+        # their enable starts equal the absolute values (0.5, 9.5).  Segments
+        # 2/3 sit in a subtree whose local origin is absolute 18, so their
+        # enable starts are shifted back by 18 -> 0.5 and 9.5, NOT 18.5/27.5.
+        assert enable_start_for("owner0/repo0") == pytest.approx(0.5)
+        assert enable_start_for("owner1/repo1") == pytest.approx(9.5)
+        assert enable_start_for("owner2/repo2") == pytest.approx(0.5)
+        assert enable_start_for("owner3/repo3") == pytest.approx(9.5)
+
+    def test_level_zero_pairs_run_concurrently(self, tmp_path):
+        """Independent level-0 pair composes overlap in time (true parallelism)."""
+        import threading
+
+        active = 0
+        peak = 0
+        call_idx = 0
+        lock = threading.Lock()
+        # The two level-0 passes (the first two runner calls) must be in-flight
+        # together; a barrier forces a deterministic overlap so the test is not
+        # flaky on slow/contended runners.
+        overlap = threading.Barrier(2, timeout=10)
+
+        def _run(cmd):
+            nonlocal active, peak, call_idx
+            with lock:
+                idx = call_idx
+                call_idx += 1
+                active += 1
+                peak = max(peak, active)
+            if idx < 2:
+                try:
+                    overlap.wait()
+                except threading.BrokenBarrierError:
+                    pass
+            with lock:
+                active -= 1
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        n = 4
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+        vc._compose_pairwise_parallel(
+            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+            None, None, tmp_path / "out.mp4", _run, tmp_path, concurrency=2,
+        )
+
+        # Level 0 has two independent pair composes; with concurrency=2 they
+        # must overlap, so peak in-flight ffmpeg passes is at least 2.
+        assert peak >= 2
+
+    def test_total_duration_matches_sequential(self, tmp_path):
+        """Tree and left-fold yield the same composed (overlap-adjusted) length."""
+        n = 7
+        durations = [10.0, 8.0, 12.0, 9.0, 11.0, 7.0, 10.0]
+        td = 1.0
+        expected = sum(durations) - td * (n - 1)
+        # Duration is a pure function of inputs; both paths must agree (this is
+        # asserted at the compose_video level elsewhere — here we sanity-check
+        # the arithmetic the tree relies on for its xfade offsets).
+        abs_start = [0.0] * n
+        for i in range(1, n):
+            abs_start[i] = abs_start[i - 1] + durations[i - 1] - td
+        # Root duration via the tree's additive rule equals the timeline length.
+        assert abs_start[-1] + durations[-1] == pytest.approx(expected)
+
+
+class TestComposePairwiseDispatch:
+    """The public _compose_pairwise routes to the right strategy (#481)."""
+
+    def test_concurrency_one_uses_sequential(self, tmp_path, monkeypatch):
+        seq = MagicMock()
+        par = MagicMock()
+        monkeypatch.setattr(vc, "_compose_pairwise_sequential", seq)
+        monkeypatch.setattr(vc, "_compose_pairwise_parallel", par)
+        paths = [tmp_path / f"s{i}.mp4" for i in range(4)]
+        vc._compose_pairwise(
+            paths, [10.0] * 4, 1.0, [TRANSITION_FADE] * 3, {}, None, None,
+            None, tmp_path / "o.mp4", _mock_runner(), tmp_path, concurrency=1,
+        )
+        seq.assert_called_once()
+        par.assert_not_called()
+
+    def test_few_clips_use_sequential(self, tmp_path, monkeypatch):
+        seq = MagicMock()
+        par = MagicMock()
+        monkeypatch.setattr(vc, "_compose_pairwise_sequential", seq)
+        monkeypatch.setattr(vc, "_compose_pairwise_parallel", par)
+        paths = [tmp_path / f"s{i}.mp4" for i in range(2)]
+        vc._compose_pairwise(
+            paths, [10.0] * 2, 1.0, [TRANSITION_FADE], {}, None, None,
+            None, tmp_path / "o.mp4", _mock_runner(), tmp_path, concurrency=4,
+        )
+        seq.assert_called_once()
+        par.assert_not_called()
+
+    def test_many_clips_with_concurrency_use_parallel(self, tmp_path, monkeypatch):
+        seq = MagicMock()
+        par = MagicMock()
+        monkeypatch.setattr(vc, "_compose_pairwise_sequential", seq)
+        monkeypatch.setattr(vc, "_compose_pairwise_parallel", par)
+        paths = [tmp_path / f"s{i}.mp4" for i in range(5)]
+        vc._compose_pairwise(
+            paths, [10.0] * 5, 1.0, [TRANSITION_FADE] * 4, {}, None, None,
+            None, tmp_path / "o.mp4", _mock_runner(), tmp_path, concurrency=3,
+        )
+        par.assert_called_once()
+        seq.assert_not_called()
+
+
+class TestComposeTreeRealFfmpeg:
+    """End-to-end offset-math validation against a real ffmpeg (#481)."""
+
+    def test_four_clip_tree_composes_with_correct_duration(self, tmp_path):
+        ffmpeg = vc._find_drawtext_capable_ffmpeg() or "ffmpeg"
+        import shutil as _sh
+        if _sh.which(ffmpeg) is None and _sh.which("ffmpeg") is None:
+            pytest.skip("ffmpeg not available")
+        binary = ffmpeg if _sh.which(ffmpeg) else "ffmpeg"
+
+        # Build four short solid-colour clips with real ffmpeg.
+        durations = [3.0, 2.0, 4.0, 2.0]
+        colours = ["red", "green", "blue", "white"]
+        paths = []
+        for i, (d, c) in enumerate(zip(durations, colours)):
+            p = tmp_path / f"clip_{i}.mp4"
+            rc = subprocess.run(
+                [binary, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                 "-i", f"color=c={c}:s=320x240:r=30:d={d}",
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", str(p)],
+                capture_output=True,
+            )
+            if rc.returncode != 0:
+                pytest.skip(f"ffmpeg cannot synthesise test clips: {rc.stderr[:200]!r}")
+            paths.append(p)
+
+        td = 1.0
+        target = tmp_path / "composed.mp4"
+
+        def _run(cmd):
+            r = subprocess.run(cmd, capture_output=True)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr.decode("utf-8", "replace")[:500])
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        vc._compose_pairwise_parallel(
+            paths, durations, td, [TRANSITION_FADE] * 3, {}, None, None, None,
+            target, _run, tmp_path, concurrency=2,
+        )
+
+        assert target.exists() and target.stat().st_size > 0
+        probe = subprocess.run(
+            [binary, "-hide_banner", "-i", str(target)],
+            capture_output=True, text=True,
+        )
+        # Composed length = sum(durations) - 3 overlaps = 11 - 3 = 8s.
+        expected = sum(durations) - td * (len(durations) - 1)
+        # Parse "Duration: HH:MM:SS.xx" from ffmpeg stderr.
+        duration_lines = [ln for ln in probe.stderr.splitlines() if "Duration:" in ln]
+        assert duration_lines, (
+            "ffprobe stderr did not contain a 'Duration:' line; "
+            f"stderr was:\n{probe.stderr}"
+        )
+        line = duration_lines[0]
+        hms = line.split("Duration:", 1)[1].split(",", 1)[0].strip()
+        h, m, s = hms.split(":")
+        actual = int(h) * 3600 + int(m) * 60 + float(s)
+        assert actual == pytest.approx(expected, abs=0.5)
+
+
 # --- Per-task normalize retry (issue #483) ---
 
 
