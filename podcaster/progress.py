@@ -271,8 +271,14 @@ def emit_progress(
     moment = _iso(at or datetime.now(timezone.utc))
     resolved_percent = _derive_percent(percent, segment_index, segment_total)
     resolved_task_status = task_status
-    if task_id is not None and resolved_task_status is None:
-        resolved_task_status = TaskStatus.RUNNING
+    if task_id is not None:
+        if resolved_task_status is None:
+            resolved_task_status = TaskStatus.RUNNING
+    else:
+        # task_status is only meaningful when paired with a task_id; drop an
+        # orphan status so events/snapshots never carry a task_status that
+        # consumers can't attribute to a task.
+        resolved_task_status = None
     captured: dict[str, Any] = {}
 
     def _apply(content: bytes | None) -> bytes:

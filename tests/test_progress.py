@@ -283,6 +283,26 @@ def test_done_task_is_removed_from_in_flight_map():
     assert statuses == [TaskStatus.RUNNING, TaskStatus.DONE]
 
 
+def test_orphan_task_status_without_task_id_is_dropped():
+    # task_status is only meaningful paired with a task_id; an orphan status
+    # must not leak into the event/current snapshot (consumers can't attribute
+    # it to a task).
+    storage = MemoryStorageBackend()
+    event = emit_progress(
+        storage,
+        "job-1",
+        stage=PipelineStage.COMPOSE,
+        task_status=TaskStatus.RUNNING,
+        at=_at(0),
+    )
+    assert event is not None
+    assert event.task_id is None
+    assert event.task_status is None
+    document = read_progress(storage, "job-1")
+    assert document["current"].get("task_status") is None
+    assert in_flight_tasks(document) == {}
+
+
 def test_failed_task_is_removed_from_in_flight_map():
     storage = MemoryStorageBackend()
     emit_task_progress(
