@@ -44,6 +44,22 @@ _RETRY_BACKOFF_BASE = 2.0
 _MIN_VALID_MP4_BYTES = 1024
 
 
+def _load_youtube_refresh_token() -> str:
+    """Resolve the YouTube refresh token from env or Azure Key Vault (#443).
+
+    Best-effort: falls back to the bare ``VIDEO_YOUTUBE_REFRESH_TOKEN`` env var
+    and never raises, so a misconfigured/unavailable vault degrades gracefully
+    (identical to the previous env-only behavior when Key Vault is not set up).
+    """
+    try:
+        from podcaster.youtube_credentials import load_youtube_refresh_token
+
+        return load_youtube_refresh_token()
+    except Exception:  # noqa: BLE001 - never break config loading on token fetch
+        logger.warning("YouTube refresh-token load failed; falling back to env", exc_info=True)
+        return os.environ.get("VIDEO_YOUTUBE_REFRESH_TOKEN", "")
+
+
 @dataclass(frozen=True)
 class VideoDistributionConfig:
     """Configuration for video distribution targets."""
@@ -70,7 +86,7 @@ class VideoDistributionConfig:
             youtube_enabled=os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true",
             youtube_client_id=os.environ.get("VIDEO_YOUTUBE_CLIENT_ID", ""),
             youtube_client_secret=os.environ.get("VIDEO_YOUTUBE_CLIENT_SECRET", ""),
-            youtube_refresh_token=os.environ.get("VIDEO_YOUTUBE_REFRESH_TOKEN", ""),
+            youtube_refresh_token=_load_youtube_refresh_token(),
             youtube_category_id=os.environ.get("VIDEO_YOUTUBE_CATEGORY_ID", "28"),
             youtube_privacy=os.environ.get("VIDEO_YOUTUBE_PRIVACY", "unlisted"),
             spotify_rss_enabled=os.environ.get("VIDEO_SPOTIFY_RSS_ENABLED", "").lower() == "true",
