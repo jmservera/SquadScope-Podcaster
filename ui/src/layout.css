@@ -259,7 +259,6 @@
   background: #6b7280;
 }
 
-
 /* Pipeline stage timeline / Gantt view (#474) */
 .stage-timeline {
   display: flex;
@@ -373,6 +372,60 @@
   padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid #cbd5e1;
+}
+
+/* Per-job asset browser (#471) */
+.asset-browser section {
+  margin-bottom: 16px;
+}
+
+.asset-browser h4 {
+  margin: 8px 0;
+}
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.asset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.asset-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.asset-item {
+  margin: 0;
+}
+
+.asset-caption {
+  font-size: 0.75rem;
+  color: #475569;
+  word-break: break-all;
+}
+
+.asset-video .video-player {
+  width: 100%;
+  border-radius: 8px;
+}
+
+.asset-audio .audio-player {
+  width: 100%;
+}
+
+.asset-thumb {
+  max-width: 160px;
+  max-height: 120px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  object-fit: cover;
 }
 
 /* Structured log viewer (issue #472) */

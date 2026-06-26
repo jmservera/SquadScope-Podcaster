@@ -12,6 +12,7 @@ import {
   type StageProgressSummary,
 } from '../api/jobs';
 import StageTimeline from './StageTimeline';
+import AssetBrowser from './AssetBrowser';
 
 function badgeClass(status: string): string {
   if (status.includes('failed') || status.includes('error')) return 'badge badge-error';
@@ -299,6 +300,9 @@ const JobMonitor: React.FC = () => {
             <p className="warning-text section-spacing" role="status">{progressWarning}</p>
           )}
           <StageTimeline events={progressEvents} summary={progressSummary} />
+
+          <h3>Assets</h3>
+          <AssetBrowser jobId={selectedJob.job_id} />
 
           <h3>Logs</h3>
           {logsLoading ? (
