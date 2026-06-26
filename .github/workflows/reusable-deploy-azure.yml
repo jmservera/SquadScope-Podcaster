@@ -347,6 +347,11 @@ jobs:
                 echo "OK  ${url} -> 200 (matched '${expect_substr}')"
                 return 0
               fi
+              # No retry left after the final attempt: fail fast instead of
+              # sleeping an extra backoff interval before giving up.
+              if [ "$i" -eq "$attempts" ]; then
+                break
+              fi
               echo "  attempt ${i}/${attempts}: ${url} -> ${code:-000}${last_err:+ (${last_err})} (waiting ${wait}s)"
               sleep "$wait"
               wait=$(( wait * 2 ))
