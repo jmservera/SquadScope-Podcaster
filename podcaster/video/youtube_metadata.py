@@ -96,7 +96,7 @@ class YouTubeMetadata:
 
     title: str
     description: str
-    tags: list[str] = field(default_factory=list)
+    tags: tuple[str, ...] = field(default_factory=tuple)
     category_id: str = YOUTUBE_CATEGORY_SCIENCE_TECH
     privacy_status: str = "unlisted"
     default_language: str = "en"
@@ -208,7 +208,7 @@ def build_youtube_metadata(
     return YouTubeMetadata(
         title=final_title,
         description=(description or "").strip(),
-        tags=resolved_tags,
+        tags=tuple(resolved_tags),
         category_id=category_id,
         privacy_status=privacy_status or "unlisted",
         default_language=language,
