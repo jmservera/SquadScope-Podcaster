@@ -275,13 +275,20 @@ def upload_to_youtube(
     # Use the resumable session URI returned in the Location header
     upload_url = resp_headers.get("location", init_url)
 
-    # Guard: single-request upload only suitable for files under 128 MB.
-    # Larger files require chunked resumable upload (not yet implemented).
+    # Files above the single-request ceiling (and any file when the resumable
+    # chunked uploader is available) are uploaded via chunked resumable upload
+    # (#442). Falls back to the single-request path below for small files when
+    # the chunked module is unavailable.
     _MAX_SINGLE_UPLOAD_BYTES = 128 * 1024 * 1024
     if file_size > _MAX_SINGLE_UPLOAD_BYTES:
+        chunked = _try_chunked_upload(
+            video_path, title, description, config, tags=tags, transport=http,
+        )
+        if chunked is not None:
+            return chunked
         logger.error(
-            "Video too large for single-request upload (%d bytes > %d). "
-            "Chunked resumable upload not yet implemented.",
+            "Video too large for single-request upload (%d bytes > %d) and the "
+            "chunked resumable uploader is unavailable.",
             file_size, _MAX_SINGLE_UPLOAD_BYTES,
         )
         return None, None
@@ -509,6 +516,59 @@ def upload_to_spotify_episode(
 # --- Orchestrator ---
 
 
+def _try_chunked_upload(
+    video_path: Path,
+    title: str,
+    description: str,
+    config: VideoDistributionConfig,
+    *,
+    tags: list[str] | None,
+    transport: HttpTransport,
+) -> tuple[str | None, str | None] | None:
+    """Delegate to the resumable chunked uploader (#442) when available.
+
+    Returns ``(video_id, video_url)`` on completion, ``(None, None)`` on a
+    handled upload failure, or ``None`` when the chunked module is unavailable
+    (caller falls back to single-request behavior).
+    """
+    try:
+        from podcaster.video.youtube import upload_video
+    except Exception:  # noqa: BLE001 - optional module; degrade gracefully
+        return None
+
+    result = upload_video(
+        video_path, title, description, config,
+        tags=tags, transport=transport,
+    )
+    if result.succeeded:
+        return result.video_id, result.video_url
+    logger.error("YouTube chunked upload failed: %s", result.error)
+    return None, None
+
+
+def youtube_enabled_for_language(
+    config: VideoDistributionConfig,
+    language: str = "en",
+    *,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Whether YouTube upload is enabled for a given language/locale (#444).
+
+    YouTube can be gated per show/locale via ``VIDEO_YOUTUBE_LANGUAGES`` (a
+    comma-separated allow-list of language codes). When unset, YouTube applies to
+    all languages (back-compatible). A language is matched on its base code
+    (``fr-FR`` → ``fr``).
+    """
+    if not config.youtube_enabled:
+        return False
+    source = os.environ if env is None else env
+    raw = source.get("VIDEO_YOUTUBE_LANGUAGES", "")
+    allow = {item.strip().lower().split("-", 1)[0] for item in raw.split(",") if item.strip()}
+    if not allow:
+        return True
+    return (language or "en").split("-", 1)[0].lower() in allow
+
+
 def distribute_video(
     video_path: Path,
     job_id: str,
@@ -523,6 +583,7 @@ def distribute_video(
     spotify_anchor_id: int | None = None,
     season_number: int | None = None,
     episode_number: int | None = None,
+    language: str = "en",
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
@@ -578,8 +639,14 @@ def distribute_video(
     blob_path = archive_to_blob(video_path, job_id, storage=storage, config=config)
     result.blob_path = blob_path
 
-    # 2. Upload to YouTube
-    if config.youtube_enabled:
+    # 2. Upload to YouTube (config-gated, and optionally per show/locale, #444)
+    youtube_active = youtube_enabled_for_language(config, language)
+    if config.youtube_enabled and not youtube_active:
+        logger.info(
+            "YouTube upload skipped for language=%s (not in VIDEO_YOUTUBE_LANGUAGES)",
+            language,
+        )
+    if youtube_active:
         try:
             video_id, video_url = upload_to_youtube(
                 video_path, title, description, config,
@@ -623,13 +690,13 @@ def distribute_video(
 
     # Determine overall status
     targets_attempted = sum([
-        config.youtube_enabled,
+        youtube_active,
         config.spotify_rss_enabled,
         config.spotify_upload_enabled,
         config.blob_archive_enabled,
     ])
     targets_succeeded = sum([
-        result.youtube_id is not None if config.youtube_enabled else False,
+        result.youtube_id is not None if youtube_active else False,
         result.spotify_rss_updated if config.spotify_rss_enabled else False,
         result.spotify_upload_updated if config.spotify_upload_enabled else False,
         result.blob_path is not None if config.blob_archive_enabled else False,
