@@ -241,6 +241,14 @@ def _split_speaker(line: str, host_labels: tuple[str, str] | None) -> tuple[str,
     return None
 
 
+#: Public aliases for shared script-parsing helpers. Other modules (e.g.
+#: :mod:`podcaster.script_plan`) should depend on these stable names rather than
+#: the underscore-prefixed implementations so internal refactors stay contained.
+script_body = _script_body
+host_labels = _host_labels
+split_speaker = _split_speaker
+
+
 def match_section_header(line: str) -> str | None:
     """Return the section *title* when *line* is a section header.
 
