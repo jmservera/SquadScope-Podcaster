@@ -35,19 +35,13 @@ WORKDIR /app
 RUN groupadd --system synth \
     && useradd --system --gid synth --home-dir /app --shell /usr/sbin/nologin synth
 
-# Install Python deps first for better layer caching.
-COPY requirements.txt ./
-RUN python -m pip install --no-cache-dir -r requirements.txt
-
-# Playwright is installed only in this synthesis image (not in requirements.txt)
-# to keep the API image lean.  Pin range matches the version used in development.
-RUN python -m pip install --no-cache-dir 'playwright>=1.53,<2'
-
-# faster-whisper powers audio-cue video sync (issue #374): word-level
-# transcription used to align repo segments to the moment the hosts discuss
-# them. Installed only here (not in the lean API image / requirements.txt);
-# the code falls back to proportional timing if it is absent.
-RUN python -m pip install --no-cache-dir 'faster-whisper>=1.0,<2'
+# Install Python deps first for better layer caching. pyproject.toml is the
+# single source of dependency truth; the [video] extra brings in playwright and
+# faster-whisper (audio-cue video sync, issue #374) and [dev] brings pytest so
+# the container can run the integration suite (docker-compose.test.yml).
+COPY pyproject.toml ./
+COPY podcaster ./podcaster
+RUN python -m pip install --no-cache-dir '.[dev,video]'
 
 # Pre-download the "tiny" model at build time so audio-cue sync works without a
 # runtime network round-trip to the Hugging Face Hub (the synthesis container
@@ -66,9 +60,6 @@ RUN python -m playwright install chromium --with-deps \
 
 # Drop build toolchain — not needed at runtime.
 RUN python -m pip uninstall -y pip setuptools wheel
-
-# Application code (synthesis pipeline is reused unchanged from podcaster/).
-COPY podcaster ./podcaster
 
 # Bundle music assets for intro/outro mixing.
 COPY assets ./assets

@@ -153,7 +153,7 @@ def _request_bearer_token(sp_dc: str, sp_key: str, show_id: str) -> str:
     """Exchange browser cookies for a short-lived Spotify bearer token."""
     if SpotifyConnector is None:
         raise SpotifyPublishError(
-            "spotifyconnector is not installed. Install requirements.txt to enable Spotify publishing."
+            "spotifyconnector is not installed. Install with `pip install -e .` to enable Spotify publishing."
         )
     connector = SpotifyConnector(
         base_url=_SPOTIFY_CONNECTOR_BASE_URL,
