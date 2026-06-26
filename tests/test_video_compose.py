@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from podcaster.video import video_compose as vc
-from podcaster.video.sync_plan import RepoReference, VideoSegment
+from podcaster.video.sync_plan import EpisodePlan, RepoReference, VideoSegment
 from podcaster.video.video_compose import (
     BOUNDARY_CONTENT_TO_CONTENT,
     BOUNDARY_CONTENT_TO_OUTRO,
@@ -34,6 +34,7 @@ from podcaster.video.video_compose import (
     TRANSITION_WIPE_LEFT,
     DogLogoConfig,
     LowerThird,
+    SyncedSegment,
     _build_audio_overlay_cmd,
     _build_canonical_av_cmd,
     _build_concat_cmd,
@@ -52,8 +53,11 @@ from podcaster.video.video_compose import (
     _join_intro_outro,
     _probe_drawtext_ffmpeg,
     _splice_section_cards,
+    apply_sync,
+    build_sync_map,
     compose_video,
     select_transitions,
+    trim_recording_cmd,
 )
 from podcaster.video.video_gen import RecordedSegment
 
@@ -820,13 +824,6 @@ class TestComposeVideoTransitions:
 # --- Tests for sync-map utilities (#296) ---
 
 
-from podcaster.video.sync_plan import EpisodePlan
-from podcaster.video.video_compose import (
-    SyncedSegment,
-    apply_sync,
-    build_sync_map,
-    trim_recording_cmd,
-)
 
 
 def _make_plan(*items: tuple[str, str, float, float]) -> EpisodePlan:

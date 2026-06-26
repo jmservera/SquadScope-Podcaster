@@ -77,7 +77,9 @@ hand-fixed the real-defect categories. Cleared `I001`, `F401`, `F541`, `F811`,
 - **F841** — removed dead assignments (e.g. unused `hf_s` in `zoom.py` and
   leftover constructions/locals in tests), keeping any side-effecting calls.
 
-Remaining baseline (deferred to follow-up Phase B passes, by directory):
+Remaining baseline *after this first pass* (point-in-time snapshot; deferred to
+follow-up Phase B passes, by directory — see "Remaining baseline (current)"
+below for the live count):
 
 | Count | Rule  | Description |
 | ----: | ----- | ----------- |
@@ -101,6 +103,34 @@ wrapping). The parsed AST of all three modules is byte-for-byte identical to
 before, so there is no string-content or logic change. No `# noqa: E501` was
 needed. `ruff check` reports no `E501` on these files; the full suite
 (2049 passed, 1 skipped) stays green.
+
+### Phase B progress (#521) — E402 follow-up
+
+Cleared `E402` (module-import-not-at-top-of-file) entirely. These were imports
+placed after early `logging.getLogger(__name__)` module-level statements or a
+mid-file import block:
+
+- **`podcaster/episode.py`** / **`podcaster/monitoring.py`** — the
+  `log`/`logger = logging.getLogger(__name__)` assignment sat between the stdlib
+  imports and the first-party `podcaster.*` imports, pushing every following
+  import past a non-import statement. Moved the logger assignment below the
+  import block.
+- **`tests/test_video_sync_plan.py`** — a second `from podcaster.video.sync_plan
+  import (...)` block lived mid-file (after the test classes started); merged its
+  names into the single top-of-file import block.
+
+### Remaining baseline (current)
+
+After the passes above (imports/dead-code, jobs `E501`, and `E402`), the live
+`ruff check podcaster tests --statistics` count is:
+
+| Count | Rule  | Description |
+| ----: | ----- | ----------- |
+| 472   | E501  | line-too-long |
+| **472** | **total** | |
+
+`E501` (line length) is the last remaining category, being cleared in further
+incremental slices. The full test suite stays green after this pass.
 
 ## Checkov (IaC / container security) — #519
 

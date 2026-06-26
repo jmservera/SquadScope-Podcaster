@@ -37,8 +37,6 @@ import re
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
-logger = logging.getLogger(__name__)
-
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -68,6 +66,8 @@ from podcaster.queue import enqueue_video_job
 from podcaster.stage_progress import summarize as summarize_stage_progress
 from podcaster.storage import StorageBackend, create_storage_backend
 from podcaster.validation import validate_payload_details
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Podcaster Job Monitor", version="0.1.0")
 
