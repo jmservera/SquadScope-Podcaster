@@ -271,7 +271,7 @@ const JobMonitor: React.FC = () => {
           {logsLoading ? (
             <p>Loading logs…</p>
           ) : logs.length > 0 ? (
-            <LogViewer logs={logs} />
+            <LogViewer key={selectedJob.job_id} logs={logs} />
           ) : (
             <p>No log entries.</p>
           )}

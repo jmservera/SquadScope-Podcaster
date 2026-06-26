@@ -375,6 +375,25 @@ class TestStructuredJobLogs:
         assert len(data["logs"]) == 1
         assert data["logs"][0]["message"] == "synthesis failed"
 
+    def test_blank_level_param_does_not_drop_debug(self, client, storage):
+        # `?level=%20` (whitespace) must behave like "not provided", not the
+        # `info` default which would silently drop debug entries (#472 review).
+        self._setup(storage)
+        resp = client.get(f"/api/jobs/{self.JOB}/logs?level=%20")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["level"] is None
+        # Info-level entry still present (not filtered out by a phantom default).
+        assert any(log["message"] == "recording 5 segments" for log in data["logs"])
+
+    def test_blank_search_param_echoed_as_none(self, client, storage):
+        self._setup(storage)
+        resp = client.get(f"/api/jobs/{self.JOB}/logs?search=%20%20")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["search"] is None
+        assert data["total"] == len(data["logs"])
+
     def test_manifest_failed_transition_inferred_error(self, client, storage):
         m = _make_manifest(self.JOB)
         m["lifecycle"]["transitions"] = [

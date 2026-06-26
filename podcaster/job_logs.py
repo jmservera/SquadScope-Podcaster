@@ -184,7 +184,8 @@ def filter_records(
     semantics of a log viewer. ``search`` is a case-insensitive substring match
     against the message, task id and stage. Malformed records are skipped.
     """
-    min_rank = LogLevel.rank(level) if level else None
+    level_str = level.strip() if isinstance(level, str) else level
+    min_rank = LogLevel.rank(level_str) if level_str else None
     needle = search.strip().lower() if isinstance(search, str) and search.strip() else None
 
     out: list[dict[str, Any]] = []

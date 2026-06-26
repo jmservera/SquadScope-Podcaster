@@ -191,6 +191,15 @@ class TestFilterRecords:
         out = filter_records(self._records(), level="warning", search="synthesis")
         assert [r["seq"] for r in out] == [4]
 
+    def test_blank_level_treated_as_no_filter(self):
+        # Whitespace-only level must not apply the `info` default and drop debug.
+        out = filter_records(self._records(), level="   ")
+        assert [r["seq"] for r in out] == [1, 2, 3, 4]
+
+    def test_empty_level_treated_as_no_filter(self):
+        out = filter_records(self._records(), level="")
+        assert [r["seq"] for r in out] == [1, 2, 3, 4]
+
     def test_skips_malformed_records(self):
         recs = self._records() + ["not a dict", 42]
         out = filter_records(recs, level="info")

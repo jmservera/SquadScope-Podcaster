@@ -68,10 +68,12 @@ describe('JobMonitor log viewer', () => {
   });
 
   async function openJob() {
+    const user = userEvent.setup();
     render(<JobMonitor />);
     const row = await screen.findByText('job-1');
-    await userEvent.click(row);
+    await user.click(row);
     await waitFor(() => expect(screen.getByText('recording 5 segments')).toBeInTheDocument());
+    return user;
   }
 
   it('renders all structured log entries with levels', async () => {
@@ -86,16 +88,16 @@ describe('JobMonitor log viewer', () => {
   });
 
   it('filters by minimum level', async () => {
-    await openJob();
-    await userEvent.selectOptions(screen.getByLabelText('Filter logs by minimum level'), 'warning');
+    const user = await openJob();
+    await user.selectOptions(screen.getByLabelText('Filter logs by minimum level'), 'warning');
     expect(screen.queryByText('recording 5 segments')).not.toBeInTheDocument();
     expect(screen.getByText('music skipped')).toBeInTheDocument();
     expect(screen.getByText('synthesis failed')).toBeInTheDocument();
   });
 
   it('filters by search text', async () => {
-    await openJob();
-    await userEvent.type(screen.getByLabelText('Search logs'), 'recording');
+    const user = await openJob();
+    await user.type(screen.getByLabelText('Search logs'), 'recording');
     expect(screen.getByText('recording 5 segments')).toBeInTheDocument();
     expect(screen.queryByText('music skipped')).not.toBeInTheDocument();
     expect(screen.queryByText('synthesis failed')).not.toBeInTheDocument();
@@ -109,8 +111,28 @@ describe('JobMonitor log viewer', () => {
   });
 
   it('shows an empty message when filters exclude everything', async () => {
-    await openJob();
-    await userEvent.type(screen.getByLabelText('Search logs'), 'no-such-text-zzz');
+    const user = await openJob();
+    await user.type(screen.getByLabelText('Search logs'), 'no-such-text-zzz');
     expect(screen.getByText('No log entries match the current filters.')).toBeInTheDocument();
+  });
+
+  it('resets log filters when a different job is selected', async () => {
+    const job2 = { ...job, job_id: 'job-2' };
+    mockFetchJobs.mockResolvedValue({ jobs: [job, job2], total: 2 });
+    mockFetchJobDetail.mockImplementation(async (id: string) => ({ ...detail, job_id: id }));
+
+    const user = await openJob();
+    // Apply a restrictive filter on job-1 so only error rows remain.
+    await user.selectOptions(screen.getByLabelText('Filter logs by minimum level'), 'error');
+    expect(screen.queryByText('recording 5 segments')).not.toBeInTheDocument();
+
+    // Switch to a different job: the viewer remounts and starts unfiltered.
+    await user.click(screen.getByText('job-2'));
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Filter logs by minimum level') as HTMLSelectElement).value,
+      ).toBe(''),
+    );
+    expect(screen.getByText('recording 5 segments')).toBeInTheDocument();
   });
 });

@@ -612,19 +612,27 @@ def get_job_logs(
     if manifest is None:
         raise HTTPException(status_code=500, detail="Manifest is corrupt")
 
-    normalized_level = LogLevel.normalize(level) if level else None
+    # Treat blank/whitespace-only params as "not provided" so `?level=%20`
+    # does not silently apply the `info` default and drop `debug` entries, and
+    # the echoed-back filters reflect what was actually applied (#472 review).
+    normalized_level = (
+        LogLevel.normalize(level) if isinstance(level, str) and level.strip() else None
+    )
+    normalized_search = (
+        search.strip() if isinstance(search, str) and search.strip() else None
+    )
 
     entries = _extract_logs(manifest)
     entries.extend(_structured_logs(read_logs(storage, job_id)))
     entries.sort(key=lambda e: (e.timestamp or "", e.seq if e.seq is not None else 0))
 
-    filtered = _filter_log_entries(entries, level=normalized_level, search=search)
+    filtered = _filter_log_entries(entries, level=normalized_level, search=normalized_search)
     return JobLogsResponse(
         job_id=job_id,
         logs=filtered,
         total=len(filtered),
         level=normalized_level,
-        search=search,
+        search=normalized_search,
     )
 
 
