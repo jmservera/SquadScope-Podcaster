@@ -77,7 +77,9 @@ hand-fixed the real-defect categories. Cleared `I001`, `F401`, `F541`, `F811`,
 - **F841** — removed dead assignments (e.g. unused `hf_s` in `zoom.py` and
   leftover constructions/locals in tests), keeping any side-effecting calls.
 
-Remaining baseline (deferred to follow-up Phase B passes, by directory):
+Remaining baseline *after this first pass* (point-in-time snapshot; deferred to
+follow-up Phase B passes, by directory — see "Remaining baseline (current)"
+below for the live count):
 
 | Count | Rule  | Description |
 | ----: | ----- | ----------- |
@@ -89,11 +91,24 @@ Remaining baseline (deferred to follow-up Phase B passes, by directory):
 changes and are intentionally left for subsequent incremental PRs so each stays
 small and reviewable. The full test suite (2049 passed) is green after this pass.
 
+### Phase B progress (#521) — E501 follow-up (jobs subsystem)
+
+Incremental `E501` pass over the job/script subsystem. Cleared
+`podcaster/script_gen.py` (29), `podcaster/jobs.py` (22), and
+`podcaster/job_runner.py` (10) — **61** `line-too-long` violations total.
+
+As with the other E501 slices, every fix is pure re-wrapping (string-concat
+splits with boundary whitespace preserved, Black-style call/comprehension
+wrapping). The parsed AST of all three modules is byte-for-byte identical to
+before, so there is no string-content or logic change. No `# noqa: E501` was
+needed. `ruff check` reports no `E501` on these files; the full suite
+(2049 passed, 1 skipped) stays green.
+
 ### Phase B progress (#521) — E402 follow-up
 
-Second incremental pass: cleared `E402` (module-import-not-at-top-of-file)
-entirely. These were imports placed after early `logging.getLogger(__name__)`
-module-level statements or a mid-file import block:
+Cleared `E402` (module-import-not-at-top-of-file) entirely. These were imports
+placed after early `logging.getLogger(__name__)` module-level statements or a
+mid-file import block:
 
 - **`podcaster/episode.py`** / **`podcaster/monitoring.py`** — the
   `log`/`logger = logging.getLogger(__name__)` assignment sat between the stdlib
@@ -104,36 +119,29 @@ module-level statements or a mid-file import block:
   import (...)` block lived mid-file (after the test classes started); merged its
   names into the single top-of-file import block.
 
-Remaining baseline after this pass:
-
-| Count | Rule  | Description |
-| ----: | ----- | ----------- |
-| 533   | E501  | line-too-long |
-| **533** | **total** | |
-
-`E501` (line length) remains the last category, deferred to a subsequent
-incremental pass. The full test suite is green after this pass.
-
 ### Phase B progress (#521) — E501 follow-up (core slice 1)
 
-Third incremental pass: started clearing `E501` (line-too-long) by module,
-beginning with the `podcaster/` config/validation core. Code lines were wrapped
-to the 100-column limit; intentional string literals that must not be reflowed
-(injection-detection regexes in `sanitization.py`, the visual-intent prompt text
-in `script_plan.py`) carry a justified `# noqa: E501` instead.
+Started clearing `E501` (line-too-long) by module, beginning with the
+`podcaster/` config/validation core. Code lines were wrapped to the 100-column
+limit; intentional string literals that must not be reflowed (injection-detection
+regexes in `sanitization.py`, the visual-intent prompt text in `script_plan.py`)
+carry a justified `# noqa: E501` instead.
 
 Files cleared in this slice: `podcaster/config.py`, `podcaster/costs.py`,
 `podcaster/validation.py`, `podcaster/sanitization.py`, `podcaster/script_plan.py`.
 
-Remaining baseline after this pass:
+### Remaining baseline (current)
+
+After the passes above (imports/dead-code, jobs `E501`, `E402`, and the config
+core `E501` slice), the live `ruff check podcaster tests --statistics` count is:
 
 | Count | Rule  | Description |
 | ----: | ----- | ----------- |
-| 494   | E501  | line-too-long |
-| **494** | **total** | |
+| 433   | E501  | line-too-long |
+| **433** | **total** | |
 
-The remaining `E501` violations are deferred to subsequent by-module passes so
-each PR stays small and reviewable. The full test suite is green after this pass.
+`E501` (line length) is the last remaining category, being cleared in further
+incremental by-module slices. The full test suite stays green after this pass.
 
 ## Checkov (IaC / container security) — #519
 
