@@ -175,10 +175,13 @@ class StageProgressResponse(BaseModel):
 class JobAsset(BaseModel):
     """A streamable media artifact produced for a job (issue #471).
 
-    ``url`` points at the authenticated streaming proxy (``/api/stream/...``)
-    which is scoped to the specific blob and requires a valid bearer token per
-    request — the same short-lived, artifact-scoped access model the SAS issuance
-    is meant to provide.
+    ``url`` points at the authenticated streaming proxy (``/api/stream/...``).
+    Note this is **not** a SAS URL: the proxy is gated by the standard Podcaster
+    bearer token (``verify_auth``) on every request and is not an
+    artifact-scoped capability — any caller holding a valid token can stream any
+    blob path. Bytes are proxied through the API rather than served directly
+    from storage. If a short-lived, per-artifact access model is required, mint
+    SAS URLs (or add a dedicated SAS issuance endpoint) instead.
     """
 
     name: str
@@ -627,9 +630,11 @@ def list_job_assets(job_id: str):
     """List the streamable media assets (video/audio/thumbnails) for a job (#471).
 
     Discovers every media blob under ``jobs/{job_id}/`` and returns playable
-    URLs via the authenticated streaming proxy. Access stays scoped to the
-    specific job's artifacts and requires a valid token per request. The job
-    must exist (have a manifest); a job with no media yet returns an empty list.
+    URLs via the authenticated streaming proxy (``/api/stream/...``). These are
+    authenticated proxy URLs gated by the standard Podcaster bearer token on
+    every request — **not** SAS URLs and not artifact-scoped capabilities. The
+    job must exist (have a manifest); a job with no media yet returns an empty
+    list.
     """
     storage = get_storage()
     if not _job_exists(storage, job_id):
