@@ -59,7 +59,7 @@ from podcaster.jobs import failed_response, run_generation_job
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
 from podcaster.progress import (
-    events_since,
+    filter_events_since,
     is_terminal,
     progress_path,
     read_progress,
@@ -504,7 +504,7 @@ def get_job_logs(job_id: str):
 
 
 def _job_exists(storage: StorageBackend, job_id: str) -> bool:
-    return storage.get_bytes(f"jobs/{job_id}/manifest.json") is not None
+    return storage.blob_exists(f"jobs/{job_id}/manifest.json")
 
 
 @app.get("/api/jobs/{job_id}/progress", response_model=ProgressResponse, dependencies=[Depends(verify_auth)])
@@ -524,7 +524,7 @@ def get_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
     if document is None:
         return ProgressResponse(job_id=job_id, current=None, events=[], last_seq=since, terminal=False)
 
-    new_events = events_since(storage, job_id, since)
+    new_events = filter_events_since(document.get("events") or [], since)
     last_seq = new_events[-1]["seq"] if new_events else since
     return ProgressResponse(
         job_id=job_id,
@@ -553,14 +553,14 @@ async def _progress_event_stream(job_id: str, since: int) -> AsyncIterator[str]:
     """
     storage = get_storage()
     cursor = since
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     started = loop.time()
     last_emit = started
 
     # Initial catch-up so a late subscriber immediately sees prior events.
     document = read_progress(storage, job_id)
     if document is not None:
-        for event in events_since(storage, job_id, cursor):
+        for event in filter_events_since(document.get("events") or [], cursor):
             cursor = event["seq"]
             yield _sse_pack(cursor, event)
             last_emit = loop.time()
@@ -575,7 +575,11 @@ async def _progress_event_stream(job_id: str, since: int) -> AsyncIterator[str]:
         await asyncio.sleep(_SSE_POLL_SECONDS)
 
         document = read_progress(storage, job_id)
-        new_events = events_since(storage, job_id, cursor) if document is not None else []
+        new_events = (
+            filter_events_since(document.get("events") or [], cursor)
+            if document is not None
+            else []
+        )
         if new_events:
             for event in new_events:
                 cursor = event["seq"]

@@ -133,7 +133,8 @@ def _derive_percent(
     if percent is not None:
         return max(0.0, min(100.0, round(float(percent), 1)))
     if segment_index is not None and segment_total and segment_total > 0:
-        return round(100.0 * min(segment_index, segment_total) / segment_total, 1)
+        clamped = max(0, min(segment_index, segment_total))
+        return round(100.0 * clamped / segment_total, 1)
     return None
 
 
@@ -163,6 +164,44 @@ def _load_document(raw: bytes | None, job_id: str) -> dict[str, Any]:
     return doc
 
 
+def _safe_seq(event: Any) -> int | None:
+    """Parse an event's ``seq`` as an int, or ``None`` when missing/malformed.
+
+    The durable document may be partially corrupted (e.g. a non-numeric
+    ``seq``); progress reading/emission must stay resilient rather than 500.
+    """
+    if not isinstance(event, dict):
+        return None
+    try:
+        return int(event.get("seq", 0))
+    except (ValueError, TypeError):
+        return None
+
+
+def _next_seq(events: list[Any]) -> int:
+    """Next monotonic seq, derived defensively from the highest valid seq."""
+    max_seq = 0
+    for event in events:
+        seq = _safe_seq(event)
+        if seq is not None and seq > max_seq:
+            max_seq = seq
+    return max_seq + 1
+
+
+def filter_events_since(events: list[Any], after_seq: int = 0) -> list[dict[str, Any]]:
+    """Events from an already-loaded list whose ``seq`` exceeds ``after_seq``.
+
+    Operating on an in-hand snapshot lets callers avoid re-reading the blob
+    (keeping the current/terminal snapshot consistent with the returned events)
+    and skips malformed events instead of raising.
+    """
+    return [
+        event
+        for event in events
+        if (seq := _safe_seq(event)) is not None and seq > after_seq
+    ]
+
+
 def emit_progress(
     storage: StorageBackend,
     job_id: str,
@@ -190,7 +229,7 @@ def emit_progress(
     def _apply(content: bytes | None) -> bytes:
         document = _load_document(content, job_id)
         events = document["events"]
-        next_seq = (events[-1]["seq"] + 1) if events else 1
+        next_seq = _next_seq(events)
         event = ProgressEvent(
             seq=next_seq,
             at=moment,
@@ -213,7 +252,9 @@ def emit_progress(
     try:
         storage.update_bytes(progress_path(job_id), "application/json; charset=utf-8", _apply)
     except Exception:  # noqa: BLE001 - progress emission must never mask the real work
-        logger.warning("could not emit progress job_id=%s stage=%s", job_id, stage)
+        logger.warning(
+            "could not emit progress job_id=%s stage=%s", job_id, stage, exc_info=True
+        )
         return None
 
     if not captured:
@@ -241,7 +282,7 @@ def events_since(storage: StorageBackend, job_id: str, after_seq: int = 0) -> li
     events = document.get("events")
     if not isinstance(events, list):
         return []
-    return [e for e in events if isinstance(e, dict) and int(e.get("seq", 0)) > after_seq]
+    return filter_events_since(events, after_seq)
 
 
 def is_terminal(document: dict[str, Any] | None) -> bool:

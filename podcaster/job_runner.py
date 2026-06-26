@@ -238,7 +238,7 @@ def run_synthesis(
     try:
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / f"{job_id}.mp3"
-            segment_total = len(parse_script_segments(script))
+            segment_total = len(parse_script_segments(script, podcast_config))
             emit_progress(
                 storage,
                 job_id,
