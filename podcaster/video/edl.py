@@ -321,6 +321,11 @@ def plan_source_ranges(manifest: ClipManifest, target_ms: int) -> tuple[tuple[So
       (or, lacking any, the whole clip) to make up the deficit (``looped=True``).
     """
     duration = manifest.duration_ms
+    if duration <= 0:
+        raise ValueError(
+            f"clip {manifest.clip_id!r} has non-positive duration_ms={duration}; "
+            "cannot plan source ranges"
+        )
     if target_ms <= 0:
         return (), False
     if target_ms == duration:

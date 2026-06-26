@@ -92,6 +92,14 @@ def test_source_ranges_loop_without_loop_sections_repeats_clip():
     assert looped is True
 
 
+def test_source_ranges_zero_duration_manifest_raises_not_hangs():
+    # A malformed manifest with duration_ms == 0 must fail fast instead of
+    # looping forever in the "fill" branch (take = min(deficit, 0) == 0).
+    m = _clip("bad", 0)
+    with pytest.raises(ValueError, match="non-positive duration_ms"):
+        plan_source_ranges(m, 1_000)
+
+
 # --- plan_edl: basic gap-free coverage ---
 
 

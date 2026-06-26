@@ -400,7 +400,7 @@ def validate_script_plan(plan: ScriptPlan) -> list[str]:
             repo_segment_count += 1
             if not seg.repo_url:
                 errors.append(f"segment {seg.index} is mode 'repo' but declares no repo_url")
-            elif _GITHUB_URL_RE.match(seg.repo_url) is None:
+            elif _GITHUB_URL_RE.fullmatch(seg.repo_url) is None:
                 errors.append(
                     f"segment {seg.index} repo_url {seg.repo_url!r} is not a GitHub repo URL"
                 )
