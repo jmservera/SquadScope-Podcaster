@@ -4,6 +4,7 @@ import {
   fetchJobDetail,
   fetchJobProgress,
   fetchJobProgressSummary,
+  type JobSummary,
 } from '../api/jobs';
 import { PIPELINE_STAGES, formatStageDuration } from './stageTimeline';
 import {
@@ -25,17 +26,22 @@ import {
 const DEFAULT_RUN_COUNT = 5;
 const MAX_RUN_COUNT = 10;
 
-async function loadRun(jobId: string): Promise<RunInput> {
+async function loadRun(job: JobSummary): Promise<RunInput> {
+  const jobId = job.job_id;
   const [detail, progress, summary] = await Promise.all([
     fetchJobDetail(jobId).catch(() => null),
     fetchJobProgress(jobId).catch(() => null),
     fetchJobProgressSummary(jobId).catch(() => null),
   ]);
+  // Fall back to the list values (already fetched by fetchJobs) when the detail
+  // call fails, so ordering by createdAt and run labels stay stable under a
+  // partial API failure instead of collapsing to epoch-0 / missing metadata
+  // (#475 review).
   return {
     jobId,
-    title: detail?.article_title ?? null,
-    createdAt: detail?.created_at ?? null,
-    status: detail?.status ?? summary?.stage ?? 'unknown',
+    title: detail?.article_title ?? job.article_title ?? null,
+    createdAt: detail?.created_at ?? job.created_at ?? null,
+    status: detail?.status ?? job.status ?? summary?.stage ?? 'unknown',
     qualityScore: detail?.quality_score ?? null,
     events: progress?.events ?? [],
     summary,
@@ -62,7 +68,7 @@ const RunComparison: React.FC = () => {
       setError(null);
       try {
         const list = await fetchJobs(runCount, 0);
-        const runs = await Promise.all(list.jobs.map((j) => loadRun(j.job_id)));
+        const runs = await Promise.all(list.jobs.map((j) => loadRun(j)));
         if (!cancelled) setRows(buildComparison(runs));
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load comparison');

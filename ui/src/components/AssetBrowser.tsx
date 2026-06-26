@@ -8,7 +8,9 @@ import { getAuthenticatedStreamUrl } from '../api/episodes';
  * Lists the streamable media artifacts for a job and lets users preview them
  * inline: video and per-segment audio players plus a thumbnail gallery. URLs
  * come from the authenticated streaming proxy (`/api/stream/...`), which is
- * scoped to the specific artifact and requires a token per request.
+ * authorized by `verify_auth`: any valid token may fetch any streamable blob.
+ * The URL is not a per-artifact capability (it is not SAS-like), so it must
+ * never be treated as a shareable, scoped grant.
  */
 interface AssetBrowserProps {
   jobId: string;

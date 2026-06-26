@@ -77,12 +77,24 @@ describe('JobMonitor log viewer', () => {
     mockFetchJobDetail.mockResolvedValue(detail);
     mockFetchJobLogs.mockResolvedValue({ job_id: 'job-1', logs, total: 3, level: null, search: null });
     mockFetchJobProgress.mockResolvedValue({
-      job_id: 'job-1', current: null, events: [], last_seq: 0, terminal: false,
+      job_id: 'job-1',
+      current: null,
+      events: [],
+      last_seq: 0,
+      terminal: false,
     });
     mockFetchJobProgressSummary.mockResolvedValue({
-      job_id: 'job-1', stage: null, phase: 'pending', segment_index: null,
-      segment_total: null, percent: null, message: null, updated_at: null,
-      terminal: false, eta: null, eta_seconds: null,
+      job_id: 'job-1',
+      stage: null,
+      phase: null,
+      segment_index: null,
+      segment_total: null,
+      percent: null,
+      message: null,
+      updated_at: null,
+      terminal: false,
+      eta: null,
+      eta_seconds: null,
     });
   });
 
