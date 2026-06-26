@@ -22,6 +22,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 
+from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
 from podcaster.progress import TaskStatus
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 from podcaster.video.video_gen import RecordedSegment, _recording_blob_name
@@ -168,6 +169,14 @@ COMPOSE_CONCURRENCY = max(
         MAX_COMPOSE_CONCURRENCY,
         _env_int("VIDEO_COMPOSE_CONCURRENCY", DEFAULT_COMPOSE_CONCURRENCY),
     ),
+)
+
+# Bounded per-task retries for the parallel normalize phase (issue #483).  A
+# single segment whose ffmpeg re-encode fails transiently is retried in
+# isolation — the blob checkpoint makes the retry idempotent — instead of
+# aborting the whole compose.  ``1`` disables retry (single attempt).
+NORMALIZE_TASK_RETRIES = max(
+    1, _env_int("VIDEO_NORMALIZE_TASK_RETRIES", DEFAULT_TASK_RETRIES)
 )
 
 
@@ -2309,6 +2318,14 @@ def compose_video(
                 except OSError:
                     logger.debug("could not free raw recording %s", input_path, exc_info=True)
 
+    def _normalize_one_with_retry(task) -> None:
+        idx = task[0]
+        retry_call(
+            lambda: _normalize_one(task),
+            attempts=NORMALIZE_TASK_RETRIES,
+            description=f"normalize segment {idx}",
+        )
+
     workers = min(NORMALIZE_WORKERS, len(norm_tasks))
     if workers > 1:
         logger.info(
@@ -2317,10 +2334,10 @@ def compose_video(
         )
         with ThreadPoolExecutor(max_workers=workers) as pool:
             # Consume the iterator so any ffmpeg failure is re-raised here.
-            list(pool.map(_normalize_one, norm_tasks))
+            list(pool.map(_normalize_one_with_retry, norm_tasks))
     else:
         for task in norm_tasks:
-            _normalize_one(task)
+            _normalize_one_with_retry(task)
 
     # Step 2: Plan transitions and lower-thirds for pairwise composition.
     # When fitting, the segment durations on screen are the fitted targets, not
