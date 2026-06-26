@@ -77,14 +77,27 @@ def generate_artifacts(
     config: PodcastConfig | None = None,
 ) -> list[GeneratedArtifact]:
     config = config or PodcastConfig()
-    generated_at_str = created_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    generated_at_str = (
+        created_at.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
     if expires_at is None:
-        expires_at = (created_at + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        expires_at = (
+            (created_at + timedelta(days=7))
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
     script = _script(job_id, payload, generated_at_str, config)
     transcript = _transcript(script, config)
     show_notes = _show_notes(payload, generated_at_str, config)
     audio_placeholder = _audio_placeholder(job_id, payload)
-    audio_validation = placeholder_audio_validation(byte_length=len(audio_placeholder), sha256=checksum(audio_placeholder)).to_manifest()
+    audio_validation = placeholder_audio_validation(
+        byte_length=len(audio_placeholder),
+        sha256=checksum(audio_placeholder),
+    ).to_manifest()
     claim_ledger = _claim_ledger(payload)
     review_checklist = _review_checklist(job_id, payload)
     rights = _rights_and_attribution()
@@ -126,12 +139,30 @@ def generate_artifacts(
 
     prefix = f"jobs/{job_id}"
     return [
-        GeneratedArtifact(f"{prefix}/script.txt", script.encode("utf-8"), "text/plain; charset=utf-8"),
-        GeneratedArtifact(f"{prefix}/claim-ledger.json", claim_ledger.encode("utf-8"), "application/json; charset=utf-8"),
-        GeneratedArtifact(f"{prefix}/cost-ledger.json", cost_ledger_json.encode("utf-8"), "application/json; charset=utf-8"),
-        GeneratedArtifact(f"{prefix}/transcript.txt", transcript.encode("utf-8"), "text/plain; charset=utf-8"),
-        GeneratedArtifact(f"{prefix}/show-notes.md", show_notes.encode("utf-8"), "text/markdown; charset=utf-8"),
-        GeneratedArtifact(f"{prefix}/review-checklist.md", review_checklist.encode("utf-8"), "text/markdown; charset=utf-8"),
+        GeneratedArtifact(
+            f"{prefix}/script.txt", script.encode("utf-8"), "text/plain; charset=utf-8"
+        ),
+        GeneratedArtifact(
+            f"{prefix}/claim-ledger.json",
+            claim_ledger.encode("utf-8"),
+            "application/json; charset=utf-8",
+        ),
+        GeneratedArtifact(
+            f"{prefix}/cost-ledger.json",
+            cost_ledger_json.encode("utf-8"),
+            "application/json; charset=utf-8",
+        ),
+        GeneratedArtifact(
+            f"{prefix}/transcript.txt", transcript.encode("utf-8"), "text/plain; charset=utf-8"
+        ),
+        GeneratedArtifact(
+            f"{prefix}/show-notes.md", show_notes.encode("utf-8"), "text/markdown; charset=utf-8"
+        ),
+        GeneratedArtifact(
+            f"{prefix}/review-checklist.md",
+            review_checklist.encode("utf-8"),
+            "text/markdown; charset=utf-8",
+        ),
         GeneratedArtifact(f"{prefix}/audio/{job_id}.mp3", audio_placeholder, "audio/mpeg"),
         GeneratedArtifact(f"{prefix}/packets/{job_id}.zip", packet, "application/zip"),
     ]
@@ -145,13 +176,19 @@ def checksum(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _script(job_id: str, payload: dict[str, object], generated_at: str, config: PodcastConfig) -> str:
+def _script(
+    job_id: str, payload: dict[str, object], generated_at: str, config: PodcastConfig
+) -> str:
     week = str(payload["week"])
     article_url = str(payload["article_url"])
     article_sha256 = str(payload.get("article_sha256") or "computed-on-retrieval")
-    article_title = str(payload.get("article_title") or "[main article title pending editorial selection]")
+    article_title = str(
+        payload.get("article_title") or "[main article title pending editorial selection]"
+    )
     source_artifacts = payload.get("source_artifacts") or []
-    source_artifact_lines = [_source_artifact_line(item) for item in source_artifacts] or ["Source Artifact: none supplied"]
+    source_artifact_lines = [_source_artifact_line(item) for item in source_artifacts] or [
+        "Source Artifact: none supplied"
+    ]
 
     return "\n".join(
         [
@@ -164,26 +201,35 @@ def _script(job_id: str, payload: dict[str, object], generated_at: str, config: 
             "Generator: squad-podcaster v0.1-stub",
             f"Voices: {config.host_a.name} = {config.host_a.voice} (OpenAI TTS); "
             f"{config.host_b.name} = {config.host_b.voice} (OpenAI TTS)",
-            "Safety: source artifact text is untrusted data, fenced, and never executed as instructions.",
+            "Safety: source artifact text is untrusted data, fenced, and never executed "
+            "as instructions.",
             *source_artifact_lines,
             "---",
             "",
-            f"{config.host_a.name}: Welcome to {config.name} {week} issue! In this episode we will talk about:"
-            f" {article_title}. If you're new here — I'm {config.host_a.name}, and {config.name} is our weekly"
-            f" analysis of the GitHub repos that matter, read in the context of the main tech-industry news"
+            f"{config.host_a.name}: Welcome to {config.name} {week} issue! In this "
+            f"episode we will talk about: {article_title}. If you're new here — "
+            f"I'm {config.host_a.name}, and {config.name} is our weekly analysis "
+            "of the GitHub repos that matter, read in the context of the main "
+            "tech-industry news"
             f" driving them.",
-            f"{config.host_b.name}: And I'm {config.host_b.name}. One honest heads-up before we dive in —"
-            f" {config.ai_voice_disclosure} Every issue, the repo links, and the extended write-ups live at"
+            f"{config.host_b.name}: And I'm {config.host_b.name}. One honest "
+            "heads-up before we dive in —"
+            f" {config.ai_voice_disclosure} Every issue, the repo links, and the "
+            "extended write-ups live at"
             f" {config.spoken_site}.",
-            f"{config.host_a.name}: Right! We're here to have a joyful, dynamic expert conversation about the"
-            " most relevant and surprising parts of this week's article — we won't just read it back to you.",
-            f"{config.host_b.name}: [Editorial highlight pending: the standout takeaway from the source article,"
+            f"{config.host_a.name}: Right! We're here to have a joyful, dynamic "
+            "expert conversation about the most relevant and surprising parts of "
+            "this week's article — we won't just read it back to you.",
+            f"{config.host_b.name}: [Editorial highlight pending: the standout "
+            "takeaway from the source article,"
             " generated and human-reviewed before synthesis.]",
-            f"{config.host_a.name}: [Editorial discussion pending: why it matters, with the two hosts trading"
+            f"{config.host_a.name}: [Editorial discussion pending: why it "
+            "matters, with the two hosts trading"
             " expert commentary on the source article.]",
             "",
             "This script is a deterministic production-path placeholder pending editorial"
-            " generation from the source article. It is dry-run-safe; no audio has been synthesized.",
+            " generation from the source article. It is dry-run-safe; no audio has "
+            "been synthesized.",
             "",
             "Host outro: Manual review is required before publishing.",
             "",
@@ -232,7 +278,8 @@ def _transcript(script: str, config: PodcastConfig) -> str:
         f"Published: {published}",
         f"Source: {source_url}",
         f"Duration: {duration}",
-        f"TTS Provider: OpenAI TTS ({config.host_a.name} {config.host_a.voice} / {config.host_b.name} {config.host_b.voice}) [synthesis pending review]",
+        f"TTS Provider: OpenAI TTS ({config.host_a.name} {config.host_a.voice} / "
+        f"{config.host_b.name} {config.host_b.voice}) [synthesis pending review]",
         "License: CC-BY-4.0",
         "---",
         "",
@@ -247,7 +294,9 @@ def _transcript(script: str, config: PodcastConfig) -> str:
     current_time_sec = 0
     for line in body.split("\n"):
         if line.strip():
-            timestamped_body += f"[{current_time_sec//60:02d}:{current_time_sec%60:02d}:00] {line}\n"
+            timestamped_body += (
+                f"[{current_time_sec//60:02d}:{current_time_sec%60:02d}:00] {line}\n"
+            )
             current_time_sec += 15  # Estimate 15 seconds per line
 
     return header + timestamped_body
@@ -268,15 +317,19 @@ def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastCo
             f"**Hosts:** Two AI voices — {config.host_a.name} ({config.host_a.voice}) and "
             f"{config.host_b.name} ({config.host_b.voice}), OpenAI TTS [synthesis pending review]",
             "",
-            f"> AI-voice disclosure: {config.ai_voice_disclosure} This is also stated in the first 60 seconds of the episode.",
+            f"> AI-voice disclosure: {config.ai_voice_disclosure} This is also "
+            "stated in the first 60 seconds of the episode.",
             "",
             "## Show notes",
             "",
-            f"{config.name} is a weekly show. For every issue, extended write-ups, repo links, and",
+            f"{config.name} is a weekly show. For every issue, extended write-ups, "
+            "repo links, and",
             f"commented articles, visit {config.url}.",
             "",
-            "This episode covers key developments from the SquadScope curated articles for this week.",
-            "Two AI hosts share a joyful, dynamic expert conversation on the most relevant and surprising",
+            "This episode covers key developments from the SquadScope curated articles "
+            "for this week.",
+            "Two AI hosts share a joyful, dynamic expert conversation on the most "
+            "relevant and surprising",
             "parts of the article — they do not read it verbatim.",
             "",
             "### Segment 1: [Topic to be added from source article]",
@@ -298,7 +351,8 @@ def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastCo
             "## License",
             "",
             "Publication is blocked for this placeholder packet.",
-            "Verify real audio, source material rights, TTS provider rights, and human editorial approval before distribution.",
+            "Verify real audio, source material rights, TTS provider rights, and "
+            "human editorial approval before distribution.",
             "",
         ]
     )
@@ -317,7 +371,12 @@ def _metadata(
     cost_ledger: dict[str, object],
     audio_validation: dict[str, object],
 ) -> dict[str, object]:
-    created_ts = created_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    created_ts = (
+        created_at.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
     return {
         "schema_version": "squadscope-podcaster-packet-v1",
@@ -380,7 +439,11 @@ def _metadata(
             "packet_format": "squadscope-podcaster-packet-v1",
             "packet_ready": False,
             "eligible": False,
-            "blocked_by": ["human_review", "synthesis_not_completed", "audio_validation_not_passed"],
+            "blocked_by": [
+                "human_review",
+                "synthesis_not_completed",
+                "audio_validation_not_passed",
+            ],
             "readiness_checks": {
                 "cost_ledger_complete": bool(cost_ledger.get("readiness", {}).get("complete"))
                 if isinstance(cost_ledger.get("readiness"), dict)
@@ -396,13 +459,18 @@ def _metadata(
         },
         "artifact_access": artifact_access_metadata(job_id, created_ts, expires_at),
         "safety": _safety_summary(payload),
-        "observability": {"correlation_id": job_id, "safe_log_fields": ["job_id", "week", "status", "artifact_count"]},
+        "observability": {
+            "correlation_id": job_id,
+            "safe_log_fields": ["job_id", "week", "status", "artifact_count"],
+        },
     }
 
 
 def _safety_summary(payload: dict[str, object]) -> dict[str, object]:
     source_artifacts = payload.get("source_artifacts") or []
-    detected = sorted({flag for item in source_artifacts for flag in sanitize_source_artifact(item).flags})
+    detected = sorted(
+        {flag for item in source_artifacts for flag in sanitize_source_artifact(item).flags}
+    )
     return {
         "schema_version": "squadscope-podcaster-safety-v1",
         "untrusted_inputs_fenced": True,
@@ -431,11 +499,18 @@ def _claim_ledger(payload: dict[str, object]) -> str:
         [
             {
                 "claim_id": "stub_000",
-                "script_excerpt": "[Script content placeholder — pending editorial generation from source article]",
+                "script_excerpt": (
+                    "[Script content placeholder — pending editorial generation from source "
+                    "article]"
+                ),
                 "source_url": payload["article_url"],
                 "source_quote": None,
                 "verified": False,
-                "editor_notes": "Deterministic stub awaiting real article content. Claim ledger will be populated during editorial generation. Human review and verification required before publication.",
+                "editor_notes": (
+                    "Deterministic stub awaiting real article content. Claim ledger will be "
+                    "populated during editorial generation. Human review and verification "
+                    "required before publication."
+                ),
             }
         ],
         sort_keys=True,
@@ -451,23 +526,32 @@ def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
             f"- Job ID: `{job_id}`",
             f"- Week: `{payload['week']}`",
             f"- Source article: {payload['article_url']}",
-            "- Review mechanism: GitHub Environment `podcast-review` via `.github/workflows/podcast-review-gate.yml`",
+            "- Review mechanism: GitHub Environment `podcast-review` via "
+            "`.github/workflows/podcast-review-gate.yml`",
             "",
-            "Reviewers must inspect `script.txt`, `claim-ledger.json`, `COST-LEDGER.json`, `transcript.txt`, `show-notes.md`, `MANIFEST.json`, and the publishing packet before approving.",
+            "Reviewers must inspect `script.txt`, `claim-ledger.json`, "
+            "`COST-LEDGER.json`, `transcript.txt`, `show-notes.md`, "
+            "`MANIFEST.json`, and the publishing packet before approving.",
             "",
             "## Required checks",
             "",
-            "- [ ] Script accuracy: every claim is represented in the claim ledger and unresolved editorial placeholders are rejected.",
-            "- [ ] Claim verification: at least three major claims are spot-checked against the source article.",
-            "- [ ] Citation/link integrity: show-note URLs resolve and point to the cited resources.",
-            "- [ ] Transcript readiness: transcript metadata is complete and matches the script/audio plan.",
-            "- [ ] TTS readiness: provider constraints and licensing are satisfied before non-dry-run synthesis.",
+            "- [ ] Script accuracy: every claim is represented in the claim ledger and "
+            "unresolved editorial placeholders are rejected.",
+            "- [ ] Claim verification: at least three major claims are spot-checked "
+            "against the source article.",
+            "- [ ] Citation/link integrity: show-note URLs resolve and point to the "
+            "cited resources.",
+            "- [ ] Transcript readiness: transcript metadata is complete and matches the "
+            "script/audio plan.",
+            "- [ ] TTS readiness: provider constraints and licensing are satisfied before "
+            "non-dry-run synthesis.",
             "- [ ] Rights/attribution: source and future TTS provider attribution are documented.",
             "",
             "## Enforcement",
             "",
             "The synthesis runner generates real audio automatically for non-dry-run jobs.",
-            "Publication remains blocked until the review workflow records an approved decision with reviewer identity and timestamp.",
+            "Publication remains blocked until the review workflow records an approved "
+            "decision with reviewer identity and timestamp.",
             "",
         ]
     )
@@ -513,7 +597,8 @@ def _operator_readme(metadata: dict[str, object]) -> str:
             "  2. Review script.txt and transcript.txt for accuracy",
             "  3. Check show-notes.md for podcast platform metadata",
             "  4. Confirm RIGHTS-AND-ATTRIBUTION.txt before distribution",
-            "  5. Keep this packet out of publication until PUBLISHING-GUIDE.txt lists every blocker as resolved",
+            "  5. Keep this packet out of publication until PUBLISHING-GUIDE.txt lists "
+            "every blocker as resolved",
             "",
             "SUPPORT:",
             "  See PUBLISHING-GUIDE.txt for the publication blocker checklist.",
@@ -530,8 +615,10 @@ def _publishing_guide() -> str:
             "  PUBLICATION BLOCKED - PLACEHOLDER PACKET",
             "===========================================",
             "",
-            "This generated packet contains deterministic placeholder audio and is not publishable.",
-            "Do not upload the MP3, submit an RSS item, expose artifact URLs, or publish to any podcast platform.",
+            "This generated packet contains deterministic placeholder audio and is not "
+            "publishable.",
+            "Do not upload the MP3, submit an RSS item, expose artifact URLs, or publish "
+            "to any podcast platform.",
             "",
             "---",
             "",
@@ -561,7 +648,8 @@ def _publishing_guide() -> str:
             "OPERATOR ACTION",
             "---",
             "Use this packet only for internal review and regression evidence.",
-            "If publication is requested, stop and create a reviewed production packet after the blockers above are resolved.",
+            "If publication is requested, stop and create a reviewed production packet "
+            "after the blockers above are resolved.",
             "",
             "---",
             "",

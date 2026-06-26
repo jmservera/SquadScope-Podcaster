@@ -130,15 +130,28 @@ carry a justified `# noqa: E501` instead.
 Files cleared in this slice: `podcaster/config.py`, `podcaster/costs.py`,
 `podcaster/validation.py`, `podcaster/sanitization.py`, `podcaster/script_plan.py`.
 
+### Phase B progress (#521) — E501 follow-up (generation core)
+
+Incremental `E501` pass over the episode-generation core. Cleared
+`podcaster/generation.py` (47) and `podcaster/episode.py` (18), **65**
+`line-too-long` violations in total.
+
+All fixes are pure re-wrapping: over-length spoken-script f-strings were split
+into Python implicit string concatenation with the boundary whitespace preserved
+exactly, and long call/comprehension lines were wrapped Black-style. The parsed
+AST of both modules is byte-for-byte identical to before the pass, so there is
+no string-content or logic change. No `# noqa: E501` was needed.
+
 ### Remaining baseline (current)
 
-After the passes above (imports/dead-code, jobs `E501`, `E402`, and the config
-core `E501` slice), the live `ruff check podcaster tests --statistics` count is:
+After the passes above (imports/dead-code, jobs `E501`, `E402`, the config-core
+`E501` slice, and the generation-core `E501` slice), the live
+`ruff check podcaster tests --statistics` count is:
 
 | Count | Rule  | Description |
 | ----: | ----- | ----------- |
-| 433   | E501  | line-too-long |
-| **433** | **total** | |
+| 368   | E501  | line-too-long |
+| **368** | **total** | |
 
 `E501` (line length) is the last remaining category, being cleared in further
 incremental by-module slices. The full test suite stays green after this pass.

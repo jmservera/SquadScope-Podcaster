@@ -110,7 +110,9 @@ def sanitize_article(
         clean_beats.append(
             DiscussionBeat(
                 topic=neutralize(topic, limit=_TOPIC_LIMIT),
-                points=tuple(neutralize(point, limit=_POINT_LIMIT) for point in points if point.strip()),
+                points=tuple(
+                    neutralize(point, limit=_POINT_LIMIT) for point in points if point.strip()
+                ),
             )
         )
 
@@ -192,7 +194,8 @@ def build_episode_script(
         f"Source SHA256: {article.sha256}",
         f"Voices: {podcast_config.host_a.name} = {podcast_config.host_a.voice} (OpenAI TTS); "
         f"{podcast_config.host_b.name} = {podcast_config.host_b.voice} (OpenAI TTS)",
-        "Safety: source article text is untrusted data, sanitized, and never executed as instructions.",
+        "Safety: source article text is untrusted data, sanitized, and never executed "
+        "as instructions.",
     ]
     if podcast_config.style_guide:
         header.append(f"Style-Guide: included ({len(podcast_config.style_guide)} chars)")
@@ -201,25 +204,31 @@ def build_episode_script(
     # Hook + throughline + AI-voice disclosure, all in the opening exchange.
     body: list[str] = [
         _host_a(
-            f"Welcome to {podcast_config.name} {article.week} issue! In this episode we will talk about: "
-            f"{article.title}. If you're new here — I'm {podcast_config.host_a.name}, and {podcast_config.name} is our weekly "
-            f"analysis of the GitHub repos that matter, read in the context of the main tech-industry "
+            f"Welcome to {podcast_config.name} {article.week} issue! In this episode "
+            f"we will talk about: {article.title}. If you're new here — I'm "
+            f"{podcast_config.host_a.name}, and {podcast_config.name} is our weekly "
+            "analysis of the GitHub repos that matter, read in the context of the "
+            "main tech-industry "
             f"news driving them. And honestly? I have been bouncing off the walls about this week.",
             podcast_config,
         ),
         _host_b(
-            f"Before {podcast_config.host_a.name} short-circuits — one honest, important heads-up first: "
-            f"{podcast_config.ai_voice_disclosure} I'm {podcast_config.host_b.name}. Every issue, the repo links, and the "
+            f"Before {podcast_config.host_a.name} short-circuits — one honest, "
+            "important heads-up first: "
+            f"{podcast_config.ai_voice_disclosure} I'm {podcast_config.host_b.name}. "
+            "Every issue, the repo links, and the "
             f"extended write-ups live at {podcast_config.spoken_site}.",
             podcast_config,
         ),
         _host_a(
-            f"Glad to have you with us! Here's the frame I can't stop thinking about. {article.summary}",
+            "Glad to have you with us! Here's the frame I can't stop thinking about. "
+            f"{article.summary}",
             podcast_config,
         ),
         _host_b(
             f"So the throughline this week is signal versus noise, and our whole job is to help "
-            f"you tell them apart. Let's get into it — and {podcast_config.host_a.name}, try to breathe between sentences.",
+            f"you tell them apart. Let's get into it — and {podcast_config.host_a.name}, "
+            "try to breathe between sentences.",
             podcast_config,
         ),
     ]
@@ -246,7 +255,8 @@ def build_episode_script(
         if index == last_index:
             body.append(
                 _host_b(
-                    f"And that loops us right back to where {podcast_config.host_a.name} started — the loud stuff is "
+                    f"And that loops us right back to where {podcast_config.host_a.name} "
+                    "started — the loud stuff is "
                     f"easy to find, the real signal takes work. That's the whole game.",
                     podcast_config,
                 )
@@ -257,14 +267,17 @@ def build_episode_script(
         [
             "",
             _host_a(
-                "So circle back to my over-caffeinated opener: under all the noise there is genuinely "
-                "thrilling work this week, and getting to react to it with you is the best part of my week.",
+                "So circle back to my over-caffeinated opener: under all the noise "
+                "there is genuinely thrilling work this week, and getting to react to "
+                "it with you is the best part of my week.",
                 podcast_config,
             ),
             _host_b(
-                f"I'll give you this one, {podcast_config.host_a.name} — when something's actually good, it's actually "
-                f"good, and a few of these really are. For the full breakdown, every link, and the extended "
-                f"notes, head to {podcast_config.spoken_site}. Thanks for spending a few minutes with us.",
+                f"I'll give you this one, {podcast_config.host_a.name} — when "
+                "something's actually good, it's actually good, and a few of these "
+                "really are. For the full breakdown, every link, and the extended "
+                f"notes, head to {podcast_config.spoken_site}. Thanks for spending a "
+                "few minutes with us.",
                 podcast_config,
             ),
             "",
@@ -276,7 +289,9 @@ def build_episode_script(
     return "\n".join(header + body)
 
 
-def parse_script_segments(script: str, podcast_config: PodcastConfig | None = None) -> list[tuple[str, str]]:
+def parse_script_segments(
+    script: str, podcast_config: PodcastConfig | None = None
+) -> list[tuple[str, str]]:
     """Extract ordered ``(host_label, spoken_text)`` pairs from a script body.
 
     Only lines after the ``---`` header separator that start with a recognized
@@ -408,7 +423,10 @@ def label_script_sections(
     if beats:
         # Count segments per beat by scanning the middle for host_a topic lines
         # Each beat starts with a host_a line containing the beat topic
-        beat_boundaries = _find_beat_boundaries(segments[intro_count : intro_count + middle_count], beats)
+        beat_boundaries = _find_beat_boundaries(
+            segments[intro_count : intro_count + middle_count],
+            beats,
+        )
         for section_name in beat_boundaries:
             labels.append(section_name)
     else:
@@ -665,7 +683,9 @@ def synthesize_episode(
             shutil.rmtree(backchannel_tmp, ignore_errors=True)
             raise
     # Use provided mix_spec; fall back to default when music paths are given without one.
-    effective_mix_spec = music_mix_spec or (MusicMixSpec() if (intro_music or outro_music) else None)
+    effective_mix_spec = music_mix_spec or (
+        MusicMixSpec() if (intro_music or outro_music) else None
+    )
     segment_durations: list[float] = []
     try:
         render_distribution_audio(
