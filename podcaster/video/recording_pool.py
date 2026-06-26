@@ -225,7 +225,10 @@ def record_segments_parallel(
     if errors:
         # Surface the earliest-failing segment so behaviour is deterministic and
         # matches the sequential path (which would have raised on it first).
+        # Re-raise with the original traceback captured inside the worker thread
+        # so the failure points at `record_one`, not this re-raise site.
         first_index = min(errors)
-        raise errors[first_index]
+        err = errors[first_index]
+        raise err.with_traceback(err.__traceback__)
 
     return results

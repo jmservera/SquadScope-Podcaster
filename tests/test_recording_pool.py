@@ -226,25 +226,32 @@ class TestRecordSegmentsParallel:
         )
         assert max_in_flight <= concurrency
 
-    def test_parallel_is_faster_than_sequential(self) -> None:
+    def test_parallel_runs_workers_concurrently(self) -> None:
         factory, _ = _make_factory()
         launch, _ = _make_launcher()
-        per_item = 0.05
+        concurrency = 4
         n = 8
+        # A reusable barrier of `concurrency` parties only releases once that
+        # many workers are simultaneously inside record_one. This is a
+        # deterministic proof of real parallelism that does not depend on
+        # wall-clock timing: if fewer than `concurrency` workers ran at once the
+        # barrier would never fill and would raise BrokenBarrierError on timeout.
+        barrier = threading.Barrier(concurrency, timeout=5)
+        thread_ids: set[int] = set()
+        lock = threading.Lock()
 
         def record_one(browser, index, segment):
-            time.sleep(per_item)
+            with lock:
+                thread_ids.add(threading.get_ident())
+            barrier.wait()
             return index
 
-        start = time.monotonic()
         record_segments_parallel(
-            _pending(n), record_one, launch, RecordingPoolConfig(4),
+            _pending(n), record_one, launch, RecordingPoolConfig(concurrency),
             playwright_factory=factory,
         )
-        elapsed = time.monotonic() - start
-        sequential = per_item * n
-        # 4 workers over 8 items ≈ 2 waves; comfortably under sequential time.
-        assert elapsed < sequential * 0.75
+        # At least `concurrency` distinct worker threads were active together.
+        assert len(thread_ids) >= concurrency
 
     def test_error_propagates_lowest_index(self) -> None:
         factory, _ = _make_factory()

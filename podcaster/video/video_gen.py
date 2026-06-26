@@ -49,6 +49,7 @@ except ModuleNotFoundError:  # pragma: no cover
     _PLAYWRIGHT_AVAILABLE = False
 
 from podcaster.video.recording_pool import (
+    MAX_RECORDING_CONCURRENCY,
     RecordingPoolConfig,
     load_recording_pool_config,
     record_segments_parallel,
@@ -2419,7 +2420,9 @@ def record_episode(
     pool_config = (
         load_recording_pool_config()
         if concurrency is None
-        else RecordingPoolConfig(concurrency=max(1, concurrency))
+        else RecordingPoolConfig(
+            concurrency=max(1, min(concurrency, MAX_RECORDING_CONCURRENCY))
+        )
     )
     pending = [
         (index, segment)
