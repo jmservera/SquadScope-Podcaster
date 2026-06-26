@@ -312,6 +312,65 @@ jobs:
             --output tsv 2>/dev/null || echo "")
           echo "ui_app_fqdn=$ui_fqdn" >> "$GITHUB_OUTPUT"
 
+      - name: Smoke check deployed UI
+        if: ${{ steps.get_fqdn.outputs.ui_app_fqdn != '' }}
+        env:
+          UI_FQDN: ${{ steps.get_fqdn.outputs.ui_app_fqdn }}
+        run: |
+          set -euo pipefail
+          base="https://${UI_FQDN}"
+          echo "Smoke-checking deployed UI at ${base}"
+          # ACA scales to zero — the first request after idle triggers a cold
+          # start, so retry with increasing backoff before declaring the UI
+          # unreachable.
+          attempts=10
+          delay=3
+          max_delay=30
+          err_file="$(mktemp)"
+          trap 'rm -f "$err_file"' EXIT
+          check() {
+            url="$1"
+            expect_substr="$2"
+            wait=$delay
+            last_err=""
+            for i in $(seq 1 "$attempts"); do
+              # Single request per attempt: capture body and status code together
+              # so they describe the same response (no skew from two requests).
+              # Keep curl's stderr (-S surfaces DNS/TLS/timeout reasons) in a file
+              # instead of discarding it, so failures are diagnosable.
+              resp="$(curl -sS --max-time 30 -w '\n%{http_code}' "$url" 2>"$err_file" || true)"
+              last_err="$(cat "$err_file")"
+              code="${resp##*$'\n'}"
+              body="${resp%$'\n'*}"
+              # Fixed-string match (-F): expect_substr is literal, not a regex.
+              if [ "$code" = "200" ] && printf '%s' "$body" | grep -qF "$expect_substr"; then
+                echo "OK  ${url} -> 200 (matched '${expect_substr}')"
+                return 0
+              fi
+              # No retry left after the final attempt: fail fast instead of
+              # sleeping an extra backoff interval before giving up.
+              if [ "$i" -eq "$attempts" ]; then
+                break
+              fi
+              echo "  attempt ${i}/${attempts}: ${url} -> ${code:-000}${last_err:+ (${last_err})} (waiting ${wait}s)"
+              sleep "$wait"
+              wait=$(( wait * 2 ))
+              [ "$wait" -gt "$max_delay" ] && wait=$max_delay
+            done
+            echo "FAIL ${url}: did not return 200 with '${expect_substr}' after ${attempts} attempts${last_err:+ (last error: ${last_err})}" >&2
+            return 1
+          }
+          # SPA shell must be served by nginx.
+          check "${base}/" "<div id=\"root\""
+          # Runtime config must be injected by docker-entrypoint.sh.
+          check "${base}/env-config.js" "window.__ENV"
+          {
+            echo "### UI smoke check passed"
+            echo "- URL: ${base}/"
+            echo "- SPA shell served (200, #root present)"
+            echo "- Runtime env-config.js served (window.__ENV present)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Optionally sync values to SquadScope
         if: ${{ inputs.sync_squadscope == 'true' }}
         env:
