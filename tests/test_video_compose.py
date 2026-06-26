@@ -14,25 +14,24 @@ import pytest
 
 from podcaster.video import video_compose as vc
 from podcaster.video.sync_plan import RepoReference, VideoSegment
-from podcaster.video.video_gen import RecordedSegment
 from podcaster.video.video_compose import (
     BOUNDARY_CONTENT_TO_CONTENT,
     BOUNDARY_CONTENT_TO_OUTRO,
     BOUNDARY_INTRO_TO_CONTENT,
+    DEFAULT_DOG_LOGO_URL,
     ENCODE_CRF,
     ENCODE_PIX_FMT,
     ENCODE_PRESET,
     INTRO_BLOB_PATH,
-    OUTRO_BLOB_PATH,
     LOWER_THIRD_DURATION,
     OUTPUT_FPS,
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
+    OUTRO_BLOB_PATH,
     TRANSITION_FADE,
     TRANSITION_FADE_BLACK,
     TRANSITION_SLIDE_LEFT,
     TRANSITION_WIPE_LEFT,
-    DEFAULT_DOG_LOGO_URL,
     DogLogoConfig,
     LowerThird,
     _build_audio_overlay_cmd,
@@ -44,8 +43,8 @@ from podcaster.video.video_compose import (
     _build_h264_metadata_cmd,
     _build_intro_dog_cmd,
     _build_normalize_cmd,
-    _build_xfade_filter,
     _build_outro_xfade_cmd,
+    _build_xfade_filter,
     _compute_lower_thirds,
     _fetch_blob_cached,
     _fetch_intro_outro,
@@ -56,6 +55,7 @@ from podcaster.video.video_compose import (
     compose_video,
     select_transitions,
 )
+from podcaster.video.video_gen import RecordedSegment
 
 
 @pytest.fixture(autouse=True)
@@ -820,13 +820,13 @@ class TestComposeVideoTransitions:
 # --- Tests for sync-map utilities (#296) ---
 
 
+from podcaster.video.sync_plan import EpisodePlan
 from podcaster.video.video_compose import (
     SyncedSegment,
+    apply_sync,
     build_sync_map,
     trim_recording_cmd,
-    apply_sync,
 )
-from podcaster.video.sync_plan import EpisodePlan
 
 
 def _make_plan(*items: tuple[str, str, float, float]) -> EpisodePlan:
@@ -846,11 +846,6 @@ def _make_plan(*items: tuple[str, str, float, float]) -> EpisodePlan:
 class TestSyncedSegment:
     def _make(self, rec_dur: float, target_dur: float) -> SyncedSegment:
         rec = _make_recorded_segment(duration=rec_dur)
-        seg = VideoSegment(
-            repo=rec.segment.repo,
-            start_seconds=0.0,
-            duration_seconds=target_dur,
-        )
         return SyncedSegment(
             recorded=rec,
             target_start_seconds=10.0,

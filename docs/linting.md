@@ -65,6 +65,30 @@ Captured with `ruff check podcaster tests --statistics`:
 > Note: the single `F821` (undefined-name) finding may indicate a real defect —
 > flagged for the Phase B fix work (#521), not addressed here.
 
+### Phase B progress (#521) — 2026-06-26
+
+First incremental pass: applied `ruff check --fix` (safe fixes only) and
+hand-fixed the real-defect categories. Cleared `I001`, `F401`, `F541`, `F811`,
+`F841`, and `F821` entirely:
+
+- **F821** — `podcaster/video/video_gen.py` referenced an unimported
+  `Playwright` type in a `_launch` annotation; added it to the
+  `playwright.sync_api` import.
+- **F841** — removed dead assignments (e.g. unused `hf_s` in `zoom.py` and
+  leftover constructions/locals in tests), keeping any side-effecting calls.
+
+Remaining baseline (deferred to follow-up Phase B passes, by directory):
+
+| Count | Rule  | Description |
+| ----: | ----- | ----------- |
+| 533   | E501  | line-too-long |
+| 28    | E402  | module-import-not-at-top-of-file |
+| **561** | **total** | |
+
+`E501` (line length) and `E402` (import placement) are larger, higher-touch
+changes and are intentionally left for subsequent incremental PRs so each stays
+small and reviewable. The full test suite (2049 passed) is green after this pass.
+
 ## Checkov (IaC / container security) — #519
 
 Checkov scans infrastructure-as-code and container definitions. It **already**

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from podcaster.config import BACKCHANNEL_LIBRARY, BackchannelConfig
 from podcaster import interaction as I
+from podcaster.config import BACKCHANNEL_LIBRARY, BackchannelConfig
 
 
 def test_assign_turn_ids_uses_speaker_letter_and_index():

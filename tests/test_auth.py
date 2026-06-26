@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import time
-
 import jwt
 import pytest
 from fastapi.testclient import TestClient
 
-from podcaster.auth import _TOKEN_EXPIRY_SECONDS, create_token, verify_token
+from podcaster.auth import create_token, verify_token
 from podcaster.monitoring import app, set_storage
-
 
 # ---------------------------------------------------------------------------
 # Minimal storage so the app can start

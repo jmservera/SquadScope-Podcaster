@@ -407,6 +407,7 @@ class TestSystemPromptWithDirections:
     def test_generate_script_passes_directions(self):
         """generate_script should pass script_directions through to system prompt."""
         import json
+
         from podcaster.config import EpisodeStyle, ScriptDirections
 
         directions = ScriptDirections(

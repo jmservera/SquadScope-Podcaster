@@ -29,11 +29,11 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 import re
-import hmac
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -62,11 +62,10 @@ from podcaster.podcast_config import PodcastConfigStore
 from podcaster.progress import (
     filter_events_since,
     is_terminal,
-    progress_path,
     read_progress,
 )
-from podcaster.stage_progress import summarize as summarize_stage_progress
 from podcaster.queue import enqueue_video_job
+from podcaster.stage_progress import summarize as summarize_stage_progress
 from podcaster.storage import StorageBackend, create_storage_backend
 from podcaster.validation import validate_payload_details
 

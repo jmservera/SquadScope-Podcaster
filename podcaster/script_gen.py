@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace as _dataclass_replace
-from typing import Any, Callable, Mapping
+from dataclasses import dataclass
+from dataclasses import replace as _dataclass_replace
+from typing import Any, Mapping
 from urllib.request import Request
 
 from podcaster.config import HistoricalContext, HostConfig, PodcastConfig, ScriptDirections
@@ -31,7 +32,7 @@ from podcaster.sanitization import cap_length, neutralize
 from podcaster.script_plan import build_visual_marker_guidance
 from podcaster.sections import parse_script_sections, sections_to_metadata, validate_sections
 from podcaster.storage import ManagedIdentityTokenCredential
-from podcaster.tts import OPENAI_SCOPE, TtsConfig, TokenProvider, Transport
+from podcaster.tts import OPENAI_SCOPE, TokenProvider, Transport, TtsConfig
 
 logger = logging.getLogger("podcaster.script_gen")
 

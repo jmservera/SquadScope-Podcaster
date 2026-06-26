@@ -10,16 +10,15 @@ from urllib.error import HTTPError
 import pytest
 
 from podcaster.youtube_credentials import (
-    _UrllibTransport,
     DEFAULT_SECRET_NAME,
     KeyVaultSecretLoader,
     YouTubeCredentialError,
     YouTubeTokenRevokedError,
+    _UrllibTransport,
     is_invalid_grant,
     load_youtube_refresh_token,
     refresh_access_token,
 )
-
 
 # --- fakes --------------------------------------------------------------------
 

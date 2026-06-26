@@ -7,7 +7,6 @@ import json
 import pytest
 
 from podcaster.video.youtube_playlist import (
-    PlaylistAddResult,
     add_to_show_playlist,
     add_video_to_playlist,
     playlist_contains_video,

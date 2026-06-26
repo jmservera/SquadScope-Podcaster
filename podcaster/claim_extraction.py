@@ -20,7 +20,6 @@ from urllib.request import Request
 
 from podcaster.sanitization import neutralize
 from podcaster.script_gen import (
-    DEFAULT_CHAT_API_VERSION,
     MAX_ARTICLE_CHARS,
     ScriptGenConfig,
     _default_transport,

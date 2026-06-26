@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
-from decimal import InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
-
 
 MAX_EPISODES_PER_MONTH = 10
 MAX_MONTHLY_SPEND_USD = Decimal("5.00")

@@ -19,7 +19,6 @@ from podcaster.scheduler import (
     CyclicDependencyError,
     DuplicateTaskError,
     InMemoryCheckpoint,
-    ScheduleResult,
     StorageCheckpoint,
     TaskResult,
     TaskSpec,
@@ -29,7 +28,6 @@ from podcaster.scheduler import (
     run_dag,
     validate_graph,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Helpers

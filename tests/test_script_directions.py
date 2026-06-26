@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from podcaster.config import (
-    EpisodeStyle,
     HistoricalContext,
     MusicMixConfig,
     ScriptDirections,

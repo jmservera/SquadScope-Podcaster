@@ -10,7 +10,6 @@ from podcaster.jobs import run_generation_job
 from podcaster.storage import LocalStorageBackend
 from scripts.record_review_approval import apply_review_decision
 
-
 ROOT = Path(__file__).resolve().parents[1]
 REVIEW_WORKFLOW = ROOT / ".github/workflows/podcast-review-gate.yml"
 SECURITY_DOC = ROOT / "docs/SECURITY.md"

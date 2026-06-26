@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-
 TARGET_SAMPLE_RATE_HZ = 44_100
 TARGET_CHANNELS = 1
 TARGET_MP3_CONTENT_TYPE = "audio/mpeg"
@@ -441,7 +440,7 @@ def _mix_music_with_speech(
     mix_spec: MusicMixSpec,
 ) -> None:
     inputs = ["-i", str(speech_path)]
-    filters = [f"[0:a]aresample=44100,aformat=channel_layouts=mono[speechsrc]"]
+    filters = ["[0:a]aresample=44100,aformat=channel_layouts=mono[speechsrc]"]
     speech_delay_seconds = mix_spec.intro_full_volume_seconds if intro_music else 0.0
     if speech_delay_seconds > 0:
         filters.append(

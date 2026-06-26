@@ -10,10 +10,9 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from podcaster.monitoring import app, set_storage, JobSummary, JobDetailResponse
+from podcaster.monitoring import app, set_storage
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
-
 
 # ---------------------------------------------------------------------------
 # In-memory storage backend for tests

@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "extract-spotify-cookies.py"
 SPEC = importlib.util.spec_from_file_location("extract_spotify_cookies", SCRIPT_PATH)
 assert SPEC and SPEC.loader

@@ -10,7 +10,6 @@ import pytest
 
 from podcaster.video import youtube_metadata as ym
 
-
 # --- metadata ---------------------------------------------------------------
 
 

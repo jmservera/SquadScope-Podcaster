@@ -39,17 +39,9 @@ from podcaster.audio import (
 )
 from podcaster.config import BackchannelConfig, PodcastConfig
 from podcaster.generation import (
-    AI_VOICE_DISCLOSURE,
-    HOST_A_NAME,
-    HOST_A_VOICE,
-    HOST_B_NAME,
-    HOST_B_VOICE,
-    PODCAST_NAME,
-    PODCAST_SPOKEN_SITE,
-    PODCAST_URL,
     checksum,
 )
-from podcaster.hooks import HostHooks, _GENERIC_HOOKS
+from podcaster.hooks import _GENERIC_HOOKS, HostHooks
 from podcaster.interaction import assign_turn_ids, build_interaction_map, resolve_placements
 from podcaster.sanitization import flag_injection, neutralize
 from podcaster.sections import match_section_header
@@ -265,8 +257,8 @@ def build_episode_script(
         [
             "",
             _host_a(
-                f"So circle back to my over-caffeinated opener: under all the noise there is genuinely "
-                f"thrilling work this week, and getting to react to it with you is the best part of my week.",
+                "So circle back to my over-caffeinated opener: under all the noise there is genuinely "
+                "thrilling work this week, and getting to react to it with you is the best part of my week.",
                 podcast_config,
             ),
             _host_b(

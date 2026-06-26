@@ -29,6 +29,7 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
+
 from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig
 from podcaster.spotify_shows import resolve_show_target
 

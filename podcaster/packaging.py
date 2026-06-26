@@ -14,7 +14,6 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from io import BytesIO
-from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 ZIP_TIMESTAMP = (2026, 6, 7, 0, 0, 0)

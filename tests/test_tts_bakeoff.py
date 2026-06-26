@@ -12,10 +12,10 @@ if str(REPO_ROOT) not in sys.path:
 
 import scripts.tts_bakeoff_synthesize as cli  # noqa: E402
 from podcaster.tts_bakeoff import (  # noqa: E402
-    BakeoffCandidate,
     PRODUCTION_GUEST_VOICE,
     PRODUCTION_NARRATOR_VOICE,
     PRODUCTION_PROVIDER,
+    BakeoffCandidate,
     SampleResult,
     build_manifest,
     build_plan,
@@ -112,7 +112,7 @@ def test_blob_paths_are_deterministic_and_safe():
 def test_blob_paths_unique_across_languages_for_shared_voice_ids():
     # ElevenLabs es/fr placeholders share a voice id; locale in the path must
     # keep their blob paths distinct so samples/manifests never collide.
-    from podcaster.tts_bakeoff import native_voice_candidates, blob_path_for
+    from podcaster.tts_bakeoff import blob_path_for, native_voice_candidates
 
     es = [c for c in native_voice_candidates("es") if c.provider == "elevenlabs"]
     fr = [c for c in native_voice_candidates("fr") if c.provider == "elevenlabs"]

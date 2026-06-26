@@ -11,9 +11,6 @@ import pytest
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 from podcaster.video.video_gen import RecordedSegment
 from podcaster.video.zoom import (
-    DEFAULT_FPS,
-    DEFAULT_VIDEO_H,
-    DEFAULT_VIDEO_W,
     DEFAULT_ZOOM_LEVEL,
     FocusRegion,
     ZoomSpec,
@@ -22,7 +19,6 @@ from podcaster.video.zoom import (
     build_zoompan_cmd,
     find_focus_regions_from_script,
 )
-
 
 # --- Helpers ---
 

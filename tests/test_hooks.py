@@ -5,12 +5,10 @@ from __future__ import annotations
 import json
 from urllib.request import Request
 
-import pytest
-
 from podcaster.config import PodcastConfig
 from podcaster.hooks import (
-    HostHooks,
     _GENERIC_HOOKS,
+    HostHooks,
     _fallback_hooks,
     generate_hooks,
 )
