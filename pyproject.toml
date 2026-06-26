@@ -21,8 +21,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "httpx2>=0.1"]
+dev = ["pytest>=8,<9", "httpx2>=0.1", "ruff==0.15.7"]
 video = ["playwright>=1.53,<2", "faster-whisper>=1.0,<2"]
+
+[tool.ruff]
+# Phase A of the DevSecOps Guardrails epic (#518): conservative, warning-only
+# baseline. Fixing violations is deferred to Phase B and blocking gates to
+# Phase C. See jmservera/SquadScope-Coordinator#33.
+line-length = 100
+target-version = "py311"
+extend-exclude = ["ui", ".worktrees"]
+
+[tool.ruff.lint]
+# Conservative starter subset: pycodestyle errors (E), Pyflakes (F),
+# and import sorting (I). Broader rule sets come in later phases.
+select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
