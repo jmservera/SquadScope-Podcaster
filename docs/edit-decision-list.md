@@ -29,9 +29,12 @@ The EDL is Layer 3's **editorial decisioning** stage:
   duration using the manifest's **safe trim ranges** (largest-first; falls back
   to a tail trim if insufficient), or **loops** a loop section when a clip is
   unexpectedly short — never stretching.
-- **Graceful degradation.** A repo/article block whose clip is missing degrades
-  to an **intermission fill** (`is_fallback=True`) rather than failing (ties into
-  #489).
+- **Graceful degradation (fallback chain, #489).** A repo/article block whose
+  clip is missing degrades through **`screenshot → card → intermission`** rather
+  than failing: a poster-frame still (`screenshots` map) is held for the block, or
+  a named card (`repo_labels`) is shown, or — as a last resort — a plain
+  intermission fill. The chosen kind is recorded on the segment and
+  `is_fallback=True`. Order is configurable via `fallback_chain`.
 - **Crossfades & title cards.** A crossfade (`crossfade_in_ms`) is declared into
   every segment after the first; a `TitleCardOverlay` is declared on the first
   segment of each section (titles via the optional `section_titles` map).
@@ -48,16 +51,18 @@ The EDL is Layer 3's **editorial decisioning** stage:
 
 | Field | Description |
 |-------|-------------|
-| `kind` | `clip` or `intermission` |
+| `kind` | `clip`, `screenshot`, `card` or `intermission` |
 | `timeline_start_ms` / `timeline_end_ms` | Position on the final video timeline |
 | `visual_mode` | Layer 1 visual mode (`repo`/`article`/`intermission`) |
-| `clip_id` / `repo_url` | Source clip (null for an intermission fill) |
+| `clip_id` / `repo_url` | Source clip (null for a screenshot/card/intermission fill) |
 | `section_id` | Enclosing section (grouping / title cards) |
 | `source_ranges` | Clip sub-ranges concatenated to fill the segment |
 | `looped` | Clip extended by repeating a loop section |
 | `crossfade_in_ms` | Crossfade into this segment (0 for the first) |
 | `title_card` | Optional title-card overlay at the segment start |
 | `is_fallback` | Degraded to a fill because the clip was missing |
+| `fallback_image_id` | Screenshot poster-frame image id (`screenshot` kind) |
+| `fallback_text` | Card text, e.g. the repo name (`card` kind) |
 
 ## Serialized schema
 

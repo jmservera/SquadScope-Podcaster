@@ -69,10 +69,35 @@ class EdlError(ValueError):
 
 
 class EdlSegmentKind(str, Enum):
-    """What a timeline segment renders."""
+    """What a timeline segment renders.
+
+    ``CLIP`` is live recorded material. The remaining kinds are the *fallback
+    chain* (#489) used when a repo/article clip is missing or fails — tried in
+    ``screenshot → card → intermission`` order so a failed recording never blocks
+    the pipeline and never leaves a gap:
+
+    * ``SCREENSHOT`` — a still poster frame of the page, held for the segment;
+    * ``CARD`` — a generated text card (e.g. the repo name);
+    * ``INTERMISSION`` — a plain breather fill (also a *declared* breather).
+    """
 
     CLIP = "clip"  # a trimmed/looped repo or article clip
+    SCREENSHOT = "screenshot"  # a static poster-frame image held for the segment
+    CARD = "card"  # a generated text card (repo/article name)
     INTERMISSION = "intermission"  # a generated intermission/breather fill
+
+
+#: Fallback chain tried, in order, when a repo/article clip is unavailable.
+DEFAULT_FALLBACK_CHAIN: tuple[EdlSegmentKind, ...] = (
+    EdlSegmentKind.SCREENSHOT,
+    EdlSegmentKind.CARD,
+    EdlSegmentKind.INTERMISSION,
+)
+
+#: Kinds that carry no source material (rendered as fills/stills, not trims).
+_FILL_KINDS = frozenset(
+    {EdlSegmentKind.SCREENSHOT, EdlSegmentKind.CARD, EdlSegmentKind.INTERMISSION}
+)
 
 
 @dataclass(frozen=True)
@@ -129,6 +154,11 @@ class EdlSegment:
         title_card: Optional title-card overlay at the start of the segment.
         is_fallback: True when this segment degraded to a fill because its clip
             was missing.
+        fallback_image_id: For a ``screenshot`` fill, the id of the poster-frame
+            image asset to hold for the segment (resolved to a path at render
+            time). ``None`` for other kinds.
+        fallback_text: For a ``card`` fill, the text to render (e.g. the repo
+            name). ``None`` for other kinds.
     """
 
     kind: EdlSegmentKind
@@ -143,6 +173,8 @@ class EdlSegment:
     crossfade_in_ms: int = 0
     title_card: TitleCardOverlay | None = None
     is_fallback: bool = False
+    fallback_image_id: str | None = None
+    fallback_text: str | None = None
 
     @property
     def duration_ms(self) -> int:
@@ -162,6 +194,8 @@ class EdlSegment:
             "crossfade_in_ms": self.crossfade_in_ms,
             "title_card": self.title_card.to_dict() if self.title_card else None,
             "is_fallback": self.is_fallback,
+            "fallback_image_id": self.fallback_image_id,
+            "fallback_text": self.fallback_text,
         }
 
     @classmethod
@@ -182,6 +216,14 @@ class EdlSegment:
             crossfade_in_ms=int(data.get("crossfade_in_ms", 0)),
             title_card=TitleCardOverlay.from_dict(card) if card else None,
             is_fallback=bool(data.get("is_fallback", False)),
+            fallback_image_id=(
+                str(data["fallback_image_id"])
+                if data.get("fallback_image_id")
+                else None
+            ),
+            fallback_text=(
+                str(data["fallback_text"]) if data.get("fallback_text") else None
+            ),
         )
 
 
@@ -361,6 +403,88 @@ def plan_source_ranges(manifest: ClipManifest, target_ms: int) -> tuple[tuple[So
     return tuple(ranges), True
 
 
+# --- Internal: fallback chain (screenshot → card → intermission) ---
+
+
+@dataclass(frozen=True)
+class FallbackResolution:
+    """The chosen fallback for a missing clip and the data the segment needs."""
+
+    kind: EdlSegmentKind
+    image_id: str | None = None
+    text: str | None = None
+
+
+def _repo_short_name(repo_url: str) -> str:
+    """A friendly ``owner/name`` (or trailing path) label for a repo URL."""
+    trimmed = repo_url.strip().rstrip("/")
+    if not trimmed:
+        return repo_url
+    parts = [p for p in trimmed.split("/") if p]
+    if len(parts) >= 2:
+        return "/".join(parts[-2:])
+    return parts[-1] if parts else repo_url
+
+
+def default_card_text(
+    visual_mode: VisualMode,
+    repo_url: str | None,
+    section_id: str | None,
+    repo_labels: Mapping[str, str] | None = None,
+    section_titles: Mapping[str, str] | None = None,
+) -> str | None:
+    """Text to print on a fallback *card* (``None`` when none can be derived)."""
+    repo_labels = repo_labels or {}
+    section_titles = section_titles or {}
+    if visual_mode is VisualMode.REPO and repo_url:
+        return repo_labels.get(repo_url) or _repo_short_name(repo_url)
+    if visual_mode is VisualMode.ARTICLE:
+        if section_id and section_id in section_titles:
+            return section_titles[section_id]
+        return "This week's highlights"
+    return None
+
+
+def _card_text(
+    block: "_Block",
+    repo_labels: Mapping[str, str],
+    section_titles: Mapping[str, str],
+) -> str | None:
+    """Text to print on a fallback *card* for *block* (``None`` if unavailable)."""
+    return default_card_text(
+        block.visual_mode,
+        block.repo_url,
+        block.section_id,
+        repo_labels,
+        section_titles,
+    )
+
+
+def resolve_fallback(
+    *,
+    repo_url: str | None,
+    screenshot_id: str | None,
+    card_text: str | None,
+    chain: Sequence[EdlSegmentKind] = DEFAULT_FALLBACK_CHAIN,
+) -> FallbackResolution:
+    """Pick the first viable step of the fallback *chain* for a missing clip.
+
+    Tries each kind in *chain* in order and returns the first whose required
+    asset is available: a ``screenshot`` needs *screenshot_id*, a ``card`` needs
+    *card_text*, and ``intermission`` is always available (the last resort). When
+    the chain omits or exhausts the available steps, an intermission fill is
+    returned so the timeline is never left with a gap.
+    """
+    for kind in chain:
+        if kind is EdlSegmentKind.SCREENSHOT and screenshot_id:
+            return FallbackResolution(kind, image_id=screenshot_id)
+        if kind is EdlSegmentKind.CARD and card_text:
+            return FallbackResolution(kind, text=card_text)
+        if kind is EdlSegmentKind.INTERMISSION:
+            return FallbackResolution(EdlSegmentKind.INTERMISSION)
+    return FallbackResolution(EdlSegmentKind.INTERMISSION)
+
+
 # --- Public API ---
 
 
@@ -370,6 +494,9 @@ def plan_edl(
     *,
     article_clip: ClipManifest | None = None,
     section_titles: Mapping[str, str] | None = None,
+    screenshots: Mapping[str, str] | None = None,
+    repo_labels: Mapping[str, str] | None = None,
+    fallback_chain: Sequence[EdlSegmentKind] | None = None,
     min_visual_ms: int = DEFAULT_MIN_VISUAL_MS,
     crossfade_ms: int = DEFAULT_CROSSFADE_MS,
     title_card_ms: int = DEFAULT_TITLE_CARD_MS,
@@ -380,15 +507,25 @@ def plan_edl(
         metadata: Layer 2 :class:`~podcaster.audio_metadata.RealizedAudioMetadata`.
         clips: Repo clip manifests keyed by ``repo_url``.
         article_clip: Manifest for the article / weekly-rundown clip (used for
-            ``article`` visual mode). When absent, article blocks become fills.
+            ``article`` visual mode). When absent, article blocks degrade via the
+            fallback chain.
         section_titles: Optional ``section_id`` → title text for title cards.
+        screenshots: Optional ``repo_url`` → poster-frame image id. Used as the
+            first step of the fallback chain (#489) when a repo/article clip is
+            missing — the still is held for the whole block instead of cutting to
+            an intermission.
+        repo_labels: Optional ``repo_url`` → friendly name for fallback *cards*.
+        fallback_chain: Order of fallback kinds to try for a missing clip;
+            defaults to :data:`DEFAULT_FALLBACK_CHAIN`
+            (``screenshot → card → intermission``).
         min_visual_ms: Minimum on-screen duration for a non-intermission segment.
         crossfade_ms: Crossfade declared into each segment after the first.
         title_card_ms: Title-card overlay duration at the start of each section.
 
     Returns:
         A gap-free, deterministic :class:`EditDecisionList` covering the full
-        audio duration.
+        audio duration. A repo/article block whose clip is missing degrades to a
+        screenshot, card or intermission fill rather than failing.
 
     Raises:
         EdlError: when ``min_visual_ms``/``crossfade_ms`` are negative.
@@ -408,6 +545,9 @@ def plan_edl(
     _fill_gaps(blocks, total)
 
     section_titles = section_titles or {}
+    screenshots = screenshots or {}
+    repo_labels = repo_labels or {}
+    chain = tuple(fallback_chain) if fallback_chain is not None else DEFAULT_FALLBACK_CHAIN
     segments: list[EdlSegment] = []
     prev_section: str | None = None
     first_block = True
@@ -425,6 +565,10 @@ def plan_edl(
             block,
             clips=clips,
             article_clip=article_clip,
+            screenshots=screenshots,
+            repo_labels=repo_labels,
+            section_titles=section_titles,
+            chain=chain,
             target=target,
             crossfade_in=crossfade_in,
             title_card=title_card,
@@ -446,6 +590,10 @@ def _plan_block_segment(
     *,
     clips: Mapping[str, ClipManifest],
     article_clip: ClipManifest | None,
+    screenshots: Mapping[str, str],
+    repo_labels: Mapping[str, str],
+    section_titles: Mapping[str, str],
+    chain: Sequence[EdlSegmentKind],
     target: int,
     crossfade_in: int,
     title_card: TitleCardOverlay | None,
@@ -457,16 +605,8 @@ def _plan_block_segment(
     elif block.visual_mode is VisualMode.ARTICLE:
         manifest = article_clip
 
-    if block.visual_mode is VisualMode.INTERMISSION or manifest is None:
-        is_fallback = (
-            block.visual_mode is not VisualMode.INTERMISSION and manifest is None
-        )
-        if is_fallback:
-            logger.warning(
-                "no clip for %s block (repo_url=%s) — degrading to intermission fill",
-                block.visual_mode.value,
-                block.repo_url,
-            )
+    # A *declared* intermission is an intentional breather, not a degraded clip.
+    if block.visual_mode is VisualMode.INTERMISSION:
         return EdlSegment(
             kind=EdlSegmentKind.INTERMISSION,
             timeline_start_ms=block.start_ms,
@@ -476,7 +616,34 @@ def _plan_block_segment(
             section_id=block.section_id,
             crossfade_in_ms=crossfade_in,
             title_card=title_card,
-            is_fallback=is_fallback,
+        )
+
+    # A repo/article block with no live clip degrades via the fallback chain.
+    if manifest is None:
+        resolution = resolve_fallback(
+            repo_url=block.repo_url,
+            screenshot_id=screenshots.get(block.repo_url) if block.repo_url else None,
+            card_text=_card_text(block, repo_labels, section_titles),
+            chain=chain,
+        )
+        logger.warning(
+            "no clip for %s block (repo_url=%s) — degrading to %s fallback",
+            block.visual_mode.value,
+            block.repo_url,
+            resolution.kind.value,
+        )
+        return EdlSegment(
+            kind=resolution.kind,
+            timeline_start_ms=block.start_ms,
+            timeline_end_ms=block.end_ms,
+            visual_mode=block.visual_mode,
+            repo_url=block.repo_url,
+            section_id=block.section_id,
+            crossfade_in_ms=crossfade_in,
+            title_card=title_card,
+            is_fallback=True,
+            fallback_image_id=resolution.image_id,
+            fallback_text=resolution.text,
         )
 
     source_ranges, looped = plan_source_ranges(manifest, target)

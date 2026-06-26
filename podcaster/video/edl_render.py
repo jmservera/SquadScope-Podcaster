@@ -32,14 +32,17 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from podcaster.video.edl import (
+    DEFAULT_FALLBACK_CHAIN,
     EditDecisionList,
     EdlSegment,
     EdlSegmentKind,
+    default_card_text,
+    resolve_fallback,
 )
 
 logger = logging.getLogger("podcaster.video.edl_render")
@@ -68,6 +71,9 @@ class RenderConfig:
     font_file: str = DEFAULT_FONT_FILE
     title_font_size: int = 64
     title_font_color: str = "white"
+    card_color: str = "0x1e1e2e"
+    card_font_size: int = 72
+    card_font_color: str = "white"
     enable_crossfades: bool = False
 
 
@@ -127,6 +133,15 @@ def _title_card_filter(segment: EdlSegment, config: RenderConfig) -> str | None:
     )
 
 
+def _card_text_filter(text: str, config: RenderConfig) -> str:
+    """Build a full-duration centred ``drawtext`` filter for a fallback card."""
+    return (
+        f"drawtext=fontfile='{config.font_file}':text='{_escape_drawtext(text)}':"
+        f"fontcolor={config.card_font_color}:fontsize={config.card_font_size}:"
+        "x=(w-text_w)/2:y=(h-text_h)/2"
+    )
+
+
 def _segment_filtergraph(
     segment: EdlSegment,
     index: int,
@@ -146,6 +161,32 @@ def _segment_filtergraph(
             f"s={config.width}x{config.height}:r={config.fps}:d={dur_s},"
             f"format={config.pixel_format},setsar=1"
         )
+        if title:
+            chain += f",{title}"
+        statements.append(f"{chain}[{label}]")
+        return statements
+
+    if segment.kind is EdlSegmentKind.CARD:
+        dur_s = _ms_to_s(segment.duration_ms)
+        text = segment.fallback_text or ""
+        chain = (
+            f"color=c={config.card_color}:"
+            f"s={config.width}x{config.height}:r={config.fps}:d={dur_s},"
+            f"format={config.pixel_format},setsar=1"
+        )
+        if text:
+            chain += f",{_card_text_filter(text, config)}"
+        statements.append(f"{chain}[{label}]")
+        return statements
+
+    if segment.kind is EdlSegmentKind.SCREENSHOT:
+        if input_index is None:
+            raise EdlRenderError(
+                f"screenshot segment {index} has no resolved input index"
+            )
+        # The still image input is already looped to the segment duration, so it
+        # only needs normalising (and an optional title card).
+        chain = f"[{input_index}:v]{norm}"
         if title:
             chain += f",{title}"
         statements.append(f"{chain}[{label}]")
@@ -226,6 +267,7 @@ def build_render_plan(
     clip_paths: Mapping[str, str | Path],
     output_path: str | Path,
     *,
+    image_paths: Mapping[str, str | Path] | None = None,
     config: RenderConfig | None = None,
 ) -> FfmpegRenderPlan:
     """Build a deterministic :class:`FfmpegRenderPlan` for *edl*.
@@ -234,42 +276,65 @@ def build_render_plan(
         edl: The Layer 3 :class:`~podcaster.video.edl.EditDecisionList` to render.
         clip_paths: Map of ``clip_id`` → source video path for every clip segment.
         output_path: Destination video path.
+        image_paths: Map of ``fallback_image_id`` → still-image path for every
+            ``screenshot`` fallback segment (#489).
         config: Encoding / styling parameters.
 
     Raises:
-        EdlRenderError: when the EDL is empty or a clip segment references a
-            ``clip_id`` missing from *clip_paths*.
+        EdlRenderError: when the EDL is empty, a clip segment references a
+            ``clip_id`` missing from *clip_paths*, or a screenshot segment
+            references an image id missing from *image_paths*. Use
+            :func:`degrade_for_render` first to turn unavailable clips into
+            screenshot/card/intermission fills and avoid a hard failure.
     """
     config = config or RenderConfig()
+    image_paths = image_paths or {}
     if not edl.segments:
         raise EdlRenderError("cannot render an empty EDL")
 
-    # Assign a stable ffmpeg input index to each distinct clip file, in first-use
-    # order, so the argv and graph are deterministic.
+    # Assign a stable ffmpeg input index to each input, in first-use order, so the
+    # argv and graph are deterministic. Clip files are shared across segments;
+    # each screenshot still gets its own ``-loop 1 -t <dur>`` input (its hold
+    # duration is baked into the input).
     input_files: list[str] = []
+    input_pre_args: list[tuple[str, ...]] = []
     input_index_by_clip: dict[str, int] = {}
-    for seg in edl.segments:
-        if seg.kind is not EdlSegmentKind.CLIP:
-            continue
-        if seg.clip_id is None or seg.clip_id not in clip_paths:
-            raise EdlRenderError(
-                f"clip segment references unknown clip_id {seg.clip_id!r}"
-            )
-        if seg.clip_id not in input_index_by_clip:
-            input_index_by_clip[seg.clip_id] = len(input_files)
-            input_files.append(str(clip_paths[seg.clip_id]))
+    seg_input_index: dict[int, int] = {}
+
+    for i, seg in enumerate(edl.segments):
+        if seg.kind is EdlSegmentKind.CLIP:
+            if seg.clip_id is None or seg.clip_id not in clip_paths:
+                raise EdlRenderError(
+                    f"clip segment references unknown clip_id {seg.clip_id!r}"
+                )
+            if seg.clip_id not in input_index_by_clip:
+                input_index_by_clip[seg.clip_id] = len(input_files)
+                input_files.append(str(clip_paths[seg.clip_id]))
+                input_pre_args.append(())
+            seg_input_index[i] = input_index_by_clip[seg.clip_id]
+        elif seg.kind is EdlSegmentKind.SCREENSHOT:
+            if seg.fallback_image_id is None or seg.fallback_image_id not in image_paths:
+                raise EdlRenderError(
+                    "screenshot segment references unknown image id "
+                    f"{seg.fallback_image_id!r}"
+                )
+            seg_input_index[i] = len(input_files)
+            input_files.append(str(image_paths[seg.fallback_image_id]))
+            input_pre_args.append(("-loop", "1", "-t", _ms_to_s(seg.duration_ms)))
 
     statements: list[str] = []
     for i, seg in enumerate(edl.segments):
-        idx = input_index_by_clip.get(seg.clip_id) if seg.kind is EdlSegmentKind.CLIP else None
-        statements.extend(_segment_filtergraph(seg, i, idx, config))
+        statements.extend(
+            _segment_filtergraph(seg, i, seg_input_index.get(i), config)
+        )
 
     join_stmts, final_label, expected_ms = _join_filtergraph(edl.segments, config)
     statements.extend(join_stmts)
     filter_complex = ";".join(statements)
 
     argv: list[str] = ["ffmpeg", "-hide_banner", "-y"]
-    for path in input_files:
+    for path, pre_args in zip(input_files, input_pre_args):
+        argv += list(pre_args)
         argv += ["-i", path]
     argv += [
         "-filter_complex",
@@ -308,12 +373,113 @@ def _default_runner(command: Sequence[str]) -> "subprocess.CompletedProcess[str]
     )
 
 
+def _clip_available(
+    segment: EdlSegment,
+    clip_paths: Mapping[str, str | Path],
+    *,
+    check_files: bool,
+) -> bool:
+    """True when *segment*'s clip can actually be rendered."""
+    if segment.clip_id is None or segment.clip_id not in clip_paths:
+        return False
+    if check_files and not Path(clip_paths[segment.clip_id]).exists():
+        return False
+    return True
+
+
+def degrade_for_render(
+    edl: EditDecisionList,
+    clip_paths: Mapping[str, str | Path],
+    *,
+    image_paths: Mapping[str, str | Path] | None = None,
+    screenshots: Mapping[str, str] | None = None,
+    repo_labels: Mapping[str, str] | None = None,
+    section_titles: Mapping[str, str] | None = None,
+    fallback_chain: Sequence[EdlSegmentKind] | None = None,
+    check_files: bool = False,
+) -> EditDecisionList:
+    """Rewrite segments whose source material is unavailable into fills (#489).
+
+    A clip segment whose ``clip_id`` is missing from *clip_paths* (or, with
+    ``check_files``, whose file does not exist on disk) — or a screenshot segment
+    whose image is missing — is degraded through the fallback chain
+    (``screenshot → card → intermission``) so a failed/missing clip never causes
+    a hard render failure. Timeline bounds, crossfades, title cards and section
+    grouping are preserved, so the result is still gap-free and the same length.
+    """
+    image_paths = image_paths or {}
+    screenshots = screenshots or {}
+    repo_labels = repo_labels or {}
+    section_titles = section_titles or {}
+    chain = (
+        tuple(fallback_chain) if fallback_chain is not None else DEFAULT_FALLBACK_CHAIN
+    )
+
+    def _degrade(segment: EdlSegment) -> EdlSegment:
+        screenshot_id = screenshots.get(segment.repo_url) if segment.repo_url else None
+        if screenshot_id is not None and screenshot_id not in image_paths:
+            screenshot_id = None  # no usable image → skip the screenshot step
+        resolution = resolve_fallback(
+            repo_url=segment.repo_url,
+            screenshot_id=screenshot_id,
+            card_text=default_card_text(
+                segment.visual_mode,
+                segment.repo_url,
+                segment.section_id,
+                repo_labels,
+                section_titles,
+            ),
+            chain=chain,
+        )
+        logger.warning(
+            "clip unavailable for %s segment (repo_url=%s) — degrading to %s fallback",
+            segment.visual_mode.value,
+            segment.repo_url,
+            resolution.kind.value,
+        )
+        return replace(
+            segment,
+            kind=resolution.kind,
+            clip_id=None,
+            source_ranges=(),
+            looped=False,
+            is_fallback=True,
+            fallback_image_id=resolution.image_id,
+            fallback_text=resolution.text,
+        )
+
+    new_segments: list[EdlSegment] = []
+    changed = False
+    for seg in edl.segments:
+        if seg.kind is EdlSegmentKind.CLIP and not _clip_available(
+            seg, clip_paths, check_files=check_files
+        ):
+            new_segments.append(_degrade(seg))
+            changed = True
+        elif seg.kind is EdlSegmentKind.SCREENSHOT and (
+            seg.fallback_image_id is None or seg.fallback_image_id not in image_paths
+        ):
+            new_segments.append(_degrade(seg))
+            changed = True
+        else:
+            new_segments.append(seg)
+
+    if not changed:
+        return edl
+    return replace(edl, segments=tuple(new_segments))
+
+
 def render_edl(
     edl: EditDecisionList,
     clip_paths: Mapping[str, str | Path],
     output_path: str | Path,
     *,
+    image_paths: Mapping[str, str | Path] | None = None,
+    screenshots: Mapping[str, str] | None = None,
+    repo_labels: Mapping[str, str] | None = None,
+    section_titles: Mapping[str, str] | None = None,
     config: RenderConfig | None = None,
+    degrade_missing: bool = True,
     runner: CommandRunner | None = None,
 ) -> Path:
     """Render *edl* to ``output_path`` with ffmpeg; return the output path.
@@ -321,12 +487,30 @@ def render_edl(
     The ffmpeg invocation is built by :func:`build_render_plan` and executed via
     *runner* (injectable for testing). Raises :class:`EdlRenderError` on a
     non-zero ffmpeg exit.
+
+    When ``degrade_missing`` (the default), any clip/screenshot segment whose
+    source material is unavailable is first rewritten by :func:`degrade_for_render`
+    into a screenshot/card/intermission fill, so a missing or failed clip never
+    causes a hard render failure (#489).
     """
     if runner is None and shutil.which("ffmpeg") is None:
         raise EdlRenderError("ffmpeg is not available on PATH")
     runner = runner or _default_runner
 
-    plan = build_render_plan(edl, clip_paths, output_path, config=config)
+    if degrade_missing:
+        edl = degrade_for_render(
+            edl,
+            clip_paths,
+            image_paths=image_paths,
+            screenshots=screenshots,
+            repo_labels=repo_labels,
+            section_titles=section_titles,
+            check_files=runner is _default_runner,
+        )
+
+    plan = build_render_plan(
+        edl, clip_paths, output_path, image_paths=image_paths, config=config
+    )
     result = runner(plan.argv)
     if result.returncode != 0:
         stderr = (result.stderr or "")[-2000:]
