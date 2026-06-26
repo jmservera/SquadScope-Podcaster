@@ -343,12 +343,6 @@ def distribute_word_timings(
 # --- Topic grouping ---
 
 
-def _visual_key(segment: ScriptPlanSegment) -> tuple[str, str | None]:
-    """Group key for a topic run: the Layer 1 visual context."""
-    repo = segment.repo_url if segment.visual_mode is VisualMode.REPO else None
-    return (segment.visual_mode.value, repo)
-
-
 def _build_topics(utterances: Sequence[UtteranceTiming]) -> tuple[TopicRange, ...]:
     """Group consecutive utterances by shared visual context into topic ranges."""
     topics: list[TopicRange] = []
@@ -416,7 +410,8 @@ def extract_realized_audio_metadata(
 
     Raises:
         RealizedAudioMetadataError: when ``segment_durations`` is not parallel to
-            ``plan.segments``, or any duration is negative.
+            ``plan.segments``, or any duration, ``speech_offset_seconds`` or
+            ``gap_seconds`` is negative.
     """
     if len(segment_durations) != len(plan.segments):
         raise RealizedAudioMetadataError(
@@ -427,6 +422,8 @@ def extract_realized_audio_metadata(
         raise RealizedAudioMetadataError("segment durations must be non-negative")
     if speech_offset_seconds < 0:
         raise RealizedAudioMetadataError("speech_offset_seconds must be non-negative")
+    if gap_seconds < 0:
+        raise RealizedAudioMetadataError("gap_seconds must be non-negative")
 
     durations = list(segment_durations)
     starts, total = compute_segment_timeline(durations, gap_seconds)

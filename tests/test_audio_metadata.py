@@ -206,6 +206,12 @@ def test_negative_offset_raises():
         extract_realized_audio_metadata(plan, [1.0] * 5, speech_offset_seconds=-1.0)
 
 
+def test_negative_gap_raises():
+    plan = _plan()
+    with pytest.raises(RealizedAudioMetadataError):
+        extract_realized_audio_metadata(plan, [1.0] * 5, gap_seconds=-0.5)
+
+
 def test_empty_plan_yields_empty_metadata():
     meta = extract_realized_audio_metadata(ScriptPlan(), [])
     assert meta.utterances == ()

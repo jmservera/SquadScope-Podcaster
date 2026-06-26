@@ -190,16 +190,19 @@ def test_validate_malformed_repo_url_raises():
         validate_script_plan(plan)
 
 
-def test_validate_repo_url_with_extra_path_rejected():
-    # Anchored validation: a URL with a trailing path segment is not a clean
-    # owner/repo URL and must be rejected (regex .fullmatch, not .match).
+@pytest.mark.parametrize(
+    "repo_url",
+    [
+        "https://github.com/owner/repo/blob/main/README.md",
+        "https://github.com/owner/repo/tree/main",
+        "https://github.com/owner/repo/issues/1",
+        "https://github.com/owner",
+        "https://gitlab.com/owner/repo",
+    ],
+)
+def test_validate_non_root_github_url_raises(repo_url):
     plan = ScriptPlan(
-        segments=(
-            ScriptPlanSegment(
-                0, "Theo", "hi", VisualMode.REPO,
-                repo_url="https://github.com/owner/repo/issues",
-            ),
-        )
+        segments=(ScriptPlanSegment(0, "Theo", "hi", VisualMode.REPO, repo_url=repo_url),)
     )
     with pytest.raises(ScriptPlanValidationError, match="not a GitHub repo URL"):
         validate_script_plan(plan)

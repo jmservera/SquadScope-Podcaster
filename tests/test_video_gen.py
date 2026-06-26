@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1807,6 +1808,69 @@ class TestRecordEpisode:
         record_episode(plan, output_dir=tmp_path, source_url=article)
 
         assert mock_record.call_args.kwargs["source_url"] == article
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_parallel_preserves_plan_order(
+        self, mock_record, mock_pw, tmp_path
+    ):
+        """Concurrent recording returns segments in plan order (#479)."""
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        def fake_record(browser, segment, output_dir, *a, **k):
+            # Earlier segments "take longer" so a naive append would reorder.
+            time.sleep(0.02 * (4 - segment.start_seconds / 10))
+            return RecordedSegment(
+                segment=segment,
+                video_path=tmp_path / f"{segment.repo.name}.webm",
+            )
+
+        mock_record.side_effect = fake_record
+
+        segments = [
+            _make_segment("o", "alpha", 0, 10),
+            _make_segment("o", "bravo", 10, 10),
+            _make_segment("o", "charlie", 20, 10),
+            _make_segment("o", "delta", 30, 10),
+        ]
+        plan = _make_plan(*segments, total=40.0)
+
+        result = record_episode(plan, output_dir=tmp_path, concurrency=4)
+
+        assert [r.segment.repo.name for r in result.recorded] == [
+            "alpha", "bravo", "charlie", "delta",
+        ]
+        assert pw_instance.chromium.launch.call_count == 4
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_concurrency_one_uses_single_browser(
+        self, mock_record, mock_pw, tmp_path
+    ):
+        """concurrency=1 keeps the original single-browser sequential path."""
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_record.side_effect = lambda browser, segment, *a, **k: RecordedSegment(
+            segment=segment, video_path=tmp_path / f"{segment.repo.name}.webm"
+        )
+
+        plan = _make_plan(
+            _make_segment("o", "alpha", 0, 10),
+            _make_segment("o", "bravo", 10, 10),
+            total=20.0,
+        )
+
+        result = record_episode(plan, output_dir=tmp_path, concurrency=1)
+
+        assert [r.segment.repo.name for r in result.recorded] == ["alpha", "bravo"]
+        # A single browser is launched and reused for both segments.
+        assert pw_instance.chromium.launch.call_count == 1
 
 
 # --- Integration tests (require Playwright + network) ---

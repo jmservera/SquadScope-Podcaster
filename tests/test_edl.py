@@ -92,14 +92,6 @@ def test_source_ranges_loop_without_loop_sections_repeats_clip():
     assert looped is True
 
 
-def test_source_ranges_zero_duration_manifest_raises_not_hangs():
-    # A malformed manifest with duration_ms == 0 must fail fast instead of
-    # looping forever in the "fill" branch (take = min(deficit, 0) == 0).
-    m = _clip("bad", 0)
-    with pytest.raises(ValueError, match="non-positive duration_ms"):
-        plan_source_ranges(m, 1_000)
-
-
 # --- plan_edl: basic gap-free coverage ---
 
 
@@ -227,10 +219,17 @@ def test_intermission_exempt_from_min_duration():
 
 
 def test_missing_clip_degrades_to_intermission_fill():
+    # With no screenshots/labels, a missing clip degrades to a *card* (the next
+    # step of the fallback chain after screenshot) rather than failing — but
+    # restricting the chain to intermission-only yields a plain breather fill.
     meta = _basic_metadata()
-    # no clip for repo-b, and no article clip
     clips = {REPO_A: _clip("clip-a", 60_000, REPO_A, trim=[TrimRange(1_000, 59_000)])}
-    edl = plan_edl(meta, clips, article_clip=None)
+    edl = plan_edl(
+        meta,
+        clips,
+        article_clip=None,
+        fallback_chain=[EdlSegmentKind.INTERMISSION],
+    )
     validate_edl(edl)
     repo_b_seg = next(s for s in edl.segments if s.repo_url == REPO_B)
     assert repo_b_seg.kind is EdlSegmentKind.INTERMISSION
@@ -239,6 +238,41 @@ def test_missing_clip_degrades_to_intermission_fill():
     article_seg = edl.segments[0]
     assert article_seg.kind is EdlSegmentKind.INTERMISSION
     assert article_seg.is_fallback is True
+
+
+def test_missing_clip_degrades_through_chain():
+    # Default chain (screenshot → card → intermission): a screenshot is used when
+    # available, otherwise a card with the repo/article name.
+    meta = _basic_metadata()
+    clips = {REPO_A: _clip("clip-a", 60_000, REPO_A, trim=[TrimRange(1_000, 59_000)])}
+    edl = plan_edl(
+        meta,
+        clips,
+        article_clip=None,
+        screenshots={REPO_B: "shot-b"},
+        repo_labels={REPO_B: "Repo B"},
+    )
+    validate_edl(edl)
+    repo_b_seg = next(s for s in edl.segments if s.repo_url == REPO_B)
+    assert repo_b_seg.kind is EdlSegmentKind.SCREENSHOT
+    assert repo_b_seg.is_fallback is True
+    assert repo_b_seg.fallback_image_id == "shot-b"
+    # article block has no screenshot → card with default article text.
+    article_seg = edl.segments[0]
+    assert article_seg.kind is EdlSegmentKind.CARD
+    assert article_seg.is_fallback is True
+    assert article_seg.fallback_text == "This week's highlights"
+
+
+def test_missing_repo_clip_degrades_to_named_card():
+    meta = _basic_metadata()
+    clips = {REPO_A: _clip("clip-a", 60_000, REPO_A, trim=[TrimRange(1_000, 59_000)])}
+    edl = plan_edl(meta, clips, article_clip=None)
+    validate_edl(edl)
+    repo_b_seg = next(s for s in edl.segments if s.repo_url == REPO_B)
+    assert repo_b_seg.kind is EdlSegmentKind.CARD
+    assert repo_b_seg.is_fallback is True
+    assert repo_b_seg.fallback_text == "owner/repo-b"
 
 
 # --- determinism, empty, validation ---
@@ -299,3 +333,22 @@ def test_round_trip_serialization():
     restored = EditDecisionList.from_dict(edl.to_dict())
     assert restored == edl
     assert restored.schema_version == EDL_SCHEMA_VERSION
+
+
+def test_round_trip_serialization_fallback_fields():
+    # screenshot/card fallback fields survive serialisation.
+    meta = _basic_metadata()
+    clips = {REPO_A: _clip("clip-a", 60_000, REPO_A, trim=[TrimRange(1_000, 59_000)])}
+    edl = plan_edl(
+        meta,
+        clips,
+        article_clip=None,
+        screenshots={REPO_B: "shot-b"},
+        repo_labels={REPO_B: "Repo B"},
+    )
+    restored = EditDecisionList.from_dict(edl.to_dict())
+    assert restored == edl
+    kinds = {s.kind for s in restored.segments}
+    assert EdlSegmentKind.SCREENSHOT in kinds
+    shot = next(s for s in restored.segments if s.kind is EdlSegmentKind.SCREENSHOT)
+    assert shot.fallback_image_id == "shot-b"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from unittest.mock import patch
 
@@ -32,6 +32,9 @@ class MemoryStorageBackend:
 
     def get_bytes(self, path: str) -> bytes | None:
         return self._blobs.get(path)
+
+    def blob_exists(self, path: str) -> bool:
+        return path in self._blobs
 
     def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> Any:
         current = self._blobs.get(path)
@@ -872,3 +875,163 @@ class TestPodcastConfigMonitoring:
             headers=headers,
         )
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /api/jobs/{id}/progress and /progress/stream (issue #469)
+# ---------------------------------------------------------------------------
+
+from podcaster.progress import PipelineStage, emit_progress  # noqa: E402
+
+
+def _store_manifest(storage, job_id: str) -> None:
+    manifest = _make_manifest(job_id)
+    storage.put_bytes(
+        f"jobs/{job_id}/manifest.json",
+        json.dumps(manifest).encode(),
+        "application/json",
+    )
+
+
+class TestProgressPoll:
+    def test_unknown_job_404(self, client, storage):
+        resp = client.get("/api/jobs/missing/progress")
+        assert resp.status_code == 404
+
+    def test_job_without_progress_returns_empty(self, client, storage):
+        _store_manifest(storage, "job-1")
+        resp = client.get("/api/jobs/job-1/progress")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["job_id"] == "job-1"
+        assert data["current"] is None
+        assert data["events"] == []
+        assert data["terminal"] is False
+
+    def test_returns_events_and_current(self, client, storage):
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=3)
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=2, segment_total=3)
+
+        resp = client.get("/api/jobs/job-1/progress")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["events"]) == 2
+        assert data["last_seq"] == 2
+        assert data["current"]["segment_index"] == 2
+        assert data["terminal"] is False
+
+    def test_since_cursor_filters_events(self, client, storage):
+        _store_manifest(storage, "job-1")
+        for _ in range(4):
+            emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS)
+
+        resp = client.get("/api/jobs/job-1/progress", params={"since": 2})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [e["seq"] for e in data["events"]] == [3, 4]
+        assert data["last_seq"] == 4
+
+    def test_terminal_flag_set_on_completion(self, client, storage):
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS)
+        emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED, percent=100.0)
+
+        resp = client.get("/api/jobs/job-1/progress")
+        assert resp.json()["terminal"] is True
+
+
+class TestProgressStream:
+    def test_unknown_job_404(self, client, storage):
+        resp = client.get("/api/jobs/missing/progress/stream")
+        assert resp.status_code == 404
+
+    def test_stream_emits_terminal_events_and_closes(self, client, storage):
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=2)
+        emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED, percent=100.0)
+
+        # The stream terminates immediately because the latest event is terminal.
+        resp = client.get("/api/jobs/job-1/progress/stream")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        body = resp.text
+        data_lines = [line for line in body.splitlines() if line.startswith("data: ")]
+        assert len(data_lines) == 2
+        first = json.loads(data_lines[0][len("data: "):])
+        assert first["stage"] == PipelineStage.SYNTHESIS
+        last = json.loads(data_lines[1][len("data: "):])
+        assert last["stage"] == PipelineStage.COMPLETED
+        assert ": end" in body
+
+    def test_stream_resumes_from_since(self, client, storage):
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS)
+        emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED)
+
+        resp = client.get("/api/jobs/job-1/progress/stream", params={"since": 1})
+        assert resp.status_code == 200
+        data_lines = [line for line in resp.text.splitlines() if line.startswith("data: ")]
+        # Only the event after seq=1 should be replayed.
+        assert len(data_lines) == 1
+        assert json.loads(data_lines[0][len("data: "):])["stage"] == PipelineStage.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /api/jobs/{id}/progress/summary (issue #470)
+# ---------------------------------------------------------------------------
+
+
+class TestProgressSummary:
+    def test_unknown_job_404(self, client, storage):
+        resp = client.get("/api/jobs/missing/progress/summary")
+        assert resp.status_code == 404
+
+    def test_job_without_progress_is_pending(self, client, storage):
+        _store_manifest(storage, "job-1")
+        resp = client.get("/api/jobs/job-1/progress/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["job_id"] == "job-1"
+        assert data["phase"] == "pending"
+        assert data["stage"] is None
+        assert data["eta"] is None
+        assert data["terminal"] is False
+
+    def test_in_flight_segment_counter_and_eta(self, client, storage):
+        _store_manifest(storage, "job-1")
+        base = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
+        # Stage start, then 12/18 done 60s later → 5s/segment → 30s ETA.
+        emit_progress(
+            storage, "job-1", stage=PipelineStage.SYNTHESIS, phase="recording",
+            segment_total=18, at=base,
+        )
+        emit_progress(
+            storage, "job-1", stage=PipelineStage.SYNTHESIS, phase="recording",
+            segment_index=12, segment_total=18, at=base + timedelta(seconds=60),
+        )
+
+        with patch("podcaster.stage_progress._utcnow") as mock_now:
+            mock_now.return_value = base + timedelta(seconds=60)
+            resp = client.get("/api/jobs/job-1/progress/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["stage"] == PipelineStage.SYNTHESIS
+        assert data["segment_index"] == 12
+        assert data["segment_total"] == 18
+        assert data["phase"] == "recording"
+        assert data["terminal"] is False
+        assert abs(data["eta_seconds"] - 30.0) < 0.5
+        assert data["eta"] is not None
+
+    def test_completed_is_terminal(self, client, storage):
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=2)
+        emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED, percent=100.0)
+
+        resp = client.get("/api/jobs/job-1/progress/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["stage"] == PipelineStage.COMPLETED
+        assert data["terminal"] is True
+        assert data["eta_seconds"] == 0.0
