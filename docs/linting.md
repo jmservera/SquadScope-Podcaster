@@ -119,18 +119,29 @@ mid-file import block:
   import (...)` block lived mid-file (after the test classes started); merged its
   names into the single top-of-file import block.
 
+### Phase B progress (#521) — E501 follow-up (core slice 1)
+
+Started clearing `E501` (line-too-long) by module, beginning with the
+`podcaster/` config/validation core. Code lines were wrapped to the 100-column
+limit; intentional string literals that must not be reflowed (injection-detection
+regexes in `sanitization.py`, the visual-intent prompt text in `script_plan.py`)
+carry a justified `# noqa: E501` instead.
+
+Files cleared in this slice: `podcaster/config.py`, `podcaster/costs.py`,
+`podcaster/validation.py`, `podcaster/sanitization.py`, `podcaster/script_plan.py`.
+
 ### Remaining baseline (current)
 
-After the passes above (imports/dead-code, jobs `E501`, and `E402`), the live
-`ruff check podcaster tests --statistics` count is:
+After the passes above (imports/dead-code, jobs `E501`, `E402`, and the config
+core `E501` slice), the live `ruff check podcaster tests --statistics` count is:
 
 | Count | Rule  | Description |
 | ----: | ----- | ----------- |
-| 472   | E501  | line-too-long |
-| **472** | **total** | |
+| 433   | E501  | line-too-long |
+| **433** | **total** | |
 
 `E501` (line length) is the last remaining category, being cleared in further
-incremental slices. The full test suite stays green after this pass.
+incremental by-module slices. The full test suite stays green after this pass.
 
 ## Checkov (IaC / container security) — #519
 
