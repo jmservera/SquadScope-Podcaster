@@ -11,6 +11,8 @@ Endpoints:
   GET /api/jobs                   — list recent jobs (paginated)
   GET /api/jobs/{id}              — job detail (manifest + derived status)
   GET /api/jobs/{id}/logs         — job logs (runner state transitions)
+  GET /api/jobs/{id}/progress     — poll real-time progress events (issue #469)
+  GET /api/jobs/{id}/progress/stream — SSE stream of progress events (issue #469)
   POST /api/jobs/{id}/video/generate — manually enqueue a video job
   GET /api/stream/{path}          — stream blob content (audio/video/images)
   GET /api/episodes               — list generated episodes with metadata
@@ -26,13 +28,14 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
 import hmac
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, AsyncIterator
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,12 @@ from podcaster.failure_reporting import report_failure
 from podcaster.jobs import failed_response, run_generation_job
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
+from podcaster.progress import (
+    filter_events_since,
+    is_terminal,
+    progress_path,
+    read_progress,
+)
 from podcaster.queue import enqueue_video_job
 from podcaster.storage import StorageBackend, create_storage_backend
 from podcaster.validation import validate_payload_details
@@ -121,6 +130,29 @@ class LogEntry(BaseModel):
 class JobLogsResponse(BaseModel):
     job_id: str
     logs: list[LogEntry]
+
+
+class ProgressResponse(BaseModel):
+    """Polling snapshot of a job's real-time progress (issue #469).
+
+    ``current`` is the latest progress event (without its ``seq``); ``events``
+    are the events newer than the requested ``since`` cursor; ``last_seq`` is the
+    cursor to pass on the next poll; ``terminal`` is true once the job reached a
+    completed/failed stage and no further events are expected.
+    """
+
+    job_id: str
+    current: dict[str, Any] | None = None
+    events: list[dict[str, Any]] = []
+    last_seq: int = 0
+    terminal: bool = False
+
+
+# Server-sent-events stream tuning. The loop polls the durable store rather than
+# holding in-memory state so it is correct on stateless/serverless ACA workers.
+_SSE_POLL_SECONDS = float(os.environ.get("MONITORING_SSE_POLL_SECONDS", "1.0"))
+_SSE_HEARTBEAT_SECONDS = float(os.environ.get("MONITORING_SSE_HEARTBEAT_SECONDS", "15.0"))
+_SSE_MAX_SECONDS = float(os.environ.get("MONITORING_SSE_MAX_SECONDS", "1800.0"))
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +501,121 @@ def get_job_logs(job_id: str):
     if manifest is None:
         raise HTTPException(status_code=500, detail="Manifest is corrupt")
     return JobLogsResponse(job_id=job_id, logs=_extract_logs(manifest))
+
+
+def _job_exists(storage: StorageBackend, job_id: str) -> bool:
+    return storage.blob_exists(f"jobs/{job_id}/manifest.json")
+
+
+@app.get("/api/jobs/{job_id}/progress", response_model=ProgressResponse, dependencies=[Depends(verify_auth)])
+def get_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
+    """Poll real-time progress events for a job (issue #469).
+
+    Returns events with ``seq > since`` plus the latest ``current`` snapshot.
+    Acts as the polling fallback to the SSE stream and works on stateless ACA
+    workers because it reads the durable per-job progress document. The job must
+    exist (have a manifest); a job with no progress yet returns an empty list.
+    """
+    storage = get_storage()
+    if not _job_exists(storage, job_id):
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+
+    document = read_progress(storage, job_id)
+    if document is None:
+        return ProgressResponse(job_id=job_id, current=None, events=[], last_seq=since, terminal=False)
+
+    new_events = filter_events_since(document.get("events") or [], since)
+    last_seq = new_events[-1]["seq"] if new_events else since
+    return ProgressResponse(
+        job_id=job_id,
+        current=document.get("current") if isinstance(document.get("current"), dict) else None,
+        events=new_events,
+        last_seq=last_seq,
+        terminal=is_terminal(document),
+    )
+
+
+def _sse_pack(event_id: int | None, data: dict[str, Any]) -> str:
+    chunk = ""
+    if event_id is not None:
+        chunk += f"id: {event_id}\n"
+    chunk += f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    return chunk
+
+
+async def _progress_event_stream(job_id: str, since: int) -> AsyncIterator[str]:
+    """Yield server-sent events for a job's progress until it terminates.
+
+    Polls the durable store every ``_SSE_POLL_SECONDS``; emits a heartbeat
+    comment when idle so proxies keep the connection open; stops once the job
+    reaches a terminal stage or ``_SSE_MAX_SECONDS`` elapses. Reading the durable
+    document each tick keeps the stream correct across worker restarts.
+    """
+    storage = get_storage()
+    cursor = since
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    last_emit = started
+
+    # Initial catch-up so a late subscriber immediately sees prior events.
+    document = read_progress(storage, job_id)
+    if document is not None:
+        for event in filter_events_since(document.get("events") or [], cursor):
+            cursor = event["seq"]
+            yield _sse_pack(cursor, event)
+            last_emit = loop.time()
+        if is_terminal(document):
+            yield ": end\n\n"
+            return
+
+    while True:
+        if loop.time() - started > _SSE_MAX_SECONDS:
+            yield ": timeout\n\n"
+            return
+        await asyncio.sleep(_SSE_POLL_SECONDS)
+
+        document = read_progress(storage, job_id)
+        new_events = (
+            filter_events_since(document.get("events") or [], cursor)
+            if document is not None
+            else []
+        )
+        if new_events:
+            for event in new_events:
+                cursor = event["seq"]
+                yield _sse_pack(cursor, event)
+            last_emit = loop.time()
+            if is_terminal(document):
+                yield ": end\n\n"
+                return
+        elif loop.time() - last_emit >= _SSE_HEARTBEAT_SECONDS:
+            yield ": keep-alive\n\n"
+            last_emit = loop.time()
+
+
+@app.get("/api/jobs/{job_id}/progress/stream", dependencies=[Depends(verify_auth)])
+async def stream_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
+    """Stream real-time progress for a job over Server-Sent Events (issue #469).
+
+    Preferred transport for the observability UI: a single long-lived HTTP
+    response over the FastAPI monitoring API (simplest to run on ACA). The UI
+    subscribes with ``EventSource`` and receives one ``data:`` line per progress
+    event; reconnects can resume from the last ``id`` via the ``since`` query
+    parameter. Backed by the same durable store as the polling endpoint.
+    """
+    storage = get_storage()
+    if not _job_exists(storage, job_id):
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+
+    return StreamingResponse(
+        _progress_event_stream(job_id, since),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/jobs/{job_id}/video/generate", dependencies=[Depends(verify_auth)])

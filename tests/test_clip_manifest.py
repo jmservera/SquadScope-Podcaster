@@ -166,3 +166,43 @@ def test_component_dataclass_round_trips():
     assert TrimRange.from_dict(tr.to_dict()) == tr
     ls = LoopSection(100, 900)
     assert LoopSection.from_dict(ls.to_dict()) == ls
+
+
+def test_fallback_with_chapters_or_repo_url_raises():
+    with pytest.raises(ClipManifestError, match="static card"):
+        build_clip_manifest(
+            "clip-fb", 5_000, is_fallback=True, chapters=[ClipChapter("c", 0, 5_000)]
+        )
+    with pytest.raises(ClipManifestError, match="static card"):
+        build_clip_manifest(
+            "clip-fb", 5_000, is_fallback=True, repo_url="https://github.com/o/r"
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("False", False),
+        ("yes", True),
+        ("no", False),
+        (1, True),
+        (0, False),
+        ("", False),
+    ],
+)
+def test_from_dict_parses_is_fallback_robustly(raw, expected):
+    m = build_clip_manifest("clip-b", 5_000, is_fallback=True)
+    data = m.to_dict()
+    data["is_fallback"] = raw
+    assert ClipManifest.from_dict(data).is_fallback is expected
+
+
+def test_from_dict_rejects_ambiguous_is_fallback():
+    m = build_clip_manifest("clip-b", 5_000, is_fallback=True)
+    data = m.to_dict()
+    data["is_fallback"] = "maybe"
+    with pytest.raises(ClipManifestError, match="is_fallback"):
+        ClipManifest.from_dict(data)
