@@ -124,6 +124,14 @@ script-generation system prompt (`podcaster/script_gen.py`), instructing the
 model to emit `## Visual:` markers per segment and declare intermissions
 explicitly.
 
+## Downstream
+
+Layer 2 — **Realized Audio Metadata** ([#486](https://github.com/jmservera/SquadScope-Podcaster/issues/486),
+`podcaster/audio_metadata.py`, see `docs/realized-audio-metadata.md`) consumes
+this plan plus the realized per-segment TTS durations to produce millisecond
+utterance / word / topic timings whose topic ranges align to the `## Visual:`
+markers declared here.
+
 ## Schema versioning
 
 The schema is versioned via `SCRIPT_PLAN_SCHEMA_VERSION`. Bump the **minor** for
