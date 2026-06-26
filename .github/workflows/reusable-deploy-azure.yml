@@ -326,14 +326,20 @@ jobs:
           attempts=10
           delay=3
           max_delay=30
+          err_file="$(mktemp)"
+          trap 'rm -f "$err_file"' EXIT
           check() {
             url="$1"
             expect_substr="$2"
             wait=$delay
+            last_err=""
             for i in $(seq 1 "$attempts"); do
               # Single request per attempt: capture body and status code together
               # so they describe the same response (no skew from two requests).
-              resp="$(curl -sS --max-time 30 -w '\n%{http_code}' "$url" 2>/dev/null || true)"
+              # Keep curl's stderr (-S surfaces DNS/TLS/timeout reasons) in a file
+              # instead of discarding it, so failures are diagnosable.
+              resp="$(curl -sS --max-time 30 -w '\n%{http_code}' "$url" 2>"$err_file" || true)"
+              last_err="$(cat "$err_file")"
               code="${resp##*$'\n'}"
               body="${resp%$'\n'*}"
               # Fixed-string match (-F): expect_substr is literal, not a regex.
@@ -341,12 +347,12 @@ jobs:
                 echo "OK  ${url} -> 200 (matched '${expect_substr}')"
                 return 0
               fi
-              echo "  attempt ${i}/${attempts}: ${url} -> ${code:-000} (waiting ${wait}s)"
+              echo "  attempt ${i}/${attempts}: ${url} -> ${code:-000}${last_err:+ (${last_err})} (waiting ${wait}s)"
               sleep "$wait"
               wait=$(( wait * 2 ))
               [ "$wait" -gt "$max_delay" ] && wait=$max_delay
             done
-            echo "FAIL ${url}: did not return 200 with '${expect_substr}' after ${attempts} attempts" >&2
+            echo "FAIL ${url}: did not return 200 with '${expect_substr}' after ${attempts} attempts${last_err:+ (last error: ${last_err})}" >&2
             return 1
           }
           # SPA shell must be served by nginx.
