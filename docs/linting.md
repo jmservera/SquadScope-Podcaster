@@ -89,6 +89,19 @@ Remaining baseline (deferred to follow-up Phase B passes, by directory):
 changes and are intentionally left for subsequent incremental PRs so each stays
 small and reviewable. The full test suite (2049 passed) is green after this pass.
 
+### Phase B progress (#521) — E501 follow-up (jobs subsystem)
+
+Incremental `E501` pass over the job/script subsystem. Cleared
+`podcaster/script_gen.py` (29), `podcaster/jobs.py` (22), and
+`podcaster/job_runner.py` (10) — **61** `line-too-long` violations total.
+
+As with the other E501 slices, every fix is pure re-wrapping (string-concat
+splits with boundary whitespace preserved, Black-style call/comprehension
+wrapping). The parsed AST of all three modules is byte-for-byte identical to
+before, so there is no string-content or logic change. No `# noqa: E501` was
+needed. `ruff check` reports no `E501` on these files; the full suite
+(2049 passed, 1 skipped) stays green.
+
 ## Checkov (IaC / container security) — #519
 
 Checkov scans infrastructure-as-code and container definitions. It **already**
