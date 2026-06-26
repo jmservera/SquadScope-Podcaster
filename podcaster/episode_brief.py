@@ -15,7 +15,7 @@ to import anywhere. It builds on the already-reviewed claim ledger
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -30,8 +30,6 @@ EPISODE_BRIEF_SCHEMA = "podcaster.episode-brief/v1"
 _ENTITY_RE = re.compile(
     r"\b(?:[A-Za-z0-9]+(?:/[A-Za-z0-9]+)+|[A-Z][A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*|[A-Z]{2,})\b"
 )
-_WORD_RE = re.compile(r"[A-Za-z0-9]+")
-
 # Common English words that match the entity pattern at sentence start but are
 # not proper nouns; excluded so the entity list stays meaningful.
 _ENTITY_STOPWORDS = frozenset(
@@ -116,6 +114,11 @@ class EpisodeBrief:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "EpisodeBrief":
+        schema = data.get("schema")
+        if schema is not None and schema != EPISODE_BRIEF_SCHEMA:
+            raise ValueError(
+                f"unsupported episode-brief schema '{schema}'; expected '{EPISODE_BRIEF_SCHEMA}'"
+            )
         source = data.get("source") if isinstance(data.get("source"), Mapping) else {}
         claims = tuple(
             BriefClaim(
@@ -129,19 +132,19 @@ class EpisodeBrief:
             if isinstance(item, Mapping)
         )
         links = tuple(
-            BriefLink(url=str(item.get("url", "")), label=str(item.get("label", "")))
+            BriefLink(url=str(item.get("url", "")).strip(), label=str(item.get("label", "")))
             for item in data.get("links", [])
-            if isinstance(item, Mapping) and item.get("url")
+            if isinstance(item, Mapping) and str(item.get("url", "")).strip()
         )
         return cls(
-            week=str(data.get("week", "")),
-            source_title=str(source.get("title", "")),
-            source_url=str(source.get("url", "")),
-            topics=tuple(str(t) for t in data.get("topics", []) if str(t).strip()),
-            key_facts=tuple(str(f) for f in data.get("key_facts", []) if str(f).strip()),
+            week=str(data.get("week", "")).strip(),
+            source_title=str(source.get("title", "")).strip(),
+            source_url=str(source.get("url", "")).strip(),
+            topics=tuple(str(t).strip() for t in data.get("topics", []) if str(t).strip()),
+            key_facts=tuple(str(f).strip() for f in data.get("key_facts", []) if str(f).strip()),
             claims=claims,
             links=links,
-            entities=tuple(str(e) for e in data.get("entities", []) if str(e).strip()),
+            entities=tuple(str(e).strip() for e in data.get("entities", []) if str(e).strip()),
         )
 
 
@@ -196,11 +199,14 @@ def build_episode_brief(
 
     ``claims`` are the reviewed claim ledger entries. When ``key_facts``,
     ``links``, or ``entities`` are not supplied they are derived from the claims
-    and title so the brief is self-contained from a single extraction pass.
+    (and the source title is additionally used for entity extraction) so the
+    brief is self-contained from a single extraction pass.
     """
 
     if not week or not week.strip():
         raise ValueError("episode brief requires a week")
+    if not source_title or not source_title.strip():
+        raise ValueError("episode brief requires a source_title")
     if not source_url or not source_url.strip():
         raise ValueError("episode brief requires a source_url")
 

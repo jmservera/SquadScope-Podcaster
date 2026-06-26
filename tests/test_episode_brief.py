@@ -30,6 +30,8 @@ def _claim(claim_id: str, excerpt: str, url: str = "https://claracle.com/a", quo
 def test_build_brief_requires_week_and_source_url():
     with pytest.raises(ValueError, match="week"):
         build_episode_brief(week="", source_title="t", source_url="https://x")
+    with pytest.raises(ValueError, match="source_title"):
+        build_episode_brief(week="2026-W23", source_title="", source_url="https://x")
     with pytest.raises(ValueError, match="source_url"):
         build_episode_brief(week="2026-W23", source_title="t", source_url="")
 
@@ -145,3 +147,57 @@ def test_brief_claim_from_claim_maps_fields():
     assert bc.statement == "spaced excerpt"
     assert bc.source_quote == "q"
     assert bc.verified is False
+
+
+def test_from_dict_rejects_wrong_schema():
+    data = {
+        "schema": "podcaster.episode-brief/v999",
+        "week": "2026-W23",
+        "source": {"title": "t", "url": "https://x.com"},
+    }
+    with pytest.raises(ValueError, match="schema"):
+        EpisodeBrief.from_dict(data)
+
+
+def test_from_dict_accepts_matching_schema():
+    data = {
+        "schema": EPISODE_BRIEF_SCHEMA,
+        "week": "2026-W23",
+        "source": {"title": "t", "url": "https://x.com"},
+    }
+    brief = EpisodeBrief.from_dict(data)
+    assert brief.week == "2026-W23"
+
+
+def test_from_dict_accepts_missing_schema():
+    data = {"week": "2026-W23", "source": {"title": "t", "url": "https://x.com"}}
+    brief = EpisodeBrief.from_dict(data)
+    assert brief.week == "2026-W23"
+
+
+def test_from_dict_strips_whitespace_fields():
+    data = {
+        "week": " 2026-W23 ",
+        "source": {"title": "  My Title  ", "url": "  https://x.com  "},
+        "topics": ["  auth  ", "  OIDC  "],
+        "key_facts": ["  fact one.  "],
+        "entities": ["  GitHub  "],
+    }
+    brief = EpisodeBrief.from_dict(data)
+    assert brief.week == "2026-W23"
+    assert brief.source_title == "My Title"
+    assert brief.source_url == "https://x.com"
+    assert brief.topics == ("auth", "OIDC")
+    assert brief.key_facts == ("fact one.",)
+    assert brief.entities == ("GitHub",)
+
+
+def test_from_dict_rejects_whitespace_only_link_urls():
+    data = {
+        "week": "2026-W23",
+        "source": {"title": "t", "url": "https://x.com"},
+        "links": [{"url": "   ", "label": "blank"}, {"url": "https://good.com", "label": "ok"}],
+    }
+    brief = EpisodeBrief.from_dict(data)
+    assert len(brief.links) == 1
+    assert brief.links[0].url == "https://good.com"
