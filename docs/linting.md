@@ -89,6 +89,23 @@ Remaining baseline (deferred to follow-up Phase B passes, by directory):
 changes and are intentionally left for subsequent incremental PRs so each stays
 small and reviewable. The full test suite (2049 passed) is green after this pass.
 
+### Phase B progress (#521) — E501 follow-up (generation core)
+
+Incremental `E501` pass over the episode-generation core. Cleared
+`podcaster/generation.py` (47) and `podcaster/episode.py` (18 — the E501 subset
+only; its pre-existing `E402` import-placement findings are handled separately),
+**65** `line-too-long` violations in total.
+
+All fixes are pure re-wrapping: over-length spoken-script f-strings were split
+into Python implicit string concatenation with the boundary whitespace preserved
+exactly, and long call/comprehension lines were wrapped Black-style. The parsed
+AST of both modules is byte-for-byte identical to before the pass, so there is
+no string-content or logic change. No `# noqa: E501` was needed.
+
+`ruff check` on both files reports no `E501`; the full suite (2049 passed,
+1 skipped) stays green. Remaining `E501` lives in other modules and tests,
+deferred to subsequent slices.
+
 ## Checkov (IaC / container security) — #519
 
 Checkov scans infrastructure-as-code and container definitions. It **already**
