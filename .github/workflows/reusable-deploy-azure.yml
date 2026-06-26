@@ -321,21 +321,30 @@ jobs:
           base="https://${UI_FQDN}"
           echo "Smoke-checking deployed UI at ${base}"
           # ACA scales to zero — the first request after idle triggers a cold
-          # start, so retry with backoff before declaring the UI unreachable.
+          # start, so retry with increasing backoff before declaring the UI
+          # unreachable.
           attempts=10
-          delay=6
+          delay=3
+          max_delay=30
           check() {
             url="$1"
             expect_substr="$2"
+            wait=$delay
             for i in $(seq 1 "$attempts"); do
-              body="$(curl -fsS --max-time 30 "$url" 2>/dev/null || true)"
-              code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$url" 2>/dev/null || echo 000)"
-              if [ "$code" = "200" ] && printf '%s' "$body" | grep -q "$expect_substr"; then
+              # Single request per attempt: capture body and status code together
+              # so they describe the same response (no skew from two requests).
+              resp="$(curl -sS --max-time 30 -w '\n%{http_code}' "$url" 2>/dev/null || true)"
+              code="${resp##*$'\n'}"
+              body="${resp%$'\n'*}"
+              # Fixed-string match (-F): expect_substr is literal, not a regex.
+              if [ "$code" = "200" ] && printf '%s' "$body" | grep -qF "$expect_substr"; then
                 echo "OK  ${url} -> 200 (matched '${expect_substr}')"
                 return 0
               fi
-              echo "  attempt ${i}/${attempts}: ${url} -> ${code} (waiting ${delay}s)"
-              sleep "$delay"
+              echo "  attempt ${i}/${attempts}: ${url} -> ${code:-000} (waiting ${wait}s)"
+              sleep "$wait"
+              wait=$(( wait * 2 ))
+              [ "$wait" -gt "$max_delay" ] && wait=$max_delay
             done
             echo "FAIL ${url}: did not return 200 with '${expect_substr}' after ${attempts} attempts" >&2
             return 1
