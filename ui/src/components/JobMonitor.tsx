@@ -3,10 +3,15 @@ import {
   fetchJobs,
   fetchJobDetail,
   fetchJobLogs,
+  fetchJobProgress,
+  fetchJobProgressSummary,
   type JobSummary,
   type JobDetailResponse,
   type LogEntry,
+  type ProgressEvent,
+  type StageProgressSummary,
 } from '../api/jobs';
+import StageTimeline from './StageTimeline';
 
 function badgeClass(status: string): string {
   if (status.includes('failed') || status.includes('error')) return 'badge badge-error';
@@ -58,6 +63,8 @@ const JobMonitor: React.FC = () => {
   const [selectedJob, setSelectedJob] = useState<JobDetailResponse | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [progressEvents, setProgressEvents] = useState<ProgressEvent[]>([]);
+  const [progressSummary, setProgressSummary] = useState<StageProgressSummary | null>(null);
 
   useEffect(() => {
     loadJobs();
@@ -80,13 +87,19 @@ const JobMonitor: React.FC = () => {
   async function selectJob(jobId: string) {
     setDetailError(null);
     setLogsLoading(true);
+    setProgressEvents([]);
+    setProgressSummary(null);
     try {
-      const [detail, logsData] = await Promise.all([
+      const [detail, logsData, progress, summary] = await Promise.all([
         fetchJobDetail(jobId),
         fetchJobLogs(jobId),
+        fetchJobProgress(jobId).catch(() => null),
+        fetchJobProgressSummary(jobId).catch(() => null),
       ]);
       setSelectedJob(detail);
       setLogs(logsData.logs);
+      setProgressEvents(progress?.events ?? []);
+      setProgressSummary(summary);
     } catch (err) {
       setDetailError(err instanceof Error ? err.message : 'Failed to load job detail');
     } finally {
@@ -191,6 +204,9 @@ const JobMonitor: React.FC = () => {
               </>
             )}
           </dl>
+
+          <h3>Pipeline Stages</h3>
+          <StageTimeline events={progressEvents} summary={progressSummary} />
 
           <h3>Logs</h3>
           {logsLoading ? (

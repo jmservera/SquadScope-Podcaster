@@ -255,6 +255,87 @@
   background: #2563eb;
 }
 
+.badge-muted {
+  background: #6b7280;
+}
+
+/* Pipeline stage timeline / Gantt view (#474) */
+.stage-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+
+.stage-row {
+  display: grid;
+  grid-template-columns: 88px 1fr 160px;
+  align-items: center;
+  gap: 12px;
+}
+
+.stage-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.stage-track {
+  position: relative;
+  height: 18px;
+  background: #f1f5f9;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.stage-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  min-width: 4px;
+}
+
+.stage-bar-completed {
+  background: #16a34a;
+}
+
+.stage-bar-in_progress {
+  background: #2563eb;
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.25) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.25) 50%,
+    rgba(255, 255, 255, 0.25) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 16px 16px;
+}
+
+.stage-bar-failed {
+  background: #dc2626;
+}
+
+.stage-bar-skipped {
+  background: #d1d5db;
+}
+
+.stage-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.stage-duration {
+  font-size: 0.8rem;
+  color: #475569;
+  min-width: 48px;
+  text-align: right;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

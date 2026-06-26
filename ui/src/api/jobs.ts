@@ -42,6 +42,39 @@ export interface JobLogsResponse {
   logs: LogEntry[];
 }
 
+export interface ProgressEvent {
+  seq: number;
+  at: string | null;
+  stage: string;
+  phase?: string | null;
+  segment_index?: number | null;
+  segment_total?: number | null;
+  percent?: number | null;
+  message?: string | null;
+}
+
+export interface ProgressResponse {
+  job_id: string;
+  current: Record<string, unknown> | null;
+  events: ProgressEvent[];
+  last_seq: number;
+  terminal: boolean;
+}
+
+export interface StageProgressSummary {
+  job_id: string;
+  stage: string | null;
+  phase: string | null;
+  segment_index: number | null;
+  segment_total: number | null;
+  percent: number | null;
+  message: string | null;
+  updated_at: string | null;
+  terminal: boolean;
+  eta: string | null;
+  eta_seconds: number | null;
+}
+
 export async function fetchJobs(limit = 20, offset = 0): Promise<JobListResponse> {
   const resp = await authenticatedFetch(
     `${API_BASE}/api/jobs?limit=${limit}&offset=${offset}`
@@ -59,5 +92,21 @@ export async function fetchJobDetail(jobId: string): Promise<JobDetailResponse> 
 export async function fetchJobLogs(jobId: string): Promise<JobLogsResponse> {
   const resp = await authenticatedFetch(`${API_BASE}/api/jobs/${encodeURIComponent(jobId)}/logs`);
   if (!resp.ok) throw new Error(`Failed to fetch logs for ${jobId}: ${resp.status}`);
+  return resp.json();
+}
+
+export async function fetchJobProgress(jobId: string, since = 0): Promise<ProgressResponse> {
+  const resp = await authenticatedFetch(
+    `${API_BASE}/api/jobs/${encodeURIComponent(jobId)}/progress?since=${since}`
+  );
+  if (!resp.ok) throw new Error(`Failed to fetch progress for ${jobId}: ${resp.status}`);
+  return resp.json();
+}
+
+export async function fetchJobProgressSummary(jobId: string): Promise<StageProgressSummary> {
+  const resp = await authenticatedFetch(
+    `${API_BASE}/api/jobs/${encodeURIComponent(jobId)}/progress/summary`
+  );
+  if (!resp.ok) throw new Error(`Failed to fetch progress summary for ${jobId}: ${resp.status}`);
   return resp.json();
 }
