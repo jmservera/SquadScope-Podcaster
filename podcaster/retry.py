@@ -53,7 +53,7 @@ def retry_call(
     retry_on: tuple[type[BaseException], ...] = (Exception,),
     give_up_on: tuple[type[BaseException], ...] = (),
     on_retry: Callable[[int, BaseException], None] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
     description: str = "task",
 ) -> T:
     """Call ``fn`` with bounded retries and exponential backoff.
@@ -66,13 +66,18 @@ def retry_call(
         backoff: Multiplier applied to the delay after each failed attempt.
         max_delay: Upper bound for any single backoff delay.
         jitter: Fraction (0..1) of the delay added as uniform random jitter to
-            avoid thundering-herd retries across parallel workers.
-        retry_on: Exception types that trigger a retry.
+            avoid thundering-herd retries across parallel workers.  Negative
+            values are clamped to ``0``.
+        retry_on: Exception types that trigger a retry.  ``KeyboardInterrupt``
+            and ``SystemExit`` always propagate immediately regardless of this
+            setting.
         give_up_on: Exception types that must propagate immediately, even when
             they would otherwise match ``retry_on`` (takes precedence).
         on_retry: Optional callback invoked as ``on_retry(attempt, exc)`` after a
             failed attempt that will be retried (e.g. to report task progress).
-        sleep: Sleep function (injectable for tests).
+        sleep: Sleep function (injectable for tests).  Defaults to
+            :func:`time.sleep`, resolved at call time so monkeypatching
+            ``podcaster.retry.time.sleep`` takes effect.
         description: Human-readable task label used in log messages.
 
     Returns:
@@ -80,14 +85,19 @@ def retry_call(
 
     Raises:
         The last exception raised by ``fn`` once attempts are exhausted, or
-        immediately for any ``give_up_on`` / non-``retry_on`` exception.
+        immediately for any ``give_up_on`` / non-``retry_on`` exception, or for
+        ``KeyboardInterrupt`` / ``SystemExit``.
     """
     attempts = max(1, attempts)
+    jitter = max(0.0, jitter)
+    _sleep = sleep if sleep is not None else time.sleep
     last_exc: BaseException | None = None
     for attempt in range(1, attempts + 1):
         try:
             return fn()
         except give_up_on:
+            raise
+        except (KeyboardInterrupt, SystemExit):
             raise
         except retry_on as exc:
             last_exc = exc
@@ -105,7 +115,7 @@ def retry_call(
             )
             if on_retry is not None:
                 on_retry(attempt, exc)
-            sleep(delay)
+            _sleep(delay)
     # Unreachable: the loop either returns or raises.  Kept for type-checkers.
     assert last_exc is not None  # pragma: no cover
     raise last_exc  # pragma: no cover

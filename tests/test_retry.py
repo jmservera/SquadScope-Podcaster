@@ -155,3 +155,52 @@ class TestRetryCall:
         assert retry._env_int("PODCASTER_TASK_RETRIES", 3) == 7
         monkeypatch.setenv("PODCASTER_TASK_RETRIES", "bogus")
         assert retry._env_int("PODCASTER_TASK_RETRIES", 3) == 3
+
+    def test_default_sleep_honors_monkeypatched_time_sleep(self, monkeypatch):
+        # The default sleep must be resolved at call time so patching
+        # ``podcaster.retry.time.sleep`` actually takes effect (issue #483 review).
+        slept: list[float] = []
+        monkeypatch.setattr("podcaster.retry.time.sleep", lambda s: slept.append(s))
+
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise RuntimeError("transient")
+            return "ok"
+
+        # No explicit ``sleep=`` — relies on the default.
+        assert retry_call(fn, attempts=3, base_delay=0.01, jitter=0.0) == "ok"
+        assert slept == [0.01]
+
+    def test_keyboard_interrupt_propagates_even_when_in_retry_on(self):
+        # KeyboardInterrupt/SystemExit must always propagate immediately, even
+        # if a caller foolishly lists BaseException in retry_on.
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            raise KeyboardInterrupt()
+
+        with pytest.raises(KeyboardInterrupt):
+            retry_call(fn, attempts=5, retry_on=(BaseException,), sleep=_no_sleep)
+        assert calls["n"] == 1  # not retried
+
+    def test_negative_jitter_is_clamped(self):
+        delays: list[float] = []
+
+        def fn():
+            raise RuntimeError("fail")
+
+        with pytest.raises(RuntimeError):
+            retry_call(
+                fn,
+                attempts=3,
+                base_delay=1.0,
+                backoff=1.0,
+                jitter=-5.0,
+                sleep=delays.append,
+            )
+        # Negative jitter clamped to 0 → delay never drops below base_delay.
+        assert all(d == 1.0 for d in delays)
