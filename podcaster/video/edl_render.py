@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -97,6 +97,7 @@ def _escape_drawtext(text: str) -> str:
     out = text.replace("\\", "\\\\")
     out = out.replace(":", r"\:")
     out = out.replace("'", r"\'")
+    out = out.replace(",", r"\,")
     out = out.replace("%", r"\%")
     return out
 
@@ -152,6 +153,9 @@ def _segment_filtergraph(
 
     if input_index is None:
         raise EdlRenderError(f"clip segment {index} has no resolved input index")
+
+    if not segment.source_ranges:
+        raise EdlRenderError(f"clip segment {index} has no source ranges to render")
 
     # Trim each kept source range, then concat when there is more than one.
     part_labels: list[str] = []

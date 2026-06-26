@@ -165,6 +165,12 @@ def test_missing_clip_path_raises():
         build_render_plan(edl, {}, "/out.mp4")
 
 
+def test_clip_segment_without_source_ranges_raises():
+    edl = _edl([_clip_seg(0, 10_000, "clip-a", [])])
+    with pytest.raises(EdlRenderError, match="no source ranges"):
+        build_render_plan(edl, {"clip-a": "/clips/a.mp4"}, "/out.mp4")
+
+
 def test_render_edl_propagates_ffmpeg_failure():
     edl = _edl([_clip_seg(0, 10_000, "clip-a", [(0, 10_000)])])
     calls = {}

@@ -16,7 +16,7 @@ EditDecisionList (#488) ─► build_render_plan ─► ffmpeg filter_complex �
 
 Built segment-by-segment, then joined:
 
-- **cuts / trims** — each clip segment `source_range` becomes `trim`+`setpts`;
+- **cuts / trims** — each clip segment `source_ranges` entry becomes `trim`+`setpts`;
   multiple ranges are `concat`-enated, so the clip plays exactly the kept material;
 - **intermission fills** — a `color` source of the segment length;
 - **title cards** — a `drawtext` overlay enabled for the card's leading window;
