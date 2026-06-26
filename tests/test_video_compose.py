@@ -2549,3 +2549,75 @@ class TestComposeTreeRealFfmpeg:
         h, m, s = hms.split(":")
         actual = int(h) * 3600 + int(m) * 60 + float(s)
         assert actual == pytest.approx(expected, abs=0.5)
+
+
+class TestNormalizeTaskReporter:
+    """Per-worker task progress wiring for the parallel normalize stage (#482)."""
+
+    def test_reporter_receives_running_and_done_per_segment(self, tmp_path):
+        runner = _mock_runner()
+        seg1 = _make_recorded_segment(owner="a", name="b", duration=10.0,
+                                      video_path=tmp_path / "seg1.webm")
+        seg2 = _make_recorded_segment(owner="c", name="d", duration=10.0,
+                                      video_path=tmp_path / "seg2.webm")
+        (tmp_path / "seg1.webm").touch()
+        (tmp_path / "seg2.webm").touch()
+
+        events: list[tuple[str, str]] = []
+
+        def reporter(task_id, status, **kwargs):
+            events.append((task_id, status))
+
+        compose_video(
+            segments=[seg1, seg2],
+            output_dir=tmp_path / "out",
+            runner=runner,
+            task_reporter=reporter,
+        )
+
+        # Each segment reports a running then a done task event.
+        assert ("norm_000", "running") in events
+        assert ("norm_000", "done") in events
+        assert ("norm_001", "running") in events
+        assert ("norm_001", "done") in events
+        # running precedes done for each task.
+        for tid in ("norm_000", "norm_001"):
+            statuses = [s for (t, s) in events if t == tid]
+            assert statuses == ["running", "done"]
+
+    def test_reporter_reports_failed_on_normalize_error(self, tmp_path):
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        def _boom(cmd):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        events: list[tuple[str, str]] = []
+
+        with pytest.raises(subprocess.CalledProcessError):
+            compose_video(
+                segments=[seg],
+                output_dir=tmp_path / "out",
+                runner=_boom,
+                task_reporter=lambda task_id, status, **kw: events.append((task_id, status)),
+            )
+
+        assert ("norm_000", "running") in events
+        assert ("norm_000", "failed") in events
+        assert ("norm_000", "done") not in events
+
+    def test_failing_reporter_never_breaks_composition(self, tmp_path):
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "seg.webm")
+        (tmp_path / "seg.webm").touch()
+
+        def _bad_reporter(task_id, status, **kwargs):
+            raise RuntimeError("reporter blew up")
+
+        result = compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=runner,
+            task_reporter=_bad_reporter,
+        )
+        assert result.segment_count == 1

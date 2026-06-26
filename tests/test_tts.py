@@ -219,6 +219,45 @@ def test_synthesize_two_voice_runs_each_turn_when_allowed():
     assert calls == ["fable", "alloy"]
 
 
+def test_synthesize_two_voice_reports_per_segment_progress():
+    config = _production_config()
+    plan = build_voice_plan([("host_a", "one"), ("host_b", "two"), ("host_a", "three")], config)
+    decision = synthesis_decision(config, dry_run=False, review_approved=True)
+    updates: list[tuple[int, int]] = []
+
+    audio = synthesize_two_voice(
+        plan,
+        config,
+        decision,
+        token_provider=lambda scope: "t",
+        transport=lambda request: b"audio",
+        progress=lambda done, total: updates.append((done, total)),
+    )
+    assert len(audio) == 3
+    # Reports a monotonically advancing N/M counter for an in-flight job (#470).
+    assert updates == [(1, 3), (2, 3), (3, 3)]
+
+
+def test_synthesize_two_voice_progress_callback_failure_is_swallowed():
+    config = _production_config()
+    plan = build_voice_plan([("host_a", "one"), ("host_b", "two")], config)
+    decision = synthesis_decision(config, dry_run=False, review_approved=True)
+
+    def boom(done, total):
+        raise RuntimeError("progress sink down")
+
+    # A failing progress callback must never break synthesis.
+    audio = synthesize_two_voice(
+        plan,
+        config,
+        decision,
+        token_provider=lambda scope: "t",
+        transport=lambda request: b"audio",
+        progress=boom,
+    )
+    assert audio == [b"audio", b"audio"]
+
+
 def _styled_config() -> TtsConfig:
     env = _production_env()
     env["AZURE_OPENAI_TTS_STYLE_HOST_A"] = "bright and energetic"

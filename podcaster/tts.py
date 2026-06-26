@@ -325,6 +325,7 @@ def synthesize_two_voice(
     *,
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
+    progress: Callable[[int, int], None] | None = None,
     pool: "TtsPoolConfig | None" = None,
 ) -> list[bytes]:
     """Synthesize every turn, but only when the gating decision allows it.
@@ -333,11 +334,17 @@ def synthesize_two_voice(
     :class:`PermissionError`, so synthesis can never run for a dry run, an
     unconfigured environment, or an unreviewed episode.
 
+    ``progress`` (issue #470): when supplied, it is called as
+    ``progress(completed, total)`` after each turn so callers can surface a live
+    "recording N/M" counter for an in-flight job.  A failing callback never
+    aborts synthesis.
+
     When ``pool`` is supplied, segments are synthesized through the bounded
     :func:`podcaster.tts_pool.synthesize_plan_concurrent` pool, which owns both
-    concurrency *and* the retry/backoff policy and keeps results in plan order.
-    A pool sized to one worker (or a single-turn plan) still runs sequentially
-    but retains the pool's rate-limit retry handling. With ``pool`` omitted the
+    concurrency *and* the retry/backoff policy and keeps results in plan order
+    (``progress`` is forwarded and fires as each segment completes). A pool
+    sized to one worker (or a single-turn plan) still runs sequentially but
+    retains the pool's rate-limit retry handling. With ``pool`` omitted the
     calls run sequentially with no retries, which is the historical behaviour.
     """
 
@@ -357,11 +364,27 @@ def synthesize_two_voice(
             pool=pool,
             token_provider=token_provider,
             transport=transport,
+            progress=progress,
         )
-    return [
-        synthesize_turn(turn, config, token_provider=token_provider, transport=transport)
-        for turn in plan
-    ]
+    total = len(plan)
+    outputs: list[bytes] = []
+    progress_failed = False
+    for turn in plan:
+        outputs.append(
+            synthesize_turn(turn, config, token_provider=token_provider, transport=transport)
+        )
+        if progress is not None and not progress_failed:
+            try:
+                progress(len(outputs), total)
+            except Exception:  # noqa: BLE001 - progress reporting must not break synthesis
+                # Log once and stop calling back so a consistently-failing
+                # callback can't spam a warning per segment (issue #470).
+                progress_failed = True
+                logging.warning(
+                    "tts progress callback failed; disabling further progress reports",
+                    exc_info=True,
+                )
+    return outputs
 
 
 def _default_transport(request: Request) -> bytes:
