@@ -2296,3 +2296,76 @@ class TestRecordEpisodeCheckpointResume:
         assert store.exists("recording_000.mp4") is True
         # … and the local copy was deleted (disk holds only the current file).
         assert recorded_paths and not recorded_paths[0].exists()
+
+
+# --- Per-task recording retry (issue #483) ---
+
+
+@pytest.mark.usefixtures("stub_compose")
+class TestRecordEpisodeTaskRetry:
+    @pytest.fixture(autouse=True)
+    def _instant_retry(self, monkeypatch):
+        monkeypatch.setattr("podcaster.retry.time.sleep", lambda _s: None)
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_transient_recording_failure_retries_only_that_segment(
+        self, mock_record, mock_pw, tmp_path
+    ):
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        attempts: dict[str, int] = {}
+
+        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+            key = segment.repo.name
+            attempts[key] = attempts.get(key, 0) + 1
+            # Segment "ruff" fails transiently on its first attempt only.
+            if key == "ruff" and attempts[key] == 1:
+                raise RuntimeError("flaky navigation")
+            path = Path(output_dir) / f"{key}_000.mp4"
+            path.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+            return RecordedSegment(segment=segment, video_path=path)
+
+        mock_record.side_effect = _fake_record
+
+        plan = _make_plan(
+            _make_segment("microsoft", "vscode", 0, 20),
+            _make_segment("astral-sh", "ruff", 20, 20),
+            total=40.0,
+        )
+        result = record_episode(plan, output_dir=out_dir)
+
+        # The whole episode completed despite one segment's transient failure.
+        assert len(result.recorded) == 2
+        # Only the failing segment was retried; the healthy one ran once.
+        assert attempts["ruff"] == 2
+        assert attempts["vscode"] == 1
+
+    @patch("podcaster.video.video_gen.RECORD_TASK_RETRIES", 2)
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    @patch("podcaster.video.video_gen._record_segment")
+    def test_exhausted_recording_retries_propagate(
+        self, mock_record, mock_pw, tmp_path
+    ):
+        pw_instance = MagicMock()
+        mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
+        mock_pw.return_value.__exit__ = MagicMock(return_value=False)
+
+        calls = {"n": 0}
+
+        def _always_fail(browser, segment, output_dir, check_accessibility, source_url=None):
+            calls["n"] += 1
+            raise RuntimeError("persistent failure")
+
+        mock_record.side_effect = _always_fail
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        with pytest.raises(RuntimeError, match="persistent failure"):
+            record_episode(plan, output_dir=tmp_path / "out")
+        assert calls["n"] == 2
