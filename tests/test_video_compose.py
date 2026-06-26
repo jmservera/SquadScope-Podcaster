@@ -2359,6 +2359,50 @@ class TestComposePairwiseParallel:
         # The partially-written output was cleaned up.
         assert not target.exists()
 
+    def test_compose_pairwise_clamps_concurrency_to_hard_cap(self, tmp_path, monkeypatch):
+        """A caller-supplied concurrency above MAX_COMPOSE_CONCURRENCY is clamped
+        before dispatch so the hard cap cannot be bypassed (issue #481 review)."""
+        captured: dict[str, int] = {}
+
+        def _spy(*args, **kwargs):
+            captured["concurrency"] = kwargs["concurrency"]
+
+        monkeypatch.setattr(vc, "_compose_pairwise_parallel", _spy)
+        n = 4
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+
+        vc._compose_pairwise(
+            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+            None, None, tmp_path / "out.mp4", _recording_runner(), tmp_path,
+            concurrency=vc.MAX_COMPOSE_CONCURRENCY + 100,
+        )
+
+        assert captured["concurrency"] == vc.MAX_COMPOSE_CONCURRENCY
+
+    def test_compose_pairwise_clamps_concurrency_floor(self, tmp_path, monkeypatch):
+        """A concurrency below 1 is clamped up to the sequential path (>=1)."""
+        called = {"parallel": False, "sequential": False}
+
+        monkeypatch.setattr(
+            vc, "_compose_pairwise_parallel",
+            lambda *a, **k: called.__setitem__("parallel", True),
+        )
+        monkeypatch.setattr(
+            vc, "_compose_pairwise_sequential",
+            lambda *a, **k: called.__setitem__("sequential", True),
+        )
+        n = 4
+        paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
+
+        vc._compose_pairwise(
+            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
+            None, None, tmp_path / "out.mp4", _recording_runner(), tmp_path,
+            concurrency=0,
+        )
+
+        # Clamped to 1 → sequential left-fold, never the parallel tree.
+        assert called["sequential"] and not called["parallel"]
+
     def test_each_boundary_transition_used_once(self, tmp_path):
         """Every boundary's distinct transition is applied exactly once."""
         runner = _recording_runner()

@@ -1488,7 +1488,12 @@ def _compose_pairwise(
     same on-screen duration.  The tree merely re-orders the passes so level-0
     pairs run in parallel — and, as a side benefit, passes each segment through
     ``~log2(N)`` re-encode generations instead of up to ``N`` in the left-fold.
+
+    ``concurrency`` is always clamped to ``[1, MAX_COMPOSE_CONCURRENCY]`` so a
+    caller-supplied override cannot bypass the hard cap and spawn an unbounded
+    number of concurrent ffmpeg processes (issue #481 review).
     """
+    concurrency = max(1, min(MAX_COMPOSE_CONCURRENCY, concurrency))
     if concurrency > 1 and len(normalized_paths) >= 3:
         _compose_pairwise_parallel(
             normalized_paths,
