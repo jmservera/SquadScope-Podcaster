@@ -48,6 +48,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     _PLAYWRIGHT_AVAILABLE = False
 
+from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
 from podcaster.video.recording_pool import (
     MAX_RECORDING_CONCURRENCY,
     RecordingPoolConfig,
@@ -154,6 +155,14 @@ def _env_int(name: str, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid int for %s=%r; using default %d", name, raw, default)
         return default
+
+
+# Bounded per-task retries for browser recording (issue #483).  A single
+# segment whose recording fails transiently (flaky navigation, browser hiccup)
+# is retried in isolation rather than aborting the whole episode.  Recording is
+# idempotent: each attempt records into the same destination and a successful
+# attempt is blob-checkpointed, so a restart skips it.  ``1`` disables retry.
+RECORD_TASK_RETRIES = max(1, _env_int("VIDEO_RECORD_TASK_RETRIES", DEFAULT_TASK_RETRIES))
 
 
 # --- Screenshot-based (hyperframe) capture (issue #387) ---
@@ -2388,9 +2397,13 @@ def record_episode(
             segment.label,
             segment.duration_seconds,
         )
-        recorded = _record_segment(
-            browser, segment, output_dir, check_accessibility,
-            source_url=source_url,
+        recorded = retry_call(
+            lambda: _record_segment(
+                browser, segment, output_dir, check_accessibility,
+                source_url=source_url,
+            ),
+            attempts=RECORD_TASK_RETRIES,
+            description=f"record segment {index} ({segment.label})",
         )
         with checkpoint_lock:
             _checkpoint_recorded_segment(index, recorded, intermediates)
