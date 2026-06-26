@@ -420,8 +420,16 @@ def run_video_generation(
     # Current implementation records locally; production should fan out to container instances.
     try:
         with tempfile.TemporaryDirectory(prefix="video_job_") as tmp:
+            from podcaster.progress import PipelineStage, make_task_reporter
             from podcaster.video.video_compose import compose_video
             from podcaster.video.video_gen import record_episode
+
+            # Per-worker task progress for the parallel normalize stage (#482):
+            # each segment surfaces as a norm_NNN task in the durable progress
+            # document so overlapping workers stay individually observable.
+            normalize_reporter = make_task_reporter(
+                storage, job_id, stage=PipelineStage.COMPOSE
+            )
 
             output_dir = Path(tmp)
 
@@ -519,6 +527,7 @@ def run_video_generation(
                     audio_duration=audio_duration,
                     section_cards=section_cards,
                     intermediates=intermediates,
+                    task_reporter=normalize_reporter,
                 )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
