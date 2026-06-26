@@ -32,10 +32,10 @@ the job runner, and tests share one control flow.
 
 | API | Purpose |
 | --- | --- |
-| `plan_language_branches(languages, default_language="en")` | Ordered, de-duplicated locales; default language first/primary. |
+| `plan_language_branches(languages, default_language="en")` | Ordered, de-duplicated locales; default language first/primary. Locales are normalized to lowercase full tags (e.g. `fr-FR` → `fr-fr`); `pt-BR` and `pt-PT` remain distinct branches. |
 | `shared_artifact_path(job_id, name)` | `jobs/{id}/{name}` — language-independent source assets. |
-| `language_artifact_path(job_id, locale, name)` | `jobs/{id}/{locale}/{name}` for per-language outputs; English stays flat (`jobs/{id}/{name}`) for backward compatibility, or pass `flat_default_language=None` to nest every language. |
-| `run_language_fanout(languages, *, gather_source, process_language, retry, max_workers)` | Gather source once, then run each language with independent retry; returns `FanOutResult`. |
+| `language_artifact_path(job_id, locale, name)` | `jobs/{id}/{locale}/{name}` where `locale` is the full normalized lowercase tag (e.g. `jobs/{id}/fr-fr/…`, `jobs/{id}/pt-br/…`); English stays flat (`jobs/{id}/{name}`) for backward compatibility, or pass `flat_default_language=None` to nest every language. |
+| `run_language_fanout(languages, *, gather_source, process_language, retry, max_workers)` | Gather source once, then run each language with independent retry; returns `FanOutResult`. When `max_workers > 1`, `shared` is passed read-only to all threads — `process_language` must not mutate it. |
 | `RetryPolicy(max_attempts=3)` | Per-branch retry. `NonRetryableError` short-circuits. |
 | `FanOutResult` / `LanguageBranchResult` | Aggregate + per-language outcome (`status`, `attempts`, `payload`, `error`). |
 

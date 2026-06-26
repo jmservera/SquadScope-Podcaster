@@ -28,7 +28,11 @@ def test_shared_artifact_path():
 
 def test_language_artifact_path_nests_non_default():
     assert language_artifact_path("job1", "es", "script.txt") == "jobs/job1/es/script.txt"
-    assert language_artifact_path("job1", "fr-FR", "audio.mp3") == "jobs/job1/fr/audio.mp3"
+    # Full subtag is preserved (fr-FR → fr-fr, not fr)
+    assert language_artifact_path("job1", "fr-FR", "audio.mp3") == "jobs/job1/fr-fr/audio.mp3"
+    # pt-BR and pt-PT produce distinct prefixes
+    assert language_artifact_path("job1", "pt-BR", "audio.mp3") == "jobs/job1/pt-br/audio.mp3"
+    assert language_artifact_path("job1", "pt-PT", "audio.mp3") == "jobs/job1/pt-pt/audio.mp3"
 
 
 def test_language_artifact_path_english_stays_flat_by_default():
@@ -50,7 +54,14 @@ def test_plan_default_language_first():
 
 
 def test_plan_dedupes_and_normalizes_locales():
-    assert plan_language_branches(["es-419", "es", "fr-FR", "en-US"]) == ["en", "es", "fr"]
+    # Exact duplicates (case-insensitive) are deduplicated; full subtags are preserved
+    # so that es and es-419 remain distinct branches (unlike the old primary-subtag collapse).
+    assert plan_language_branches(["es", "ES", "fr-FR", "fr-fr"]) == ["en", "es", "fr-fr"]
+
+
+def test_plan_preserves_distinct_sublocales():
+    # pt-BR and pt-PT must NOT collapse — they are separate language branches
+    assert plan_language_branches(["pt-BR", "pt-PT"]) == ["en", "pt-br", "pt-pt"]
 
 
 def test_plan_accepts_mapping():

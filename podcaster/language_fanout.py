@@ -42,7 +42,13 @@ class NonRetryableError(RuntimeError):
 
 
 def _language_key(locale: str | None) -> str:
-    return (locale or "").split("-", 1)[0].strip().lower()
+    """Return a normalized locale key (full locale, lowercased).
+
+    Full subtags are preserved so that ``pt-BR`` and ``pt-PT`` produce distinct
+    keys (``pt-br`` / ``pt-pt``), maintaining per-locale isolation for artifact
+    paths and retry branches.
+    """
+    return (locale or "").strip().lower()
 
 
 def shared_artifact_path(job_id: str, name: str) -> str:
@@ -59,6 +65,10 @@ def language_artifact_path(
     flat_default_language: str | None = DEFAULT_LANGUAGE,
 ) -> str:
     """Path for a per-language artifact: ``jobs/{id}/{locale}/{name}``.
+
+    *locale* is normalized to lowercase (e.g. ``fr-FR`` → ``fr-fr``,
+    ``pt-BR`` → ``pt-br``); full subtags are preserved so that ``pt-BR`` and
+    ``pt-PT`` produce distinct artifact prefixes.
 
     To preserve existing English layout, the default language can stay flat
     (``jobs/{id}/{name}``) by leaving ``flat_default_language`` at ``"en"``; pass
@@ -225,6 +235,12 @@ def run_language_fanout(
             Exceptions are retried per :class:`RetryPolicy`; raise
             :class:`NonRetryableError` to fail immediately. A failure isolates to
             that branch and never re-runs ``gather_source``.
+
+            **Thread safety**: when ``max_workers > 1``, the same ``shared``
+            object is passed to all threads concurrently. ``process_language``
+            **must treat ``shared`` as read-only**; any mutation of shared state
+            introduces data races. If per-branch mutation is needed, deep-copy
+            the relevant parts inside ``process_language``.
         retry: Per-branch retry policy (default 3 attempts).
         default_language: Always-present primary language.
         max_workers: >1 runs branches in parallel threads.
