@@ -8,6 +8,7 @@ import { useAuth } from './components/AuthProvider';
 import LoginButton from './components/LoginButton';
 import Dashboard from './components/Dashboard';
 import JobMonitor from './components/JobMonitor';
+import RunComparison from './components/RunComparison';
 import EpisodeList from './components/EpisodeList';
 import CredentialSettings from './components/CredentialSettings';
 import PodcastConfigEditor from './components/PodcastConfigEditor';
@@ -61,6 +62,16 @@ const App: React.FC = () => {
             <ProtectedRoute>
               <Layout>
                 <JobMonitor />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/comparison"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <RunComparison />
               </Layout>
             </ProtectedRoute>
           }

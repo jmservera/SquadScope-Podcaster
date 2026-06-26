@@ -9,6 +9,7 @@ interface LayoutProps {
 const navItems = [
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/jobs', label: 'Jobs' },
+  { to: '/comparison', label: 'Comparison' },
   { to: '/episodes', label: 'Episodes' },
   { to: '/credentials', label: 'Credentials' },
   { to: '/podcast-config', label: 'Config' },
