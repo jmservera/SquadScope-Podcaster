@@ -22,6 +22,7 @@ from podcaster.video.sync_plan import (
 from podcaster.video.video_gen import (
     _NEUTRALIZE_FIXED_STICKY_JS,
     _PAGE_ZOOM_JS,
+    GITHUB_JUMP_MAX_PX_PER_FRAME,
     GITHUB_README_TOP_MARGIN,
     HEIGHT,
     IMAGE_ZOOM_MIN_SIZE_PX,
@@ -45,6 +46,7 @@ from podcaster.video.video_gen import (
     _correct_repo_from_article,
     _dismiss_cookie_consent,
     _dismiss_overlays,
+    _ease_in_out,
     _ease_linear,
     _ease_out_cubic,
     _extract_website_url,
@@ -433,6 +435,18 @@ class TestEasingFunctions:
         # At the midpoint easeOutCubic is already well past halfway (fast start).
         assert _ease_out_cubic(0.5) > 0.5
 
+    def test_ease_in_out_endpoints_and_symmetry(self):
+        # Smoothstep: gentle start and finish, exactly half at the midpoint
+        # (no front-loaded leap) — the property that makes the README travel
+        # smooth (issue #543).
+        assert _ease_in_out(0.0) == 0.0
+        assert _ease_in_out(1.0) == 1.0
+        assert _ease_in_out(0.5) == 0.5
+
+    def test_ease_in_out_starts_slow(self):
+        # Unlike ease_out_cubic, the opening interval moves less than linear.
+        assert _ease_in_out(0.1) < 0.1
+
 
 # --- README-first scroll for GitHub repos (issue #415) ---
 
@@ -484,6 +498,35 @@ class TestGithubScrollPlan:
         # Not enough frames to stage header + jump + reading (header == 0).
         assert _github_scroll_plan(8000, HEIGHT, 12000, 2) is None
         assert _github_scroll_plan(8000, HEIGHT, 12000, 0) == []
+
+    def test_travel_phase_never_jumps_hard(self):
+        # The regression behind #543: the travel into the README must never move
+        # more than the smooth-travel cap in a single frame (no hard cut).  This
+        # is checked across the WHOLE plan, including the early travel frames
+        # that the old ease_out_cubic jump front-loaded with >1000px leaps.
+        for readme_y, scrollable, frames in (
+            (8000, 12000, 300),
+            (6000, 9000, 240),
+            (5000, 50000, 300),
+            (3000, 4000, 180),
+        ):
+            plan = _github_scroll_plan(readme_y, HEIGHT, scrollable, frames)
+            assert plan is not None
+            deltas = [b - a for a, b in zip(plan, plan[1:])]
+            # +1 tolerance for integer rounding in _scroll_positions.
+            assert max(deltas) <= GITHUB_JUMP_MAX_PX_PER_FRAME + 1, (
+                f"hard jump of {max(deltas)}px for readme_y={readme_y}"
+            )
+
+    def test_deep_readme_short_segment_clamps_instead_of_jumping(self):
+        # README far down, few frames: rather than a hard jump it travels only as
+        # far as the cap allows (still smooth) and never exceeds the cap.
+        plan = _github_scroll_plan(20000, HEIGHT, 40000, 120)
+        assert plan is not None
+        deltas = [b - a for a, b in zip(plan, plan[1:])]
+        assert max(deltas) <= GITHUB_JUMP_MAX_PX_PER_FRAME + 1
+        # Did not pretend to reach the deep README in one segment.
+        assert max(plan) < 20000
 
 
 class TestScrollGithubReadme:
