@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: prod-release
@@ -32,8 +31,10 @@ jobs:
     steps:
       - name: Resolve image tag
         id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          tag="${{ inputs.tag }}"
+          tag="$INPUT_TAG"
           if [ -z "$tag" ]; then
             tag="${GITHUB_SHA::12}"
           fi

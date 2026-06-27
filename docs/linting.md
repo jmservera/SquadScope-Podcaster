@@ -260,3 +260,26 @@ By severity: **7 High, 9 Medium, 1 Informational**.
 
 > Fixes are deferred to Phase B (#521); blocking enforcement to Phase C.
 
+### Phase B progress (#521) — zizmor HIGH cleared
+
+All **7 High** findings have been fixed; the new severity breakdown is
+**0 High, 9 Medium, 1 Informational**. What was fixed:
+
+- **template-injection (3 → 0)** in 2 workflows — moved interpolated
+  `${{ inputs.* }}` expressions into `env:` variables and referenced them as
+  quoted shell vars in `run:` blocks:
+  - `release.yml` — `inputs.tag` → `INPUT_TAG`.
+  - `reusable-publish-image.yml` — `inputs.dockerfile` → `DOCKERFILE` and
+    `inputs.build_context` → `BUILD_CONTEXT`.
+- **unpinned-uses (3 → 0)** — pinned 3 official actions in
+  `integration-tests.yml` to full commit SHAs (with `# vX.Y.Z` comments):
+  `actions/checkout@v4` → `34e1148…` (v4.3.1),
+  `actions/setup-python@v5` → `a26af69…` (v5.6.0),
+  `actions/setup-node@v4` → `49933ea…` (v4.4.0).
+- **excessive-permissions (1 → 0)** in `release.yml` — dropped the workflow-level
+  `id-token: write`; least-privilege `contents: read` stays at the top level and
+  `id-token: write` remains scoped to the individual jobs that need OIDC.
+
+> Out of scope for this HIGH slice: the **Medium** `secrets-inherit` (8) and
+> `artipacked` (1) findings remain deferred in the non-blocking baseline.
+

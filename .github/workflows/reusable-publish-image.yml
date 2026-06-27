@@ -81,7 +81,10 @@ jobs:
 
       - name: Build image
         if: steps.gate.outputs.approved == 'true'
-        run: docker build -f "${{ inputs.dockerfile }}" -t "$IMAGE_REF" ${{ inputs.build_context }}
+        env:
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          BUILD_CONTEXT: ${{ inputs.build_context }}
+        run: docker build -f "$DOCKERFILE" -t "$IMAGE_REF" "$BUILD_CONTEXT"
 
       - name: Scan image before push (Trivy)
         if: steps.gate.outputs.approved == 'true'
