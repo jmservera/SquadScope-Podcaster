@@ -79,10 +79,10 @@ jobs:
         run: python -m compileall podcaster
 
   lint:
-    # Phase A of the DevSecOps Guardrails epic (#518): Ruff runs in
-    # warning-only mode. `continue-on-error` keeps the lane non-blocking so the
-    # baseline is visible as annotations without failing CI. Enforcement is
-    # deferred to Phase C. See jmservera/SquadScope-Coordinator#33.
+    # Phase C of the DevSecOps Guardrails epic (#523): Ruff runs in BLOCKING
+    # mode. `ruff check` and `ruff format --check` fail CI on any violation;
+    # Phase B (#521) cleared the baseline to zero so this gates against
+    # regressions. See jmservera/SquadScope-Coordinator#33.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
