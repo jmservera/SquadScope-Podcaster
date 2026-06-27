@@ -338,6 +338,14 @@ OUTRO_BLOB_PATH = "assets/video/outro.mp4"
 CONCAT_AUDIO_SAMPLE_RATE = "48000"
 CONCAT_AUDIO_CHANNELS = "2"
 
+# Safety margin (seconds) added when padding the audio track with trailing
+# silence so the muxed audio is *always* at least as long as the video. The
+# concat demuxer's declared container duration can under-report the true frame
+# span by up to a frame or so, which previously left the audio a few tens of
+# milliseconds short and tripped Spotify's VIDEO_DURATION_LONGER_THAN_AUDIO
+# check (issue #549). ~3 frames @30fps of imperceptible trailing silence.
+AUDIO_PAD_EPSILON = 0.1
+
 
 def _default_intro_outro_cache_dir() -> Path:
     """Default on-disk cache for downloaded intro/outro clips.
@@ -812,6 +820,42 @@ def _probe_media(path: Path, run: "CommandRunner") -> tuple[bool, float]:
     return has_audio, duration
 
 
+def _probe_video_frame_span(path: Path, run: "CommandRunner", fallback: float = 0.0) -> float:
+    """Probe the *true* video frame span of *path* in seconds.
+
+    ``_probe_media`` reads the container's **declared** ``format.duration``, which
+    a concat-demuxer stream-copy can under-report relative to the real frame span
+    (issue #549). The true span is ``frame_count / fps``: count the coded video
+    packets (one per frame for H.264) and divide by the average frame rate. On any
+    probe failure, returns *fallback* so callers degrade gracefully.
+    """
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-count_packets",
+        "-show_entries",
+        "stream=nb_read_packets,r_frame_rate",
+        "-of",
+        "json",
+        str(path),
+    ]
+    try:
+        proc = run(cmd)
+        info = json.loads(proc.stdout or "{}")
+        stream = (info.get("streams") or [{}])[0]
+        nb_packets = int(stream.get("nb_read_packets", 0) or 0)
+        num, _, den = str(stream.get("r_frame_rate", "")).partition("/")
+        fps = float(num) / float(den) if den and float(den) != 0 else 0.0
+    except Exception:  # noqa: BLE001 — probing is best-effort
+        return fallback
+    if nb_packets <= 0 or fps <= 0:
+        return fallback
+    return nb_packets / fps
+
+
 def _build_canonical_av_cmd(
     input_path: Path,
     output_path: Path,
@@ -967,9 +1011,12 @@ def _build_audio_overlay_cmd(
 
     # Spotify rejects with VIDEO_DURATION_LONGER_THAN_AUDIO when the video
     # outlasts the audio. When the video is the longer stream, pad the audio
-    # track with trailing silence up to the full video duration (issue #353).
+    # track with trailing silence up to the full video duration plus a small
+    # safety margin so a frame-span under-report never leaves audio < video
+    # (issues #353, #549).
     if 0 < audio_duration < video_duration:
-        cmd += ["-af", f"apad=whole_dur={video_duration:.3f}"]
+        pad_target = video_duration + AUDIO_PAD_EPSILON
+        cmd += ["-af", f"apad=whole_dur={pad_target:.3f}"]
 
     cmd += [
         "-c:a",
@@ -2122,7 +2169,17 @@ def _finalize_output(
         muxed_target = output_path.parent / "muxed.mp4"
         _, audio_duration = _probe_media(audio_path, run)
         _, probed_video_duration = _probe_media(video_only_path, run)
-        effective_video_duration = probed_video_duration or video_duration
+        # The concat container's declared duration can under-report the true
+        # frame span, which under-pads the audio (issue #549). Prefer the true
+        # frame span (frame_count / fps) so apad targets the real video length.
+        true_video_duration = _probe_video_frame_span(
+            video_only_path, run, fallback=probed_video_duration
+        )
+        effective_video_duration = (
+            max(probed_video_duration, true_video_duration)
+            or probed_video_duration
+            or video_duration
+        )
         run(
             _build_audio_overlay_cmd(
                 video_only_path,

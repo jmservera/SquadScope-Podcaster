@@ -1340,10 +1340,11 @@ class TestEncodeConfigurability:
         assert "tpad" not in " ".join(cmd)
         assert "-shortest" not in cmd
         # Audio shorter than video is padded with silence to the full video
-        # length so Spotify does not reject VIDEO_DURATION_LONGER_THAN_AUDIO.
+        # length plus a small safety margin so a frame-span under-report never
+        # leaves audio < video (issues #353, #549).
         joined = " ".join(cmd)
         assert "-af" in cmd
-        assert "apad=whole_dur=20.000" in joined
+        assert "apad=whole_dur=20.100" in joined
 
     def test_no_audio_pad_when_audio_is_longer(self, tmp_path):
         cmd = _build_audio_overlay_cmd(
@@ -2936,7 +2937,159 @@ class TestComposeTreeRealFfmpeg:
         assert actual == pytest.approx(expected, abs=0.5)
 
 
-# --- Per-task normalize retry (issue #483) ---
+class TestApadFrameSpanRealFfmpeg:
+    """audio_duration >= video_duration after mux on a synthetic concat (#549)."""
+
+    def _ffprobe_durations(self, binary: str, path):
+        import json as _json
+
+        def _dur(args):
+            r = subprocess.run([binary, *args], capture_output=True, text=True)
+            return _json.loads(r.stdout or "{}")
+
+        vinfo = _dur(
+            [
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-count_packets",
+                "-show_entries",
+                "stream=nb_read_packets,r_frame_rate",
+                "-of",
+                "json",
+                str(path),
+            ]
+        )
+        ainfo = _dur(
+            [
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=duration",
+                "-of",
+                "json",
+                str(path),
+            ]
+        )
+        vs = (vinfo.get("streams") or [{}])[0]
+        nb = int(vs.get("nb_read_packets", 0) or 0)
+        num, _, den = str(vs.get("r_frame_rate", "30/1")).partition("/")
+        fps = float(num) / float(den) if den and float(den) != "0" else 30.0
+        video_dur = nb / fps if fps else 0.0
+        audio_dur = float((ainfo.get("streams") or [{}])[0].get("duration", 0.0) or 0.0)
+        return video_dur, audio_dur
+
+    def test_muxed_audio_not_shorter_than_video(self, tmp_path):
+        import shutil as _sh
+
+        ffprobe = _sh.which("ffprobe")
+        ffmpeg = _sh.which("ffmpeg")
+        if not ffmpeg or not ffprobe:
+            pytest.skip("ffmpeg/ffprobe not available")
+
+        def _run(cmd):
+            r = subprocess.run([str(a) for a in cmd], capture_output=True, text=True)
+            if r.returncode != 0:
+                raise RuntimeError(" ".join(map(str, cmd)) + "\n" + r.stderr[:800])
+            return subprocess.CompletedProcess(cmd, 0, r.stdout, r.stderr)
+
+        # Build a concat-demuxer (stream-copy) video whose declared container
+        # duration can under-report the true frame span — the #549 scenario.
+        clips = []
+        for i, c in enumerate(["red", "green", "blue"]):
+            p = tmp_path / f"seg_{i}.mp4"
+            _run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"color=c={c}:s=320x240:r=30:d=2.0",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(p),
+                ]
+            )
+            clips.append(p)
+        list_file = tmp_path / "list.txt"
+        list_file.write_text("".join(f"file '{p}'\n" for p in clips))
+        video_only = tmp_path / "video_only.mp4"
+        _run(vc._build_concat_cmd(list_file, video_only))
+
+        # Podcast audio deliberately a touch shorter than the video span.
+        audio = tmp_path / "audio.m4a"
+        _run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=5.85",
+                "-c:a",
+                "aac",
+                str(audio),
+            ]
+        )
+
+        out = tmp_path / "final.mp4"
+        result = vc._finalize_output(
+            video_only_path=video_only,
+            video_duration=0.0,
+            audio_path=audio,
+            output_path=out,
+            segment_count=len(clips),
+            run=_run,
+        )
+        assert out.exists() and out.stat().st_size > 0
+        video_dur, audio_dur = self._ffprobe_durations(ffprobe, out)
+        assert audio_dur >= video_dur, (
+            f"audio ({audio_dur:.3f}s) shorter than video ({video_dur:.3f}s) — "
+            "Spotify would reject VIDEO_DURATION_LONGER_THAN_AUDIO"
+        )
+        assert result.has_audio
+
+
+class TestProbeVideoFrameSpan:
+    """Unit coverage for the true-frame-span probe (#549)."""
+
+    def test_computes_span_from_packet_count(self):
+        import json as _json
+
+        def _run(cmd):
+            payload = _json.dumps(
+                {"streams": [{"nb_read_packets": "14316", "r_frame_rate": "30/1"}]}
+            )
+            return subprocess.CompletedProcess(cmd, 0, payload, "")
+
+        span = vc._probe_video_frame_span(Path("/x.mp4"), _run, fallback=1.0)
+        assert span == pytest.approx(477.2, abs=1e-6)
+
+    def test_falls_back_on_probe_failure(self):
+        def _run(cmd):
+            raise RuntimeError("boom")
+
+        assert vc._probe_video_frame_span(Path("/x.mp4"), _run, fallback=12.5) == 12.5
+
+    def test_falls_back_when_no_packets(self):
+        import json as _json
+
+        def _run(cmd):
+            return subprocess.CompletedProcess(cmd, 0, _json.dumps({"streams": [{}]}), "")
+
+        assert vc._probe_video_frame_span(Path("/x.mp4"), _run, fallback=7.0) == 7.0
 
 
 class _FlakyNormalizeRunner:
