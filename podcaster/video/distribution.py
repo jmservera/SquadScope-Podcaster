@@ -93,8 +93,12 @@ class VideoDistributionConfig:
             youtube_privacy=os.environ.get("VIDEO_YOUTUBE_PRIVACY", "unlisted"),
             spotify_rss_enabled=os.environ.get("VIDEO_SPOTIFY_RSS_ENABLED", "").lower() == "true",
             spotify_rss_feed_path=os.environ.get("VIDEO_SPOTIFY_RSS_FEED_PATH", ""),
-            spotify_upload_enabled=os.environ.get("VIDEO_SPOTIFY_UPLOAD_ENABLED", "").lower() == "true",
-            blob_archive_enabled=os.environ.get("VIDEO_BLOB_ARCHIVE_ENABLED", "true").lower() == "true",
+            spotify_upload_enabled=(
+                os.environ.get("VIDEO_SPOTIFY_UPLOAD_ENABLED", "").lower() == "true"
+            ),
+            blob_archive_enabled=(
+                os.environ.get("VIDEO_BLOB_ARCHIVE_ENABLED", "true").lower() == "true"
+            ),
             dry_run=os.environ.get("VIDEO_DISTRIBUTE_DRY_RUN", "").lower() == "true",
         )
 

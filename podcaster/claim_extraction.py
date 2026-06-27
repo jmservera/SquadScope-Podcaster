@@ -49,7 +49,8 @@ class Claim:
 def _build_claim_extraction_prompt(article_content: str, article_url: str) -> tuple[str, str]:
     """Build system and user prompts for claim extraction."""
 
-    system_prompt = f"""You are a fact-checking assistant. Extract substantive factual claims from the provided article.
+    system_prompt = f"""You are a fact-checking assistant. Extract substantive factual claims from \
+the provided article.
 
 For each claim:
 1. Identify the specific factual assertion (not opinions or speculation)
@@ -112,7 +113,10 @@ def extract_claims(
         raise RuntimeError("managed identity returned an empty token for claim extraction")
 
     base = config.endpoint if config.endpoint.endswith("/") else f"{config.endpoint}/"
-    url = f"{base}openai/deployments/{config.chat_deployment}/chat/completions?api-version={config.api_version}"
+    url = (
+        f"{base}openai/deployments/{config.chat_deployment}/chat/completions"
+        f"?api-version={config.api_version}"
+    )
 
     payload = {
         "messages": [
@@ -193,8 +197,16 @@ def _parse_claims(raw_json: str, article_url: str) -> list[Claim]:
                 claim_id=claim_id,
                 script_excerpt=script_excerpt,
                 source_url=str(item.get("source_url", article_url)),
-                source_quote=item.get("source_quote") if isinstance(item.get("source_quote"), str) else None,
-                source_paragraph=item.get("source_paragraph") if isinstance(item.get("source_paragraph"), int) else None,
+                source_quote=(
+                    item.get("source_quote")
+                    if isinstance(item.get("source_quote"), str)
+                    else None
+                ),
+                source_paragraph=(
+                    item.get("source_paragraph")
+                    if isinstance(item.get("source_paragraph"), int)
+                    else None
+                ),
                 verified=False,  # Always false — human review required
                 editor_notes=str(item.get("editor_notes", "Requires human verification")),
             )
@@ -212,11 +224,16 @@ def claims_to_ledger_json(claims: list[Claim]) -> str:
             [
                 {
                     "claim_id": "stub_000",
-                    "script_excerpt": "[No claims extracted — pending editorial generation from source article]",
+                    "script_excerpt": (
+                        "[No claims extracted — pending editorial generation from source article]"
+                    ),
                     "source_url": "",
                     "source_quote": None,
                     "verified": False,
-                    "editor_notes": "Claim ledger will be populated during editorial generation. Human review required.",
+                    "editor_notes": (
+                        "Claim ledger will be populated during editorial generation. Human review "
+                        "required."
+                    ),
                 }
             ],
             sort_keys=True,

@@ -113,7 +113,10 @@ def _call_llm_for_hooks(
 
     payload = {
         "messages": [
-            {"role": "system", "content": "You generate short conversational phrases. Respond only with JSON."},
+            {
+                "role": "system",
+                "content": "You generate short conversational phrases. Respond only with JSON.",
+            },
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.9,

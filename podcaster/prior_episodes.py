@@ -35,7 +35,11 @@ def fetch_prior_episode_themes(storage: StorageBackend, current_job_id: str) -> 
         try:
             script_bytes = storage.get_bytes(f"jobs/{job_id}/script.txt")
         except Exception:
-            logger.exception("prior episode script read failed for job_id=%s prior_job_id=%s", current_job_id, job_id)
+            logger.exception(
+                "prior episode script read failed for job_id=%s prior_job_id=%s",
+                current_job_id,
+                job_id,
+            )
             continue
         if not script_bytes:
             continue
@@ -134,7 +138,12 @@ def _is_non_theme_line(content: str) -> bool:
 
 def _normalize_theme(theme: str) -> str:
     cleaned = re.sub(r"\s+", " ", theme).strip(" -:.;,[]")
-    cleaned = re.sub(r"^(?:in this episode we will talk about|we will talk about)\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"^(?:in this episode we will talk about|we will talk about)\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     if not cleaned:
         return ""
     if len(cleaned) > _MAX_THEME_CHARS:

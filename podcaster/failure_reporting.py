@@ -72,7 +72,10 @@ def _find_open_issue(
     *,
     transport=None,
 ) -> int | None:
-    """Return the issue number of an existing open ``aca-failure`` issue for *container*, or None."""
+    """Return the issue number of an existing open ``aca-failure`` issue.
+
+    Returns None when there is no existing issue for *container*.
+    """
     path = (
         f"/repos/{repo}/issues"
         f"?labels={FAILURE_LABEL}&state=open&per_page=30"

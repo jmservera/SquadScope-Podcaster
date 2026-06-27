@@ -789,7 +789,11 @@ def process_message(
         queue.delete_message(message)
         return VideoOutcome("", STATUS_FAILED, reason="malformed_message")
 
-    logger.info("processing video message job_id=%s dequeue_count=%s", job_id, message.dequeue_count)
+    logger.info(
+        "processing video message job_id=%s dequeue_count=%s",
+        job_id,
+        message.dequeue_count,
+    )
 
     try:
         outcome = run_video_generation(job_id, storage, config=config, now=now)
@@ -799,7 +803,10 @@ def process_message(
             report_failure(
                 container="podcaster-video",
                 error_type="RetryExhausted",
-                error_message=f"Video generation failed after {message.dequeue_count} attempts for job_id={job_id}",
+                error_message=(
+                    f"Video generation failed after {message.dequeue_count} attempts "
+                    f"for job_id={job_id}"
+                ),
                 details={"job_id": job_id, "dequeue_count": message.dequeue_count},
             )
             queue.delete_message(message)

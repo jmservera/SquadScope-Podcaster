@@ -343,7 +343,10 @@ def _excise(start: int, end: int, removed: Sequence[tuple[int, int]]) -> list[So
     return kept
 
 
-def plan_source_ranges(manifest: ClipManifest, target_ms: int) -> tuple[tuple[SourceRange, ...], bool]:
+def plan_source_ranges(
+    manifest: ClipManifest,
+    target_ms: int,
+) -> tuple[tuple[SourceRange, ...], bool]:
     """Plan the source ranges of *manifest* that fill exactly *target_ms*.
 
     Returns ``(source_ranges, looped)`` where the range durations sum to

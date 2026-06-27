@@ -356,7 +356,10 @@ def resolve_placements(
         raise ValueError("durations must be parallel to turns")
 
     starts = _turn_starts(durations, gap_seconds)
-    by_id = {turn.turn_id: (start, duration) for turn, start, duration in zip(turns, starts, durations)}
+    by_id = {
+        turn.turn_id: (start, duration)
+        for turn, start, duration in zip(turns, starts, durations)
+    }
     placements: list[BackchannelPlacement] = []
     for interaction in interaction_map:
         clip = clips.get((interaction.speaker, interaction.text)) or clips.get(interaction.text)
@@ -380,7 +383,12 @@ def resolve_placements(
     return placements
 
 
-def _anchor_time(interaction: Interaction, start: float, duration: float, turns: list[Turn]) -> float:
+def _anchor_time(
+    interaction: Interaction,
+    start: float,
+    duration: float,
+    turns: list[Turn],
+) -> float:
     turn_text = next((t.text for t in turns if t.turn_id == interaction.under_turn_id), "")
     if not turn_text:
         return start

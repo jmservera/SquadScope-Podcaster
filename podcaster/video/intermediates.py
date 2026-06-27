@@ -215,7 +215,12 @@ class IntermediateStore:
         try:
             actual = getter(self.blob_path(name))
         except Exception:
-            logger.debug("blob size probe failed job_id=%s name=%s", self._job_id, name, exc_info=True)
+            logger.debug(
+                "blob size probe failed job_id=%s name=%s",
+                self._job_id,
+                name,
+                exc_info=True,
+            )
             return True
         if actual is None:
             return False
@@ -239,7 +244,12 @@ class IntermediateStore:
         except UnicodeDecodeError:
             return None
 
-    def write_text(self, name: str, text: str, content_type: str = "application/json; charset=utf-8") -> bool:
+    def write_text(
+        self,
+        name: str,
+        text: str,
+        content_type: str = "application/json; charset=utf-8",
+    ) -> bool:
         """Checkpoint small text/JSON intermediate ``name`` (sidecar metadata)."""
         if self._backend is None:
             return False
@@ -247,7 +257,10 @@ class IntermediateStore:
             self._backend.put_bytes(self.blob_path(name), text.encode("utf-8"), content_type)
         except Exception:
             logger.warning(
-                "intermediate text write failed job_id=%s name=%s", self._job_id, name, exc_info=True,
+                "intermediate text write failed job_id=%s name=%s",
+                self._job_id,
+                name,
+                exc_info=True,
             )
             return False
         return True

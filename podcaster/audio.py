@@ -107,7 +107,11 @@ class MusicMixSpec:
             raise ValueError("outro_fade_in_seconds_from_zero must be positive")
 
 
-def normalize_audio(input_path: Path, output_path: Path, runner: CommandRunner | None = None) -> None:
+def normalize_audio(
+    input_path: Path,
+    output_path: Path,
+    runner: CommandRunner | None = None,
+) -> None:
     runner = runner or _run_command
     output_path.parent.mkdir(parents=True, exist_ok=True)
     runner(
@@ -155,7 +159,11 @@ def render_distribution_audio(
     tmp_dir.mkdir(parents=True, exist_ok=False)
     try:
         segment_paths = _write_segments(tmp_dir, segments, segment_extension=segment_extension)
-        segment_durations = list(precomputed_segment_durations) if precomputed_segment_durations is not None else None
+        segment_durations = (
+            list(precomputed_segment_durations)
+            if precomputed_segment_durations is not None
+            else None
+        )
         if segment_durations is not None and len(segment_durations) != len(segment_paths):
             raise ValueError("precomputed_segment_durations must be parallel to segments")
         if (
@@ -168,9 +176,16 @@ def render_distribution_audio(
             segment_durations_out.extend(segment_durations)
 
         if mix_spec is not None and (intro_music or outro_music):
-            _validate_mix_spec_for_segments(mix_spec, len(segment_paths), intro_music=intro_music, outro_music=outro_music)
+            _validate_mix_spec_for_segments(
+                mix_spec,
+                len(segment_paths),
+                intro_music=intro_music,
+                outro_music=outro_music,
+            )
             if segment_durations is None:
-                segment_durations = [_probe_duration_seconds(path, runner) for path in segment_paths]
+                segment_durations = [
+                    _probe_duration_seconds(path, runner) for path in segment_paths
+                ]
                 if segment_durations_out is not None:
                     segment_durations_out.extend(segment_durations)
             elif segment_durations_out is not None and not segment_durations_out:
@@ -180,7 +195,12 @@ def render_distribution_audio(
             # Backchannels overlay the raw speech body (before the music delay),
             # so their speech-relative start times stay correct once the music
             # mixer shifts the whole speech track.
-            speech_for_music = _apply_backchannels(speech_intermediate, backchannels, tmp_dir, runner)
+            speech_for_music = _apply_backchannels(
+                speech_intermediate,
+                backchannels,
+                tmp_dir,
+                runner,
+            )
             mixed_intermediate = tmp_dir / "episode.wav"
             _mix_music_with_speech(
                 speech_for_music,
@@ -373,7 +393,12 @@ def _encode_distribution_mp3(input_path: Path, output_path: Path, runner: Comman
     )
 
 
-def _write_segments(tmp_dir: Path, segments: list[bytes], *, segment_extension: str = ".mp3") -> list[Path]:
+def _write_segments(
+    tmp_dir: Path,
+    segments: list[bytes],
+    *,
+    segment_extension: str = ".mp3",
+) -> list[Path]:
     normalized_extension = _normalize_segment_extension(segment_extension)
     segment_paths: list[Path] = []
     for position, segment in enumerate(segments):
@@ -402,13 +427,20 @@ def _concat_audio_files(
     concat_parts: list[str] = []
     for position, input_path in enumerate(input_paths):
         inputs.extend(["-i", str(input_path)])
-        filters.append(f"[{position}:a]aresample=44100,aformat=channel_layouts=mono[a{position}]")
+        filters.append(
+            f"[{position}:a]aresample=44100,aformat=channel_layouts=mono[a{position}]"
+        )
         concat_parts.append(f"[a{position}]")
         if gap_seconds > 0 and position < len(input_paths) - 1:
             filters.append(f"aevalsrc=0:d={_ffmpeg_number(gap_seconds)}:s=44100:c=mono[g{position}]")
             concat_parts.append(f"[g{position}]")
 
-    filter_complex = ";".join(filters) + ";" + "".join(concat_parts) + f"concat=n={len(concat_parts)}:v=0:a=1[out]"
+    filter_complex = (
+        ";".join(filters)
+        + ";"
+        + "".join(concat_parts)
+        + f"concat=n={len(concat_parts)}:v=0:a=1[out]"
+    )
     runner(
         [
             "ffmpeg",
@@ -458,10 +490,12 @@ def _mix_music_with_speech(
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
             f"atrim=end={_ffmpeg_number(intro_end)},asetpts=PTS-STARTPTS,"
-            f"volume='{_intro_volume_expression(segment_durations, gap_seconds, mix_spec)}':eval=frame[intro]"
+            f"volume='{_intro_volume_expression(segment_durations, gap_seconds, mix_spec)}':"
+            "eval=frame[intro]"
         )
         filters.append(
-            f"{current_mix}[intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]"
+            f"{current_mix}[intro]amix=inputs=2:normalize=0:duration=first:"
+            "weights='1 1'[speech_with_intro]"
         )
         current_mix = "[speech_with_intro]"
         next_input_index += 1
@@ -486,7 +520,8 @@ def _mix_music_with_speech(
         filters.append(
             f"[{next_input_index}:a]aresample=44100,aformat=channel_layouts=mono,"
             f"{outro_trim}"
-            f"volume='{_outro_volume_expression(outro_speech_overlap_seconds, mix_spec)}':eval=frame,"
+            f"volume='{_outro_volume_expression(outro_speech_overlap_seconds, mix_spec)}':"
+            "eval=frame,"
             f"adelay={_ffmpeg_milliseconds(outro_delay_seconds)}:all=1[outro]"
         )
         filters.append(
@@ -571,7 +606,8 @@ def build_backchannel_filter_complex(items: list[BackchannelMixItem]) -> str:
         is_last = position == len(items) - 1
         mix_label = "[out]" if is_last else f"[mix{position}]"
         filters.append(
-            f"{current}{clip_label}amix=inputs=2:normalize=0:duration=first:weights='1 1'{mix_label}"
+            f"{current}{clip_label}amix=inputs=2:normalize=0:duration=first:"
+            f"weights='1 1'{mix_label}"
         )
         current = mix_label
 
@@ -639,9 +675,13 @@ def _validate_mix_spec_for_segments(
     outro_music: Path | None,
 ) -> None:
     if intro_music and mix_spec.intro_speech_segments_under_music > segment_count:
-        raise ValueError("intro_speech_segments_under_music cannot exceed the speech segment count")
+        raise ValueError(
+            "intro_speech_segments_under_music cannot exceed the speech segment count"
+        )
     if outro_music and mix_spec.outro_speech_segments_with_music > segment_count:
-        raise ValueError("outro_speech_segments_with_music cannot exceed the speech segment count")
+        raise ValueError(
+            "outro_speech_segments_with_music cannot exceed the speech segment count"
+        )
 
 
 def _probe_duration_seconds(path: Path, runner: CommandRunner) -> float:
@@ -683,7 +723,10 @@ def probe_segment_durations(
         return [_probe_duration_seconds(p, runner) for p in paths]
 
 
-def _segment_timeline(segment_durations: list[float], gap_seconds: float) -> tuple[list[float], float]:
+def _segment_timeline(
+    segment_durations: list[float],
+    gap_seconds: float,
+) -> tuple[list[float], float]:
     if gap_seconds < 0:
         raise ValueError("gap_seconds must be non-negative")
     for duration in segment_durations:
@@ -1063,9 +1106,16 @@ def _constraints(expected_format: str) -> dict[str, object]:
         "content_type": profile["content_type"],
         "sample_rate_hz": TARGET_SAMPLE_RATE_HZ,
         "channels": TARGET_CHANNELS,
-        "loudness_lufs": {"target": TARGET_LOUDNESS_LUFS, "tolerance": LOUDNESS_TOLERANCE_LUFS},
+        "loudness_lufs": {
+            "target": TARGET_LOUDNESS_LUFS,
+            "tolerance": LOUDNESS_TOLERANCE_LUFS,
+        },
         "max_duration_seconds": MAX_DURATION_SECONDS,
-        "max_file_size_bytes": MAX_FILE_SIZE_BYTES_WAV if profile["format"] == "wav" else MAX_FILE_SIZE_BYTES_MP3,
+        "max_file_size_bytes": (
+            MAX_FILE_SIZE_BYTES_WAV
+            if profile["format"] == "wav"
+            else MAX_FILE_SIZE_BYTES_MP3
+        ),
     }
     if profile["format"] == "mp3":
         constraints["bitrate_bps"] = {"min": TARGET_MP3_BITRATE_BPS, "max": TARGET_MP3_BITRATE_BPS}

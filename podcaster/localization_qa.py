@@ -198,7 +198,10 @@ def _is_default_language(language: str) -> bool:
     return (language or "").split("-", 1)[0].strip().lower() in ("", "en")
 
 
-def extract_spoken_text(script_text: str, host_labels: Sequence[str] | None = None) -> list[tuple[str, str]]:
+def extract_spoken_text(
+    script_text: str,
+    host_labels: Sequence[str] | None = None,
+) -> list[tuple[str, str]]:
     """Return ``(speaker_label, spoken_text)`` pairs from a generated script.
 
     Non-spoken ``## Section:`` headers and the leading ``---`` metadata block are
@@ -358,7 +361,8 @@ def evaluate_localization(
             )
         if unexpected:
             warnings.append(
-                f"{locale}: unexpected speaker label(s) not in configured hosts: {', '.join(unexpected)}"
+                f"{locale}: unexpected speaker label(s) not in configured hosts: "
+                f"{', '.join(unexpected)}"
             )
     else:
         checks["host_persona_consistent"] = True

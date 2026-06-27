@@ -42,7 +42,10 @@ logger = logging.getLogger(__name__)
 
 # Spotify for Creators internal API base
 _BASE_URL = "https://api-v5.anchor.fm"
-_SPOTIFY_CLIENT_ID = (os.environ.get("SPOTIFY_CLIENT_ID") or "").strip() or "05a1371ee5194c27860b3ff3ff3979d2"
+_SPOTIFY_CLIENT_ID = (
+    (os.environ.get("SPOTIFY_CLIENT_ID") or "").strip()
+    or "05a1371ee5194c27860b3ff3ff3979d2"
+)
 _SPOTIFY_CONNECTOR_BASE_URL = "https://generic.wg.spotify.com/podcasters/v0"
 
 # Required headers for mutation requests
@@ -154,7 +157,8 @@ def _request_bearer_token(sp_dc: str, sp_key: str, show_id: str) -> str:
     """Exchange browser cookies for a short-lived Spotify bearer token."""
     if SpotifyConnector is None:
         raise SpotifyPublishError(
-            "spotifyconnector is not installed. Install with `pip install -e .` to enable Spotify publishing."
+            "spotifyconnector is not installed. Install with `pip install -e .` to "
+            "enable Spotify publishing."
         )
     connector = SpotifyConnector(
         base_url=_SPOTIFY_CONNECTOR_BASE_URL,
@@ -846,9 +850,25 @@ def _resolve_publish_inputs(
     publish_mode_raw = spotify_publish_config.publish_mode.strip()
     publish_mode = publish_mode_raw.lower()
     if publish_mode == "draft":
-        return resolved_title, resolved_description, resolved_season, resolved_episode, "draft", None, spotify_publish_config.upload_format
+        return (
+            resolved_title,
+            resolved_description,
+            resolved_season,
+            resolved_episode,
+            "draft",
+            None,
+            spotify_publish_config.upload_format,
+        )
     if publish_mode == "immediate":
-        return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None, spotify_publish_config.upload_format
+        return (
+            resolved_title,
+            resolved_description,
+            resolved_season,
+            resolved_episode,
+            "immediate",
+            None,
+            spotify_publish_config.upload_format,
+        )
 
     try:
         parsed_publish_on = datetime.fromisoformat(publish_mode_raw.replace("Z", "+00:00"))
@@ -879,7 +899,15 @@ def _resolve_publish_inputs(
                 publish_on,
                 spotify_publish_config.upload_format,
             )
-        return resolved_title, resolved_description, resolved_season, resolved_episode, "immediate", None, spotify_publish_config.upload_format
+        return (
+            resolved_title,
+            resolved_description,
+            resolved_season,
+            resolved_episode,
+            "immediate",
+            None,
+            spotify_publish_config.upload_format,
+        )
 
 
 def inject_timestamps_into_description(
@@ -957,7 +985,15 @@ def publish_episode(
             error="Spotify publishing disabled (SPOTIFY_PUBLISH_ENABLED != true).",
         )
 
-    resolved_title, resolved_description, season_number, episode_number, publish_behavior, resolved_publish_on, upload_format = (
+    (
+        resolved_title,
+        resolved_description,
+        season_number,
+        episode_number,
+        publish_behavior,
+        resolved_publish_on,
+        upload_format,
+    ) = (
         _resolve_publish_inputs(
             title,
             description,
@@ -1001,7 +1037,8 @@ def publish_episode(
     if _is_dry_run():
         target = resolve_show_target(language, language_config=language_config)
         logger.info(
-            "DRY RUN: Would publish %s as '%s' to show '%s' (lang=%s, tag=%s, %s, format=%s, content_type=%s)",
+            "DRY RUN: Would publish %s as '%s' to show '%s' (lang=%s, tag=%s, %s, "
+            "format=%s, content_type=%s)",
             upload_path,
             resolved_title,
             target.show_name,
@@ -1013,7 +1050,11 @@ def publish_episode(
         )
         return PublishResult(
             anchor_episode_id=None,
-            status="draft" if publish_behavior == "draft" else ("scheduled" if resolved_publish_on else "published"),
+            status=(
+                "draft"
+                if publish_behavior == "draft"
+                else ("scheduled" if resolved_publish_on else "published")
+            ),
             dry_run=True,
             details={
                 "title": resolved_title,
@@ -1109,7 +1150,11 @@ def publish_episode(
         if publish_behavior != "draft":
             _publish_episode_live(session, anchor_id, resolved_publish_on)
 
-        status = "draft" if publish_behavior == "draft" else ("scheduled" if resolved_publish_on else "published")
+        status = (
+            "draft"
+            if publish_behavior == "draft"
+            else ("scheduled" if resolved_publish_on else "published")
+        )
         logger.info(
             "Episode published to Spotify: anchorId=%d status=%s",
             anchor_id,

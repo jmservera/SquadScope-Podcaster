@@ -8,8 +8,9 @@ This module defines per-locale ``show_name`` defaults (e.g. "Claracle Semanal"
 for ``es``); callers may override them via per-language config (#432,
 ``LanguageConfig``). The remaining overlay copy (outro CTA, default episode
 title, section-card names) is Farnsworth-supplied translated/rewritten copy and
-lives here as the single source of truth. English copy is identical to the previous hard-coded values so
-existing English renders are byte-for-byte unchanged.
+lives here as the single source of truth. English copy is identical to the
+previous hard-coded values so existing English renders are byte-for-byte
+unchanged.
 """
 
 from __future__ import annotations
