@@ -20,7 +20,13 @@ from podcaster.publish import PublishResult
 class FakeRequest:
     """Minimal request for testing the handler."""
 
-    def __init__(self, method: str, path: str, body: bytes | None = None, headers: dict[str, str] | None = None):
+    def __init__(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ):
         self.method = method
         self.path = path
         self.body = body or b""
@@ -30,7 +36,9 @@ class FakeRequest:
 class FakeHandler:
     """A minimal mock of BaseHTTPRequestHandler for unit testing."""
 
-    def __init__(self, method: str, path: str, body: bytes = b"", headers: dict[str, str] | None = None):
+    def __init__(
+        self, method: str, path: str, body: bytes = b"", headers: dict[str, str] | None = None
+    ):
         self.path = path
         self._body = body
         self._headers_dict = headers or {}
@@ -70,7 +78,9 @@ class FakeHandler:
         return json.loads(self._wfile.getvalue())
 
 
-def make_handler(method: str, path: str, body: bytes = b"", headers: dict[str, str] | None = None) -> FakeHandler:
+def make_handler(
+    method: str, path: str, body: bytes = b"", headers: dict[str, str] | None = None
+) -> FakeHandler:
     """Create a FakeHandler and dispatch the request."""
     handler = FakeHandler(method, path, body, headers)
     # Manually invoke the handler method
@@ -98,20 +108,26 @@ class TestHealthEndpoint:
 
 class TestAuthCheck:
     def test_missing_api_key_returns_401(self):
-        body = json.dumps({"week": "2026-W24", "article_url": "https://example.com/article"}).encode()
+        body = json.dumps(
+            {"week": "2026-W24", "article_url": "https://example.com/article"}
+        ).encode()
         with patch.dict(os.environ, {"PODCASTER_API_KEY": "test-key-123"}):
             handler = make_handler("POST", "/api/generate", body=body)
         assert handler.response_code == HTTPStatus.UNAUTHORIZED
 
     def test_wrong_api_key_returns_401(self):
-        body = json.dumps({"week": "2026-W24", "article_url": "https://example.com/article"}).encode()
+        body = json.dumps(
+            {"week": "2026-W24", "article_url": "https://example.com/article"}
+        ).encode()
         headers = {"x-podcaster-api-key": "wrong-key", "Content-Length": str(len(body))}
         with patch.dict(os.environ, {"PODCASTER_API_KEY": "test-key-123"}):
             handler = make_handler("POST", "/api/generate", body=body, headers=headers)
         assert handler.response_code == HTTPStatus.UNAUTHORIZED
 
     def test_no_configured_key_returns_401(self):
-        body = json.dumps({"week": "2026-W24", "article_url": "https://example.com/article"}).encode()
+        body = json.dumps(
+            {"week": "2026-W24", "article_url": "https://example.com/article"}
+        ).encode()
         headers = {"x-podcaster-api-key": "any-key", "Content-Length": str(len(body))}
         with patch.dict(os.environ, {}, clear=True):
             # Remove PODCASTER_API_KEY if present
@@ -309,10 +325,12 @@ class TestSuccessfulGeneration:
     def test_valid_request_returns_202(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
         monkeypatch.setenv("PODCASTER_LOCAL_ARTIFACT_DIR", str(tmp_path))
-        body = json.dumps({
-            "week": "2026-W24",
-            "article_url": "https://example.com/article",
-        }).encode()
+        body = json.dumps(
+            {
+                "week": "2026-W24",
+                "article_url": "https://example.com/article",
+            }
+        ).encode()
         handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
         assert handler.response_code == HTTPStatus.ACCEPTED
         resp = handler.get_response_json()
@@ -324,11 +342,13 @@ class TestSuccessfulGeneration:
     def test_dry_run_returns_200(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
         monkeypatch.setenv("PODCASTER_LOCAL_ARTIFACT_DIR", str(tmp_path))
-        body = json.dumps({
-            "week": "2026-W24",
-            "article_url": "https://example.com/article",
-            "dry_run": True,
-        }).encode()
+        body = json.dumps(
+            {
+                "week": "2026-W24",
+                "article_url": "https://example.com/article",
+                "dry_run": True,
+            }
+        ).encode()
         handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
         assert handler.response_code == HTTPStatus.OK
         resp = handler.get_response_json()
@@ -355,16 +375,26 @@ class TestResponseShape:
     def test_response_has_all_contract_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
         monkeypatch.setenv("PODCASTER_LOCAL_ARTIFACT_DIR", str(tmp_path))
-        body = json.dumps({
-            "week": "2026-W24",
-            "article_url": "https://example.com/article",
-        }).encode()
+        body = json.dumps(
+            {
+                "week": "2026-W24",
+                "article_url": "https://example.com/article",
+            }
+        ).encode()
         handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
         resp = handler.get_response_json()
         expected_keys = {
-            "job_id", "status", "manifest_url", "mp3_url", "wav_url",
-            "transcript_url", "show_notes_url", "publishing_packet_url",
-            "expires_at", "warnings", "errors",
+            "job_id",
+            "status",
+            "manifest_url",
+            "mp3_url",
+            "wav_url",
+            "transcript_url",
+            "show_notes_url",
+            "publishing_packet_url",
+            "expires_at",
+            "warnings",
+            "errors",
         }
         assert set(resp.keys()) == expected_keys
 
@@ -373,9 +403,17 @@ class TestResponseShape:
         handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
         resp = handler.get_response_json()
         expected_keys = {
-            "job_id", "status", "manifest_url", "mp3_url", "wav_url",
-            "transcript_url", "show_notes_url", "publishing_packet_url",
-            "expires_at", "warnings", "errors",
+            "job_id",
+            "status",
+            "manifest_url",
+            "mp3_url",
+            "wav_url",
+            "transcript_url",
+            "show_notes_url",
+            "publishing_packet_url",
+            "expires_at",
+            "warnings",
+            "errors",
         }
         assert set(resp.keys()) == expected_keys
         assert resp["errors"]  # Should have validation errors
@@ -402,7 +440,9 @@ class TestReviewEndpoint:
             manifest={"job_id": "podcast-1", "status": "published", "review_status": "approved"},
             publish_result=PublishResult(status="published"),
         )
-        body = json.dumps({"job_id": "podcast-1", "reviewer": "leela", "decision": "approved"}).encode()
+        body = json.dumps(
+            {"job_id": "podcast-1", "reviewer": "leela", "decision": "approved"}
+        ).encode()
         handler = make_handler("POST", "/api/review", body=body, headers=self._headers(body))
         assert handler.response_code == HTTPStatus.OK
         response = handler.get_response_json()

@@ -142,19 +142,26 @@ exactly, and long call/comprehension lines were wrapped Black-style. The parsed
 AST of both modules is byte-for-byte identical to before the pass, so there is
 no string-content or logic change. No `# noqa: E501` was needed.
 
+### Phase B progress (#521) — E501 follow-up (tests tree)
+
+Final `E501` pass over the `tests/` directory. Wrapped all **244**
+`line-too-long` violations across 49 test files. Pure formatting — all
+rendered strings preserved byte-for-byte, no logic changes. No `# noqa: E501`
+annotations were required. `ruff check podcaster tests` is now fully clean.
+Full suite result: **2048 passed, 2 skipped, 2 deselected**.
+
 ### Remaining baseline (current)
 
-After the passes above (imports/dead-code, jobs `E501`, `E402`, the config-core
-`E501` slice, and the generation-core `E501` slice), the live
-`ruff check podcaster tests --statistics` count is:
+All Phase B ruff violations have been cleared.
+`ruff check podcaster tests` reports **0 findings** — "All checks passed!".
 
 | Count | Rule  | Description |
 | ----: | ----- | ----------- |
-| 368   | E501  | line-too-long |
-| **368** | **total** | |
+| 0     | —     | — |
+| **0** | **total** | |
 
-`E501` (line length) is the last remaining category, being cleared in further
-incremental by-module slices. The full test suite stays green after this pass.
+`E501` is fully cleared across both `podcaster/` and `tests/`. The full test
+suite stays green after this pass.
 
 ## Checkov (IaC / container security) — #519
 

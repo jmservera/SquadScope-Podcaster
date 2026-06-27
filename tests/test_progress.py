@@ -36,7 +36,9 @@ class MemoryStorageBackend:
     def get_bytes(self, path: str) -> bytes | None:
         return self._blobs.get(path)
 
-    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> Any:
+    def update_bytes(
+        self, path: str, content_type: str, update: Callable[[bytes | None], bytes]
+    ) -> Any:
         updated = update(self._blobs.get(path))
         self._blobs[path] = updated
         return self.put_bytes(path, updated, content_type)
@@ -269,12 +271,20 @@ def test_running_task_is_visible_in_tasks_map():
 def test_done_task_is_removed_from_in_flight_map():
     storage = MemoryStorageBackend()
     emit_task_progress(
-        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_001",
-        status=TaskStatus.RUNNING, at=_at(0),
+        storage,
+        "job-1",
+        stage=PipelineStage.COMPOSE,
+        task_id="norm_001",
+        status=TaskStatus.RUNNING,
+        at=_at(0),
     )
     emit_task_progress(
-        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_001",
-        status=TaskStatus.DONE, at=_at(1),
+        storage,
+        "job-1",
+        stage=PipelineStage.COMPOSE,
+        task_id="norm_001",
+        status=TaskStatus.DONE,
+        at=_at(1),
     )
     document = read_progress(storage, "job-1")
     assert in_flight_tasks(document) == {}
@@ -306,12 +316,20 @@ def test_orphan_task_status_without_task_id_is_dropped():
 def test_failed_task_is_removed_from_in_flight_map():
     storage = MemoryStorageBackend()
     emit_task_progress(
-        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_002",
-        status=TaskStatus.RUNNING, at=_at(0),
+        storage,
+        "job-1",
+        stage=PipelineStage.COMPOSE,
+        task_id="norm_002",
+        status=TaskStatus.RUNNING,
+        at=_at(0),
     )
     emit_task_progress(
-        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_002",
-        status=TaskStatus.FAILED, at=_at(1),
+        storage,
+        "job-1",
+        stage=PipelineStage.COMPOSE,
+        task_id="norm_002",
+        status=TaskStatus.FAILED,
+        at=_at(1),
     )
     assert in_flight_tasks(read_progress(storage, "job-1")) == {}
 
@@ -320,13 +338,23 @@ def test_multiple_in_flight_tasks_are_individually_visible():
     storage = MemoryStorageBackend()
     for i in range(3):
         emit_task_progress(
-            storage, "job-1", stage=PipelineStage.COMPOSE, task_id=f"norm_{i:03d}",
-            status=TaskStatus.RUNNING, segment_index=i + 1, segment_total=3, at=_at(i),
+            storage,
+            "job-1",
+            stage=PipelineStage.COMPOSE,
+            task_id=f"norm_{i:03d}",
+            status=TaskStatus.RUNNING,
+            segment_index=i + 1,
+            segment_total=3,
+            at=_at(i),
         )
     # One of them finishes; the other two stay in flight.
     emit_task_progress(
-        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_001",
-        status=TaskStatus.DONE, at=_at(5),
+        storage,
+        "job-1",
+        stage=PipelineStage.COMPOSE,
+        task_id="norm_001",
+        status=TaskStatus.DONE,
+        at=_at(5),
     )
     tasks = in_flight_tasks(read_progress(storage, "job-1"))
     assert set(tasks) == {"norm_000", "norm_002"}
@@ -335,7 +363,11 @@ def test_multiple_in_flight_tasks_are_individually_visible():
 def test_task_id_defaults_to_running_status():
     storage = MemoryStorageBackend()
     event = emit_progress(
-        storage, "job-1", stage=PipelineStage.COMPOSE, task_id="norm_009", at=_at(0),
+        storage,
+        "job-1",
+        stage=PipelineStage.COMPOSE,
+        task_id="norm_009",
+        at=_at(0),
     )
     assert event is not None and event.task_status == TaskStatus.RUNNING
     assert "norm_009" in in_flight_tasks(read_progress(storage, "job-1"))

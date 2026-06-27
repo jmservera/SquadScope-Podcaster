@@ -12,7 +12,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-pytest.importorskip("playwright", reason="playwright not installed — skipping video intro/outro tests")
+pytest.importorskip(
+    "playwright", reason="playwright not installed — skipping video intro/outro tests"
+)
 
 from podcaster.video.intro_outro import (
     CLARACLE_URL,
@@ -169,10 +171,10 @@ class TestRecordHtmlToVideo:
         mock_pw = _mock_playwright_context(tmp_path)
         output_path = tmp_path / "test.webm"
 
-        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
-             patch(
-            "podcaster.video.intro_outro.sync_playwright"
-        ) as mock_sync_pw:
+        with (
+            patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True),
+            patch("podcaster.video.intro_outro.sync_playwright") as mock_sync_pw,
+        ):
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
             mock_sync_pw.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -196,12 +198,14 @@ class TestRecordHtmlToVideo:
     def test_sets_content_and_waits(self, tmp_path):
         mock_pw = _mock_playwright_context(tmp_path)
         output_path = tmp_path / "test.webm"
-        mock_page = mock_pw.chromium.launch.return_value.new_context.return_value.new_page.return_value
+        mock_page = (
+            mock_pw.chromium.launch.return_value.new_context.return_value.new_page.return_value
+        )
 
-        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
-             patch(
-            "podcaster.video.intro_outro.sync_playwright"
-        ) as mock_sync_pw:
+        with (
+            patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True),
+            patch("podcaster.video.intro_outro.sync_playwright") as mock_sync_pw,
+        ):
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
             mock_sync_pw.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -218,10 +222,10 @@ class TestRecordHtmlToVideo:
         mock_pw = _mock_playwright_context(tmp_path)
         output_path = tmp_path / "final.webm"
 
-        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
-             patch(
-            "podcaster.video.intro_outro.sync_playwright"
-        ) as mock_sync_pw:
+        with (
+            patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True),
+            patch("podcaster.video.intro_outro.sync_playwright") as mock_sync_pw,
+        ):
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
             mock_sync_pw.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -252,10 +256,10 @@ class TestGenerateIntro:
     def test_returns_clip_result(self, tmp_path):
         mock_pw = _mock_playwright_context(tmp_path)
 
-        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
-             patch(
-            "podcaster.video.intro_outro.sync_playwright"
-        ) as mock_sync_pw:
+        with (
+            patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True),
+            patch("podcaster.video.intro_outro.sync_playwright") as mock_sync_pw,
+        ):
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
             mock_sync_pw.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -273,10 +277,10 @@ class TestGenerateIntro:
     def test_uses_default_config(self, tmp_path):
         mock_pw = _mock_playwright_context(tmp_path)
 
-        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
-             patch(
-            "podcaster.video.intro_outro.sync_playwright"
-        ) as mock_sync_pw:
+        with (
+            patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True),
+            patch("podcaster.video.intro_outro.sync_playwright") as mock_sync_pw,
+        ):
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
             mock_sync_pw.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -289,10 +293,10 @@ class TestGenerateIntro:
             output_dir = Path(td) / "new_subdir"
             mock_pw = _mock_playwright_context(output_dir)
 
-            with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
-                 patch(
-                "podcaster.video.intro_outro.sync_playwright"
-            ) as mock_sync_pw:
+            with (
+                patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True),
+                patch("podcaster.video.intro_outro.sync_playwright") as mock_sync_pw,
+            ):
                 mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
                 mock_sync_pw.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -307,10 +311,10 @@ class TestGenerateOutro:
     def test_returns_clip_result(self, tmp_path):
         mock_pw = _mock_playwright_context(tmp_path)
 
-        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
-             patch(
-            "podcaster.video.intro_outro.sync_playwright"
-        ) as mock_sync_pw:
+        with (
+            patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True),
+            patch("podcaster.video.intro_outro.sync_playwright") as mock_sync_pw,
+        ):
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
             mock_sync_pw.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -331,10 +335,10 @@ class TestGenerateOutro:
             duration_ms=8000,
         )
 
-        with patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True), \
-             patch(
-            "podcaster.video.intro_outro.sync_playwright"
-        ) as mock_sync_pw:
+        with (
+            patch("podcaster.video.intro_outro._PLAYWRIGHT_AVAILABLE", True),
+            patch("podcaster.video.intro_outro.sync_playwright") as mock_sync_pw,
+        ):
             mock_sync_pw.return_value.__enter__ = MagicMock(return_value=mock_pw)
             mock_sync_pw.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -561,9 +565,7 @@ class TestBuildOutroFfmpegCmd:
 
 def _make_ffmpeg_runner() -> MagicMock:
     runner = MagicMock()
-    runner.return_value = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="", stderr=""
-    )
+    runner.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     return runner
 
 
@@ -654,7 +656,6 @@ class TestGenerateOutroFfmpeg:
         cmd = runner.call_args[0][0]
         vf = cmd[cmd.index("-vf") + 1]
         assert DEFAULT_SHOW_NAME in vf
-
 
 
 # --- End credits tests (#300) ---
@@ -826,9 +827,7 @@ class TestGenerateCreditsFfmpeg:
     def test_drawtext_fallback_when_no_capable_ffmpeg(self, tmp_path):
         """Falls back to 'ffmpeg' with a warning when no drawtext-capable binary found."""
         runner = _make_ffmpeg_runner()
-        with patch(
-            "podcaster.video.intro_outro._get_drawtext_ffmpeg", return_value=None
-        ):
+        with patch("podcaster.video.intro_outro._get_drawtext_ffmpeg", return_value=None):
             generate_credits_ffmpeg(output_dir=tmp_path, runner=runner)
         assert runner.call_args[0][0][0] == "ffmpeg"
 

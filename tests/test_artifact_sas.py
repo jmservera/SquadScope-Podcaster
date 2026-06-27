@@ -160,7 +160,12 @@ class _RecordingStorage:
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         self.objects[path] = content
-        return StoredArtifact(path=path, url=f"https://acct/c/{path}", size_bytes=len(content), content_type=content_type)
+        return StoredArtifact(
+            path=path,
+            url=f"https://acct/c/{path}",
+            size_bytes=len(content),
+            content_type=content_type,
+        )
 
     def get_bytes(self, path: str) -> bytes | None:  # pragma: no cover - unused
         return self.objects.get(path)

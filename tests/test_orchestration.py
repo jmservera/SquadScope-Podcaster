@@ -84,7 +84,9 @@ def _synthesized_manifest() -> dict:
 
 def _stage(storage: LocalStorageBackend, manifest: dict) -> None:
     job_id = manifest["job_id"]
-    storage.put_bytes(manifest_path(job_id), manifest_bytes(manifest), "application/json; charset=utf-8")
+    storage.put_bytes(
+        manifest_path(job_id), manifest_bytes(manifest), "application/json; charset=utf-8"
+    )
     storage.put_bytes(f"jobs/{job_id}/audio/{job_id}.mp3", b"mp3", "audio/mpeg")
     storage.put_bytes(f"jobs/{job_id}/audio/{job_id}.wav", b"wav", "audio/wav")
 
@@ -99,7 +101,9 @@ class _RemoteStorageStub:
     def get_bytes(self, path: str) -> bytes | None:
         return self._blobs.get(path)
 
-    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> StoredArtifact:
+    def update_bytes(
+        self, path: str, content_type: str, update: Callable[[bytes | None], bytes]
+    ) -> StoredArtifact:
         raise NotImplementedError
 
     def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
@@ -189,7 +193,9 @@ def test_persist_manifest_uses_storage_update_bytes() -> None:
             self.updated.append(path)
             return super().update_bytes(path, content_type, update)
 
-    storage = TrackingStorage(Path(".test-orchestration-storage"), "https://example.invalid/artifacts")
+    storage = TrackingStorage(
+        Path(".test-orchestration-storage"), "https://example.invalid/artifacts"
+    )
     manifest = _synthesized_manifest()
     try:
         persist_manifest(storage, manifest["job_id"], manifest)
@@ -201,7 +207,9 @@ def test_persist_manifest_uses_storage_update_bytes() -> None:
         shutil.rmtree(storage.root, ignore_errors=True)
 
 
-def test_prepare_audio_files_remote_storage_downloads_mp4_when_present(tmp_path: Path, monkeypatch) -> None:
+def test_prepare_audio_files_remote_storage_downloads_mp4_when_present(
+    tmp_path: Path, monkeypatch
+) -> None:
     job_id = _job_id()
     manifest = _synthesized_manifest()
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
@@ -242,7 +250,9 @@ def test_prepare_audio_files_remote_storage_skips_missing_mp4(tmp_path: Path, mo
     assert not mp3_path.with_suffix(".mp4").exists()
 
 
-def test_prepare_audio_files_remote_storage_falls_back_to_video_mp4(tmp_path: Path, monkeypatch) -> None:
+def test_prepare_audio_files_remote_storage_falls_back_to_video_mp4(
+    tmp_path: Path, monkeypatch
+) -> None:
     job_id = _job_id()
     manifest = _synthesized_manifest()
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))

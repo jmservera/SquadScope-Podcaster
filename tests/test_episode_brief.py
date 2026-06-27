@@ -15,7 +15,9 @@ from podcaster.episode_brief import (
 )
 
 
-def _claim(claim_id: str, excerpt: str, url: str = "https://claracle.com/a", quote: str | None = None) -> Claim:
+def _claim(
+    claim_id: str, excerpt: str, url: str = "https://claracle.com/a", quote: str | None = None
+) -> Claim:
     return Claim(
         claim_id=claim_id,
         script_excerpt=excerpt,

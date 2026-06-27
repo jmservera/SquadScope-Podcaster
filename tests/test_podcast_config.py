@@ -35,7 +35,11 @@ def test_podcast_config_defaults_match_generation_constants() -> None:
 
 
 def test_generate_artifacts_without_podcast_config_matches_explicit_defaults() -> None:
-    payload = {"week": "2026-W23", "article_url": "https://example.com/article", "article_sha256": "a" * 64}
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_sha256": "a" * 64,
+    }
     created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
     job_id = build_job_id(payload)
 
@@ -88,7 +92,11 @@ def test_run_generation_job_threads_custom_podcast_config_into_artifacts() -> No
     assert "Voices: Ada = nova" in script
     assert "Lin = shimmer" in script
     assert "Ada: Welcome to SignalWire 2026-W23 issue!" in script
-    assert "Lin: And I'm Lin. One honest heads-up before we dive in — These hosts are synthetic voices." in script
+    assert (
+        "Lin: And I'm Lin. One honest heads-up before we dive in — These hosts are "
+        "synthetic voices."
+        in script
+    )
     assert "pod.example.com" in script
     assert "TTS Provider: OpenAI TTS (Ada nova / Lin shimmer)" in transcript
     assert "These hosts are synthetic voices." in show_notes

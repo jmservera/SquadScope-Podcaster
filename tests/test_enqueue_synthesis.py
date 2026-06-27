@@ -81,7 +81,11 @@ def test_enqueue_not_invoked_when_budget_gate_fails() -> None:
                 "schema_version": "squadscope-podcaster-monthly-cost-ledger-v1",
                 "month": "2026-06",
                 "episodes": [
-                    {"job_id": f"existing-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
+                    {
+                        "job_id": f"existing-{index}",
+                        "week": f"2026-W2{index}",
+                        "estimated_total_usd": "0.00",
+                    }
                     for index in range(10)
                 ],
             }
@@ -131,7 +135,10 @@ def test_enqueue_failure_does_not_break_202_contract() -> None:
 
     assert result.response["status"] == "accepted"
     assert result.response["errors"] == []
-    assert "synthesis enqueue failed; job remains staged until synthesis is replayed" in result.response["warnings"]
+    assert (
+        "synthesis enqueue failed; job remains staged until synthesis is replayed"
+        in result.response["warnings"]
+    )
     assert result.manifest["generation"]["synthesis_queue"]["status"] == "failed"
 
 
@@ -213,4 +220,3 @@ def test_enqueue_video_job_diagnostics_mask_url(monkeypatch, caplog) -> None:
     assert "video-jobs" in text
     assert "SECRETSAS" not in text
     assert "sig=" not in text
-

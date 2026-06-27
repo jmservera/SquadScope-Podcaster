@@ -344,7 +344,9 @@ class TestPublishEpisode:
             publish_resp,
         ]
 
-        result = publish_episode(mp3_file, "Claracle W24", "<p>Episode notes</p>", wav_path=wav_file)
+        result = publish_episode(
+            mp3_file, "Claracle W24", "<p>Episode notes</p>", wav_path=wav_file
+        )
         assert result.status == "published"
         assert result.anchor_episode_id == 12345
         assert result.error is None
@@ -409,7 +411,9 @@ class TestPublishEpisode:
         assert metadata_call.kwargs["json"]["episodeNumber"] == 25
         assert metadata_call.kwargs["json"]["isPublished"] is False
         assert metadata_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00.000Z"
-        assert metadata_call.kwargs["json"]["wizardDraftedToPublishOn"] == "2026-06-20T09:00:00.000Z"
+        assert (
+            metadata_call.kwargs["json"]["wizardDraftedToPublishOn"] == "2026-06-20T09:00:00.000Z"
+        )
         publish_call = mock_session.request.call_args_list[-1]
         assert publish_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00Z"
 
@@ -470,7 +474,9 @@ class TestPublishEpisode:
             _mock_json_resp({}),
         ]
 
-        result = publish_episode(mp3_file, "Original Title", "<p>Original desc</p>", wav_path=wav_file)
+        result = publish_episode(
+            mp3_file, "Original Title", "<p>Original desc</p>", wav_path=wav_file
+        )
 
         assert result.status == "published"
         metadata_call = mock_session.request.call_args_list[-2]
@@ -508,7 +514,9 @@ class TestPublishEpisode:
         assert "wizardDraftedToPublishOn" not in metadata_call.kwargs["json"]
 
     @patch("podcaster.publish._build_session")
-    def test_appends_timestamps_when_within_limit(self, mock_build, mp3_file, wav_file, spotify_env):
+    def test_appends_timestamps_when_within_limit(
+        self, mock_build, mp3_file, wav_file, spotify_env
+    ):
         mock_session = MagicMock()
         mock_build.return_value = mock_session
         mock_session.request.side_effect = [
@@ -570,7 +578,9 @@ class TestPublishEpisode:
             mp3_file,
             "Original Title",
             "<p>Original desc</p>",
-            spotify_publish_config=SpotifyPublishConfig(publish_mode="immediate", upload_format="mp3"),
+            spotify_publish_config=SpotifyPublishConfig(
+                publish_mode="immediate", upload_format="mp3"
+            ),
             wav_path=wav_file,
         )
 
@@ -579,7 +589,9 @@ class TestPublishEpisode:
         assert upload_call.kwargs["headers"]["Content-Type"] == "audio/mpeg"
         assert upload_call.kwargs["data"] == mp3_file.read_bytes()
 
-    def test_timestamps_html_included_in_dry_run(self, mp3_file, wav_file, spotify_env, monkeypatch):
+    def test_timestamps_html_included_in_dry_run(
+        self, mp3_file, wav_file, spotify_env, monkeypatch
+    ):
         monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
         result = publish_episode(
             mp3_file,
@@ -876,7 +888,8 @@ class TestUploadVideoToEpisode:
 
         monkeypatch.setattr(pub, "_get_upload_url", fake_get_url)
         monkeypatch.setattr(
-            pub, "_upload_video_multipart",
+            pub,
+            "_upload_video_multipart",
             lambda s, parts, data: [{"partNumber": 1, "etag": "e1"}],
         )
 
@@ -894,9 +907,7 @@ class TestUploadVideoToEpisode:
 
         monkeypatch.setattr(pub, "_set_metadata", fake_metadata)
 
-        result = pub.upload_video_to_episode(
-            self._video(tmp_path), 555, title="My Show"
-        )
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
         assert result.status == "draft"
         # The NEW episode id is returned, not the audio anchor (555).
         assert result.anchor_episode_id == 777
@@ -1069,9 +1080,7 @@ class TestCredentialExpiryDetection:
         )
         from podcaster.config import SpotifyPublishConfig
 
-        config = SpotifyPublishConfig.from_payload(
-            {"spotify_publish": {"upload_format": "mp3"}}
-        )
+        config = SpotifyPublishConfig.from_payload({"spotify_publish": {"upload_format": "mp3"}})
         with patch(
             "podcaster.credential_expiry.notify_credential_expiry",
             return_value=4242,
