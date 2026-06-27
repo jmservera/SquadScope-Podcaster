@@ -30,10 +30,10 @@ _HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is 
 def _ffmpeg_has_drawtext() -> bool:
     if not _HAS_FFMPEG:
         return False
-    out = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True)
+    return any(
+        line.split()[1:2] == ["drawtext"] for line in out.stdout.splitlines() if line.split()
     )
-    return any(line.split()[1:2] == ["drawtext"] for line in out.stdout.splitlines() if line.split())
 
 
 _HAS_DRAWTEXT = _ffmpeg_has_drawtext()
@@ -78,10 +78,12 @@ def _edl(segments, crossfade_ms=500):
 
 
 def test_build_plan_basic_argv_and_graph():
-    edl = _edl([
-        _clip_seg(0, 10_000, "clip-a", [(0, 10_000)]),
-        _interm_seg(10_000, 14_000),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 10_000, "clip-a", [(0, 10_000)]),
+            _interm_seg(10_000, 14_000),
+        ]
+    )
     plan = build_render_plan(edl, {"clip-a": "/clips/a.mp4"}, "/out/ep.mp4")
     assert plan.argv[0] == "ffmpeg"
     assert "-i" in plan.argv and "/clips/a.mp4" in plan.argv
@@ -94,10 +96,12 @@ def test_build_plan_basic_argv_and_graph():
 
 
 def test_input_dedup_same_clip_one_input():
-    edl = _edl([
-        _clip_seg(0, 10_000, "clip-a", [(0, 10_000)]),
-        _clip_seg(10_000, 20_000, "clip-a", [(20_000, 30_000)]),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 10_000, "clip-a", [(0, 10_000)]),
+            _clip_seg(10_000, 20_000, "clip-a", [(20_000, 30_000)]),
+        ]
+    )
     plan = build_render_plan(edl, {"clip-a": "/clips/a.mp4"}, "/out/ep.mp4")
     assert plan.inputs == ("/clips/a.mp4",)
     assert plan.argv.count("-i") == 1
@@ -107,9 +111,11 @@ def test_input_dedup_same_clip_one_input():
 
 
 def test_multi_range_segment_uses_concat():
-    edl = _edl([
-        _clip_seg(0, 10_000, "clip-a", [(0, 4_000), (6_000, 12_000)]),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 10_000, "clip-a", [(0, 4_000), (6_000, 12_000)]),
+        ]
+    )
     plan = build_render_plan(edl, {"clip-a": "/clips/a.mp4"}, "/out/ep.mp4")
     assert "[s0_0][s0_1]concat=n=2:v=1:a=0[seg0_raw]" in plan.filter_complex
 
@@ -132,20 +138,24 @@ def test_title_card_drawtext():
 
 
 def test_concat_join_duration_is_exact():
-    edl = _edl([
-        _clip_seg(0, 10_000, "clip-a", [(0, 10_000)], xfade=0),
-        _clip_seg(10_000, 25_000, "clip-b", [(0, 15_000)], xfade=500),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 10_000, "clip-a", [(0, 10_000)], xfade=0),
+            _clip_seg(10_000, 25_000, "clip-b", [(0, 15_000)], xfade=500),
+        ]
+    )
     plan = build_render_plan(edl, {"clip-a": "/a.mp4", "clip-b": "/b.mp4"}, "/out.mp4")
     assert "concat=n=2:v=1:a=0[vout]" in plan.filter_complex
     assert plan.expected_duration_ms == 25_000
 
 
 def test_xfade_join_offsets_and_duration():
-    edl = _edl([
-        _clip_seg(0, 10_000, "clip-a", [(0, 10_000)], xfade=0),
-        _clip_seg(10_000, 25_000, "clip-b", [(0, 15_000)], xfade=500),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 10_000, "clip-a", [(0, 10_000)], xfade=0),
+            _clip_seg(10_000, 25_000, "clip-b", [(0, 15_000)], xfade=500),
+        ]
+    )
     cfg = RenderConfig(enable_crossfades=True)
     plan = build_render_plan(edl, {"clip-a": "/a.mp4", "clip-b": "/b.mp4"}, "/out.mp4", config=cfg)
     # one transition: offset = 10.0 - 0.5 = 9.5s, duration 0.5s
@@ -155,10 +165,12 @@ def test_xfade_join_offsets_and_duration():
 
 
 def test_determinism():
-    edl = _edl([
-        _clip_seg(0, 10_000, "clip-a", [(0, 10_000)]),
-        _interm_seg(10_000, 14_000),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 10_000, "clip-a", [(0, 10_000)]),
+            _interm_seg(10_000, 14_000),
+        ]
+    )
     a = build_render_plan(edl, {"clip-a": "/clips/a.mp4"}, "/out/ep.mp4")
     b = build_render_plan(edl, {"clip-a": "/clips/a.mp4"}, "/out/ep.mp4")
     assert a == b
@@ -240,9 +252,7 @@ def test_build_plan_renders_card_fill_with_text():
 
 def test_build_plan_screenshot_uses_looped_image_input():
     edl = _edl([_screenshot_seg(0, 10_000, "shot-b", repo="r")])
-    plan = build_render_plan(
-        edl, {}, "/out.mp4", image_paths={"shot-b": "/imgs/b.png"}
-    )
+    plan = build_render_plan(edl, {}, "/out.mp4", image_paths={"shot-b": "/imgs/b.png"})
     assert plan.inputs == ("/imgs/b.png",)
     # still image is held for the segment with -loop 1 -t <dur>
     assert "-loop" in plan.argv and "1" in plan.argv
@@ -311,22 +321,37 @@ def test_render_edl_does_not_fail_on_missing_clip(monkeypatch):
 def _make_clip(path: Path, color: str, seconds: float) -> None:
     subprocess.run(
         [
-            "ffmpeg", "-hide_banner", "-y",
-            "-f", "lavfi", "-i",
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
             f"color=c={color}:s=320x240:r=30:d={seconds}",
-            "-pix_fmt", "yuv420p", str(path),
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
         ],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
 
 
 def _probe_seconds(path: Path) -> float:
     out = subprocess.run(
         [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
         ],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return float(out.stdout.strip())
 
@@ -338,11 +363,13 @@ def test_real_render_matches_edl_duration(tmp_path):
     _make_clip(clip_a, "red", 6.0)
     _make_clip(clip_b, "blue", 6.0)
 
-    edl = _edl([
-        _clip_seg(0, 3_000, "clip-a", [(0, 3_000)], section="s1"),
-        _interm_seg(3_000, 5_000),
-        _clip_seg(5_000, 9_000, "clip-b", [(0, 2_000), (3_000, 5_000)]),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 3_000, "clip-a", [(0, 3_000)], section="s1"),
+            _interm_seg(3_000, 5_000),
+            _clip_seg(5_000, 9_000, "clip-b", [(0, 2_000), (3_000, 5_000)]),
+        ]
+    )
     cfg = RenderConfig(width=320, height=240, fps=30, preset="ultrafast")
     out = tmp_path / "ep.mp4"
     render_edl(edl, {"clip-a": clip_a, "clip-b": clip_b}, out, config=cfg)
@@ -359,10 +386,12 @@ def test_real_render_with_crossfade(tmp_path):
     _make_clip(clip_a, "green", 12.0)
     _make_clip(clip_b, "white", 12.0)
 
-    edl = _edl([
-        _clip_seg(0, 9_000, "clip-a", [(0, 9_000)], xfade=0),
-        _clip_seg(9_000, 18_000, "clip-b", [(0, 9_000)], xfade=500),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 9_000, "clip-a", [(0, 9_000)], xfade=0),
+            _clip_seg(9_000, 18_000, "clip-b", [(0, 9_000)], xfade=500),
+        ]
+    )
     cfg = RenderConfig(width=320, height=240, fps=30, preset="ultrafast", enable_crossfades=True)
     out = tmp_path / "ep_xfade.mp4"
     render_edl(edl, {"clip-a": clip_a, "clip-b": clip_b}, out, config=cfg)
@@ -373,11 +402,19 @@ def test_real_render_with_crossfade(tmp_path):
 def _make_image(path: Path, color: str) -> None:
     subprocess.run(
         [
-            "ffmpeg", "-hide_banner", "-y",
-            "-f", "lavfi", "-i", f"color=c={color}:s=320x240",
-            "-frames:v", "1", str(path),
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c={color}:s=320x240",
+            "-frames:v",
+            "1",
+            str(path),
         ],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
 
 
@@ -390,10 +427,12 @@ def test_real_render_screenshot_fallback_duration(tmp_path):
     shot = tmp_path / "shot.png"
     _make_image(shot, "blue")
 
-    edl = _edl([
-        _clip_seg(0, 4_000, "clip-a", [(0, 4_000)]),
-        _screenshot_seg(4_000, 9_000, "shot-x"),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 4_000, "clip-a", [(0, 4_000)]),
+            _screenshot_seg(4_000, 9_000, "shot-x"),
+        ]
+    )
     cfg = RenderConfig(width=320, height=240, fps=30, preset="ultrafast")
     out = tmp_path / "ep_shot.mp4"
     render_edl(edl, {"clip-a": clip_a}, out, image_paths={"shot-x": shot}, config=cfg)
@@ -410,10 +449,12 @@ def test_real_render_degrades_missing_clip_to_screenshot(tmp_path):
     shot = tmp_path / "shot.png"
     _make_image(shot, "white")
 
-    edl = _edl([
-        _clip_seg(0, 4_000, "clip-a", [(0, 4_000)]),
-        _clip_seg(4_000, 9_000, "clip-missing", [(0, 5_000)], repo="https://x/o/repo-z"),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 4_000, "clip-a", [(0, 4_000)]),
+            _clip_seg(4_000, 9_000, "clip-missing", [(0, 5_000)], repo="https://x/o/repo-z"),
+        ]
+    )
     cfg = RenderConfig(width=320, height=240, fps=30, preset="ultrafast")
     out = tmp_path / "ep_degraded.mp4"
     render_edl(
@@ -435,10 +476,12 @@ def test_real_render_card_fallback_duration(tmp_path):
     clip_a = tmp_path / "a.mp4"
     _make_clip(clip_a, "red", 6.0)
 
-    edl = _edl([
-        _clip_seg(0, 4_000, "clip-a", [(0, 4_000)]),
-        _card_seg(4_000, 9_000, "owner/missing-repo"),
-    ])
+    edl = _edl(
+        [
+            _clip_seg(0, 4_000, "clip-a", [(0, 4_000)]),
+            _card_seg(4_000, 9_000, "owner/missing-repo"),
+        ]
+    )
     cfg = RenderConfig(width=320, height=240, fps=30, preset="ultrafast")
     out = tmp_path / "ep_card.mp4"
     render_edl(edl, {"clip-a": clip_a}, out, config=cfg)

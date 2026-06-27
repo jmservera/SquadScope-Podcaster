@@ -22,12 +22,16 @@ def test_valid_minimal_payload_has_no_errors() -> None:
 
 
 def test_legacy_string_source_artifacts_fixture_has_no_errors() -> None:
-    payload = json.loads((FIXTURE_ROOT / "podcaster_request_legacy_strings.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (FIXTURE_ROOT / "podcaster_request_legacy_strings.json").read_text(encoding="utf-8")
+    )
     assert validate_payload(payload) == []
 
 
 def test_squadscope_object_source_artifacts_fixture_has_no_errors() -> None:
-    payload = json.loads((FIXTURE_ROOT / "podcaster_request_squadscope_objects.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (FIXTURE_ROOT / "podcaster_request_squadscope_objects.json").read_text(encoding="utf-8")
+    )
     assert validate_payload(payload) == []
 
 

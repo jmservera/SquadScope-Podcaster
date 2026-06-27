@@ -133,7 +133,10 @@ def test_disclosure_with_newlines_is_sanitized_in_apply_to():
 
 
 def test_language_directive_sanitizes_caller_fields():
-    """display_name, locale, and cta from caller config must be sanitized before prompt embedding."""
+    (
+        "display_name, locale, and cta from caller config must be sanitized before prompt "
+        "embedding."
+    )
     from podcaster.script_gen import _build_language_directive
 
     ctx = GenerationContext(

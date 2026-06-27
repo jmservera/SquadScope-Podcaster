@@ -104,7 +104,11 @@ class _FakeTransport:
         start, end = int(start_s), int(end_s)
 
         # Inject a single transient failure at a given offset.
-        if self.fail_at_offset is not None and start == self.fail_at_offset and not self._failed_once:
+        if (
+            self.fail_at_offset is not None
+            and start == self.fail_at_offset
+            and not self._failed_once
+        ):
             self._failed_once = True
             return 503, {}, b""
 
@@ -170,9 +174,7 @@ def test_upload_chunked_resumes_after_transient_failure(tmp_path):
     assert result.succeeded
     assert result.bytes_uploaded == total
     # The status-query ("bytes */total") must have been used to resume.
-    assert any(
-        r[1].get("Content-Range") == f"bytes */{total}" for r in t.requests
-    )
+    assert any(r[1].get("Content-Range") == f"bytes */{total}" for r in t.requests)
 
 
 def test_upload_chunked_308_without_range_header_re_queries_offset(tmp_path):
@@ -215,6 +217,7 @@ def test_upload_chunked_308_without_range_header_re_queries_offset(tmp_path):
             self.received = end + 1
             if self.received >= total:
                 import json as _json
+
                 return 200, {}, _json.dumps({"id": "vid-norange"}).encode()
             return 308, {"range": f"bytes=0-{end}"}, b""
 
@@ -279,12 +282,15 @@ def test_upload_video_full_flow(tmp_path, monkeypatch):
     path = _make_file(tmp_path, total)
     t = _FakeTransport(total=total, chunk=_GRANULE)
 
-    monkeypatch.setattr(
-        "podcaster.video.youtube._get_youtube_access_token", lambda c, h: "tok"
-    )
+    monkeypatch.setattr("podcaster.video.youtube._get_youtube_access_token", lambda c, h: "tok")
     res = upload_video(
-        path, "Title", "Desc", _config(), transport=t,
-        chunk_size=_GRANULE, sleep=lambda s: None,
+        path,
+        "Title",
+        "Desc",
+        _config(),
+        transport=t,
+        chunk_size=_GRANULE,
+        sleep=lambda s: None,
     )
     assert res.succeeded
     assert res.video_id == "vid-OK"

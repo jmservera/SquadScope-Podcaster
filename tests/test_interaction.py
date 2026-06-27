@@ -47,7 +47,9 @@ def test_build_interaction_map_disabled_returns_empty():
 
 
 def test_build_interaction_map_speaker_is_the_listener():
-    turns = I.assign_turn_ids([("host_a", "We tried graph retrieval, and it worked, and we liked it.")])
+    turns = I.assign_turn_ids(
+        [("host_a", "We tried graph retrieval, and it worked, and we liked it.")]
+    )
     cfg = BackchannelConfig(enabled=True, min_gap_seconds=1, max_gap_seconds=60)
     m = I.build_interaction_map(turns, [40.0], cfg)
     assert len(m) >= 1
@@ -130,9 +132,7 @@ def test_interaction_to_dict_matches_issue_schema():
 
 def test_resolve_placements_validates_parallel_durations():
     turns = I.assign_turn_ids([("host_a", "hello there.")])
-    m = I.build_interaction_map(
-        turns, [40.0], BackchannelConfig(enabled=True, min_gap_seconds=1)
-    )
+    m = I.build_interaction_map(turns, [40.0], BackchannelConfig(enabled=True, min_gap_seconds=1))
     with pytest.raises(ValueError):
         I.resolve_placements(m, turns, [40.0, 1.0], {})
 

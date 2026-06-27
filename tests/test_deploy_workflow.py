@@ -35,9 +35,9 @@ def test_deploy_workflow_uses_oidc_auth() -> None:
     """Wrapper workflow must request OIDC and forward to the reusable deploy."""
     workflow = _workflow_text()
 
-    assert re.search(r"(?m)^  id-token: write$", workflow), (
-        "deploy-azure.yml must request id-token: write for OIDC"
-    )
+    assert re.search(
+        r"(?m)^  id-token: write$", workflow
+    ), "deploy-azure.yml must request id-token: write for OIDC"
     assert "uses: ./.github/workflows/reusable-deploy-azure.yml" in workflow
     assert "secrets: inherit" in workflow
 
@@ -46,9 +46,9 @@ def test_reusable_deploy_workflow_uses_oidc_auth() -> None:
     """Reusable ACA deploy authenticates via OIDC (id-token: write) and azure/login."""
     workflow = _reusable_workflow_text()
 
-    assert re.search(r"(?m)^  id-token: write$", workflow), (
-        "reusable-deploy-azure.yml must request id-token: write for OIDC"
-    )
+    assert re.search(
+        r"(?m)^  id-token: write$", workflow
+    ), "reusable-deploy-azure.yml must request id-token: write for OIDC"
     assert "azure/login@" in workflow, "reusable-deploy-azure.yml must use azure/login action"
 
 
@@ -101,9 +101,9 @@ def test_bicep_references_aca_module() -> None:
     """infra/main.bicep must deploy the ACA module as the primary compute."""
     bicep = BICEP.read_text(encoding="utf-8")
 
-    assert re.search(r"module aca 'modules/aca\.bicep'", bicep), (
-        "infra/main.bicep must reference modules/aca.bicep"
-    )
+    assert re.search(
+        r"module aca 'modules/aca\.bicep'", bicep
+    ), "infra/main.bicep must reference modules/aca.bicep"
     assert "containerAppsEnvName" in bicep
     assert "synthesisJobName" in bicep
 
@@ -132,13 +132,13 @@ def test_openai_module_always_deployed_in_aca_architecture() -> None:
     # #109: In the ACA-only architecture, OpenAI is always deployed (not opt-in).
     bicep = BICEP.read_text(encoding="utf-8")
 
-    assert re.search(r"module openAi 'modules/openai\.bicep' =", bicep), (
-        "infra/main.bicep must deploy the OpenAI module"
-    )
+    assert re.search(
+        r"module openAi 'modules/openai\.bicep' =", bicep
+    ), "infra/main.bicep must deploy the OpenAI module"
     # It should NOT be conditional anymore
-    assert "if (deployOpenAi)" not in bicep, (
-        "OpenAI module should be unconditionally deployed in ACA-only architecture"
-    )
+    assert (
+        "if (deployOpenAi)" not in bicep
+    ), "OpenAI module should be unconditionally deployed in ACA-only architecture"
 
 
 def test_openai_module_uses_managed_identity_not_keys() -> None:
@@ -153,9 +153,9 @@ def test_openai_module_uses_managed_identity_not_keys() -> None:
     # Cognitive Services OpenAI User role for the ACA job managed identity.
     assert "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd" in module
     assert "listKeys" not in module and "listKeys" not in main, "must not read OpenAI account keys"
-    assert "AZURE_OPENAI_API_KEY" not in module and "AZURE_OPENAI_API_KEY" not in main, (
-        "OpenAI account keys must never be wired into infrastructure"
-    )
+    assert (
+        "AZURE_OPENAI_API_KEY" not in module and "AZURE_OPENAI_API_KEY" not in main
+    ), "OpenAI account keys must never be wired into infrastructure"
 
 
 def test_openai_module_deploys_fable_and_alloy_tts() -> None:
@@ -186,7 +186,10 @@ def test_reusable_deploy_workflow_has_prod_environment_concurrency_and_output() 
     workflow = _reusable_workflow_text()
 
     assert re.search(r"(?m)^    environment: prod$", workflow)
-    assert re.search(r"(?m)^    concurrency:\n^      group: prod-deploy\n^      cancel-in-progress: false$", workflow)
+    assert re.search(
+        r"(?m)^    concurrency:\n^      group: prod-deploy\n^      cancel-in-progress: false$",
+        workflow,
+    )
     assert "api_app_fqdn:" in workflow
     assert "id: get_fqdn" in workflow
     assert '--query "properties.outputs.apiAppFqdn.value"' in workflow
@@ -206,30 +209,35 @@ def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
     # actually enforce that so expired artifacts do not accumulate forever.
     bicep = BICEP.read_text(encoding="utf-8")
 
-    assert "Microsoft.Storage/storageAccounts/managementPolicies@" in bicep, (
-        "infra/main.bicep must provision a Storage management (lifecycle) policy"
+    assert (
+        "Microsoft.Storage/storageAccounts/managementPolicies@" in bicep
+    ), "infra/main.bicep must provision a Storage management (lifecycle) policy"
+    assert (
+        "param artifactRetentionDays int = 7" in bicep
+    ), "artifact retention must default to the documented 7-day manifest expiry"
+    assert re.search(
+        r"@minValue\(1\)\s*\n\s*@maxValue\(365\)\s*\n\s*param artifactRetentionDays", bicep
     )
-    assert "param artifactRetentionDays int = 7" in bicep, (
-        "artifact retention must default to the documented 7-day manifest expiry"
-    )
-    assert re.search(r"@minValue\(1\)\s*\n\s*@maxValue\(365\)\s*\n\s*param artifactRetentionDays", bicep)
 
     # Artifact container must be covered by delete rules tied to the retention param.
     # The artifacts rule targets auto-generated output prefixes (jobs/, bakeoff/) but must
     # NOT target the bare container, so operator review artifacts under review/ are retained (#93).
-    assert "param autoExpireArtifactPrefixes array" in bicep, (
-        "auto-expire prefixes must be parametrised so review/ can be excluded"
-    )
+    assert (
+        "param autoExpireArtifactPrefixes array" in bicep
+    ), "auto-expire prefixes must be parametrised so review/ can be excluded"
     assert re.search(
-        r"prefixMatch:\s*\[for prefix in autoExpireArtifactPrefixes: '\$\{storageContainerName\}/\$\{prefix\}'\]",
+        (
+            r"prefixMatch:\s*\[for prefix in autoExpireArtifactPrefixes: "
+            r"'\$\{storageContainerName\}/\$\{prefix\}'\]"
+        ),
         bicep,
     ), "artifacts lifecycle rule must target the parametrised auto-expire prefixes"
-    assert "'jobs/'" in bicep and "'bakeoff/'" in bicep, (
-        "auto-expire prefixes must cover generated job and bakeoff outputs"
-    )
-    assert "'review/'" not in bicep, (
-        "operator review artifacts (review/) must not be subject to lifecycle auto-delete (#93)"
-    )
+    assert (
+        "'jobs/'" in bicep and "'bakeoff/'" in bicep
+    ), "auto-expire prefixes must cover generated job and bakeoff outputs"
+    assert (
+        "'review/'" not in bicep
+    ), "operator review artifacts (review/) must not be subject to lifecycle auto-delete (#93)"
     assert "prefixMatch: [\n          '${storageContainerName}/'" not in bicep and not re.search(
         r"prefixMatch:\s*\[\s*'\$\{storageContainerName\}/'\s*\]", bicep
     ), "artifacts rule must not match the whole container (would auto-delete review/ artifacts)"

@@ -35,7 +35,9 @@ def test_generate_show_notes_contains_metadata():
 
 
 def test_build_publishing_packet_zip_structure():
-    transcript = generate_transcript("---\nTheo: Hi\nVera: Hello", week="2026-W24", duration_seconds=30.0)
+    transcript = generate_transcript(
+        "---\nTheo: Hi\nVera: Hello", week="2026-W24", duration_seconds=30.0
+    )
     notes = generate_show_notes(week="2026-W24", title="T", article_url="https://x.com")
     manifest = {"week": "2026-W24", "status": "review"}
 

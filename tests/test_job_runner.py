@@ -22,7 +22,12 @@ class FakeStorage:
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
         self.blobs[path] = content
-        return StoredArtifact(path=path, url=f"https://test.invalid/{path}", size_bytes=len(content), content_type=content_type)
+        return StoredArtifact(
+            path=path,
+            url=f"https://test.invalid/{path}",
+            size_bytes=len(content),
+            content_type=content_type,
+        )
 
     def get_bytes(self, path: str) -> bytes | None:
         return self.blobs.get(path)
@@ -30,7 +35,12 @@ class FakeStorage:
     def update_bytes(self, path, content_type, update):
         updated = update(self.blobs.get(path))
         self.blobs[path] = updated
-        return StoredArtifact(path=path, url=f"https://test.invalid/{path}", size_bytes=len(updated), content_type=content_type)
+        return StoredArtifact(
+            path=path,
+            url=f"https://test.invalid/{path}",
+            size_bytes=len(updated),
+            content_type=content_type,
+        )
 
 
 class FakeQueue:
@@ -38,7 +48,9 @@ class FakeQueue:
         self._messages = list(messages or [])
         self.deleted: list[str] = []
 
-    def receive_messages(self, max_messages: int = 1, *, visibility_timeout: int = 600) -> list[QueueMessage]:
+    def receive_messages(
+        self, max_messages: int = 1, *, visibility_timeout: int = 600
+    ) -> list[QueueMessage]:
         batch = self._messages[:max_messages]
         self._messages = self._messages[max_messages:]
         return batch
@@ -104,7 +116,11 @@ def _base_manifest(status: str = "accepted") -> dict:
         "publishing": {
             "mode": "review_gate",
             "eligible": False,
-            "blocked_by": ["human_review", "synthesis_not_completed", "audio_validation_not_passed"],
+            "blocked_by": [
+                "human_review",
+                "synthesis_not_completed",
+                "audio_validation_not_passed",
+            ],
             "readiness_checks": {
                 "editorial_review_complete": False,
                 "real_audio_available": False,
@@ -112,17 +128,39 @@ def _base_manifest(status: str = "accepted") -> dict:
             },
             "public_url": None,
         },
-        "lifecycle": {"status": status, "revision": 1, "transitions": [{"at": "t0", "to": "accepted", "reason": "request_validated"}]},
+        "lifecycle": {
+            "status": status,
+            "revision": 1,
+            "transitions": [{"at": "t0", "to": "accepted", "reason": "request_validated"}],
+        },
         "artifacts": {
-            mp3_path: {"url": f"https://test.invalid/{mp3_path}", "publicly_accessible": False, "size_bytes": 1, "content_type": "audio/mpeg", "sha256": "0" * 64},
-            wav_path: {"url": f"https://test.invalid/{wav_path}", "publicly_accessible": False, "size_bytes": 1, "content_type": "audio/wav", "sha256": "0" * 64},
+            mp3_path: {
+                "url": f"https://test.invalid/{mp3_path}",
+                "publicly_accessible": False,
+                "size_bytes": 1,
+                "content_type": "audio/mpeg",
+                "sha256": "0" * 64,
+            },
+            wav_path: {
+                "url": f"https://test.invalid/{wav_path}",
+                "publicly_accessible": False,
+                "size_bytes": 1,
+                "content_type": "audio/wav",
+                "sha256": "0" * 64,
+            },
         },
     }
 
 
 def _stage(storage: FakeStorage, manifest: dict, script: str) -> None:
-    storage.put_bytes(job_runner.manifest_path(JOB_ID), manifest_bytes(manifest), "application/json; charset=utf-8")
-    storage.put_bytes(job_runner.script_path(JOB_ID), script.encode("utf-8"), "text/plain; charset=utf-8")
+    storage.put_bytes(
+        job_runner.manifest_path(JOB_ID),
+        manifest_bytes(manifest),
+        "application/json; charset=utf-8",
+    )
+    storage.put_bytes(
+        job_runner.script_path(JOB_ID), script.encode("utf-8"), "text/plain; charset=utf-8"
+    )
 
 
 def _patch_audio(monkeypatch) -> None:
@@ -164,7 +202,9 @@ def _patch_audio(monkeypatch) -> None:
 def _patch_tts_network(monkeypatch) -> None:
     # Replace the managed-identity token + HTTP transport defaults so process_message/
     # drain (which do not inject these) never touch the network.
-    monkeypatch.setattr(tts.ManagedIdentityTokenCredential, "get_token", lambda self, *scopes: "token")
+    monkeypatch.setattr(
+        tts.ManagedIdentityTokenCredential, "get_token", lambda self, *scopes: "token"
+    )
     monkeypatch.setattr(tts, "_default_transport", lambda request: b"segment-bytes")
 
 
@@ -198,7 +238,11 @@ def test_run_synthesis_completes_and_marks_publish_ready(monkeypatch):
     _stage(storage, _base_manifest(), _two_voice_script())
 
     outcome = job_runner.run_synthesis(
-        JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=lambda request: b"segment-bytes"
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
@@ -217,7 +261,10 @@ def test_run_synthesis_completes_and_marks_publish_ready(monkeypatch):
     assert storage.get_bytes(mp3_path) == b"M" * 512
     assert storage.get_bytes(wav_path) == b"W" * 512
     assert manifest["artifacts"][mp3_path]["sha256"] == gen["synthesis_runner"]["audio"]["sha256"]
-    assert manifest["artifacts"][wav_path]["sha256"] == gen["synthesis_runner"]["audio"]["artifacts"]["wav"]["sha256"]
+    assert (
+        manifest["artifacts"][wav_path]["sha256"]
+        == gen["synthesis_runner"]["audio"]["artifacts"]["wav"]["sha256"]
+    )
     assert gen["synthesis_runner"]["audio"]["upload_format"] == "wav"
     assert gen["tts_synthesis"]["blocked_by"] == []
     assert manifest["status"] == "synthesized_publish_ready"
@@ -237,7 +284,13 @@ def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
     with caplog.at_level("INFO"):
-        job_runner.run_synthesis(JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=lambda request: b"bytes")
+        job_runner.run_synthesis(
+            JOB_ID,
+            storage,
+            _production_config(),
+            token_provider=lambda scope: "token",
+            transport=lambda request: b"bytes",
+        )
     combined = " ".join(record.getMessage() for record in caplog.records)
     assert "openai.azure.com" not in combined  # full endpoint never logged
     assert "Bearer" not in combined
@@ -254,11 +307,16 @@ def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
     monkeypatch.setattr(
         job_runner,
         "auto_publish_job",
-        lambda job_id, storage=None, now=None: called.append(job_id) or type("Result", (), {"manifest": {"status": "published"}})(),
+        lambda job_id, storage=None, now=None: called.append(job_id)
+        or type("Result", (), {"manifest": {"status": "published"}})(),
     )
 
     outcome = job_runner.run_synthesis(
-        JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=lambda request: b"segment-bytes"
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
@@ -298,7 +356,11 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
     monkeypatch.setattr(job_runner, "publish_episode", fake_publish_episode)
 
     outcome = job_runner.run_synthesis(
-        JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=lambda request: b"segment-bytes"
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
@@ -391,7 +453,9 @@ def test_run_synthesis_is_idempotent_on_duplicate_delivery(monkeypatch):
     def exploding_transport(request):
         raise AssertionError("must not re-synthesize an already-completed job")
 
-    outcome = job_runner.run_synthesis(JOB_ID, storage, _production_config(), transport=exploding_transport)
+    outcome = job_runner.run_synthesis(
+        JOB_ID, storage, _production_config(), transport=exploding_transport
+    )
     assert outcome.status == job_runner.STATUS_SKIPPED
     assert outcome.reason == job_runner.REASON_ALREADY_SYNTHESIZED
 
@@ -493,7 +557,10 @@ def test_run_synthesis_skips_placeholder_script(monkeypatch):
     _stage(storage, _base_manifest(), _placeholder_script())
 
     outcome = job_runner.run_synthesis(
-        JOB_ID, storage, _production_config(), transport=lambda request: pytest.fail("must not synthesize placeholder")
+        JOB_ID,
+        storage,
+        _production_config(),
+        transport=lambda request: pytest.fail("must not synthesize placeholder"),
     )
     assert outcome.status == job_runner.STATUS_SKIPPED
     assert outcome.reason == job_runner.REASON_NOT_TWO_VOICE
@@ -522,7 +589,13 @@ def test_run_synthesis_failure_does_not_make_publishable(monkeypatch):
         raise RuntimeError("tts endpoint unreachable")
 
     with pytest.raises(job_runner.TransientSynthesisError):
-        job_runner.run_synthesis(JOB_ID, storage, _production_config(), token_provider=lambda scope: "token", transport=failing_transport)
+        job_runner.run_synthesis(
+            JOB_ID,
+            storage,
+            _production_config(),
+            token_provider=lambda scope: "token",
+            transport=failing_transport,
+        )
 
     manifest = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode("utf-8"))
     assert manifest["status"] == "synthesis_failed"
@@ -544,7 +617,12 @@ def test_run_synthesis_missing_manifest_is_transient():
 
 
 def _message(job_id: str = JOB_ID, message_id: str = "m1") -> QueueMessage:
-    return QueueMessage(message_id=message_id, pop_receipt="pr", body=encode_synthesis_message(job_id), dequeue_count=1)
+    return QueueMessage(
+        message_id=message_id,
+        pop_receipt="pr",
+        body=encode_synthesis_message(job_id),
+        dequeue_count=1,
+    )
 
 
 def test_process_message_deletes_on_completion(monkeypatch, caplog):
@@ -556,10 +634,14 @@ def test_process_message_deletes_on_completion(monkeypatch, caplog):
     msg = _message()
 
     with caplog.at_level("INFO"):
-        outcome = job_runner.process_message(msg, storage=storage, queue=queue, config=_production_config())
+        outcome = job_runner.process_message(
+            msg, storage=storage, queue=queue, config=_production_config()
+        )
     assert outcome.status == job_runner.STATUS_COMPLETED
     assert queue.deleted == ["m1"]
-    audit = " ".join(record.getMessage() for record in caplog.records if "synthesis audit" in record.getMessage())
+    audit = " ".join(
+        record.getMessage() for record in caplog.records if "synthesis audit" in record.getMessage()
+    )
     assert "event=start" in audit
     assert "event=success" in audit
     assert JOB_ID in audit
@@ -570,7 +652,9 @@ def test_process_message_deletes_on_skip(monkeypatch):
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _placeholder_script())
     queue = FakeQueue()
-    outcome = job_runner.process_message(_message(), storage=storage, queue=queue, config=_production_config())
+    outcome = job_runner.process_message(
+        _message(), storage=storage, queue=queue, config=_production_config()
+    )
     assert outcome.status == job_runner.STATUS_SKIPPED
     assert queue.deleted == ["m1"]
 
@@ -579,7 +663,9 @@ def test_process_message_leaves_message_on_transient_failure(monkeypatch):
     _patch_audio(monkeypatch)
     storage = FakeStorage()  # no manifest staged -> transient
     queue = FakeQueue()
-    outcome = job_runner.process_message(_message(), storage=storage, queue=queue, config=_production_config())
+    outcome = job_runner.process_message(
+        _message(), storage=storage, queue=queue, config=_production_config()
+    )
     assert outcome.status == job_runner.STATUS_FAILED
     assert queue.deleted == []  # left for redelivery
 
@@ -594,7 +680,9 @@ def test_process_message_deletes_after_retry_exhaustion(monkeypatch):
         body=encode_synthesis_message(JOB_ID),
         dequeue_count=job_runner.MAX_DEQUEUE_COUNT,
     )
-    outcome = job_runner.process_message(msg, storage=storage, queue=queue, config=_production_config())
+    outcome = job_runner.process_message(
+        msg, storage=storage, queue=queue, config=_production_config()
+    )
     assert outcome.status == job_runner.STATUS_FAILED
     assert outcome.reason == job_runner.REASON_RETRY_EXHAUSTED
     assert queue.deleted == ["m-poison"]
@@ -604,7 +692,9 @@ def test_process_message_discards_poison_message():
     storage = FakeStorage()
     queue = FakeQueue()
     poison = QueueMessage(message_id="p1", pop_receipt="pr", body="not-json", dequeue_count=9)
-    outcome = job_runner.process_message(poison, storage=storage, queue=queue, config=_production_config())
+    outcome = job_runner.process_message(
+        poison, storage=storage, queue=queue, config=_production_config()
+    )
     assert outcome.status == job_runner.STATUS_FAILED
     assert queue.deleted == ["p1"]
 
@@ -668,7 +758,9 @@ def test_request_backchannels_parses_enabled_config_from_manifest():
 
     from podcaster.config import BackchannelConfig
 
-    manifest = {"request": {"backchannels": {"enabled": True, "min_gap_seconds": 30, "max_gap_seconds": 40}}}
+    manifest = {
+        "request": {"backchannels": {"enabled": True, "min_gap_seconds": 30, "max_gap_seconds": 40}}
+    }
     config = job_runner._request_backchannels(manifest)
     assert isinstance(config, BackchannelConfig)
     assert config.enabled is True

@@ -35,10 +35,7 @@ def _turns(n: int) -> tuple[tuple[str, str], ...]:
         "This is host turn number {i} and it carries plenty of words so the "
         "estimated spoken duration stays nicely above the short threshold here."
     )
-    return tuple(
-        ("Theo" if i % 2 == 0 else "Vera", line.format(i=i))
-        for i in range(n)
-    )
+    return tuple(("Theo" if i % 2 == 0 else "Vera", line.format(i=i)) for i in range(n))
 
 
 def _section(index: int, *, title: str, turns: int = MIN_HOST_TURNS_PER_SECTION) -> ScriptSection:
@@ -79,7 +76,9 @@ Host outro: Manual review is required before publishing.
 
 class TestMatchSectionHeader:
     def test_matches_standard_header(self):
-        assert match_section_header("## Section: AI Frameworks Showdown") == "AI Frameworks Showdown"
+        assert (
+            match_section_header("## Section: AI Frameworks Showdown") == "AI Frameworks Showdown"
+        )
 
     def test_matches_extra_hashes_and_spacing(self):
         assert match_section_header("###   Section :  Deep Dive ") == "Deep Dive"

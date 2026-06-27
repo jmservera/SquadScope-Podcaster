@@ -45,7 +45,9 @@ def _http_error(status: int) -> HTTPError:
 
 
 def _install_urlopen(monkeypatch, *events: object) -> Mock:
-    side_effect = [event if isinstance(event, Exception) else _JsonResponse(event) for event in events]
+    side_effect = [
+        event if isinstance(event, Exception) else _JsonResponse(event) for event in events
+    ]
     mock = Mock(side_effect=side_effect)
     monkeypatch.setattr(storage, "urlopen", mock)
     return mock

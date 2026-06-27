@@ -45,7 +45,9 @@ def test_stitch_segments_runs_concat_then_two_pass_loudnorm(tmp_path):
             output_path.write_bytes(b"ID3-final-mp3")
         return _completed()
 
-    result = audio.stitch_segments([b"seg-a", b"seg-b", b"seg-c"], output_path, runner=runner, gap_seconds=0.3)
+    result = audio.stitch_segments(
+        [b"seg-a", b"seg-b", b"seg-c"], output_path, runner=runner, gap_seconds=0.3
+    )
 
     assert result == output_path
     # Four passes: concat, loudnorm measure, loudnorm apply-to-wav, MP3 encode.
@@ -74,9 +76,16 @@ def test_stitch_segments_uses_requested_segment_extension(tmp_path):
         calls.append(command)
         if command[-1] == str(output_path):
             output_path.write_bytes(b"ID3-final-mp3")
-        return _completed(stderr='{ "input_i" : "-17.4", "input_tp" : "-1.0", "input_lra" : "4.3", "input_thresh" : "-27.6", "target_offset" : "0.2" }')
+        return _completed(
+            stderr=(
+                '{ "input_i" : "-17.4", "input_tp" : "-1.0", "input_lra" : "4.3", '
+                '"input_thresh" : "-27.6", "target_offset" : "0.2" }'
+            )
+        )
 
-    audio.stitch_segments([b"RIFFseg-a", b"RIFFseg-b"], output_path, runner=runner, segment_extension=".wav")
+    audio.stitch_segments(
+        [b"RIFFseg-a", b"RIFFseg-b"], output_path, runner=runner, segment_extension=".wav"
+    )
 
     concat_cmd = " ".join(calls[0])
     assert "segment-000.wav" in concat_cmd
@@ -218,18 +227,27 @@ def test_stitch_segments_builds_music_mix_filtergraph_when_mix_spec_is_provided(
     assert "apad=whole_dur" not in mix_cmd
     assert "volume='if(lt(t,8)" in mix_cmd
     assert ":eval=frame" in mix_cmd
-    assert "[speech][intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]" in mix_cmd
+    assert (
+        "[speech][intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]"
+        in mix_cmd
+    )
     # Outro offset clamped: min(75, max(0, 1.25-0.5))=0.75
     assert "atrim=start=0.75" in mix_cmd
     assert "volume='if(lt(t,2.8),0.1*t/2.8" in mix_cmd
-    assert "[speech_with_intro][outro]amix=inputs=2:normalize=0:duration=longest:weights='1 1'[out]" in mix_cmd
+    assert (
+        "[speech_with_intro][outro]amix=inputs=2:normalize=0:duration=longest:weights='1 1'[out]"
+        in mix_cmd
+    )
 
 
 def test_outro_volume_expression_holds_duck_then_ramps_to_full_volume():
     expression = audio._outro_volume_expression(2.8, audio.MusicMixSpec())
 
     # New envelope: fade from 0 to 0.1 over min(3.0, 2.8)=2.8s, then ramp to 1.0
-    assert expression == "if(lt(t,2.8),0.1*t/2.8,if(lt(t,2.8),0.1,if(lt(t,7.8),0.1+(1-0.1)*(t-2.8)/5,1)))"
+    assert (
+        expression
+        == "if(lt(t,2.8),0.1*t/2.8,if(lt(t,2.8),0.1,if(lt(t,7.8),0.1+(1-0.1)*(t-2.8)/5,1)))"
+    )
 
 
 def test_outro_volume_expression_returns_full_volume_when_no_speech_overlap():

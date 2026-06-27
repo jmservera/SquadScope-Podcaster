@@ -18,7 +18,9 @@ FR = LanguageConfig.default_for("fr")
 EN = LanguageConfig.default_for("en")
 
 
-def _es_script(*, include_disclosure: bool = True, include_cta: bool = True, leak: bool = False) -> str:
+def _es_script(
+    *, include_disclosure: bool = True, include_cta: bool = True, leak: bool = False
+) -> str:
     disclosure = ES.disclosure if include_disclosure else "Bienvenidos al programa de esta semana."
     cta = ES.cta if include_cta else "Gracias por acompañarnos hoy."
     leak_line = (
@@ -32,7 +34,8 @@ def _es_script(*, include_disclosure: bool = True, include_cta: bool = True, lea
         f"HOST_B: {disclosure}\n"
         "## Section: Frameworks de IA\n"
         f"{leak_line}\n"
-        "HOST_B: Exactamente, lo que más nos llamó la atención fue su integración con GitHub y la API.\n"
+        "HOST_B: Exactamente, lo que más nos llamó la atención fue su integración con "
+        "GitHub y la API.\n"
         "HOST_A: Coincido, el equipo usa CI/CD de forma ejemplar.\n"
         "HOST_B: Para cerrar, un recordatorio importante.\n"
         f"HOST_A: {cta}\n"
@@ -187,9 +190,7 @@ def test_host_persona_inconsistency_warns_not_fails() -> None:
         "HOST_B: Su integración con GitHub es notable.\n"
         f"HOST_A: {ES.cta}\n"
     )
-    result = evaluate_localization(
-        script, config=ES, host_a_name="HOST_A", host_b_name="HOST_B"
-    )
+    result = evaluate_localization(script, config=ES, host_a_name="HOST_A", host_b_name="HOST_B")
     # Still passes (advisory), but flags the unexpected speaker.
     assert result.passed, result.errors
     assert result.checks["host_persona_consistent"] is False

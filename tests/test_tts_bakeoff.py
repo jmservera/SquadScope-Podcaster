@@ -46,7 +46,10 @@ def test_reviewed_script_exists_and_has_two_speakers():
 
 
 def test_parse_segments_skips_frontmatter_and_groups_paragraphs():
-    text = "Header line not labelled\nVersion: 1\nNARRATOR: First line.\ncontinued line.\n\nNARRATOR: Second paragraph.\nGUEST: A quote.\n"
+    text = (
+        "Header line not labelled\nVersion: 1\nNARRATOR: First line.\ncontinued line.\n\n"
+        "NARRATOR: Second paragraph.\nGUEST: A quote.\n"
+    )
     segments = parse_segments(text)
     assert [s.role for s in segments] == ["narrator", "narrator", "guest"]
     assert segments[0].text == "First line. continued line."
@@ -102,7 +105,10 @@ def test_production_candidate_excluded_from_bakeoff_comparison_plan():
 def test_blob_paths_are_deterministic_and_safe():
     plan = build_plan(SCRIPT_TEXT, "2026-W23")
     paths = [spec.blob_path for spec in plan]
-    assert paths[0] == "bakeoff/2026-w23/azure-speech-standard/en-us/en-us-andrewmultilingualneural.mp3"
+    assert (
+        paths[0]
+        == "bakeoff/2026-w23/azure-speech-standard/en-us/en-us-andrewmultilingualneural.mp3"
+    )
     for path in paths:
         assert path == path.lower()
         assert " " not in path
@@ -166,7 +172,9 @@ def test_manifest_redacts_urls_and_records_hash():
             url="https://acct.blob.core.windows.net/c/x.mp3?sig=LEAK",
         )
     ]
-    manifest = build_manifest("2026-W23", "docs/tts-bakeoff-test-script.txt", SCRIPT_TEXT, results, "execute")
+    manifest = build_manifest(
+        "2026-W23", "docs/tts-bakeoff-test-script.txt", SCRIPT_TEXT, results, "execute"
+    )
     blob = json.dumps(manifest)
     assert "LEAK" not in blob
     assert manifest["script"]["sha256"] == script_sha256(SCRIPT_TEXT)

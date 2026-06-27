@@ -97,6 +97,7 @@ class FakeQueue:
 
 def _make_message(job_id: str, dequeue_count: int = 1) -> QueueMessage:
     import base64
+
     body = base64.b64encode(
         json.dumps({"schema_version": "v1", "job_id": job_id}).encode()
     ).decode()
@@ -118,9 +119,7 @@ def _no_network_removed_check():
     """Default removed-repo pre-flight (issue #394) to a no-op so unit tests
     never make real HEAD requests to github.com.  Individual tests can still
     patch ``check_repo_removed`` to exercise the removed-repo path."""
-    with patch(
-        "podcaster.video.sync_plan.check_repo_removed", return_value=False
-    ):
+    with patch("podcaster.video.sync_plan.check_repo_removed", return_value=False):
         yield
 
 
@@ -264,9 +263,12 @@ class TestRunVideoGeneration:
             run_video_generation("bad", storage, config=dry_config)
 
     def test_already_processed_skips(self, storage, dry_config):
-        storage.set_manifest("done-job", {
-            "generation": {"video_runner": {"status": "completed"}},
-        })
+        storage.set_manifest(
+            "done-job",
+            {
+                "generation": {"video_runner": {"status": "completed"}},
+            },
+        )
         outcome = run_video_generation("done-job", storage, config=dry_config)
         assert outcome.status == STATUS_SKIPPED
         assert outcome.reason == REASON_ALREADY_PROCESSED
@@ -296,6 +298,7 @@ class TestRunVideoGeneration:
                 segment_count=1,
                 has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
 
         outcome = run_video_generation("no-repos", storage, config=dry_config)
@@ -310,10 +313,13 @@ class TestRunVideoGeneration:
     @patch("podcaster.video.video_compose.compose_video")
     def test_successful_generation(self, mock_compose, mock_record, storage, dry_config, tmp_path):
         job_id = "video-ok"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {"article_title": "Test Episode"},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Test Episode"},
+            },
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
 
         # Mock record_episode
@@ -331,6 +337,7 @@ class TestRunVideoGeneration:
                 segment_count=2,
                 has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
 
         outcome = run_video_generation(job_id, storage, config=dry_config)
@@ -353,10 +360,13 @@ class TestRunVideoGeneration:
     ):
         """Removed repos are flagged before recording and speaker cues persisted (#394)."""
         job_id = "video-removed"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {"article_title": "Test Episode"},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Test Episode"},
+            },
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
 
         mock_recording = MagicMock()
@@ -367,18 +377,19 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=60.0,
-                segment_count=2, has_audio=False,
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
 
         # facebook/react is "removed"; microsoft/vscode is present.
         def fake_removed(url, timeout=5.0):
             return "facebook/react" in url
 
-        with patch(
-            "podcaster.video.sync_plan.check_repo_removed", side_effect=fake_removed
-        ):
+        with patch("podcaster.video.sync_plan.check_repo_removed", side_effect=fake_removed):
             outcome = run_video_generation(job_id, storage, config=dry_config)
 
         assert outcome.status == STATUS_COMPLETED
@@ -404,10 +415,13 @@ class TestRunVideoGeneration:
     ):
         """No removed-repo artifact is written when every repo is present (#394)."""
         job_id = "video-allpresent"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {"article_title": "Test Episode"},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Test Episode"},
+            },
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
 
         mock_recording = MagicMock()
@@ -418,9 +432,12 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=60.0,
-                segment_count=2, has_audio=False,
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
 
         outcome = run_video_generation(job_id, storage, config=dry_config)
@@ -435,10 +452,13 @@ class TestRunVideoGeneration:
     ):
         """The video description is built from show-notes with summary + credits (#363)."""
         job_id = "video-notes"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {"article_title": "Notes Episode"},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Notes Episode"},
+            },
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
         storage._data[show_notes_path(job_id)] = (
             "# Claracle — Week 2026-W24\n\n"
@@ -457,13 +477,19 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=60.0,
-                segment_count=2, has_audio=False,
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
         mock_distribute.return_value = MagicMock(
-            status="completed", youtube_id=None, blob_path=None,
-            spotify_rss_updated=False, spotify_upload_updated=False,
+            status="completed",
+            youtube_id=None,
+            blob_path=None,
+            spotify_rss_updated=False,
+            spotify_upload_updated=False,
         )
 
         run_video_generation(job_id, storage, config=dry_config)
@@ -484,14 +510,17 @@ class TestRunVideoGeneration:
     ):
         """description_template from the request is appended as music credits (#412)."""
         job_id = "video-template"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {
-                "article_title": "Template Episode",
-                "week": "2026-W24",
-                "description_template": "Custom music credit from SquadScope config",
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Template Episode",
+                    "week": "2026-W24",
+                    "description_template": "Custom music credit from SquadScope config",
+                },
             },
-        })
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
 
         mock_recording = MagicMock()
@@ -502,13 +531,19 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=60.0,
-                segment_count=2, has_audio=False,
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
         mock_distribute.return_value = MagicMock(
-            status="completed", youtube_id=None, blob_path=None,
-            spotify_rss_updated=False, spotify_upload_updated=False,
+            status="completed",
+            youtube_id=None,
+            blob_path=None,
+            spotify_rss_updated=False,
+            spotify_upload_updated=False,
         )
 
         run_video_generation(job_id, storage, config=dry_config)
@@ -525,14 +560,17 @@ class TestRunVideoGeneration:
         """A non-string description_template is ignored (no crash) and the default
         music attribution is used instead (#412 review hardening)."""
         job_id = "video-malformed"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {
-                "article_title": "Malformed Episode",
-                "week": "2026-W24",
-                "description_template": {"unexpected": "object"},
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Malformed Episode",
+                    "week": "2026-W24",
+                    "description_template": {"unexpected": "object"},
+                },
             },
-        })
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
 
         mock_recording = MagicMock()
@@ -543,13 +581,19 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=60.0,
-                segment_count=2, has_audio=False,
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
         mock_distribute.return_value = MagicMock(
-            status="completed", youtube_id=None, blob_path=None,
-            spotify_rss_updated=False, spotify_upload_updated=False,
+            status="completed",
+            youtube_id=None,
+            blob_path=None,
+            spotify_rss_updated=False,
+            spotify_upload_updated=False,
         )
 
         run_video_generation(job_id, storage, config=dry_config)
@@ -563,15 +607,21 @@ class TestRunVideoGeneration:
     def test_season_episode_numbers_from_manifest_week(
         self, mock_compose, mock_record, mock_distribute, storage, dry_config
     ):
-        """Season (year) and episode (week) are resolved from manifest and passed to distribute_video (#412)."""
+        (
+            "Season (year) and episode (week) are resolved from manifest and passed "
+            "to distribute_video (#412)."
+        )
         job_id = "video-season"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {
-                "article_title": "Season Episode",
-                "week": "2026-W24",
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Season Episode",
+                    "week": "2026-W24",
+                },
             },
-        })
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
 
         mock_recording = MagicMock()
@@ -582,13 +632,19 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=60.0,
-                segment_count=2, has_audio=False,
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
         mock_distribute.return_value = MagicMock(
-            status="completed", youtube_id=None, blob_path=None,
-            spotify_rss_updated=False, spotify_upload_updated=False,
+            status="completed",
+            youtube_id=None,
+            blob_path=None,
+            spotify_rss_updated=False,
+            spotify_upload_updated=False,
         )
 
         run_video_generation(job_id, storage, config=dry_config)
@@ -605,10 +661,13 @@ class TestRunVideoGeneration:
     ):
         """When no week is in the manifest, season/episode are None (#412)."""
         job_id = "video-noweek"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {"article_title": "No Week"},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "No Week"},
+            },
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
 
         mock_recording = MagicMock()
@@ -619,13 +678,19 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=60.0,
-                segment_count=2, has_audio=False,
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
         mock_distribute.return_value = MagicMock(
-            status="completed", youtube_id=None, blob_path=None,
-            spotify_rss_updated=False, spotify_upload_updated=False,
+            status="completed",
+            youtube_id=None,
+            blob_path=None,
+            spotify_rss_updated=False,
+            spotify_upload_updated=False,
         )
 
         run_video_generation(job_id, storage, config=dry_config)
@@ -643,10 +708,13 @@ class TestRunVideoGeneration:
         """The segment plan uses the REAL MP3 duration, not the manifest value (#353)."""
         job_id = "video-dur"
         # Manifest says 300s, but the actual MP3 probes at 123s.
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 300.0}},
-            "request": {"article_title": "Dur Test"},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 300.0}},
+                "request": {"article_title": "Dur Test"},
+            },
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
         # Provide the audio blob so _resolve_audio_path returns a path.
         storage._data[f"jobs/{job_id}/audio/{job_id}.mp3"] = b"\x00" * 16
@@ -660,9 +728,12 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=123.0,
-                segment_count=2, has_audio=True,
+                output_path=output_path,
+                duration_seconds=123.0,
+                segment_count=2,
+                has_audio=True,
             )
+
         mock_compose.side_effect = fake_compose
 
         outcome = run_video_generation(job_id, storage, config=dry_config)
@@ -680,10 +751,13 @@ class TestRunVideoGeneration:
     ):
         """When the MP3 cannot be probed, the manifest duration is used (#353)."""
         job_id = "video-fallback"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 222.0}},
-            "request": {"article_title": "Fallback"},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 222.0}},
+                "request": {"article_title": "Fallback"},
+            },
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
         storage._data[f"jobs/{job_id}/audio/{job_id}.mp3"] = b"\x00" * 16
         mock_probe.return_value = None  # probe failed
@@ -696,9 +770,12 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=222.0,
-                segment_count=2, has_audio=True,
+                output_path=output_path,
+                duration_seconds=222.0,
+                segment_count=2,
+                has_audio=True,
             )
+
         mock_compose.side_effect = fake_compose
 
         outcome = run_video_generation(job_id, storage, config=dry_config)
@@ -716,10 +793,13 @@ class TestRunVideoGeneration:
         import subprocess
 
         job_id = "video-ffmpeg-fail"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {"article_title": "Test Episode"},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Test Episode"},
+            },
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
 
         mock_recording = MagicMock()
@@ -727,8 +807,10 @@ class TestRunVideoGeneration:
         mock_record.return_value = mock_recording
 
         mock_compose.side_effect = subprocess.CalledProcessError(
-            255, ["ffmpeg", "-i", "joined.mp4", "muxed.mp4"],
-            output="", stderr="av_interleaved_write_frame(): No space left on device",
+            255,
+            ["ffmpeg", "-i", "joined.mp4", "muxed.mp4"],
+            output="",
+            stderr="av_interleaved_write_frame(): No space left on device",
         )
 
         with caplog.at_level(logging.ERROR):
@@ -748,10 +830,13 @@ class TestRunVideoGeneration:
     ):
         """Scratch intermediates are deleted once the episode publishes (#410)."""
         job_id = "video-cleanup"
-        storage.set_manifest(job_id, {
-            "generation": {"validation": {"duration_seconds": 60.0}},
-            "request": {"article_title": "Test Episode"},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Test Episode"},
+            },
+        )
         storage.set_script(job_id, SAMPLE_SCRIPT)
 
         mock_recording = MagicMock()
@@ -762,9 +847,12 @@ class TestRunVideoGeneration:
             if output_path:
                 output_path.write_bytes(b"\x00" * 2048)
             return MagicMock(
-                output_path=output_path, duration_seconds=60.0,
-                segment_count=2, has_audio=False,
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
             )
+
         mock_compose.side_effect = fake_compose
 
         fake_store = MagicMock()
@@ -788,7 +876,10 @@ class TestRunVideoGeneration:
 class TestProcessMessage:
     def test_malformed_message_deleted(self, storage, queue):
         msg = QueueMessage(
-            message_id="m1", pop_receipt="p1", body="garbage!!!", dequeue_count=1,
+            message_id="m1",
+            pop_receipt="p1",
+            body="garbage!!!",
+            dequeue_count=1,
         )
         outcome = process_message(msg, storage=storage, queue=queue)
         assert outcome.status == STATUS_FAILED
@@ -811,9 +902,12 @@ class TestProcessMessage:
 
     def test_successful_processing_deletes(self, storage, queue, dry_config):
         job_id = "success-job"
-        storage.set_manifest(job_id, {
-            "generation": {"video_runner": {"status": "completed"}},
-        })
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"video_runner": {"status": "completed"}},
+            },
+        )
         msg = _make_message(job_id)
         outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
         assert outcome.status == STATUS_SKIPPED
@@ -832,9 +926,12 @@ class TestDrain:
     def test_processes_multiple_messages(self, storage, dry_config):
         # Set up two jobs that will skip (already processed)
         for jid in ["j1", "j2"]:
-            storage.set_manifest(jid, {
-                "generation": {"video_runner": {"status": "completed"}},
-            })
+            storage.set_manifest(
+                jid,
+                {
+                    "generation": {"video_runner": {"status": "completed"}},
+                },
+            )
 
         queue = FakeQueue([_make_message("j1"), _make_message("j2")])
         outcomes = drain(queue, storage, dry_config)
@@ -844,9 +941,12 @@ class TestDrain:
     def test_respects_max_messages(self, storage, dry_config):
         for i in range(10):
             jid = f"j{i}"
-            storage.set_manifest(jid, {
-                "generation": {"video_runner": {"status": "completed"}},
-            })
+            storage.set_manifest(
+                jid,
+                {
+                    "generation": {"video_runner": {"status": "completed"}},
+                },
+            )
 
         messages = [_make_message(f"j{i}") for i in range(10)]
         queue = FakeQueue(messages)
@@ -949,10 +1049,9 @@ class TestBuildSectionCards:
             "## Signal & Noise\nBeto: https://github.com/astral-sh/ruff\n"
         )
         # Avoid invoking real ffmpeg: stub the card renderer.
-        with patch(
-            "podcaster.video.section_cards.generate_section_card"
-        ) as gen, patch(
-            "podcaster.video.section_cards._get_drawtext_ffmpeg", return_value="ffmpeg"
+        with (
+            patch("podcaster.video.section_cards.generate_section_card") as gen,
+            patch("podcaster.video.section_cards._get_drawtext_ffmpeg", return_value="ffmpeg"),
         ):
             inserts = _build_section_cards(
                 script,

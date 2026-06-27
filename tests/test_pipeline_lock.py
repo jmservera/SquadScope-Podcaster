@@ -66,7 +66,9 @@ class TestClaimPipeline:
         assert claim_pipeline(storage, "job-1", PIPELINE_VIDEO) is False
 
     def test_claim_preserves_existing_manifest_data(self):
-        initial = json.dumps({"request": {"title": "test"}, "generation": {"validation": {}}}).encode()
+        initial = json.dumps(
+            {"request": {"title": "test"}, "generation": {"validation": {}}}
+        ).encode()
         storage = FakeStorageBackend(initial)
         assert claim_pipeline(storage, "job-1", PIPELINE_VIDEO) is True
         doc = storage.content
@@ -100,9 +102,7 @@ class TestClaimPipeline:
 
     def test_video_blocked_while_audio_synthesis_in_progress(self):
         """Video must NOT take over the lock while audio synthesis is unfinished."""
-        initial = json.dumps(
-            {"generation": {"synthesis_runner": {"status": "running"}}}
-        ).encode()
+        initial = json.dumps({"generation": {"synthesis_runner": {"status": "running"}}}).encode()
         storage = FakeStorageBackend(initial)
         assert claim_pipeline(storage, "job-1", PIPELINE_AUDIO) is True
         assert claim_pipeline(storage, "job-1", PIPELINE_VIDEO) is False
@@ -110,9 +110,7 @@ class TestClaimPipeline:
 
     def test_video_takes_over_after_audio_synthesis_completed(self):
         """Once synthesis_runner.status == completed, video may claim the lock."""
-        initial = json.dumps(
-            {"generation": {"synthesis_runner": {"status": "completed"}}}
-        ).encode()
+        initial = json.dumps({"generation": {"synthesis_runner": {"status": "completed"}}}).encode()
         storage = FakeStorageBackend(initial)
         assert claim_pipeline(storage, "job-1", PIPELINE_AUDIO) is True
         # Audio finished; video should now be able to take over.
@@ -121,9 +119,7 @@ class TestClaimPipeline:
 
     def test_audio_cannot_take_over_video_lock(self):
         """The completed-synthesis handoff is one-directional (video over audio only)."""
-        initial = json.dumps(
-            {"generation": {"synthesis_runner": {"status": "completed"}}}
-        ).encode()
+        initial = json.dumps({"generation": {"synthesis_runner": {"status": "completed"}}}).encode()
         storage = FakeStorageBackend(initial)
         assert claim_pipeline(storage, "job-1", PIPELINE_VIDEO) is True
         assert claim_pipeline(storage, "job-1", PIPELINE_AUDIO) is False
