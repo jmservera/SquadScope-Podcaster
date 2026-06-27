@@ -33,12 +33,31 @@ def test_payload_provides_identity_detects_config() -> None:
     assert PodcastConfig.payload_provides_identity({"podcast_config": None}) is False
     # Empty identity fields don't count as provided.
     assert PodcastConfig.payload_provides_identity({"podcast_config": {"name": ""}}) is False
+    # A host block with a blank/absent name does not count as supplied identity
+    # (it would fall back to the default name) — issue #545.
+    assert (
+        PodcastConfig.payload_provides_identity({"podcast_config": {"host_a": {"name": ""}}})
+        is False
+    )
+    assert (
+        PodcastConfig.payload_provides_identity({"podcast_config": {"host_a": {"voice": "fable"}}})
+        is False
+    )
+    assert PodcastConfig.payload_provides_identity({"podcast_config": {"hosts": []}}) is False
+    assert (
+        PodcastConfig.payload_provides_identity(
+            {"podcast_config": {"hosts": [{"name": ""}, {"voice": "x"}]}}
+        )
+        is False
+    )
     # Any of name / host_a / host_b / hosts present -> identity provided.
     assert PodcastConfig.payload_provides_identity({"podcast_config": {"name": "My Show"}}) is True
     assert (
         PodcastConfig.payload_provides_identity({"podcast_config": {"host_a": {"name": "Ada"}}})
         is True
     )
+    # A bare string host name also counts.
+    assert PodcastConfig.payload_provides_identity({"podcast_config": {"host_a": "Ada"}}) is True
     assert (
         PodcastConfig.payload_provides_identity({"podcast_config": {"host_b": {"name": "Bo"}}})
         is True

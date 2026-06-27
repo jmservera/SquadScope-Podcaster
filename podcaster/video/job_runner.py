@@ -560,7 +560,7 @@ def run_video_generation(
             # missing rather than wrong (issue #545).
             article_title = request.get("article_title")
             if isinstance(article_title, str) and article_title.strip():
-                title = article_title
+                title = article_title.strip()
             else:
                 title = f"SquadScope Podcast — {job_id}"
                 logger.warning(
