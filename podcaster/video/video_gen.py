@@ -1232,9 +1232,29 @@ def _ease_out_cubic(t: float) -> float:
     return 1.0 - (1.0 - t) ** 3
 
 
+def _ease_in_out(t: float) -> float:
+    """Smoothstep ease-in-out — gentle start and finish (issue #543).
+
+    ``3t² − 2t³`` (Hermite smoothstep): velocity ramps up from zero, peaks at
+    the midpoint and decelerates back to zero.  Its peak slope is exactly
+    ``1.5×`` the average, so — unlike :func:`_ease_out_cubic`, which front-loads
+    the largest delta into the very first frame — it never produces a hard
+    per-frame jump.  Used for the README travel phase so the transition reads as
+    a continuous fast scroll rather than a cut (issue #543).
+    """
+    return t * t * (3.0 - 2.0 * t)
+
+
+# Peak-slope multiplier of :func:`_ease_in_out` relative to its average speed.
+# Used to size the travel-phase frame budget so the *peak* per-frame velocity
+# stays within the smooth-travel cap (issue #543).
+_EASE_IN_OUT_PEAK_FACTOR = 1.5
+
+
 _EASINGS: dict[str, Callable[[float], float]] = {
     "linear": _ease_linear,
     "ease_out_cubic": _ease_out_cubic,
+    "ease_in_out": _ease_in_out,
 }
 
 
@@ -1410,6 +1430,14 @@ def _smooth_scroll(
 # ``_scroll_github_readme``.
 GITHUB_HEADER_HOLD_SECONDS = 2.0  # issue range 1.5-2.5s
 GITHUB_JUMP_SECONDS = 0.6  # eased transition, issue range 0.5-0.9s
+# Peak per-frame velocity (px/frame) allowed during the README travel phase.
+# The travel that brings the README into view used to be a fixed, short
+# ``ease_out_cubic`` jump whose first frame could leap >1000px — a hard cut, not
+# a scroll (issue #543).  The travel-phase frame budget is now sized from the
+# distance so the *peak* per-frame step never exceeds this cap, keeping the
+# transition a continuous (if brisk) scroll.  At 30fps, 60px/frame ≈ 1800px/s —
+# fast enough to clear the file tree quickly, slow enough to read as motion.
+GITHUB_JUMP_MAX_PX_PER_FRAME = 60
 # Frame-count equivalents at the default 30fps capture rate.  Kept as the
 # defaults for ``_github_scroll_plan`` (frame-indexed) and for tests.
 GITHUB_HEADER_HOLD_FRAMES = round(GITHUB_HEADER_HOLD_SECONDS * SCROLL_TICKS_PER_SEC)  # 60
@@ -1417,9 +1445,6 @@ GITHUB_JUMP_FRAMES = round(GITHUB_JUMP_SECONDS * SCROLL_TICKS_PER_SEC)  # 18
 # Pixels of headroom kept above the README so its heading stays visible after
 # the jump (rather than aligning the README flush to the very top).
 GITHUB_README_TOP_MARGIN = 120
-# Jump (vs. gentle eased scroll) when the README is more than this many viewport
-# heights below the top.
-README_JUMP_VIEWPORT_THRESHOLD = 2.0
 
 # Robustly locate the README and report its document offset plus the page's max
 # scrollable Y.  Returns ``{readmeY: int|null, scrollable: int}``.
@@ -1458,13 +1483,25 @@ def _github_scroll_plan(
     header_frames: int = GITHUB_HEADER_HOLD_FRAMES,
     jump_frames: int = GITHUB_JUMP_FRAMES,
     px_per_frame: int = READING_PX_PER_FRAME,
+    jump_px_per_frame: int = GITHUB_JUMP_MAX_PX_PER_FRAME,
 ) -> "list[int] | None":
     """Build the per-frame Y positions for the README-first flow (issue #415).
 
-    Phases: hold on the header, an eased jump to the README, then a reading-speed
-    linear scroll through the README content.  Returns a list of exactly
-    *total_frames* absolute Y offsets, or ``None`` when there aren't enough
-    frames to stage the flow (the caller then does a plain smooth scroll).
+    Phases: hold on the header, a velocity-bounded eased *travel* down to the
+    README, then a reading-speed linear scroll through the README content.
+    Returns a list of exactly *total_frames* absolute Y offsets, or ``None`` when
+    there aren't enough frames to stage the flow (the caller then does a plain
+    smooth scroll).
+
+    The travel phase used to be a fixed, short ``ease_out_cubic`` jump whose very
+    first frame could leap over a thousand pixels — a hard cut rather than a
+    scroll (issue #543).  Its frame budget is now derived from the travel
+    distance and *jump_px_per_frame* so the *peak* per-frame step stays within
+    that cap, using the symmetric :func:`_ease_in_out` curve (gentle start and
+    finish).  *jump_frames* now acts as a lower bound so even short travels keep
+    a soft eased glide.  When the README is so deep that it can't be reached
+    within the available frames at travel speed, the travel distance is clamped
+    (landing partway, then reading continues) rather than ever jumping hard.
     """
     if total_frames <= 0:
         return []
@@ -1473,29 +1510,44 @@ def _github_scroll_plan(
         MAX_READING_PX_PER_FRAME,
         max(1, int(px_per_frame)),
     )
+    travel_cap = max(1, int(jump_px_per_frame))
 
-    # Never let header + jump eat more than half the segment — reading the
-    # README content is the point, so it always gets at least half the frames.
+    # Header hold first, then split the remainder between travel and reading.
     header = min(header_frames, total_frames // 4)
-    far = readme_y > viewport_height * README_JUMP_VIEWPORT_THRESHOLD
-    if far:
-        jump = min(jump_frames, total_frames // 4)
-    else:
-        # README is close — a slightly longer eased glide reads better than an
-        # abrupt jump.
-        jump = min(max(jump_frames, total_frames // 6), total_frames // 4)
+    available = total_frames - header
 
-    reading = total_frames - header - jump
+    # Frames the eased travel needs so its peak per-frame step (≈ peak-factor ×
+    # the average) stays within travel_cap.  ``+1`` converts movement intervals
+    # to positions; ``jump_frames`` is a soft minimum so short travels still ease
+    # in and out instead of snapping (issue #543).
+    needed_intervals = math.ceil(_EASE_IN_OUT_PEAK_FACTOR * readme_y / travel_cap)
+    jump_needed = max(needed_intervals + 1, jump_frames)
+    # Always reserve a real reading budget so a deep README never collapses the
+    # read phase to a single held (no-op) frame — travel yields frames to keep
+    # this floor, clamping its distance if necessary (issue #543 review).
+    reading_floor = max(2, available // 6)
+    max_jump = max(1, available - reading_floor)
+    jump = min(jump_needed, max_jump)
+    reading = available - jump
     if header < 1 or jump < 1 or reading < 1:
         return None
 
+    # If the budget couldn't fit the full eased travel, only go as far as the
+    # travel speed allows so the peak step never exceeds the cap (issue #543).
+    if jump >= jump_needed:
+        travel_end = readme_y
+    else:
+        reachable = int((jump - 1) * travel_cap / _EASE_IN_OUT_PEAK_FACTOR)
+        travel_end = min(readme_y, reachable)
+    travel_end = max(0, min(travel_end, int(doc_scrollable)))
+
     plan: "list[int]" = [0] * header
-    plan += _scroll_positions(0, readme_y, jump, easing="ease_out_cubic")
+    plan += _scroll_positions(0, travel_end, jump, easing="ease_in_out")
     # The reading phase has ``reading`` frames, i.e. ``reading - 1`` movement
     # intervals, so size the span off the interval count to keep the average
     # per-frame delta at or below *px_per_frame* (issue #415).
-    read_end = min(int(doc_scrollable), readme_y + max(reading - 1, 1) * px_per_frame)
-    plan += _scroll_positions(readme_y, read_end, reading, easing="linear")
+    read_end = min(int(doc_scrollable), travel_end + max(reading - 1, 1) * px_per_frame)
+    plan += _scroll_positions(travel_end, read_end, reading, easing="linear")
 
     # Guard against off-by-one from the phase concatenation.
     if len(plan) < total_frames:
@@ -1567,7 +1619,7 @@ def _scroll_github_readme(
         return
 
     logger.info(
-        "README-first scroll: header+jump to y=%d then read to y=%d (#415)",
+        "README-first scroll: header hold, smooth travel to y=%d then read to y=%d (#543)",
         readme_y,
         plan[-1],
     )
