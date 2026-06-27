@@ -577,10 +577,13 @@ def run_video_generation(
             if not PodcastConfig.payload_provides_identity(request):
                 logger.warning(
                     "podcast_config identity absent in manifest request for "
-                    "job_id=%s; the episode uses default host names — supply "
-                    "request.podcast_config (name/host_a/host_b) to override "
-                    "(issue #545)",
+                    "job_id=%s; the episode uses default show name %r and hosts "
+                    "%r/%r — supply request.podcast_config (name/host_a/host_b) "
+                    "to override (issue #545)",
                     job_id,
+                    podcast_config.name,
+                    podcast_config.host_a.name,
+                    podcast_config.host_b.name,
                 )
             fallback_description = str(
                 request.get("description", f"Video podcast episode {job_id}")
