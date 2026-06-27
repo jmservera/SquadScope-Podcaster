@@ -1522,8 +1522,12 @@ def _github_scroll_plan(
     # in and out instead of snapping (issue #543).
     needed_intervals = math.ceil(_EASE_IN_OUT_PEAK_FACTOR * readme_y / travel_cap)
     jump_needed = max(needed_intervals + 1, jump_frames)
-    # Never consume the whole budget — reading always keeps at least one frame.
-    jump = min(jump_needed, max(1, available - 1))
+    # Always reserve a real reading budget so a deep README never collapses the
+    # read phase to a single held (no-op) frame — travel yields frames to keep
+    # this floor, clamping its distance if necessary (issue #543 review).
+    reading_floor = max(2, available // 6)
+    max_jump = max(1, available - reading_floor)
+    jump = min(jump_needed, max_jump)
     reading = available - jump
     if header < 1 or jump < 1 or reading < 1:
         return None

@@ -527,6 +527,21 @@ class TestGithubScrollPlan:
         assert max(deltas) <= GITHUB_JUMP_MAX_PX_PER_FRAME + 1
         # Did not pretend to reach the deep README in one segment.
         assert max(plan) < 20000
+        # The reading phase must actually advance — never degenerate into a
+        # single held final frame (issue #543 review).
+        assert plan[-1] > plan[-2]
+
+    def test_deep_readme_reading_phase_does_not_collapse(self):
+        # A ~5s clip (150f @30fps) with a deep README must still keep a real
+        # reading budget that scrolls, not a single no-op hold (issue #543).
+        plan = _github_scroll_plan(8000, HEIGHT, 12000, 150)
+        assert plan is not None
+        deltas = [b - a for a, b in zip(plan, plan[1:])]
+        assert max(deltas) <= GITHUB_JUMP_MAX_PX_PER_FRAME + 1
+        # The final stretch advances at reading speed (the read phase is real).
+        assert plan[-1] > plan[-2]
+        tail = plan[-10:]
+        assert max(b - a for a, b in zip(tail, tail[1:])) <= READING_PX_PER_FRAME
 
 
 class TestScrollGithubReadme:
