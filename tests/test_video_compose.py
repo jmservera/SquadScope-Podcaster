@@ -1616,6 +1616,56 @@ class TestComposeVideoFitToWindow:
         assert sum(targets) == pytest.approx(21.0)
         assert all(t == pytest.approx(10.5) for t in targets)
 
+    def test_first_last_segments_trimmed_for_audio_sync(self, tmp_path):
+        # Sync regression (issue #544): with transition=0 the content maps the
+        # audio window [intro, audio-outro] at 1:1.  The plan tiles the FULL
+        # audio timeline, so the first segment's intro span and the last
+        # segment's outro span must be trimmed before fitting — otherwise the
+        # asymmetric segments are proportionally squeezed and drift off their
+        # spoken mention.  Audio=30, intro=5, outro=5 -> content window 20.
+        # Plan: seg0 covers audio [0,20] (20s), seg1 covers [20,30] (10s).
+        # After trim: seg0=15, seg1=5 (sum 20 = window) -> kept ~1:1, NOT the
+        # proportional 13.6/6.8 the old scale-only path produced.  A small
+        # transition (0.5s) adds a uniform xfade-compensation stretch.
+        runner = _ffprobe_runner(has_audio=True, duration=5.0)
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"})
+        s1 = tmp_path / "a.webm"
+        s2 = tmp_path / "b.webm"
+        s1.touch()
+        s2.touch()
+        segs = [
+            _make_recorded_segment(owner="a", name="b", duration=20.0, video_path=s1),
+            _make_recorded_segment(owner="c", name="d", duration=10.0, video_path=s2),
+        ]
+        out = tmp_path / "out" / "episode.mp4"
+
+        compose_video(
+            segments=segs,
+            audio_path=tmp_path / "audio.mp3",
+            output_path=out,
+            runner=runner,
+            storage=storage,
+            intro_outro_cache_dir=tmp_path / "cache",
+            audio_duration=30.0,
+            transition_duration=0.5,
+        )
+
+        cmds = [c.args[0] for c in runner.call_args_list]
+        fit_cmds = [
+            c
+            for c in cmds
+            if "-t" in c
+            and any("tpad=stop_mode=clone" in str(a) for a in c)
+            and c[-1].endswith(".mp4")
+            and "seg_" in c[-1]
+        ]
+        assert len(fit_cmds) == 2
+        targets = [float(c[c.index("-t") + 1]) for c in fit_cmds]
+        # target_sum = 20 (window) + 0.5 (one xfade) = 20.5; trimmed source = 20
+        # so scale = 1.025 -> [15.375, 5.125], NOT the proportional ~[13.7, 6.8].
+        assert targets[0] == pytest.approx(15.375)
+        assert targets[1] == pytest.approx(5.125)
+
     def test_single_generic_segment_trimmed_to_window(self, tmp_path):
         runner = _ffprobe_runner(has_audio=True, duration=4.0)
         storage = _FakeStorage({INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"})
