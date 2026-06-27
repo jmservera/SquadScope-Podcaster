@@ -232,11 +232,7 @@ def filter_events_since(events: list[Any], after_seq: int = 0) -> list[dict[str,
     (keeping the current/terminal snapshot consistent with the returned events)
     and skips malformed events instead of raising.
     """
-    return [
-        event
-        for event in events
-        if (seq := _safe_seq(event)) is not None and seq > after_seq
-    ]
+    return [event for event in events if (seq := _safe_seq(event)) is not None and seq > after_seq]
 
 
 def emit_progress(
@@ -318,9 +314,7 @@ def emit_progress(
     try:
         storage.update_bytes(progress_path(job_id), "application/json; charset=utf-8", _apply)
     except Exception:  # noqa: BLE001 - progress emission must never mask the real work
-        logger.warning(
-            "could not emit progress job_id=%s stage=%s", job_id, stage, exc_info=True
-        )
+        logger.warning("could not emit progress job_id=%s stage=%s", job_id, stage, exc_info=True)
         return None
 
     if not captured:
@@ -383,6 +377,7 @@ def make_task_reporter(
     """
 
     if storage is None or not job_id:
+
         def _noop(task_id: str, status: str = TaskStatus.RUNNING, **kwargs: Any) -> None:
             return None
 

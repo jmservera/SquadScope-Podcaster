@@ -389,10 +389,9 @@ def run_synthesis(
             # spotify_publish_config being present is not enough — Spotify must also be
             # enabled via SPOTIFY_PUBLISH_ENABLED=true for actual publishing to occur.
             has_spotify = (
-                (spotify_publish_config is not None
-                 and os.environ.get("SPOTIFY_PUBLISH_ENABLED", "").lower() == "true")
-                or auto_publish_enabled()
-            )
+                spotify_publish_config is not None
+                and os.environ.get("SPOTIFY_PUBLISH_ENABLED", "").lower() == "true"
+            ) or auto_publish_enabled()
             has_youtube = os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true"
             if not has_spotify and not has_youtube:
                 logger.warning(
@@ -623,6 +622,8 @@ _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 # Track name → file path mapping. Names are normalized to lowercase with
 # spaces replaced by hyphens.
 _MUSIC_DIR = _ASSETS_DIR / "music"
+
+
 def _resolve_music_paths(config: MusicMixConfig) -> tuple[Path | None, Path | None]:
     """Resolve intro and outro music file paths from bundled assets.
 
@@ -705,8 +706,7 @@ def process_message(
                 stage="synthesis",
                 error_type="RetryExhausted",
                 error_summary=(
-                    f"Synthesis failed after {message.dequeue_count} attempts "
-                    f"for job_id={job_id}"
+                    f"Synthesis failed after {message.dequeue_count} attempts for job_id={job_id}"
                 ),
             )
             queue.delete_message(message)
@@ -755,9 +755,7 @@ def drain(
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     queue = create_queue_backend()
     if queue is None:
         logger.error(
@@ -999,9 +997,7 @@ def _record_runner_state(storage: StorageBackend, job_id: str, state: dict[str, 
         lifecycle = document.setdefault("lifecycle", {})
         if isinstance(lifecycle, dict):
             status = (
-                "synthesis_failed"
-                if state.get("status") == STATUS_FAILED
-                else "synthesis_skipped"
+                "synthesis_failed" if state.get("status") == STATUS_FAILED else "synthesis_skipped"
             )
             document["status"] = status
             lifecycle["status"] = status

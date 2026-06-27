@@ -70,9 +70,10 @@ def build_cost_ledger(
     }
     missing = missing_cost_ledger_fields(ledger)
     ledger["readiness"]["missing_fields"] = missing
-    ledger["readiness"]["complete"] = (
-        not missing and budget["status"] in {"within_budget", "override_recorded"}
-    )
+    ledger["readiness"]["complete"] = not missing and budget["status"] in {
+        "within_budget",
+        "override_recorded",
+    }
     ledger["readiness"]["status"] = "ready" if ledger["readiness"]["complete"] else "blocked"
     return ledger
 

@@ -42,9 +42,7 @@ def test_from_payload_top_level():
 
 
 def test_from_payload_nested_under_script_directions():
-    cfg = BackchannelConfig.from_payload(
-        {"script_directions": {"backchannels": {"enabled": True}}}
-    )
+    cfg = BackchannelConfig.from_payload({"script_directions": {"backchannels": {"enabled": True}}})
     assert cfg.enabled is True
 
 

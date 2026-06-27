@@ -188,7 +188,7 @@ def _parse_claims(raw_json: str, article_url: str) -> list[Claim]:
     for i, item in enumerate(parsed[:MAX_CLAIMS]):
         if not isinstance(item, dict):
             continue
-        claim_id = str(item.get("claim_id", f"claim_{i+1:03d}"))
+        claim_id = str(item.get("claim_id", f"claim_{i + 1:03d}"))
         script_excerpt = str(item.get("script_excerpt", "")).strip()
         if not script_excerpt:
             continue
@@ -198,9 +198,7 @@ def _parse_claims(raw_json: str, article_url: str) -> list[Claim]:
                 script_excerpt=script_excerpt,
                 source_url=str(item.get("source_url", article_url)),
                 source_quote=(
-                    item.get("source_quote")
-                    if isinstance(item.get("source_quote"), str)
-                    else None
+                    item.get("source_quote") if isinstance(item.get("source_quote"), str) else None
                 ),
                 source_paragraph=(
                     item.get("source_paragraph")
@@ -220,25 +218,29 @@ def claims_to_ledger_json(claims: list[Claim]) -> str:
     """Serialize claims to the standard claim-ledger.json format."""
 
     if not claims:
-        return json.dumps(
-            [
-                {
-                    "claim_id": "stub_000",
-                    "script_excerpt": (
-                        "[No claims extracted — pending editorial generation from source article]"
-                    ),
-                    "source_url": "",
-                    "source_quote": None,
-                    "verified": False,
-                    "editor_notes": (
-                        "Claim ledger will be populated during editorial generation. Human review "
-                        "required."
-                    ),
-                }
-            ],
-            sort_keys=True,
-            indent=2,
-        ) + "\n"
+        return (
+            json.dumps(
+                [
+                    {
+                        "claim_id": "stub_000",
+                        "script_excerpt": (
+                            "[No claims extracted — pending editorial "
+                            "generation from source article]"
+                        ),
+                        "source_url": "",
+                        "source_quote": None,
+                        "verified": False,
+                        "editor_notes": (
+                            "Claim ledger will be populated during editorial "
+                            "generation. Human review required."
+                        ),
+                    }
+                ],
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
+        )
 
     ledger: list[dict[str, Any]] = []
     for claim in claims:

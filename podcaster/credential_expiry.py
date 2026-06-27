@@ -30,9 +30,7 @@ logger = logging.getLogger("podcaster.credential_expiry")
 CREDENTIALS_EXPIRED_LABEL = "credentials-expired"
 DEFAULT_REPO = "jmservera/SquadScope-Podcaster"
 ISSUE_TITLE = "[Spotify] SP_DC/SP_KEY credentials expired — refresh required"
-YOUTUBE_ISSUE_TITLE = (
-    "[YouTube] OAuth refresh token revoked/expired — re-authentication required"
-)
+YOUTUBE_ISSUE_TITLE = "[YouTube] OAuth refresh token revoked/expired — re-authentication required"
 
 _GH_TIMEOUT = 30
 
@@ -116,10 +114,7 @@ def _ensure_label(repo: str) -> None:
 def build_issue_body(error_message: str, *, timestamp: str | None = None) -> str:
     """Build the Markdown body with credential-refresh instructions."""
     now = timestamp or (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
     return "\n".join(
         [
@@ -163,8 +158,7 @@ def build_issue_body(error_message: str, *, timestamp: str | None = None) -> str
             "session revocation.",
             "",
             "---",
-            "_Automatically reported by the Spotify credential-expiry detector "
-            "(#364)._",
+            "_Automatically reported by the Spotify credential-expiry detector (#364)._",
         ]
     )
 
@@ -216,15 +210,11 @@ def notify_credential_expiry(error_message: str) -> int | None:
             ]
         )
         issue_url = (result.stdout or "").strip()
-        logger.error(
-            "Spotify credentials expired — opened GitHub issue: %s", issue_url
-        )
+        logger.error("Spotify credentials expired — opened GitHub issue: %s", issue_url)
         number = _parse_issue_number(issue_url)
         return number
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-        logger.warning(
-            "failed to open credential-expiry issue via gh CLI", exc_info=True
-        )
+        logger.warning("failed to open credential-expiry issue via gh CLI", exc_info=True)
         return None
 
 
@@ -242,10 +232,7 @@ def _parse_issue_number(issue_url: str) -> int | None:
 def build_youtube_issue_body(error_message: str, *, timestamp: str | None = None) -> str:
     """Build the Markdown body with YouTube re-authentication instructions."""
     now = timestamp or (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
     return "\n".join(
         [
@@ -293,8 +280,7 @@ def build_youtube_issue_body(error_message: str, *, timestamp: str | None = None
             "Vault at runtime.",
             "",
             "---",
-            "_Automatically reported by the YouTube credential-expiry detector "
-            "(#443)._",
+            "_Automatically reported by the YouTube credential-expiry detector (#443)._",
         ]
     )
 
@@ -343,12 +329,8 @@ def notify_youtube_credential_expiry(error_message: str) -> int | None:
             ]
         )
         issue_url = (result.stdout or "").strip()
-        logger.error(
-            "YouTube refresh token revoked — opened GitHub issue: %s", issue_url
-        )
+        logger.error("YouTube refresh token revoked — opened GitHub issue: %s", issue_url)
         return _parse_issue_number(issue_url)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-        logger.warning(
-            "failed to open YouTube re-auth issue via gh CLI", exc_info=True
-        )
+        logger.warning("failed to open YouTube re-auth issue via gh CLI", exc_info=True)
         return None

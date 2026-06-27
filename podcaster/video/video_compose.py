@@ -64,9 +64,7 @@ def _probe_drawtext_ffmpeg(
                 text=True,
                 timeout=10,
             )
-            if proc.returncode == 0 and (
-                "drawtext" in proc.stdout or "drawtext" in proc.stderr
-            ):
+            if proc.returncode == 0 and ("drawtext" in proc.stdout or "drawtext" in proc.stderr):
                 return binary
         except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             continue
@@ -151,9 +149,7 @@ INTERMEDIATE_PRESET = _env_str("VIDEO_INTERMEDIATE_PRESET", "veryfast")
 # Number of segment normalizations to run in parallel.  Each is an independent
 # ffmpeg process, so this scales near-linearly with cores up to the cap and is
 # the single biggest video-generation speed-up (issue #376).
-NORMALIZE_WORKERS = max(
-    1, _env_int("VIDEO_NORMALIZE_WORKERS", min(4, os.cpu_count() or 1))
-)
+NORMALIZE_WORKERS = max(1, _env_int("VIDEO_NORMALIZE_WORKERS", min(4, os.cpu_count() or 1)))
 # Number of independent pairwise-compose passes to run in parallel within each
 # level of the composition tree (issue #481).  Each xfade pass is its own ffmpeg
 # process (CPU + disk-I/O bound), so a small pool is used: the default of 2
@@ -175,9 +171,7 @@ COMPOSE_CONCURRENCY = max(
 # single segment whose ffmpeg re-encode fails transiently is retried in
 # isolation — the blob checkpoint makes the retry idempotent — instead of
 # aborting the whole compose.  ``1`` disables retry (single attempt).
-NORMALIZE_TASK_RETRIES = max(
-    1, _env_int("VIDEO_NORMALIZE_TASK_RETRIES", DEFAULT_TASK_RETRIES)
-)
+NORMALIZE_TASK_RETRIES = max(1, _env_int("VIDEO_NORMALIZE_TASK_RETRIES", DEFAULT_TASK_RETRIES))
 
 
 def _video_encode_args(preset: str) -> list[str]:
@@ -197,10 +191,14 @@ def _video_encode_args(preset: str) -> list[str]:
     if hw is not None:
         return _hwaccel_encode_args(hw, preset)
     args = [
-        "-c:v", ENCODE_VCODEC,
-        "-preset", preset,
-        "-crf", str(ENCODE_CRF),
-        "-pix_fmt", ENCODE_PIX_FMT,
+        "-c:v",
+        ENCODE_VCODEC,
+        "-preset",
+        preset,
+        "-crf",
+        str(ENCODE_CRF),
+        "-pix_fmt",
+        ENCODE_PIX_FMT,
     ]
     if ENCODE_VCODEC == "libx264":
         # Spotify requires H.264 *High* profile; it is x264's default for
@@ -255,7 +253,10 @@ def _nvenc_available() -> bool:
     try:
         out = subprocess.run(
             [ffmpeg, "-hide_banner", "-encoders"],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
     except Exception:  # pragma: no cover - defensive
         return False
@@ -289,16 +290,20 @@ def _hwaccel_encode_args(codec: str, preset: str) -> list[str]:
     """
     nv_preset = _NVENC_PRESET_MAP.get(preset, "p4")
     args = [
-        "-c:v", codec,
-        "-preset", nv_preset,
-        "-rc", "constqp",
-        "-qp", str(ENCODE_CRF),
-        "-pix_fmt", ENCODE_PIX_FMT,
+        "-c:v",
+        codec,
+        "-preset",
+        nv_preset,
+        "-rc",
+        "constqp",
+        "-qp",
+        str(ENCODE_CRF),
+        "-pix_fmt",
+        ENCODE_PIX_FMT,
     ]
     if codec == "h264_nvenc":
         args += ["-profile:v", "high"]
     return args
-
 
 
 def _metadata_bsf_spec() -> str:
@@ -313,6 +318,7 @@ def _metadata_bsf_spec() -> str:
         f"{name}=colour_primaries=1:transfer_characteristics=1:"
         "matrix_coefficients=1:video_full_range_flag=0"
     )
+
 
 # When the podcast audio outlasts the composed video, the final frame is held
 # (via tpad) and then faded to black over this many seconds so the outro audio
@@ -430,7 +436,8 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
     if scheme not in ("http", "https"):
         logger.warning(
             "Skipping DOG logo fetch: unsupported URL scheme %r in %s; composing without watermark",
-            scheme, url,
+            scheme,
+            url,
         )
         return None
 
@@ -449,7 +456,8 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
     except Exception as exc:  # noqa: BLE001 — never fail composition on fetch error
         logger.warning(
             "Failed to download DOG logo from %s: %s; composing without watermark",
-            url, exc,
+            url,
+            exc,
         )
         return None
 
@@ -494,11 +502,11 @@ def _build_dog_overlay_filter(
 # --- Transition types (#298) ---
 # Valid xfade transition names (subset chosen for quality and file-size impact)
 
-TRANSITION_FADE = "fade"              # smooth crossfade — universal default
-TRANSITION_FADE_BLACK = "fadeblack"   # fade through black — good for intro joins
-TRANSITION_SLIDE_LEFT = "slideleft"   # slide incoming segment in from the right
-TRANSITION_SLIDE_RIGHT = "slideright" # slide incoming segment in from the left
-TRANSITION_WIPE_LEFT = "wipeleft"     # wipe — clean, good for content→outro
+TRANSITION_FADE = "fade"  # smooth crossfade — universal default
+TRANSITION_FADE_BLACK = "fadeblack"  # fade through black — good for intro joins
+TRANSITION_SLIDE_LEFT = "slideleft"  # slide incoming segment in from the right
+TRANSITION_SLIDE_RIGHT = "slideright"  # slide incoming segment in from the left
+TRANSITION_WIPE_LEFT = "wipeleft"  # wipe — clean, good for content→outro
 TRANSITION_WIPE_RIGHT = "wiperight"
 
 # Boundary kind identifiers (caller classifies each N-1 boundary for N segments)
@@ -586,17 +594,24 @@ def _build_normalize_cmd(
     return [
         "ffmpeg",
         "-hide_banner",
-        "-loglevel", "warning",
+        "-loglevel",
+        "warning",
         "-y",
-        "-i", str(input_path),
-        "-vf", f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
-               f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,fps={OUTPUT_FPS}",
+        "-i",
+        str(input_path),
+        "-vf",
+        f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
+        f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,fps={OUTPUT_FPS}",
         "-an",
         *_video_encode_args(INTERMEDIATE_PRESET),
-        "-colorspace", "bt709",
-        "-color_trc", "bt709",
-        "-color_primaries", "bt709",
-        "-color_range", "tv",
+        "-colorspace",
+        "bt709",
+        "-color_trc",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_range",
+        "tv",
         str(output_path),
     ]
 
@@ -632,17 +647,25 @@ def _build_fit_segment_cmd(
     return [
         "ffmpeg",
         "-hide_banner",
-        "-loglevel", "warning",
+        "-loglevel",
+        "warning",
         "-y",
-        "-i", str(input_path),
-        "-vf", vf,
-        "-t", f"{target:.3f}",
+        "-i",
+        str(input_path),
+        "-vf",
+        vf,
+        "-t",
+        f"{target:.3f}",
         "-an",
         *_video_encode_args(INTERMEDIATE_PRESET),
-        "-colorspace", "bt709",
-        "-color_trc", "bt709",
-        "-color_primaries", "bt709",
-        "-color_range", "tv",
+        "-colorspace",
+        "bt709",
+        "-color_trc",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_range",
+        "tv",
         str(output_path),
     ]
 
@@ -694,10 +717,7 @@ def _fit_target_durations(
         # otherwise the floor constraints alone exceed the target (infeasible)
         # and the floored values are the best valid result.
         if headroom_total >= excess > 0:
-            floored = [
-                d - excess * (h / headroom_total)
-                for d, h in zip(floored, headroom)
-            ]
+            floored = [d - excess * (h / headroom_total) for d, h in zip(floored, headroom)]
 
     return floored
 
@@ -722,14 +742,17 @@ def _fetch_blob_cached(
     except Exception as exc:  # noqa: BLE001 — never fail composition on fetch error
         logger.warning(
             "Failed to fetch %s clip from storage (%s): %s; composing without it",
-            label, blob_path, exc,
+            label,
+            blob_path,
+            exc,
         )
         return None
 
     if not data:
         logger.warning(
             "No %s clip found in storage at %s; composing without it",
-            label, blob_path,
+            label,
+            blob_path,
         )
         return None
 
@@ -737,7 +760,10 @@ def _fetch_blob_cached(
     cache_path.write_bytes(data)
     logger.info(
         "Downloaded %s clip (%d bytes) from %s to %s",
-        label, len(data), blob_path, cache_path,
+        label,
+        len(data),
+        blob_path,
+        cache_path,
     )
     return cache_path
 
@@ -751,12 +777,8 @@ def _fetch_intro_outro(
     Returns ``(intro_path, outro_path)`` where either entry may be ``None`` when
     the corresponding blob is unavailable.
     """
-    intro = _fetch_blob_cached(
-        storage, INTRO_BLOB_PATH, cache_dir / "intro.mp4", "intro"
-    )
-    outro = _fetch_blob_cached(
-        storage, OUTRO_BLOB_PATH, cache_dir / "outro.mp4", "outro"
-    )
+    intro = _fetch_blob_cached(storage, INTRO_BLOB_PATH, cache_dir / "intro.mp4", "intro")
+    outro = _fetch_blob_cached(storage, OUTRO_BLOB_PATH, cache_dir / "outro.mp4", "outro")
     return intro, outro
 
 
@@ -767,9 +789,13 @@ def _probe_media(path: Path, run: "CommandRunner") -> tuple[bool, float]:
     ``(False, 0.0)`` so callers degrade gracefully.
     """
     cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration:stream=codec_type",
-        "-of", "json",
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration:stream=codec_type",
+        "-of",
+        "json",
         str(path),
     ]
     try:
@@ -778,10 +804,7 @@ def _probe_media(path: Path, run: "CommandRunner") -> tuple[bool, float]:
     except Exception:  # noqa: BLE001 — probing is best-effort
         return False, 0.0
 
-    has_audio = any(
-        stream.get("codec_type") == "audio"
-        for stream in info.get("streams", [])
-    )
+    has_audio = any(stream.get("codec_type") == "audio" for stream in info.get("streams", []))
     try:
         duration = float(info.get("format", {}).get("duration", 0.0) or 0.0)
     except (TypeError, ValueError):
@@ -807,29 +830,46 @@ def _build_canonical_av_cmd(
         f"fps={OUTPUT_FPS},format={ENCODE_PIX_FMT},setsar=1"
     )
     cmd: list[str] = [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-        "-i", str(input_path),
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(input_path),
     ]
     if not has_audio:
         cmd += [
-            "-f", "lavfi",
+            "-f",
+            "lavfi",
             "-i",
             f"anullsrc=channel_layout=stereo:sample_rate={CONCAT_AUDIO_SAMPLE_RATE}",
         ]
     audio_map = "0:a:0" if has_audio else "1:a"
     cmd += [
-        "-filter_complex", f"[0:v]{vf}[v]",
-        "-map", "[v]",
-        "-map", audio_map,
+        "-filter_complex",
+        f"[0:v]{vf}[v]",
+        "-map",
+        "[v]",
+        "-map",
+        audio_map,
         *_video_encode_args(ENCODE_PRESET),
-        "-colorspace", "bt709",
-        "-color_trc", "bt709",
-        "-color_primaries", "bt709",
-        "-color_range", "tv",
-        "-c:a", "aac",
-        "-b:a", ENCODE_AUDIO_BITRATE,
-        "-ar", CONCAT_AUDIO_SAMPLE_RATE,
-        "-ac", CONCAT_AUDIO_CHANNELS,
+        "-colorspace",
+        "bt709",
+        "-color_trc",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_range",
+        "tv",
+        "-c:a",
+        "aac",
+        "-b:a",
+        ENCODE_AUDIO_BITRATE,
+        "-ar",
+        CONCAT_AUDIO_SAMPLE_RATE,
+        "-ac",
+        CONCAT_AUDIO_CHANNELS,
     ]
     if not has_audio:
         cmd.append("-shortest")
@@ -840,11 +880,21 @@ def _build_canonical_av_cmd(
 def _build_concat_cmd(list_file: Path, output_path: Path) -> list[str]:
     """Build the concat-demuxer command joining canonicalised clips (stream copy)."""
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-        "-f", "concat", "-safe", "0",
-        "-i", str(list_file),
-        "-c", "copy",
-        "-movflags", "+faststart",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_file),
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
         str(output_path),
     ]
 
@@ -872,11 +922,19 @@ def _build_audio_overlay_cmd(
     stream is copied unchanged and any trailing silence is left as-is.
     """
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-        "-i", str(video_path),
-        "-i", str(audio_path),
-        "-map", "0:v:0",
-        "-map", "1:a:0",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(video_path),
+        "-i",
+        str(audio_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
     ]
 
     extend_video = audio_duration > video_duration > 0
@@ -892,12 +950,17 @@ def _build_audio_overlay_cmd(
             f"fade=t=out:st={fade_start:.3f}:d={fade_duration:.3f}"
         )
         cmd += [
-            "-vf", vf,
+            "-vf",
+            vf,
             *_video_encode_args(ENCODE_PRESET),
-            "-colorspace", "bt709",
-            "-color_trc", "bt709",
-            "-color_primaries", "bt709",
-            "-color_range", "tv",
+            "-colorspace",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_range",
+            "tv",
         ]
     else:
         cmd += ["-c:v", "copy"]
@@ -909,11 +972,16 @@ def _build_audio_overlay_cmd(
         cmd += ["-af", f"apad=whole_dur={video_duration:.3f}"]
 
     cmd += [
-        "-c:a", "aac",
-        "-b:a", ENCODE_AUDIO_BITRATE,
-        "-ar", CONCAT_AUDIO_SAMPLE_RATE,
-        "-ac", CONCAT_AUDIO_CHANNELS,
-        "-movflags", "+faststart",
+        "-c:a",
+        "aac",
+        "-b:a",
+        ENCODE_AUDIO_BITRATE,
+        "-ar",
+        CONCAT_AUDIO_SAMPLE_RATE,
+        "-ac",
+        CONCAT_AUDIO_CHANNELS,
+        "-movflags",
+        "+faststart",
         str(output_path),
     ]
     return cmd
@@ -931,13 +999,21 @@ def _build_h264_metadata_cmd(input_path: Path, output_path: Path) -> list[str]:
     H.264 or ``hevc_metadata`` for HEVC — with no re-encode (issues #353, #376).
     """
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-        "-i", str(input_path),
-        "-c:v", "copy",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(input_path),
+        "-c:v",
+        "copy",
         "-bsf:v",
         _metadata_bsf_spec(),
-        "-c:a", "copy",
-        "-movflags", "+faststart",
+        "-c:a",
+        "copy",
+        "-movflags",
+        "+faststart",
         str(output_path),
     ]
 
@@ -960,11 +1036,19 @@ def _build_intro_dog_cmd(
     enable_expr = f"gte(t,{enable_start:.3f})"
     overlay = _build_dog_overlay_filter(dog_logo, 1, "0:v", enable=enable_expr)
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-        "-i", str(intro_path),
-        "-i", str(dog_logo_path),
-        "-filter_complex", overlay,
-        "-map", "[dogout]",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(intro_path),
+        "-i",
+        str(dog_logo_path),
+        "-filter_complex",
+        overlay,
+        "-map",
+        "[dogout]",
         *_encode_tail(preset),
         str(output_path),
     ]
@@ -986,13 +1070,20 @@ def _build_outro_xfade_cmd(
     source (silent) audio is dropped here and the crossfade never cuts audio.
     """
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-        "-i", str(content_path),
-        "-i", str(outro_path),
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(content_path),
+        "-i",
+        str(outro_path),
         "-filter_complex",
         f"[0:v][1:v]xfade=transition={transition}"
         f":duration={transition_duration}:offset={offset:.3f}[vx]",
-        "-map", "[vx]",
+        "-map",
+        "[vx]",
         *_encode_tail(ENCODE_PRESET),
         str(output_path),
     ]
@@ -1050,11 +1141,10 @@ def _join_intro_outro(
             dog_intro = canon_dir / "intro_dog.mp4"
             logger.info(
                 "Overlaying DOG on intro tail from %.1fs (intro=%.1fs)",
-                enable_start, intro_dur,
+                enable_start,
+                intro_dur,
             )
-            run(_build_intro_dog_cmd(
-                intro_path, dog_logo, dog_logo_path, enable_start, dog_intro
-            ))
+            run(_build_intro_dog_cmd(intro_path, dog_logo, dog_logo_path, enable_start, dog_intro))
             intro_src = dog_intro
         intro_canon = canon_dir / "intro.mp4"
         logger.info("Canonicalizing intro clip for concat: %s", intro_src)
@@ -1083,20 +1173,25 @@ def _join_intro_outro(
             offset = max(0.0, content_dur - td)
             content_outro_v = canon_dir / "content_outro_v.mp4"
             logger.info(
-                "Crossfading content->outro (transition=%s, duration=%.2fs) "
-                "at offset %.3fs",
-                outro_transition, td, offset,
+                "Crossfading content->outro (transition=%s, duration=%.2fs) at offset %.3fs",
+                outro_transition,
+                td,
+                offset,
             )
-            run(_build_outro_xfade_cmd(
-                content_canon, outro_canon, outro_transition, td, offset,
-                content_outro_v,
-            ))
+            run(
+                _build_outro_xfade_cmd(
+                    content_canon,
+                    outro_canon,
+                    outro_transition,
+                    td,
+                    offset,
+                    content_outro_v,
+                )
+            )
             # Re-canonicalise so the crossfaded clip carries the uniform
             # silent-audio layout the concat demuxer needs.
             content_outro = canon_dir / "content_outro.mp4"
-            run(_build_canonical_av_cmd(
-                content_outro_v, content_outro, has_audio=False
-            ))
+            run(_build_canonical_av_cmd(content_outro_v, content_outro, has_audio=False))
             tail_clips = [content_outro]
             added_duration += outro_dur - td
         else:
@@ -1104,7 +1199,9 @@ def _join_intro_outro(
             logger.info(
                 "Skipping content->outro crossfade (content=%.2fs, "
                 "outro=%.2fs, transition=%.2fs); using hard cut",
-                content_dur, outro_dur, td,
+                content_dur,
+                outro_dur,
+                td,
             )
             tail_clips = [content_canon, outro_canon]
             added_duration += outro_dur
@@ -1121,7 +1218,8 @@ def _join_intro_outro(
     )
     logger.info(
         "Joining %d clip(s) (intro/content/outro) into %s",
-        len(canon_paths), output_path,
+        len(canon_paths),
+        output_path,
     )
     run(_build_concat_cmd(list_file, output_path))
     return added_duration
@@ -1157,8 +1255,7 @@ def select_transitions(
     kinds = boundary_kinds or [BOUNDARY_CONTENT_TO_CONTENT] * n_boundaries
     if len(kinds) != n_boundaries:
         raise ValueError(
-            f"boundary_kinds length ({len(kinds)}) must equal "
-            f"n_boundaries ({n_boundaries})"
+            f"boundary_kinds length ({len(kinds)}) must equal n_boundaries ({n_boundaries})"
         )
 
     content_idx = 0
@@ -1207,8 +1304,7 @@ def _build_xfade_filter(
         transitions = select_transitions(n_boundaries)
     elif len(transitions) != n_boundaries:
         raise ValueError(
-            f"transitions length ({len(transitions)}) must equal "
-            f"n_boundaries ({n_boundaries})"
+            f"transitions length ({len(transitions)}) must equal n_boundaries ({n_boundaries})"
         )
 
     filters: list[str] = []
@@ -1221,7 +1317,7 @@ def _build_xfade_filter(
 
     cumulative = segment_durations[0] + segment_durations[1] - transition_duration
     for i in range(2, n):
-        in_label = "v01" if i == 2 else f"vx{i-1}"
+        in_label = "v01" if i == 2 else f"vx{i - 1}"
         out_label = f"vx{i}" if i < n - 1 else "vout"
 
         offset = cumulative - transition_duration
@@ -1273,9 +1369,7 @@ def _build_drawtext_filter(
             f":enable='between(t,{lt.start_seconds:.3f},{lt.end_seconds:.3f})'"
         )
 
-        filters.append(
-            f"[{current_label}]{name_filter},{url_filter}[{out_label}]"
-        )
+        filters.append(f"[{current_label}]{name_filter},{url_filter}[{out_label}]")
         current_label = out_label
 
     return ";".join(filters)
@@ -1342,9 +1436,7 @@ def _compute_lower_thirds(
     Each lower-third appears at the start of its segment (after transition)
     and lasts LOWER_THIRD_DURATION seconds or until segment ends.
     """
-    return list(
-        _compute_lower_thirds_by_index(segments, transition_duration).values()
-    )
+    return list(_compute_lower_thirds_by_index(segments, transition_duration).values())
 
 
 # --- Pairwise xfade composition (#349) ---
@@ -1356,10 +1448,14 @@ def _compute_lower_thirds(
 
 # bt709 colour flags applied to every libx264 encode for consistent colour.
 _BT709_FLAGS: list[str] = [
-    "-colorspace", "bt709",
-    "-color_trc", "bt709",
-    "-color_primaries", "bt709",
-    "-color_range", "tv",
+    "-colorspace",
+    "bt709",
+    "-color_trc",
+    "bt709",
+    "-color_primaries",
+    "bt709",
+    "-color_range",
+    "tv",
 ]
 
 
@@ -1369,7 +1465,8 @@ def _encode_tail(preset: str) -> list[str]:
         "-an",
         *_video_encode_args(preset),
         *_BT709_FLAGS,
-        "-movflags", "+faststart",
+        "-movflags",
+        "+faststart",
     ]
 
 
@@ -1393,9 +1490,15 @@ def _build_xfade_step_cmd(
     """
     binary = drawtext_bin or "ffmpeg"
     cmd: list[str] = [
-        binary, "-hide_banner", "-loglevel", "warning", "-y",
-        "-i", str(accumulator_path),
-        "-i", str(segment_path),
+        binary,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(accumulator_path),
+        "-i",
+        str(segment_path),
     ]
     filters = [
         f"[0:v][1:v]xfade=transition={transition}"
@@ -1428,8 +1531,13 @@ def _build_finalize_cmd(
     """
     binary = drawtext_bin or "ffmpeg"
     cmd: list[str] = [
-        binary, "-hide_banner", "-loglevel", "warning", "-y",
-        "-i", str(input_path),
+        binary,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(input_path),
     ]
     if dog_logo_path is not None:
         cmd += ["-i", str(dog_logo_path)]
@@ -1440,9 +1548,7 @@ def _build_finalize_cmd(
         filters.append(_build_drawtext_filter(final_lower_thirds, "0:v"))
         video_label = "final"
     if dog_logo_path is not None and dog_logo is not None:
-        filters.append(
-            _build_dog_overlay_filter(dog_logo, 1, video_label)
-        )
+        filters.append(_build_dog_overlay_filter(dog_logo, 1, video_label))
         video_label = "dogout"
 
     if filters:
@@ -1638,9 +1744,7 @@ def _compose_pairwise_parallel(
             last_seg=i,
             duration=durations[i],
             abs_start=abs_start[i],
-            pending_lts=(
-                [lower_thirds_by_index[i]] if i in lower_thirds_by_index else []
-            ),
+            pending_lts=([lower_thirds_by_index[i]] if i in lower_thirds_by_index else []),
             is_intermediate=False,
         )
         for i in range(n)
@@ -1655,7 +1759,10 @@ def _compose_pairwise_parallel(
             _release(item.path)
 
     def _combine(
-        left: _ComposeItem, right: _ComposeItem, out_path: Path, preset: str,
+        left: _ComposeItem,
+        right: _ComposeItem,
+        out_path: Path,
+        preset: str,
         workers: int = 1,
     ) -> _ComposeItem:
         # The boundary between the two contiguous ranges is left.last_seg, so it
@@ -1741,7 +1848,9 @@ def _compose_pairwise_parallel(
         if workers > 1:
             logger.info(
                 "Composing tree level %d: %d pair(s) with %d parallel workers",
-                level, n_pairs, workers,
+                level,
+                n_pairs,
+                workers,
             )
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futs = {
@@ -1826,9 +1935,7 @@ def _compose_pairwise_sequential(
 
     if n == 1:
         _fetch(normalized_paths[0])
-        final_lts = (
-            [lower_thirds_by_index[0]] if 0 in lower_thirds_by_index else []
-        )
+        final_lts = [lower_thirds_by_index[0]] if 0 in lower_thirds_by_index else []
         run(
             _build_finalize_cmd(
                 normalized_paths[0],
@@ -2016,13 +2123,15 @@ def _finalize_output(
         _, audio_duration = _probe_media(audio_path, run)
         _, probed_video_duration = _probe_media(video_only_path, run)
         effective_video_duration = probed_video_duration or video_duration
-        run(_build_audio_overlay_cmd(
-            video_only_path,
-            audio_path,
-            muxed_target,
-            video_duration=effective_video_duration,
-            audio_duration=audio_duration,
-        ))
+        run(
+            _build_audio_overlay_cmd(
+                video_only_path,
+                audio_path,
+                muxed_target,
+                video_duration=effective_video_duration,
+                audio_duration=audio_duration,
+            )
+        )
         pre_final_path = muxed_target
         # Audio is never truncated and is padded to at least the video length,
         # so the muxed output runs for the longer stream.
@@ -2209,9 +2318,7 @@ def compose_video(
     # by (sum of card durations − transition per card) to keep total video length
     # aligned with the audio timeline (issue #377).
     section_cards = section_cards or []
-    card_reserve = sum(
-        max(0.0, c.duration_seconds - transition_duration) for c in section_cards
-    )
+    card_reserve = sum(max(0.0, c.duration_seconds - transition_duration) for c in section_cards)
     if fit_to_window:
         intro_dur = _probe_media(intro_path, run)[1] if intro_path else 0.0
         outro_dur = _probe_media(outro_path, run)[1] if outro_path else 0.0
@@ -2220,13 +2327,14 @@ def compose_video(
             MIN_CONTENT_WINDOW_SECONDS,
         )
         plan_durations = [seg.segment.duration_seconds for seg in segments]
-        fit_durations = _fit_target_durations(
-            plan_durations, content_window, transition_duration
-        )
+        fit_durations = _fit_target_durations(plan_durations, content_window, transition_duration)
         logger.info(
-            "Fitting %d content segment(s) to %.1fs window "
-            "(audio=%.1fs, intro=%.1fs, outro=%.1fs)",
-            len(segments), content_window, audio_duration, intro_dur, outro_dur,
+            "Fitting %d content segment(s) to %.1fs window (audio=%.1fs, intro=%.1fs, outro=%.1fs)",
+            len(segments),
+            content_window,
+            audio_duration,
+            intro_dur,
+            outro_dur,
         )
 
     # Step 1: Normalize all segments to 1080p/30fps (fitting each to its target
@@ -2355,7 +2463,8 @@ def compose_video(
     if workers > 1:
         logger.info(
             "Normalizing %d segment(s) with %d parallel workers",
-            len(norm_tasks), workers,
+            len(norm_tasks),
+            workers,
         )
         with ThreadPoolExecutor(max_workers=workers) as pool:
             # Consume the iterator so any ffmpeg failure is re-raised here.
@@ -2428,7 +2537,8 @@ def compose_video(
         )
         logger.info(
             "Spliced %d section title card(s) into content (%d clips total)",
-            len(section_cards), len(normalized_paths),
+            len(section_cards),
+            len(normalized_paths),
         )
 
     # Step 4: Composite the (video-only) content pairwise — each pass uses
@@ -2539,10 +2649,7 @@ class SyncedSegment:
     @property
     def needs_trim(self) -> bool:
         """True when the recording duration exceeds the target window by > 0.1 s."""
-        return (
-            self.recorded.segment.duration_seconds
-            > self.target_duration_seconds + 0.1
-        )
+        return self.recorded.segment.duration_seconds > self.target_duration_seconds + 0.1
 
 
 def build_sync_map(
@@ -2567,16 +2674,13 @@ def build_sync_map(
     Raises:
         ValueError: If any plan segment has no matching recording.
     """
-    by_url: dict[str, RecordedSegment] = {
-        rec.segment.label: rec for rec in recordings
-    }
+    by_url: dict[str, RecordedSegment] = {rec.segment.label: rec for rec in recordings}
     result: list[SyncedSegment] = []
     for seg in plan.segments:
         url = seg.label
         if url not in by_url:
             raise ValueError(
-                f"No recording found for plan segment {url!r}. "
-                f"Available: {sorted(by_url)}"
+                f"No recording found for plan segment {url!r}. Available: {sorted(by_url)}"
             )
         result.append(
             SyncedSegment(
@@ -2611,11 +2715,19 @@ def trim_recording_cmd(
         Command list suitable for :func:`subprocess.run`.
     """
     return [
-        ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y",
-        "-ss", f"{start_seconds:.3f}",
-        "-i", str(input_path),
-        "-t", f"{duration_seconds:.3f}",
-        "-c", "copy",
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-ss",
+        f"{start_seconds:.3f}",
+        "-i",
+        str(input_path),
+        "-t",
+        f"{duration_seconds:.3f}",
+        "-c",
+        "copy",
         str(output_path),
     ]
 

@@ -117,8 +117,14 @@ def test_first_mention_prefers_earliest_display_text_over_url():
     repo = RepoReference("JimLiu", "baoyu-design")
     # Display text "baoyu design" at idx 1, URL "jimliu baoyu design" at idx 5.
     tokens = [
-        "the", "baoyu", "design", "package", "at",
-        "jimliu", "baoyu", "design",
+        "the",
+        "baoyu",
+        "design",
+        "package",
+        "at",
+        "jimliu",
+        "baoyu",
+        "design",
     ]
     assert _first_mention_index(tokens, repo) == 1
 
@@ -210,9 +216,7 @@ def test_repo_audio_timestamps_returns_none_on_failure(monkeypatch):
     def _boom(*_a, **_k):
         raise TranscriptionUnavailable("no whisper")
 
-    monkeypatch.setattr(
-        "podcaster.video.audio_align.transcribe_words", _boom
-    )
+    monkeypatch.setattr("podcaster.video.audio_align.transcribe_words", _boom)
     repos = [RepoReference("JimLiu", "baoyu-design")]
     assert repo_audio_timestamps(SCRIPT, repos, "audio.mp3") is None
 

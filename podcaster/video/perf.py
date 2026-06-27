@@ -162,7 +162,10 @@ class PhaseTimer:
         self._collector.record(self.record)
         logger.info(
             "phase=%s wall=%.1fs cpu=%.1fs peakRSS=%.0fMiB%s",
-            self.name, wall, cpu, self.record.peak_rss_mb,
+            self.name,
+            wall,
+            cpu,
+            self.record.peak_rss_mb,
             " (failed)" if exc_type is not None else "",
         )
         # Never suppress exceptions.

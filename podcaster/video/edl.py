@@ -94,6 +94,7 @@ DEFAULT_FALLBACK_CHAIN: tuple[EdlSegmentKind, ...] = (
     EdlSegmentKind.INTERMISSION,
 )
 
+
 @dataclass(frozen=True)
 class SourceRange:
     """A sub-range (ms) of a source clip, played as part of a segment."""
@@ -203,21 +204,15 @@ class EdlSegment:
             clip_id=(str(data["clip_id"]) if data.get("clip_id") else None),
             repo_url=(str(data["repo_url"]) if data.get("repo_url") else None),
             section_id=(str(data["section_id"]) if data.get("section_id") else None),
-            source_ranges=tuple(
-                SourceRange.from_dict(r) for r in data.get("source_ranges", [])
-            ),
+            source_ranges=tuple(SourceRange.from_dict(r) for r in data.get("source_ranges", [])),
             looped=bool(data.get("looped", False)),
             crossfade_in_ms=int(data.get("crossfade_in_ms", 0)),
             title_card=TitleCardOverlay.from_dict(card) if card else None,
             is_fallback=bool(data.get("is_fallback", False)),
             fallback_image_id=(
-                str(data["fallback_image_id"])
-                if data.get("fallback_image_id")
-                else None
+                str(data["fallback_image_id"]) if data.get("fallback_image_id") else None
             ),
-            fallback_text=(
-                str(data["fallback_text"]) if data.get("fallback_text") else None
-            ),
+            fallback_text=(str(data["fallback_text"]) if data.get("fallback_text") else None),
         )
 
 
@@ -267,9 +262,7 @@ class _Block:
         return self.end_ms - self.start_ms
 
 
-def _merge_short_topics(
-    topics: Sequence[TopicRange], min_visual_ms: int
-) -> list[_Block]:
+def _merge_short_topics(topics: Sequence[TopicRange], min_visual_ms: int) -> list[_Block]:
     """Merge sub-``min_visual_ms`` non-intermission topics into a neighbour.
 
     A short topic extends the *previous* block (which keeps its own clip), so the
@@ -287,8 +280,7 @@ def _merge_short_topics(
             section_id=topic.section_id,
         )
         too_short = (
-            block.visual_mode is not VisualMode.INTERMISSION
-            and block.duration_ms < min_visual_ms
+            block.visual_mode is not VisualMode.INTERMISSION and block.duration_ms < min_visual_ms
         )
         if too_short and blocks:
             blocks[-1].end_ms = block.end_ms  # extend previous; keep its clip
@@ -680,28 +672,20 @@ def validate_edl(edl: EditDecisionList) -> None:
     cursor = 0
     for seg in edl.segments:
         if seg.timeline_start_ms != cursor:
-            raise EdlError(
-                f"gap/overlap at {seg.timeline_start_ms} (expected {cursor})"
-            )
+            raise EdlError(f"gap/overlap at {seg.timeline_start_ms} (expected {cursor})")
         if seg.timeline_end_ms <= seg.timeline_start_ms:
             raise EdlError("segment has non-positive duration")
         if seg.kind is EdlSegmentKind.CLIP:
             covered = sum(r.duration_ms for r in seg.source_ranges)
             if covered != seg.duration_ms:
                 raise EdlError(
-                    f"clip segment source ranges cover {covered}ms, "
-                    f"expected {seg.duration_ms}ms"
+                    f"clip segment source ranges cover {covered}ms, expected {seg.duration_ms}ms"
                 )
-        if (
-            seg.visual_mode is not VisualMode.INTERMISSION
-            and seg.duration_ms < edl.min_visual_ms
-        ):
+        if seg.visual_mode is not VisualMode.INTERMISSION and seg.duration_ms < edl.min_visual_ms:
             raise EdlError(
                 f"segment {seg.duration_ms}ms is below min_visual_ms {edl.min_visual_ms}"
             )
         cursor = seg.timeline_end_ms
 
     if cursor != edl.total_duration_ms:
-        raise EdlError(
-            f"timeline ends at {cursor}, expected {edl.total_duration_ms}"
-        )
+        raise EdlError(f"timeline ends at {cursor}, expected {edl.total_duration_ms}")

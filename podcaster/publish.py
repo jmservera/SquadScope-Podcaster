@@ -43,9 +43,8 @@ logger = logging.getLogger(__name__)
 # Spotify for Creators internal API base
 _BASE_URL = "https://api-v5.anchor.fm"
 _SPOTIFY_CLIENT_ID = (
-    (os.environ.get("SPOTIFY_CLIENT_ID") or "").strip()
-    or "05a1371ee5194c27860b3ff3ff3979d2"
-)
+    os.environ.get("SPOTIFY_CLIENT_ID") or ""
+).strip() or "05a1371ee5194c27860b3ff3ff3979d2"
 _SPOTIFY_CONNECTOR_BASE_URL = "https://generic.wg.spotify.com/podcasters/v0"
 
 # Required headers for mutation requests
@@ -175,9 +174,7 @@ def _request_bearer_token(sp_dc: str, sp_key: str, show_id: str) -> str:
             raise SpotifyCredentialExpiredError(
                 "Spotify cookies expired — operator must refresh SP_DC/SP_KEY."
             ) from exc
-        raise SpotifyPublishError(
-            "Failed to exchange Spotify cookies for bearer token."
-        ) from exc
+        raise SpotifyPublishError("Failed to exchange Spotify cookies for bearer token.") from exc
 
     bearer = connector._bearer or ""
     if not bearer:
@@ -249,7 +246,7 @@ def _retry_request(
                         body_snippet,
                     )
                 break
-            wait = _RETRY_BACKOFF_BASE ** attempt
+            wait = _RETRY_BACKOFF_BASE**attempt
             safe_reason = type(exc).__name__
             if exc.response is not None:
                 safe_reason += f" (HTTP {exc.response.status_code})"
@@ -280,9 +277,7 @@ def verify_spotify_auth(
     Returns (is_valid, message).
     """
     try:
-        show_id, sp_dc, sp_key = _get_credentials(
-            language, language_config=language_config
-        )
+        show_id, sp_dc, sp_key = _get_credentials(language, language_config=language_config)
     except ValueError as exc:
         return False, str(exc)
 
@@ -314,9 +309,7 @@ def verify_spotify_auth(
         return False, f"Spotify connectivity error: {exc}"
 
 
-def _resolve_legacy_ids(
-    session: requests.Session, show_id: str
-) -> tuple[str, str]:
+def _resolve_legacy_ids(session: requests.Session, show_id: str) -> tuple[str, str]:
     """Step 1: Resolve show_id to stationId + userId."""
     url = f"{_BASE_URL}/v3/shows/{show_id}/legacyIds"
     resp = _retry_request(session, "GET", url, params=_mums_params(), timeout=15)
@@ -525,9 +518,7 @@ def _process_upload(
                     f"{exc.response.status_code}) — SP_DC/SP_KEY credentials "
                     "expired. Operator must refresh them."
                 ) from exc
-            raise SpotifyPublishError(
-                f"Upload {upload_id} status poll failed: {exc}"
-            ) from exc
+            raise SpotifyPublishError(f"Upload {upload_id} status poll failed: {exc}") from exc
         backoff = _POLL_INTERVAL  # reset on success
         data = resp.json()
         # Status is in data.request.state (not top-level "status")
@@ -550,9 +541,7 @@ def _process_upload(
                     detail += f" (errorCode={error_code})"
                 if failure_info:
                     detail += f" failureInfo={failure_info}"
-                raise SpotifyPublishError(
-                    f"Upload {upload_id} media validation failed: {detail}"
-                )
+                raise SpotifyPublishError(f"Upload {upload_id} media validation failed: {detail}")
             logger.info("Upload %s processing completed (state=%s)", upload_id, status)
             return
         elif status == "failed":
@@ -575,9 +564,7 @@ def _process_upload(
                 detail += f" (validation: {failures})"
             if failure_info:
                 detail += f" failureInfo={failure_info}"
-            raise SpotifyPublishError(
-                f"Upload {upload_id} processing failed: {detail}"
-            )
+            raise SpotifyPublishError(f"Upload {upload_id} processing failed: {detail}")
         logger.debug("Upload %s status: %s (attempt %d)", upload_id, status, attempt + 1)
 
     raise SpotifyPublishError(
@@ -609,9 +596,7 @@ def _set_metadata(
         "podcastEpisodeIsExplicit": explicit,
     }
     if publish_behavior == "scheduled" and publish_on is not None:
-        publish_on_utc = publish_on.astimezone(timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%S.000Z"
-        )
+        publish_on_utc = publish_on.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         payload["publishOn"] = publish_on_utc
         payload["wizardDraftedToPublishOn"] = publish_on_utc
     if season_number is not None:
@@ -643,9 +628,7 @@ def _publish_episode_live(
     url = f"{_BASE_URL}/v3/episodes/{anchor_id}/publish?isMumsCompatible=true"
     payload: dict[str, Any] = {}
     if publish_on:
-        payload["publishOn"] = publish_on.astimezone(timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        payload["publishOn"] = publish_on.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     _retry_request(
         session,
         "POST",
@@ -716,9 +699,7 @@ def upload_video_to_episode(
         )
 
     if not video_path.exists() or video_path.stat().st_size == 0:
-        return PublishResult(
-            status="failed", error=f"Video file not found or empty: {video_path}"
-        )
+        return PublishResult(status="failed", error=f"Video file not found or empty: {video_path}")
 
     try:
         env_show_id, env_sp_dc, env_sp_key = _get_credentials()
@@ -993,17 +974,15 @@ def publish_episode(
         publish_behavior,
         resolved_publish_on,
         upload_format,
-    ) = (
-        _resolve_publish_inputs(
-            title,
-            description,
-            publish_on,
-            spotify_publish_config,
-            year=year,
-            week=week,
-            article_title=article_title,
-            article_summary=article_summary,
-        )
+    ) = _resolve_publish_inputs(
+        title,
+        description,
+        publish_on,
+        spotify_publish_config,
+        year=year,
+        week=week,
+        article_title=article_title,
+        article_summary=article_summary,
     )
 
     # Append timestamps to description if provided and within Spotify's limit
@@ -1081,11 +1060,8 @@ def publish_episode(
     except ValueError as exc:
         return PublishResult(status="failed", error=str(exc))
 
-
     if upload_path is None or not upload_path.exists():
-        return PublishResult(
-            status="failed", error=f"{format_label} file not found: {upload_path}"
-        )
+        return PublishResult(status="failed", error=f"{format_label} file not found: {upload_path}")
 
     try:
         session = _build_session(sp_dc, sp_key, show_id)

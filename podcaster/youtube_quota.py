@@ -273,20 +273,14 @@ def reserve_quota(
 
     def _apply(content: bytes | None) -> bytes:
         ledger = load_quota_ledger(content, day=day)
-        decision = quota_preflight(
-            ledger, planned_units, daily_quota=daily_quota, reserve=reserve
-        )
+        decision = quota_preflight(ledger, planned_units, daily_quota=daily_quota, reserve=reserve)
         decision_holder.clear()
         decision_holder.update(decision)
         if not decision["allowed"]:
             # Persist nothing — re-raise after update_bytes returns the original.
             raise QuotaExceeded(decision)
-        updated = record_quota_usage(
-            ledger, planned_units, op=op, job_id=job_id, now=now
-        )
-        return json.dumps(updated, separators=(",", ":"), sort_keys=True).encode(
-            "utf-8"
-        )
+        updated = record_quota_usage(ledger, planned_units, op=op, job_id=job_id, now=now)
+        return json.dumps(updated, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
     try:
         storage.update_bytes(path, "application/json; charset=utf-8", _apply)

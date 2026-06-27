@@ -24,8 +24,7 @@ TARGET_CONTENT_TYPE = TARGET_MP3_CONTENT_TYPE
 
 
 class CommandRunner(Protocol):
-    def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
-        ...
+    def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]: ...
 
 
 @dataclass(frozen=True)
@@ -427,12 +426,12 @@ def _concat_audio_files(
     concat_parts: list[str] = []
     for position, input_path in enumerate(input_paths):
         inputs.extend(["-i", str(input_path)])
-        filters.append(
-            f"[{position}:a]aresample=44100,aformat=channel_layouts=mono[a{position}]"
-        )
+        filters.append(f"[{position}:a]aresample=44100,aformat=channel_layouts=mono[a{position}]")
         concat_parts.append(f"[a{position}]")
         if gap_seconds > 0 and position < len(input_paths) - 1:
-            filters.append(f"aevalsrc=0:d={_ffmpeg_number(gap_seconds)}:s=44100:c=mono[g{position}]")
+            filters.append(
+                f"aevalsrc=0:d={_ffmpeg_number(gap_seconds)}:s=44100:c=mono[g{position}]"
+            )
             concat_parts.append(f"[g{position}]")
 
     filter_complex = (
@@ -675,13 +674,9 @@ def _validate_mix_spec_for_segments(
     outro_music: Path | None,
 ) -> None:
     if intro_music and mix_spec.intro_speech_segments_under_music > segment_count:
-        raise ValueError(
-            "intro_speech_segments_under_music cannot exceed the speech segment count"
-        )
+        raise ValueError("intro_speech_segments_under_music cannot exceed the speech segment count")
     if outro_music and mix_spec.outro_speech_segments_with_music > segment_count:
-        raise ValueError(
-            "outro_speech_segments_with_music cannot exceed the speech segment count"
-        )
+        raise ValueError("outro_speech_segments_with_music cannot exceed the speech segment count")
 
 
 def _probe_duration_seconds(path: Path, runner: CommandRunner) -> float:
@@ -1112,9 +1107,7 @@ def _constraints(expected_format: str) -> dict[str, object]:
         },
         "max_duration_seconds": MAX_DURATION_SECONDS,
         "max_file_size_bytes": (
-            MAX_FILE_SIZE_BYTES_WAV
-            if profile["format"] == "wav"
-            else MAX_FILE_SIZE_BYTES_MP3
+            MAX_FILE_SIZE_BYTES_WAV if profile["format"] == "wav" else MAX_FILE_SIZE_BYTES_MP3
         ),
     }
     if profile["format"] == "mp3":

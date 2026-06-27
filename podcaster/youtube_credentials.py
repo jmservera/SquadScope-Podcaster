@@ -123,9 +123,7 @@ class KeyVaultSecretLoader:
             headers={"Authorization": f"Bearer {self._token()}"},
         )
         if status != 200:
-            raise YouTubeCredentialError(
-                f"Key Vault secret '{name}' fetch failed: HTTP {status}"
-            )
+            raise YouTubeCredentialError(f"Key Vault secret '{name}' fetch failed: HTTP {status}")
         try:
             value = json.loads(body).get("value", "")
         except (ValueError, AttributeError) as exc:
@@ -202,8 +200,7 @@ def refresh_access_token(
 
     if not refresh_token:
         raise YouTubeCredentialError(
-            "No YouTube refresh token configured (set "
-            f"{ENV_REFRESH_TOKEN} or {ENV_KEYVAULT_URL})."
+            f"No YouTube refresh token configured (set {ENV_REFRESH_TOKEN} or {ENV_KEYVAULT_URL})."
         )
 
     http = transport or _UrllibTransport()

@@ -173,6 +173,7 @@ def test_different_stages_have_independent_caps():
             time.sleep(0.02)
             with lock:
                 cur[stage] -= 1
+
         return _run
 
     tasks = [_spec(f"a{i}", "a", _work("a")) for i in range(4)]
@@ -213,6 +214,7 @@ def test_failure_blocks_only_dependents():
         def _run():
             ran.append(name)
             return name
+
         return _run
 
     def _boom():
@@ -265,6 +267,7 @@ def test_resume_skips_checkpointed_tasks():
         def _run():
             ran.append(name)
             return name
+
         return _run
 
     checkpoint = InMemoryCheckpoint(completed={"a"})
@@ -290,6 +293,7 @@ def test_failed_run_then_resume_runs_only_incomplete():
             if fail:
                 raise RuntimeError("boom")
             return name
+
         return _run
 
     checkpoint = InMemoryCheckpoint()
@@ -354,6 +358,7 @@ def test_storage_checkpoint_roundtrip_and_resume():
         def _run():
             ran.append(name)
             return name
+
         return _run
 
     tasks = [
@@ -457,7 +462,7 @@ def test_build_generation_dag_without_distribute():
     specs = build_generation_dag(
         segment_ids=["s0"],
         repo_ids=["r0"],
-        run_factory=lambda stage, tid, deps: (lambda: tid),
+        run_factory=lambda stage, tid, deps: lambda: tid,
         distribute=False,
     )
     ids = {s.id for s in specs}
@@ -469,7 +474,7 @@ def test_build_generation_dag_no_repos_still_valid():
     specs = build_generation_dag(
         segment_ids=["s0", "s1"],
         repo_ids=[],
-        run_factory=lambda stage, tid, deps: (lambda: tid),
+        run_factory=lambda stage, tid, deps: lambda: tid,
     )
     by_id = {s.id: s for s in specs}
     # compose depends on audio_mix only when there are no repo clips.

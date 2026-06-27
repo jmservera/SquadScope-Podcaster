@@ -45,8 +45,16 @@ SOURCE_ARTIFACT_OBJECT_FIELDS = {
     "week",
 }
 PODCAST_CONFIG_FIELDS = {
-    "ai_voice_disclosure", "dog_logo", "host_a", "host_b", "hosts", "languages",
-    "name", "spoken_site", "style_guide", "url",
+    "ai_voice_disclosure",
+    "dog_logo",
+    "host_a",
+    "host_b",
+    "hosts",
+    "languages",
+    "name",
+    "spoken_site",
+    "style_guide",
+    "url",
 }
 HOST_CONFIG_FIELDS = {"name", "style", "voice"}
 
@@ -215,14 +223,23 @@ def _validate_source_artifact_object(label: str, artifact: dict[Any, Any]) -> li
             errors.append(f"{label}.{url_field} must be an http or https URL")
 
     for string_field in (
-        "role", "path", "name", "week", "generated_at", "crawled_at", "source_status"
+        "role",
+        "path",
+        "name",
+        "week",
+        "generated_at",
+        "crawled_at",
+        "source_status",
     ):
         value = artifact.get(string_field)
         if value is not None and not isinstance(value, str):
             errors.append(f"{label}.{string_field} must be a string")
 
     for digest_field in (
-        "sha256", "artifact_checksum", "schema_checksum", "source_config_checksum"
+        "sha256",
+        "artifact_checksum",
+        "schema_checksum",
+        "source_config_checksum",
     ):
         value = artifact.get(digest_field)
         if value is not None and (not isinstance(value, str) or not SHA256_RE.match(value)):
@@ -234,9 +251,7 @@ def _validate_source_artifact_object(label: str, artifact: dict[Any, Any]) -> li
 
     size_bytes = artifact.get("size_bytes")
     if size_bytes is not None and (
-        not isinstance(size_bytes, int)
-        or isinstance(size_bytes, bool)
-        or size_bytes < 0
+        not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0
     ):
         errors.append(f"{label}.size_bytes must be a non-negative integer")
 
@@ -346,7 +361,9 @@ def build_stub_response(payload: dict[str, Any], now: datetime | None = None) ->
 
     storage = LocalStorageBackend(
         root=Path(os.environ.get("PODCASTER_LOCAL_STORAGE_PATH", ".podcaster-artifacts")),
-        base_url=os.environ.get("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-stub"),
+        base_url=os.environ.get(
+            "PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-stub"
+        ),
     )
     validation = validate_payload_details(payload)
     return run_generation_job(

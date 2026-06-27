@@ -33,9 +33,7 @@ from podcaster.video.section_cards import (
 
 def _mock_runner() -> MagicMock:
     runner = MagicMock()
-    runner.return_value = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="", stderr=""
-    )
+    runner.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     return runner
 
 
@@ -90,7 +88,7 @@ class TestParseSections:
         assert positions == sorted(positions)
         # Each position points at the start of its header line in the script.
         for m in markers:
-            line = SCRIPT_WITH_SECTIONS[m.position:].splitlines()[0]
+            line = SCRIPT_WITH_SECTIONS[m.position :].splitlines()[0]
             assert m.name.split()[0].lower() in line.lower() or m.emoji in line
 
     def test_dialogue_mentions_not_treated_as_headers(self):
@@ -114,10 +112,7 @@ class TestParseSections:
         assert parse_sections(script) == []
 
     def test_duplicate_section_collapsed(self):
-        script = (
-            "Title: X\n---\n\n## Trends\n🔥 Trends\n"
-            "Ada: see https://github.com/o/r\n"
-        )
+        script = "Title: X\n---\n\n## Trends\n🔥 Trends\nAda: see https://github.com/o/r\n"
         markers = parse_sections(script)
         assert [m.name for m in markers] == ["Trends"]
 
@@ -241,9 +236,7 @@ class TestPlanSectionCardInserts:
 class TestBuildSectionCardCmd:
     def test_contains_drawtext_fade_and_duration(self):
         marker = _marker_from_name("Trends")
-        cmd = _build_section_card_cmd(
-            marker, Path("/out/card.mp4"), SectionCardConfig(), "ffmpeg"
-        )
+        cmd = _build_section_card_cmd(marker, Path("/out/card.mp4"), SectionCardConfig(), "ffmpeg")
         vf = cmd[cmd.index("-vf") + 1]
         assert "drawtext" in vf
         assert "Trends" in vf
@@ -254,9 +247,7 @@ class TestBuildSectionCardCmd:
 
     def test_uses_section_accent_for_rule(self):
         marker = _marker_from_name("Signal & Noise")
-        cmd = _build_section_card_cmd(
-            marker, Path("/out/card.mp4"), SectionCardConfig(), "ffmpeg"
-        )
+        cmd = _build_section_card_cmd(marker, Path("/out/card.mp4"), SectionCardConfig(), "ffmpeg")
         vf = cmd[cmd.index("-vf") + 1]
         assert KNOWN_SECTIONS["signal & noise"].accent in vf
         # The frame height is referenced as ih (not the box-height h) in drawbox.
@@ -264,9 +255,7 @@ class TestBuildSectionCardCmd:
 
     def test_escapes_special_characters(self):
         marker = SectionMarker(name="A: B, C", position=0)
-        cmd = _build_section_card_cmd(
-            marker, Path("/out/card.mp4"), SectionCardConfig(), "ffmpeg"
-        )
+        cmd = _build_section_card_cmd(marker, Path("/out/card.mp4"), SectionCardConfig(), "ffmpeg")
         vf = cmd[cmd.index("-vf") + 1]
         assert r"\:" in vf and r"\," in vf
 
@@ -278,9 +267,7 @@ class TestGenerateSectionCard:
     def test_runs_command_and_returns_clip_result(self, tmp_path):
         runner = _mock_runner()
         out = tmp_path / "card.mp4"
-        result = generate_section_card(
-            "Trends", out, ffmpeg_bin="ffmpeg", runner=runner
-        )
+        result = generate_section_card("Trends", out, ffmpeg_bin="ffmpeg", runner=runner)
         runner.assert_called_once()
         assert result.path == out
         assert result.duration_ms == SECTION_CARD_DURATION_MS
@@ -289,9 +276,7 @@ class TestGenerateSectionCard:
     def test_accepts_marker_object(self, tmp_path):
         runner = _mock_runner()
         marker = SectionMarker(name="Industry", position=0)
-        generate_section_card(
-            marker, tmp_path / "c.mp4", ffmpeg_bin="ffmpeg", runner=runner
-        )
+        generate_section_card(marker, tmp_path / "c.mp4", ffmpeg_bin="ffmpeg", runner=runner)
         runner.assert_called_once()
 
     def test_string_name_enriched_from_registry(self):
@@ -333,9 +318,7 @@ class TestBuildSectionCardInserts:
         runner.assert_not_called()
 
     def test_missing_drawtext_ffmpeg_skips(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "podcaster.video.section_cards._get_drawtext_ffmpeg", lambda: None
-        )
+        monkeypatch.setattr("podcaster.video.section_cards._get_drawtext_ffmpeg", lambda: None)
         runner = _mock_runner()
         inserts = build_section_card_inserts(
             SCRIPT_WITH_SECTIONS, SEGMENT_URLS, tmp_path, runner=runner

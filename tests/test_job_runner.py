@@ -307,8 +307,9 @@ def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
     monkeypatch.setattr(
         job_runner,
         "auto_publish_job",
-        lambda job_id, storage=None, now=None: called.append(job_id)
-        or type("Result", (), {"manifest": {"status": "published"}})(),
+        lambda job_id, storage=None, now=None: (
+            called.append(job_id) or type("Result", (), {"manifest": {"status": "published"}})()
+        ),
     )
 
     outcome = job_runner.run_synthesis(

@@ -71,7 +71,7 @@ def test_ui_serves_built_dist_on_configured_port() -> None:
         assert root_status == 200
         assert "text/html" in root_content_type
         root_html = root_body.decode("utf-8")
-        assert "<div id=\"root\">" in root_html or "<div id=\"root\"></div>" in root_html
+        assert '<div id="root">' in root_html or '<div id="root"></div>' in root_html
 
         env_status, _, _ = _fetch(f"{base_url}/env-config.js")
         assert env_status in {200, 404}

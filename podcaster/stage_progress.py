@@ -43,12 +43,7 @@ def _parse_iso(value: Any) -> datetime | None:
 def _iso(moment: datetime) -> str:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
-    return (
-        moment.astimezone(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return moment.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _events(document: dict[str, Any]) -> list[dict[str, Any]]:
@@ -74,9 +69,7 @@ def _stage_started_at(events: list[dict[str, Any]], stage: str) -> datetime | No
     return None
 
 
-def compute_eta(
-    document: dict[str, Any], *, now: datetime
-) -> tuple[float | None, str | None]:
+def compute_eta(document: dict[str, Any], *, now: datetime) -> tuple[float | None, str | None]:
     """Estimate ``(remaining_seconds, eta_iso)`` from observed event timings.
 
     The estimate extrapolates the current stage: the elapsed wall-clock time

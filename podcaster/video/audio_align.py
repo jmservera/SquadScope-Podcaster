@@ -133,9 +133,7 @@ def align_token_times(
             length.
     """
     if len(transcript_tokens) != len(transcript_starts):
-        raise ValueError(
-            "transcript_tokens and transcript_starts must be the same length"
-        )
+        raise ValueError("transcript_tokens and transcript_starts must be the same length")
 
     n = len(script_tokens)
     times: list[float | None] = [None] * n
@@ -165,9 +163,7 @@ def align_token_times(
     return times, matcher.ratio()
 
 
-def _first_mention_index(
-    script_tokens: Sequence[str], repo: RepoReference
-) -> int | None:
+def _first_mention_index(script_tokens: Sequence[str], repo: RepoReference) -> int | None:
     """Return the script-token index where *repo* is first mentioned.
 
     Searches for two identifiers and returns the **earliest** match: the bare
@@ -232,8 +228,7 @@ def map_repo_times(
 
     if ratio < min_ratio:
         logger.warning(
-            "audio alignment ratio %.3f below threshold %.3f; falling back to "
-            "proportional timing",
+            "audio alignment ratio %.3f below threshold %.3f; falling back to proportional timing",
             ratio,
             min_ratio,
         )
@@ -304,9 +299,7 @@ def transcribe_words(
     except TranscriptionUnavailable:
         raise
     except Exception as exc:
-        raise TranscriptionUnavailable(
-            f"word-level transcription failed: {exc}"
-        ) from exc
+        raise TranscriptionUnavailable(f"word-level transcription failed: {exc}") from exc
 
     if not words:
         raise TranscriptionUnavailable("transcription produced no words")

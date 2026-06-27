@@ -215,9 +215,7 @@ class ScriptPlan:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ScriptPlan":
-        segments = tuple(
-            ScriptPlanSegment.from_dict(seg) for seg in data.get("segments", [])
-        )
+        segments = tuple(ScriptPlanSegment.from_dict(seg) for seg in data.get("segments", []))
         sections = tuple(_section_from_dict(sec) for sec in data.get("sections", []))
         return cls(
             segments=segments,
@@ -451,7 +449,7 @@ def build_visual_marker_guidance() -> str:
         '  "## Visual: repo https://github.com/<owner>/<repo>" (use the real repo URL).\n'
         '- When the hosts step back to the weekly rundown or source article, emit "## Visual: article".\n'  # noqa: E501
         '- For an intentional breather between topic clusters, emit "## Visual: intermission".\n'
-        "- A \"## Visual:\" marker stays in effect for every following host turn until the next marker.\n"  # noqa: E501
+        '- A "## Visual:" marker stays in effect for every following host turn until the next marker.\n'  # noqa: E501
         "- Place a marker whenever the on-screen focus changes; every repo you discuss MUST have its own\n"  # noqa: E501
         '  "## Visual: repo <url>" marker — never rely on the URL merely appearing in the dialogue.\n'  # noqa: E501
         "- Intermission is an EXPLICIT choice, never just the absence of a repo. Only use it deliberately.\n"  # noqa: E501

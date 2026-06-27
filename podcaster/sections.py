@@ -230,7 +230,7 @@ def _split_speaker(line: str, host_labels: tuple[str, str] | None) -> tuple[str,
         for label in (host_a, host_b):
             prefix = f"{label}:"
             if line.startswith(prefix):
-                text = line[len(prefix):].strip()
+                text = line[len(prefix) :].strip()
                 return (label, text) if text else None
         # With a known config, only the configured hosts are spoken turns.
         return None
@@ -425,8 +425,7 @@ def validate_sections(
     count = len(sections)
     if count < MIN_SECTIONS or count > MAX_SECTIONS:
         errors.append(
-            f"section count {count} is out of range "
-            f"({MIN_SECTIONS}-{MAX_SECTIONS} required)"
+            f"section count {count} is out of range ({MIN_SECTIONS}-{MAX_SECTIONS} required)"
         )
 
     for section in sections:

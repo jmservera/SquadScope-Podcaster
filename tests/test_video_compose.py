@@ -660,9 +660,9 @@ class TestComposeVideoDrawtext:
 
         # Final compose command must NOT contain drawtext filter expressions
         final_cmd = runner.call_args_list[-1][0][0]
-        assert (
-            "-filter_complex" not in final_cmd
-        ), "drawtext filter_complex should not be in compose cmd"
+        assert "-filter_complex" not in final_cmd, (
+            "drawtext filter_complex should not be in compose cmd"
+        )
         assert not any(arg.startswith("drawtext=") for arg in final_cmd)
 
     def test_no_drawtext_probe_when_no_lower_thirds(self, tmp_path):
@@ -2877,7 +2877,7 @@ class TestComposeTreeRealFfmpeg:
         # Parse "Duration: HH:MM:SS.xx" from ffmpeg stderr.
         duration_lines = [ln for ln in probe.stderr.splitlines() if "Duration:" in ln]
         assert duration_lines, (
-            "ffprobe stderr did not contain a 'Duration:' line; " f"stderr was:\n{probe.stderr}"
+            f"ffprobe stderr did not contain a 'Duration:' line; stderr was:\n{probe.stderr}"
         )
         line = duration_lines[0]
         hms = line.split("Duration:", 1)[1].split(",", 1)[0].strip()

@@ -607,10 +607,8 @@ class TestRunVideoGeneration:
     def test_season_episode_numbers_from_manifest_week(
         self, mock_compose, mock_record, mock_distribute, storage, dry_config
     ):
-        (
-            "Season (year) and episode (week) are resolved from manifest and passed "
-            "to distribute_video (#412)."
-        )
+        "Season (year) and episode (week) are resolved from manifest"
+        "and passed to distribute_video (#412)."
         job_id = "video-season"
         storage.set_manifest(
             job_id,

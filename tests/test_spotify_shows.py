@@ -64,9 +64,7 @@ class _FakeLanguageConfig:
 
 def test_config_show_id_overrides_env():
     cfg = _FakeLanguageConfig(spotify_show_id="cfg-show", locale="es-419")
-    target = resolve_show_target(
-        "es", language_config=cfg, env={"SPOTIFY_SHOW_ID_ES": "env-show"}
-    )
+    target = resolve_show_target("es", language_config=cfg, env={"SPOTIFY_SHOW_ID_ES": "env-show"})
     assert target.show_id == "cfg-show"
     assert target.language_tag == "es"
 

@@ -18,9 +18,7 @@ def _clean_env(monkeypatch):
 
 
 def _completed(stdout: str = "", returncode: int = 0):
-    return subprocess.CompletedProcess(
-        args=["gh"], returncode=returncode, stdout=stdout, stderr=""
-    )
+    return subprocess.CompletedProcess(args=["gh"], returncode=returncode, stdout=stdout, stderr="")
 
 
 class TestBuildIssueBody:
@@ -79,8 +77,9 @@ class TestNotifyCredentialExpiry:
                 return _completed(stdout="https://github.com/owner/repo/issues/99\n")
             raise AssertionError(f"unexpected gh call: {args}")
 
-        with patch.object(ce, "_gh_available", return_value=True), patch.object(
-            ce, "_run_gh", side_effect=fake_run
+        with (
+            patch.object(ce, "_gh_available", return_value=True),
+            patch.object(ce, "_run_gh", side_effect=fake_run),
         ):
             num = ce.notify_credential_expiry("HTTP 401 expired")
 
@@ -93,15 +92,12 @@ class TestNotifyCredentialExpiry:
     def test_dedups_existing_open_issue(self):
         def fake_run(args):
             if args[0] == "issue" and args[1] == "list":
-                return _completed(
-                    stdout=json.dumps(
-                        [{"number": 12, "title": ce.ISSUE_TITLE}]
-                    )
-                )
+                return _completed(stdout=json.dumps([{"number": 12, "title": ce.ISSUE_TITLE}]))
             raise AssertionError(f"should not create when dedup hit: {args}")
 
-        with patch.object(ce, "_gh_available", return_value=True), patch.object(
-            ce, "_run_gh", side_effect=fake_run
+        with (
+            patch.object(ce, "_gh_available", return_value=True),
+            patch.object(ce, "_run_gh", side_effect=fake_run),
         ):
             num = ce.notify_credential_expiry("expired")
 
@@ -111,8 +107,9 @@ class TestNotifyCredentialExpiry:
         def fake_run(args):
             raise subprocess.CalledProcessError(1, args, stderr="nope")
 
-        with patch.object(ce, "_gh_available", return_value=True), patch.object(
-            ce, "_run_gh", side_effect=fake_run
+        with (
+            patch.object(ce, "_gh_available", return_value=True),
+            patch.object(ce, "_run_gh", side_effect=fake_run),
         ):
             assert ce.notify_credential_expiry("expired") is None
 
@@ -128,7 +125,8 @@ class TestNotifyCredentialExpiry:
                 return _completed(stdout="https://github.com/owner/repo/issues/5")
             raise AssertionError(f"unexpected: {args}")
 
-        with patch.object(ce, "_gh_available", return_value=True), patch.object(
-            ce, "_run_gh", side_effect=fake_run
+        with (
+            patch.object(ce, "_gh_available", return_value=True),
+            patch.object(ce, "_run_gh", side_effect=fake_run),
         ):
             assert ce.notify_credential_expiry("expired") == 5

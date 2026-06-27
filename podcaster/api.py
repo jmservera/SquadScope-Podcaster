@@ -481,13 +481,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
         decision = str(payload.get("decision") or "").strip()
         notes = str(payload.get("notes") or "")
         run_url = str(payload.get("run_url") or "").strip() or None
-        reviewed_at = (
-            str(payload.get("reviewed_at") or "").strip()
-            or datetime.now(timezone.utc)
-            .replace(microsecond=0)
-            .isoformat()
-            .replace("+00:00", "Z")
-        )
+        reviewed_at = str(payload.get("reviewed_at") or "").strip() or datetime.now(
+            timezone.utc
+        ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         publish_on_approval = payload.get("publish_on_approval", True) is not False
         errors: list[str] = []
         if not job_id:

@@ -115,9 +115,7 @@ def build_video_metadata(
     """Build the full ``videos.insert`` request body (snippet + status)."""
 
     return {
-        "snippet": build_snippet(
-            title, description, tags=tags, category_id=category_id
-        ),
+        "snippet": build_snippet(title, description, tags=tags, category_id=category_id),
         "status": build_status(privacy_status, made_for_kids=made_for_kids),
     }
 
@@ -306,9 +304,7 @@ def upload_chunked(
             )
 
     # Loop completed without a 200/201 — query the server for a final id.
-    offset, completed_id = _query_resume_offset(
-        http, session_uri, access_token, total_size
-    )
+    offset, completed_id = _query_resume_offset(http, session_uri, access_token, total_size)
     if completed_id:
         return _success_result(completed_id, total_size)
     return YouTubeUploadResult(
@@ -412,9 +408,7 @@ def upload_video(
     )
 
     try:
-        session_uri = initiate_resumable_session(
-            http, access_token, metadata, file_size=file_size
-        )
+        session_uri = initiate_resumable_session(http, access_token, metadata, file_size=file_size)
     except RuntimeError as exc:
         logger.error("YouTube resumable init failed: %s", exc)
         return YouTubeUploadResult(status="failed", error=str(exc))

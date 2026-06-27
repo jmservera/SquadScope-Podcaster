@@ -144,8 +144,7 @@ class HttpTransport(Protocol):
         method: str = "GET",
         headers: dict[str, str] | None = None,
         data: bytes | None = None,
-    ) -> tuple[int, bytes]:
-        ...
+    ) -> tuple[int, bytes]: ...
 
     def request_with_headers(
         self,
@@ -201,12 +200,14 @@ class StorageUploader(Protocol):
 
 def _get_youtube_access_token(config: VideoDistributionConfig, transport: HttpTransport) -> str:
     """Exchange refresh token for a short-lived access token."""
-    data = urlencode({
-        "client_id": config.youtube_client_id,
-        "client_secret": config.youtube_client_secret,
-        "refresh_token": config.youtube_refresh_token,
-        "grant_type": "refresh_token",
-    }).encode()
+    data = urlencode(
+        {
+            "client_id": config.youtube_client_id,
+            "client_secret": config.youtube_client_secret,
+            "refresh_token": config.youtube_refresh_token,
+            "grant_type": "refresh_token",
+        }
+    ).encode()
 
     status, body = transport.request(
         "https://oauth2.googleapis.com/token",
@@ -271,10 +272,12 @@ def upload_to_youtube(
     }
 
     # Initiate resumable upload
-    params = urlencode({
-        "uploadType": "resumable",
-        "part": "snippet,status",
-    })
+    params = urlencode(
+        {
+            "uploadType": "resumable",
+            "part": "snippet,status",
+        }
+    )
     init_url = f"{_YOUTUBE_UPLOAD_URL}?{params}"
     metadata_bytes = json.dumps(metadata).encode("utf-8")
 
@@ -302,14 +305,20 @@ def upload_to_youtube(
     _MAX_SINGLE_UPLOAD_BYTES = 128 * 1024 * 1024
     if file_size > _MAX_SINGLE_UPLOAD_BYTES:
         chunked = _try_chunked_upload(
-            video_path, title, description, config, tags=tags, transport=http,
+            video_path,
+            title,
+            description,
+            config,
+            tags=tags,
+            transport=http,
         )
         if chunked is not None:
             return chunked
         logger.error(
             "Video too large for single-request upload (%d bytes > %d) and the "
             "chunked resumable uploader is unavailable.",
-            file_size, _MAX_SINGLE_UPLOAD_BYTES,
+            file_size,
+            _MAX_SINGLE_UPLOAD_BYTES,
         )
         return None, None
 
@@ -341,7 +350,7 @@ def upload_to_youtube(
             logger.warning("YouTube upload attempt %d error: %s", attempt + 1, exc)
 
         if attempt < _MAX_RETRIES - 1:
-            time.sleep(_RETRY_BACKOFF_BASE ** attempt)
+            time.sleep(_RETRY_BACKOFF_BASE**attempt)
 
     logger.error("YouTube upload failed after %d attempts", _MAX_RETRIES)
     return None, None
@@ -387,8 +396,8 @@ def update_spotify_rss(
         "  <item>\n"
         f"    <title>{_escape_xml(title)}</title>\n"
         f"    <description>{_escape_xml(description)}</description>\n"
-        f"    <enclosure url=\"{_escape_xml(video_url)}\" "
-        f"type=\"video/mp4\" length=\"0\" />\n"
+        f'    <enclosure url="{_escape_xml(video_url)}" '
+        f'type="video/mp4" length="0" />\n'
         f"    <pubDate>{rfc2822_date}</pubDate>\n"
         f"    <itunes:duration>{int(duration_seconds)}</itunes:duration>\n"
         f"    <itunes:episodeType>full</itunes:episodeType>\n"
@@ -557,8 +566,12 @@ def _try_chunked_upload(
         return None
 
     result = upload_video(
-        video_path, title, description, config,
-        tags=tags, transport=transport,
+        video_path,
+        title,
+        description,
+        config,
+        tags=tags,
+        transport=transport,
     )
     if result.succeeded:
         return result.video_id, result.video_url
@@ -642,9 +655,7 @@ def distribute_video(
             "VIDEO_YOUTUBE_ENABLED, VIDEO_SPOTIFY_RSS_ENABLED, "
             "VIDEO_SPOTIFY_UPLOAD_ENABLED, VIDEO_BLOB_ARCHIVE_ENABLED."
         )
-        logger.error(
-            "video distribution aborted job_id=%s: no target configured", job_id
-        )
+        logger.error("video distribution aborted job_id=%s: no target configured", job_id)
         return result
 
     if not video_path.exists():
@@ -673,8 +684,12 @@ def distribute_video(
     if youtube_active:
         try:
             video_id, video_url = upload_to_youtube(
-                video_path, title, description, config,
-                tags=tags, transport=transport,
+                video_path,
+                title,
+                description,
+                config,
+                tags=tags,
+                transport=transport,
             )
             result.youtube_id = video_id
             result.youtube_url = video_url
@@ -702,7 +717,11 @@ def distribute_video(
             result.errors.append("Spotify RSS skipped: no enclosure URL")
         else:
             rss_ok = update_spotify_rss(
-                enclosure_url, title, description, duration_seconds, config,
+                enclosure_url,
+                title,
+                description,
+                duration_seconds,
+                config,
                 storage=storage,
             )
             result.spotify_rss_updated = rss_ok
@@ -712,27 +731,35 @@ def distribute_video(
     # 4. Publish MP4 as a NEW separate Spotify episode draft (#340)
     if config.spotify_upload_enabled:
         upload_ok = upload_to_spotify_episode(
-            video_path, spotify_anchor_id, config,
-            title=title, description=description,
-            season_number=season_number, episode_number=episode_number,
+            video_path,
+            spotify_anchor_id,
+            config,
+            title=title,
+            description=description,
+            season_number=season_number,
+            episode_number=episode_number,
         )
         result.spotify_upload_updated = upload_ok
         if not upload_ok:
             result.errors.append("Spotify video upload failed")
 
     # Determine overall status
-    targets_attempted = sum([
-        youtube_active,
-        config.spotify_rss_enabled,
-        config.spotify_upload_enabled,
-        config.blob_archive_enabled,
-    ])
-    targets_succeeded = sum([
-        result.youtube_id is not None if youtube_active else False,
-        result.spotify_rss_updated if config.spotify_rss_enabled else False,
-        result.spotify_upload_updated if config.spotify_upload_enabled else False,
-        result.blob_path is not None if config.blob_archive_enabled else False,
-    ])
+    targets_attempted = sum(
+        [
+            youtube_active,
+            config.spotify_rss_enabled,
+            config.spotify_upload_enabled,
+            config.blob_archive_enabled,
+        ]
+    )
+    targets_succeeded = sum(
+        [
+            result.youtube_id is not None if youtube_active else False,
+            result.spotify_rss_updated if config.spotify_rss_enabled else False,
+            result.spotify_upload_updated if config.spotify_upload_enabled else False,
+            result.blob_path is not None if config.blob_archive_enabled else False,
+        ]
+    )
 
     if targets_succeeded == 0 and targets_attempted > 0:
         result.status = "failed"
@@ -743,8 +770,12 @@ def distribute_video(
 
     logger.info(
         "video distribution job_id=%s status=%s youtube=%s rss=%s spotify_upload=%s blob=%s",
-        job_id, result.status, result.youtube_id, result.spotify_rss_updated,
-        result.spotify_upload_updated, result.blob_path,
+        job_id,
+        result.status,
+        result.youtube_id,
+        result.spotify_rss_updated,
+        result.spotify_upload_updated,
+        result.blob_path,
     )
     return result
 

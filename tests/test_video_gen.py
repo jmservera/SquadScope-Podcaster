@@ -86,9 +86,7 @@ def _valid_png_bytes(width: int = 64, height: int = 64) -> bytes:
     def _chunk(tag: bytes, data: bytes) -> bytes:
         body = tag + data
         return (
-            struct.pack(">I", len(data))
-            + body
-            + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+            struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
         )
 
     sig = b"\x89PNG\r\n\x1a\n"
@@ -103,6 +101,7 @@ _PNG_64x64 = _valid_png_bytes()
 @pytest.fixture
 def stub_compose():
     """Replace ffmpeg screenshot composition with a fast stub (no ffmpeg)."""
+
     def fake(capturer, duration_seconds, output_path):
         Path(output_path).write_bytes(b"\x00\x00\x00\x18ftypmp42stub")
         return Path(output_path)
@@ -115,6 +114,7 @@ def stub_compose():
 
 
 # --- Helpers ---
+
 
 def _make_segment(
     owner: str = "test-owner",
@@ -288,9 +288,7 @@ class TestSmoothScroll:
         page = MagicMock()
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
         # scrollable content: 5000px total, viewport 1080px
-        page.evaluate.side_effect = lambda js: (
-            5000 if "scrollHeight" in js else None
-        )
+        page.evaluate.side_effect = lambda js: 5000 if "scrollHeight" in js else None
 
         duration = 2.0
         _smooth_scroll(page, duration)
@@ -306,18 +304,14 @@ class TestSmoothScroll:
         page = MagicMock()
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
         # Very long page
-        page.evaluate.side_effect = lambda js: (
-            100_000 if "scrollHeight" in js else None
-        )
+        page.evaluate.side_effect = lambda js: 100_000 if "scrollHeight" in js else None
 
         duration = 1.0
         _smooth_scroll(page, duration)
 
         ticks = int(duration * SCROLL_TICKS_PER_SEC)
         # Deterministic absolute positioning: one scrollTo per tick (issue #413).
-        scroll_calls = [
-            c for c in page.evaluate.call_args_list if "scrollTo" in str(c)
-        ]
+        scroll_calls = [c for c in page.evaluate.call_args_list if "scrollTo" in str(c)]
         assert len(scroll_calls) == ticks
 
         # Parse the target Y of each scrollTo and verify the per-frame step never
@@ -340,16 +334,12 @@ class TestSmoothScroll:
         # (it previously ignored it and always used the 10px hard ceiling).
         page = MagicMock()
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
-        page.evaluate.side_effect = lambda js: (
-            100_000 if "scrollHeight" in js else None
-        )
+        page.evaluate.side_effect = lambda js: 100_000 if "scrollHeight" in js else None
 
         duration = 1.0
         _smooth_scroll(page, duration, max_px_per_frame=3)
 
-        scroll_calls = [
-            c for c in page.evaluate.call_args_list if "scrollTo" in str(c)
-        ]
+        scroll_calls = [c for c in page.evaluate.call_args_list if "scrollTo" in str(c)]
         ys = []
         for call in scroll_calls:
             m = re.search(r"scrollTo\(0,\s*(\d+)\)", call[0][0])
@@ -362,9 +352,7 @@ class TestSmoothScroll:
         page = MagicMock()
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
         # Page fits in viewport
-        page.evaluate.side_effect = lambda js: (
-            HEIGHT if "scrollHeight" in js else None
-        )
+        page.evaluate.side_effect = lambda js: HEIGHT if "scrollHeight" in js else None
 
         _smooth_scroll(page, 2.0)
 
@@ -380,9 +368,7 @@ class TestSmoothScroll:
         """Duration > 0 but < 1 tick should still wait the full duration."""
         page = MagicMock()
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
-        page.evaluate.side_effect = lambda js: (
-            5000 if "scrollHeight" in js else None
-        )
+        page.evaluate.side_effect = lambda js: 5000 if "scrollHeight" in js else None
 
         _smooth_scroll(page, 0.02)  # too short for a full tick
 
@@ -501,8 +487,7 @@ class TestGithubScrollPlan:
 
 
 class TestScrollGithubReadme:
-    def _page(self, *, url="https://github.com/owner/repo", readme_y=8000,
-              scrollable=12000):
+    def _page(self, *, url="https://github.com/owner/repo", readme_y=8000, scrollable=12000):
         page = MagicMock()
         page.url = url
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
@@ -519,9 +504,7 @@ class TestScrollGithubReadme:
 
     def test_non_github_falls_back_to_smooth_scroll(self):
         page = self._page(url="https://example.com/page")
-        with patch(
-            "podcaster.video.video_gen._smooth_scroll"
-        ) as smooth:
+        with patch("podcaster.video.video_gen._smooth_scroll") as smooth:
             _scroll_github_readme(page, 5.0)
         smooth.assert_called_once()
 
@@ -571,9 +554,7 @@ class TestScrollGithubReadme:
         # One frame per output frame at the capture fps.
         assert cap.count == int(5.0 * SCREENSHOT_CAPTURE_FPS)
         # The staged flow uses absolute scrollTo positioning.
-        scroll_calls = [
-            c for c in page.evaluate.call_args_list if "scrollTo" in str(c)
-        ]
+        scroll_calls = [c for c in page.evaluate.call_args_list if "scrollTo" in str(c)]
         assert scroll_calls, "expected scrollTo calls from staged plan"
         # Early frames hold on the header (y==0).
         first = re.search(r"scrollTo\(0,\s*(\d+)\)", str(scroll_calls[0]))
@@ -665,9 +646,7 @@ class TestRenderUrlCard:
 class TestRenderRemovedCard:
     def test_sets_content_and_waits(self):
         page = MagicMock()
-        _render_removed_card(
-            page, "owner", "repo", "This repo was removed from GitHub", 4.0
-        )
+        _render_removed_card(page, "owner", "repo", "This repo was removed from GitHub", 4.0)
         page.set_content.assert_called_once()
         html = page.set_content.call_args[0][0]
         assert "owner/repo" in html
@@ -680,9 +659,7 @@ class TestRenderRemovedCard:
     def test_screenshot_mode_captures_still(self):
         page = MagicMock()
         capturer = MagicMock()
-        _render_removed_card(
-            page, "o", "r", "This repo was removed from GitHub", 4.0, capturer
-        )
+        _render_removed_card(page, "o", "r", "This repo was removed from GitHub", 4.0, capturer)
         capturer.reset_frames.assert_called_once()
         capturer.still.assert_called_once_with(page)
         page.wait_for_timeout.assert_not_called()
@@ -693,9 +670,7 @@ class TestRenderRemovedCard:
 
 class TestIsLoginRedirect:
     def test_detects_login_path(self):
-        assert _is_login_redirect(
-            "https://github.com/login?return_to=%2Fowner%2Frepo"
-        ) is True
+        assert _is_login_redirect("https://github.com/login?return_to=%2Fowner%2Frepo") is True
 
     def test_detects_session_path(self):
         assert _is_login_redirect("https://github.com/session") is True
@@ -776,9 +751,7 @@ class TestApplyPageZoom:
         page.evaluate.return_value = 1
         _prepare_page_for_recording(page)
         # Both anti-flash CSS and full-page zoom CSS injected
-        injected = [
-            c.kwargs.get("content", "") for c in page.add_style_tag.call_args_list
-        ]
+        injected = [c.kwargs.get("content", "") for c in page.add_style_tag.call_args_list]
         assert any("ss-page-zoom" in css for css in injected)
 
 
@@ -889,9 +862,7 @@ class TestRecordSegment:
         browser.new_context.return_value = context
         context.new_page.return_value = page
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
-        page.evaluate.side_effect = lambda js: (
-            2000 if "scrollHeight" in js else None
-        )
+        page.evaluate.side_effect = lambda js: 2000 if "scrollHeight" in js else None
 
         # Create a fake video file that Playwright would produce
         raw_dir = tmp_path / "raw"
@@ -908,8 +879,10 @@ class TestRecordSegment:
         browser, out_dir = self._mock_browser(tmp_path)
         segment = _make_segment(owner="microsoft", name="vscode", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.video_path.exists()
@@ -927,8 +900,10 @@ class TestRecordSegment:
         page.goto.return_value = MagicMock(status=404)
         segment = _make_segment(owner="gone", name="repo", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=False), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=False),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.is_fallback is True
@@ -936,9 +911,7 @@ class TestRecordSegment:
         assert result.video_path.exists()
         # The card shows the URL, never an "unavailable" message (#386).
         card_html = next(
-            c.args[0]
-            for c in page.set_content.call_args_list
-            if "gone/repo" in c.args[0]
+            c.args[0] for c in page.set_content.call_args_list if "gone/repo" in c.args[0]
         )
         assert "unavailable" not in card_html.lower()
 
@@ -950,9 +923,11 @@ class TestRecordSegment:
         page.goto.return_value = MagicMock(status=404)
         segment = _make_segment(owner="proj", name="site", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=False), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=True), \
-             patch("podcaster.video.video_gen._navigate_to_website", return_value=True):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=False),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=True),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.is_fallback is False
@@ -973,8 +948,10 @@ class TestRecordSegment:
             removed_reason="This repo was removed from GitHub",
         )
 
-        with patch("podcaster.video.video_gen._check_repo_accessible") as acc, \
-             patch("podcaster.video.video_gen._check_gh_pages") as pages:
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible") as acc,
+            patch("podcaster.video.video_gen._check_gh_pages") as pages,
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         # No accessibility checks, no GitHub Pages probe, no navigation.
@@ -988,9 +965,7 @@ class TestRecordSegment:
         assert result.video_path.exists()
         assert result.video_path.name.startswith("someuser_mktail_")
         card_html = next(
-            c.args[0]
-            for c in page.set_content.call_args_list
-            if "someuser/mktail" in c.args[0]
+            c.args[0] for c in page.set_content.call_args_list if "someuser/mktail" in c.args[0]
         )
         assert "removed from GitHub" in card_html
         assert "unavailable" not in card_html.lower()
@@ -1002,8 +977,10 @@ class TestRecordSegment:
 
         segment = _make_segment(owner="slow", name="repo", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.is_fallback is True
@@ -1013,8 +990,10 @@ class TestRecordSegment:
         browser, out_dir = self._mock_browser(tmp_path)
         segment = _make_segment(owner="pages-owner", name="pages-repo", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=True):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.has_pages is True
@@ -1023,8 +1002,10 @@ class TestRecordSegment:
         browser, out_dir = self._mock_browser(tmp_path)
         segment = _make_segment(duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible") as mock_check, \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible") as mock_check,
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+        ):
             _record_segment(browser, segment, out_dir, check_accessibility=False)
 
         mock_check.assert_not_called()
@@ -1033,8 +1014,10 @@ class TestRecordSegment:
         browser, out_dir = self._mock_browser(tmp_path)
         segment = _make_segment(duration=1.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+        ):
             _record_segment(browser, segment, out_dir)
 
         call_kwargs = browser.new_context.call_args[1]
@@ -1049,9 +1032,11 @@ class TestRecordSegment:
         browser, out_dir = self._mock_browser(tmp_path)
         segment = _make_segment(duration=1.0)
 
-        with patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", False), \
-             patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
+        with (
+            patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", False),
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         call_kwargs = browser.new_context.call_args[1]
@@ -1066,10 +1051,14 @@ class TestRecordSegment:
         page.goto.return_value = MagicMock(status=200)
         segment = _make_segment(owner="jmservera", name="SquadScope", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
-             patch("podcaster.video.video_gen._extract_website_url",
-                   return_value="https://claracle.com"):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch(
+                "podcaster.video.video_gen._extract_website_url",
+                return_value="https://claracle.com",
+            ),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.website_url == "https://claracle.com"
@@ -1084,9 +1073,11 @@ class TestRecordSegment:
         page.goto.return_value = MagicMock(status=200)
         segment = _make_segment(owner="microsoft", name="vscode", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
-             patch("podcaster.video.video_gen._extract_website_url", return_value=None):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch("podcaster.video.video_gen._extract_website_url", return_value=None),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.website_url is None
@@ -1098,11 +1089,15 @@ class TestRecordSegment:
         page.goto.return_value = MagicMock(status=200)
         segment = _make_segment(owner="jmservera", name="SquadScope", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
-             patch("podcaster.video.video_gen._extract_website_url",
-                   return_value="https://broken.example"), \
-             patch("podcaster.video.video_gen._navigate_to_website", return_value=False):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch(
+                "podcaster.video.video_gen._extract_website_url",
+                return_value="https://broken.example",
+            ),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=False),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         # Website failed to load — record the GitHub page, no website recorded.
@@ -1121,9 +1116,7 @@ class TestRecordGenericSegment:
         browser.new_context.return_value = context
         context.new_page.return_value = page
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
-        page.evaluate.side_effect = lambda js: (
-            2000 if "scrollHeight" in js else None
-        )
+        page.evaluate.side_effect = lambda js: 2000 if "scrollHeight" in js else None
         raw_dir = tmp_path / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         fake_video = raw_dir / "generic.webm"
@@ -1161,6 +1154,7 @@ class TestRecordGenericSegment:
         # The only set_content call is the dark hold frame painted before
         # navigation (issue #355); the static background is never rendered.
         from podcaster.video.video_gen import DARK_HOLD_HTML
+
         page.set_content.assert_called_once_with(DARK_HOLD_HTML)
 
     def test_falls_back_to_background_on_nav_error(self, tmp_path):
@@ -1180,6 +1174,7 @@ class TestRecordGenericSegment:
         # On failure it renders the static background. set_content is called
         # twice: once for the dark hold frame, once for the background.
         from podcaster.video.video_gen import DARK_HOLD_HTML
+
         assert page.set_content.call_count == 2
         contents = [c.args[0] for c in page.set_content.call_args_list]
         assert contents[0] == DARK_HOLD_HTML
@@ -1194,12 +1189,7 @@ class TestLooksMalformedRepoUrl:
         assert _looks_malformed_repo_url("https://github.com/vercel/eve") is False
 
     def test_valid_with_dots_and_dashes(self):
-        assert (
-            _looks_malformed_repo_url(
-                "https://github.com/astral-sh/ruff.rs"
-            )
-            is False
-        )
+        assert _looks_malformed_repo_url("https://github.com/astral-sh/ruff.rs") is False
 
     def test_empty_url(self):
         assert _looks_malformed_repo_url("") is True
@@ -1214,9 +1204,7 @@ class TestLooksMalformedRepoUrl:
         assert _looks_malformed_repo_url("https://github.com/vercel") is True
 
     def test_percent_encoding_in_path(self):
-        assert (
-            _looks_malformed_repo_url("https://github.com/vercel/e%20ve") is True
-        )
+        assert _looks_malformed_repo_url("https://github.com/vercel/e%20ve") is True
 
 
 class TestTryNavigateRepo:
@@ -1277,10 +1265,7 @@ class TestTryNavigateRepo:
         page.goto.return_value = MagicMock(status=200)
         page.url = "https://github.com/a/b"
         _try_navigate_repo(page, "https://github.com/a/b")
-        assert (
-            page.goto.call_args.kwargs["timeout"]
-            == GITHUB_NETWORK_IDLE_TIMEOUT_MS
-        )
+        assert page.goto.call_args.kwargs["timeout"] == GITHUB_NETWORK_IDLE_TIMEOUT_MS
 
     def test_non_github_url_uses_default_timeout(self):
         from podcaster.video.video_gen import NETWORK_IDLE_TIMEOUT_MS
@@ -1289,9 +1274,7 @@ class TestTryNavigateRepo:
         page.goto.return_value = MagicMock(status=200)
         page.url = "https://example.com/a/b"
         _try_navigate_repo(page, "https://example.com/a/b")
-        assert (
-            page.goto.call_args.kwargs["timeout"] == NETWORK_IDLE_TIMEOUT_MS
-        )
+        assert page.goto.call_args.kwargs["timeout"] == NETWORK_IDLE_TIMEOUT_MS
 
     def test_returns_false_on_login_redirect(self):
         # A 200 that lands on the login page means the repo is private /
@@ -1348,19 +1331,16 @@ class TestTryRecordProjectSite:
     def test_returns_none_when_no_pages(self):
         page = MagicMock()
         repo = RepoReference("o", "r")
-        with patch(
-            "podcaster.video.video_gen._check_gh_pages", return_value=False
-        ):
+        with patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
             assert _try_record_project_site(page, repo, 2.0) is None
         page.goto.assert_not_called()
 
     def test_returns_none_when_pages_fails_to_load(self):
         page = MagicMock()
         repo = RepoReference("o", "r")
-        with patch(
-            "podcaster.video.video_gen._check_gh_pages", return_value=True
-        ), patch(
-            "podcaster.video.video_gen._navigate_to_website", return_value=False
+        with (
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=False),
         ):
             assert _try_record_project_site(page, repo, 2.0) is None
 
@@ -1369,13 +1349,13 @@ class TestTryRecordProjectSite:
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
         page.evaluate.side_effect = lambda js: 2000 if "scrollHeight" in js else None
         repo = RepoReference("o", "r")
-        with patch(
-            "podcaster.video.video_gen._check_gh_pages", return_value=True
-        ), patch(
-            "podcaster.video.video_gen._navigate_to_website", return_value=True
+        with (
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=True),
+            patch("podcaster.video.video_gen._navigate_to_website", return_value=True),
         ):
             url = _try_record_project_site(page, repo, 2.0)
         assert url == "https://o.github.io/r/"
+
     _ARTICLE = "https://claracle.com/weekly/2026/w26/"
 
     def test_returns_none_without_source_url(self):
@@ -1432,9 +1412,7 @@ class TestNavigateWithRecovery:
     def test_direct_success(self):
         page = self._page(MagicMock(status=200))
         repo = RepoReference("vercel", "eve")
-        outcome = _navigate_with_recovery(
-            page, repo, None, backoff_seconds=(0.0,)
-        )
+        outcome = _navigate_with_recovery(page, repo, None, backoff_seconds=(0.0,))
         assert outcome.success is True
         assert outcome.recovery_path == "direct"
         assert outcome.repo == repo
@@ -1443,9 +1421,7 @@ class TestNavigateWithRecovery:
     def test_retry_success(self):
         page = self._page(MagicMock(status=503), MagicMock(status=200))
         repo = RepoReference("vercel", "eve")
-        outcome = _navigate_with_recovery(
-            page, repo, None, backoff_seconds=(0.0,)
-        )
+        outcome = _navigate_with_recovery(page, repo, None, backoff_seconds=(0.0,))
         assert outcome.success is True
         assert outcome.recovery_path == "retry"
         assert page.goto.call_count == 2
@@ -1473,12 +1449,15 @@ class TestNavigateWithRecovery:
         # article correction (issue #381 — validate before attempting).
         page = self._page(MagicMock(status=200))
         repo = RepoReference("vercel", "eve")
-        with patch(
-            "podcaster.video.video_gen._looks_malformed_repo_url",
-            return_value=True,
-        ), patch(
-            "podcaster.video.video_gen._correct_repo_from_article",
-            return_value=None,
+        with (
+            patch(
+                "podcaster.video.video_gen._looks_malformed_repo_url",
+                return_value=True,
+            ),
+            patch(
+                "podcaster.video.video_gen._correct_repo_from_article",
+                return_value=None,
+            ),
         ):
             outcome = _navigate_with_recovery(page, repo, None)
         assert outcome.success is False
@@ -1515,9 +1494,7 @@ class TestNavigateWithRecovery:
     def test_all_paths_fail(self, mock_correct):
         page = self._page(MagicMock(status=404), MagicMock(status=404))
         repo = RepoReference("vercel", "eve")
-        outcome = _navigate_with_recovery(
-            page, repo, None, backoff_seconds=(0.0,)
-        )
+        outcome = _navigate_with_recovery(page, repo, None, backoff_seconds=(0.0,))
         assert outcome.success is False
         assert outcome.recovery_path == "fallback"
         assert page.goto.call_count == 2
@@ -1536,9 +1513,7 @@ class TestRecordSegmentRecovery:
         browser.new_context.return_value = context
         context.new_page.return_value = page
         page.viewport_size = {"width": WIDTH, "height": HEIGHT}
-        page.evaluate.side_effect = lambda js: (
-            2000 if "scrollHeight" in js else None
-        )
+        page.evaluate.side_effect = lambda js: 2000 if "scrollHeight" in js else None
         raw_dir = tmp_path / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         fake_video = raw_dir / "rec.webm"
@@ -1553,9 +1528,11 @@ class TestRecordSegmentRecovery:
         page.goto.side_effect = [Exception("timeout"), MagicMock(status=200)]
         segment = _make_segment(owner="vercel", name="eve", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
-             patch("podcaster.video.video_gen._extract_website_url", return_value=None):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch("podcaster.video.video_gen._extract_website_url", return_value=None),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.is_fallback is False
@@ -1577,9 +1554,11 @@ class TestRecordSegmentRecovery:
         ]
         segment = _make_segment(owner="vercel", name="ev", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
-             patch("podcaster.video.video_gen._extract_website_url", return_value=None):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch("podcaster.video.video_gen._extract_website_url", return_value=None),
+        ):
             result = _record_segment(
                 browser,
                 segment,
@@ -1598,13 +1577,14 @@ class TestRecordSegmentRecovery:
         page.goto.return_value = MagicMock(status=404)
         segment = _make_segment(owner="vercel", name="eve", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False):
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.is_fallback is True
         assert result.recovery_path == "fallback"
-
 
     def test_no_fallback_after_successful_navigation(self, tmp_path):
         # Navigation succeeds, but a later recording step (smooth scroll) raises.
@@ -1614,14 +1594,16 @@ class TestRecordSegmentRecovery:
         page.goto.return_value = MagicMock(status=200)
         segment = _make_segment(owner="vercel", name="eve", duration=2.0)
 
-        with patch("podcaster.video.video_gen._check_repo_accessible", return_value=True), \
-             patch("podcaster.video.video_gen._check_gh_pages", return_value=False), \
-             patch("podcaster.video.video_gen._extract_website_url", return_value=None), \
-             patch(
-                 "podcaster.video.video_gen._smooth_scroll",
-                 side_effect=RuntimeError("scroll boom"),
-             ), \
-             patch("podcaster.video.video_gen._render_fallback_page") as mock_fallback:
+        with (
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch("podcaster.video.video_gen._extract_website_url", return_value=None),
+            patch(
+                "podcaster.video.video_gen._smooth_scroll",
+                side_effect=RuntimeError("scroll boom"),
+            ),
+            patch("podcaster.video.video_gen._render_fallback_page") as mock_fallback,
+        ):
             result = _record_segment(browser, segment, out_dir)
 
         assert result.is_fallback is False
@@ -1671,14 +1653,13 @@ class TestRecordEpisode:
                 video = MagicMock()
 
                 page.viewport_size = {"width": WIDTH, "height": HEIGHT}
-                page.evaluate.side_effect = lambda js: (
-                    2000 if "scrollHeight" in js else None
-                )
+                page.evaluate.side_effect = lambda js: 2000 if "scrollHeight" in js else None
 
                 # Create a unique fake video
                 raw_dir = tmp_path / "raw"
                 raw_dir.mkdir(parents=True, exist_ok=True)
                 import uuid
+
                 fake_video = raw_dir / f"{uuid.uuid4()}.webm"
                 fake_video.write_bytes(b"\x1a\x45\xdf\xa3")
                 video.path.return_value = str(fake_video)
@@ -1721,13 +1702,12 @@ class TestRecordEpisode:
             video = MagicMock()
 
             page.viewport_size = {"width": WIDTH, "height": HEIGHT}
-            page.evaluate.side_effect = lambda js: (
-                2000 if "scrollHeight" in js else None
-            )
+            page.evaluate.side_effect = lambda js: 2000 if "scrollHeight" in js else None
 
             raw_dir = Path(kwargs.get("record_video_dir", "/tmp"))
             raw_dir.mkdir(parents=True, exist_ok=True)
             import uuid
+
             fake_video = raw_dir / f"{uuid.uuid4()}.webm"
             fake_video.write_bytes(b"\x1a\x45\xdf\xa3")
             video.path.return_value = str(fake_video)
@@ -1748,9 +1728,7 @@ class TestRecordEpisode:
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
     @patch("podcaster.video.video_gen._check_repo_accessible", return_value=True)
     @patch("podcaster.video.video_gen._check_gh_pages", return_value=False)
-    def test_launches_with_anti_throttling_args(
-        self, mock_pages, mock_access, mock_pw
-    ):
+    def test_launches_with_anti_throttling_args(self, mock_pages, mock_access, mock_pw):
         """Chromium is launched with the anti-throttling recording args (#359)."""
         pw_instance = MagicMock()
         mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
@@ -1762,12 +1740,11 @@ class TestRecordEpisode:
             page = MagicMock()
             video = MagicMock()
             page.viewport_size = {"width": WIDTH, "height": HEIGHT}
-            page.evaluate.side_effect = lambda js: (
-                2000 if "scrollHeight" in js else None
-            )
+            page.evaluate.side_effect = lambda js: 2000 if "scrollHeight" in js else None
             raw_dir = Path(kwargs.get("record_video_dir", "/tmp"))
             raw_dir.mkdir(parents=True, exist_ok=True)
             import uuid
+
             fake_video = raw_dir / f"{uuid.uuid4()}.webm"
             fake_video.write_bytes(b"\x1a\x45\xdf\xa3")
             video.path.return_value = str(fake_video)
@@ -1786,9 +1763,7 @@ class TestRecordEpisode:
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
     @patch("podcaster.video.video_gen._record_segment")
-    def test_passes_source_url_to_record_segment(
-        self, mock_record, mock_pw, tmp_path
-    ):
+    def test_passes_source_url_to_record_segment(self, mock_record, mock_pw, tmp_path):
         """The episode's Source URL is forwarded for repo-URL recovery (#378)."""
         pw_instance = MagicMock()
         mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
@@ -1808,9 +1783,7 @@ class TestRecordEpisode:
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
     @patch("podcaster.video.video_gen._record_segment")
-    def test_parallel_preserves_plan_order(
-        self, mock_record, mock_pw, tmp_path
-    ):
+    def test_parallel_preserves_plan_order(self, mock_record, mock_pw, tmp_path):
         """Concurrent recording returns segments in plan order (#479)."""
         pw_instance = MagicMock()
         mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
@@ -1837,16 +1810,17 @@ class TestRecordEpisode:
         result = record_episode(plan, output_dir=tmp_path, concurrency=4)
 
         assert [r.segment.repo.name for r in result.recorded] == [
-            "alpha", "bravo", "charlie", "delta",
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
         ]
         assert pw_instance.chromium.launch.call_count == 4
 
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
     @patch("podcaster.video.video_gen._record_segment")
-    def test_concurrency_one_uses_single_browser(
-        self, mock_record, mock_pw, tmp_path
-    ):
+    def test_concurrency_one_uses_single_browser(self, mock_record, mock_pw, tmp_path):
         """concurrency=1 keeps the original single-browser sequential path."""
         pw_instance = MagicMock()
         mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
@@ -1885,6 +1859,7 @@ class TestRecordEpisodeIntegration:
         pytest.importorskip("playwright")
         # Also verify browsers are installed
         from playwright.sync_api import sync_playwright
+
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -1901,9 +1876,7 @@ class TestRecordEpisodeIntegration:
         plan = _make_plan(*segments, total=9.0)
 
         with tempfile.TemporaryDirectory() as tmp:
-            result = record_episode(
-                plan, output_dir=tmp, headless=True, check_accessibility=True
-            )
+            result = record_episode(plan, output_dir=tmp, headless=True, check_accessibility=True)
 
             assert len(result.recorded) == 3
             for rec in result.recorded:
@@ -1914,9 +1887,7 @@ class TestRecordEpisodeIntegration:
 
     def test_handles_404_repo(self):
         segments = [
-            _make_segment(
-                "nonexistent-owner-zzz", "nonexistent-repo-zzz", 0, 3
-            ),
+            _make_segment("nonexistent-owner-zzz", "nonexistent-repo-zzz", 0, 3),
         ]
         plan = _make_plan(*segments, total=3.0)
 
@@ -1935,12 +1906,11 @@ class TestRecordEpisodeIntegration:
 class TestMakeRecordingContext:
     def test_hyperframe_mode_sets_native_scale_and_logs(self, tmp_path, caplog):
         browser = MagicMock()
-        with patch(
-            "podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", True
-        ), caplog.at_level("INFO"):
-            context, capturer = _make_recording_context(
-                browser, tmp_path, segment_label="repo x/y"
-            )
+        with (
+            patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", True),
+            caplog.at_level("INFO"),
+        ):
+            context, capturer = _make_recording_context(browser, tmp_path, segment_label="repo x/y")
         assert capturer is not None
         kwargs = browser.new_context.call_args.kwargs
         # Native 1920x1080 capture, no HiDPI scaling (issue #392).
@@ -1955,25 +1925,22 @@ class TestMakeRecordingContext:
 
     def test_screencast_mode_records_video_and_logs(self, tmp_path, caplog):
         browser = MagicMock()
-        with patch(
-            "podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", False
-        ), caplog.at_level("INFO"):
+        with (
+            patch("podcaster.video.video_gen.SCREENSHOT_CAPTURE_ENABLED", False),
+            caplog.at_level("INFO"),
+        ):
             context, capturer = _make_recording_context(browser, tmp_path)
         assert capturer is None
         kwargs = browser.new_context.call_args.kwargs
         assert "record_video_dir" in kwargs
-        assert any(
-            "screencast capture mode active" in r.message for r in caplog.records
-        )
+        assert any("screencast capture mode active" in r.message for r in caplog.records)
 
 
 def _make_screenshot_page(scroll_height: int = 5000) -> MagicMock:
     """A mock Page whose screenshot writes a real PNG to the given path."""
     page = MagicMock()
     page.viewport_size = {"width": WIDTH, "height": HEIGHT}
-    page.evaluate.side_effect = lambda js: (
-        scroll_height if "scrollHeight" in js else None
-    )
+    page.evaluate.side_effect = lambda js: scroll_height if "scrollHeight" in js else None
 
     def _screenshot(path):
         Path(path).write_bytes(_PNG_64x64)
@@ -2346,9 +2313,7 @@ class TestRecordEpisodeTaskRetry:
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
     @patch("podcaster.video.video_gen._record_segment")
-    def test_exhausted_recording_retries_propagate(
-        self, mock_record, mock_pw, tmp_path
-    ):
+    def test_exhausted_recording_retries_propagate(self, mock_record, mock_pw, tmp_path):
         pw_instance = MagicMock()
         mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
         mock_pw.return_value.__exit__ = MagicMock(return_value=False)

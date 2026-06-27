@@ -117,9 +117,7 @@ GITHUB_NETWORK_IDLE_TIMEOUT_MS = 60_000
 # rendered substantial, usable content.  If any of these exist after a
 # navigation that timed out on ``networkidle``, the page is good enough to
 # record and we proceed instead of falling back to a URL card (issue #405).
-CONTENT_LOADED_SELECTOR = (
-    ".repository-content, .markdown-body, [data-testid=repo-header], main"
-)
+CONTENT_LOADED_SELECTOR = ".repository-content, .markdown-body, [data-testid=repo-header], main"
 # Timeout for navigating to a repo's external website (issue #360).  Kept
 # shorter than the GitHub timeout so a slow/down website falls back quickly to
 # the already-rendered GitHub page.
@@ -580,9 +578,7 @@ _COOKIE_ACCEPT_JS = """
 """
 
 
-def _dismiss_cookie_consent(
-    page: Page, timeout_ms: int = COOKIE_CONSENT_TIMEOUT_MS
-) -> bool:
+def _dismiss_cookie_consent(page: Page, timeout_ms: int = COOKIE_CONSENT_TIMEOUT_MS) -> bool:
     """Find and accept a cookie-consent banner before recording (issue #388).
 
     Tries, in order:
@@ -613,9 +609,7 @@ def _dismiss_cookie_consent(
                 el = page.query_selector(selector)
                 if el and el.is_visible():
                     el.click(timeout=500)
-                    logger.debug(
-                        "Dismissed cookie consent via selector %s", selector
-                    )
+                    logger.debug("Dismissed cookie consent via selector %s", selector)
                     try:
                         page.wait_for_timeout(COOKIE_DISMISS_SETTLE_MS)
                     except Exception:
@@ -774,9 +768,19 @@ def _validate_recording(path: Path) -> None:
             logger.warning("recorded segment is empty: %s", path)
             return
         subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=nw=1:nk=1", str(path)],
-            check=True, capture_output=True, timeout=30,
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1:nk=1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
         )
     except Exception:  # noqa: BLE001 — validation is advisory only
         logger.debug("ffprobe validation skipped/failed for %s", path, exc_info=True)
@@ -801,12 +805,8 @@ def _checkpoint_recorded_segment(
     suffix = recorded.video_path.suffix or ".mp4"
     content_type = "video/webm" if suffix == ".webm" else "video/mp4"
     _validate_recording(recorded.video_path)
-    if intermediates.upload(
-        _recording_blob_name(index, suffix), recorded.video_path, content_type
-    ):
-        intermediates.write_text(
-            _recording_meta_name(index), _serialize_recording_meta(recorded)
-        )
+    if intermediates.upload(_recording_blob_name(index, suffix), recorded.video_path, content_type):
+        intermediates.write_text(_recording_meta_name(index), _serialize_recording_meta(recorded))
         intermediates.mark(f"recording_{index:03d}", recovery_path=recorded.recovery_path)
         # Upload was size-verified above; the recording now lives safely in blob
         # so drop the local copy to keep disk usage bounded.
@@ -908,9 +908,7 @@ def _neutralize_fixed_sticky(page: Page) -> int:
     except Exception:
         return 0
     if neutralised:
-        logger.debug(
-            "Neutralised %s fixed/sticky element(s) before recording", neutralised
-        )
+        logger.debug("Neutralised %s fixed/sticky element(s) before recording", neutralised)
     return int(neutralised or 0)
 
 
@@ -1004,24 +1002,34 @@ class _Capturer:
         self.count = 0
 
 
-def _build_frames_to_video_cmd(
-    frames_dir: Path, fps: int, output_path: Path
-) -> list[str]:
+def _build_frames_to_video_cmd(frames_dir: Path, fps: int, output_path: Path) -> list[str]:
     """ffmpeg command composing a PNG frame sequence into an H.264 clip."""
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-        "-framerate", str(fps),
-        "-i", str(frames_dir / "frame_%05d.png"),
-        "-vf", "format=yuv420p",
-        "-c:v", "libx264",
-        "-preset", SCREENSHOT_CAPTURE_PRESET,
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-framerate",
+        str(fps),
+        "-i",
+        str(frames_dir / "frame_%05d.png"),
+        "-vf",
+        "format=yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        SCREENSHOT_CAPTURE_PRESET,
     ]
     if SCREENSHOT_CAPTURE_TUNE:
         cmd += ["-tune", SCREENSHOT_CAPTURE_TUNE]
     cmd += [
-        "-crf", str(SCREENSHOT_CAPTURE_CRF),
-        "-pix_fmt", "yuv420p",
-        "-r", str(fps),
+        "-crf",
+        str(SCREENSHOT_CAPTURE_CRF),
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        str(fps),
         str(output_path),
     ]
     return cmd
@@ -1032,21 +1040,35 @@ def _build_still_to_video_cmd(
 ) -> list[str]:
     """ffmpeg command holding a single still PNG for *duration_seconds*."""
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-        "-loop", "1",
-        "-framerate", str(fps),
-        "-t", f"{max(duration_seconds, 1.0 / fps):.3f}",
-        "-i", str(still_path),
-        "-vf", "format=yuv420p",
-        "-c:v", "libx264",
-        "-preset", SCREENSHOT_CAPTURE_PRESET,
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-loop",
+        "1",
+        "-framerate",
+        str(fps),
+        "-t",
+        f"{max(duration_seconds, 1.0 / fps):.3f}",
+        "-i",
+        str(still_path),
+        "-vf",
+        "format=yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        SCREENSHOT_CAPTURE_PRESET,
     ]
     if SCREENSHOT_CAPTURE_TUNE:
         cmd += ["-tune", SCREENSHOT_CAPTURE_TUNE]
     cmd += [
-        "-crf", str(SCREENSHOT_CAPTURE_CRF),
-        "-pix_fmt", "yuv420p",
-        "-r", str(fps),
+        "-crf",
+        str(SCREENSHOT_CAPTURE_CRF),
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        str(fps),
         str(output_path),
     ]
     return cmd
@@ -1085,31 +1107,21 @@ def _compose_screenshot_segment(
         _pad_frames(capturer, expected)
         cmd = _build_frames_to_video_cmd(capturer.frames_dir, fps, output_path)
     elif capturer.still_image is not None and capturer.still_image.exists():
-        cmd = _build_still_to_video_cmd(
-            capturer.still_image, duration_seconds, fps, output_path
-        )
+        cmd = _build_still_to_video_cmd(capturer.still_image, duration_seconds, fps, output_path)
     else:
-        raise RuntimeError(
-            "No screenshots captured for screenshot-based segment composition"
-        )
+        raise RuntimeError("No screenshots captured for screenshot-based segment composition")
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=600
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"ffmpeg timed out composing screenshot segment: {exc}"
-        ) from exc
+        raise RuntimeError(f"ffmpeg timed out composing screenshot segment: {exc}") from exc
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg failed composing screenshot segment "
             f"(exit {result.returncode}): {result.stderr.strip()}"
         )
     if not output_path.exists():
-        raise RuntimeError(
-            f"ffmpeg did not produce screenshot segment at {output_path}"
-        )
+        raise RuntimeError(f"ffmpeg did not produce screenshot segment at {output_path}")
     return output_path
 
 
@@ -1252,9 +1264,7 @@ def _scroll_positions(
     return [int(round(start_y + span * fn(i / last))) for i in range(total_frames)]
 
 
-def _scroll_frame_count(
-    duration_seconds: float, capturer: "_Capturer | None"
-) -> "tuple[int, int]":
+def _scroll_frame_count(duration_seconds: float, capturer: "_Capturer | None") -> "tuple[int, int]":
     """Return ``(total_frames, tick_rate)`` for a scroll of *duration_seconds*.
 
     In screenshot mode the capture rate must equal the composed framerate so
@@ -1262,9 +1272,7 @@ def _scroll_frame_count(
     screencast mode the historical SCROLL_TICKS_PER_SEC floor is used so a
     sub-tick duration simply waits without scrolling.
     """
-    tick_rate = (
-        SCREENSHOT_CAPTURE_FPS if capturer is not None else SCROLL_TICKS_PER_SEC
-    )
+    tick_rate = SCREENSHOT_CAPTURE_FPS if capturer is not None else SCROLL_TICKS_PER_SEC
     total_frames = (
         math.ceil(duration_seconds * tick_rate)
         if capturer is not None
@@ -1486,9 +1494,7 @@ def _github_scroll_plan(
     # The reading phase has ``reading`` frames, i.e. ``reading - 1`` movement
     # intervals, so size the span off the interval count to keep the average
     # per-frame delta at or below *px_per_frame* (issue #415).
-    read_end = min(
-        int(doc_scrollable), readme_y + max(reading - 1, 1) * px_per_frame
-    )
+    read_end = min(int(doc_scrollable), readme_y + max(reading - 1, 1) * px_per_frame)
     plan += _scroll_positions(readme_y, read_end, reading, easing="linear")
 
     # Guard against off-by-one from the phase concatenation.
@@ -1638,9 +1644,7 @@ def _render_url_card(
     in real time for the screencast recorder (issue #387).
     """
     url = f"github.com/{owner}/{name}"
-    html = FALLBACK_BRAND_HTML.format(
-        width=WIDTH, height=HEIGHT, owner=owner, name=name, url=url
-    )
+    html = FALLBACK_BRAND_HTML.format(width=WIDTH, height=HEIGHT, owner=owner, name=name, url=url)
     page.set_content(html)
     if capturer is not None:
         # Discard any partially-captured frames so the fallback is held as a
@@ -1766,9 +1770,7 @@ def _page_has_content(page: Page) -> bool:
     the page is treated as "no content" so the caller falls back safely.
     """
     try:
-        found = page.evaluate(
-            "(sel) => !!document.querySelector(sel)", CONTENT_LOADED_SELECTOR
-        )
+        found = page.evaluate("(sel) => !!document.querySelector(sel)", CONTENT_LOADED_SELECTOR)
     except Exception:  # noqa: BLE001 — a dead/blank page has no usable content
         return False
     return bool(found)
@@ -1787,11 +1789,7 @@ def _try_navigate_repo(page: Page, url: str) -> bool:
     content (:func:`_page_has_content`).  Only a truly blank/login page after a
     timeout returns False so the caller can decide on a recovery step.
     """
-    timeout_ms = (
-        GITHUB_NETWORK_IDLE_TIMEOUT_MS
-        if _is_github_url(url)
-        else NETWORK_IDLE_TIMEOUT_MS
-    )
+    timeout_ms = GITHUB_NETWORK_IDLE_TIMEOUT_MS if _is_github_url(url) else NETWORK_IDLE_TIMEOUT_MS
     try:
         response = page.goto(url, wait_until="networkidle", timeout=timeout_ms)
     except Exception as exc:  # noqa: BLE001 — recovery decides next step
@@ -1815,9 +1813,7 @@ def _try_navigate_repo(page: Page, url: str) -> bool:
                 exc,
             )
             return True
-        logger.warning(
-            "Navigation to %s failed with no usable content: %s", url, exc
-        )
+        logger.warning("Navigation to %s failed with no usable content: %s", url, exc)
         return False
     status = getattr(response, "status", None)
     if isinstance(status, int) and status >= 400:
@@ -1829,8 +1825,7 @@ def _try_navigate_repo(page: Page, url: str) -> bool:
     final_url = getattr(page, "url", None)
     if _is_login_redirect(final_url):
         logger.warning(
-            "Navigation to %s redirected to login (%s) — repo likely "
-            "private/login-required",
+            "Navigation to %s redirected to login (%s) — repo likely private/login-required",
             url,
             final_url,
         )
@@ -1838,9 +1833,7 @@ def _try_navigate_repo(page: Page, url: str) -> bool:
     return True
 
 
-def _correct_repo_from_article(
-    repo: RepoReference, source_url: str | None
-) -> RepoReference | None:
+def _correct_repo_from_article(repo: RepoReference, source_url: str | None) -> RepoReference | None:
     """Find the correct repo for *repo* on the source article page (issue #378).
 
     Fetches the article at *source_url* (the script header's ``Source URL:``)
@@ -1903,8 +1896,7 @@ def _navigate_with_recovery(
     malformed = _looks_malformed_repo_url(repo.url)
     if malformed:
         logger.warning(
-            "Repo URL %s looks malformed; skipping direct/retry and consulting "
-            "source article",
+            "Repo URL %s looks malformed; skipping direct/retry and consulting source article",
             repo.url,
         )
     else:
@@ -1933,8 +1925,7 @@ def _navigate_with_recovery(
                 return _NavOutcome(repo, "retry", True)
 
         logger.info(
-            "Repo URL %s still unreachable after %d retries; consulting source "
-            "article",
+            "Repo URL %s still unreachable after %d retries; consulting source article",
             repo.url,
             len(backoff_seconds),
         )
@@ -1954,9 +1945,7 @@ def _navigate_with_recovery(
             )
             return _NavOutcome(corrected, "article", True)
 
-    logger.warning(
-        "Recovery path=fallback: all recovery attempts failed for %s", repo.url
-    )
+    logger.warning("Recovery path=fallback: all recovery attempts failed for %s", repo.url)
     return _NavOutcome(repo, "fallback", False)
 
 
@@ -2024,13 +2013,15 @@ def _record_generic_segment(
                     "Error recording generic source %s — using background",
                     source_url,
                 )
-                _render_generic_background(
-                    page, segment.duration_seconds, capturer
-                )
+                _render_generic_background(page, segment.duration_seconds, capturer)
         else:
             _render_generic_background(page, segment.duration_seconds, capturer)
         dest_path = _finalize_segment(
-            page, context, capturer, output_dir, "generic",
+            page,
+            context,
+            capturer,
+            output_dir,
+            "generic",
             segment.duration_seconds,
         )
     except Exception:
@@ -2121,8 +2112,7 @@ def _record_segment(
     # wasted on a dead URL (issue #394).
     if segment.is_removed:
         logger.info(
-            "Repo %s flagged removed (%s); rendering removed card without "
-            "recording (issue #394)",
+            "Repo %s flagged removed (%s); rendering removed card without recording (issue #394)",
             repo.url,
             segment.removed_reason,
         )
@@ -2140,8 +2130,12 @@ def _record_segment(
         except Exception:
             logger.exception("Error rendering removed card for %s", repo.url)
         dest_path = _finalize_segment(
-            page, context, capturer, output_dir,
-            f"{repo.owner}_{repo.name}", segment.duration_seconds,
+            page,
+            context,
+            capturer,
+            output_dir,
+            f"{repo.owner}_{repo.name}",
+            segment.duration_seconds,
         )
         return RecordedSegment(
             segment=segment,
@@ -2195,18 +2189,14 @@ def _record_segment(
             # Before showing a static card, try the repo's project website —
             # its GitHub Pages site — so we record real content when the repo
             # page 404s or requires login (issue #386).
-            pages_url = _try_record_project_site(
-                page, repo, segment.duration_seconds, capturer
-            )
+            pages_url = _try_record_project_site(page, repo, segment.duration_seconds, capturer)
             if pages_url is not None:
                 website_url = pages_url
                 has_pages = True
                 recovery_path = "website"
             else:
                 is_fallback = True
-                _render_url_card(
-                    page, repo.owner, repo.name, segment.duration_seconds, capturer
-                )
+                _render_url_card(page, repo.owner, repo.name, segment.duration_seconds, capturer)
         else:
             # Navigation may have corrected the repo (e.g. via the source
             # article); use the effective repo for naming and the website flow.
@@ -2220,9 +2210,7 @@ def _record_segment(
                 # Wait for the page to fully settle (load + paint) before
                 # recording motion, avoiding the initial content flash.
                 try:
-                    page.wait_for_load_state(
-                        "networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS
-                    )
+                    page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS)
                 except Exception:
                     pass
                 page.wait_for_timeout(PAGE_SETTLE_MS)
@@ -2233,9 +2221,7 @@ def _record_segment(
                 website_url = _extract_website_url(page)
                 if website_url and _navigate_to_website(page, website_url):
                     try:
-                        page.wait_for_load_state(
-                            "networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS
-                        )
+                        page.wait_for_load_state("networkidle", timeout=WEBSITE_NAV_TIMEOUT_MS)
                     except Exception:
                         pass
                     page.wait_for_timeout(PAGE_SETTLE_MS)
@@ -2281,11 +2267,7 @@ def _record_segment(
                 # count instead, so no real-time wait is needed (issue #387).
                 if capturer is None:
                     remaining_ms = int(
-                        (
-                            segment.duration_seconds
-                            - (time.monotonic() - record_start)
-                        )
-                        * 1000
+                        (segment.duration_seconds - (time.monotonic() - record_start)) * 1000
                     )
                     if remaining_ms > 0:
                         try:
@@ -2301,13 +2283,15 @@ def _record_segment(
         logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True
         recovery_path = "fallback"
-        _render_fallback_page(
-            page, repo.owner, repo.name, segment.duration_seconds, capturer
-        )
+        _render_fallback_page(page, repo.owner, repo.name, segment.duration_seconds, capturer)
 
     dest_path = _finalize_segment(
-        page, context, capturer, output_dir,
-        f"{repo.owner}_{repo.name}", segment.duration_seconds,
+        page,
+        context,
+        capturer,
+        output_dir,
+        f"{repo.owner}_{repo.name}",
+        segment.duration_seconds,
     )
 
     return RecordedSegment(
@@ -2383,7 +2367,8 @@ def record_episode(
         if resumed:
             logger.info(
                 "Resuming recording from blob: %d/%d segment(s) already checkpointed",
-                len(resumed), len(plan.segments),
+                len(resumed),
+                len(plan.segments),
             )
 
     needs_browser = len(resumed) < len(plan.segments)
@@ -2393,9 +2378,7 @@ def record_episode(
     # record concurrently (issue #479).
     checkpoint_lock = threading.Lock()
 
-    def _record_one(
-        browser: "Browser", index: int, segment: VideoSegment
-    ) -> RecordedSegment:
+    def _record_one(browser: "Browser", index: int, segment: VideoSegment) -> RecordedSegment:
         """Record + checkpoint a single (non-resumed) segment."""
         logger.info(
             "Recording segment: %s (%.1fs)",
@@ -2404,7 +2387,10 @@ def record_episode(
         )
         recorded = retry_call(
             lambda: _record_segment(
-                browser, segment, output_dir, check_accessibility,
+                browser,
+                segment,
+                output_dir,
+                check_accessibility,
                 source_url=source_url,
             ),
             attempts=RECORD_TASK_RETRIES,
@@ -2425,7 +2411,9 @@ def record_episode(
     def _log_reused(index: int, recovered: RecordedSegment) -> None:
         logger.info(
             "Reused checkpointed segment %d: %s (recovery=%s)",
-            index, recovered.video_path.name, recovered.recovery_path,
+            index,
+            recovered.video_path.name,
+            recovered.recovery_path,
         )
 
     if not needs_browser:
@@ -2438,14 +2426,10 @@ def record_episode(
     pool_config = (
         load_recording_pool_config()
         if concurrency is None
-        else RecordingPoolConfig(
-            concurrency=max(1, min(concurrency, MAX_RECORDING_CONCURRENCY))
-        )
+        else RecordingPoolConfig(concurrency=max(1, min(concurrency, MAX_RECORDING_CONCURRENCY)))
     )
     pending = [
-        (index, segment)
-        for index, segment in enumerate(plan.segments)
-        if index not in resumed
+        (index, segment) for index, segment in enumerate(plan.segments) if index not in resumed
     ]
 
     def _launch(pw: "Playwright") -> "Browser":
@@ -2455,7 +2439,10 @@ def record_episode(
         # Record the outstanding segments concurrently, each worker driving its
         # own browser; results come back keyed by plan index (issue #479).
         recorded_map = record_segments_parallel(
-            pending, _record_one, _launch, pool_config,
+            pending,
+            _record_one,
+            _launch,
+            pool_config,
             playwright_factory=sync_playwright,
         )
         for index in range(len(plan.segments)):

@@ -15,9 +15,7 @@ from podcaster.video import youtube_metadata as ym
 
 class TestBuildYouTubeMetadata:
     def test_english_title_format_with_week(self):
-        meta = ym.build_youtube_metadata(
-            "Kubernetes 1.30 deep dive", "Notes", week=26, locale="en"
-        )
+        meta = ym.build_youtube_metadata("Kubernetes 1.30 deep dive", "Notes", week=26, locale="en")
         assert meta.title == "Claracle Weekly — W26: Kubernetes 1.30 deep dive"
         assert meta.category_id == ym.YOUTUBE_CATEGORY_SCIENCE_TECH == "28"
         assert meta.privacy_status == "unlisted"
@@ -25,9 +23,7 @@ class TestBuildYouTubeMetadata:
         assert meta.default_audio_language == "en"
 
     def test_spanish_localized_label_and_language(self):
-        meta = ym.build_youtube_metadata(
-            "Repaso de Kubernetes", "Notas", week=3, locale="es-MX"
-        )
+        meta = ym.build_youtube_metadata("Repaso de Kubernetes", "Notas", week=3, locale="es-MX")
         assert meta.title.startswith("Claracle Semanal — W03:")
         assert meta.default_language == "es"
         assert meta.default_audio_language == "es"
@@ -67,9 +63,7 @@ class TestBuildYouTubeMetadata:
         assert meta.tags[0] == long_tags[0]
 
     def test_custom_show_label_override(self):
-        meta = ym.build_youtube_metadata(
-            "Topic", "Notes", week=5, show_label="Claracle Especial"
-        )
+        meta = ym.build_youtube_metadata("Topic", "Notes", week=5, show_label="Claracle Especial")
         assert meta.title == "Claracle Especial — W05: Topic"
 
     def test_request_body_structure(self):
@@ -88,9 +82,7 @@ class TestBuildYouTubeMetadata:
 
 class TestThumbnailCommand:
     def test_command_contains_expected_args(self):
-        cmd = ym.build_thumbnail_command(
-            Path("/in.mp4"), Path("/out.jpg"), timestamp_seconds=4.5
-        )
+        cmd = ym.build_thumbnail_command(Path("/in.mp4"), Path("/out.jpg"), timestamp_seconds=4.5)
         assert "ffmpeg" in cmd[0]
         assert "-frames:v" in cmd and cmd[cmd.index("-frames:v") + 1] == "1"
         assert "/in.mp4" in cmd
@@ -102,9 +94,7 @@ class TestThumbnailCommand:
         assert cmd[cmd.index("-ss") + 1] == "4.500"
 
     def test_negative_timestamp_clamped_to_zero(self):
-        cmd = ym.build_thumbnail_command(
-            Path("/in.mp4"), Path("/out.jpg"), timestamp_seconds=-2
-        )
+        cmd = ym.build_thumbnail_command(Path("/in.mp4"), Path("/out.jpg"), timestamp_seconds=-2)
         assert cmd[cmd.index("-ss") + 1] == "0.000"
 
     def test_content_type_inference(self):
@@ -128,9 +118,18 @@ class TestExtractThumbnail:
         video = tmp_path / "sample.mp4"
         subprocess.run(
             [
-                _FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "lavfi", "-i", "testsrc=size=640x360:rate=10:duration=1",
-                "-pix_fmt", "yuv420p", str(video),
+                _FFMPEG,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=640x360:rate=10:duration=1",
+                "-pix_fmt",
+                "yuv420p",
+                str(video),
             ],
             check=True,
             capture_output=True,
@@ -168,9 +167,7 @@ class _FakeTransport:
         self._idx = 0
 
     def request(self, url, *, method="GET", headers=None, data=None):
-        self.requests.append(
-            {"url": url, "method": method, "headers": headers, "data": data}
-        )
+        self.requests.append({"url": url, "method": method, "headers": headers, "data": data})
         if self._idx < len(self._responses):
             resp = self._responses[self._idx]
             self._idx += 1

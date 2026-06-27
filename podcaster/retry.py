@@ -103,9 +103,7 @@ def retry_call(
         except retry_on as exc:
             last_exc = exc
             if attempt >= attempts:
-                logger.error(
-                    "%s failed after %d attempt(s): %s", description, attempt, exc
-                )
+                logger.error("%s failed after %d attempt(s): %s", description, attempt, exc)
                 raise
             delay = min(max_delay, base_delay * (backoff ** (attempt - 1)))
             if jitter:
@@ -114,7 +112,11 @@ def retry_call(
                 delay = min(max_delay, delay + random.uniform(0.0, jitter * delay))
             logger.warning(
                 "%s failed on attempt %d/%d (%s); retrying in %.2fs",
-                description, attempt, attempts, exc, delay,
+                description,
+                attempt,
+                attempts,
+                exc,
+                delay,
             )
             if on_retry is not None:
                 on_retry(attempt, exc)

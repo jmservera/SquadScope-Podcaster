@@ -222,13 +222,9 @@ class ClipManifest:
             repo_url=(str(data["repo_url"]) if data.get("repo_url") else None),
             chapters=tuple(ClipChapter.from_dict(c) for c in data.get("chapters", [])),
             trim_ranges=tuple(TrimRange.from_dict(r) for r in data.get("trim_ranges", [])),
-            loop_sections=tuple(
-                LoopSection.from_dict(s) for s in data.get("loop_sections", [])
-            ),
+            loop_sections=tuple(LoopSection.from_dict(s) for s in data.get("loop_sections", [])),
             is_fallback=_parse_bool(data.get("is_fallback", False), field="is_fallback"),
-            schema_version=str(
-                data.get("schema_version", CLIP_MANIFEST_SCHEMA_VERSION)
-            ),
+            schema_version=str(data.get("schema_version", CLIP_MANIFEST_SCHEMA_VERSION)),
         )
 
 
@@ -312,17 +308,14 @@ def build_clip_manifest(
     if not is_fallback and not manifest.trim_ranges:
         reason = "no chapters" if not chapters else "chapters too short"
         logger.warning(
-            "clip %s has no safe trim ranges (%s) — EDL must trim "
-            "at the edges or loop instead",
+            "clip %s has no safe trim ranges (%s) — EDL must trim at the edges or loop instead",
             clip_id,
             reason,
         )
     return manifest
 
 
-def _validate_chapters(
-    clip_id: str, chapters: Sequence[ClipChapter], duration_ms: int
-) -> None:
+def _validate_chapters(clip_id: str, chapters: Sequence[ClipChapter], duration_ms: int) -> None:
     """Ensure chapters are inside the clip, well-formed, ordered and disjoint."""
     prev_end = 0
     for chapter in chapters:

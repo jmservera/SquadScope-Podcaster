@@ -160,9 +160,7 @@ def test_crossfade_declared_after_first_segment():
 def test_title_card_on_section_change():
     meta = _basic_metadata()
     titles = {"s1": "AI Frameworks", "s2": "Breather"}
-    edl = plan_edl(
-        meta, _basic_clips(), article_clip=_clip("art", 30_000), section_titles=titles
-    )
+    edl = plan_edl(meta, _basic_clips(), article_clip=_clip("art", 30_000), section_titles=titles)
     # first repo-a starts section s1 → title card; repo-b (same s1) → none
     repo_segs = [s for s in edl.segments if s.section_id == "s1"]
     assert repo_segs[0].title_card is not None

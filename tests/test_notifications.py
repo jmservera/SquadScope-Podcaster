@@ -188,9 +188,7 @@ def test_teams_payload_is_message_card_with_action():
 def test_teams_payload_without_link_omits_action():
     transport = _Transport()
     cfg = NotificationConfig(webhook_url=_HTTPS, fmt=FORMAT_TEAMS)
-    notify_failure(
-        job_id="j", stage="mux", error_summary="x", config=cfg, transport=transport
-    )
+    notify_failure(job_id="j", stage="mux", error_summary="x", config=cfg, transport=transport)
     assert "potentialAction" not in transport.last_payload
 
 
@@ -244,27 +242,39 @@ def test_summary_control_chars_stripped():
 # Robustness — notification never raises
 # --------------------------------------------------------------------------- #
 def test_no_config_is_noop_returns_false():
-    assert notify_failure(
-        job_id="j", stage="synthesis", error_summary="x", config=None,
-        transport=_Transport(),
-    ) is False
+    assert (
+        notify_failure(
+            job_id="j",
+            stage="synthesis",
+            error_summary="x",
+            config=None,
+            transport=_Transport(),
+        )
+        is False
+    )
 
 
 def test_non_2xx_returns_false():
     transport = _Transport(status=500)
     cfg = NotificationConfig(webhook_url=_HTTPS)
-    assert notify_failure(
-        job_id="j", stage="synthesis", error_summary="x", config=cfg, transport=transport
-    ) is False
+    assert (
+        notify_failure(
+            job_id="j", stage="synthesis", error_summary="x", config=cfg, transport=transport
+        )
+        is False
+    )
 
 
 def test_transport_exception_is_swallowed():
     transport = _Transport(raise_exc=OSError("network down"))
     cfg = NotificationConfig(webhook_url=_HTTPS)
     # Must not raise.
-    assert notify_failure(
-        job_id="j", stage="synthesis", error_summary="x", config=cfg, transport=transport
-    ) is False
+    assert (
+        notify_failure(
+            job_id="j", stage="synthesis", error_summary="x", config=cfg, transport=transport
+        )
+        is False
+    )
 
 
 def test_uses_env_config_when_not_passed(monkeypatch):
@@ -272,8 +282,6 @@ def test_uses_env_config_when_not_passed(monkeypatch):
     monkeypatch.setenv(ENV_WEBHOOK_FORMAT, FORMAT_GENERIC)
     monkeypatch.delenv(ENV_DISABLED, raising=False)
     transport = _Transport()
-    ok = notify_failure(
-        job_id="env-job", stage="synthesis", error_summary="x", transport=transport
-    )
+    ok = notify_failure(job_id="env-job", stage="synthesis", error_summary="x", transport=transport)
     assert ok is True
     assert transport.last_payload["job_id"] == "env-job"

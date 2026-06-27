@@ -236,7 +236,7 @@ def _classify_header(line: str) -> tuple[str, str] | None:
         # Only treat it as an emoji if it is non-ASCII (skip plain punctuation).
         if _EMOJI_RUN_RE.search(candidate):
             emoji = candidate
-        body = body[lead.end():].strip()
+        body = body[lead.end() :].strip()
 
     if not body or _looks_like_dialogue(stripped):
         return None
@@ -318,7 +318,8 @@ def parse_sections(script: str) -> list[SectionMarker]:
     if markers:
         logger.info(
             "Detected %d section header(s): %s",
-            len(markers), ", ".join(m.name for m in markers),
+            len(markers),
+            ", ".join(m.name for m in markers),
         )
     return markers
 
@@ -451,12 +452,27 @@ def _build_section_card_cmd(
     ]
 
     return [
-        ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y",
-        "-f", "lavfi",
-        "-i", f"color=c={config.background}:size={config.width}x{config.height}:rate={FPS}",
-        "-t", f"{duration_sec:.3f}",
-        "-vf", ",".join(filters),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c={config.background}:size={config.width}x{config.height}:rate={FPS}",
+        "-t",
+        f"{duration_sec:.3f}",
+        "-vf",
+        ",".join(filters),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
         str(output_path),
     ]
 
@@ -511,8 +527,10 @@ def _marker_from_name(name: str, position: int = 0) -> SectionMarker:
     known = KNOWN_SECTIONS.get(_normalize_name(name))
     if known is not None:
         return SectionMarker(
-            name=known.name, position=position,
-            emoji=known.emoji, accent=known.accent,
+            name=known.name,
+            position=position,
+            emoji=known.emoji,
+            accent=known.accent,
         )
     return SectionMarker(name=name, position=position, accent=DEFAULT_ACCENT)
 
@@ -569,8 +587,11 @@ def build_section_card_inserts(
         card_path = output_dir / f"section_{ordinal:02d}_{slug}.mp4"
         marker = _marker_from_name(name)
         generate_section_card(
-            marker, card_path, config=config,
-            ffmpeg_bin=ffmpeg_bin, runner=runner,
+            marker,
+            card_path,
+            config=config,
+            ffmpeg_bin=ffmpeg_bin,
+            runner=runner,
         )
         inserts.append(
             SectionCardInsert(

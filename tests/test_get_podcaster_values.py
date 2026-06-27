@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "get-podcaster-values.sh"
 
 FAKE_AZ = (
-    '#!/usr/bin/env bash\n'
+    "#!/usr/bin/env bash\n"
     "# Fake Azure CLI returning deterministic resource-group discovery data.\n"
     "set -euo pipefail\n"
     "\n"

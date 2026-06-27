@@ -139,7 +139,7 @@ def generate_show_notes(
 
 **Podcast:** [Claracle]({podcast_url})
 **Source article:** [{title}]({article_url})
-**Hosts:** {hosts.get('host_a', 'Theo')} & {hosts.get('host_b', 'Vera')}
+**Hosts:** {hosts.get("host_a", "Theo")} & {hosts.get("host_b", "Vera")}
 
 ---
 

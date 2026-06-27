@@ -71,16 +71,13 @@ class QueueMessage:
 class QueueBackend(Protocol):
     def receive_messages(
         self, max_messages: int = 1, *, visibility_timeout: int = 600
-    ) -> list[QueueMessage]:
-        ...
+    ) -> list[QueueMessage]: ...
 
-    def delete_message(self, message: QueueMessage) -> None:
-        ...
+    def delete_message(self, message: QueueMessage) -> None: ...
 
 
 class QueueProducer(Protocol):
-    def send_message(self, body: str) -> None:
-        ...
+    def send_message(self, body: str) -> None: ...
 
 
 def encode_synthesis_message(job_id: str) -> str:
@@ -173,9 +170,7 @@ class AzureStorageQueueBackend:
     def receive_messages(
         self, max_messages: int = 1, *, visibility_timeout: int = 600
     ) -> list[QueueMessage]:
-        query = urlencode(
-            {"numofmessages": max_messages, "visibilitytimeout": visibility_timeout}
-        )
+        query = urlencode({"numofmessages": max_messages, "visibilitytimeout": visibility_timeout})
         request = Request(
             f"{self._queue_url}/messages?{query}",
             method="GET",

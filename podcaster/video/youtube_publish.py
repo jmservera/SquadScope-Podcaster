@@ -101,9 +101,7 @@ class PublishingPacket:
         if self.draft_privacy not in VALID_PRIVACY:
             raise ValueError(f"invalid draft_privacy: {self.draft_privacy!r}")
         if not self.review_url and self.video_id:
-            self.review_url = (
-                f"https://studio.youtube.com/video/{self.video_id}/edit"
-            )
+            self.review_url = f"https://studio.youtube.com/video/{self.video_id}/edit"
 
     @property
     def is_scheduled(self) -> bool:
@@ -155,11 +153,7 @@ def build_publishing_packet(
         scheduled_publish_at: Optional desired publish time. When set,
             :func:`approve_and_publish` schedules instead of going public now.
     """
-    scheduled = (
-        _to_rfc3339(scheduled_publish_at)
-        if scheduled_publish_at is not None
-        else ""
-    )
+    scheduled = _to_rfc3339(scheduled_publish_at) if scheduled_publish_at is not None else ""
     return PublishingPacket(
         video_id=video_id,
         video_url=video_url,
@@ -268,9 +262,7 @@ def publish_video(
             scheduled_publish_at=scheduled,
         )
     logger.warning("Publish update failed for video %s: HTTP %s", video_id, status)
-    return PublishResult(
-        video_id=video_id, succeeded=False, error=f"HTTP {status}"
-    )
+    return PublishResult(video_id=video_id, succeeded=False, error=f"HTTP {status}")
 
 
 def approve_and_publish(

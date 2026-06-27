@@ -51,10 +51,15 @@ def test_api_rejects_unauthenticated_generate_request(monkeypatch) -> None:
     try:
         conn = HTTPConnection("127.0.0.1", port, timeout=5)
         body = json.dumps({"week": "2026-W25"}).encode()
-        conn.request("POST", "/api/generate", body=body, headers={
-            "Content-Type": "application/json",
-            "Content-Length": str(len(body)),
-        })
+        conn.request(
+            "POST",
+            "/api/generate",
+            body=body,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+            },
+        )
         resp = conn.getresponse()
         assert resp.status == 401
         data = json.loads(resp.read())
@@ -77,11 +82,16 @@ def test_api_rejects_wrong_api_key(monkeypatch) -> None:
     try:
         conn = HTTPConnection("127.0.0.1", port, timeout=5)
         body = json.dumps({"week": "2026-W25"}).encode()
-        conn.request("POST", "/api/generate", body=body, headers={
-            "Content-Type": "application/json",
-            "Content-Length": str(len(body)),
-            "x-podcaster-api-key": "wrong-key",
-        })
+        conn.request(
+            "POST",
+            "/api/generate",
+            body=body,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+                "x-podcaster-api-key": "wrong-key",
+            },
+        )
         resp = conn.getresponse()
         assert resp.status == 401
         conn.close()

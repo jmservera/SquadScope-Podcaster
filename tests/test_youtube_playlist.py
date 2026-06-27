@@ -22,9 +22,7 @@ class _FakeTransport:
         self.calls: list[dict] = []
 
     def request(self, url, *, method="GET", headers=None, data=None):
-        self.calls.append(
-            {"url": url, "method": method, "headers": headers, "data": data}
-        )
+        self.calls.append({"url": url, "method": method, "headers": headers, "data": data})
         if not self._responses:
             raise AssertionError("unexpected extra request")
         status, body = self._responses.pop(0)

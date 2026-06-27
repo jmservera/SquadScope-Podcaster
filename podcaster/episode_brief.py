@@ -34,11 +34,56 @@ _ENTITY_RE = re.compile(
 # not proper nouns; excluded so the entity list stays meaningful.
 _ENTITY_STOPWORDS = frozenset(
     {
-        "The", "This", "That", "These", "Those", "There", "Then", "They", "Their",
-        "A", "An", "And", "But", "For", "Nor", "Or", "So", "Yet", "It", "Its",
-        "We", "You", "He", "She", "His", "Her", "Our", "Your", "When", "While",
-        "With", "Where", "What", "Who", "Why", "How", "If", "In", "On", "At",
-        "By", "To", "Of", "As", "Is", "Are", "Was", "Were", "Be", "Been",
+        "The",
+        "This",
+        "That",
+        "These",
+        "Those",
+        "There",
+        "Then",
+        "They",
+        "Their",
+        "A",
+        "An",
+        "And",
+        "But",
+        "For",
+        "Nor",
+        "Or",
+        "So",
+        "Yet",
+        "It",
+        "Its",
+        "We",
+        "You",
+        "He",
+        "She",
+        "His",
+        "Her",
+        "Our",
+        "Your",
+        "When",
+        "While",
+        "With",
+        "Where",
+        "What",
+        "Who",
+        "Why",
+        "How",
+        "If",
+        "In",
+        "On",
+        "At",
+        "By",
+        "To",
+        "Of",
+        "As",
+        "Is",
+        "Are",
+        "Was",
+        "Were",
+        "Be",
+        "Been",
     }
 )
 
@@ -126,9 +171,7 @@ class EpisodeBrief:
                 statement=str(item.get("statement", "")).strip(),
                 source_url=str(item.get("source_url", "")),
                 source_quote=(
-                    item.get("source_quote")
-                    if isinstance(item.get("source_quote"), str)
-                    else None
+                    item.get("source_quote") if isinstance(item.get("source_quote"), str) else None
                 ),
                 verified=bool(item.get("verified", False)),
             )

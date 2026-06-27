@@ -106,9 +106,7 @@ class TestRetryCall:
             events.append((attempt, str(exc)))
 
         with pytest.raises(RuntimeError):
-            retry_call(
-                fn, attempts=3, on_retry=on_retry, sleep=_no_sleep
-            )
+            retry_call(fn, attempts=3, on_retry=on_retry, sleep=_no_sleep)
         # Two retries before the third (final) attempt raises.
         assert events == [(1, "fail"), (2, "fail")]
 

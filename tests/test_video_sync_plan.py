@@ -530,9 +530,7 @@ class TestGenerateEpisodePlanTimed:
         assert starts[1] >= starts[0] + 4.9
 
     def test_segment_order_is_monotonic(self):
-        script = (
-            "https://github.com/c/c ... " "https://github.com/a/a ... " "https://github.com/b/b"
-        )
+        script = "https://github.com/c/c ... https://github.com/a/a ... https://github.com/b/b"
         repos = [
             self._repo("a", "a"),
             self._repo("b", "b"),
@@ -543,9 +541,7 @@ class TestGenerateEpisodePlanTimed:
         assert starts == sorted(starts)
 
     def test_total_duration_preserved(self):
-        script = (
-            "https://github.com/a/a ... " "https://github.com/b/b ... " "https://github.com/c/c"
-        )
+        script = "https://github.com/a/a ... https://github.com/b/b ... https://github.com/c/c"
         repos = [
             self._repo("a", "a"),
             self._repo("b", "b"),

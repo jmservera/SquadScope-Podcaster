@@ -94,8 +94,7 @@ def test_run_generation_job_threads_custom_podcast_config_into_artifacts() -> No
     assert "Ada: Welcome to SignalWire 2026-W23 issue!" in script
     assert (
         "Lin: And I'm Lin. One honest heads-up before we dive in — These hosts are "
-        "synthetic voices."
-        in script
+        "synthetic voices." in script
     )
     assert "pod.example.com" in script
     assert "TTS Provider: OpenAI TTS (Ada nova / Lin shimmer)" in transcript

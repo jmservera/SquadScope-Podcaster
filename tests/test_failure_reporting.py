@@ -41,12 +41,14 @@ def _make_transport(responses: list[Any]):
     def transport(request):
         i = idx[0]
         idx[0] += 1
-        calls.append({
-            "url": request.full_url,
-            "method": request.method,
-            "body": json.loads(request.data.decode()) if request.data else None,
-            "headers": dict(request.headers),
-        })
+        calls.append(
+            {
+                "url": request.full_url,
+                "method": request.method,
+                "body": json.loads(request.data.decode()) if request.data else None,
+                "headers": dict(request.headers),
+            }
+        )
         return FakeResponse(responses[i])
 
     return transport, calls
