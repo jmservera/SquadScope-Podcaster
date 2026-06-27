@@ -4,11 +4,12 @@ Part of the **DevSecOps Guardrails epic** (parent: jmservera/SquadScope-Coordina
 
 The rollout is phased:
 
-- **Phase A — baseline + non-blocking** (current): tools run in CI as
-  warnings/annotations only. They never fail the build. Existing violations are
-  recorded as a baseline.
-- **Phase B** — fix the baseline violations.
-- **Phase C** — flip the gates to blocking (and add local pre-commit/pre-push hooks).
+- **Phase A — baseline + non-blocking**: tools run in CI as warnings/annotations
+  only. They never fail the build. Existing violations are recorded as a baseline.
+- **Phase B** — fix the baseline violations (done, #521).
+- **Phase C — blocking + local hooks** (current): the CI gates are **blocking**
+  (#523) and local pre-commit/pre-push hooks mirror them (#522). See the
+  "Phase C" section at the end of this document.
 
 ## Ruff (Python lint + format) — #518
 
@@ -40,9 +41,11 @@ ruff format podcaster tests           # apply formatting
 
 ### CI
 
-`.github/workflows/reusable-ci.yml` has a `lint` job that runs Ruff with
-`continue-on-error: true` and emits GitHub annotations (`--output-format github`).
-In Phase A this lane is **non-blocking** — it surfaces findings without failing CI.
+`.github/workflows/reusable-ci.yml` has a `lint` job that runs `ruff check`
+(emitting GitHub annotations via `--output-format github`) and
+`ruff format --check`. As of Phase C (#523) this lane is **blocking** — any ruff
+lint or format violation fails CI. Phase B (#521) cleared the baseline to zero, so
+the gate protects against regressions.
 
 ### Baseline report (2026-06-26)
 
@@ -202,8 +205,11 @@ checkov --directory . --framework dockerfile \
 
 ### CI
 
-The `infrastructure` job runs a Checkov Dockerfile step with `--soft-fail` and
-`--baseline .checkov.baseline`. In Phase A this lane is **non-blocking**.
+The `infrastructure` job runs Checkov against `infra/` (Bicep) and the
+Dockerfiles. As of Phase C (#523) both lanes are **blocking**: the Bicep scan
+fails on any finding outside the documented `--skip-check` allowlist, and the
+Dockerfile scan fails on any NEW finding not recorded in
+`--baseline .checkov.baseline` (accepted LOW findings stay in the baseline).
 
 ### Baseline report (2026-06-26)
 
@@ -226,15 +232,18 @@ Passed: 94, Failed: 1, Skipped: 0. No CRITICAL/HIGH findings.
 
 [zizmor](https://docs.zizmor.sh) audits GitHub Actions workflows for
 supply-chain risks: template injection, dangerous triggers, unpinned actions,
-and overly-permissive `permissions:`. Phase A runs it in **non-blocking** mode.
+and overly-permissive `permissions:`. As of Phase C (#523) it runs in
+**blocking** mode on **HIGH+** findings.
 
 ### CI
 
 `.github/workflows/zizmor.yml` runs `zizmorcore/zizmor-action` (pinned to commit
 `5f14fd08f7cf1cb1609c1e344975f152c7ee938d`, v0.5.6) on changes under
-`.github/workflows/`. The job is `continue-on-error: true` and uploads SARIF to
-GitHub Code Scanning. Generated Squad workflows (`squad-*`, `sync-squad-labels`)
-are excluded since they are produced upstream. Mirrors the SquadScope setup.
+`.github/workflows/`. As of Phase C (#523) the job is **blocking** with
+`min-severity: high` — it fails CI on HIGH+ findings while the deferred
+Medium/Informational findings stay visible via the SARIF upload to GitHub Code
+Scanning. Generated Squad workflows (`squad-*`, `sync-squad-labels`) are excluded
+since they are produced upstream. Mirrors the SquadScope setup.
 
 ### Local usage
 
@@ -296,3 +305,35 @@ What was fixed:
 > remain deferred in the non-blocking baseline, along with the **1 Informational**
 > `template-injection` finding (the lower-severity remainder of the 4 total).
 
+
+## Phase C — blocking CI gates — #523
+
+The Phase-A warning-only lanes are now **blocking** (only after Phase B cleared the
+baseline, #521):
+
+- **Ruff** (`lint` job) — `continue-on-error` removed from both `ruff check` and
+  `ruff format --check`; any lint or format violation fails CI.
+- **Checkov** (`infrastructure` job) — Bicep blocks on findings outside the
+  `--skip-check` allowlist; the Dockerfile scan dropped `--soft-fail` and now
+  blocks on NEW findings (accepted LOW findings stay in `.checkov.baseline`).
+- **Zizmor** (`zizmor` workflow) — `continue-on-error` removed; runs with
+  `min-severity: high` so it blocks on HIGH+ while deferring the documented
+  Medium/Informational baseline.
+- **Trivy** image/config scans and the **pytest** `test` job already fail CI on
+  error and remain blocking.
+
+### Branch protection (required checks) — needs a repo admin
+
+Marking these checks as **required** in branch protection (so a PR cannot merge
+until they pass) must be done by a repository admin in **Settings → Branches** (or
+via a ruleset); it cannot be automated by CI/agents. Recommended required checks:
+
+- `ci / lint`, `ci / test`, `ci / infrastructure`, `ci / ui`,
+  `ci / synthesis-image`
+- `GitHub Actions Security Scan (zizmor)`
+- the Trivy image/config scan checks
+
+Until branch protection is configured, the gates above still **run and fail** on
+new violations — a red check is visible on every PR — but GitHub will not
+*prevent* merge. Configuring required checks is the final, admin-only step of
+Phase C.

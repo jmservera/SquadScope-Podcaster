@@ -1,13 +1,13 @@
 # GitHub Actions supply-chain security scanning (zizmor).
 #
-# Phase A of the DevSecOps Guardrails epic (#520): warning-only baseline.
+# Phase C of the DevSecOps Guardrails epic (#523): blocking enforcement.
 # zizmor focuses on Actions-specific risks — template injection, dangerous
 # triggers, unpinned actions, and overly-permissive `permissions:`.
 #
-# This lane is NON-BLOCKING (`continue-on-error: true`); SARIF is uploaded to
-# GitHub Code Scanning so findings are visible without failing CI. Blocking
-# enforcement is deferred to Phase C. Mirrors the SquadScope setup for
-# cross-repo parity. See jmservera/SquadScope-Coordinator#33.
+# This lane is BLOCKING on **HIGH+** findings (the bar Phase B cleared, #521);
+# the deferred Medium/Informational findings stay visible via SARIF in GitHub
+# Code Scanning without failing CI. Mirrors the local pre-push hook (#522) and
+# the SquadScope setup for cross-repo parity. See jmservera/SquadScope-Coordinator#33.
 name: Zizmor
 
 on:
@@ -31,7 +31,6 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    continue-on-error: true
     steps:
       - name: Checkout repository
         # actions/checkout v6.0.3 (commit SHA, not the annotated tag object)
@@ -64,5 +63,9 @@ jobs:
           # Pin the zizmor CLI so findings stay stable across Phases A/B/C
           # (matches the documented baseline in docs/linting.md).
           version: 1.25.2
+          # Phase C (#523): block only on HIGH+ findings — the bar Phase B
+          # (#521) cleared. Deferred Medium/Informational findings remain
+          # visible in Code Scanning but do not fail CI.
+          min-severity: high
           # SARIF is uploaded to GitHub Code Scanning automatically.
           advanced-security: true
