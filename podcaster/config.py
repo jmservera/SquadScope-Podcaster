@@ -445,6 +445,28 @@ class PodcastConfig:
             languages=languages,
         )
 
+    @classmethod
+    def payload_provides_identity(cls, payload: Mapping[str, Any] | None) -> bool:
+        """Return ``True`` when *payload* explicitly supplies podcast identity.
+
+        "Identity" means the show name or either host (the fields that surface in
+        the spoken script and on-screen credits).  When this returns ``False``
+        the resolved config falls back to the module defaults, and callers should
+        log that the configuration was genuinely absent (issue #545).
+        """
+
+        if not isinstance(payload, Mapping):
+            return False
+        config_payload: object = payload
+        if "podcast_config" in payload:
+            config_payload = payload.get("podcast_config")
+        if not isinstance(config_payload, Mapping):
+            return False
+        for key in ("name", "host_a", "host_b", "hosts"):
+            if config_payload.get(key):
+                return True
+        return False
+
     def language_for(self, code: str | None) -> LanguageConfig:
         """Return the language block for ``code``, falling back to the default.
 

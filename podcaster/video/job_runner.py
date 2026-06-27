@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from podcaster.config import PodcastConfig
 from podcaster.failure_reporting import report_failure
 from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE
 from podcaster.music import TRACK_ATTRIBUTION
@@ -546,7 +547,29 @@ def run_video_generation(
             request = manifest.get("request")
             if not isinstance(request, dict):
                 request = {}
-            title = str(request.get("article_title", f"SquadScope Podcast — {job_id}"))
+            # Source the episode title from the job config; default only when it
+            # is genuinely absent, and log so the operator can tell config was
+            # missing rather than wrong (issue #545).
+            article_title = request.get("article_title")
+            if isinstance(article_title, str) and article_title.strip():
+                title = article_title
+            else:
+                title = f"SquadScope Podcast — {job_id}"
+                logger.warning(
+                    "article_title absent in manifest request for job_id=%s; "
+                    "using default title %r (supply request.article_title to "
+                    "override, issue #545)",
+                    job_id,
+                    title,
+                )
+            if not PodcastConfig.payload_provides_identity(request):
+                logger.warning(
+                    "podcast_config identity absent in manifest request for "
+                    "job_id=%s; the episode uses default host names — supply "
+                    "request.podcast_config (name/host_a/host_b) to override "
+                    "(issue #545)",
+                    job_id,
+                )
             fallback_description = str(
                 request.get("description", f"Video podcast episode {job_id}")
             )
