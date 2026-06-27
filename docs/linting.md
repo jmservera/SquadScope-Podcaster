@@ -311,7 +311,8 @@ helper scripts under `scripts/hooks/`.
 | `pre-commit` | ruff-format     | `lint` job — `ruff format --check`          |
 | `pre-push`   | checkov         | `infrastructure` job — Bicep + Dockerfile   |
 | `pre-push`   | zizmor          | `zizmor` workflow — Actions security scan   |
-| `pre-push`   | pytest          | `test` job — `pytest tests/ -q`             |
+| `pre-push`   | pytest          | `test` job — `pytest`                       |
+| `pre-push`   | compileall      | `test` job — `python -m compileall podcaster` |
 | `pre-push`   | docker-build    | `synthesis-image` job — builds all 3 images |
 
 Fast checks (ruff) run on every commit; the slower scans, the test suite, and the

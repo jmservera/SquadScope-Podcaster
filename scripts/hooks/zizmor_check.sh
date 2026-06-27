@@ -15,7 +15,12 @@ if ! command -v zizmor >/dev/null 2>&1; then
 fi
 
 # Same selection as zizmor.yml: repo-owned workflows only (skip generated ones).
-mapfile -t WORKFLOWS < <(
+# Use a portable while-read loop (not `mapfile`/`readarray`) so the hook works on
+# Bash 3.2 — the default /bin/bash on macOS.
+WORKFLOWS=()
+while IFS= read -r workflow; do
+  WORKFLOWS+=("$workflow")
+done < <(
   find .github/workflows -maxdepth 1 -type f \
     \( -name "*.yml" -o -name "*.yaml" \) \
     ! -name "squad-*.yml" \

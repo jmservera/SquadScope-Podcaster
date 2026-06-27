@@ -6,6 +6,7 @@
 #   - checkov (IaC/Docker)  -> matches the CI `infrastructure` Checkov steps
 #   - zizmor (Actions)      -> matches the CI `zizmor` workflow
 #   - pytest (unit tests)   -> matches the CI `test` job
+#   - compileall (syntax)   -> matches the CI `test` job's compileall step
 #   - docker build          -> matches the CI `synthesis-image` build steps
 #
 # Fast checks (ruff) run on every commit. Slower checks (checkov, zizmor,
@@ -74,6 +75,16 @@ repos:
       - id: pytest
         name: pytest (unit tests)
         entry: python3 -m pytest tests/ -q
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
+
+      # compileall: byte-compile the package to catch syntax errors the test
+      # selection may miss (matches the CI test job's `python -m compileall`).
+      - id: compileall
+        name: python compileall (syntax check)
+        entry: python3 -m compileall -q podcaster
         language: system
         stages: [pre-push]
         pass_filenames: false
