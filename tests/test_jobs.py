@@ -45,6 +45,27 @@ def test_generation_job_warns_when_podcast_identity_absent(caplog) -> None:
     assert any("podcast_config identity absent" in r.getMessage() for r in caplog.records)
 
 
+def test_generation_job_whitespace_article_title_uses_placeholder(caplog) -> None:
+    # Issue #545: a blank/whitespace article_title must be treated as absent —
+    # the placeholder is used and the absence is logged (not the raw whitespace).
+    artifact_root = Path(".test-artifacts-545c")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    with caplog.at_level(logging.WARNING):
+        run_generation_job(
+            {
+                "week": "2026-W23",
+                "article_url": "https://example.com/article",
+                "article_title": "   ",
+            },
+            storage=storage,
+            now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+        )
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    assert any("article_title absent" in r.getMessage() for r in caplog.records)
+
+
 def test_generation_job_silent_when_podcast_identity_present(caplog) -> None:
     artifact_root = Path(".test-artifacts-545b")
     shutil.rmtree(artifact_root, ignore_errors=True)
