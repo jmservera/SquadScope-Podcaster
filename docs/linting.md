@@ -296,3 +296,64 @@ What was fixed:
 > remain deferred in the non-blocking baseline, along with the **1 Informational**
 > `template-injection` finding (the lower-severity remainder of the 4 total).
 
+
+## Phase C — local enforcement (pre-commit / pre-push) — #522
+
+Phase C adds **local hooks** that mirror the CI gates so guardrail violations are
+caught before they reach a PR. The hooks live in `.pre-commit-config.yaml` and the
+helper scripts under `scripts/hooks/`.
+
+### What runs, and when
+
+| Stage        | Hook            | Mirrors CI                                  |
+| ------------ | --------------- | ------------------------------------------- |
+| `pre-commit` | ruff (lint+fix) | `lint` job — `ruff check podcaster tests`   |
+| `pre-commit` | ruff-format     | `lint` job — `ruff format --check`          |
+| `pre-push`   | checkov         | `infrastructure` job — Bicep + Dockerfile   |
+| `pre-push`   | zizmor          | `zizmor` workflow — Actions security scan   |
+| `pre-push`   | pytest          | `test` job — `pytest`                       |
+| `pre-push`   | compileall      | `test` job — `python -m compileall podcaster` |
+| `pre-push`   | docker-build    | `synthesis-image` job — builds all 3 images |
+
+Fast checks (ruff) run on every commit; the slower scans, the test suite, and the
+container builds run on push to keep the commit loop quick.
+
+The local checks are pinned to the **same tool versions as CI** (ruff `0.15.7`,
+checkov `3.2.533`, zizmor `1.25.2`). When a version is bumped in CI, bump the
+matching `rev`/script reference here too — local and CI must stay in lockstep.
+The `scripts/hooks/checkov_check.sh` skip-check list and `.checkov.baseline` usage
+are copied from `.github/workflows/reusable-ci.yml`; keep them in sync. zizmor
+blocks locally on **HIGH+** findings (the bar Phase B cleared); deferred
+Medium/Informational findings stay in the documented baseline above.
+
+### Install (one-time)
+
+```bash
+pip install pre-commit
+pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
+Install the underlying tools too (the pre-push hooks invoke repo-local tooling):
+
+```bash
+pip install ruff==0.15.7 checkov==3.2.533 zizmor==1.25.2
+```
+
+### Run on demand
+
+```bash
+pre-commit run --all-files              # commit-stage hooks (ruff)
+pre-commit run --hook-stage pre-push --all-files <hook-id>   # a specific pre-push hook
+```
+
+### Emergency bypass (hotfixes only)
+
+```bash
+git commit --no-verify
+git push   --no-verify
+```
+
+Bypassing skips **local** hooks only — the CI gates still run, so a push is never
+silently ungated. Follow up by fixing any skipped findings and call it out in the
+PR so Hermes can review. Never weaken or delete a check to make CI green
+(**CI must be correct, not just green**).
