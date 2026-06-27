@@ -98,7 +98,10 @@ class TestPreflight:
         assert decision["allowed"] is True
         assert decision["reason"] == "within_quota"
         assert decision["projected_units"] == 1600
-        assert decision["remaining_units"] == q.YOUTUBE_DAILY_QUOTA_UNITS - q.QUOTA_SAFETY_RESERVE_UNITS - 1600
+        assert (
+            decision["remaining_units"]
+            == q.YOUTUBE_DAILY_QUOTA_UNITS - q.QUOTA_SAFETY_RESERVE_UNITS - 1600
+        )
 
     def test_blocks_when_would_exceed(self):
         ledger = {"day": "d", "consumed_units": 9000, "operations": []}

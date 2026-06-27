@@ -82,7 +82,11 @@ def test_review_approval_reinstates_provider_gate_when_manifest_only_had_human_r
             "generation": {
                 "audio_mode": "placeholder",
                 "tts_provider": None,
-                "tts_synthesis": {"status": "blocked", "allowed": False, "blocked_by": ["human_review"]},
+                "tts_synthesis": {
+                    "status": "blocked",
+                    "allowed": False,
+                    "blocked_by": ["human_review"],
+                },
                 "audio_validation": {"status": "blocked", "ready": False},
             },
             "publishing": {"eligible": True, "packet_ready": True, "blocked_by": ["human_review"]},
@@ -104,7 +108,11 @@ def test_review_approval_reinstates_provider_gate_when_manifest_only_had_human_r
     ]
     assert reviewed["publishing"]["eligible"] is False
     assert reviewed["publishing"]["packet_ready"] is False
-    assert reviewed["publishing"]["blocked_by"] == ["synthesis_not_completed", "audio_validation_not_passed", "cost_ledger_missing"]
+    assert reviewed["publishing"]["blocked_by"] == [
+        "synthesis_not_completed",
+        "audio_validation_not_passed",
+        "cost_ledger_missing",
+    ]
 
 
 def test_review_approval_preserves_privacy_and_rai_gates_after_provider_selection() -> None:
@@ -159,8 +167,17 @@ def test_review_approval_fails_closed_when_cost_ledger_is_missing() -> None:
         {
             "job_id": "podcast-2026-W23-test",
             "review": {"status": "pending", "audit_trail": [], "gate": {"status": "blocked"}},
-            "generation": {"tts_synthesis": {"status": "blocked", "allowed": False, "blocked_by": ["human_review"]}},
-            "publishing": {"eligible": False, "blocked_by": ["human_review", "synthesis_not_completed"]},
+            "generation": {
+                "tts_synthesis": {
+                    "status": "blocked",
+                    "allowed": False,
+                    "blocked_by": ["human_review"],
+                }
+            },
+            "publishing": {
+                "eligible": False,
+                "blocked_by": ["human_review", "synthesis_not_completed"],
+            },
             "lifecycle": {"status": "review_pending", "transitions": []},
         },
         reviewer="leela",
@@ -204,7 +221,10 @@ def test_record_review_approval_cli_writes_reviewed_manifest(tmp_path: Path) -> 
                         ],
                     }
                 },
-                "publishing": {"eligible": False, "blocked_by": ["human_review", "synthesis_not_completed"]},
+                "publishing": {
+                    "eligible": False,
+                    "blocked_by": ["human_review", "synthesis_not_completed"],
+                },
                 "lifecycle": {"status": "review_pending", "transitions": []},
             }
         ),
@@ -235,8 +255,17 @@ def test_record_review_approval_cli_writes_reviewed_manifest(tmp_path: Path) -> 
     assert reviewed["review_status"] == "changes_requested"
     assert reviewed["review"]["approved_by"] is None
     assert reviewed["generation"]["tts_synthesis"]["allowed"] is False
-    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == ["human_review", "provider_not_selected", "provider_privacy_review_required", "rai_security_signoff_required", "cost_ledger_missing"]
-    assert reviewed["review"]["audit_trail"][-1]["notes"] == "Claim ledger has unverified placeholders."
+    assert reviewed["generation"]["tts_synthesis"]["blocked_by"] == [
+        "human_review",
+        "provider_not_selected",
+        "provider_privacy_review_required",
+        "rai_security_signoff_required",
+        "cost_ledger_missing",
+    ]
+    assert (
+        reviewed["review"]["audit_trail"][-1]["notes"]
+        == "Claim ledger has unverified placeholders."
+    )
 
 
 def test_security_doc_discloses_tts_provider_and_staging_privacy_gates() -> None:

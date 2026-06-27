@@ -131,7 +131,11 @@ def test_decision_allowed_only_when_configured_reviewed_and_not_dry_run():
 
 def test_build_voice_plan_assigns_two_voices():
     config = _production_config()
-    segments = [("host_a", "Welcome to Claracle."), ("host_b", "Great to be here."), ("host_a", "Let's dig in.")]
+    segments = [
+        ("host_a", "Welcome to Claracle."),
+        ("host_b", "Great to be here."),
+        ("host_a", "Let's dig in."),
+    ]
     plan = build_voice_plan(segments, config)
     assert [turn.voice for turn in plan] == ["fable", "alloy", "fable"]
     assert [turn.role for turn in plan] == [HOST_A_ROLE, HOST_B_ROLE, HOST_A_ROLE]

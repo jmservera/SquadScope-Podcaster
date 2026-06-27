@@ -33,14 +33,31 @@ def _plan():
     return ScriptPlan(
         segments=(
             _seg(0, "Theo", "Welcome to the show", VisualMode.ARTICLE),
-            _seg(1, "Vera", "First repo here", VisualMode.REPO,
-                 "https://github.com/owner/repo-a", "section-1"),
-            _seg(2, "Theo", "Totally agree friend", VisualMode.REPO,
-                 "https://github.com/owner/repo-a", "section-1"),
-            _seg(3, "Vera", "Now the second one", VisualMode.REPO,
-                 "https://github.com/owner/repo-b", "section-1"),
-            _seg(4, "Theo", "Lets take a breather", VisualMode.INTERMISSION,
-                 None, "section-2"),
+            _seg(
+                1,
+                "Vera",
+                "First repo here",
+                VisualMode.REPO,
+                "https://github.com/owner/repo-a",
+                "section-1",
+            ),
+            _seg(
+                2,
+                "Theo",
+                "Totally agree friend",
+                VisualMode.REPO,
+                "https://github.com/owner/repo-a",
+                "section-1",
+            ),
+            _seg(
+                3,
+                "Vera",
+                "Now the second one",
+                VisualMode.REPO,
+                "https://github.com/owner/repo-b",
+                "section-1",
+            ),
+            _seg(4, "Theo", "Lets take a breather", VisualMode.INTERMISSION, None, "section-2"),
         )
     )
 
@@ -114,9 +131,7 @@ def test_speech_offset_shifts_every_timestamp():
 def test_speaker_ids_resolved_by_host_labels():
     plan = _plan()
     durations = [1.0] * 5
-    meta = extract_realized_audio_metadata(
-        plan, durations, host_labels=("Theo", "Vera")
-    )
+    meta = extract_realized_audio_metadata(plan, durations, host_labels=("Theo", "Vera"))
     ids = {u.speaker: u.speaker_id for u in meta.utterances}
     assert ids == {"Theo": "host_a", "Vera": "host_b"}
 
@@ -236,22 +251,45 @@ def test_to_dict_shape():
     plan = _plan()
     data = extract_realized_audio_metadata(plan, [1.0] * 5).to_dict()
     assert data["schema_version"] == AUDIO_METADATA_SCHEMA_VERSION
-    assert {"gap_ms", "speech_offset_ms", "total_duration_ms", "utterances", "topics"} <= data.keys()
+    assert {
+        "gap_ms",
+        "speech_offset_ms",
+        "total_duration_ms",
+        "utterances",
+        "topics",
+    } <= data.keys()
     first = data["utterances"][0]
-    assert {"index", "speaker", "speaker_id", "start_ms", "end_ms", "visual_mode", "words"} <= first.keys()
+    assert {
+        "index",
+        "speaker",
+        "speaker_id",
+        "start_ms",
+        "end_ms",
+        "visual_mode",
+        "words",
+    } <= first.keys()
 
 
 def test_dataclass_round_trip_units():
     word = WordTiming("hi", 0, 100)
     assert WordTiming.from_dict(word.to_dict()) == word
     utt = UtteranceTiming(
-        index=0, speaker="Theo", speaker_id="host_a", text="hi there",
-        start_ms=0, end_ms=500, visual_mode=VisualMode.ARTICLE,
+        index=0,
+        speaker="Theo",
+        speaker_id="host_a",
+        text="hi there",
+        start_ms=0,
+        end_ms=500,
+        visual_mode=VisualMode.ARTICLE,
         words=(WordTiming("hi", 0, 250), WordTiming("there", 250, 500)),
     )
     assert UtteranceTiming.from_dict(utt.to_dict()) == utt
     topic = TopicRange(
-        visual_mode=VisualMode.REPO, start_ms=0, end_ms=500,
-        utterance_indices=(0,), repo_url="https://github.com/o/r", section_id="s1",
+        visual_mode=VisualMode.REPO,
+        start_ms=0,
+        end_ms=500,
+        utterance_indices=(0,),
+        repo_url="https://github.com/o/r",
+        section_id="s1",
     )
     assert TopicRange.from_dict(topic.to_dict()) == topic

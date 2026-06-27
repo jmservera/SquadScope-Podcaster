@@ -29,14 +29,18 @@ class MemoryStorageBackend:
     def get_bytes(self, path: str) -> bytes | None:
         return self._blobs.get(path)
 
-    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> Any:
+    def update_bytes(
+        self, path: str, content_type: str, update: Callable[[bytes | None], bytes]
+    ) -> Any:
         updated = update(self._blobs.get(path))
         self._blobs[path] = updated
         return self.put_bytes(path, updated, content_type)
 
 
 class FailingStorageBackend(MemoryStorageBackend):
-    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> Any:
+    def update_bytes(
+        self, path: str, content_type: str, update: Callable[[bytes | None], bytes]
+    ) -> Any:
         raise RuntimeError("storage unavailable")
 
 
@@ -61,7 +65,12 @@ class TestLogLevel:
         assert LogLevel.normalize(123) == LogLevel.INFO
 
     def test_rank_ordering(self):
-        assert LogLevel.rank("debug") < LogLevel.rank("info") < LogLevel.rank("warning") < LogLevel.rank("error")
+        assert (
+            LogLevel.rank("debug")
+            < LogLevel.rank("info")
+            < LogLevel.rank("warning")
+            < LogLevel.rank("error")
+        )
 
 
 class TestEmitLog:

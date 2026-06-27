@@ -27,7 +27,16 @@ class MemoryStorageBackend:
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> Any:
         self._blobs[path] = content
-        return type("SA", (), {"path": path, "url": f"mem://{path}", "size_bytes": len(content), "content_type": content_type})()
+        return type(
+            "SA",
+            (),
+            {
+                "path": path,
+                "url": f"mem://{path}",
+                "size_bytes": len(content),
+                "content_type": content_type,
+            },
+        )()
 
     def get_bytes(self, path: str) -> bytes | None:
         return self._blobs.get(path)
@@ -35,7 +44,9 @@ class MemoryStorageBackend:
     def blob_exists(self, path: str) -> bool:
         return path in self._blobs
 
-    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> Any:
+    def update_bytes(
+        self, path: str, content_type: str, update: Callable[[bytes | None], bytes]
+    ) -> Any:
         current = self._blobs.get(path)
         updated = update(current)
         self._blobs[path] = updated
@@ -46,12 +57,25 @@ class MemoryStorageBackend:
         return matches[:limit]
 
     def generate_download_url(self, path: str, *, expiry: datetime) -> Any:
-        return type("URL", (), {"path": path, "url": f"mem://{path}", "expires_at": "", "method": "local", "signed": False, "https_only": False, "account_key_used": False})()
+        return type(
+            "URL",
+            (),
+            {
+                "path": path,
+                "url": f"mem://{path}",
+                "expires_at": "",
+                "method": "local",
+                "signed": False,
+                "https_only": False,
+                "account_key_used": False,
+            },
+        )()
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_manifest(
     job_id: str,
@@ -131,9 +155,19 @@ class TestListJobs:
 
     def test_returns_jobs(self, client, storage):
         m1 = _make_manifest("podcast-2026-W24-abc123", created_at="2026-06-15T12:00:00Z")
-        m2 = _make_manifest("podcast-2026-W23-def456", week="2026-W23", created_at="2026-06-08T12:00:00Z")
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m1).encode(), "application/json")
-        storage.put_bytes("jobs/podcast-2026-W23-def456/manifest.json", json.dumps(m2).encode(), "application/json")
+        m2 = _make_manifest(
+            "podcast-2026-W23-def456", week="2026-W23", created_at="2026-06-08T12:00:00Z"
+        )
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json",
+            json.dumps(m1).encode(),
+            "application/json",
+        )
+        storage.put_bytes(
+            "jobs/podcast-2026-W23-def456/manifest.json",
+            json.dumps(m2).encode(),
+            "application/json",
+        )
 
         resp = client.get("/api/jobs")
         assert resp.status_code == 200
@@ -146,8 +180,14 @@ class TestListJobs:
 
     def test_pagination(self, client, storage):
         for i in range(5):
-            m = _make_manifest(f"podcast-2026-W{20+i:02d}-x{i}", created_at=f"2026-05-{10+i:02d}T12:00:00Z")
-            storage.put_bytes(f"jobs/podcast-2026-W{20+i:02d}-x{i}/manifest.json", json.dumps(m).encode(), "application/json")
+            m = _make_manifest(
+                f"podcast-2026-W{20+i:02d}-x{i}", created_at=f"2026-05-{10+i:02d}T12:00:00Z"
+            )
+            storage.put_bytes(
+                f"jobs/podcast-2026-W{20+i:02d}-x{i}/manifest.json",
+                json.dumps(m).encode(),
+                "application/json",
+            )
 
         resp = client.get("/api/jobs?limit=2&offset=0")
         assert resp.status_code == 200
@@ -157,8 +197,14 @@ class TestListJobs:
 
     def test_skips_corrupt_manifests_in_total(self, client, storage):
         valid_manifest = _make_manifest("podcast-2026-W24-valid")
-        storage.put_bytes("jobs/podcast-2026-W24-valid/manifest.json", json.dumps(valid_manifest).encode(), "application/json")
-        storage.put_bytes("jobs/podcast-2026-W23-corrupt/manifest.json", b"not json", "application/json")
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-valid/manifest.json",
+            json.dumps(valid_manifest).encode(),
+            "application/json",
+        )
+        storage.put_bytes(
+            "jobs/podcast-2026-W23-corrupt/manifest.json", b"not json", "application/json"
+        )
 
         resp = client.get("/api/jobs")
 
@@ -188,7 +234,9 @@ class TestGetJob:
     def test_returns_detail(self, client, storage):
         m = _make_manifest("podcast-2026-W24-abc123", status="synthesized_publish_ready")
         m["generation"]["audio_validation"] = {"status": "passed"}
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/jobs/podcast-2026-W24-abc123")
         assert resp.status_code == 200
@@ -203,7 +251,9 @@ class TestGetJob:
 
     def test_quality_score_placeholder(self, client, storage):
         m = _make_manifest("podcast-2026-W24-abc123")
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/jobs/podcast-2026-W24-abc123")
         data = resp.json()
@@ -229,9 +279,15 @@ class TestGetJobLogs:
         m = _make_manifest("podcast-2026-W24-abc123")
         m["lifecycle"]["transitions"] = [
             {"at": "2026-06-15T12:00:00Z", "to": "accepted", "reason": "initial_staging"},
-            {"at": "2026-06-15T12:05:00Z", "to": "synthesized_publish_ready", "reason": "audio_synthesized_validation_passed"},
+            {
+                "at": "2026-06-15T12:05:00Z",
+                "to": "synthesized_publish_ready",
+                "reason": "audio_synthesized_validation_passed",
+            },
         ]
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/jobs/podcast-2026-W24-abc123/logs")
         assert resp.status_code == 200
@@ -250,7 +306,9 @@ class TestGetJobLogs:
             "completed_at": "2026-06-15T12:10:00Z",
             "job_id": "podcast-2026-W24-abc123",
         }
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/jobs/podcast-2026-W24-abc123/logs")
         data = resp.json()
@@ -259,7 +317,9 @@ class TestGetJobLogs:
 
     def test_includes_queue_state(self, client, storage):
         m = _make_manifest("podcast-2026-W24-abc123")
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/jobs/podcast-2026-W24-abc123/logs")
         data = resp.json()
@@ -272,8 +332,14 @@ class TestGetJobLogs:
             {"at": "2026-06-15T12:05:00Z", "to": "synthesized", "reason": "done"},
             {"at": "2026-06-15T12:00:00Z", "to": "accepted", "reason": "initial"},
         ]
-        m["generation"]["synthesis_queue"] = {"status": "enqueued", "enqueued_at": "2026-06-15T12:01:00Z", "detail": None}
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+        m["generation"]["synthesis_queue"] = {
+            "status": "enqueued",
+            "enqueued_at": "2026-06-15T12:01:00Z",
+            "detail": None,
+        }
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/jobs/podcast-2026-W24-abc123/logs")
         data = resp.json()
@@ -304,14 +370,34 @@ class TestStructuredJobLogs:
         m["lifecycle"]["transitions"] = [
             {"at": "2026-06-15T12:00:00Z", "to": "accepted", "reason": "initial_staging"},
         ]
-        storage.put_bytes(f"jobs/{self.JOB}/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            f"jobs/{self.JOB}/manifest.json", json.dumps(m).encode(), "application/json"
+        )
         _write_structured_logs(
             storage,
             self.JOB,
             [
-                {"seq": 1, "at": "2026-06-15T12:02:00Z", "level": "info", "message": "recording 5 segments", "stage": "synthesis"},
-                {"seq": 2, "at": "2026-06-15T12:03:00Z", "level": "warning", "message": "music skipped", "task_id": "mix-1"},
-                {"seq": 3, "at": "2026-06-15T12:04:00Z", "level": "error", "message": "synthesis failed", "stage": "synthesis"},
+                {
+                    "seq": 1,
+                    "at": "2026-06-15T12:02:00Z",
+                    "level": "info",
+                    "message": "recording 5 segments",
+                    "stage": "synthesis",
+                },
+                {
+                    "seq": 2,
+                    "at": "2026-06-15T12:03:00Z",
+                    "level": "warning",
+                    "message": "music skipped",
+                    "task_id": "mix-1",
+                },
+                {
+                    "seq": 3,
+                    "at": "2026-06-15T12:04:00Z",
+                    "level": "error",
+                    "message": "synthesis failed",
+                    "stage": "synthesis",
+                },
             ],
         )
 
@@ -398,14 +484,18 @@ class TestStructuredJobLogs:
         m["lifecycle"]["transitions"] = [
             {"at": "2026-06-15T12:00:00Z", "to": "failed", "reason": "synthesis_failed"},
         ]
-        storage.put_bytes(f"jobs/{self.JOB}/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            f"jobs/{self.JOB}/manifest.json", json.dumps(m).encode(), "application/json"
+        )
         resp = client.get(f"/api/jobs/{self.JOB}/logs?level=error")
         data = resp.json()
         assert any(log["event"] == "transition:failed" for log in data["logs"])
 
     def test_no_structured_logs_still_returns_manifest(self, client, storage):
         m = _make_manifest(self.JOB)
-        storage.put_bytes(f"jobs/{self.JOB}/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            f"jobs/{self.JOB}/manifest.json", json.dumps(m).encode(), "application/json"
+        )
         resp = client.get(f"/api/jobs/{self.JOB}/logs")
         assert resp.status_code == 200
         assert resp.json()["total"] >= 1
@@ -428,7 +518,9 @@ class TestEnqueueVideo:
 
     def test_enqueues_successfully(self, client, storage):
         m = _make_manifest("podcast-2026-W24-abc123")
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         with patch("podcaster.monitoring.enqueue_video_job", return_value=True) as mock_enqueue:
             resp = client.post("/api/jobs/podcast-2026-W24-abc123/video/generate")
@@ -439,7 +531,9 @@ class TestEnqueueVideo:
 
     def test_queue_not_configured_returns_503(self, client, storage):
         m = _make_manifest("podcast-2026-W24-abc123")
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         with patch("podcaster.monitoring.enqueue_video_job", return_value=False):
             resp = client.post("/api/jobs/podcast-2026-W24-abc123/video/generate")
@@ -448,7 +542,9 @@ class TestEnqueueVideo:
 
     def test_enqueue_failure_returns_502(self, client, storage):
         m = _make_manifest("podcast-2026-W24-abc123")
-        storage.put_bytes("jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/podcast-2026-W24-abc123/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         with patch("podcaster.monitoring.enqueue_video_job", side_effect=RuntimeError("boom")):
             resp = client.post("/api/jobs/podcast-2026-W24-abc123/video/generate")
@@ -470,7 +566,9 @@ class TestHealthz:
 
 class TestGenerateEndpoint:
     def test_invalid_json_returns_400(self, client, storage):
-        resp = client.post("/api/generate", data="not json", headers={"content-type": "application/json"})
+        resp = client.post(
+            "/api/generate", data="not json", headers={"content-type": "application/json"}
+        )
 
         assert resp.status_code == 400
         assert "request body must be valid JSON" in resp.json()["errors"]
@@ -508,7 +606,9 @@ class TestReviewEndpoint:
         assert "job_id is required" in resp.json()["errors"]
 
     @patch("podcaster.monitoring.process_review_decision")
-    def test_returns_manifest_and_publish_status(self, mock_process_review_decision, client, storage):
+    def test_returns_manifest_and_publish_status(
+        self, mock_process_review_decision, client, storage
+    ):
         mock_process_review_decision.return_value = JobPublishOutcome(
             manifest={"job_id": "podcast-1", "status": "published", "review_status": "approved"},
             publish_result=PublishResult(status="published"),
@@ -657,7 +757,9 @@ class TestStreamBlob:
 
 
 class TestListEpisodes:
-    def _manifest_with_audio(self, job_id: str, *, audio_path: str = "jobs/test/episode.mp3", **kwargs) -> dict[str, Any]:
+    def _manifest_with_audio(
+        self, job_id: str, *, audio_path: str = "jobs/test/episode.mp3", **kwargs
+    ) -> dict[str, Any]:
         m = _make_manifest(job_id, **kwargs)
         m["generation"]["artifacts"] = {"audio": {"path": audio_path}}
         m["generation"]["audio_validation"] = {"status": "passed"}
@@ -674,8 +776,12 @@ class TestListEpisodes:
         assert data["total"] == 0
 
     def test_returns_episodes_with_audio(self, client, storage):
-        m = self._manifest_with_audio("podcast-W24-abc", audio_path="jobs/podcast-W24-abc/episode.mp3")
-        storage.put_bytes("jobs/podcast-W24-abc/manifest.json", json.dumps(m).encode(), "application/json")
+        m = self._manifest_with_audio(
+            "podcast-W24-abc", audio_path="jobs/podcast-W24-abc/episode.mp3"
+        )
+        storage.put_bytes(
+            "jobs/podcast-W24-abc/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/episodes")
         assert resp.status_code == 200
@@ -689,8 +795,12 @@ class TestListEpisodes:
         assert ep["title"] == "Test Article"
 
     def test_episodes_sorted_by_date(self, client, storage):
-        m1 = self._manifest_with_audio("job-old", created_at="2026-06-01T12:00:00Z", audio_path="jobs/job-old/ep.mp3")
-        m2 = self._manifest_with_audio("job-new", created_at="2026-06-10T12:00:00Z", audio_path="jobs/job-new/ep.mp3")
+        m1 = self._manifest_with_audio(
+            "job-old", created_at="2026-06-01T12:00:00Z", audio_path="jobs/job-old/ep.mp3"
+        )
+        m2 = self._manifest_with_audio(
+            "job-new", created_at="2026-06-10T12:00:00Z", audio_path="jobs/job-new/ep.mp3"
+        )
         storage.put_bytes("jobs/job-old/manifest.json", json.dumps(m1).encode(), "application/json")
         storage.put_bytes("jobs/job-new/manifest.json", json.dumps(m2).encode(), "application/json")
 
@@ -701,8 +811,14 @@ class TestListEpisodes:
 
     def test_episodes_pagination(self, client, storage):
         for i in range(3):
-            m = self._manifest_with_audio(f"job-{i}", created_at=f"2026-06-{10+i:02d}T12:00:00Z", audio_path=f"jobs/job-{i}/ep.mp3")
-            storage.put_bytes(f"jobs/job-{i}/manifest.json", json.dumps(m).encode(), "application/json")
+            m = self._manifest_with_audio(
+                f"job-{i}",
+                created_at=f"2026-06-{10+i:02d}T12:00:00Z",
+                audio_path=f"jobs/job-{i}/ep.mp3",
+            )
+            storage.put_bytes(
+                f"jobs/job-{i}/manifest.json", json.dumps(m).encode(), "application/json"
+            )
 
         resp = client.get("/api/episodes?limit=2&offset=0")
         data = resp.json()
@@ -722,7 +838,9 @@ class TestListEpisodes:
     def test_episode_with_audio_file_fallback(self, client, storage):
         m = _make_manifest("job-fallback")
         m["generation"]["audio_file"] = "jobs/job-fallback/out.mp3"
-        storage.put_bytes("jobs/job-fallback/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/job-fallback/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/episodes")
         data = resp.json()
@@ -749,12 +867,22 @@ class TestListEpisodes:
                 "sha256": "abc123",
                 "size_bytes": 12345,
                 "artifacts": {
-                    "mp3": {"path": "jobs/job-synth/episode.mp3", "sha256": "abc123", "size_bytes": 12345},
-                    "wav": {"path": "jobs/job-synth/episode.wav", "sha256": "def456", "size_bytes": 99999},
+                    "mp3": {
+                        "path": "jobs/job-synth/episode.mp3",
+                        "sha256": "abc123",
+                        "size_bytes": 12345,
+                    },
+                    "wav": {
+                        "path": "jobs/job-synth/episode.wav",
+                        "sha256": "def456",
+                        "size_bytes": 99999,
+                    },
                 },
             },
         }
-        storage.put_bytes("jobs/job-synth/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/job-synth/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/episodes")
         data = resp.json()
@@ -770,11 +898,17 @@ class TestListEpisodes:
             "status": "completed",
             "audio": {
                 "artifacts": {
-                    "mp3": {"path": "jobs/job-synth2/episode.mp3", "sha256": "abc", "size_bytes": 100},
+                    "mp3": {
+                        "path": "jobs/job-synth2/episode.mp3",
+                        "sha256": "abc",
+                        "size_bytes": 100,
+                    },
                 },
             },
         }
-        storage.put_bytes("jobs/job-synth2/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/job-synth2/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/episodes")
         data = resp.json()
@@ -816,7 +950,9 @@ class TestListEpisodes:
 
     def test_episode_without_video_has_null_video_fields(self, client, storage):
         m = self._manifest_with_audio("job-novid", audio_path="jobs/job-novid/episode.mp3")
-        storage.put_bytes("jobs/job-novid/manifest.json", json.dumps(m).encode(), "application/json")
+        storage.put_bytes(
+            "jobs/job-novid/manifest.json", json.dumps(m).encode(), "application/json"
+        )
 
         resp = client.get("/api/episodes")
         ep = resp.json()["episodes"][0]
@@ -1039,8 +1175,12 @@ class TestProgressPoll:
 
     def test_returns_events_and_current(self, client, storage):
         _store_manifest(storage, "job-1")
-        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=3)
-        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=2, segment_total=3)
+        emit_progress(
+            storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=3
+        )
+        emit_progress(
+            storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=2, segment_total=3
+        )
 
         resp = client.get("/api/jobs/job-1/progress")
         assert resp.status_code == 200
@@ -1077,7 +1217,9 @@ class TestProgressStream:
 
     def test_stream_emits_terminal_events_and_closes(self, client, storage):
         _store_manifest(storage, "job-1")
-        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=2)
+        emit_progress(
+            storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=2
+        )
         emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED, percent=100.0)
 
         # The stream terminates immediately because the latest event is terminal.
@@ -1087,9 +1229,9 @@ class TestProgressStream:
         body = resp.text
         data_lines = [line for line in body.splitlines() if line.startswith("data: ")]
         assert len(data_lines) == 2
-        first = json.loads(data_lines[0][len("data: "):])
+        first = json.loads(data_lines[0][len("data: ") :])
         assert first["stage"] == PipelineStage.SYNTHESIS
-        last = json.loads(data_lines[1][len("data: "):])
+        last = json.loads(data_lines[1][len("data: ") :])
         assert last["stage"] == PipelineStage.COMPLETED
         assert ": end" in body
 
@@ -1103,7 +1245,7 @@ class TestProgressStream:
         data_lines = [line for line in resp.text.splitlines() if line.startswith("data: ")]
         # Only the event after seq=1 should be replayed.
         assert len(data_lines) == 1
-        assert json.loads(data_lines[0][len("data: "):])["stage"] == PipelineStage.COMPLETED
+        assert json.loads(data_lines[0][len("data: ") :])["stage"] == PipelineStage.COMPLETED
 
 
 # ---------------------------------------------------------------------------
@@ -1132,12 +1274,21 @@ class TestProgressSummary:
         base = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
         # Stage start, then 12/18 done 60s later → 5s/segment → 30s ETA.
         emit_progress(
-            storage, "job-1", stage=PipelineStage.SYNTHESIS, phase="recording",
-            segment_total=18, at=base,
+            storage,
+            "job-1",
+            stage=PipelineStage.SYNTHESIS,
+            phase="recording",
+            segment_total=18,
+            at=base,
         )
         emit_progress(
-            storage, "job-1", stage=PipelineStage.SYNTHESIS, phase="recording",
-            segment_index=12, segment_total=18, at=base + timedelta(seconds=60),
+            storage,
+            "job-1",
+            stage=PipelineStage.SYNTHESIS,
+            phase="recording",
+            segment_index=12,
+            segment_total=18,
+            at=base + timedelta(seconds=60),
         )
 
         with patch("podcaster.stage_progress._utcnow") as mock_now:
@@ -1155,7 +1306,9 @@ class TestProgressSummary:
 
     def test_completed_is_terminal(self, client, storage):
         _store_manifest(storage, "job-1")
-        emit_progress(storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=2)
+        emit_progress(
+            storage, "job-1", stage=PipelineStage.SYNTHESIS, segment_index=1, segment_total=2
+        )
         emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED, percent=100.0)
 
         resp = client.get("/api/jobs/job-1/progress/summary")

@@ -147,7 +147,10 @@ class TestParseClaims:
         assert claims == []
 
     def test_skips_items_without_script_excerpt(self):
-        data = [{"claim_id": "c1", "script_excerpt": ""}, {"claim_id": "c2", "script_excerpt": "Real claim"}]
+        data = [
+            {"claim_id": "c1", "script_excerpt": ""},
+            {"claim_id": "c2", "script_excerpt": "Real claim"},
+        ]
         claims = _parse_claims(json.dumps(data), "https://example.com")
         assert len(claims) == 1
         assert claims[0].script_excerpt == "Real claim"

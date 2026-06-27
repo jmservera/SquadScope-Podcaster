@@ -108,13 +108,17 @@ def test_build_provider_plan_assigns_provider_and_voice_per_turn():
 
 
 def test_build_provider_plan_validates_inputs():
-    routing = ProviderRouting(provider=PROVIDER_OPENAI, locale="en-US", voice_host_a="fable", voice_host_b="alloy")
+    routing = ProviderRouting(
+        provider=PROVIDER_OPENAI, locale="en-US", voice_host_a="fable", voice_host_b="alloy"
+    )
     with pytest.raises(ValueError, match="at least one"):
         build_provider_plan([], routing)
     bad = ProviderRouting(provider="bogus", locale="x", voice_host_a="a", voice_host_b="b")
     with pytest.raises(ValueError, match="unknown TTS provider"):
         build_provider_plan([("a", "x")], bad)
-    missing = ProviderRouting(provider=PROVIDER_OPENAI, locale="en-US", voice_host_a="", voice_host_b="alloy")
+    missing = ProviderRouting(
+        provider=PROVIDER_OPENAI, locale="en-US", voice_host_a="", voice_host_b="alloy"
+    )
     with pytest.raises(ValueError, match="both host voices"):
         build_provider_plan([("a", "x")], missing)
 
@@ -124,7 +128,6 @@ def test_for_language_rejects_mixed_providers():
     mixed = _Block("xx", "xx-XX", "fable", "es-MX-DaliaMultilingualNeural")
     with pytest.raises(ValueError, match="same TTS provider"):
         ProviderRouting.for_language(mixed)
-
 
 
 def test_openai_synthesizer_is_wired_natives_are_gated():

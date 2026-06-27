@@ -58,7 +58,10 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     }
     assert result.manifest["generation"]["audio_validation"]["status"] == "blocked"
     assert result.manifest["generation"]["audio_validation"]["ready"] is False
-    assert result.manifest["generation"]["audio_validation"]["metadata"]["content_type"] == "audio/mpeg"
+    assert (
+        result.manifest["generation"]["audio_validation"]["metadata"]["content_type"]
+        == "audio/mpeg"
+    )
     assert result.manifest["artifact_access"]["model"] == "private_operator_path"
     assert result.manifest["artifact_access"]["response_urls"] == {
         "publicly_accessible": False,
@@ -67,11 +70,19 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
         "query_strings_allowed": False,
         "credential_material_allowed": False,
     }
-    assert result.manifest["artifact_access"]["retention"]["cleanup_after"] == result.response["expires_at"]
-    assert result.manifest["artifact_access"]["audit"]["correlation_id"] == result.response["job_id"]
+    assert (
+        result.manifest["artifact_access"]["retention"]["cleanup_after"]
+        == result.response["expires_at"]
+    )
+    assert (
+        result.manifest["artifact_access"]["audit"]["correlation_id"] == result.response["job_id"]
+    )
     assert result.response["publishing_packet_url"].endswith(".zip")
     assert "human review is required before publishing" not in result.response["warnings"]
-    assert "artifact URLs are private operator paths, not public publishing links" in result.response["warnings"]
+    assert (
+        "artifact URLs are private operator paths, not public publishing links"
+        in result.response["warnings"]
+    )
 
     job_dir = artifact_root / "jobs" / result.response["job_id"]
     packet_file = job_dir / "packets" / f"{result.response['job_id']}.zip"
@@ -80,21 +91,23 @@ def test_generation_job_stages_manifest_review_gate_and_packet() -> None:
     assert (job_dir / "cost-ledger.json").exists()
     assert (job_dir / "review-checklist.md").exists()
     assert packet_file.exists()
-    
+
     # Verify packet manifest uses flat structure per editorial standards section 7.2
     with ZipFile(packet_file) as packet:
         packet_manifest = json.loads(packet.read("MANIFEST.json"))
         assert packet_manifest["review_status"] == "pending"
         assert packet_manifest["review"]["environment"] == "podcast-review"
         assert packet_manifest["review"]["gate"]["status"] == "blocked"
-        assert packet_manifest["review"]["gate"]["approval_required_before"] == "spotify_publication"
+        assert (
+            packet_manifest["review"]["gate"]["approval_required_before"] == "spotify_publication"
+        )
         assert packet_manifest["generation"]["audio_validation"]["status"] == "blocked"
         assert packet_manifest["cost_ledger"]["budget"]["status"] == "within_budget"
         assert packet_manifest["publishing"]["packet_ready"] is False
         assert packet_manifest["publishing"]["readiness_checks"]["cost_ledger_complete"] is True
         assert packet_manifest["artifact_access"]["model"] == "private_operator_path"
         assert packet_manifest["artifact_access"]["publication"]["eligible"] is False
-    
+
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
@@ -104,7 +117,12 @@ def test_dry_run_preserves_response_shape_and_review_metadata() -> None:
     storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
 
     result = run_generation_job(
-        {"week": "2026-W23", "article_url": "https://example.com/article", "dry_run": True, "callback": {"url": "https://example.com/cb", "secret_name": "CALLBACK_SECRET"}},
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "dry_run": True,
+            "callback": {"url": "https://example.com/cb", "secret_name": "CALLBACK_SECRET"},
+        },
         storage=storage,
         now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
     )
@@ -137,7 +155,12 @@ def test_backchannels_payload_is_threaded_into_request_manifest() -> None:
     backchannels = {"enabled": True, "min_gap_seconds": 30, "max_gap_seconds": 40}
 
     with_bc = run_generation_job(
-        {"week": "2026-W23", "article_url": "https://example.com/article", "dry_run": True, "backchannels": backchannels},
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "dry_run": True,
+            "backchannels": backchannels,
+        },
         storage=storage,
         now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
     )
@@ -163,7 +186,13 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
         now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
     )
 
-    packet_file = artifact_root / "jobs" / result.response["job_id"] / "packets" / f"{result.response['job_id']}.zip"
+    packet_file = (
+        artifact_root
+        / "jobs"
+        / result.response["job_id"]
+        / "packets"
+        / f"{result.response['job_id']}.zip"
+    )
     with ZipFile(packet_file) as packet:
         names = set(packet.namelist())
         required = {
@@ -211,7 +240,11 @@ def test_publishing_packet_extracts_with_required_files_and_checksums() -> None:
 
 
 def test_generation_outputs_are_deterministic_and_documented() -> None:
-    payload = {"week": "2026-W23", "article_url": "https://example.com/article", "article_sha256": "a" * 64}
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_sha256": "a" * 64,
+    }
     created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
     job_id = build_job_id(payload)
 
@@ -265,7 +298,10 @@ def test_local_storage_backend_stages_under_safe_project_relative_paths(monkeypa
 
 
 def test_managed_identity_scope_is_converted_to_resource() -> None:
-    assert _managed_identity_resource("https://storage.azure.com/.default") == "https://storage.azure.com"
+    assert (
+        _managed_identity_resource("https://storage.azure.com/.default")
+        == "https://storage.azure.com"
+    )
     assert _managed_identity_resource("https://storage.azure.com") == "https://storage.azure.com"
 
 
@@ -278,7 +314,9 @@ def test_managed_identity_expiry_accepts_epoch_or_expires_in(monkeypatch) -> Non
 def test_artifact_urls_are_private_operator_paths_without_query_credentials() -> None:
     artifact_root = Path(".test-artifacts-private-urls")
     shutil.rmtree(artifact_root, ignore_errors=True)
-    storage = LocalStorageBackend(artifact_root, "https://storage.example.invalid/private-artifacts")
+    storage = LocalStorageBackend(
+        artifact_root, "https://storage.example.invalid/private-artifacts"
+    )
 
     result = run_generation_job(
         {"week": "2026-W23", "article_url": "https://example.com/article"},
@@ -288,7 +326,13 @@ def test_artifact_urls_are_private_operator_paths_without_query_credentials() ->
 
     response_urls = [
         result.response[key]
-        for key in ("manifest_url", "mp3_url", "transcript_url", "show_notes_url", "publishing_packet_url")
+        for key in (
+            "manifest_url",
+            "mp3_url",
+            "transcript_url",
+            "show_notes_url",
+            "publishing_packet_url",
+        )
     ]
     manifest_urls = [details["url"] for details in result.manifest["artifacts"].values()]
     for url in response_urls + manifest_urls:
@@ -300,12 +344,18 @@ def test_artifact_urls_are_private_operator_paths_without_query_credentials() ->
         assert parsed.password is None
 
     assert result.manifest["artifact_access"]["response_urls"]["signed_urls"] is False
-    assert result.manifest["artifact_access"]["operator_access"]["method"] == "Azure RBAC or local filesystem access"
+    assert (
+        result.manifest["artifact_access"]["operator_access"]["method"]
+        == "Azure RBAC or local filesystem access"
+    )
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
 def test_artifact_base_urls_reject_embedded_credentials_and_signed_queries() -> None:
-    assert normalize_artifact_base_url("https://storage.example.invalid/base/") == "https://storage.example.invalid/base"
+    assert (
+        normalize_artifact_base_url("https://storage.example.invalid/base/")
+        == "https://storage.example.invalid/base"
+    )
     for unsafe_url in (
         "https://storage.example.invalid/base?sig=secret",
         "https://user:pass@storage.example.invalid/base",
@@ -332,7 +382,11 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     }
 
     with caplog.at_level(logging.INFO):
-        result = run_generation_job(payload, storage=storage, now=datetime(2026, 6, 7, 19, 7, 49, 816000, tzinfo=timezone.utc))
+        result = run_generation_job(
+            payload,
+            storage=storage,
+            now=datetime(2026, 6, 7, 19, 7, 49, 816000, tzinfo=timezone.utc),
+        )
 
     manifest = result.manifest
     job_id = build_job_id(payload)
@@ -355,7 +409,11 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     }
     assert manifest["lifecycle"]["force"] is True
     assert manifest["lifecycle"]["transitions"][-1]["to"] == "accepted"
-    assert manifest["publishing"]["blocked_by"] == ["human_review", "synthesis_not_completed", "audio_validation_not_passed"]
+    assert manifest["publishing"]["blocked_by"] == [
+        "human_review",
+        "synthesis_not_completed",
+        "audio_validation_not_passed",
+    ]
     assert manifest["review"]["artifacts_for_review"] == [
         "script.txt",
         "claim-ledger.json",
@@ -367,7 +425,10 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
         "publishing-packet.zip",
     ]
     assert manifest["generation"]["tts_synthesis"]["allowed"] is True
-    assert manifest["artifact_access"]["publication"]["blocked_by"] == ["human_review", "synthesis_not_completed"]
+    assert manifest["artifact_access"]["publication"]["blocked_by"] == [
+        "human_review",
+        "synthesis_not_completed",
+    ]
     assert manifest["publishing"]["packet_ready"] is False
     assert manifest["publishing"]["readiness_checks"] == {
         "cost_ledger_complete": True,
@@ -381,7 +442,10 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     assert manifest["cost_ledger"]["duration_seconds"] == 0
     assert manifest["cost_ledger"]["privacy"]["secrets_recorded"] is False
     assert manifest["observability"]["correlation_id"] == job_id
-    assert all(details["url"].startswith("https://example.invalid/artifacts/jobs/") for details in manifest["artifacts"].values())
+    assert all(
+        details["url"].startswith("https://example.invalid/artifacts/jobs/")
+        for details in manifest["artifacts"].values()
+    )
     assert all(
         details["access_model"] == "private_operator_path"
         and details["publicly_accessible"] is False
@@ -392,7 +456,10 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     )
     serialized = json.loads(manifest_bytes(manifest).decode("utf-8"))
     assert serialized == manifest
-    assert f"podcaster job staged job_id={job_id} status=accepted dry_run=False artifact_count=9" in caplog.text
+    assert (
+        f"podcaster job staged job_id={job_id} status=accepted dry_run=False artifact_count=9"
+        in caplog.text
+    )
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
@@ -407,7 +474,11 @@ def test_non_dry_run_fails_closed_when_monthly_episode_limit_exceeded() -> None:
                 "schema_version": "squadscope-podcaster-monthly-cost-ledger-v1",
                 "month": "2026-06",
                 "episodes": [
-                    {"job_id": f"existing-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
+                    {
+                        "job_id": f"existing-{index}",
+                        "week": f"2026-W2{index}",
+                        "estimated_total_usd": "0.00",
+                    }
                     for index in range(10)
                 ],
             }
@@ -422,7 +493,9 @@ def test_non_dry_run_fails_closed_when_monthly_episode_limit_exceeded() -> None:
     )
 
     assert result.response["status"] == "failed"
-    assert result.response["errors"] == ["monthly podcast budget exceeded; explicit operator override required"]
+    assert result.response["errors"] == [
+        "monthly podcast budget exceeded; explicit operator override required"
+    ]
     assert result.manifest["budget"]["status"] == "over_budget"
     assert not (artifact_root / "jobs" / str(result.manifest["job_id"])).exists()
     shutil.rmtree(artifact_root, ignore_errors=True)
@@ -438,6 +511,7 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
     # Pre-populate ledger with 10 other episodes (at limit) PLUS this job's entry.
     job_payload = {"week": "2026-W29", "article_url": "https://example.com/retry-article"}
     from podcaster.jobs import build_job_id
+
     target_job_id = build_job_id(job_payload)
 
     storage.put_bytes(
@@ -447,9 +521,14 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
                 "schema_version": "squadscope-podcaster-monthly-cost-ledger-v1",
                 "month": "2026-06",
                 "episodes": [
-                    {"job_id": f"other-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
+                    {
+                        "job_id": f"other-{index}",
+                        "week": f"2026-W2{index}",
+                        "estimated_total_usd": "0.00",
+                    }
                     for index in range(10)
-                ] + [
+                ]
+                + [
                     {"job_id": target_job_id, "week": "2026-W29", "estimated_total_usd": "0.00"},
                 ],
             }
@@ -493,8 +572,13 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
     )
 
     assert result.response["status"] == "accepted"
-    assert storage.monthly_updates == [monthly_ledger_path("2026-06"), monthly_ledger_path("2026-06")]
-    monthly = json.loads((artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8"))
+    assert storage.monthly_updates == [
+        monthly_ledger_path("2026-06"),
+        monthly_ledger_path("2026-06"),
+    ]
+    monthly = json.loads(
+        (artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8")
+    )
     assert monthly["episodes"][-1].get("state") != "reserved"
     shutil.rmtree(artifact_root, ignore_errors=True)
 
@@ -526,7 +610,9 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
         assert statuses.count("accepted") == 10
         assert statuses.count("failed") == 3
 
-        monthly = json.loads((artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8"))
+        monthly = json.loads(
+            (artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8")
+        )
         assert len(monthly["episodes"]) == 10
         assert len({episode["job_id"] for episode in monthly["episodes"]}) == 10
         assert all(episode.get("state") != "reserved" for episode in monthly["episodes"])
@@ -555,7 +641,11 @@ def test_non_dry_run_allows_explicit_operator_cost_override() -> None:
                 "schema_version": "squadscope-podcaster-monthly-cost-ledger-v1",
                 "month": "2026-06",
                 "episodes": [
-                    {"job_id": f"existing-{index}", "week": f"2026-W2{index}", "estimated_total_usd": "0.00"}
+                    {
+                        "job_id": f"existing-{index}",
+                        "week": f"2026-W2{index}",
+                        "estimated_total_usd": "0.00",
+                    }
                     for index in range(10)
                 ],
             }
@@ -585,7 +675,9 @@ def test_non_dry_run_allows_explicit_operator_cost_override() -> None:
         "reason": "approved launch exception",
         "recorded_at": "2026-06-09T11:00:00Z",
     }
-    monthly = json.loads((artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8"))
+    monthly = json.loads(
+        (artifact_root / monthly_ledger_path("2026-06")).read_text(encoding="utf-8")
+    )
     assert len(monthly["episodes"]) == 11
     assert monthly["episodes"][-1]["budget_status"] == "override_recorded"
     shutil.rmtree(artifact_root, ignore_errors=True)
@@ -617,7 +709,13 @@ def test_azure_conditional_update_retries_412_conflicts_then_succeeds(monkeypatc
             }
         )
         if len(put_attempts) == 1:
-            raise HTTPError("https://storage.example.invalid/blob", 412, "Precondition Failed", hdrs=None, fp=None)
+            raise HTTPError(
+                "https://storage.example.invalid/blob",
+                412,
+                "Precondition Failed",
+                hdrs=None,
+                fp=None,
+            )
 
     monkeypatch.setattr(backend, "_get_blob_state", get_blob_state)
     monkeypatch.setattr(backend, "_put_blob", put_blob)
@@ -652,7 +750,9 @@ def test_azure_conditional_update_fails_after_412_retry_exhaustion(monkeypatch) 
         if_none_match: str | None = None,
     ) -> None:
         put_attempts.append(f"{path}:{if_match}:{if_none_match}")
-        raise HTTPError("https://storage.example.invalid/blob", 412, "Precondition Failed", hdrs=None, fp=None)
+        raise HTTPError(
+            "https://storage.example.invalid/blob", 412, "Precondition Failed", hdrs=None, fp=None
+        )
 
     monkeypatch.setattr(backend, "_get_blob_state", get_blob_state)
     monkeypatch.setattr(backend, "_put_blob", put_blob)
@@ -687,7 +787,13 @@ def test_azure_conditional_update_retry_exhaustion_stops_before_artifacts() -> N
 
         def _put_blob(self, path, content, content_type, *, if_match=None, if_none_match=None):
             self.put_attempts += 1
-            raise HTTPError("https://storage.example.invalid/blob", 412, "Precondition Failed", hdrs=None, fp=None)
+            raise HTTPError(
+                "https://storage.example.invalid/blob",
+                412,
+                "Precondition Failed",
+                hdrs=None,
+                fp=None,
+            )
 
     storage = AlwaysConflictingAzureStorage()
 
@@ -716,7 +822,13 @@ def test_artifacts_do_not_include_api_secret_marker() -> None:
 
     serialized_response = json.dumps(result.response)
     serialized_manifest = json.dumps(result.manifest)
-    packet_bytes = (artifact_root / "jobs" / result.response["job_id"] / "packets" / f"{result.response['job_id']}.zip").read_bytes()
+    packet_bytes = (
+        artifact_root
+        / "jobs"
+        / result.response["job_id"]
+        / "packets"
+        / f"{result.response['job_id']}.zip"
+    ).read_bytes()
     assert "dont-leak-me" not in serialized_response
     assert "dont-leak-me" not in serialized_manifest
     assert b"dont-leak-me" not in packet_bytes
@@ -731,7 +843,9 @@ def _parse_checksums(content: str) -> dict[str, str]:
     return parsed
 
 
-def test_llm_script_generation_replaces_placeholder_when_article_content_provided(monkeypatch) -> None:
+def test_llm_script_generation_replaces_placeholder_when_article_content_provided(
+    monkeypatch,
+) -> None:
     """When article_content is present and chat endpoint is configured, the LLM script is used."""
     import json as _json
     from urllib.request import Request
@@ -748,7 +862,8 @@ def test_llm_script_generation_replaces_placeholder_when_article_content_provide
     # Mock the managed identity token and HTTP transport
     fake_dialogue = (
         "Theo: Welcome to Claracle! Let's dive into AI.\n"
-        "Vera: Both hosts on this show are AI-generated synthetic voices, not human presenters. Let's go.\n"
+        "Vera: Both hosts on this show are AI-generated synthetic voices, "
+        "not human presenters. Let's go.\n"
         "## Section: AI Frameworks Showdown\n"
         "Theo: First up, frameworks fought hard for the spotlight this week here.\n"
         "Vera: The contrast in developer experience was genuinely striking to me.\n"
@@ -769,8 +884,11 @@ def test_llm_script_generation_replaces_placeholder_when_article_content_provide
 
     # Patch the script_gen module to use our fakes
     from podcaster import script_gen
+
     monkeypatch.setattr(script_gen, "_default_transport", fake_transport)
-    monkeypatch.setattr(script_gen.ManagedIdentityTokenCredential, "get_token", staticmethod(fake_token_provider))
+    monkeypatch.setattr(
+        script_gen.ManagedIdentityTokenCredential, "get_token", staticmethod(fake_token_provider)
+    )
 
     result = run_generation_job(
         {
@@ -827,8 +945,11 @@ def test_llm_script_generation_falls_back_on_failure(monkeypatch) -> None:
         return "fake-token"
 
     from podcaster import script_gen
+
     monkeypatch.setattr(script_gen, "_default_transport", failing_transport)
-    monkeypatch.setattr(script_gen.ManagedIdentityTokenCredential, "get_token", staticmethod(fake_token_provider))
+    monkeypatch.setattr(
+        script_gen.ManagedIdentityTokenCredential, "get_token", staticmethod(fake_token_provider)
+    )
 
     result = run_generation_job(
         {

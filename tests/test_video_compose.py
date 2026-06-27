@@ -94,9 +94,7 @@ def _make_recorded_segment(
 def _mock_runner() -> MagicMock:
     """Create a mock command runner that returns success."""
     runner = MagicMock()
-    runner.return_value = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="", stderr=""
-    )
+    runner.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     return runner
 
 
@@ -126,9 +124,7 @@ class TestBuildNormalizeCmd:
 
 class TestBuildFitSegmentCmd:
     def test_forces_exact_duration_with_tpad(self):
-        cmd = _build_fit_segment_cmd(
-            Path("/in/clip.webm"), Path("/out/clip.mp4"), 7.5
-        )
+        cmd = _build_fit_segment_cmd(Path("/in/clip.webm"), Path("/out/clip.mp4"), 7.5)
         assert cmd[0] == "ffmpeg"
         # An exact output duration is enforced.
         assert "-t" in cmd
@@ -140,9 +136,7 @@ class TestBuildFitSegmentCmd:
         assert "-an" in cmd  # video-only
 
     def test_negative_target_clamped_to_zero(self):
-        cmd = _build_fit_segment_cmd(
-            Path("/in/clip.webm"), Path("/out/clip.mp4"), -3.0
-        )
+        cmd = _build_fit_segment_cmd(Path("/in/clip.webm"), Path("/out/clip.mp4"), -3.0)
         assert cmd[cmd.index("-t") + 1] == "0.000"
 
 
@@ -184,6 +178,7 @@ class TestFitTargetDurations:
 
 
 # --- Tests for _build_xfade_filter ---
+
 
 class TestBuildXfadeFilter:
     def test_single_segment_no_filter(self):
@@ -231,9 +226,7 @@ class TestBuildXfadeFilter:
 
     def test_default_transitions_vary_for_four_segments(self):
         # 4 segments → 3 boundaries → should not all be the same transition
-        result = _build_xfade_filter(
-            [10.0, 10.0, 10.0, 10.0], transition_duration=1.0
-        )
+        result = _build_xfade_filter([10.0, 10.0, 10.0, 10.0], transition_duration=1.0)
         # The rotation is: fade, slideleft, wipeleft
         assert "fade" in result
         assert "slideleft" in result
@@ -249,8 +242,14 @@ class TestBuildDrawtextFilter:
         assert result == ""
 
     def test_single_lower_third(self):
-        lts = [LowerThird(text="owner/repo", url="https://github.com/owner/repo",
-                          start_seconds=1.0, end_seconds=6.0)]
+        lts = [
+            LowerThird(
+                text="owner/repo",
+                url="https://github.com/owner/repo",
+                start_seconds=1.0,
+                end_seconds=6.0,
+            )
+        ]
         result = _build_drawtext_filter(lts, "vout")
         assert "drawtext" in result
         assert "owner/repo" in result
@@ -261,10 +260,12 @@ class TestBuildDrawtextFilter:
 
     def test_multiple_lower_thirds(self):
         lts = [
-            LowerThird(text="a/b", url="https://github.com/a/b",
-                       start_seconds=0.5, end_seconds=5.5),
-            LowerThird(text="c/d", url="https://github.com/c/d",
-                       start_seconds=10.0, end_seconds=15.0),
+            LowerThird(
+                text="a/b", url="https://github.com/a/b", start_seconds=0.5, end_seconds=5.5
+            ),
+            LowerThird(
+                text="c/d", url="https://github.com/c/d", start_seconds=10.0, end_seconds=15.0
+            ),
         ]
         result = _build_drawtext_filter(lts, "vout")
         assert result.count("drawtext") == 4  # 2 per lower-third (name + url)
@@ -272,8 +273,11 @@ class TestBuildDrawtextFilter:
         assert "[final]" in result
 
     def test_special_chars_escaped(self):
-        lts = [LowerThird(text="test:repo", url="https://github.com/t/r",
-                          start_seconds=0.0, end_seconds=5.0)]
+        lts = [
+            LowerThird(
+                text="test:repo", url="https://github.com/t/r", start_seconds=0.0, end_seconds=5.0
+            )
+        ]
         result = _build_drawtext_filter(lts, "vout")
         assert r"test\:repo" in result
 
@@ -337,10 +341,12 @@ class TestComposeVideo:
 
     def test_two_segments_with_xfade(self, tmp_path):
         runner = _mock_runner()
-        seg1 = _make_recorded_segment(owner="a", name="b", duration=10.0,
-                                      video_path=tmp_path / "seg1.webm")
-        seg2 = _make_recorded_segment(owner="c", name="d", duration=10.0,
-                                      video_path=tmp_path / "seg2.webm")
+        seg1 = _make_recorded_segment(
+            owner="a", name="b", duration=10.0, video_path=tmp_path / "seg1.webm"
+        )
+        seg2 = _make_recorded_segment(
+            owner="c", name="d", duration=10.0, video_path=tmp_path / "seg2.webm"
+        )
         (tmp_path / "seg1.webm").touch()
         (tmp_path / "seg2.webm").touch()
 
@@ -396,12 +402,15 @@ class TestComposeVideo:
     def test_three_segments_duration(self, tmp_path):
         runner = _mock_runner()
         segs = [
-            _make_recorded_segment(owner="a", name="x", duration=10.0,
-                                   video_path=tmp_path / "s1.webm"),
-            _make_recorded_segment(owner="b", name="y", duration=10.0,
-                                   video_path=tmp_path / "s2.webm"),
-            _make_recorded_segment(owner="c", name="z", duration=10.0,
-                                   video_path=tmp_path / "s3.webm"),
+            _make_recorded_segment(
+                owner="a", name="x", duration=10.0, video_path=tmp_path / "s1.webm"
+            ),
+            _make_recorded_segment(
+                owner="b", name="y", duration=10.0, video_path=tmp_path / "s2.webm"
+            ),
+            _make_recorded_segment(
+                owner="c", name="z", duration=10.0, video_path=tmp_path / "s3.webm"
+            ),
         ]
         for s in segs:
             s.video_path.touch()
@@ -426,9 +435,7 @@ class TestComposeVideo:
             p = tmp_path / f"seg{i:02d}.webm"
             p.touch()
             segs.append(
-                _make_recorded_segment(
-                    owner="o", name=f"r{i}", duration=10.0, video_path=p
-                )
+                _make_recorded_segment(owner="o", name=f"r{i}", duration=10.0, video_path=p)
             )
 
         result = compose_video(
@@ -476,9 +483,7 @@ class TestComposeVideo:
 
     def test_ffmpeg_failure_propagates(self, tmp_path):
         runner = MagicMock()
-        runner.side_effect = subprocess.CalledProcessError(
-            1, "ffmpeg", stderr="error"
-        )
+        runner.side_effect = subprocess.CalledProcessError(1, "ffmpeg", stderr="error")
         seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "seg.webm")
         (tmp_path / "seg.webm").touch()
 
@@ -487,10 +492,12 @@ class TestComposeVideo:
 
     def test_custom_transition_duration(self, tmp_path):
         runner = _mock_runner()
-        seg1 = _make_recorded_segment(owner="a", name="b", duration=10.0,
-                                      video_path=tmp_path / "s1.webm")
-        seg2 = _make_recorded_segment(owner="c", name="d", duration=10.0,
-                                      video_path=tmp_path / "s2.webm")
+        seg1 = _make_recorded_segment(
+            owner="a", name="b", duration=10.0, video_path=tmp_path / "s1.webm"
+        )
+        seg2 = _make_recorded_segment(
+            owner="c", name="d", duration=10.0, video_path=tmp_path / "s2.webm"
+        )
         (tmp_path / "s1.webm").touch()
         (tmp_path / "s2.webm").touch()
 
@@ -587,9 +594,7 @@ class TestProbeDrawtextFfmpeg:
             self._make_proc(stdout="drawtext", returncode=0),
         ]
         with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
-            result = _probe_drawtext_ffmpeg(
-                candidates=["/bad/ffmpeg", "/usr/bin/ffmpeg"]
-            )
+            result = _probe_drawtext_ffmpeg(candidates=["/bad/ffmpeg", "/usr/bin/ffmpeg"])
         assert result == "/usr/bin/ffmpeg"
 
     def test_timeout_is_skipped(self):
@@ -599,9 +604,7 @@ class TestProbeDrawtextFfmpeg:
             self._make_proc(stdout="drawtext"),
         ]
         with patch("podcaster.video.video_compose.subprocess.run", side_effect=outputs):
-            result = _probe_drawtext_ffmpeg(
-                candidates=["/hung/ffmpeg", "/usr/bin/ffmpeg"]
-            )
+            result = _probe_drawtext_ffmpeg(candidates=["/hung/ffmpeg", "/usr/bin/ffmpeg"])
         assert result == "/usr/bin/ffmpeg"
 
     def test_empty_candidates_returns_none(self):
@@ -646,9 +649,7 @@ class TestComposeVideoDrawtext:
             return_value=None,
         ):
             with caplog.at_level(logging.WARNING, logger="podcaster.video.video_compose"):
-                result = compose_video(
-                    segments=[seg], output_dir=tmp_path / "out", runner=runner
-                )
+                result = compose_video(segments=[seg], output_dir=tmp_path / "out", runner=runner)
 
         # Video must still be produced (no exception)
         assert result.segment_count == 1
@@ -659,7 +660,9 @@ class TestComposeVideoDrawtext:
 
         # Final compose command must NOT contain drawtext filter expressions
         final_cmd = runner.call_args_list[-1][0][0]
-        assert "-filter_complex" not in final_cmd, "drawtext filter_complex should not be in compose cmd"
+        assert (
+            "-filter_complex" not in final_cmd
+        ), "drawtext filter_complex should not be in compose cmd"
         assert not any(arg.startswith("drawtext=") for arg in final_cmd)
 
     def test_no_drawtext_probe_when_no_lower_thirds(self, tmp_path):
@@ -669,9 +672,7 @@ class TestComposeVideoDrawtext:
         seg = _make_recorded_segment(duration=1.0, video_path=tmp_path / "seg.webm")
         (tmp_path / "seg.webm").touch()
 
-        with patch(
-            "podcaster.video.video_compose._find_drawtext_capable_ffmpeg"
-        ) as mock_probe:
+        with patch("podcaster.video.video_compose._find_drawtext_capable_ffmpeg") as mock_probe:
             compose_video(
                 segments=[seg],
                 output_dir=tmp_path / "out",
@@ -702,24 +703,30 @@ class TestSelectTransitions:
         assert result == [TRANSITION_WIPE_LEFT]
 
     def test_three_content_boundaries_cycle(self):
-        result = select_transitions(3, [
-            BOUNDARY_CONTENT_TO_CONTENT,
-            BOUNDARY_CONTENT_TO_CONTENT,
-            BOUNDARY_CONTENT_TO_CONTENT,
-        ])
+        result = select_transitions(
+            3,
+            [
+                BOUNDARY_CONTENT_TO_CONTENT,
+                BOUNDARY_CONTENT_TO_CONTENT,
+                BOUNDARY_CONTENT_TO_CONTENT,
+            ],
+        )
         # Should cycle: fade, slideleft, wipeleft
         assert result[0] == TRANSITION_FADE
         assert result[1] == TRANSITION_SLIDE_LEFT
         assert result[2] == TRANSITION_WIPE_LEFT
 
     def test_mixed_boundary_kinds(self):
-        result = select_transitions(3, [
-            BOUNDARY_INTRO_TO_CONTENT,
-            BOUNDARY_CONTENT_TO_CONTENT,
-            BOUNDARY_CONTENT_TO_OUTRO,
-        ])
+        result = select_transitions(
+            3,
+            [
+                BOUNDARY_INTRO_TO_CONTENT,
+                BOUNDARY_CONTENT_TO_CONTENT,
+                BOUNDARY_CONTENT_TO_OUTRO,
+            ],
+        )
         assert result[0] == TRANSITION_FADE_BLACK
-        assert result[1] == TRANSITION_FADE    # first content rotation slot
+        assert result[1] == TRANSITION_FADE  # first content rotation slot
         assert result[2] == TRANSITION_WIPE_LEFT
 
     def test_four_content_boundaries_wrap(self):
@@ -824,8 +831,6 @@ class TestComposeVideoTransitions:
 # --- Tests for sync-map utilities (#296) ---
 
 
-
-
 def _make_plan(*items: tuple[str, str, float, float]) -> EpisodePlan:
     """Build an EpisodePlan from (owner, name, start, duration) tuples."""
     segs = tuple(
@@ -880,9 +885,7 @@ class TestBuildSyncMap:
         )
         return RecordedSegment(segment=seg, video_path=Path(f"/recs/{name}.webm"))
 
-    def _plan_from_recs(
-        self, *recs: tuple[str, str, float, float]
-    ) -> EpisodePlan:
+    def _plan_from_recs(self, *recs: tuple[str, str, float, float]) -> EpisodePlan:
         segs = tuple(
             VideoSegment(
                 repo=RepoReference(owner=owner, name=name),
@@ -1031,8 +1034,8 @@ class TestApplySync:
         src2 = tmp_path / "b.webm"
         src1.touch()
         src2.touch()
-        ss1 = self._make_ss("a", 20.0, 0.0, 10.0, src1)   # needs trim
-        ss2 = self._make_ss("b", 8.0, 10.0, 10.0, src2)   # no trim
+        ss1 = self._make_ss("a", 20.0, 0.0, 10.0, src1)  # needs trim
+        ss2 = self._make_ss("b", 8.0, 10.0, 10.0, src2)  # no trim
         result = apply_sync([ss1, ss2], output_dir=tmp_path / "out", runner=runner)
         assert len(result) == 2
         assert runner.call_count == 1  # only ss1 triggered a trim
@@ -1151,8 +1154,6 @@ class TestJoinIntroOutroCrossfade:
         # Hard cut: full outro duration is added, no overlap subtracted.
         assert added == pytest.approx(0.5)
 
-
-
     def test_downloads_and_caches(self, tmp_path):
         storage = _FakeStorage({INTRO_BLOB_PATH: b"intro-bytes"})
         cache = tmp_path / "intro.mp4"
@@ -1187,9 +1188,7 @@ class TestJoinIntroOutroCrossfade:
 
 class TestFetchIntroOutro:
     def test_returns_both_when_present(self, tmp_path):
-        storage = _FakeStorage(
-            {INTRO_BLOB_PATH: b"i", OUTRO_BLOB_PATH: b"o"}
-        )
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"i", OUTRO_BLOB_PATH: b"o"})
         intro, outro = _fetch_intro_outro(storage, tmp_path)
         assert intro is not None and intro.read_bytes() == b"i"
         assert outro is not None and outro.read_bytes() == b"o"
@@ -1203,9 +1202,7 @@ class TestFetchIntroOutro:
 
 class TestBuildCanonicalAvCmd:
     def test_with_audio_maps_source_audio(self):
-        cmd = _build_canonical_av_cmd(
-            Path("/in.mp4"), Path("/out.mp4"), has_audio=True
-        )
+        cmd = _build_canonical_av_cmd(Path("/in.mp4"), Path("/out.mp4"), has_audio=True)
         assert cmd[0] == "ffmpeg"
         assert "0:a:0" in cmd
         assert "anullsrc" not in " ".join(cmd)
@@ -1213,9 +1210,7 @@ class TestBuildCanonicalAvCmd:
         assert f"{OUTPUT_WIDTH}:{OUTPUT_HEIGHT}" in cmd[cmd.index("-filter_complex") + 1]
 
     def test_without_audio_synthesizes_silence(self):
-        cmd = _build_canonical_av_cmd(
-            Path("/in.mp4"), Path("/out.mp4"), has_audio=False
-        )
+        cmd = _build_canonical_av_cmd(Path("/in.mp4"), Path("/out.mp4"), has_audio=False)
         joined = " ".join(cmd)
         assert "anullsrc" in joined
         assert "1:a" in cmd
@@ -1295,6 +1290,7 @@ class TestEncodeConfigurability:
         finally:
             monkeypatch.delenv("VIDEO_ENCODE_CRF", raising=False)
             importlib.reload(reloaded)
+
     def test_overlays_audio_as_sole_track(self, tmp_path):
         cmd = _build_audio_overlay_cmd(
             tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4"
@@ -1314,8 +1310,11 @@ class TestEncodeConfigurability:
 
     def test_extends_video_when_audio_is_longer(self, tmp_path):
         cmd = _build_audio_overlay_cmd(
-            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4",
-            video_duration=10.0, audio_duration=15.0,
+            tmp_path / "video.mp4",
+            tmp_path / "audio.mp3",
+            tmp_path / "out.mp4",
+            video_duration=10.0,
+            audio_duration=15.0,
         )
         joined = " ".join(cmd)
         # video is re-encoded (not copied) so it can be padded + faded
@@ -1331,8 +1330,11 @@ class TestEncodeConfigurability:
 
     def test_copies_video_when_video_is_longer(self, tmp_path):
         cmd = _build_audio_overlay_cmd(
-            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4",
-            video_duration=20.0, audio_duration=15.0,
+            tmp_path / "video.mp4",
+            tmp_path / "audio.mp3",
+            tmp_path / "out.mp4",
+            video_duration=20.0,
+            audio_duration=15.0,
         )
         assert "copy" in cmd
         assert "tpad" not in " ".join(cmd)
@@ -1345,8 +1347,11 @@ class TestEncodeConfigurability:
 
     def test_no_audio_pad_when_audio_is_longer(self, tmp_path):
         cmd = _build_audio_overlay_cmd(
-            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4",
-            video_duration=10.0, audio_duration=15.0,
+            tmp_path / "video.mp4",
+            tmp_path / "audio.mp3",
+            tmp_path / "out.mp4",
+            video_duration=10.0,
+            audio_duration=15.0,
         )
         assert "apad" not in " ".join(cmd)
 
@@ -1361,8 +1366,11 @@ class TestEncodeConfigurability:
         # where the original video ends and last only as long as the padding so
         # it never bleeds into the real footage.
         cmd = _build_audio_overlay_cmd(
-            tmp_path / "video.mp4", tmp_path / "audio.mp3", tmp_path / "out.mp4",
-            video_duration=10.0, audio_duration=11.0,
+            tmp_path / "video.mp4",
+            tmp_path / "audio.mp3",
+            tmp_path / "out.mp4",
+            video_duration=10.0,
+            audio_duration=11.0,
         )
         joined = " ".join(cmd)
         assert "tpad=stop_mode=clone:stop_duration=1.000" in joined
@@ -1408,9 +1416,7 @@ class TestComposeVideoContentVideoOnly:
         # _ffprobe_runner answers every probe with the same duration, so intro,
         # outro and audio all report 5.0s here.
         runner = _ffprobe_runner(has_audio=True, duration=5.0)
-        storage = _FakeStorage(
-            {INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"}
-        )
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"})
         seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
         (tmp_path / "s.webm").touch()
         audio = tmp_path / "audio.mp3"
@@ -1428,15 +1434,14 @@ class TestComposeVideoContentVideoOnly:
 
         cmds = [c.args[0] for c in runner.call_args_list]
         # intro/content/outro joined video-only into joined.mp4
-        concat_cmds = [
-            c for c in cmds if "concat" in c and c[-1].endswith("joined.mp4")
-        ]
+        concat_cmds = [c for c in cmds if "concat" in c and c[-1].endswith("joined.mp4")]
         assert len(concat_cmds) == 1
         # canonicalized clips all generate a silent track (has_audio=False):
         # intro, content, outro, plus the re-canonicalised content+outro
         # crossfade clip (issue #393) = 4.
         canon_cmds = [
-            c for c in cmds
+            c
+            for c in cmds
             if "-filter_complex" in c and "join" in c[-1] and "anullsrc" in " ".join(c)
         ]
         assert len(canon_cmds) == 4
@@ -1467,15 +1472,11 @@ class TestComposeVideoIntroOutro:
         compose_video(segments=[seg], output_dir=tmp_path / "out", runner=runner)
         # 1 normalize + 1 compose + 1 h264_metadata BSF, no ffprobe/concat
         assert runner.call_count == 3
-        assert all(
-            c.args[0][0] != "ffprobe" for c in runner.call_args_list
-        )
+        assert all(c.args[0][0] != "ffprobe" for c in runner.call_args_list)
 
     def test_prepends_intro_and_appends_outro(self, tmp_path):
         runner = _ffprobe_runner(has_audio=True, duration=5.0)
-        storage = _FakeStorage(
-            {INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"}
-        )
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"intro", OUTRO_BLOB_PATH: b"outro"})
         seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
         (tmp_path / "s.webm").touch()
         out = tmp_path / "out" / "episode.mp4"
@@ -1512,8 +1513,11 @@ class TestComposeVideoIntroOutro:
         assert len(probe_cmds) == 3
         # canonical re-encodes for intro, content, outro and the crossfaded
         # content+outro clip (4 canonicalize calls)
-        canon_cmds = [c for c in cmds if "-filter_complex" in c and "anullsrc" in " ".join(c)
-                      and "join" in c[-1]]
+        canon_cmds = [
+            c
+            for c in cmds
+            if "-filter_complex" in c and "anullsrc" in " ".join(c) and "join" in c[-1]
+        ]
         assert len(canon_cmds) == 4
         # duration = 10s content + 5s intro + 5s outro, minus the 1s crossfade
         # overlap between content and outro (issue #393).
@@ -1598,9 +1602,12 @@ class TestComposeVideoFitToWindow:
         cmds = [c.args[0] for c in runner.call_args_list]
         # Each segment is fit (tpad + -t), not plain-normalized.
         fit_cmds = [
-            c for c in cmds
-            if "-t" in c and any("tpad=stop_mode=clone" in str(a) for a in c)
-            and c[-1].endswith(".mp4") and "seg_" in c[-1]
+            c
+            for c in cmds
+            if "-t" in c
+            and any("tpad=stop_mode=clone" in str(a) for a in c)
+            and c[-1].endswith(".mp4")
+            and "seg_" in c[-1]
         ]
         assert len(fit_cmds) == 2
         # Targets sum to content_window + transition*(n-1) = 20 + 1 = 21,
@@ -1629,8 +1636,7 @@ class TestComposeVideoFitToWindow:
 
         cmds = [c.args[0] for c in runner.call_args_list]
         fit_cmd = next(
-            c for c in cmds
-            if "-t" in c and any("tpad=stop_mode=clone" in str(a) for a in c)
+            c for c in cmds if "-t" in c and any("tpad=stop_mode=clone" in str(a) for a in c)
         )
         # 20s audio - 4s intro - 4s outro = 12s content (single segment).
         assert float(fit_cmd[fit_cmd.index("-t") + 1]) == pytest.approx(12.0)
@@ -1667,24 +1673,28 @@ class TestDogLogoConfig:
         assert DogLogoConfig.from_dict("nope") is None
 
     def test_custom_values(self):
-        cfg = DogLogoConfig.from_dict({
-            "url": "https://example.com/logo.png",
-            "position": "bottom-left",
-            "size": 120,
-            "opacity": 0.5,
-        })
+        cfg = DogLogoConfig.from_dict(
+            {
+                "url": "https://example.com/logo.png",
+                "position": "bottom-left",
+                "size": 120,
+                "opacity": 0.5,
+            }
+        )
         assert cfg.url == "https://example.com/logo.png"
         assert cfg.position == "bottom-left"
         assert cfg.size == 120
         assert cfg.opacity == pytest.approx(0.5)
 
     def test_invalid_values_fall_back(self):
-        cfg = DogLogoConfig.from_dict({
-            "url": "   ",
-            "position": "middle",
-            "size": "huge",
-            "opacity": "bad",
-        })
+        cfg = DogLogoConfig.from_dict(
+            {
+                "url": "   ",
+                "position": "middle",
+                "size": "huge",
+                "opacity": "bad",
+            }
+        )
         assert cfg.url == DEFAULT_DOG_LOGO_URL
         assert cfg.position == "top-right"
         assert cfg.size == 80
@@ -1758,8 +1768,7 @@ class TestComposeVideoDogLogo:
             dog_logo=DogLogoConfig(),
         )
         compose_cmd = next(
-            c.args[0] for c in runner.call_args_list
-            if "-filter_complex" in c.args[0]
+            c.args[0] for c in runner.call_args_list if "-filter_complex" in c.args[0]
         )
         joined = " ".join(compose_cmd)
         assert "overlay=" in joined
@@ -1789,8 +1798,7 @@ class TestComposeVideoDogLogo:
         cmds = [c.args[0] for c in runner.call_args_list]
         # the intro-tail DOG pass overlays the logo with a time-gated enable
         intro_dog_cmd = next(
-            c for c in cmds
-            if "-filter_complex" in c and c[-1].endswith("intro_dog.mp4")
+            c for c in cmds if "-filter_complex" in c and c[-1].endswith("intro_dog.mp4")
         )
         joined = " ".join(intro_dog_cmd)
         assert "enable='gte(t," in joined
@@ -1840,31 +1848,47 @@ class TestHardwareAccelEncoding:
 
     def test_default_cpu_path_unchanged(self):
         # auto-mode with no GPU device must return the exact libx264 flags.
-        with patch.object(vc, "_HWACCEL_MODE", "auto"), \
-             patch.object(vc, "_nvenc_available", return_value=False):
+        with (
+            patch.object(vc, "_HWACCEL_MODE", "auto"),
+            patch.object(vc, "_nvenc_available", return_value=False),
+        ):
             vc._select_hwaccel_encoder.cache_clear()
             args = vc._video_encode_args("slow")
         assert args == [
-            "-c:v", "libx264", "-preset", "slow", "-crf", str(vc.ENCODE_CRF),
-            "-pix_fmt", vc.ENCODE_PIX_FMT, "-profile:v", "high",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "slow",
+            "-crf",
+            str(vc.ENCODE_CRF),
+            "-pix_fmt",
+            vc.ENCODE_PIX_FMT,
+            "-profile:v",
+            "high",
         ]
 
     def test_off_mode_never_uses_nvenc(self):
-        with patch.object(vc, "_HWACCEL_MODE", "off"), \
-             patch.object(vc, "_nvenc_available", return_value=True):
+        with (
+            patch.object(vc, "_HWACCEL_MODE", "off"),
+            patch.object(vc, "_nvenc_available", return_value=True),
+        ):
             vc._select_hwaccel_encoder.cache_clear()
             assert vc._select_hwaccel_encoder() is None
 
     def test_auto_uses_nvenc_when_available(self):
-        with patch.object(vc, "_HWACCEL_MODE", "auto"), \
-             patch.object(vc, "_nvenc_available", return_value=True):
+        with (
+            patch.object(vc, "_HWACCEL_MODE", "auto"),
+            patch.object(vc, "_nvenc_available", return_value=True),
+        ):
             vc._select_hwaccel_encoder.cache_clear()
             codec = vc._select_hwaccel_encoder()
         assert codec == vc._NVENC_CODEC
 
     def test_forced_nvenc_skips_detection(self):
-        with patch.object(vc, "_HWACCEL_MODE", "nvenc"), \
-             patch.object(vc, "_nvenc_available", return_value=False) as avail:
+        with (
+            patch.object(vc, "_HWACCEL_MODE", "nvenc"),
+            patch.object(vc, "_nvenc_available", return_value=False) as avail,
+        ):
             vc._select_hwaccel_encoder.cache_clear()
             codec = vc._select_hwaccel_encoder()
         avail.assert_not_called()
@@ -1930,9 +1954,7 @@ class TestSpliceSectionCards:
     def test_insert_before_first(self):
         paths, durs, trans = self._content(2)
         card = Path("/n/card.mp4")
-        new_paths, _, new_trans, _ = _splice_section_cards(
-            paths, durs, trans, {}, [(0, card, 2.5)]
-        )
+        new_paths, _, new_trans, _ = _splice_section_cards(paths, durs, trans, {}, [(0, card, 2.5)])
         assert new_paths == [card, paths[0], paths[1]]
         # card is first (no leading transition); card->seg0 fade; seg0->seg1 original.
         assert new_trans == [TRANSITION_FADE, TRANSITION_WIPE_LEFT]
@@ -1977,9 +1999,7 @@ class TestSpliceSectionCards:
         paths, durs, trans = self._content(2)
         lt = LowerThird(text="r", url="u", start_seconds=0.5, end_seconds=4.0)
         card = Path("/n/card.mp4")
-        _, _, _, new_lts = _splice_section_cards(
-            paths, durs, trans, {0: lt}, [(0, card, 2.5)], 1.0
-        )
+        _, _, _, new_lts = _splice_section_cards(paths, durs, trans, {0: lt}, [(0, card, 2.5)], 1.0)
         # Card before segment 0 → segment 0's LT lands at index 1, shifted +1.5 s.
         assert set(new_lts.keys()) == {1}
         assert new_lts[1].start_seconds == pytest.approx(2.0)
@@ -1993,10 +2013,12 @@ class TestSpliceSectionCards:
 class TestComposeVideoSectionCards:
     def test_cards_normalized_and_spliced(self, tmp_path):
         runner = _mock_runner()
-        seg1 = _make_recorded_segment(owner="a", name="b", duration=10.0,
-                                      video_path=tmp_path / "seg1.webm")
-        seg2 = _make_recorded_segment(owner="c", name="d", duration=10.0,
-                                      video_path=tmp_path / "seg2.webm")
+        seg1 = _make_recorded_segment(
+            owner="a", name="b", duration=10.0, video_path=tmp_path / "seg1.webm"
+        )
+        seg2 = _make_recorded_segment(
+            owner="c", name="d", duration=10.0, video_path=tmp_path / "seg2.webm"
+        )
         (tmp_path / "seg1.webm").touch()
         (tmp_path / "seg2.webm").touch()
         card = tmp_path / "card.mp4"
@@ -2011,9 +2033,7 @@ class TestComposeVideoSectionCards:
         )
 
         # The card clip must be normalized like content (its path appears in a cmd).
-        normalize_inputs = [
-            c.args[0] for c in runner.call_args_list if str(card) in c.args[0]
-        ]
+        normalize_inputs = [c.args[0] for c in runner.call_args_list if str(card) in c.args[0]]
         assert normalize_inputs, "section card was not normalized"
         # Result content count still reflects the original content segments.
         assert result.segment_count == 2
@@ -2023,8 +2043,10 @@ class TestComposeVideoSectionCards:
         seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
         (tmp_path / "s.webm").touch()
         result = compose_video(
-            segments=[seg], output_dir=tmp_path / "out",
-            runner=runner, section_cards=None,
+            segments=[seg],
+            output_dir=tmp_path / "out",
+            runner=runner,
+            section_cards=None,
         )
         # 1 normalize + 1 compose + 1 h264 metadata — unchanged from baseline.
         assert runner.call_count == 3
@@ -2034,10 +2056,12 @@ class TestComposeVideoSectionCards:
         # With fit-to-window active, total composed video stays aligned with the
         # audio timeline: content window shrinks by (card_dur - transition) per card.
         runner = _mock_runner()
-        seg1 = _make_recorded_segment(owner="a", name="b", duration=10.0,
-                                      video_path=tmp_path / "seg1.webm")
-        seg2 = _make_recorded_segment(owner="c", name="d", duration=10.0,
-                                      video_path=tmp_path / "seg2.webm")
+        seg1 = _make_recorded_segment(
+            owner="a", name="b", duration=10.0, video_path=tmp_path / "seg1.webm"
+        )
+        seg2 = _make_recorded_segment(
+            owner="c", name="d", duration=10.0, video_path=tmp_path / "seg2.webm"
+        )
         (tmp_path / "seg1.webm").touch()
         (tmp_path / "seg2.webm").touch()
         card = tmp_path / "card.mp4"
@@ -2306,8 +2330,18 @@ class TestComposePairwiseParallel:
         transitions = [TRANSITION_FADE] * (n - 1)
 
         vc._compose_pairwise_parallel(
-            paths, durations, 1.0, transitions, {}, None, None, None,
-            tmp_path / "out.mp4", runner, tmp_path, concurrency=2,
+            paths,
+            durations,
+            1.0,
+            transitions,
+            {},
+            None,
+            None,
+            None,
+            tmp_path / "out.mp4",
+            runner,
+            tmp_path,
+            concurrency=2,
         )
 
         xfades = _xfade_cmds(runner.calls)
@@ -2339,14 +2373,24 @@ class TestComposePairwiseParallel:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
         vc._compose_pairwise_parallel(
-            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
-            None, None, tmp_path / "out.mp4", _run, tmp_path, concurrency=2,
+            paths,
+            [10.0] * n,
+            1.0,
+            [TRANSITION_FADE] * (n - 1),
+            {},
+            None,
+            None,
+            None,
+            tmp_path / "out.mp4",
+            _run,
+            tmp_path,
+            concurrency=2,
         )
 
         # Each pair has two inputs of ``size`` -> sum*2 == 4*size per pass.
         # Level-0 pairs (workers=2) request 2x that; the root pass (workers=1) 1x.
         assert max(requested) == 4 * size * 2  # a level-0 pass with 2 workers
-        assert requested[-1] == 4 * size * 1   # the final root pass, 1 worker
+        assert requested[-1] == 4 * size * 1  # the final root pass, 1 worker
 
     def test_combine_failure_releases_inputs_and_drops_partial_output(self, tmp_path):
         """A failed xfade pass must reclaim disk: release the fetched leaf inputs
@@ -2374,9 +2418,20 @@ class TestComposePairwiseParallel:
 
         with pytest.raises(subprocess.CalledProcessError):
             vc._compose_pairwise_parallel(
-                paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
-                None, None, target, _run, tmp_path, concurrency=1,
-                fetch=_fetch, release=_release,
+                paths,
+                [10.0] * n,
+                1.0,
+                [TRANSITION_FADE] * (n - 1),
+                {},
+                None,
+                None,
+                None,
+                target,
+                _run,
+                tmp_path,
+                concurrency=1,
+                fetch=_fetch,
+                release=_release,
             )
 
         # Both leaf inputs were fetched and then released back on failure.
@@ -2407,9 +2462,20 @@ class TestComposePairwiseParallel:
 
         with pytest.raises(RuntimeError, match="blob download failed"):
             vc._compose_pairwise_parallel(
-                paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
-                None, None, target, _run, tmp_path, concurrency=1,
-                fetch=_fetch, release=_release,
+                paths,
+                [10.0] * n,
+                1.0,
+                [TRANSITION_FADE] * (n - 1),
+                {},
+                None,
+                None,
+                None,
+                target,
+                _run,
+                tmp_path,
+                concurrency=1,
+                fetch=_fetch,
+                release=_release,
             )
 
         # Only the first input was fetched, and it was released on the failure.
@@ -2429,8 +2495,17 @@ class TestComposePairwiseParallel:
         paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
 
         vc._compose_pairwise(
-            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
-            None, None, tmp_path / "out.mp4", _recording_runner(), tmp_path,
+            paths,
+            [10.0] * n,
+            1.0,
+            [TRANSITION_FADE] * (n - 1),
+            {},
+            None,
+            None,
+            None,
+            tmp_path / "out.mp4",
+            _recording_runner(),
+            tmp_path,
             concurrency=vc.MAX_COMPOSE_CONCURRENCY + 100,
         )
 
@@ -2441,19 +2516,30 @@ class TestComposePairwiseParallel:
         called = {"parallel": False, "sequential": False}
 
         monkeypatch.setattr(
-            vc, "_compose_pairwise_parallel",
+            vc,
+            "_compose_pairwise_parallel",
             lambda *a, **k: called.__setitem__("parallel", True),
         )
         monkeypatch.setattr(
-            vc, "_compose_pairwise_sequential",
+            vc,
+            "_compose_pairwise_sequential",
             lambda *a, **k: called.__setitem__("sequential", True),
         )
         n = 4
         paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
 
         vc._compose_pairwise(
-            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
-            None, None, tmp_path / "out.mp4", _recording_runner(), tmp_path,
+            paths,
+            [10.0] * n,
+            1.0,
+            [TRANSITION_FADE] * (n - 1),
+            {},
+            None,
+            None,
+            None,
+            tmp_path / "out.mp4",
+            _recording_runner(),
+            tmp_path,
             concurrency=0,
         )
 
@@ -2468,13 +2554,26 @@ class TestComposePairwiseParallel:
         durations = [10.0] * n
         # Distinct transitions per boundary so we can verify each is used once.
         transitions = [
-            TRANSITION_FADE, TRANSITION_FADE_BLACK, TRANSITION_WIPE_LEFT,
-            TRANSITION_SLIDE_LEFT, TRANSITION_FADE,
+            TRANSITION_FADE,
+            TRANSITION_FADE_BLACK,
+            TRANSITION_WIPE_LEFT,
+            TRANSITION_SLIDE_LEFT,
+            TRANSITION_FADE,
         ]
 
         vc._compose_pairwise_parallel(
-            paths, durations, 1.0, transitions, {}, None, None, None,
-            tmp_path / "out.mp4", runner, tmp_path, concurrency=2,
+            paths,
+            durations,
+            1.0,
+            transitions,
+            {},
+            None,
+            None,
+            None,
+            tmp_path / "out.mp4",
+            runner,
+            tmp_path,
+            concurrency=2,
         )
 
         used = []
@@ -2492,8 +2591,18 @@ class TestComposePairwiseParallel:
         paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
 
         vc._compose_pairwise_parallel(
-            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
-            None, None, target, runner, tmp_path, concurrency=2,
+            paths,
+            [10.0] * n,
+            1.0,
+            [TRANSITION_FADE] * (n - 1),
+            {},
+            None,
+            None,
+            None,
+            target,
+            runner,
+            tmp_path,
+            concurrency=2,
         )
 
         # Exactly one xfade pass targets compose_target, and it uses the full
@@ -2516,8 +2625,18 @@ class TestComposePairwiseParallel:
         lts = self._lts(n, durations, td)
 
         vc._compose_pairwise_parallel(
-            paths, durations, td, [TRANSITION_FADE] * (n - 1), lts, "ffmpeg",
-            None, None, tmp_path / "out.mp4", runner, tmp_path, concurrency=2,
+            paths,
+            durations,
+            td,
+            [TRANSITION_FADE] * (n - 1),
+            lts,
+            "ffmpeg",
+            None,
+            None,
+            tmp_path / "out.mp4",
+            runner,
+            tmp_path,
+            concurrency=2,
         )
 
         # Find, for each segment, the enable start time baked into its drawtext.
@@ -2576,8 +2695,18 @@ class TestComposePairwiseParallel:
         n = 4
         paths = [tmp_path / f"seg_{i:02d}.mp4" for i in range(n)]
         vc._compose_pairwise_parallel(
-            paths, [10.0] * n, 1.0, [TRANSITION_FADE] * (n - 1), {}, None,
-            None, None, tmp_path / "out.mp4", _run, tmp_path, concurrency=2,
+            paths,
+            [10.0] * n,
+            1.0,
+            [TRANSITION_FADE] * (n - 1),
+            {},
+            None,
+            None,
+            None,
+            tmp_path / "out.mp4",
+            _run,
+            tmp_path,
+            concurrency=2,
         )
 
         # Level 0 has two independent pair composes; with concurrency=2 they
@@ -2610,8 +2739,18 @@ class TestComposePairwiseDispatch:
         monkeypatch.setattr(vc, "_compose_pairwise_parallel", par)
         paths = [tmp_path / f"s{i}.mp4" for i in range(4)]
         vc._compose_pairwise(
-            paths, [10.0] * 4, 1.0, [TRANSITION_FADE] * 3, {}, None, None,
-            None, tmp_path / "o.mp4", _mock_runner(), tmp_path, concurrency=1,
+            paths,
+            [10.0] * 4,
+            1.0,
+            [TRANSITION_FADE] * 3,
+            {},
+            None,
+            None,
+            None,
+            tmp_path / "o.mp4",
+            _mock_runner(),
+            tmp_path,
+            concurrency=1,
         )
         seq.assert_called_once()
         par.assert_not_called()
@@ -2623,8 +2762,18 @@ class TestComposePairwiseDispatch:
         monkeypatch.setattr(vc, "_compose_pairwise_parallel", par)
         paths = [tmp_path / f"s{i}.mp4" for i in range(2)]
         vc._compose_pairwise(
-            paths, [10.0] * 2, 1.0, [TRANSITION_FADE], {}, None, None,
-            None, tmp_path / "o.mp4", _mock_runner(), tmp_path, concurrency=4,
+            paths,
+            [10.0] * 2,
+            1.0,
+            [TRANSITION_FADE],
+            {},
+            None,
+            None,
+            None,
+            tmp_path / "o.mp4",
+            _mock_runner(),
+            tmp_path,
+            concurrency=4,
         )
         seq.assert_called_once()
         par.assert_not_called()
@@ -2636,8 +2785,18 @@ class TestComposePairwiseDispatch:
         monkeypatch.setattr(vc, "_compose_pairwise_parallel", par)
         paths = [tmp_path / f"s{i}.mp4" for i in range(5)]
         vc._compose_pairwise(
-            paths, [10.0] * 5, 1.0, [TRANSITION_FADE] * 4, {}, None, None,
-            None, tmp_path / "o.mp4", _mock_runner(), tmp_path, concurrency=3,
+            paths,
+            [10.0] * 5,
+            1.0,
+            [TRANSITION_FADE] * 4,
+            {},
+            None,
+            None,
+            None,
+            tmp_path / "o.mp4",
+            _mock_runner(),
+            tmp_path,
+            concurrency=3,
         )
         par.assert_called_once()
         seq.assert_not_called()
@@ -2649,6 +2808,7 @@ class TestComposeTreeRealFfmpeg:
     def test_four_clip_tree_composes_with_correct_duration(self, tmp_path):
         ffmpeg = vc._find_drawtext_capable_ffmpeg() or "ffmpeg"
         import shutil as _sh
+
         if _sh.which(ffmpeg) is None and _sh.which("ffmpeg") is None:
             pytest.skip("ffmpeg not available")
         binary = ffmpeg if _sh.which(ffmpeg) else "ffmpeg"
@@ -2660,9 +2820,22 @@ class TestComposeTreeRealFfmpeg:
         for i, (d, c) in enumerate(zip(durations, colours)):
             p = tmp_path / f"clip_{i}.mp4"
             rc = subprocess.run(
-                [binary, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-                 "-i", f"color=c={c}:s=320x240:r=30:d={d}",
-                 "-c:v", "libx264", "-pix_fmt", "yuv420p", str(p)],
+                [
+                    binary,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"color=c={c}:s=320x240:r=30:d={d}",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(p),
+                ],
                 capture_output=True,
             )
             if rc.returncode != 0:
@@ -2679,22 +2852,32 @@ class TestComposeTreeRealFfmpeg:
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         vc._compose_pairwise_parallel(
-            paths, durations, td, [TRANSITION_FADE] * 3, {}, None, None, None,
-            target, _run, tmp_path, concurrency=2,
+            paths,
+            durations,
+            td,
+            [TRANSITION_FADE] * 3,
+            {},
+            None,
+            None,
+            None,
+            target,
+            _run,
+            tmp_path,
+            concurrency=2,
         )
 
         assert target.exists() and target.stat().st_size > 0
         probe = subprocess.run(
             [binary, "-hide_banner", "-i", str(target)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         # Composed length = sum(durations) - 3 overlaps = 11 - 3 = 8s.
         expected = sum(durations) - td * (len(durations) - 1)
         # Parse "Duration: HH:MM:SS.xx" from ffmpeg stderr.
         duration_lines = [ln for ln in probe.stderr.splitlines() if "Duration:" in ln]
         assert duration_lines, (
-            "ffprobe stderr did not contain a 'Duration:' line; "
-            f"stderr was:\n{probe.stderr}"
+            "ffprobe stderr did not contain a 'Duration:' line; " f"stderr was:\n{probe.stderr}"
         )
         line = duration_lines[0]
         hms = line.split("Duration:", 1)[1].split(",", 1)[0].strip()
@@ -2740,10 +2923,12 @@ def _instant_retry(monkeypatch):
 class TestNormalizeTaskRetry:
     def test_single_transient_failure_retries_only_that_task(self, tmp_path, _instant_retry):
         runner = _FlakyNormalizeRunner(fail_seg="seg_001", fail_times=1)
-        seg0 = _make_recorded_segment(owner="a", name="b", duration=10.0,
-                                      video_path=tmp_path / "seg0.webm")
-        seg1 = _make_recorded_segment(owner="c", name="d", duration=10.0,
-                                      video_path=tmp_path / "seg1.webm")
+        seg0 = _make_recorded_segment(
+            owner="a", name="b", duration=10.0, video_path=tmp_path / "seg0.webm"
+        )
+        seg1 = _make_recorded_segment(
+            owner="c", name="d", duration=10.0, video_path=tmp_path / "seg1.webm"
+        )
         (tmp_path / "seg0.webm").touch()
         (tmp_path / "seg1.webm").touch()
 
@@ -2783,10 +2968,12 @@ class TestNormalizeTaskReporter:
 
     def test_reporter_receives_running_and_done_per_segment(self, tmp_path):
         runner = _mock_runner()
-        seg1 = _make_recorded_segment(owner="a", name="b", duration=10.0,
-                                      video_path=tmp_path / "seg1.webm")
-        seg2 = _make_recorded_segment(owner="c", name="d", duration=10.0,
-                                      video_path=tmp_path / "seg2.webm")
+        seg1 = _make_recorded_segment(
+            owner="a", name="b", duration=10.0, video_path=tmp_path / "seg1.webm"
+        )
+        seg2 = _make_recorded_segment(
+            owner="c", name="d", duration=10.0, video_path=tmp_path / "seg2.webm"
+        )
         (tmp_path / "seg1.webm").touch()
         (tmp_path / "seg2.webm").touch()
 

@@ -73,7 +73,11 @@ def test_monthly_guardrail_allows_explicit_operator_override() -> None:
         prior_episode_count=10,
         prior_monthly_spend_usd=Decimal("5.00"),
         projected_episode_cost_usd=Decimal("0.50"),
-        override={"actor": "hermes", "reason": "approved launch exception", "recorded_at": "2026-06-09T11:00:00Z"},
+        override={
+            "actor": "hermes",
+            "reason": "approved launch exception",
+            "recorded_at": "2026-06-09T11:00:00Z",
+        },
     )
 
     assert budget["status"] == "override_recorded"
@@ -90,7 +94,11 @@ def test_cost_gate_blocks_missing_fields_and_unknown_budget_status() -> None:
         "week": "2026-W23",
         "costs": {},
         "budget": {"status": "unknown"},
-        "privacy": {"secrets_recorded": False, "provider_credentials_recorded": False, "full_prompts_recorded": False},
+        "privacy": {
+            "secrets_recorded": False,
+            "provider_credentials_recorded": False,
+            "full_prompts_recorded": False,
+        },
     }
 
     missing = missing_cost_ledger_fields(incomplete)

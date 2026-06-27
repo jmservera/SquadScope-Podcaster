@@ -32,7 +32,10 @@ def test_validate_smoke_response_redacts_manifest_url_query() -> None:
         },
     )
 
-    assert summary["manifest_url"] == "https://storage.example/jobs/podcast-2026-W23-abc12345/manifest.json?[redacted-query]"
+    assert (
+        summary["manifest_url"]
+        == "https://storage.example/jobs/podcast-2026-W23-abc12345/manifest.json?[redacted-query]"
+    )
     assert "secret" not in summary["manifest_url"]
 
 
@@ -40,10 +43,26 @@ def test_validate_smoke_response_redacts_manifest_url_query() -> None:
     ("status_code", "body", "message"),
     [
         (401, {"errors": ["unauthorized"]}, "expected HTTP 202"),
-        (202, {"manifest_url": "https://storage.example/manifest.json", "errors": []}, "missing required field"),
-        (202, {"job_id": "", "manifest_url": "https://storage.example/manifest.json", "errors": []}, "job_id"),
+        (
+            202,
+            {"manifest_url": "https://storage.example/manifest.json", "errors": []},
+            "missing required field",
+        ),
+        (
+            202,
+            {"job_id": "", "manifest_url": "https://storage.example/manifest.json", "errors": []},
+            "job_id",
+        ),
         (202, {"job_id": "job", "manifest_url": "", "errors": []}, "manifest_url"),
-        (202, {"job_id": "job", "manifest_url": "https://storage.example/manifest.json", "errors": ["bad"]}, "errors"),
+        (
+            202,
+            {
+                "job_id": "job",
+                "manifest_url": "https://storage.example/manifest.json",
+                "errors": ["bad"],
+            },
+            "errors",
+        ),
     ],
 )
 def test_validate_smoke_response_rejects_non_ready_shapes(

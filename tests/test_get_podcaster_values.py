@@ -16,48 +16,55 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "get-podcaster-values.sh"
 
-FAKE_AZ = r"""#!/usr/bin/env bash
-# Fake Azure CLI returning deterministic resource-group discovery data.
-set -euo pipefail
-
-# Resolve the --query value (mimics az JMESPath projection for our calls).
-query=""
-args=("$@")
-for ((i=0; i<${#args[@]}; i++)); do
-  if [ "${args[$i]}" = "--query" ]; then
-    query="${args[$((i+1))]}"
-  fi
-done
-
-case "$1 $2" in
-  "account show") echo '{"id":"sub-1"}'; exit 0;;
-esac
-
-cmd="$1 $2 ${3:-}"
-case "$cmd" in
-  "storage account list")
-    [ "$query" = "[0].name" ] && echo "podcasterfakestg"; exit 0;;
-  "storage account show")
-    case "$query" in
-      "primaryEndpoints.blob") echo "https://podcasterfakestg.blob.core.windows.net/"; exit 0;;
-      "primaryEndpoints.queue") echo "https://podcasterfakestg.queue.core.windows.net/"; exit 0;;
-    esac
-    exit 0;;
-  "cognitiveservices account list")
-    if [ "$query" = "[?kind=='OpenAI'].name | [0]" ]; then echo "podcaster-fake-openai"; fi
-    if [ "$query" = "[0].name" ]; then echo "podcaster-fake-openai"; fi
-    exit 0;;
-  "cognitiveservices account show")
-    [ "$query" = "properties.endpoint" ] && echo "https://podcaster-fake-openai.openai.azure.com/"; exit 0;;
-  "cognitiveservices account keys")
-    [ "$query" = "key1" ] && echo "fake-openai-key-xyz789"; exit 0;;
-  "containerapp job list")
-    [ "$query" = "[0].name" ] && echo "podcaster-fake-synth"; exit 0;;
-  "containerapp job show")
-    [ "$query" = "properties.template.containers[0].env[?name=='PODCASTER_API_KEY'].value | [0]" ] && echo "fake-podcaster-key-abc123"; exit 0;;
-esac
-exit 0
-"""
+FAKE_AZ = (
+    '#!/usr/bin/env bash\n'
+    "# Fake Azure CLI returning deterministic resource-group discovery data.\n"
+    "set -euo pipefail\n"
+    "\n"
+    "# Resolve the --query value (mimics az JMESPath projection for our calls).\n"
+    'query=""\n'
+    'args=("$@")\n'
+    "for ((i=0; i<${#args[@]}; i++)); do\n"
+    '  if [ "${args[$i]}" = "--query" ]; then\n'
+    '    query="${args[$((i+1))]}"\n'
+    "  fi\n"
+    "done\n"
+    "\n"
+    'case "$1 $2" in\n'
+    """  "account show") echo '{"id":"sub-1"}'; exit 0;;\n"""
+    "esac\n"
+    "\n"
+    'cmd="$1 $2 ${3:-}"\n'
+    'case "$cmd" in\n'
+    '  "storage account list")\n'
+    '    [ "$query" = "[0].name" ] && echo "podcasterfakestg"; exit 0;;\n'
+    '  "storage account show")\n'
+    '    case "$query" in\n'
+    '      "primaryEndpoints.blob") echo '
+    '"https://podcasterfakestg.blob.core.windows.net/"; exit 0;;\n'
+    '      "primaryEndpoints.queue") echo '
+    '"https://podcasterfakestg.queue.core.windows.net/"; exit 0;;\n'
+    "    esac\n"
+    "    exit 0;;\n"
+    '  "cognitiveservices account list")\n'
+    """    if [ "$query" = "[?kind=='OpenAI'].name | [0]" ]; then echo """
+    '"podcaster-fake-openai"; fi\n'
+    '    if [ "$query" = "[0].name" ]; then echo "podcaster-fake-openai"; fi\n'
+    "    exit 0;;\n"
+    '  "cognitiveservices account show")\n'
+    '    [ "$query" = "properties.endpoint" ] && echo '
+    '"https://podcaster-fake-openai.openai.azure.com/"; exit 0;;\n'
+    '  "cognitiveservices account keys")\n'
+    '    [ "$query" = "key1" ] && echo "fake-openai-key-xyz789"; exit 0;;\n'
+    '  "containerapp job list")\n'
+    '    [ "$query" = "[0].name" ] && echo "podcaster-fake-synth"; exit 0;;\n'
+    '  "containerapp job show")\n'
+    '    [ "$query" = "properties.template.containers[0].env'
+    """[?name=='PODCASTER_API_KEY'].value | [0]" ] && echo """
+    '"fake-podcaster-key-abc123"; exit 0;;\n'
+    "esac\n"
+    "exit 0\n"
+)
 
 
 def _make_fake_az(tmp_path: Path) -> dict[str, str]:

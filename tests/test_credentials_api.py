@@ -16,12 +16,23 @@ class MemoryStorageBackend:
 
     def put_bytes(self, path: str, content: bytes, content_type: str) -> Any:
         self._blobs[path] = content
-        return type("SA", (), {"path": path, "url": f"mem://{path}", "size_bytes": len(content), "content_type": content_type})()
+        return type(
+            "SA",
+            (),
+            {
+                "path": path,
+                "url": f"mem://{path}",
+                "size_bytes": len(content),
+                "content_type": content_type,
+            },
+        )()
 
     def get_bytes(self, path: str) -> bytes | None:
         return self._blobs.get(path)
 
-    def update_bytes(self, path: str, content_type: str, update: Callable[[bytes | None], bytes]) -> Any:
+    def update_bytes(
+        self, path: str, content_type: str, update: Callable[[bytes | None], bytes]
+    ) -> Any:
         current = self._blobs.get(path)
         updated = update(current)
         self._blobs[path] = updated
@@ -31,7 +42,19 @@ class MemoryStorageBackend:
         return sorted(path for path in self._blobs if path.startswith(prefix))[:limit]
 
     def generate_download_url(self, path: str, *, expiry: datetime) -> Any:
-        return type("URL", (), {"path": path, "url": f"mem://{path}", "expires_at": expiry.isoformat(), "method": "local", "signed": False, "https_only": False, "account_key_used": False})()
+        return type(
+            "URL",
+            (),
+            {
+                "path": path,
+                "url": f"mem://{path}",
+                "expires_at": expiry.isoformat(),
+                "method": "local",
+                "signed": False,
+                "https_only": False,
+                "account_key_used": False,
+            },
+        )()
 
 
 class TestCredentialsApi:
@@ -43,14 +66,17 @@ class TestCredentialsApi:
 
     def test_get_credentials_returns_empty_list(self):
         storage = MemoryStorageBackend()
-        with patch("podcaster.api.create_storage_backend", return_value=storage), patch.dict(
-            os.environ,
-            {
-                "UI_AUTH_USERNAME": "admin",
-                "UI_AUTH_PASSWORD": "hunter2",
-                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
-            },
-            clear=True,
+        with (
+            patch("podcaster.api.create_storage_backend", return_value=storage),
+            patch.dict(
+                os.environ,
+                {
+                    "UI_AUTH_USERNAME": "admin",
+                    "UI_AUTH_PASSWORD": "hunter2",
+                    "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+                },
+                clear=True,
+            ),
         ):
             handler = make_handler("GET", "/api/credentials", headers=self._headers())
         assert handler.response_code == 200
@@ -77,8 +103,13 @@ class TestCredentialsApi:
             "UI_AUTH_PASSWORD": "hunter2",
             "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
         }
-        with patch("podcaster.api.create_storage_backend", return_value=storage), patch.dict(os.environ, env, clear=True):
-            create_handler = make_handler("POST", "/api/credentials", body=create_body, headers=self._headers(create_body))
+        with (
+            patch("podcaster.api.create_storage_backend", return_value=storage),
+            patch.dict(os.environ, env, clear=True),
+        ):
+            create_handler = make_handler(
+                "POST", "/api/credentials", body=create_body, headers=self._headers(create_body)
+            )
             assert create_handler.response_code == 200
             created = create_handler.get_response_json()
             assert set(created) == {"id", "type", "label", "is_set", "created_at", "updated_at"}
@@ -111,7 +142,9 @@ class TestCredentialsApi:
             assert updated["created_at"] == created["created_at"]
             assert updated["updated_at"] >= created["updated_at"]
 
-            delete_handler = make_handler("DELETE", f"/api/credentials/{credential_id}", headers=self._headers())
+            delete_handler = make_handler(
+                "DELETE", f"/api/credentials/{credential_id}", headers=self._headers()
+            )
             assert delete_handler.response_code == 204
             assert delete_handler.response_body == b""
 
@@ -120,15 +153,20 @@ class TestCredentialsApi:
 
     def test_credentials_accept_api_key_auth(self):
         storage = MemoryStorageBackend()
-        body = json.dumps({"type": "api_key", "label": "Service", "values": {"key": "secret"}}).encode()
+        body = json.dumps(
+            {"type": "api_key", "label": "Service", "values": {"key": "secret"}}
+        ).encode()
         headers = {"x-podcaster-api-key": "machine-key", "Content-Length": str(len(body))}
-        with patch("podcaster.api.create_storage_backend", return_value=storage), patch.dict(
-            os.environ,
-            {
-                "PODCASTER_API_KEY": "machine-key",
-                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
-            },
-            clear=True,
+        with (
+            patch("podcaster.api.create_storage_backend", return_value=storage),
+            patch.dict(
+                os.environ,
+                {
+                    "PODCASTER_API_KEY": "machine-key",
+                    "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+                },
+                clear=True,
+            ),
         ):
             handler = make_handler("POST", "/api/credentials", body=body, headers=headers)
         assert handler.response_code == 200
@@ -136,32 +174,44 @@ class TestCredentialsApi:
 
     def test_credentials_require_ui_auth_secret_for_encryption(self):
         storage = MemoryStorageBackend()
-        with patch("podcaster.api.create_storage_backend", return_value=storage), patch.dict(
-            os.environ,
-            {
-                "UI_AUTH_USERNAME": "admin",
-                "UI_AUTH_PASSWORD": "hunter2",
-                "UI_AUTH_SECRET": "",
-                "PODCASTER_API_KEY": "machine-key",
-            },
-            clear=True,
+        with (
+            patch("podcaster.api.create_storage_backend", return_value=storage),
+            patch.dict(
+                os.environ,
+                {
+                    "UI_AUTH_USERNAME": "admin",
+                    "UI_AUTH_PASSWORD": "hunter2",
+                    "UI_AUTH_SECRET": "",
+                    "PODCASTER_API_KEY": "machine-key",
+                },
+                clear=True,
+            ),
         ):
-            handler = make_handler("GET", "/api/credentials", headers={"x-podcaster-api-key": "machine-key"})
+            handler = make_handler(
+                "GET", "/api/credentials", headers={"x-podcaster-api-key": "machine-key"}
+            )
         assert handler.response_code == 501
         assert "UI_AUTH_SECRET" in handler.get_response_json()["error"]
 
     def test_credentials_reject_invalid_payload(self):
         storage = MemoryStorageBackend()
         body = json.dumps({"type": "bad", "label": "", "values": []}).encode()
-        with patch("podcaster.api.create_storage_backend", return_value=storage), patch.dict(
-            os.environ,
-            {
-                "UI_AUTH_USERNAME": "admin",
-                "UI_AUTH_PASSWORD": "hunter2",
-                "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
-            },
-            clear=True,
+        with (
+            patch("podcaster.api.create_storage_backend", return_value=storage),
+            patch.dict(
+                os.environ,
+                {
+                    "UI_AUTH_USERNAME": "admin",
+                    "UI_AUTH_PASSWORD": "hunter2",
+                    "UI_AUTH_SECRET": "test-secret-256-bits-long-enough",
+                },
+                clear=True,
+            ),
         ):
-            handler = make_handler("POST", "/api/credentials", body=body, headers=self._headers(body))
+            handler = make_handler(
+                "POST", "/api/credentials", body=body, headers=self._headers(body)
+            )
         assert handler.response_code == 400
-        assert handler.get_response_json()["error"] == "type must be one of: spotify, youtube, api_key"
+        assert (
+            handler.get_response_json()["error"] == "type must be one of: spotify, youtube, api_key"
+        )

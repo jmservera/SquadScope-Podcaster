@@ -22,8 +22,12 @@ class TestScriptDirections:
         assert not sd.has_content
 
     def test_backchannels_parse_top_level_and_nested(self) -> None:
-        top_level = ScriptDirections.from_payload({"backchannels": {"enabled": True, "min_gap_seconds": 12}})
-        nested = ScriptDirections.from_payload({"script_directions": {"backchannels": {"enabled": True}}})
+        top_level = ScriptDirections.from_payload(
+            {"backchannels": {"enabled": True, "min_gap_seconds": 12}}
+        )
+        nested = ScriptDirections.from_payload(
+            {"script_directions": {"backchannels": {"enabled": True}}}
+        )
 
         assert top_level.backchannels.enabled is True
         assert top_level.backchannels.min_gap_seconds == 12
@@ -71,7 +75,10 @@ class TestScriptDirections:
     def test_historical_context_string_payload(self) -> None:
         payload = {
             "script_directions": {
-                "historical_context": "AI coding copilots kept moving from autocomplete to agentic workflows.",
+                "historical_context": (
+                    "AI coding copilots kept moving from autocomplete to agentic "
+                    "workflows."
+                ),
             }
         }
 
@@ -86,8 +93,14 @@ class TestScriptDirections:
         payload = {
             "script_directions": {
                 "historical_context": {
-                    "month_synthesis": "Developer tooling stories kept centering on workflow automation.",
-                    "yearly_narrative": "Teams steadily shifted from single-shot prompts to durable agent loops.",
+                    "month_synthesis": (
+                        "Developer tooling stories kept centering on workflow "
+                        "automation."
+                    ),
+                    "yearly_narrative": (
+                        "Teams steadily shifted from single-shot prompts to durable "
+                        "agent loops."
+                    ),
                     "prior_episode_themes": ["evaluation discipline", "cost control", "", 7],
                 }
             }
@@ -101,7 +114,10 @@ class TestScriptDirections:
         assert sd.historical_context.yearly_narrative == (
             "Teams steadily shifted from single-shot prompts to durable agent loops."
         )
-        assert sd.historical_context.prior_episode_themes == ("evaluation discipline", "cost control")
+        assert sd.historical_context.prior_episode_themes == (
+            "evaluation discipline",
+            "cost control",
+        )
 
 
 class TestMusicMixConfig:
@@ -115,7 +131,11 @@ class TestMusicMixConfig:
             "music_mix": {
                 "track": "Summer Sport",
                 "intro": {"full_volume_seconds": 8, "fade_down_under": "Host A opening"},
-                "outro": {"start_position": "1:15", "fade_up_during": "farewell", "play_to_end": True},
+                "outro": {
+                    "start_position": "1:15",
+                    "fade_up_during": "farewell",
+                    "play_to_end": True,
+                },
             }
         }
         mm = MusicMixConfig.from_payload(payload)

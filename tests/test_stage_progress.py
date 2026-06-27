@@ -42,7 +42,13 @@ def test_summarize_none_document_is_pending():
 
 def test_summarize_in_flight_segment_counter():
     events = [
-        {"seq": 1, "at": _iso(START), "stage": PipelineStage.SYNTHESIS, "phase": "recording", "segment_total": 18},
+        {
+            "seq": 1,
+            "at": _iso(START),
+            "stage": PipelineStage.SYNTHESIS,
+            "phase": "recording",
+            "segment_total": 18,
+        },
         {
             "seq": 2,
             "at": _iso(START + timedelta(seconds=60)),
@@ -67,7 +73,13 @@ def test_summarize_in_flight_segment_counter():
 
 def test_summarize_completed_is_terminal_with_zero_eta():
     events = [
-        {"seq": 1, "at": _iso(START), "stage": PipelineStage.SYNTHESIS, "phase": "recording", "segment_total": 5},
+        {
+            "seq": 1,
+            "at": _iso(START),
+            "stage": PipelineStage.SYNTHESIS,
+            "phase": "recording",
+            "segment_total": 5,
+        },
         {
             "seq": 2,
             "at": _iso(START + timedelta(seconds=20)),
@@ -88,7 +100,13 @@ def test_summarize_completed_is_terminal_with_zero_eta():
 
 def test_summarize_no_segment_counter_yet_has_no_eta():
     events = [
-        {"seq": 1, "at": _iso(START), "stage": PipelineStage.SYNTHESIS, "phase": "recording", "segment_total": 8},
+        {
+            "seq": 1,
+            "at": _iso(START),
+            "stage": PipelineStage.SYNTHESIS,
+            "phase": "recording",
+            "segment_total": 8,
+        },
     ]
     summary = summarize(_doc(events), now=START + timedelta(seconds=5))
     assert summary["stage"] == PipelineStage.SYNTHESIS
@@ -150,7 +168,13 @@ def test_compute_eta_zero_when_all_segments_done_non_terminal():
 
 def test_compute_eta_none_when_no_elapsed_time():
     events = [
-        {"seq": 1, "at": _iso(START), "stage": PipelineStage.SYNTHESIS, "segment_index": 2, "segment_total": 10},
+        {
+            "seq": 1,
+            "at": _iso(START),
+            "stage": PipelineStage.SYNTHESIS,
+            "segment_index": 2,
+            "segment_total": 10,
+        },
     ]
     # now == stage start → zero elapsed → cannot estimate.
     remaining, eta = compute_eta(_doc(events), now=START)

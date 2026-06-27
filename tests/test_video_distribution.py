@@ -74,7 +74,11 @@ class FakeTransport:
             resp = self._responses[self._call_idx]
             self._call_idx += 1
             return (resp[0], {"location": f"{url}/resumable-session"}, resp[1])
-        return (200, {"location": f"{url}/resumable-session"}, b'{"id": "test-video-id", "access_token": "fake-token"}')
+        return (
+            200,
+            {"location": f"{url}/resumable-session"},
+            b'{"id": "test-video-id", "access_token": "fake-token"}',
+        )
 
 
 class FakeStorage:
@@ -164,13 +168,18 @@ class TestUploadToYouTube:
         assert "dry-run-id" in vid_url
 
     def test_successful_upload(self, video_file, youtube_config):
-        transport = FakeTransport(responses=[
-            (200, json.dumps({"access_token": "tok123"}).encode()),
-            (200, b'{}'),  # resumable init
-            (200, json.dumps({"id": "yt-abc123"}).encode()),
-        ])
+        transport = FakeTransport(
+            responses=[
+                (200, json.dumps({"access_token": "tok123"}).encode()),
+                (200, b"{}"),  # resumable init
+                (200, json.dumps({"id": "yt-abc123"}).encode()),
+            ]
+        )
         vid_id, vid_url = upload_to_youtube(
-            video_file, "Test Title", "Test Desc", youtube_config,
+            video_file,
+            "Test Title",
+            "Test Desc",
+            youtube_config,
             transport=transport,
         )
         assert vid_id == "yt-abc123"
@@ -179,7 +188,10 @@ class TestUploadToYouTube:
     def test_file_not_found(self, youtube_config):
         with pytest.raises(FileNotFoundError):
             upload_to_youtube(
-                Path("/nonexistent.mp4"), "title", "desc", youtube_config,
+                Path("/nonexistent.mp4"),
+                "title",
+                "desc",
+                youtube_config,
                 transport=FakeTransport(),
             )
 
@@ -188,17 +200,25 @@ class TestUploadToYouTube:
         small_file.write_bytes(b"\x00" * 10)
         with pytest.raises(ValueError, match="too small"):
             upload_to_youtube(
-                small_file, "title", "desc", youtube_config,
+                small_file,
+                "title",
+                "desc",
+                youtube_config,
                 transport=FakeTransport(),
             )
 
     def test_upload_failure_returns_none(self, video_file, youtube_config):
-        transport = FakeTransport(responses=[
-            (200, json.dumps({"access_token": "tok"}).encode()),
-            (500, b"error"),  # init fails
-        ])
+        transport = FakeTransport(
+            responses=[
+                (200, json.dumps({"access_token": "tok"}).encode()),
+                (500, b"error"),  # init fails
+            ]
+        )
         vid_id, vid_url = upload_to_youtube(
-            video_file, "title", "desc", youtube_config,
+            video_file,
+            "title",
+            "desc",
+            youtube_config,
             transport=transport,
         )
         assert vid_id is None
@@ -306,7 +326,12 @@ class TestArchiveToBlob:
 class TestDistributeVideo:
     def test_file_not_found(self, tmp_path, dry_run_config):
         result = distribute_video(
-            tmp_path / "missing.mp4", "job1", "title", "desc", 120.0, dry_run_config,
+            tmp_path / "missing.mp4",
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            dry_run_config,
         )
         assert result.status == "failed"
         assert "not found" in result.errors[0]
@@ -320,7 +345,12 @@ class TestDistributeVideo:
 
     def test_dry_run_all_targets(self, video_file, dry_run_config):
         result = distribute_video(
-            video_file, "job1", "Test Video", "A test", 120.0, dry_run_config,
+            video_file,
+            "job1",
+            "Test Video",
+            "A test",
+            120.0,
+            dry_run_config,
         )
         assert result.status == "completed"
         assert result.youtube_id == "dry-run-id"
@@ -329,11 +359,18 @@ class TestDistributeVideo:
 
     def test_youtube_only(self, video_file):
         config = VideoDistributionConfig(
-            youtube_enabled=True, spotify_rss_enabled=False,
-            blob_archive_enabled=False, dry_run=True,
+            youtube_enabled=True,
+            spotify_rss_enabled=False,
+            blob_archive_enabled=False,
+            dry_run=True,
         )
         result = distribute_video(
-            video_file, "job1", "title", "desc", 120.0, config,
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
         )
         assert result.youtube_id == "dry-run-id"
         assert result.spotify_rss_updated is False
@@ -349,14 +386,21 @@ class TestDistributeVideo:
         )
         # YouTube in dry-run-like mode won't work without credentials
         # but RSS will fail due to empty path → partial
-        transport = FakeTransport(responses=[
-            (200, json.dumps({"access_token": "tok"}).encode()),
-            (500, b"error"),
-            (500, b"error"),
-            (500, b"error"),
-        ])
+        transport = FakeTransport(
+            responses=[
+                (200, json.dumps({"access_token": "tok"}).encode()),
+                (500, b"error"),
+                (500, b"error"),
+                (500, b"error"),
+            ]
+        )
         result = distribute_video(
-            video_file, "job1", "title", "desc", 120.0, config,
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
             transport=transport,
         )
         assert result.status == "failed"
@@ -431,7 +475,16 @@ class TestSpotifyEpisodeUpload:
         """Video upload proceeds even without an audio anchor_id (#340)."""
         from podcaster.publish import PublishResult
 
-        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4", season_number=None, episode_number=None):
+        def fake_upload(
+            path,
+            anchor_id,
+            *,
+            title=None,
+            description=None,
+            content_type="video/mp4",
+            season_number=None,
+            episode_number=None,
+        ):
             return PublishResult(
                 anchor_episode_id=999,
                 status="draft",
@@ -450,7 +503,16 @@ class TestSpotifyEpisodeUpload:
     def test_delegates_to_publish(self, video_file, monkeypatch):
         captured = {}
 
-        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4", season_number=None, episode_number=None):
+        def fake_upload(
+            path,
+            anchor_id,
+            *,
+            title=None,
+            description=None,
+            content_type="video/mp4",
+            season_number=None,
+            episode_number=None,
+        ):
             captured["path"] = path
             captured["anchor_id"] = anchor_id
             captured["content_type"] = content_type
@@ -464,10 +526,18 @@ class TestSpotifyEpisodeUpload:
 
         monkeypatch.setattr("podcaster.publish.upload_video_to_episode", fake_upload)
         config = VideoDistributionConfig(spotify_upload_enabled=True)
-        assert upload_to_spotify_episode(
-            video_file, 99, config, title="My Show", description="desc",
-            season_number=2026, episode_number=24,
-        ) is True
+        assert (
+            upload_to_spotify_episode(
+                video_file,
+                99,
+                config,
+                title="My Show",
+                description="desc",
+                season_number=2026,
+                episode_number=24,
+            )
+            is True
+        )
         assert captured["anchor_id"] == 99
         assert captured["content_type"] == "video/mp4"
         assert captured["title"] == "My Show"
@@ -475,7 +545,16 @@ class TestSpotifyEpisodeUpload:
         assert captured["episode_number"] == 24
 
     def test_publish_failure_returns_false(self, video_file, monkeypatch):
-        def fake_upload(path, anchor_id, *, title=None, description=None, content_type="video/mp4", season_number=None, episode_number=None):
+        def fake_upload(
+            path,
+            anchor_id,
+            *,
+            title=None,
+            description=None,
+            content_type="video/mp4",
+            season_number=None,
+            episode_number=None,
+        ):
             from podcaster.publish import PublishResult
 
             return PublishResult(status="failed", error="boom")
@@ -491,7 +570,12 @@ class TestSpotifyEpisodeUpload:
             dry_run=True,
         )
         result = distribute_video(
-            video_file, "job1", "title", "desc", 120.0, config,
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
             spotify_anchor_id=123,
         )
         assert result.spotify_upload_updated is True
@@ -508,13 +592,16 @@ class TestPlaylistIntegration:
         def fake_add(config, locale, video_id, token, *, transport=None, position=None):
             calls.append({"locale": locale, "video_id": video_id})
             from podcaster.video.youtube_playlist import PlaylistAddResult
+
             return PlaylistAddResult(video_id=video_id, playlist_id="PLen", succeeded=True)
 
         monkeypatch.setattr("podcaster.video.distribution._add_to_show_playlist", fake_add)
 
-        transport = FakeTransport(responses=[
-            (200, json.dumps({"access_token": "tok"}).encode()),  # token (upload)
-        ])
+        transport = FakeTransport(
+            responses=[
+                (200, json.dumps({"access_token": "tok"}).encode()),  # token (upload)
+            ]
+        )
         # upload_to_youtube: token, init, upload; then token again for playlist
         transport._responses = [
             (200, json.dumps({"access_token": "tok"}).encode()),  # token for upload
@@ -537,13 +624,19 @@ class TestPlaylistIntegration:
 
         config_real = VideoDistributionConfig(
             youtube_enabled=True,
-            youtube_client_id="id", youtube_client_secret="sec",
+            youtube_client_id="id",
+            youtube_client_secret="sec",
             youtube_refresh_token="ref",
             blob_archive_enabled=False,
             dry_run=False,
         )
         result = distribute_video(
-            video_file, "job1", "title", "desc", 120.0, config_real,
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config_real,
             locale="es",
         )
         assert result.youtube_id == "yt-vid-001"
@@ -559,7 +652,9 @@ class TestPlaylistIntegration:
             lambda *a, **kw: calls.append(True),
         )
         config = VideoDistributionConfig(
-            youtube_enabled=True, blob_archive_enabled=False, dry_run=True,
+            youtube_enabled=True,
+            blob_archive_enabled=False,
+            dry_run=True,
         )
         distribute_video(video_file, "job1", "title", "desc", 120.0, config)
         assert calls == []
@@ -580,7 +675,9 @@ class TestPlaylistIntegration:
             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("network down")),
         )
         config = VideoDistributionConfig(
-            youtube_enabled=True, blob_archive_enabled=False, dry_run=False,
+            youtube_enabled=True,
+            blob_archive_enabled=False,
+            dry_run=False,
         )
         result = distribute_video(video_file, "job1", "title", "desc", 120.0, config)
         assert result.youtube_id == "yt-vid-002"

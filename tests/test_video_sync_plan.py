@@ -42,23 +42,26 @@ from podcaster.video.sync_plan import (
 
 # --- Fixtures ---
 
-SAMPLE_SCRIPT = """\
-Title: Week 24 — Open Source Highlights
-Episode: 42
-Published: 2026-06-15
-Source: https://github.com/jmservera/SquadScope
-Duration: 15:42
-TTS Provider: OpenAI TTS (Ada shimmer / Beto echo) [synthesis pending review]
-License: CC-BY-4.0
----
-
-Ada: Welcome to this week's episode! We've got some exciting repos to cover.
-Beto: Absolutely! Let's start with https://github.com/microsoft/vscode — the latest release is huge.
-Ada: And don't forget https://github.com/astral-sh/ruff which just hit 1.0.
-Beto: We should also mention https://github.com/jmservera/SquadScope-Podcaster for the meta angle.
-Ada: Plus there's this interesting fork at https://github.com/astral-sh/ruff/issues/123 but that's just an issue link.
-Beto: Great episode everyone!
-"""
+SAMPLE_SCRIPT = (
+    "Title: Week 24 — Open Source Highlights\n"
+    "Episode: 42\n"
+    "Published: 2026-06-15\n"
+    "Source: https://github.com/jmservera/SquadScope\n"
+    "Duration: 15:42\n"
+    "TTS Provider: OpenAI TTS (Ada shimmer / Beto echo) [synthesis pending review]\n"
+    "License: CC-BY-4.0\n"
+    "---\n"
+    "\n"
+    "Ada: Welcome to this week's episode! We've got some exciting repos to cover.\n"
+    "Beto: Absolutely! Let's start with https://github.com/microsoft/vscode — the latest "
+    "release is huge.\n"
+    "Ada: And don't forget https://github.com/astral-sh/ruff which just hit 1.0.\n"
+    "Beto: We should also mention https://github.com/jmservera/SquadScope-Podcaster for "
+    "the meta angle.\n"
+    "Ada: Plus there's this interesting fork at https://github.com/astral-sh/ruff/issues/"
+    "123 but that's just an issue link.\n"
+    "Beto: Great episode everyone!\n"
+)
 
 SCRIPT_NO_REPOS = """\
 Title: No Repos Episode
@@ -131,12 +134,8 @@ class TestFetchReposFromArticle:
             calls.append(url)
             return _FakeResponse(200, self._PAGE_HTML)
 
-        monkeypatch.setattr(
-            "podcaster.video.sync_plan.requests.get", fake_get
-        )
-        repos = fetch_repos_from_article(
-            "https://claracle.com/weekly/2026/W26/"
-        )
+        monkeypatch.setattr("podcaster.video.sync_plan.requests.get", fake_get)
+        repos = fetch_repos_from_article("https://claracle.com/weekly/2026/W26/")
         # lowercase variant attempted first
         assert calls[0] == "https://claracle.com/weekly/2026/w26/"
         assert RepoReference("microsoft", "vscode") in repos
@@ -148,12 +147,8 @@ class TestFetchReposFromArticle:
                 return _FakeResponse(404, "not found")
             return _FakeResponse(200, self._PAGE_HTML)
 
-        monkeypatch.setattr(
-            "podcaster.video.sync_plan.requests.get", fake_get
-        )
-        repos = fetch_repos_from_article(
-            "https://claracle.com/weekly/2026/W26/"
-        )
+        monkeypatch.setattr("podcaster.video.sync_plan.requests.get", fake_get)
+        repos = fetch_repos_from_article("https://claracle.com/weekly/2026/W26/")
         assert RepoReference("microsoft", "vscode") in repos
 
     def test_excludes_own_project_repo(self, monkeypatch):
@@ -181,9 +176,7 @@ class TestFetchReposFromArticle:
         def fake_get(url, timeout=None):
             raise _requests.RequestException("boom")
 
-        monkeypatch.setattr(
-            "podcaster.video.sync_plan.requests.get", fake_get
-        )
+        monkeypatch.setattr("podcaster.video.sync_plan.requests.get", fake_get)
         assert fetch_repos_from_article("https://claracle.com/x/") == []
 
     def test_returns_empty_when_no_repos_on_page(self, monkeypatch):
@@ -201,8 +194,7 @@ class TestFetchReposFromArticle:
         called = []
         monkeypatch.setattr(
             "podcaster.video.sync_plan.requests.get",
-            lambda url, timeout=None: called.append(url)
-            or _FakeResponse(200, "<html></html>"),
+            lambda url, timeout=None: called.append(url) or _FakeResponse(200, "<html></html>"),
         )
         # Hosts outside the allowlist must never be fetched (SSRF guard).
         assert fetch_repos_from_article("https://example.com/x/") == []
@@ -302,14 +294,10 @@ class TestGenerateEpisodePlan:
         assert plan.segments[-1].end_seconds == pytest.approx(120.0)
 
     def test_segments_are_contiguous(self):
-        repos = [
-            RepoReference(owner="x", name=f"r{i}") for i in range(5)
-        ]
+        repos = [RepoReference(owner="x", name=f"r{i}") for i in range(5)]
         plan = generate_episode_plan(repos, total_duration_seconds=100.0)
         for i in range(len(plan.segments) - 1):
-            assert plan.segments[i].end_seconds == pytest.approx(
-                plan.segments[i + 1].start_seconds
-            )
+            assert plan.segments[i].end_seconds == pytest.approx(plan.segments[i + 1].start_seconds)
 
     def test_single_repo(self):
         repos = [RepoReference(owner="o", name="r")]
@@ -404,9 +392,7 @@ class TestPlanFromScript:
             "podcaster.video.sync_plan.fetch_repos_from_article",
             lambda url: [],
         )
-        plan = plan_from_script(
-            SCRIPT_NO_REPOS_WITH_SOURCE, total_duration_seconds=60.0
-        )
+        plan = plan_from_script(SCRIPT_NO_REPOS_WITH_SOURCE, total_duration_seconds=60.0)
         seg = plan.segments[0]
         assert seg.is_generic
         assert seg.source_url == "https://claracle.com/weekly/2026/W26/"
@@ -420,9 +406,7 @@ class TestPlanFromScript:
             "podcaster.video.sync_plan.fetch_repos_from_article",
             lambda url: fetched,
         )
-        plan = plan_from_script(
-            SCRIPT_NO_REPOS_WITH_SOURCE, total_duration_seconds=60.0
-        )
+        plan = plan_from_script(SCRIPT_NO_REPOS_WITH_SOURCE, total_duration_seconds=60.0)
         # Real timed segments per repo, not a single generic background.
         assert len(plan.segments) == 2
         assert all(not s.is_generic for s in plan.segments)
@@ -513,9 +497,7 @@ class TestGenerateEpisodePlanTimed:
 
     def test_single_repo_fills_total_duration(self):
         repos = [self._repo("a", "b")]
-        plan = generate_episode_plan_timed(
-            "intro https://github.com/a/b done", repos, 60.0
-        )
+        plan = generate_episode_plan_timed("intro https://github.com/a/b done", repos, 60.0)
         assert len(plan.segments) == 1
         seg = plan.segments[0]
         # Single segment: start + duration must equal total duration
@@ -524,10 +506,7 @@ class TestGenerateEpisodePlanTimed:
 
     def test_timing_reflects_script_position(self):
         # repo a/a is mentioned early (~10%), repo b/b mentioned late (~90%)
-        script = (
-            "aaa https://github.com/a/a bbb " + "x" * 800 +
-            " https://github.com/b/b zzz"
-        )
+        script = "aaa https://github.com/a/a bbb " + "x" * 800 + " https://github.com/b/b zzz"
         repos = [
             self._repo("a", "a"),
             self._repo("b", "b"),
@@ -540,9 +519,7 @@ class TestGenerateEpisodePlanTimed:
 
     def test_min_segment_enforced(self):
         # Both repos appear at the very start — min_segment should separate them
-        script = (
-            "https://github.com/a/a https://github.com/b/b rest of script"
-        )
+        script = "https://github.com/a/a https://github.com/b/b rest of script"
         repos = [
             self._repo("a", "a"),
             self._repo("b", "b"),
@@ -554,9 +531,7 @@ class TestGenerateEpisodePlanTimed:
 
     def test_segment_order_is_monotonic(self):
         script = (
-            "https://github.com/c/c ... "
-            "https://github.com/a/a ... "
-            "https://github.com/b/b"
+            "https://github.com/c/c ... " "https://github.com/a/a ... " "https://github.com/b/b"
         )
         repos = [
             self._repo("a", "a"),
@@ -569,9 +544,7 @@ class TestGenerateEpisodePlanTimed:
 
     def test_total_duration_preserved(self):
         script = (
-            "https://github.com/a/a ... "
-            "https://github.com/b/b ... "
-            "https://github.com/c/c"
+            "https://github.com/a/a ... " "https://github.com/b/b ... " "https://github.com/c/c"
         )
         repos = [
             self._repo("a", "a"),
@@ -603,10 +576,7 @@ class TestPlanFromScriptTimed:
         )
         plan = plan_from_script_timed(SCRIPT_NO_REPOS_WITH_SOURCE, 60.0)
         assert plan.segments[0].is_generic
-        assert (
-            plan.segments[0].source_url
-            == "https://claracle.com/weekly/2026/W26/"
-        )
+        assert plan.segments[0].source_url == "https://claracle.com/weekly/2026/W26/"
 
     def test_article_repos_use_equal_split(self, monkeypatch):
         # Repos fetched from the article are absent from the script, so timed
@@ -648,8 +618,7 @@ class TestWeeklyUrlFromJobId:
 
     def test_pads_single_digit_week(self):
         assert (
-            weekly_url_from_job_id("podcast-2026-W6-abc")
-            == "https://claracle.com/weekly/2026/w06/"
+            weekly_url_from_job_id("podcast-2026-W6-abc") == "https://claracle.com/weekly/2026/w06/"
         )
 
     def test_accepts_lowercase_w(self):
@@ -761,8 +730,6 @@ class TestPrependWeeklySegment:
 
 
 # --- Audio-boundary sync tests (#297) ---
-
-
 
 
 class TestBuildAudioCuePoints:
@@ -978,9 +945,7 @@ class TestCheckRepoRemoved:
     def test_other_status_is_not_removed(self):
         # Rate-limiting / server errors must not be mistaken for removal.
         for status in (429, 500, 503):
-            with patch(
-                "podcaster.video.sync_plan.requests.head", return_value=_FakeResp(status)
-            ):
+            with patch("podcaster.video.sync_plan.requests.head", return_value=_FakeResp(status)):
                 assert check_repo_removed("https://github.com/a/b") is False
 
     def test_network_error_is_not_removed(self):
@@ -1001,12 +966,22 @@ class TestAnnotateRemovedRepos:
         return EpisodePlan(
             total_duration_seconds=30.0,
             segments=(
-                VideoSegment(repo=RepoReference("microsoft", "vscode"),
-                             start_seconds=0.0, duration_seconds=10.0),
-                VideoSegment(repo=RepoReference("someuser", "mktail"),
-                             start_seconds=10.0, duration_seconds=10.0),
-                VideoSegment(repo=None, source_url="https://claracle.com/x",
-                             start_seconds=20.0, duration_seconds=10.0),
+                VideoSegment(
+                    repo=RepoReference("microsoft", "vscode"),
+                    start_seconds=0.0,
+                    duration_seconds=10.0,
+                ),
+                VideoSegment(
+                    repo=RepoReference("someuser", "mktail"),
+                    start_seconds=10.0,
+                    duration_seconds=10.0,
+                ),
+                VideoSegment(
+                    repo=None,
+                    source_url="https://claracle.com/x",
+                    start_seconds=20.0,
+                    duration_seconds=10.0,
+                ),
             ),
         )
 
@@ -1040,8 +1015,12 @@ class TestAnnotateRemovedRepos:
         plan = EpisodePlan(
             total_duration_seconds=10.0,
             segments=(
-                VideoSegment(repo=RepoReference("a", "b"), start_seconds=0.0,
-                             duration_seconds=10.0, removed_reason="pre-set"),
+                VideoSegment(
+                    repo=RepoReference("a", "b"),
+                    start_seconds=0.0,
+                    duration_seconds=10.0,
+                    removed_reason="pre-set",
+                ),
             ),
         )
         calls = []
@@ -1060,11 +1039,17 @@ class TestRemovedRepoSpeakerNotes:
         plan = EpisodePlan(
             total_duration_seconds=20.0,
             segments=(
-                VideoSegment(repo=RepoReference("microsoft", "vscode"),
-                             start_seconds=0.0, duration_seconds=10.0),
-                VideoSegment(repo=RepoReference("someuser", "mktail"),
-                             start_seconds=10.0, duration_seconds=10.0,
-                             removed_reason=REMOVED_REPO_REASON),
+                VideoSegment(
+                    repo=RepoReference("microsoft", "vscode"),
+                    start_seconds=0.0,
+                    duration_seconds=10.0,
+                ),
+                VideoSegment(
+                    repo=RepoReference("someuser", "mktail"),
+                    start_seconds=10.0,
+                    duration_seconds=10.0,
+                    removed_reason=REMOVED_REPO_REASON,
+                ),
             ),
         )
         notes = removed_repo_speaker_notes(plan)
@@ -1075,8 +1060,11 @@ class TestRemovedRepoSpeakerNotes:
     def test_no_notes_when_none_removed(self):
         plan = EpisodePlan(
             total_duration_seconds=10.0,
-            segments=(VideoSegment(repo=RepoReference("a", "b"),
-                                   start_seconds=0.0, duration_seconds=10.0),),
+            segments=(
+                VideoSegment(
+                    repo=RepoReference("a", "b"), start_seconds=0.0, duration_seconds=10.0
+                ),
+            ),
         )
         assert removed_repo_speaker_notes(plan) == []
 
@@ -1085,9 +1073,14 @@ class TestRemovedReasonSerialization:
     def test_to_yaml_includes_removed_reason(self):
         plan = EpisodePlan(
             total_duration_seconds=10.0,
-            segments=(VideoSegment(repo=RepoReference("a", "b"), start_seconds=0.0,
-                                   duration_seconds=10.0,
-                                   removed_reason=REMOVED_REPO_REASON),),
+            segments=(
+                VideoSegment(
+                    repo=RepoReference("a", "b"),
+                    start_seconds=0.0,
+                    duration_seconds=10.0,
+                    removed_reason=REMOVED_REPO_REASON,
+                ),
+            ),
         )
         data = yaml.safe_load(plan.to_yaml())
         assert data["segments"][0]["removed_reason"] == REMOVED_REPO_REASON
@@ -1140,7 +1133,9 @@ class TestGenerateEpisodePlanFromTimes:
         # Two repos aligned to nearly the same time get separated by the floor.
         times = {self.R1: 10.0, self.R2: 10.2}
         plan = generate_episode_plan_from_times(
-            [self.R1, self.R2], times, total_duration_seconds=60.0,
+            [self.R1, self.R2],
+            times,
+            total_duration_seconds=60.0,
             min_segment_seconds=5.0,
         )
         starts = [s.start_seconds for s in plan.segments]
@@ -1149,7 +1144,9 @@ class TestGenerateEpisodePlanFromTimes:
     def test_all_segments_fit_within_total(self):
         times = {self.R1: 110.0, self.R2: 115.0, self.R3: 118.0}
         plan = generate_episode_plan_from_times(
-            [self.R1, self.R2, self.R3], times, total_duration_seconds=120.0,
+            [self.R1, self.R2, self.R3],
+            times,
+            total_duration_seconds=120.0,
             min_segment_seconds=5.0,
         )
         for s in plan.segments:
@@ -1209,9 +1206,7 @@ class TestPlanFromScriptAligned:
             called["n"] += 1
             return None
 
-        monkeypatch.setattr(
-            "podcaster.video.audio_align.repo_audio_timestamps", _spy
-        )
+        monkeypatch.setattr("podcaster.video.audio_align.repo_audio_timestamps", _spy)
         script = "Title: T\nSource URL: https://claracle.com/x\n---\nHi there.\n"
         plan = plan_from_script_aligned(script, 100.0, audio_path="a.mp3")
         assert called["n"] == 0

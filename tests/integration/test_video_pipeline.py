@@ -76,7 +76,9 @@ def test_video_pipeline_generates_mp4_output(
         fake_webm=fake_webm,
     )
     runner = FakeCommandRunner()
-    output_path = tmp_path / ("episode-with-audio.mp4" if with_audio else "episode-without-audio.mp4")
+    output_path = tmp_path / (
+        "episode-with-audio.mp4" if with_audio else "episode-without-audio.mp4"
+    )
 
     result = compose_video(
         recorded_segments,

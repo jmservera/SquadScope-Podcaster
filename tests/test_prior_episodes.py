@@ -25,7 +25,9 @@ def test_local_storage_backend_list_blobs_returns_prefix_matches(tmp_path: Path)
 
 
 class _MockStorage:
-    def __init__(self, blobs: list[str], scripts: dict[str, bytes] | None = None, *, fail_list: bool = False) -> None:
+    def __init__(
+        self, blobs: list[str], scripts: dict[str, bytes] | None = None, *, fail_list: bool = False
+    ) -> None:
         self._blobs = blobs
         self._scripts = scripts or {}
         self._fail_list = fail_list
@@ -62,14 +64,16 @@ def test_fetch_prior_episode_themes_reads_latest_scripts_and_caps_budget() -> No
                 "Title: Claracle Podcast – Week 2026-W25\n"
                 "Source URL: https://example.com/evals-and-guardrails-become-standard\n"
                 "---\n"
-                "Theo: In this episode we will talk about: Eval loops and guardrails become standard.\n"
+                "Theo: In this episode we will talk about: Eval loops and guardrails "
+                "become standard.\n"
                 "Vera: Platform teams are turning prompts into repeatable operating procedures.\n"
             ).encode("utf-8"),
             "jobs/podcast-2026-W24-aaaa/script.txt": (
                 "Title: Claracle Podcast – Week 2026-W24\n"
                 "Source URL: https://example.com/devops-budgets-tighten-around-inference-costs\n"
                 "---\n"
-                "Theo: In this episode we will talk about: DevOps budgets tighten around inference costs.\n"
+                "Theo: In this episode we will talk about: DevOps budgets tighten "
+                "around inference costs.\n"
             ).encode("utf-8"),
         },
     )
