@@ -2327,6 +2327,20 @@ def compose_video(
             MIN_CONTENT_WINDOW_SECONDS,
         )
         plan_durations = [seg.segment.duration_seconds for seg in segments]
+        # Sync fix (issue #544): the podcast audio is muxed 1:1 from t=0, but the
+        # content block is placed *after* the intro bumper and *before* the outro.
+        # The sync plan tiles the full audio timeline [0, audio], so the span the
+        # intro bumper already covers ([0, intro_dur], the spoken welcome) and the
+        # span the outro covers ([audio - outro_dur, audio], the closing) must be
+        # trimmed off the first and last content segments. Otherwise the content
+        # is proportionally squeezed into the window AND shifted by intro_dur,
+        # drifting each repo away from when the hosts actually name it. After the
+        # trim the content represents audio [intro_dur, audio - outro_dur] at 1:1.
+        _seg_floor = transition_duration + 0.5
+        if plan_durations and intro_dur > 0:
+            plan_durations[0] = max(plan_durations[0] - intro_dur, _seg_floor)
+        if plan_durations and outro_dur > 0:
+            plan_durations[-1] = max(plan_durations[-1] - outro_dur, _seg_floor)
         fit_durations = _fit_target_durations(plan_durations, content_window, transition_duration)
         logger.info(
             "Fitting %d content segment(s) to %.1fs window (audio=%.1fs, intro=%.1fs, outro=%.1fs)",

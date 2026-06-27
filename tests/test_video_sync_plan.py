@@ -657,16 +657,17 @@ class TestPrependWeeklySegment:
         # repo segments shifted after the weekly segment
         assert out.segments[1].repo == RepoReference("microsoft", "vscode")
 
-    def test_duration_proportional_to_bridge_clamped(self):
-        # bridge of 18s -> within [15, 20] -> used as-is
+    def test_duration_fills_bridge_with_min_floor(self):
+        # bridge of 18s -> used as-is (above the 15s floor)
         out = prepend_weekly_segment(self._repo_plan(18.0), "podcast-2026-W26-x")
         assert out.segments[0].duration_seconds == 18.0
-        # bridge of 5s -> clamped up to the 15s minimum
+        # bridge of 5s -> raised to the 15s minimum floor
         out_low = prepend_weekly_segment(self._repo_plan(5.0), "podcast-2026-W26-x")
         assert out_low.segments[0].duration_seconds == 15.0
-        # bridge of 40s -> clamped down to the 20s maximum
+        # bridge of 40s -> fills the whole bridge (no maximum clamp), so the
+        # plan keeps tiling the timeline with no gap (issue #544)
         out_high = prepend_weekly_segment(self._repo_plan(40.0), "podcast-2026-W26-x")
-        assert out_high.segments[0].duration_seconds == 20.0
+        assert out_high.segments[0].duration_seconds == 40.0
 
     def test_no_week_token_returns_plan_unchanged(self):
         plan = self._repo_plan()
@@ -708,14 +709,17 @@ class TestPrependWeeklySegment:
         assert out.segments[2].start_seconds == 115.0
         assert out.total_duration_seconds == plan.total_duration_seconds + 10.0
 
-    def test_large_bridge_clamped_without_shift(self):
-        # bridge of 40s is clamped down to the 20s maximum: the weekly segment
-        # fits within the bridge, so no shift and no total-duration change.
+    def test_large_bridge_filled_without_shift(self):
+        # bridge of 40s: the weekly segment fills the whole bridge (no maximum
+        # clamp), so no shift, no total-duration change, and the plan tiles the
+        # timeline with no gap before the first repo (issue #544).
         plan = self._repo_plan(40.0)
         out = prepend_weekly_segment(plan, "podcast-2026-W26-x")
-        assert out.segments[0].duration_seconds == 20.0
+        assert out.segments[0].duration_seconds == 40.0
         assert out.segments[1].start_seconds == 40.0
         assert out.total_duration_seconds == plan.total_duration_seconds
+        # The weekly segment ends exactly where the first repo begins (no hole).
+        assert out.segments[0].duration_seconds == out.segments[1].start_seconds
 
     def test_idempotent(self):
         plan = self._repo_plan()
@@ -723,6 +727,39 @@ class TestPrependWeeklySegment:
         twice = prepend_weekly_segment(once, "podcast-2026-W26-x")
         assert len(twice.segments) == len(once.segments)
         assert twice.segments[0].source_url == once.segments[0].source_url
+
+    def test_plan_tiles_timeline_with_no_gap(self):
+        # The composed video lays segments out by duration, so the plan must tile
+        # [0, total] contiguously — any gap shifts every repo earlier than it is
+        # discussed (issue #544). Build a realistic plan from real mention times
+        # (which tiles [first_start, total]); prepend must fill the leading
+        # bridge so the whole timeline tiles, for both small and large bridges.
+        repos = (
+            RepoReference("vercel", "eve"),
+            RepoReference("astral-sh", "ruff"),
+            RepoReference("microsoft", "vscode"),
+        )
+        for first_start in (5.0, 18.0, 106.0):
+            plan = generate_episode_plan_from_times(
+                list(repos),
+                {
+                    repos[0]: first_start,
+                    repos[1]: first_start + 90.0,
+                    repos[2]: first_start + 180.0,
+                },
+                total_duration_seconds=first_start + 280.0,
+            )
+            out = prepend_weekly_segment(plan, "podcast-2026-W26-x")
+            assert out.segments[0].is_generic
+            assert out.segments[0].start_seconds == 0.0
+            cursor = 0.0
+            for seg in out.segments:
+                assert abs(seg.start_seconds - cursor) < 1e-6, (
+                    f"gap/overlap at {seg.start_seconds} (expected {cursor}) "
+                    f"for first_start={first_start}"
+                )
+                cursor += seg.duration_seconds
+            assert abs(cursor - out.total_duration_seconds) < 1e-6
 
 
 # --- Audio-boundary sync tests (#297) ---

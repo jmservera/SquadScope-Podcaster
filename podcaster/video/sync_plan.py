@@ -862,9 +862,13 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
     ``source_url`` so the recorder navigates to and scrolls the page like any
     other website segment.
 
-    Its duration is proportional to the bridge before the first repo mention
-    (the first segment's ``start_seconds``), clamped to
-    ``[WEEKLY_SEGMENT_MIN_SECONDS, WEEKLY_SEGMENT_MAX_SECONDS]``.
+    Its duration spans the entire bridge before the first repo mention (the
+    first segment's ``start_seconds``), with a ``WEEKLY_SEGMENT_MIN_SECONDS``
+    floor.  Filling the whole bridge keeps the plan tiling the audio timeline
+    with no gap: clamping the weekly page to a small maximum used to leave the
+    rest of the bridge uncovered, and because composition lays segments out by
+    duration that gap collapsed and shifted every repo earlier than the moment
+    the hosts actually name it (issue #544).
 
     The plan is returned unchanged when *job_id* yields no weekly URL or the
     weekly page is already the first segment (idempotent).
@@ -890,7 +894,10 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
         return plan
 
     first_start = segments[0].start_seconds if segments else WEEKLY_SEGMENT_MAX_SECONDS
-    weekly_duration = min(max(first_start, WEEKLY_SEGMENT_MIN_SECONDS), WEEKLY_SEGMENT_MAX_SECONDS)
+    # Span the whole bridge (only a minimum floor) so the weekly page fills the
+    # pre-first-repo gap and the plan keeps tiling the audio timeline with no
+    # hole — otherwise every repo is shown earlier than it is discussed (#544).
+    weekly_duration = max(first_start, WEEKLY_SEGMENT_MIN_SECONDS)
 
     weekly_segment = VideoSegment(
         start_seconds=0.0,
