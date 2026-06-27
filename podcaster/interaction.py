@@ -45,11 +45,48 @@ _ACRONYM_RE = re.compile(r"\b[A-Z]{2,}\b")
 _CODE_SPAN_RE = re.compile(r"`[^`]+`")
 _TECH_KEYWORDS = frozenset(
     {
-        "api", "apis", "sdk", "cli", "json", "yaml", "http", "https", "tcp", "udp",
-        "sql", "regex", "kubernetes", "k8s", "docker", "ffmpeg", "tts", "llm", "gpu",
-        "cpu", "ram", "oauth", "jwt", "ssh", "tls", "url", "uri", "uuid", "ast",
-        "repo", "repos", "commit", "branch", "merge", "endpoint", "schema", "payload",
-        "embedding", "embeddings", "tokenizer", "transformer", "backchannel",
+        "api",
+        "apis",
+        "sdk",
+        "cli",
+        "json",
+        "yaml",
+        "http",
+        "https",
+        "tcp",
+        "udp",
+        "sql",
+        "regex",
+        "kubernetes",
+        "k8s",
+        "docker",
+        "ffmpeg",
+        "tts",
+        "llm",
+        "gpu",
+        "cpu",
+        "ram",
+        "oauth",
+        "jwt",
+        "ssh",
+        "tls",
+        "url",
+        "uri",
+        "uuid",
+        "ast",
+        "repo",
+        "repos",
+        "commit",
+        "branch",
+        "merge",
+        "endpoint",
+        "schema",
+        "payload",
+        "embedding",
+        "embeddings",
+        "tokenizer",
+        "transformer",
+        "backchannel",
     }
 )
 
@@ -357,8 +394,7 @@ def resolve_placements(
 
     starts = _turn_starts(durations, gap_seconds)
     by_id = {
-        turn.turn_id: (start, duration)
-        for turn, start, duration in zip(turns, starts, durations)
+        turn.turn_id: (start, duration) for turn, start, duration in zip(turns, starts, durations)
     }
     placements: list[BackchannelPlacement] = []
     for interaction in interaction_map:

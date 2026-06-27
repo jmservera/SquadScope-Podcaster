@@ -181,9 +181,7 @@ def _segment_filtergraph(
 
     if segment.kind is EdlSegmentKind.SCREENSHOT:
         if input_index is None:
-            raise EdlRenderError(
-                f"screenshot segment {index} has no resolved input index"
-            )
+            raise EdlRenderError(f"screenshot segment {index} has no resolved input index")
         # The still image input is already looped to the segment duration, so it
         # only needs normalising (and an optional title card).
         chain = f"[{input_index}:v]{norm}"
@@ -304,9 +302,7 @@ def build_render_plan(
     for i, seg in enumerate(edl.segments):
         if seg.kind is EdlSegmentKind.CLIP:
             if seg.clip_id is None or seg.clip_id not in clip_paths:
-                raise EdlRenderError(
-                    f"clip segment references unknown clip_id {seg.clip_id!r}"
-                )
+                raise EdlRenderError(f"clip segment references unknown clip_id {seg.clip_id!r}")
             if seg.clip_id not in input_index_by_clip:
                 input_index_by_clip[seg.clip_id] = len(input_files)
                 input_files.append(str(clip_paths[seg.clip_id]))
@@ -315,8 +311,7 @@ def build_render_plan(
         elif seg.kind is EdlSegmentKind.SCREENSHOT:
             if seg.fallback_image_id is None or seg.fallback_image_id not in image_paths:
                 raise EdlRenderError(
-                    "screenshot segment references unknown image id "
-                    f"{seg.fallback_image_id!r}"
+                    f"screenshot segment references unknown image id {seg.fallback_image_id!r}"
                 )
             seg_input_index[i] = len(input_files)
             input_files.append(str(image_paths[seg.fallback_image_id]))
@@ -324,9 +319,7 @@ def build_render_plan(
 
     statements: list[str] = []
     for i, seg in enumerate(edl.segments):
-        statements.extend(
-            _segment_filtergraph(seg, i, seg_input_index.get(i), config)
-        )
+        statements.extend(_segment_filtergraph(seg, i, seg_input_index.get(i), config))
 
     join_stmts, final_label, expected_ms = _join_filtergraph(edl.segments, config)
     statements.extend(join_stmts)
@@ -411,9 +404,7 @@ def degrade_for_render(
     screenshots = screenshots or {}
     repo_labels = repo_labels or {}
     section_titles = section_titles or {}
-    chain = (
-        tuple(fallback_chain) if fallback_chain is not None else DEFAULT_FALLBACK_CHAIN
-    )
+    chain = tuple(fallback_chain) if fallback_chain is not None else DEFAULT_FALLBACK_CHAIN
 
     def _degrade(segment: EdlSegment) -> EdlSegment:
         screenshot_id = screenshots.get(segment.repo_url) if segment.repo_url else None
@@ -508,9 +499,7 @@ def render_edl(
             check_files=runner is _default_runner,
         )
 
-    plan = build_render_plan(
-        edl, clip_paths, output_path, image_paths=image_paths, config=config
-    )
+    plan = build_render_plan(edl, clip_paths, output_path, image_paths=image_paths, config=config)
     result = runner(plan.argv)
     if result.returncode != 0:
         stderr = (result.stderr or "")[-2000:]

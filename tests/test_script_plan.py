@@ -48,7 +48,11 @@ Theo: Back to the weekly rundown we published online.
 @pytest.mark.parametrize(
     "line,mode,url",
     [
-        ("## Visual: repo https://github.com/owner/repo", VisualMode.REPO, "https://github.com/owner/repo"),
+        (
+            "## Visual: repo https://github.com/owner/repo",
+            VisualMode.REPO,
+            "https://github.com/owner/repo",
+        ),
         ("### visual - repo https://github.com/o/r.git", VisualMode.REPO, "https://github.com/o/r"),
         ("## Visual: intermission", VisualMode.INTERMISSION, None),
         ("## VISUAL: article", VisualMode.ARTICLE, None),
@@ -209,9 +213,7 @@ def test_validate_non_root_github_url_raises(repo_url):
 
 
 def test_validate_warns_when_no_repo_visuals():
-    plan = ScriptPlan(
-        segments=(ScriptPlanSegment(0, "Theo", "hi", VisualMode.ARTICLE),)
-    )
+    plan = ScriptPlan(segments=(ScriptPlanSegment(0, "Theo", "hi", VisualMode.ARTICLE),))
     warnings = validate_script_plan(plan)
     assert any("no 'repo' visuals" in w for w in warnings)
 

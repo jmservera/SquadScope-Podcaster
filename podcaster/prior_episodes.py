@@ -53,9 +53,7 @@ def fetch_prior_episode_themes(storage: StorageBackend, current_job_id: str) -> 
 
 def _prior_job_ids(blob_names: Iterable[str], *, current_job_id: str) -> list[str]:
     job_ids = {
-        match.group(1)
-        for blob_name in blob_names
-        if (match := _JOB_PATH_RE.match(blob_name))
+        match.group(1) for blob_name in blob_names if (match := _JOB_PATH_RE.match(blob_name))
     }
     job_ids.discard(current_job_id)
     return sorted(job_ids, reverse=True)

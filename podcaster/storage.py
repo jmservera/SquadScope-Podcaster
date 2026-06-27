@@ -51,43 +51,32 @@ class SignedDownloadUrl:
 
 
 class StorageBackend(Protocol):
-    def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
-        ...
+    def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact: ...
 
-    def get_bytes(self, path: str) -> bytes | None:
-        ...
+    def get_bytes(self, path: str) -> bytes | None: ...
 
     def update_bytes(
         self,
         path: str,
         content_type: str,
         update: Callable[[bytes | None], bytes],
-    ) -> StoredArtifact:
-        ...
+    ) -> StoredArtifact: ...
 
-    def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
-        ...
+    def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]: ...
 
-    def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
-        ...
+    def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl: ...
 
-    def blob_exists(self, path: str) -> bool:
-        ...
+    def blob_exists(self, path: str) -> bool: ...
 
-    def blob_size(self, path: str) -> int | None:
-        ...
+    def blob_size(self, path: str) -> int | None: ...
 
-    def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
-        ...
+    def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact: ...
 
-    def download_file(self, path: str, dest: Path) -> bool:
-        ...
+    def download_file(self, path: str, dest: Path) -> bool: ...
 
-    def delete_blob(self, path: str) -> bool:
-        ...
+    def delete_blob(self, path: str) -> bool: ...
 
-    def delete_prefix(self, prefix: str) -> int:
-        ...
+    def delete_prefix(self, prefix: str) -> int: ...
 
 
 class LocalStorageBackend:
@@ -463,9 +452,7 @@ class AzureBlobStorageBackend:
         except HTTPError as exc:
             if exc.code == 404:
                 return False
-            detail = (
-                exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
-            )
+            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
             raise RuntimeError(
                 f"blob existence check failed for {safe_path}: HTTP {exc.code} {detail}"
             ) from exc
@@ -495,9 +482,7 @@ class AzureBlobStorageBackend:
         except HTTPError as exc:
             if exc.code == 404:
                 return None
-            detail = (
-                exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
-            )
+            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
             raise RuntimeError(
                 f"blob size probe failed for {safe_path}: HTTP {exc.code} {detail}"
             ) from exc
@@ -601,9 +586,7 @@ class AzureBlobStorageBackend:
         except HTTPError as exc:
             if exc.code in (404, 202):
                 return exc.code == 202
-            detail = (
-                exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
-            )
+            detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""
             raise RuntimeError(
                 f"blob delete failed for {safe_path}: HTTP {exc.code} {detail}"
             ) from exc
@@ -632,7 +615,9 @@ def create_storage_backend() -> StorageBackend:
         return AzureBlobStorageBackend(account_url=account_url, container_name=container)
 
     root = Path(os.environ.get("PODCASTER_LOCAL_STORAGE_PATH", ".podcaster-artifacts"))
-    base_url = os.environ.get("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-stub")
+    base_url = os.environ.get(
+        "PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-stub"
+    )
     return LocalStorageBackend(root=root, base_url=base_url)
 
 
@@ -655,13 +640,17 @@ def create_scratch_storage_backend() -> StorageBackend | None:
         return AzureBlobStorageBackend(account_url=account_url, container_name=container)
 
     root = Path(os.environ.get("PODCASTER_LOCAL_SCRATCH_PATH", ".podcaster-scratch"))
-    base_url = os.environ.get("PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-scratch")
+    base_url = os.environ.get(
+        "PODCASTER_ARTIFACT_BASE_URL", "https://example.invalid/podcaster-scratch"
+    )
     return LocalStorageBackend(root=root, base_url=base_url)
 
 
 class ManagedIdentityTokenCredential:
     def get_token(self, *scopes: str) -> str:
-        resource = _managed_identity_resource(scopes[0] if scopes else "https://storage.azure.com/.default")
+        resource = _managed_identity_resource(
+            scopes[0] if scopes else "https://storage.azure.com/.default"
+        )
         token_payload = _request_managed_identity_token(resource)
         token = token_payload.get("access_token")
         if not isinstance(token, str) or not token:

@@ -115,12 +115,12 @@ class TestLabelScriptSections:
         assert labels[-2] == "Outro"
         # Middle labels should contain both beat topics
         middle = labels[4:-2]
-        assert any(
-            "First Topic" in lbl for lbl in middle
-        ), f"Expected 'First Topic' in middle labels: {middle}"
-        assert any(
-            "Second Topic" in lbl for lbl in middle
-        ), f"Expected 'Second Topic' in middle labels: {middle}"
+        assert any("First Topic" in lbl for lbl in middle), (
+            f"Expected 'First Topic' in middle labels: {middle}"
+        )
+        assert any("Second Topic" in lbl for lbl in middle), (
+            f"Expected 'Second Topic' in middle labels: {middle}"
+        )
 
     def test_too_few_segments(self):
         labels = label_script_sections("", [("host_a", "hi"), ("host_b", "hey")])

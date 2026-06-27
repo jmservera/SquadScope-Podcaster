@@ -198,9 +198,7 @@ class ScheduleResult:
     @property
     def succeeded(self) -> bool:
         """True when every task completed (or was resumed); none failed/blocked."""
-        return all(
-            r.state in _SATISFIED_STATES for r in self.tasks.values()
-        )
+        return all(r.state in _SATISFIED_STATES for r in self.tasks.values())
 
     def by_state(self, state: TaskState) -> list[TaskResult]:
         return [r for r in self.tasks.values() if r.state == state]
@@ -308,9 +306,7 @@ class StorageCheckpoint:
                 }
                 return json.dumps(body, ensure_ascii=False).encode("utf-8")
 
-            self._storage.update_bytes(
-                self._path, "application/json; charset=utf-8", _update
-            )
+            self._storage.update_bytes(self._path, "application/json; charset=utf-8", _update)
 
 
 # --------------------------------------------------------------------------- #
@@ -350,9 +346,7 @@ def validate_graph(tasks: Sequence[TaskSpec]) -> dict[str, TaskSpec]:
     for task in index.values():
         for dep in task.deps:
             if dep not in index:
-                raise UnknownDependencyError(
-                    f"task {task.id!r} depends on unknown task {dep!r}"
-                )
+                raise UnknownDependencyError(f"task {task.id!r} depends on unknown task {dep!r}")
             if dep == task.id:
                 raise CyclicDependencyError(f"task {task.id!r} depends on itself")
 
@@ -471,9 +465,7 @@ def run_dag(
         return all(states[dep] in _SATISFIED_STATES for dep in task.deps)
 
     def _dep_blocked(task: TaskSpec) -> bool:
-        return any(
-            states[dep] in (TaskState.FAILED, TaskState.BLOCKED) for dep in task.deps
-        )
+        return any(states[dep] in (TaskState.FAILED, TaskState.BLOCKED) for dep in task.deps)
 
     def _propagate_blocked() -> None:
         """Mark pending tasks whose deps failed/blocked as BLOCKED (transitively)."""
@@ -655,9 +647,7 @@ def build_generation_dag(
 
     script_id = add("script", STAGE_SCRIPT, ())
 
-    tts_ids = [
-        add(f"tts_{sid}", STAGE_TTS, (script_id,)) for sid in segment_ids
-    ]
+    tts_ids = [add(f"tts_{sid}", STAGE_TTS, (script_id,)) for sid in segment_ids]
 
     norm_ids: list[str] = []
     for rid in repo_ids:
@@ -687,6 +677,4 @@ def build_generation_dag(
 
 
 def _now_iso() -> str:
-    return (
-        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

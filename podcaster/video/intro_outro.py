@@ -41,8 +41,10 @@ try:
         _find_drawtext_capable_ffmpeg as _get_drawtext_ffmpeg,
     )
 except ImportError:  # pragma: no cover
+
     def _get_drawtext_ffmpeg() -> str | None:  # type: ignore[misc]
         return None
+
 
 logger = logging.getLogger(__name__)
 
@@ -224,9 +226,7 @@ class IntroConfig:
         return cls(
             show_name=show_name if show_name is not None else copy.show_name,
             episode_title=(
-                episode_title
-                if episode_title is not None
-                else copy.default_episode_title
+                episode_title if episode_title is not None else copy.default_episode_title
             ),
             subtitle=subtitle,
             duration_ms=duration_ms,
@@ -362,14 +362,11 @@ def _record_html_to_video(
         video_path.rename(output_path)
     else:
         raise RuntimeError(
-            f"Playwright did not produce a video file"
-            f"{f' at {video_path}' if video_path else ''}"
+            f"Playwright did not produce a video file{f' at {video_path}' if video_path else ''}"
         )
 
     if not output_path.exists():
-        raise RuntimeError(
-            f"Playwright recording failed: no video file produced at {output_path}"
-        )
+        raise RuntimeError(f"Playwright recording failed: no video file produced at {output_path}")
 
     return output_path
 
@@ -491,9 +488,7 @@ def derive_intro_duration(
         ValueError: If *words_per_minute* is not positive.
     """
     if words_per_minute <= 0:
-        raise ValueError(
-            f"words_per_minute must be positive, got {words_per_minute}"
-        )
+        raise ValueError(f"words_per_minute must be positive, got {words_per_minute}")
 
     if not script.strip():
         return default_seconds
@@ -599,12 +594,27 @@ def _build_intro_ffmpeg_cmd(
     ]
 
     return [
-        ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y",
-        "-f", "lavfi",
-        "-i", f"color=c=#0d1117:size={config.width}x{config.height}:rate={FPS}",
-        "-t", f"{duration_sec:.3f}",
-        "-vf", ",".join(filters),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=#0d1117:size={config.width}x{config.height}:rate={FPS}",
+        "-t",
+        f"{duration_sec:.3f}",
+        "-vf",
+        ",".join(filters),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
         str(output_path),
     ]
 
@@ -660,12 +670,27 @@ def _build_outro_ffmpeg_cmd(
     ]
 
     return [
-        ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y",
-        "-f", "lavfi",
-        "-i", f"color=c=#0d1117:size={config.width}x{config.height}:rate={FPS}",
-        "-t", f"{duration_sec:.3f}",
-        "-vf", ",".join(filters),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=#0d1117:size={config.width}x{config.height}:rate={FPS}",
+        "-t",
+        f"{duration_sec:.3f}",
+        "-vf",
+        ",".join(filters),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
         str(output_path),
     ]
 
@@ -801,11 +826,11 @@ _DEFAULT_CREDITS_ENTRIES: list[CreditsEntry] = [
 DEFAULT_CREDITS_ENTRIES: list[CreditsEntry] = _DEFAULT_CREDITS_ENTRIES
 
 # Credits card layout constants
-_CREDITS_HEADING_Y = 120      # show name top margin
-_CREDITS_TITLE_Y = 220        # "Credits" label y position
+_CREDITS_HEADING_Y = 120  # show name top margin
+_CREDITS_TITLE_Y = 220  # "Credits" label y position
 _CREDITS_ENTRIES_Y_START = 320  # first entry's label y position
-_CREDITS_ENTRY_HEIGHT = 100   # pixels between consecutive entries
-_CREDITS_VALUE_OFFSET = 36    # value y offset below label within one entry
+_CREDITS_ENTRY_HEIGHT = 100  # pixels between consecutive entries
+_CREDITS_VALUE_OFFSET = 36  # value y offset below label within one entry
 
 # Default credits duration (8 s sits comfortably in the 5-10 s requirement)
 DEFAULT_CREDITS_DURATION_MS = 8_000
@@ -916,12 +941,27 @@ def _build_credits_ffmpeg_cmd(
     ]
 
     return [
-        ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y",
-        "-f", "lavfi",
-        "-i", f"color=c=#0d1117:size={config.width}x{config.height}:rate={FPS}",
-        "-t", f"{duration_sec:.3f}",
-        "-vf", ",".join(filters),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=#0d1117:size={config.width}x{config.height}:rate={FPS}",
+        "-t",
+        f"{duration_sec:.3f}",
+        "-vf",
+        ",".join(filters),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
         str(output_path),
     ]
 

@@ -114,9 +114,7 @@ def load_tts_pool_config(env: Mapping[str, str] | None = None) -> TtsPoolConfig:
         backoff_max_seconds=_float_env(
             env, "PODCASTER_TTS_BACKOFF_MAX_SECONDS", DEFAULT_BACKOFF_MAX_SECONDS
         ),
-        backoff_jitter=_float_env(
-            env, "PODCASTER_TTS_BACKOFF_JITTER", DEFAULT_BACKOFF_JITTER
-        ),
+        backoff_jitter=_float_env(env, "PODCASTER_TTS_BACKOFF_JITTER", DEFAULT_BACKOFF_JITTER),
     )
 
 
@@ -168,9 +166,7 @@ def synthesize_plan_concurrent(
 
     if not decision.get("allowed"):
         blocked_by = decision.get("blocked_by") or ["not_authorized"]
-        raise PermissionError(
-            f"tts synthesis is blocked: {', '.join(map(str, blocked_by))}"
-        )
+        raise PermissionError(f"tts synthesis is blocked: {', '.join(map(str, blocked_by))}")
     if not plan:
         raise ValueError("voice plan is empty")
 

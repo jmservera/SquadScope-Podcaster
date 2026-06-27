@@ -218,9 +218,7 @@ def _publish_from_manifest(
         year=year,
         week=week,
         article_title=(
-            request.get("article_title")
-            if isinstance(request.get("article_title"), str)
-            else None
+            request.get("article_title") if isinstance(request.get("article_title"), str) else None
         ),
         wav_path=wav_path,
         language=_request_language(manifest),

@@ -33,9 +33,7 @@ logger = logging.getLogger(__name__)
 # --- Constants ---------------------------------------------------------------
 
 #: ``playlistItems.insert`` endpoint (POST, ``part=snippet``).
-PLAYLIST_ITEMS_INSERT_URL = (
-    "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet"
-)
+PLAYLIST_ITEMS_INSERT_URL = "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet"
 
 #: ``playlistItems.list`` base endpoint (GET).
 PLAYLIST_ITEMS_LIST_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
@@ -90,9 +88,7 @@ def resolve_playlist_id(
             return str(single).strip()
 
     env_key = (
-        _PLAYLIST_ENV_BASE
-        if norm == _DEFAULT_LOCALE
-        else f"{_PLAYLIST_ENV_BASE}_{norm.upper()}"
+        _PLAYLIST_ENV_BASE if norm == _DEFAULT_LOCALE else f"{_PLAYLIST_ENV_BASE}_{norm.upper()}"
     )
     return (environ.get(env_key, "") or "").strip()
 
@@ -207,9 +203,7 @@ def add_video_to_playlist(
     if status in (200, 201):
         item_id = ""
         try:
-            data = json.loads(
-                body.decode("utf-8") if isinstance(body, bytes) else body
-            )
+            data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
             item_id = str(data.get("id", ""))
         except (ValueError, AttributeError):
             pass
@@ -259,13 +253,9 @@ def add_to_show_playlist(
             "No YouTube playlist configured for locale %s; skipping",
             _normalize_locale(locale),
         )
-        return PlaylistAddResult(
-            video_id=video_id, playlist_id="", succeeded=True, skipped=True
-        )
+        return PlaylistAddResult(video_id=video_id, playlist_id="", succeeded=True, skipped=True)
 
-    if playlist_contains_video(
-        playlist_id, video_id, access_token, transport=transport
-    ):
+    if playlist_contains_video(playlist_id, video_id, access_token, transport=transport):
         logger.info(
             "Video %s already in playlist %s; skipping (idempotent)",
             video_id,

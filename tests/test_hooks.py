@@ -80,9 +80,7 @@ class TestGenerateHooks:
 
     def test_fallback_on_invalid_json(self):
         def bad_json_transport(request: Request) -> bytes:
-            response = {
-                "choices": [{"message": {"role": "assistant", "content": "not json"}}]
-            }
+            response = {"choices": [{"message": {"role": "assistant", "content": "not json"}}]}
             return json.dumps(response).encode("utf-8")
 
         result = generate_hooks(

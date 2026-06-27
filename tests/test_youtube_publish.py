@@ -28,9 +28,7 @@ class _FakeTransport:
         self.calls: list[dict] = []
 
     def request(self, url, *, method="GET", headers=None, data=None):
-        self.calls.append(
-            {"url": url, "method": method, "headers": headers, "data": data}
-        )
+        self.calls.append({"url": url, "method": method, "headers": headers, "data": data})
         if self._raises:
             raise RuntimeError("boom")
         return self._status, b"{}"

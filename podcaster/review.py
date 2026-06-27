@@ -139,12 +139,10 @@ def _append_blocker(blockers: list[str], reason: str) -> list[str]:
 def _provider_selection_complete(manifest: dict[str, Any]) -> bool:
     generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else {}
     tts_synthesis = (
-        generation.get("tts_synthesis")
-        if isinstance(generation.get("tts_synthesis"), dict)
-        else {}
+        generation.get("tts_synthesis") if isinstance(generation.get("tts_synthesis"), dict) else {}
     )
-    provider_selection = (
-        generation.get("provider_selection") or tts_synthesis.get("provider_selection")
+    provider_selection = generation.get("provider_selection") or tts_synthesis.get(
+        "provider_selection"
     )
     if isinstance(provider_selection, dict):
         status = provider_selection.get("status")

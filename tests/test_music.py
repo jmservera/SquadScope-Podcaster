@@ -58,4 +58,3 @@ def test_track_attribution_names_creative_commons_license():
     mandated by assets/music/ATTRIBUTION.md (issue #412)."""
     assert "Creative Commons CC BY-SA 3.0" in music.TRACK_ATTRIBUTION
     assert "https://creativecommons.org/licenses/by-sa/3.0/" in music.TRACK_ATTRIBUTION
-

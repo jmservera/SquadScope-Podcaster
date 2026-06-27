@@ -60,9 +60,11 @@ class TestLocalBackendFileMethods:
     def test_delete_prefix(self, backend, tmp_path):
         src = tmp_path / "in.bin"
         src.write_bytes(b"x")
-        for name in ["video-jobs/j1/intermediates/a.mp4",
-                     "video-jobs/j1/intermediates/sub/b.mp4",
-                     "video-jobs/j2/intermediates/c.mp4"]:
+        for name in [
+            "video-jobs/j1/intermediates/a.mp4",
+            "video-jobs/j1/intermediates/sub/b.mp4",
+            "video-jobs/j2/intermediates/c.mp4",
+        ]:
             backend.upload_file(name, src, "video/mp4")
 
         deleted = backend.delete_prefix("video-jobs/j1/intermediates/")
@@ -157,7 +159,8 @@ class TestIntermediateStoreEnabled:
         manifest = store.load_manifest()
         assert manifest["job_id"] == "job-42"
         assert manifest["stages"]["recording_000"] == {
-            "status": "complete", "recovery_path": "direct"
+            "status": "complete",
+            "recovery_path": "direct",
         }
         assert manifest["stages"]["composed_video"]["duration_seconds"] == 12.5
 

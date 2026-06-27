@@ -61,10 +61,7 @@ def run_generation_job(
 ) -> JobResult:
     current = now or datetime.now(timezone.utc)
     expires_at = (
-        (current + timedelta(days=7))
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
+        (current + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
     job_id = build_job_id(payload)
     podcast_config = PodcastConfig.from_payload(payload)
@@ -176,11 +173,14 @@ def run_generation_job(
                 llm_generation_engine = "llm-script-gen"
                 sections = parse_script_sections(llm_script, podcast_config)
                 if sections:
-                    llm_sections_json = json.dumps(
-                        {"sections": sections_to_metadata(sections)},
-                        ensure_ascii=False,
-                        indent=2,
-                    ) + "\n"
+                    llm_sections_json = (
+                        json.dumps(
+                            {"sections": sections_to_metadata(sections)},
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                        + "\n"
+                    )
                 logging.info("podcaster job using LLM-generated script job_id=%s", job_id)
             except Exception:
                 logging.exception(
@@ -198,9 +198,7 @@ def run_generation_job(
                 )
                 if claims:
                     llm_claims_json = claims_to_ledger_json(claims)
-                    logging.info(
-                        "podcaster job extracted %d claims job_id=%s", len(claims), job_id
-                    )
+                    logging.info("podcaster job extracted %d claims job_id=%s", len(claims), job_id)
             except Exception:
                 logging.exception("claim extraction failed job_id=%s; using stub ledger", job_id)
                 warnings.append("claim extraction failed; using stub claim ledger")
@@ -229,12 +227,14 @@ def run_generation_job(
         # Replace the deterministic script with the LLM-generated one if available.
         if llm_script and artifact.path.endswith("/script.txt"):
             from podcaster.generation import GeneratedArtifact
+
             artifact = GeneratedArtifact(
                 artifact.path, llm_script.encode("utf-8"), artifact.content_type
             )
         # Replace the stub claim ledger with LLM-extracted claims if available.
         if llm_claims_json and artifact.path.endswith("/claim-ledger.json"):
             from podcaster.generation import GeneratedArtifact
+
             artifact = GeneratedArtifact(
                 artifact.path, llm_claims_json.encode("utf-8"), artifact.content_type
             )
@@ -421,8 +421,7 @@ def _enqueue_synthesis(job_id: str, enqueue: Callable[[str], bool] | None) -> di
             "enqueued_at": current,
             "detail": "synthesis queue not configured",
             "warning": (
-                "synthesis queue not configured; job will remain staged until synthesis "
-                "is replayed"
+                "synthesis queue not configured; job will remain staged until synthesis is replayed"
             ),
         }
     except Exception:
@@ -447,10 +446,7 @@ def _job_already_in_ledger(monthly_ledger: dict[str, Any], job_id: str) -> bool:
     episodes = monthly_ledger.get("episodes")
     if not isinstance(episodes, list):
         return False
-    return any(
-        isinstance(ep, dict) and ep.get("job_id") == job_id
-        for ep in episodes
-    )
+    return any(isinstance(ep, dict) and ep.get("job_id") == job_id for ep in episodes)
 
 
 def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
@@ -506,9 +502,7 @@ def _cost_override(payload: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _lifecycle_metadata(
-    payload: dict[str, Any], created_at: str, status: str
-) -> dict[str, Any]:
+def _lifecycle_metadata(payload: dict[str, Any], created_at: str, status: str) -> dict[str, Any]:
     transitions = [
         {
             "at": created_at,

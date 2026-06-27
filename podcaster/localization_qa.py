@@ -356,9 +356,7 @@ def evaluate_localization(
         consistent = not missing and not unexpected
         checks["host_persona_consistent"] = consistent
         if missing:
-            warnings.append(
-                f"{locale}: configured host(s) never speak: {', '.join(missing)}"
-            )
+            warnings.append(f"{locale}: configured host(s) never speak: {', '.join(missing)}")
         if unexpected:
             warnings.append(
                 f"{locale}: unexpected speaker label(s) not in configured hosts: "

@@ -99,21 +99,15 @@ class TestConfig:
         assert cfg.concurrency == 4
 
     def test_load_clamps_to_max(self) -> None:
-        cfg = load_recording_pool_config(
-            {"PODCASTER_RECORDING_CONCURRENCY": "999"}
-        )
+        cfg = load_recording_pool_config({"PODCASTER_RECORDING_CONCURRENCY": "999"})
         assert cfg.concurrency == MAX_RECORDING_CONCURRENCY
 
     def test_load_clamps_below_one_to_sequential(self) -> None:
-        cfg = load_recording_pool_config(
-            {"PODCASTER_RECORDING_CONCURRENCY": "0"}
-        )
+        cfg = load_recording_pool_config({"PODCASTER_RECORDING_CONCURRENCY": "0"})
         assert cfg.concurrency == 1
 
     def test_load_invalid_falls_back_to_default(self) -> None:
-        cfg = load_recording_pool_config(
-            {"PODCASTER_RECORDING_CONCURRENCY": "lots"}
-        )
+        cfg = load_recording_pool_config({"PODCASTER_RECORDING_CONCURRENCY": "lots"})
         assert cfg.concurrency == DEFAULT_RECORDING_CONCURRENCY
 
 
@@ -125,7 +119,10 @@ class TestRecordSegmentsParallel:
         factory, _ = _make_factory()
         launch, browsers = _make_launcher()
         result = record_segments_parallel(
-            [], lambda b, i, s: s, launch, RecordingPoolConfig(3),
+            [],
+            lambda b, i, s: s,
+            launch,
+            RecordingPoolConfig(3),
             playwright_factory=factory,
         )
         assert result == {}
@@ -139,7 +136,10 @@ class TestRecordSegmentsParallel:
             return f"recorded-{index}-{segment}"
 
         result = record_segments_parallel(
-            _pending(5), record_one, launch, RecordingPoolConfig(3),
+            _pending(5),
+            record_one,
+            launch,
+            RecordingPoolConfig(3),
             playwright_factory=factory,
         )
         assert result == {
@@ -162,7 +162,10 @@ class TestRecordSegmentsParallel:
             return index
 
         record_segments_parallel(
-            _pending(12), record_one, launch, RecordingPoolConfig(4),
+            _pending(12),
+            record_one,
+            launch,
+            RecordingPoolConfig(4),
             playwright_factory=factory,
         )
         assert sorted(seen) == list(range(12))
@@ -179,7 +182,10 @@ class TestRecordSegmentsParallel:
             return index
 
         record_segments_parallel(
-            _pending(8), record_one, launch, RecordingPoolConfig(4),
+            _pending(8),
+            record_one,
+            launch,
+            RecordingPoolConfig(4),
             playwright_factory=factory,
         )
         # One Playwright instance + one browser per worker; never more workers
@@ -194,7 +200,10 @@ class TestRecordSegmentsParallel:
         factory, created = _make_factory()
         launch, browsers = _make_launcher()
         record_segments_parallel(
-            _pending(2), lambda b, i, s: i, launch, RecordingPoolConfig(8),
+            _pending(2),
+            lambda b, i, s: i,
+            launch,
+            RecordingPoolConfig(8),
             playwright_factory=factory,
         )
         # Only 2 items → only 2 browsers despite concurrency=8.
@@ -220,7 +229,10 @@ class TestRecordSegmentsParallel:
             return index
 
         record_segments_parallel(
-            _pending(12), record_one, launch, RecordingPoolConfig(concurrency),
+            _pending(12),
+            record_one,
+            launch,
+            RecordingPoolConfig(concurrency),
             playwright_factory=factory,
         )
         assert max_in_flight <= concurrency
@@ -246,7 +258,10 @@ class TestRecordSegmentsParallel:
             return index
 
         record_segments_parallel(
-            _pending(n), record_one, launch, RecordingPoolConfig(concurrency),
+            _pending(n),
+            record_one,
+            launch,
+            RecordingPoolConfig(concurrency),
             playwright_factory=factory,
         )
         # At least `concurrency` distinct worker threads were active together.
@@ -266,7 +281,10 @@ class TestRecordSegmentsParallel:
 
         with pytest.raises(Boom) as excinfo:
             record_segments_parallel(
-                _pending(8), record_one, launch, RecordingPoolConfig(4),
+                _pending(8),
+                record_one,
+                launch,
+                RecordingPoolConfig(4),
                 playwright_factory=factory,
             )
         # The earliest-failing segment's error wins for deterministic behaviour.
@@ -278,7 +296,10 @@ class TestRecordSegmentsParallel:
         factory, created = _make_factory()
         launch, browsers = _make_launcher()
         result = record_segments_parallel(
-            _pending(3), lambda b, i, s: i, launch, RecordingPoolConfig(1),
+            _pending(3),
+            lambda b, i, s: i,
+            launch,
+            RecordingPoolConfig(1),
             playwright_factory=factory,
         )
         assert result == {0: 0, 1: 1, 2: 2}

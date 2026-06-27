@@ -12,8 +12,20 @@ DEFAULT_SPOTIFY_UPLOAD_FORMAT = "mp3"
 _SPOTIFY_UPLOAD_FORMATS = frozenset({"wav", "mp3"})
 _VOID_HTML_TAGS = frozenset(
     {
-        "area", "base", "br", "col", "embed", "hr", "img", "input",
-        "link", "meta", "param", "source", "track", "wbr",
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
     }
 )
 
@@ -273,11 +285,15 @@ class LanguageConfig:
             host_b_payload = _merge_voice(host_b_payload, voices.get("host_b"))
 
         prompts_payload = payload.get("prompts")
-        prompts = {
-            str(k): v.strip()
-            for k, v in prompts_payload.items()
-            if isinstance(v, str) and v.strip()
-        } if isinstance(prompts_payload, Mapping) else dict(defaults.prompts)
+        prompts = (
+            {
+                str(k): v.strip()
+                for k, v in prompts_payload.items()
+                if isinstance(v, str) and v.strip()
+            }
+            if isinstance(prompts_payload, Mapping)
+            else dict(defaults.prompts)
+        )
 
         enabled = payload.get("enabled")
         return cls(
@@ -345,9 +361,7 @@ def validate_language_block(language: str, payload: object) -> None:
         for vkey in ("host_a", "host_b"):
             vval = voices.get(vkey)
             if vval is not None and (not isinstance(vval, str) or not vval.strip()):
-                raise ValueError(
-                    f"language {language!r}: voices.{vkey} must be a non-empty string"
-                )
+                raise ValueError(f"language {language!r}: voices.{vkey} must be a non-empty string")
 
     prompts = payload.get("prompts")
     if prompts is not None:

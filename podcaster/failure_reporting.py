@@ -76,10 +76,7 @@ def _find_open_issue(
 
     Returns None when there is no existing issue for *container*.
     """
-    path = (
-        f"/repos/{repo}/issues"
-        f"?labels={FAILURE_LABEL}&state=open&per_page=30"
-    )
+    path = f"/repos/{repo}/issues?labels={FAILURE_LABEL}&state=open&per_page=30"
     try:
         issues = _api_request("GET", path, token, transport=transport)
     except (URLError, OSError, ValueError):

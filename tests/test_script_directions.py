@@ -76,8 +76,7 @@ class TestScriptDirections:
         payload = {
             "script_directions": {
                 "historical_context": (
-                    "AI coding copilots kept moving from autocomplete to agentic "
-                    "workflows."
+                    "AI coding copilots kept moving from autocomplete to agentic workflows."
                 ),
             }
         }
@@ -94,12 +93,10 @@ class TestScriptDirections:
             "script_directions": {
                 "historical_context": {
                     "month_synthesis": (
-                        "Developer tooling stories kept centering on workflow "
-                        "automation."
+                        "Developer tooling stories kept centering on workflow automation."
                     ),
                     "yearly_narrative": (
-                        "Teams steadily shifted from single-shot prompts to durable "
-                        "agent loops."
+                        "Teams steadily shifted from single-shot prompts to durable agent loops."
                     ),
                     "prior_episode_themes": ["evaluation discipline", "cost control", "", 7],
                 }

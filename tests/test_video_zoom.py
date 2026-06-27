@@ -25,9 +25,7 @@ from podcaster.video.zoom import (
 
 def _mock_runner() -> MagicMock:
     runner = MagicMock()
-    runner.return_value = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="", stderr=""
-    )
+    runner.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     return runner
 
 
@@ -41,8 +39,13 @@ def _make_focus(
     label: str = "diagram",
 ) -> FocusRegion:
     return FocusRegion(
-        x=x, y=y, width=w, height=h,
-        start_seconds=start, duration_seconds=dur, label=label,
+        x=x,
+        y=y,
+        width=w,
+        height=h,
+        start_seconds=start,
+        duration_seconds=dur,
+        label=label,
     )
 
 
@@ -71,25 +74,29 @@ def _make_recorded(
 
 class TestFocusRegion:
     def test_center_x(self):
-        f = FocusRegion(x=100.0, y=50.0, width=400.0, height=200.0,
-                        start_seconds=0.0, duration_seconds=2.0)
+        f = FocusRegion(
+            x=100.0, y=50.0, width=400.0, height=200.0, start_seconds=0.0, duration_seconds=2.0
+        )
         assert f.center_x == pytest.approx(300.0)
 
     def test_center_y(self):
-        f = FocusRegion(x=100.0, y=50.0, width=400.0, height=200.0,
-                        start_seconds=0.0, duration_seconds=2.0)
+        f = FocusRegion(
+            x=100.0, y=50.0, width=400.0, height=200.0, start_seconds=0.0, duration_seconds=2.0
+        )
         assert f.center_y == pytest.approx(150.0)
 
     def test_center_symmetric(self):
         # Centered region at 960x540 → center at (960, 540)
-        f = FocusRegion(x=760.0, y=390.0, width=400.0, height=300.0,
-                        start_seconds=0.0, duration_seconds=1.0)
+        f = FocusRegion(
+            x=760.0, y=390.0, width=400.0, height=300.0, start_seconds=0.0, duration_seconds=1.0
+        )
         assert f.center_x == pytest.approx(960.0)
         assert f.center_y == pytest.approx(540.0)
 
     def test_default_label_empty(self):
-        f = FocusRegion(x=0.0, y=0.0, width=100.0, height=100.0,
-                        start_seconds=0.0, duration_seconds=1.0)
+        f = FocusRegion(
+            x=0.0, y=0.0, width=100.0, height=100.0, start_seconds=0.0, duration_seconds=1.0
+        )
         assert f.label == ""
 
 
@@ -209,16 +216,16 @@ class TestBuildZoompanCmd:
         assert "s=1280x720" in vf
 
     def test_fps_in_filter(self):
-        cmd = build_zoompan_cmd(
-            Path("/a.webm"), Path("/b.mp4"), _make_spec(), fps=25
-        )
+        cmd = build_zoompan_cmd(Path("/a.webm"), Path("/b.mp4"), _make_spec(), fps=25)
         vf_idx = cmd.index("-vf")
         vf = cmd[vf_idx + 1]
         assert "fps=25" in vf
 
     def test_custom_ffmpeg_bin(self):
         cmd = build_zoompan_cmd(
-            Path("/a.webm"), Path("/b.mp4"), _make_spec(),
+            Path("/a.webm"),
+            Path("/b.mp4"),
+            _make_spec(),
             ffmpeg_bin="/usr/bin/ffmpeg",
         )
         assert cmd[0] == "/usr/bin/ffmpeg"
@@ -261,8 +268,10 @@ class TestApplyZoomToSegment:
         src = tmp_path / "seg.webm"
         src.touch()
         rec = _make_recorded(video_path=src)
-        specs = [_make_spec(_make_focus(start=0.0, dur=1.0)),
-                 _make_spec(_make_focus(start=3.0, dur=1.0))]
+        specs = [
+            _make_spec(_make_focus(start=0.0, dur=1.0)),
+            _make_spec(_make_focus(start=3.0, dur=1.0)),
+        ]
         apply_zoom_to_segment(rec, specs, tmp_path / "out", runner=runner)
         assert runner.call_count == 2
 

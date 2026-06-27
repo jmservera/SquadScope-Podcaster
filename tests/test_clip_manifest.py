@@ -90,7 +90,7 @@ def test_fallback_clip_is_fully_trimmable_and_loopable():
 
 def test_covers_discussion_time():
     m = build_clip_manifest("clip-003", 90_000)
-    assert m.covers(80) is True   # 80s ≤ 90s
+    assert m.covers(80) is True  # 80s ≤ 90s
     assert m.covers(95) is False  # 95s > 90s
 
 
@@ -106,9 +106,7 @@ def test_non_positive_duration_raises():
 
 def test_chapter_outside_clip_raises():
     with pytest.raises(ClipManifestError):
-        build_clip_manifest(
-            "clip-y", 10_000, chapters=[ClipChapter("oops", 0, 20_000)]
-        )
+        build_clip_manifest("clip-y", 10_000, chapters=[ClipChapter("oops", 0, 20_000)])
 
 
 def test_overlapping_chapters_raise():
@@ -125,9 +123,7 @@ def test_overlapping_chapters_raise():
 
 def test_non_positive_chapter_raises():
     with pytest.raises(ClipManifestError):
-        build_clip_manifest(
-            "clip-w", 60_000, chapters=[ClipChapter("a", 10_000, 10_000)]
-        )
+        build_clip_manifest("clip-w", 60_000, chapters=[ClipChapter("a", 10_000, 10_000)])
 
 
 # --- serialization round-trip ---
@@ -135,9 +131,7 @@ def test_non_positive_chapter_raises():
 
 def test_round_trip_serialization():
     chapters = [ClipChapter("readme", 0, 30_000), ClipChapter("issues", 30_000, 55_000)]
-    m = build_clip_manifest(
-        "clip-rt", 60_000, repo_url="https://github.com/o/r", chapters=chapters
-    )
+    m = build_clip_manifest("clip-rt", 60_000, repo_url="https://github.com/o/r", chapters=chapters)
     restored = ClipManifest.from_dict(m.to_dict())
     assert restored == m
     assert restored.schema_version == CLIP_MANIFEST_SCHEMA_VERSION
@@ -173,9 +167,7 @@ def test_fallback_with_chapters_or_repo_url_raises():
             "clip-fb", 5_000, is_fallback=True, chapters=[ClipChapter("c", 0, 5_000)]
         )
     with pytest.raises(ClipManifestError, match="static card"):
-        build_clip_manifest(
-            "clip-fb", 5_000, is_fallback=True, repo_url="https://github.com/o/r"
-        )
+        build_clip_manifest("clip-fb", 5_000, is_fallback=True, repo_url="https://github.com/o/r")
 
 
 @pytest.mark.parametrize(

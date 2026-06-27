@@ -142,9 +142,7 @@ class NotificationConfig:
         """Raise :class:`NotificationError` if the webhook URL is unsafe."""
         parsed = urlparse(self.webhook_url)
         if parsed.scheme != "https":
-            raise NotificationError(
-                f"webhook URL must use https, got scheme {parsed.scheme!r}"
-            )
+            raise NotificationError(f"webhook URL must use https, got scheme {parsed.scheme!r}")
         if not parsed.hostname:
             raise NotificationError("webhook URL has no host")
         if _host_is_blocked(parsed.hostname):
@@ -302,9 +300,7 @@ def notify_failure(
                     config.fmt,
                 )
                 return True
-            logger.warning(
-                "alert webhook returned non-2xx status=%s job_id=%s", status, job_id
-            )
+            logger.warning("alert webhook returned non-2xx status=%s job_id=%s", status, job_id)
             return False
     except HTTPError as exc:
         logger.warning("alert webhook HTTP error status=%s job_id=%s", exc.code, job_id)

@@ -57,7 +57,13 @@ def test_distribute_video_skips_youtube_for_blocked_language(video_file, monkeyp
         dry_run=True,
     )
     result = distribute_video(
-        video_file, "job1", "t", "d", 120.0, cfg, language="es",
+        video_file,
+        "job1",
+        "t",
+        "d",
+        120.0,
+        cfg,
+        language="es",
     )
     # YouTube skipped (not attempted) → blob-only success.
     assert result.youtube_id is None
@@ -74,7 +80,13 @@ def test_distribute_video_uploads_youtube_for_allowed_language(video_file, monke
         dry_run=True,
     )
     result = distribute_video(
-        video_file, "job1", "t", "d", 120.0, cfg, language="es",
+        video_file,
+        "job1",
+        "t",
+        "d",
+        120.0,
+        cfg,
+        language="es",
     )
     assert result.youtube_id == "dry-run-id"
     assert result.status == "completed"
@@ -83,8 +95,10 @@ def test_distribute_video_uploads_youtube_for_allowed_language(video_file, monke
 def test_distribute_video_default_language_unchanged(video_file):
     # No allow-list set → English uploads as before.
     cfg = VideoDistributionConfig(
-        youtube_enabled=True, spotify_rss_enabled=False,
-        blob_archive_enabled=False, dry_run=True,
+        youtube_enabled=True,
+        spotify_rss_enabled=False,
+        blob_archive_enabled=False,
+        dry_run=True,
     )
     result = distribute_video(video_file, "job1", "t", "d", 120.0, cfg)
     assert result.youtube_id == "dry-run-id"
@@ -117,8 +131,10 @@ def test_large_file_delegates_to_chunked_uploader(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "stat", _fake_stat)
 
     cfg = VideoDistributionConfig(
-        youtube_enabled=True, youtube_client_id="c",
-        youtube_client_secret="s", youtube_refresh_token="rt",
+        youtube_enabled=True,
+        youtube_client_id="c",
+        youtube_client_secret="s",
+        youtube_refresh_token="rt",
     )
 
     # Stub token exchange and the chunked uploader module.
@@ -157,13 +173,16 @@ def test_large_file_without_chunked_module_returns_none(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", _fake_stat)
     cfg = VideoDistributionConfig(
-        youtube_enabled=True, youtube_client_id="c",
-        youtube_client_secret="s", youtube_refresh_token="rt",
+        youtube_enabled=True,
+        youtube_client_id="c",
+        youtube_client_secret="s",
+        youtube_refresh_token="rt",
     )
     monkeypatch.setattr(
         "podcaster.video.distribution._get_youtube_access_token", lambda c, h: "tok"
     )
     import sys
+
     monkeypatch.setitem(sys.modules, "podcaster.video.youtube", None)  # ImportError on import
 
     vid_id, vid_url = upload_to_youtube(big, "t", "d", cfg, transport=_InitTransport())

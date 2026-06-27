@@ -282,25 +282,19 @@ class RealizedAudioMetadata:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RealizedAudioMetadata":
         return cls(
-            utterances=tuple(
-                UtteranceTiming.from_dict(u) for u in data.get("utterances", [])
-            ),
+            utterances=tuple(UtteranceTiming.from_dict(u) for u in data.get("utterances", [])),
             topics=tuple(TopicRange.from_dict(t) for t in data.get("topics", [])),
             gap_ms=int(data.get("gap_ms", _to_ms(DEFAULT_GAP_SECONDS))),
             speech_offset_ms=int(data.get("speech_offset_ms", 0)),
             total_duration_ms=int(data.get("total_duration_ms", 0)),
-            schema_version=str(
-                data.get("schema_version", AUDIO_METADATA_SCHEMA_VERSION)
-            ),
+            schema_version=str(data.get("schema_version", AUDIO_METADATA_SCHEMA_VERSION)),
         )
 
 
 # --- Word-timing estimation ---
 
 
-def distribute_word_timings(
-    text: str, start_ms: int, end_ms: int
-) -> tuple[WordTiming, ...]:
+def distribute_word_timings(text: str, start_ms: int, end_ms: int) -> tuple[WordTiming, ...]:
     """Estimate per-word timings spanning ``[start_ms, end_ms]``.
 
     The utterance duration is distributed across whitespace-delimited words in
@@ -461,7 +455,5 @@ def extract_realized_audio_metadata(
     if not utterances:
         logger.warning("realized audio metadata has no utterances (empty plan)")
     elif not metadata.repo_topics:
-        logger.warning(
-            "realized audio metadata declares no repo topics — check Layer 1 plan"
-        )
+        logger.warning("realized audio metadata declares no repo topics — check Layer 1 plan")
     return metadata

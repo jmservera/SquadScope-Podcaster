@@ -467,7 +467,7 @@ def _extract_beat_topics(script: str, config: PodcastConfig) -> list[str]:
             spoken_count += 1
             if in_body:
                 # This is a beat topic intro — extract the topic
-                text = stripped[len(host_a_label) + 1:].strip()
+                text = stripped[len(host_a_label) + 1 :].strip()
                 # Topic is typically after the hook: "Hook text. Topic."
                 # Take the last sentence as the topic name
                 parts = text.rsplit(". ", 1)
@@ -556,9 +556,9 @@ def compute_section_timestamps(
 
     for i, label in enumerate(section_labels[: len(starts)]):
         if label != prev_label:
-            timestamps.append(SectionTimestamp(
-                name=label, start_seconds=starts[i] + speech_offset_seconds
-            ))
+            timestamps.append(
+                SectionTimestamp(name=label, start_seconds=starts[i] + speech_offset_seconds)
+            )
             prev_label = label
 
     return timestamps
@@ -581,9 +581,7 @@ def format_timestamps_html(timestamps: list[SectionTimestamp]) -> str:
 
     if not timestamps:
         return ""
-    lines = "<br/>".join(
-        f"{ts.formatted} {html_mod.escape(ts.name)}" for ts in timestamps
-    )
+    lines = "<br/>".join(f"{ts.formatted} {html_mod.escape(ts.name)}" for ts in timestamps)
     return f"<p>Timestamps:</p><p>{lines}</p>"
 
 
@@ -720,7 +718,9 @@ def synthesize_episode(
     try:
         section_timestamps = tuple(
             compute_section_timestamps(
-                segment_durations, section_labels, gap_seconds=0.35,
+                segment_durations,
+                section_labels,
+                gap_seconds=0.35,
                 speech_offset_seconds=speech_offset,
             )
         )

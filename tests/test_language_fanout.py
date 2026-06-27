@@ -173,9 +173,7 @@ def test_shared_gather_failure_is_fatal():
         raise RuntimeError("source gather failed")
 
     with pytest.raises(RuntimeError, match="source gather failed"):
-        run_language_fanout(
-            ["es"], gather_source=gather, process_language=lambda lang, s: None
-        )
+        run_language_fanout(["es"], gather_source=gather, process_language=lambda lang, s: None)
 
 
 # --- parallelism --------------------------------------------------------------

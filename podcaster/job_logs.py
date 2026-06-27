@@ -196,8 +196,7 @@ def filter_records(
             continue
         if needle is not None:
             haystack = " ".join(
-                str(record.get(field, ""))
-                for field in ("message", "task_id", "stage")
+                str(record.get(field, "")) for field in ("message", "task_id", "stage")
             ).lower()
             if needle not in haystack:
                 continue

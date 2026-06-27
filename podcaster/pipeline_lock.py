@@ -102,7 +102,9 @@ def claim_pipeline(
     except _LockConflict as exc:
         logger.info(
             "pipeline lock conflict: job_id=%s requested=%s owner=%s",
-            job_id, pipeline, exc.owner,
+            job_id,
+            pipeline,
+            exc.owner,
         )
         return False
     except Exception:

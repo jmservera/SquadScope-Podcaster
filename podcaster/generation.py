@@ -272,18 +272,20 @@ def _transcript(script: str, config: PodcastConfig) -> str:
     # Placeholder duration for stub
     duration = "15:42"
 
-    header = "\n".join([
-        f"Title: {title}",
-        f"Episode: {episode}",
-        f"Published: {published}",
-        f"Source: {source_url}",
-        f"Duration: {duration}",
-        f"TTS Provider: OpenAI TTS ({config.host_a.name} {config.host_a.voice} / "
-        f"{config.host_b.name} {config.host_b.voice}) [synthesis pending review]",
-        "License: CC-BY-4.0",
-        "---",
-        "",
-    ])
+    header = "\n".join(
+        [
+            f"Title: {title}",
+            f"Episode: {episode}",
+            f"Published: {published}",
+            f"Source: {source_url}",
+            f"Duration: {duration}",
+            f"TTS Provider: OpenAI TTS ({config.host_a.name} {config.host_a.voice} / "
+            f"{config.host_b.name} {config.host_b.voice}) [synthesis pending review]",
+            "License: CC-BY-4.0",
+            "---",
+            "",
+        ]
+    )
 
     # Extract body (after "---" in script) and add timestamps
     body_start = script.find("---") + 3
@@ -295,7 +297,7 @@ def _transcript(script: str, config: PodcastConfig) -> str:
     for line in body.split("\n"):
         if line.strip():
             timestamped_body += (
-                f"[{current_time_sec//60:02d}:{current_time_sec%60:02d}:00] {line}\n"
+                f"[{current_time_sec // 60:02d}:{current_time_sec % 60:02d}:00] {line}\n"
             )
             current_time_sec += 15  # Estimate 15 seconds per line
 
@@ -322,8 +324,7 @@ def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastCo
             "",
             "## Show notes",
             "",
-            f"{config.name} is a weekly show. For every issue, extended write-ups, "
-            "repo links, and",
+            f"{config.name} is a weekly show. For every issue, extended write-ups, repo links, and",
             f"commented articles, visit {config.url}.",
             "",
             "This episode covers key developments from the SquadScope curated articles "
@@ -495,27 +496,30 @@ def _safety_summary(payload: dict[str, object]) -> dict[str, object]:
 
 
 def _claim_ledger(payload: dict[str, object]) -> str:
-    return json.dumps(
-        [
-            {
-                "claim_id": "stub_000",
-                "script_excerpt": (
-                    "[Script content placeholder — pending editorial generation from source "
-                    "article]"
-                ),
-                "source_url": payload["article_url"],
-                "source_quote": None,
-                "verified": False,
-                "editor_notes": (
-                    "Deterministic stub awaiting real article content. Claim ledger will be "
-                    "populated during editorial generation. Human review and verification "
-                    "required before publication."
-                ),
-            }
-        ],
-        sort_keys=True,
-        indent=2,
-    ) + "\n"
+    return (
+        json.dumps(
+            [
+                {
+                    "claim_id": "stub_000",
+                    "script_excerpt": (
+                        "[Script content placeholder — pending editorial generation from source "
+                        "article]"
+                    ),
+                    "source_url": payload["article_url"],
+                    "source_quote": None,
+                    "verified": False,
+                    "editor_notes": (
+                        "Deterministic stub awaiting real article content. Claim ledger will be "
+                        "populated during editorial generation. Human review and verification "
+                        "required before publication."
+                    ),
+                }
+            ],
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
@@ -713,8 +717,8 @@ def _rights_and_attribution() -> str:
             "  • License: [Article License if specified]",
             "",
             "Attribution template (copy-paste ready):",
-            "  \"This episode is based on an article from SquadScope.",
-            "   Read the full story: [Article URL]\"",
+            '  "This episode is based on an article from SquadScope.',
+            '   Read the full story: [Article URL]"',
             "",
             "---",
             "",

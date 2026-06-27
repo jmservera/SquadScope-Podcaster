@@ -765,7 +765,7 @@ def test_azure_conditional_update_fails_after_412_retry_exhaustion(monkeypatch) 
         )
 
     assert get_attempts == [monthly_ledger_path("2026-06")] * 5
-    assert put_attempts == [f"{monthly_ledger_path('2026-06')}:\"stale-etag\":None"] * 5
+    assert put_attempts == [f'{monthly_ledger_path("2026-06")}:"stale-etag":None'] * 5
 
 
 def test_azure_conditional_update_retry_exhaustion_stops_before_artifacts() -> None:

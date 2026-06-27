@@ -42,17 +42,15 @@ jobs:
           checkov --directory infra --framework bicep \
             --skip-check CKV_AZURE_35,CKV_AZURE_43,CKV_AZURE_206,CKV_AZURE_225,CKV_AZURE_15,CKV_AZURE_212,CKV_AZURE_78,CKV_AZURE_213,CKV_AZURE_222,CKV_AZURE_67,CKV_AZURE_18,CKV_AZURE_17,CKV_AZURE_59,CKV_AZURE_134,CKV_AZURE_233,CKV_AZURE_139,CKV_AZURE_163,CKV_AZURE_166
 
-      - name: Run Checkov (Dockerfiles, warning-only)
-        # Phase A of the DevSecOps Guardrails epic (#519): extend Checkov from
-        # infra/ (Bicep) to the container images. `--soft-fail` keeps this lane
-        # non-blocking and `.checkov.baseline` records the existing findings so
-        # only NEW issues surface. Enforcement is deferred to Phase C.
-        # See jmservera/SquadScope-Coordinator#33.
+      - name: Run Checkov (Dockerfiles)
+        # Phase C of the DevSecOps Guardrails epic (#523): blocking. The
+        # `.checkov.baseline` records the accepted existing (LOW) findings so
+        # only NEW Dockerfile findings fail CI. See jmservera/SquadScope-Coordinator#33.
         run: |
           checkov --directory . --framework dockerfile \
             --skip-path .worktrees --skip-path ui/node_modules \
             --baseline .checkov.baseline \
-            --soft-fail --compact
+            --compact
 
   test:
     runs-on: ubuntu-latest
@@ -81,10 +79,10 @@ jobs:
         run: python -m compileall podcaster
 
   lint:
-    # Phase A of the DevSecOps Guardrails epic (#518): Ruff runs in
-    # warning-only mode. `continue-on-error` keeps the lane non-blocking so the
-    # baseline is visible as annotations without failing CI. Enforcement is
-    # deferred to Phase C. See jmservera/SquadScope-Coordinator#33.
+    # Phase C of the DevSecOps Guardrails epic (#523): Ruff runs in BLOCKING
+    # mode. `ruff check` and `ruff format --check` fail CI on any violation;
+    # Phase B (#521) cleared the baseline to zero so this gates against
+    # regressions. See jmservera/SquadScope-Coordinator#33.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -102,12 +100,13 @@ jobs:
       - name: Install Ruff
         run: python -m pip install --upgrade ruff==0.15.7
 
-      - name: Ruff lint (warning-only)
-        continue-on-error: true
+      - name: Ruff lint
+        # Phase C (#523): blocking — fails on any ruff violation. Phase B (#521)
+        # cleared the baseline to zero, so this gates against regressions.
         run: ruff check podcaster tests --output-format github
 
-      - name: Ruff format check (warning-only)
-        continue-on-error: true
+      - name: Ruff format check
+        # Phase C (#523): blocking — fails if any file is not ruff-formatted.
         run: ruff format --check podcaster tests
 
       - name: Ruff baseline summary

@@ -319,9 +319,7 @@ def _extract_summary(manifest: dict[str, Any]) -> JobSummary:
         created_at=manifest.get("created_at"),
         week=str(request.get("week", "")) if request.get("week") else None,
         article_title=(
-            request.get("article_title")
-            if isinstance(request.get("article_title"), str)
-            else None
+            request.get("article_title") if isinstance(request.get("article_title"), str) else None
         ),
     )
 
@@ -329,9 +327,7 @@ def _extract_summary(manifest: dict[str, Any]) -> JobSummary:
 def _extract_detail(manifest: dict[str, Any]) -> JobDetailResponse:
     request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
     generation = (
-        manifest.get("generation")
-        if isinstance(manifest.get("generation"), dict)
-        else None
+        manifest.get("generation") if isinstance(manifest.get("generation"), dict) else None
     )
 
     # Derive a quality score from audio validation if available.
@@ -350,25 +346,17 @@ def _extract_detail(manifest: dict[str, Any]) -> JobDetailResponse:
         expires_at=manifest.get("expires_at"),
         week=str(request.get("week", "")) if request.get("week") else None,
         article_url=(
-            request.get("article_url")
-            if isinstance(request.get("article_url"), str)
-            else None
+            request.get("article_url") if isinstance(request.get("article_url"), str) else None
         ),
         article_title=(
-            request.get("article_title")
-            if isinstance(request.get("article_title"), str)
-            else None
+            request.get("article_title") if isinstance(request.get("article_title"), str) else None
         ),
         generation=generation,
         publishing=(
-            manifest.get("publishing")
-            if isinstance(manifest.get("publishing"), dict)
-            else None
+            manifest.get("publishing") if isinstance(manifest.get("publishing"), dict) else None
         ),
         lifecycle=(
-            manifest.get("lifecycle")
-            if isinstance(manifest.get("lifecycle"), dict)
-            else None
+            manifest.get("lifecycle") if isinstance(manifest.get("lifecycle"), dict) else None
         ),
         quality_score=quality_score,
         warnings=manifest.get("warnings") if isinstance(manifest.get("warnings"), list) else None,
@@ -550,13 +538,9 @@ async def api_review(request: Request):
     decision = str(payload.get("decision") or "").strip()
     notes = str(payload.get("notes") or "")
     run_url = str(payload.get("run_url") or "").strip() or None
-    reviewed_at = (
-        str(payload.get("reviewed_at") or "").strip()
-        or datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    reviewed_at = str(payload.get("reviewed_at") or "").strip() or datetime.now(
+        timezone.utc
+    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     publish_on_approval = payload.get("publish_on_approval", True) is not False
 
     errors: list[str] = []
@@ -688,9 +672,7 @@ def get_job_logs(
     normalized_level = (
         LogLevel.normalize(level) if isinstance(level, str) and level.strip() else None
     )
-    normalized_search = (
-        search.strip() if isinstance(search, str) and search.strip() else None
-    )
+    normalized_search = search.strip() if isinstance(search, str) and search.strip() else None
 
     entries = _extract_logs(manifest)
     entries.extend(_structured_logs(read_logs(storage, job_id)))
@@ -815,7 +797,7 @@ def list_job_assets(job_id: str):
         if kind is None:
             continue  # skip manifests, logs, progress docs and other non-media
         seen.add(path)
-        name = path[len(prefix):] if path.startswith(prefix) else path.rsplit("/", 1)[-1]
+        name = path[len(prefix) :] if path.startswith(prefix) else path.rsplit("/", 1)[-1]
         assets.append(
             JobAsset(
                 name=name,
@@ -1177,7 +1159,7 @@ def _normalize_blob_path(value: str) -> str:
         container = os.environ.get("PODCASTER_STORAGE_CONTAINER", "podcaster-artifacts")
         prefix = f"{container}/"
         if container and stripped.startswith(prefix):
-            stripped = stripped[len(prefix):]
+            stripped = stripped[len(prefix) :]
     return stripped.lstrip("/")
 
 
@@ -1204,9 +1186,7 @@ def _extract_video_path(generation: dict[str, Any]) -> str | None:
     return None
 
 
-def _collect_artifacts(
-    generation: dict[str, Any], exclude: set[str]
-) -> list[EpisodeArtifact]:
+def _collect_artifacts(generation: dict[str, Any], exclude: set[str]) -> list[EpisodeArtifact]:
     """Collect extra downloadable artifact files (e.g. wav, images), excluding
     the primary audio/video already surfaced via dedicated players."""
     items: list[EpisodeArtifact] = []
@@ -1248,9 +1228,7 @@ def _collect_artifacts(
 def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
     """Extract episode summary from a manifest. Returns None if no audio."""
     generation = (
-        manifest.get("generation")
-        if isinstance(manifest.get("generation"), dict)
-        else None
+        manifest.get("generation") if isinstance(manifest.get("generation"), dict) else None
     )
     if generation is None:
         return None
@@ -1266,9 +1244,7 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
 
     if not audio_path:
         audio_path = (
-            generation.get("audio_file")
-            if isinstance(generation.get("audio_file"), str)
-            else None
+            generation.get("audio_file") if isinstance(generation.get("audio_file"), str) else None
         )
 
     # Check synthesis_runner manifest shape (how audio is recorded in real runs)
@@ -1290,9 +1266,7 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
 
     request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
     publishing = (
-        manifest.get("publishing")
-        if isinstance(manifest.get("publishing"), dict)
-        else None
+        manifest.get("publishing") if isinstance(manifest.get("publishing"), dict) else None
     )
 
     video_path = _extract_video_path(generation)
@@ -1309,9 +1283,7 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
     return EpisodeSummary(
         job_id=manifest.get("job_id", ""),
         title=(
-            request.get("article_title")
-            if isinstance(request.get("article_title"), str)
-            else None
+            request.get("article_title") if isinstance(request.get("article_title"), str) else None
         ),
         created_at=manifest.get("created_at"),
         status=manifest.get("status", "unknown"),

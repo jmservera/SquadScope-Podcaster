@@ -181,10 +181,10 @@ class TestListJobs:
     def test_pagination(self, client, storage):
         for i in range(5):
             m = _make_manifest(
-                f"podcast-2026-W{20+i:02d}-x{i}", created_at=f"2026-05-{10+i:02d}T12:00:00Z"
+                f"podcast-2026-W{20 + i:02d}-x{i}", created_at=f"2026-05-{10 + i:02d}T12:00:00Z"
             )
             storage.put_bytes(
-                f"jobs/podcast-2026-W{20+i:02d}-x{i}/manifest.json",
+                f"jobs/podcast-2026-W{20 + i:02d}-x{i}/manifest.json",
                 json.dumps(m).encode(),
                 "application/json",
             )
@@ -813,7 +813,7 @@ class TestListEpisodes:
         for i in range(3):
             m = self._manifest_with_audio(
                 f"job-{i}",
-                created_at=f"2026-06-{10+i:02d}T12:00:00Z",
+                created_at=f"2026-06-{10 + i:02d}T12:00:00Z",
                 audio_path=f"jobs/job-{i}/ep.mp3",
             )
             storage.put_bytes(

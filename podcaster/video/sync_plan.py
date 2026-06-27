@@ -30,9 +30,7 @@ _ARTICLE_FETCH_TIMEOUT = 10
 _ARTICLE_FETCH_ALLOWED_HOSTS = frozenset({"claracle.com", "www.claracle.com"})
 
 # Matches GitHub repo URLs: https://github.com/owner/repo (with optional trailing path)
-_GITHUB_REPO_RE = re.compile(
-    r"https?://github\.com/([A-Za-z0-9\-_.]+)/([A-Za-z0-9\-_.]+)"
-)
+_GITHUB_REPO_RE = re.compile(r"https?://github\.com/([A-Za-z0-9\-_.]+)/([A-Za-z0-9\-_.]+)")
 
 # Label used for generic background segments that are not tied to a repo.
 GENERIC_SEGMENT_LABEL = "__generic__"
@@ -168,9 +166,7 @@ def extract_repo_urls(script: str) -> list[RepoReference]:
 
 
 # Matches the "Source URL:" header line, capturing the URL.
-_SOURCE_URL_RE = re.compile(
-    r"^\s*Source URL:\s*(\S+)", re.IGNORECASE | re.MULTILINE
-)
+_SOURCE_URL_RE = re.compile(r"^\s*Source URL:\s*(\S+)", re.IGNORECASE | re.MULTILINE)
 
 
 def extract_source_url(script: str) -> str | None:
@@ -248,9 +244,7 @@ def fetch_repos_from_article(url: str) -> list[RepoReference]:
             logger.warning("Failed to fetch article page %s: %s", candidate, exc)
             continue
         if response.status_code != 200:
-            logger.info(
-                "Article page %s returned HTTP %s", candidate, response.status_code
-            )
+            logger.info("Article page %s returned HTTP %s", candidate, response.status_code)
             continue
         repos = extract_repo_urls(response.text)
         repos = [r for r in repos if not _is_excluded_repo(r)]
@@ -290,9 +284,7 @@ def generate_episode_plan(
     if not repos:
         raise ValueError("No repos provided for episode plan generation")
     if total_duration_seconds <= 0:
-        raise ValueError(
-            f"Total duration must be positive, got {total_duration_seconds}"
-        )
+        raise ValueError(f"Total duration must be positive, got {total_duration_seconds}")
 
     segment_duration = total_duration_seconds / len(repos)
     segments: list[VideoSegment] = []
@@ -336,9 +328,7 @@ def generate_generic_plan(
         ValueError: If duration is non-positive.
     """
     if total_duration_seconds <= 0:
-        raise ValueError(
-            f"Total duration must be positive, got {total_duration_seconds}"
-        )
+        raise ValueError(f"Total duration must be positive, got {total_duration_seconds}")
 
     return EpisodePlan(
         total_duration_seconds=total_duration_seconds,
@@ -408,7 +398,7 @@ def _script_position(script: str, url: str) -> float:
     if pos < 0 and url.startswith("https://"):
         # extract_repo_urls() also matches http:// mentions, but RepoReference.url
         # always normalizes to https://. Try the http:// variant before giving up.
-        pos = script.find("http://" + url[len("https://"):])
+        pos = script.find("http://" + url[len("https://") :])
     if pos < 0:
         return 1.0
     return pos / len(script)
@@ -467,9 +457,7 @@ def generate_episode_plan_timed(
     if not repos:
         raise ValueError("No repos provided for episode plan generation")
     if total_duration_seconds <= 0:
-        raise ValueError(
-            f"Total duration must be positive, got {total_duration_seconds}"
-        )
+        raise ValueError(f"Total duration must be positive, got {total_duration_seconds}")
 
     n = len(repos)
     # Cap the minimum so all n segments always fit within total_duration
@@ -496,9 +484,7 @@ def generate_episode_plan_timed(
             duration = total_duration_seconds - start
         # Guard against floating-point drift producing tiny negatives
         duration = max(duration, effective_min)
-        segments.append(
-            VideoSegment(repo=repo, start_seconds=start, duration_seconds=duration)
-        )
+        segments.append(VideoSegment(repo=repo, start_seconds=start, duration_seconds=duration))
 
     return EpisodePlan(
         total_duration_seconds=total_duration_seconds,
@@ -554,9 +540,7 @@ def plan_from_script_timed(
             source_url,
         )
         return generate_generic_plan(total_duration_seconds, source_url)
-    return generate_episode_plan_timed(
-        script, repos, total_duration_seconds, min_segment_seconds
-    )
+    return generate_episode_plan_timed(script, repos, total_duration_seconds, min_segment_seconds)
 
 
 # --- Removed/bot repo pre-flight detection (issue #394) ---
@@ -633,9 +617,7 @@ def annotate_removed_repos(
         try:
             removed = checker(seg.repo.url, timeout=timeout)
         except Exception:  # noqa: BLE001 — never let a probe abort planning
-            logger.exception(
-                "Removed-repo check raised for %s; assuming present", seg.repo.url
-            )
+            logger.exception("Removed-repo check raised for %s; assuming present", seg.repo.url)
             removed = False
         if removed:
             removed_count += 1
@@ -727,9 +709,7 @@ def generate_episode_plan_from_times(
     if not repos:
         raise ValueError("No repos provided for episode plan generation")
     if total_duration_seconds <= 0:
-        raise ValueError(
-            f"Total duration must be positive, got {total_duration_seconds}"
-        )
+        raise ValueError(f"Total duration must be positive, got {total_duration_seconds}")
 
     n = len(repos)
     effective_min = min(min_segment_seconds, total_duration_seconds / n)
@@ -768,9 +748,7 @@ def generate_episode_plan_from_times(
         else:
             duration = total_duration_seconds - start
         duration = max(duration, effective_min)
-        segments.append(
-            VideoSegment(repo=repo, start_seconds=start, duration_seconds=duration)
-        )
+        segments.append(VideoSegment(repo=repo, start_seconds=start, duration_seconds=duration))
 
     return EpisodePlan(
         total_duration_seconds=total_duration_seconds,
@@ -812,17 +790,13 @@ def plan_from_script_aligned(
         ValueError: If duration is non-positive.
     """
     if audio_path is None:
-        return plan_from_script_timed(
-            script, total_duration_seconds, min_segment_seconds
-        )
+        return plan_from_script_timed(script, total_duration_seconds, min_segment_seconds)
 
     repos = extract_repo_urls(script)
     if not repos:
         # No repos anywhere in the script (header or body) → alignment can't
         # help. Reuse the existing article-fetch / generic fallbacks.
-        return plan_from_script_timed(
-            script, total_duration_seconds, min_segment_seconds
-        )
+        return plan_from_script_timed(script, total_duration_seconds, min_segment_seconds)
 
     # Import lazily so the heavy faster-whisper dependency is only touched when
     # audio-cue sync is actually attempted.
@@ -832,8 +806,7 @@ def plan_from_script_aligned(
     mention_times = repo_audio_timestamps(script, repos, audio_path, **kwargs)
     if not mention_times:
         logger.info(
-            "audio-cue sync produced no timings; using proportional timing for "
-            "%d repo(s)",
+            "audio-cue sync produced no timings; using proportional timing for %d repo(s)",
             len(repos),
         )
         return generate_episode_plan_timed(
@@ -917,9 +890,7 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
         return plan
 
     first_start = segments[0].start_seconds if segments else WEEKLY_SEGMENT_MAX_SECONDS
-    weekly_duration = min(
-        max(first_start, WEEKLY_SEGMENT_MIN_SECONDS), WEEKLY_SEGMENT_MAX_SECONDS
-    )
+    weekly_duration = min(max(first_start, WEEKLY_SEGMENT_MIN_SECONDS), WEEKLY_SEGMENT_MAX_SECONDS)
 
     weekly_segment = VideoSegment(
         start_seconds=0.0,
@@ -1130,9 +1101,7 @@ def snap_episode_plan_to_audio(
 
     snapped_starts: list[float] = []
     for seg in plan.segments:
-        snapped = snap_to_audio_boundary(
-            seg.start_seconds, cue_points, tolerance_seconds
-        )
+        snapped = snap_to_audio_boundary(seg.start_seconds, cue_points, tolerance_seconds)
         # Enforce monotonic order after snapping
         if snapped_starts and snapped <= snapped_starts[-1]:
             snapped = snapped_starts[-1] + 0.0  # keep previous; will recalc dur below
@@ -1185,9 +1154,7 @@ def snap_visual_cues(
     """
     return [
         VisualCue(
-            time_seconds=snap_to_audio_boundary(
-                cue.time_seconds, cue_points, tolerance_seconds
-            ),
+            time_seconds=snap_to_audio_boundary(cue.time_seconds, cue_points, tolerance_seconds),
             kind=cue.kind,
             label=cue.label,
         )

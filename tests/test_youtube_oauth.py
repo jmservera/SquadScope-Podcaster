@@ -58,7 +58,9 @@ def test_consent_url_requires_state_and_redirect():
 
 
 def test_token_exchange_payload_is_authorization_code_grant():
-    payload = build_token_exchange_payload(CLIENT, "auth-code", "http://127.0.0.1:5000/oauth2callback")
+    payload = build_token_exchange_payload(
+        CLIENT, "auth-code", "http://127.0.0.1:5000/oauth2callback"
+    )
     parsed = parse_qs(payload.decode())
     assert parsed["grant_type"] == ["authorization_code"]
     assert parsed["code"] == ["auth-code"]

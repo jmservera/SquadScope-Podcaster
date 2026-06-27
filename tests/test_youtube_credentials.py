@@ -67,7 +67,8 @@ def test_keyvault_loader_requires_url():
 
 def test_keyvault_loader_http_error():
     loader = KeyVaultSecretLoader(
-        "https://v.vault.azure.net", credential=_FakeCredential(),
+        "https://v.vault.azure.net",
+        credential=_FakeCredential(),
         transport=_FakeTransport(403, b"forbidden"),
     )
     with pytest.raises(YouTubeCredentialError, match="HTTP 403"):
@@ -124,7 +125,8 @@ def test_load_returns_empty_when_unconfigured():
 
 def test_load_from_keyvault_when_env_absent():
     loader = KeyVaultSecretLoader(
-        "https://v.vault.azure.net", credential=_FakeCredential(),
+        "https://v.vault.azure.net",
+        credential=_FakeCredential(),
         transport=_FakeTransport(200, {"value": "kv-rt"}),
     )
     token = load_youtube_refresh_token(
@@ -137,7 +139,8 @@ def test_load_from_keyvault_when_env_absent():
 def test_load_uses_default_secret_name():
     captured = []
     loader = KeyVaultSecretLoader(
-        "https://v.vault.azure.net", credential=_FakeCredential(),
+        "https://v.vault.azure.net",
+        credential=_FakeCredential(),
         transport=_FakeTransport(200, {"value": "kv-rt"}, capture=captured),
     )
     load_youtube_refresh_token(
@@ -199,8 +202,11 @@ def test_refresh_access_token_invalid_grant_no_notify(monkeypatch):
     transport = _FakeTransport(400, {"error": "invalid_grant"})
     with pytest.raises(YouTubeTokenRevokedError):
         refresh_access_token(
-            client_id="c", client_secret="s", refresh_token="rt",
-            transport=transport, notify=False,
+            client_id="c",
+            client_secret="s",
+            refresh_token="rt",
+            transport=transport,
+            notify=False,
         )
     assert called == []
 

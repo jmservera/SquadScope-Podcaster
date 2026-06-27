@@ -34,13 +34,13 @@ OWNERSHIP_TONE_PROMPT = (
     "Claracle is the hosts' OWN publication and analysis platform. The hosts are "
     "not reporting on an external article — they ARE the people who wrote the "
     "research. They speak as experts sharing their own findings.\n"
-    "Use ownership language: \"We found...\", \"Our analysis shows...\", "
-    "\"This week we noticed...\", \"On Claracle, we're tracking...\", "
-    "\"What stood out to us...\".\n"
-    "Do NOT refer to the source as an external \"article\", \"report\", "
-    "\"roundup\", or \"analysis\". Never say \"the article mentions\", "
-    "\"according to the report\", \"the roundup says\", \"as the article notes\", "
-    "or similar reporter-voice phrasing. Referring to \"Claracle\" as the brand "
+    'Use ownership language: "We found...", "Our analysis shows...", '
+    '"This week we noticed...", "On Claracle, we\'re tracking...", '
+    '"What stood out to us...".\n'
+    'Do NOT refer to the source as an external "article", "report", '
+    '"roundup", or "analysis". Never say "the article mentions", '
+    '"according to the report", "the roundup says", "as the article notes", '
+    'or similar reporter-voice phrasing. Referring to "Claracle" as the brand '
     "name is fine; treating it as an outside source is not.\n"
 )
 
@@ -204,9 +204,9 @@ def build_repair_instruction(violations: list[OwnershipViolation]) -> str:
         "as an external source. Claracle is the hosts' OWN publication; they wrote "
         "the analysis and must speak as experts sharing their own findings.\n\n"
         "Rewrite ONLY the offending lines below using ownership language "
-        "(\"We found...\", \"Our analysis shows...\", \"This week we noticed...\", "
-        "\"What stood out to us...\"). Preserve every other line EXACTLY as-is, "
-        "including all \"## Section:\" headers, speaker labels, and ordering. "
+        '("We found...", "Our analysis shows...", "This week we noticed...", '
+        '"What stood out to us..."). Preserve every other line EXACTLY as-is, '
+        'including all "## Section:" headers, speaker labels, and ordering. '
         "Return the COMPLETE script.\n\n"
         "Offending lines:\n"
         f"{bullets}\n"

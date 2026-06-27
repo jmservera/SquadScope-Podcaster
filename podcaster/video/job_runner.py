@@ -80,9 +80,7 @@ _MIN_VALID_MP4_BYTES = 1024
 
 # Fallback music credit appended to the video description when the caller's
 # request payload does not supply a ``description_template``.
-_DEFAULT_MUSIC_CREDITS = (
-    f"Intro and Outro: {TRACK_ATTRIBUTION}"
-)
+_DEFAULT_MUSIC_CREDITS = f"Intro and Outro: {TRACK_ATTRIBUTION}"
 
 
 @dataclass(frozen=True)
@@ -160,12 +158,14 @@ def _extract_hosts(notes: str) -> str:
     for line in notes.splitlines():
         stripped = line.strip()
         if stripped.lower().startswith("**hosts:**"):
-            return stripped[len("**Hosts:**"):].strip()
+            return stripped[len("**Hosts:**") :].strip()
     return ""
 
 
 def _build_video_description(
-    storage: StorageBackend, job_id: str, fallback: str,
+    storage: StorageBackend,
+    job_id: str,
+    fallback: str,
     music_credits: str | None = None,
 ) -> str:
     """Build the Spotify/YouTube video description from the episode show-notes.
@@ -227,6 +227,7 @@ def _parse_week_str(week_str: str) -> tuple[int, int] | None:
         # Validate using the calendar — raises ValueError for invalid combos
         # (e.g. week 53 in a year that only has 52 weeks).
         import datetime as _dt
+
         _dt.date.fromisocalendar(year, week, 1)
     except ValueError:
         return None
@@ -278,9 +279,11 @@ def _persist_removed_repo_notes(
     notes = removed_repo_speaker_notes(plan)
     if not notes:
         return []
-    body = "# Removed repos — speaker cues (issue #394)\n\n" + "\n".join(
-        f"- {note}" for note in notes
-    ) + "\n"
+    body = (
+        "# Removed repos — speaker cues (issue #394)\n\n"
+        + "\n".join(f"- {note}" for note in notes)
+        + "\n"
+    )
     try:
         storage.put_bytes(
             removed_repos_notes_path(job_id),
@@ -288,9 +291,7 @@ def _persist_removed_repo_notes(
             "text/markdown; charset=utf-8",
         )
     except Exception:
-        logger.warning(
-            "failed to persist removed-repo notes for job_id=%s", job_id, exc_info=True
-        )
+        logger.warning("failed to persist removed-repo notes for job_id=%s", job_id, exc_info=True)
     logger.info(
         "job_id=%s: %d repo(s) removed from GitHub — speaker cues generated",
         job_id,
@@ -344,9 +345,13 @@ def _probe_audio_duration(audio_path: Path) -> float | None:
     import subprocess
 
     cmd = [
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
         str(audio_path),
     ]
     try:
@@ -425,9 +430,7 @@ def run_video_generation(
             # Per-worker task progress for the parallel normalize stage (#482):
             # each segment surfaces as a norm_NNN task in the durable progress
             # document so overlapping workers stay individually observable.
-            normalize_reporter = make_task_reporter(
-                storage, job_id, stage=PipelineStage.COMPOSE
-            )
+            normalize_reporter = make_task_reporter(storage, job_id, stage=PipelineStage.COMPOSE)
 
             output_dir = Path(tmp)
 
@@ -448,7 +451,8 @@ def run_video_generation(
                 audio_duration = 300.0  # Default 5 minutes if no audio info
                 logger.warning(
                     "no audio duration available, defaulting to %.0fs for job_id=%s",
-                    audio_duration, job_id,
+                    audio_duration,
+                    job_id,
                 )
 
             # Parse script and generate plan. Timing is synced to the audio via
@@ -466,12 +470,19 @@ def run_video_generation(
             except ValueError as exc:
                 logger.warning(
                     "video skipped job_id=%s reason=%s: %s",
-                    job_id, REASON_INVALID_PLAN, exc,
+                    job_id,
+                    REASON_INVALID_PLAN,
+                    exc,
                 )
-                _record_video_state(storage, job_id, {
-                    "status": STATUS_SKIPPED, "reason": REASON_INVALID_PLAN,
-                    "at": _iso(current),
-                })
+                _record_video_state(
+                    storage,
+                    job_id,
+                    {
+                        "status": STATUS_SKIPPED,
+                        "reason": REASON_INVALID_PLAN,
+                        "at": _iso(current),
+                    },
+                )
                 return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
 
             # Show the claracle.com weekly page (derived from the job_id) as the
@@ -568,20 +579,24 @@ def run_video_generation(
             timings.log_summary(logger)
 
             # Record success in manifest
-            _record_video_state(storage, job_id, {
-                "status": STATUS_COMPLETED,
-                "at": _iso(current),
-                "segment_count": compose_result.segment_count,
-                "duration_seconds": compose_result.duration_seconds,
-                "performance": timings.to_dict(),
-                "distribution": {
-                    "status": dist_result.status,
-                    "youtube_id": dist_result.youtube_id,
-                    "blob_path": dist_result.blob_path,
-                    "spotify_rss_updated": dist_result.spotify_rss_updated,
-                    "spotify_upload_updated": dist_result.spotify_upload_updated,
+            _record_video_state(
+                storage,
+                job_id,
+                {
+                    "status": STATUS_COMPLETED,
+                    "at": _iso(current),
+                    "segment_count": compose_result.segment_count,
+                    "duration_seconds": compose_result.duration_seconds,
+                    "performance": timings.to_dict(),
+                    "distribution": {
+                        "status": dist_result.status,
+                        "youtube_id": dist_result.youtube_id,
+                        "blob_path": dist_result.blob_path,
+                        "spotify_rss_updated": dist_result.spotify_rss_updated,
+                        "spotify_upload_updated": dist_result.spotify_upload_updated,
+                    },
                 },
-            })
+            )
 
             # Intermediates are no longer needed once the episode is published;
             # delete the job's scratch blobs (issue #410).  Best-effort — the
@@ -612,12 +627,21 @@ def run_video_generation(
                 stderr = stderr.decode("utf-8", "replace")
             logger.error(
                 "video subprocess failed job_id=%s rc=%s cmd=%s stderr=%s",
-                job_id, exc.returncode, cmd_str, (stderr or "").strip(),
+                job_id,
+                exc.returncode,
+                cmd_str,
+                (stderr or "").strip(),
             )
         logger.exception("video generation failed job_id=%s error=%s", job_id, type(exc).__name__)
-        _record_video_state(storage, job_id, {
-            "status": STATUS_FAILED, "reason": type(exc).__name__, "at": _iso(current),
-        })
+        _record_video_state(
+            storage,
+            job_id,
+            {
+                "status": STATUS_FAILED,
+                "reason": type(exc).__name__,
+                "at": _iso(current),
+            },
+        )
         raise TransientVideoError(f"video generation failed for job_id={job_id}") from exc
 
 
@@ -726,8 +750,7 @@ def _build_section_cards(
         from podcaster.video.section_cards import SectionCardConfig, build_section_card_inserts
 
         segment_repo_urls = [
-            rec.segment.repo.url if rec.segment.repo is not None else None
-            for rec in recorded
+            rec.segment.repo.url if rec.segment.repo is not None else None for rec in recorded
         ]
         duration_seconds = _section_card_duration_seconds(sections_metadata or [])
         config = SectionCardConfig(duration_ms=int(round(duration_seconds * 1000)))
@@ -784,7 +807,8 @@ def process_message(
     except ValueError:
         logger.error(
             "discarding malformed video message message_id=%s dequeue_count=%s",
-            message.message_id, message.dequeue_count,
+            message.message_id,
+            message.dequeue_count,
         )
         queue.delete_message(message)
         return VideoOutcome("", STATUS_FAILED, reason="malformed_message")
@@ -811,8 +835,11 @@ def process_message(
             )
             queue.delete_message(message)
             return VideoOutcome(job_id, STATUS_FAILED, reason=REASON_RETRY_EXHAUSTED)
-        logger.warning("leaving video message for retry job_id=%s dequeue_count=%s",
-                       job_id, message.dequeue_count)
+        logger.warning(
+            "leaving video message for retry job_id=%s dequeue_count=%s",
+            job_id,
+            message.dequeue_count,
+        )
         return VideoOutcome(job_id, STATUS_FAILED, reason="transient")
 
     queue.delete_message(message)
@@ -849,6 +876,7 @@ def main() -> int:
         return 2
 
     from podcaster.queue import AzureStorageQueueBackend
+
     queue = AzureStorageQueueBackend(queue_url, queue_name)
     storage = create_storage_backend()
     config = VideoDistributionConfig.from_env()
@@ -868,7 +896,10 @@ def main() -> int:
 
     logger.info(
         "video run finished processed=%s completed=%s skipped=%s failed=%s",
-        len(outcomes), completed, skipped, failed,
+        len(outcomes),
+        completed,
+        skipped,
+        failed,
     )
 
     if failed:

@@ -129,7 +129,9 @@ class IntermediateStore:
             # simply means we re-do the stage (correct, just slower).
             logger.warning(
                 "intermediate existence check failed job_id=%s name=%s; treating as absent",
-                self._job_id, name, exc_info=True,
+                self._job_id,
+                name,
+                exc_info=True,
             )
             return False
 
@@ -148,7 +150,9 @@ class IntermediateStore:
         except Exception:
             logger.warning(
                 "intermediate download failed job_id=%s name=%s; will recompute",
-                self._job_id, name, exc_info=True,
+                self._job_id,
+                name,
+                exc_info=True,
             )
             return False
         if ok:
@@ -173,7 +177,9 @@ class IntermediateStore:
         if not source.exists():
             logger.warning(
                 "intermediate upload skipped job_id=%s name=%s: source missing %s",
-                self._job_id, name, source,
+                self._job_id,
+                name,
+                source,
             )
             return False
         expected = source.stat().st_size
@@ -182,14 +188,18 @@ class IntermediateStore:
         except Exception:
             logger.warning(
                 "intermediate upload failed job_id=%s name=%s; continuing without checkpoint",
-                self._job_id, name, exc_info=True,
+                self._job_id,
+                name,
+                exc_info=True,
             )
             return False
         if not self._verify_size(name, expected):
             logger.warning(
                 "intermediate upload size mismatch job_id=%s name=%s expected=%d; "
                 "discarding unverified checkpoint",
-                self._job_id, name, expected,
+                self._job_id,
+                name,
+                expected,
             )
             # Best-effort: drop the unverified blob so resume won't reuse it.
             deleter = getattr(self._backend, "delete_blob", None)
@@ -234,7 +244,10 @@ class IntermediateStore:
             raw = self._backend.get_bytes(self.blob_path(name))
         except Exception:
             logger.warning(
-                "intermediate read failed job_id=%s name=%s", self._job_id, name, exc_info=True,
+                "intermediate read failed job_id=%s name=%s",
+                self._job_id,
+                name,
+                exc_info=True,
             )
             return None
         if raw is None:
@@ -279,7 +292,8 @@ class IntermediateStore:
         except Exception:
             logger.warning(
                 "intermediate cleanup failed job_id=%s; lifecycle policy will reclaim",
-                self._job_id, exc_info=True,
+                self._job_id,
+                exc_info=True,
             )
             return 0
         logger.info("cleaned up %d intermediate blob(s) job_id=%s", deleted, self._job_id)

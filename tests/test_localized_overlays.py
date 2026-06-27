@@ -116,9 +116,7 @@ def test_render_intro_html_localized_show_name():
 
 def test_section_card_cmd_localizes_text_spanish():
     marker = SectionMarker(name="Signal & Noise", position=0)
-    cmd = _build_section_card_cmd(
-        marker, Path("/tmp/card.mp4"), SectionCardConfig(locale="es")
-    )
+    cmd = _build_section_card_cmd(marker, Path("/tmp/card.mp4"), SectionCardConfig(locale="es"))
     joined = " ".join(cmd)
     assert "Se" in joined and "al y Ruido" in joined  # Señal y Ruido split across join boundaries
     assert "Signal & Noise" not in joined
@@ -126,8 +124,6 @@ def test_section_card_cmd_localizes_text_spanish():
 
 def test_section_card_cmd_english_unchanged():
     marker = SectionMarker(name="Signal & Noise", position=0)
-    cmd = _build_section_card_cmd(
-        marker, Path("/tmp/card.mp4"), SectionCardConfig()
-    )
+    cmd = _build_section_card_cmd(marker, Path("/tmp/card.mp4"), SectionCardConfig())
     joined = " ".join(cmd)
     assert "Signal & Noise" in joined

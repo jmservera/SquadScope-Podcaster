@@ -225,13 +225,10 @@ class TestGenerateScriptRepairFlow:
     def test_soft_flags_logged_at_warning(self, caplog):
         # Soft flags are surfaced as warnings (not INFO) so they are visible in
         # production log filters.
-        soft = (
-            "Theo: According to our benchmark, it's faster.\nVera: Nice work."
-        )
+        soft = "Theo: According to our benchmark, it's faster.\nVera: Nice work."
         transport = _sequenced_transport([soft])
         with caplog.at_level("WARNING"):
             self._gen(transport)
         assert any(
-            "ownership soft-flag" in r.message and r.levelname == "WARNING"
-            for r in caplog.records
+            "ownership soft-flag" in r.message and r.levelname == "WARNING" for r in caplog.records
         )

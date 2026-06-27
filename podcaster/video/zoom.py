@@ -33,9 +33,9 @@ from podcaster.video.video_gen import RecordedSegment
 logger = logging.getLogger(__name__)
 
 # Default zoom / easing constants
-DEFAULT_ZOOM_LEVEL = 2.0       # 2× zoom at peak
-DEFAULT_EASE_IN_S = 0.5        # seconds to ramp up to peak zoom
-DEFAULT_EASE_OUT_S = 0.5       # seconds to ramp back to full view
+DEFAULT_ZOOM_LEVEL = 2.0  # 2× zoom at peak
+DEFAULT_EASE_IN_S = 0.5  # seconds to ramp up to peak zoom
+DEFAULT_EASE_OUT_S = 0.5  # seconds to ramp back to full view
 DEFAULT_VIDEO_W = 1920
 DEFAULT_VIDEO_H = 1080
 DEFAULT_FPS = 30
@@ -209,20 +209,24 @@ def build_zoompan_cmd(
     """
     z_expr, x_expr, y_expr = _zoompan_exprs(spec, video_w, video_h, fps)
     zoompan_filter = (
-        f"zoompan=z='{z_expr}'"
-        f":x='{x_expr}'"
-        f":y='{y_expr}'"
-        f":d=1"
-        f":s={video_w}x{video_h}"
-        f":fps={fps}"
+        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':d=1:s={video_w}x{video_h}:fps={fps}"
     )
     return [
-        ffmpeg_bin, "-hide_banner", "-loglevel", "warning", "-y",
-        "-i", str(input_path),
-        "-vf", zoompan_filter,
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-pix_fmt", "yuv420p",
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vf",
+        zoompan_filter,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
         "-an",
         str(output_path),
     ]
@@ -269,9 +273,7 @@ def apply_zoom_to_segment(
 
     for i, spec in enumerate(zoom_specs):
         out_path = output_dir / f"{recorded.video_path.stem}_zoom_{i:02d}{suffix}"
-        cmd = build_zoompan_cmd(
-            current_path, out_path, spec, video_w, video_h, fps, ffmpeg_bin
-        )
+        cmd = build_zoompan_cmd(current_path, out_path, spec, video_w, video_h, fps, ffmpeg_bin)
         label = spec.focus.label or f"focus_{i}"
         logger.info(
             "Applying zoom to %s: focus=%s zoom=%.1f×",

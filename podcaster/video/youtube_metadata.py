@@ -250,8 +250,7 @@ def build_thumbnail_command(
     the source aspect ratio.
     """
     scale_crop = (
-        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height}"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
     )
     return [
         ffmpeg_bin,
@@ -352,9 +351,7 @@ def upload_thumbnail(
     if size == 0:
         raise ValueError("Thumbnail image is empty")
     if size > THUMBNAIL_MAX_BYTES:
-        raise ValueError(
-            f"Thumbnail too large ({size} bytes > {THUMBNAIL_MAX_BYTES})"
-        )
+        raise ValueError(f"Thumbnail too large ({size} bytes > {THUMBNAIL_MAX_BYTES})")
 
     http = transport if transport is not None else _default_transport()
 
@@ -380,9 +377,7 @@ def upload_thumbnail(
     if status == 200:
         logger.info("Thumbnail set for video %s", video_id)
         return True
-    logger.warning(
-        "Thumbnail upload failed for video %s: HTTP %s", video_id, status
-    )
+    logger.warning("Thumbnail upload failed for video %s: HTTP %s", video_id, status)
     return False
 
 
@@ -412,9 +407,7 @@ def generate_and_set_thumbnail(
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         logger.warning("Thumbnail generation skipped for %s: %s", video_id, exc)
         return False
-    return upload_thumbnail(
-        video_id, output_path, access_token, transport=transport
-    )
+    return upload_thumbnail(video_id, output_path, access_token, transport=transport)
 
 
 def _default_transport() -> object:

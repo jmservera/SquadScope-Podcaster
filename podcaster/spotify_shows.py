@@ -111,9 +111,8 @@ def resolve_show_target(
     if not language_tag:
         language_tag = SPOTIFY_LANGUAGE_TAGS.get(key, key)
 
-    show_name = (
-        _getattr_str(language_config, "show_name")
-        or _DEFAULT_SHOW_NAMES.get(key, _DEFAULT_SHOW_NAMES[DEFAULT_LANGUAGE])
+    show_name = _getattr_str(language_config, "show_name") or _DEFAULT_SHOW_NAMES.get(
+        key, _DEFAULT_SHOW_NAMES[DEFAULT_LANGUAGE]
     )
 
     return ShowTarget(
@@ -141,7 +140,5 @@ def build_show_targets(
     targets: dict[str, ShowTarget] = {}
     for raw in languages:
         key = _language_key(raw if isinstance(raw, str) else getattr(raw, "language", None))
-        targets[key] = resolve_show_target(
-            key, language_config=configs.get(key), env=env
-        )
+        targets[key] = resolve_show_target(key, language_config=configs.get(key), env=env)
     return targets
