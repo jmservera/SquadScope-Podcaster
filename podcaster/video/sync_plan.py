@@ -826,10 +826,9 @@ def plan_from_script_aligned(
 # --- claracle.com weekly page as the first content segment (issue #382) ---
 
 # The weekly page is shown after the intro, before the hosts discuss any repo.
-# Its on-screen time is proportional to the bridge before the first repo
-# mention, clamped to this window.
+# It spans the entire bridge before the first repo mention (only a minimum
+# floor), so the plan keeps tiling the audio timeline with no gap (issue #544).
 WEEKLY_SEGMENT_MIN_SECONDS = 15.0
-WEEKLY_SEGMENT_MAX_SECONDS = 20.0
 
 # Extracts the ISO year and week from a job_id such as
 # ``podcast-2026-W26-de5f4e6e0435`` (case-insensitive ``W``).
@@ -893,7 +892,9 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
     if segments and segments[0].source_url == url and segments[0].is_generic:
         return plan
 
-    first_start = segments[0].start_seconds if segments else WEEKLY_SEGMENT_MAX_SECONDS
+    # ``segments`` is guaranteed non-empty here: the function returns early above
+    # when the plan has no repo segments.
+    first_start = segments[0].start_seconds
     # Span the whole bridge (only a minimum floor) so the weekly page fills the
     # pre-first-repo gap and the plan keeps tiling the audio timeline with no
     # hole — otherwise every repo is shown earlier than it is discussed (#544).

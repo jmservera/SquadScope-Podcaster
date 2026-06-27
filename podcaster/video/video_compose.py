@@ -2336,11 +2336,14 @@ def compose_video(
         # is proportionally squeezed into the window AND shifted by intro_dur,
         # drifting each repo away from when the hosts actually name it. After the
         # trim the content represents audio [intro_dur, audio - outro_dur] at 1:1.
-        _seg_floor = transition_duration + 0.5
+        # Clamp only to 0 here and let _fit_target_durations apply the single
+        # xfade-valid floor (transition + 0.5) consistently, so the proportional
+        # scaling is not skewed by a pre-applied floor when the intro/outro span
+        # exceeds the first/last segment length.
         if plan_durations and intro_dur > 0:
-            plan_durations[0] = max(plan_durations[0] - intro_dur, _seg_floor)
+            plan_durations[0] = max(plan_durations[0] - intro_dur, 0.0)
         if plan_durations and outro_dur > 0:
-            plan_durations[-1] = max(plan_durations[-1] - outro_dur, _seg_floor)
+            plan_durations[-1] = max(plan_durations[-1] - outro_dur, 0.0)
         fit_durations = _fit_target_durations(plan_durations, content_window, transition_duration)
         logger.info(
             "Fitting %d content segment(s) to %.1fs window (audio=%.1fs, intro=%.1fs, outro=%.1fs)",
