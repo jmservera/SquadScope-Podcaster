@@ -24,6 +24,35 @@ from podcaster.storage import LocalStorageBackend
 from podcaster.validation import validate_payload, validate_payload_details
 
 
+def test_payload_provides_identity_detects_config() -> None:
+    # Absent / non-mapping payloads -> no identity (defaults will be used).
+    assert PodcastConfig.payload_provides_identity(None) is False
+    assert PodcastConfig.payload_provides_identity({}) is False
+    assert PodcastConfig.payload_provides_identity({"podcast_config": {}}) is False
+    assert PodcastConfig.payload_provides_identity({"week": "2026-W26"}) is False
+    assert PodcastConfig.payload_provides_identity({"podcast_config": None}) is False
+    # Empty identity fields don't count as provided.
+    assert PodcastConfig.payload_provides_identity({"podcast_config": {"name": ""}}) is False
+    # Any of name / host_a / host_b / hosts present -> identity provided.
+    assert PodcastConfig.payload_provides_identity({"podcast_config": {"name": "My Show"}}) is True
+    assert (
+        PodcastConfig.payload_provides_identity({"podcast_config": {"host_a": {"name": "Ada"}}})
+        is True
+    )
+    assert (
+        PodcastConfig.payload_provides_identity({"podcast_config": {"host_b": {"name": "Bo"}}})
+        is True
+    )
+    assert (
+        PodcastConfig.payload_provides_identity(
+            {"podcast_config": {"hosts": [{"name": "Ada"}, {"name": "Bo"}]}}
+        )
+        is True
+    )
+    # Bare podcast_config mapping (no wrapper key) is also accepted.
+    assert PodcastConfig.payload_provides_identity({"name": "My Show"}) is True
+
+
 def test_podcast_config_defaults_match_generation_constants() -> None:
     config = PodcastConfig()
     assert config.name == PODCAST_NAME

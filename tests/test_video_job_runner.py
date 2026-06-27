@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -501,6 +502,105 @@ class TestRunVideoGeneration:
         assert "www.claracle.com" in description
         # Music credits must be present (default attribution from TRACK_ATTRIBUTION)
         assert _DEFAULT_MUSIC_CREDITS in description
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_default_title_and_identity_warn_when_config_absent(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config, caplog
+    ):
+        """Issue #545: a render with no article_title/podcast_config falls back to
+        defaults and logs both, so the operator can tell config was missing."""
+        job_id = "video-no-config"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0, segment_count=2, has_audio=False
+            )
+
+        mock_compose.side_effect = fake_compose
+        mock_distribute.return_value = MagicMock(
+            status="completed",
+            youtube_id=None,
+            blob_path=None,
+            spotify_rss_updated=False,
+            spotify_upload_updated=False,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            run_video_generation(job_id, storage, config=dry_config)
+
+        title = mock_distribute.call_args.args[2]
+        assert title == f"SquadScope Podcast — {job_id}"
+        assert any("article_title absent" in r.getMessage() for r in caplog.records)
+        assert any("podcast_config identity absent" in r.getMessage() for r in caplog.records)
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_configured_title_and_identity_no_warning(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config, caplog
+    ):
+        """Issue #545: when the request supplies article_title + podcast_config
+        identity, the configured title is used and no default-fallback warning."""
+        job_id = "video-with-config"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Configured Episode Title",
+                    "podcast_config": {
+                        "name": "My Show",
+                        "host_a": {"name": "Ada"},
+                        "host_b": {"name": "Bo"},
+                    },
+                },
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0, segment_count=2, has_audio=False
+            )
+
+        mock_compose.side_effect = fake_compose
+        mock_distribute.return_value = MagicMock(
+            status="completed",
+            youtube_id=None,
+            blob_path=None,
+            spotify_rss_updated=False,
+            spotify_upload_updated=False,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            run_video_generation(job_id, storage, config=dry_config)
+
+        title = mock_distribute.call_args.args[2]
+        assert title == "Configured Episode Title"
+        assert not any("article_title absent" in r.getMessage() for r in caplog.records)
+        assert not any("podcast_config identity absent" in r.getMessage() for r in caplog.records)
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")
