@@ -2944,7 +2944,7 @@ class TestApadFrameSpanRealFfmpeg:
         import json as _json
 
         def _dur(args):
-            r = subprocess.run([binary, *args], capture_output=True, text=True)
+            r = subprocess.run([binary, *args], capture_output=True, text=True, check=True)
             return _json.loads(r.stdout or "{}")
 
         vinfo = _dur(
@@ -2955,7 +2955,7 @@ class TestApadFrameSpanRealFfmpeg:
                 "v:0",
                 "-count_packets",
                 "-show_entries",
-                "stream=nb_read_packets,r_frame_rate",
+                "stream=nb_read_packets,avg_frame_rate,r_frame_rate",
                 "-of",
                 "json",
                 str(path),
@@ -2976,8 +2976,9 @@ class TestApadFrameSpanRealFfmpeg:
         )
         vs = (vinfo.get("streams") or [{}])[0]
         nb = int(vs.get("nb_read_packets", 0) or 0)
-        num, _, den = str(vs.get("r_frame_rate", "30/1")).partition("/")
-        fps = float(num) / float(den) if den and float(den) != "0" else 30.0
+        fps = vc._parse_fps(vs.get("avg_frame_rate", "")) or vc._parse_fps(
+            vs.get("r_frame_rate", "")
+        )
         video_dur = nb / fps if fps else 0.0
         audio_dur = float((ainfo.get("streams") or [{}])[0].get("duration", 0.0) or 0.0)
         return video_dur, audio_dur
@@ -3060,6 +3061,10 @@ class TestApadFrameSpanRealFfmpeg:
             "Spotify would reject VIDEO_DURATION_LONGER_THAN_AUDIO"
         )
         assert result.has_audio
+        # duration_seconds must reflect the padded audio (video + epsilon), not
+        # the unpadded input audio, in the video>audio case (#549 review).
+        assert result.duration_seconds >= video_dur
+        assert result.duration_seconds == pytest.approx(video_dur + vc.AUDIO_PAD_EPSILON, abs=0.06)
 
 
 class TestProbeVideoFrameSpan:
@@ -3070,12 +3075,41 @@ class TestProbeVideoFrameSpan:
 
         def _run(cmd):
             payload = _json.dumps(
-                {"streams": [{"nb_read_packets": "14316", "r_frame_rate": "30/1"}]}
+                {
+                    "streams": [
+                        {
+                            "nb_read_packets": "14316",
+                            "avg_frame_rate": "30/1",
+                            "r_frame_rate": "30/1",
+                        }
+                    ]
+                }
             )
             return subprocess.CompletedProcess(cmd, 0, payload, "")
 
         span = vc._probe_video_frame_span(Path("/x.mp4"), _run, fallback=1.0)
         assert span == pytest.approx(477.2, abs=1e-6)
+
+    def test_prefers_avg_frame_rate_falls_back_to_r_frame_rate(self):
+        import json as _json
+
+        # avg_frame_rate is 0/0 (unknown) → fall back to r_frame_rate.
+        def _run(cmd):
+            payload = _json.dumps(
+                {
+                    "streams": [
+                        {
+                            "nb_read_packets": "300",
+                            "avg_frame_rate": "0/0",
+                            "r_frame_rate": "30/1",
+                        }
+                    ]
+                }
+            )
+            return subprocess.CompletedProcess(cmd, 0, payload, "")
+
+        span = vc._probe_video_frame_span(Path("/x.mp4"), _run, fallback=1.0)
+        assert span == pytest.approx(10.0, abs=1e-6)
 
     def test_falls_back_on_probe_failure(self):
         def _run(cmd):
@@ -3090,6 +3124,25 @@ class TestProbeVideoFrameSpan:
             return subprocess.CompletedProcess(cmd, 0, _json.dumps({"streams": [{}]}), "")
 
         assert vc._probe_video_frame_span(Path("/x.mp4"), _run, fallback=7.0) == 7.0
+
+
+class TestParseFps:
+    """Unit coverage for the rational frame-rate parser (#549)."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("30/1", 30.0),
+            ("60000/1001", pytest.approx(59.94, abs=0.01)),
+            ("25", 25.0),
+            ("0/0", 0.0),
+            ("", 0.0),
+            ("N/A", 0.0),
+            ("30/0", 0.0),
+        ],
+    )
+    def test_parse(self, value, expected):
+        assert vc._parse_fps(value) == expected
 
 
 class _FlakyNormalizeRunner:

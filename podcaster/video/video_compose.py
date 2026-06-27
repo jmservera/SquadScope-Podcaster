@@ -820,14 +820,32 @@ def _probe_media(path: Path, run: "CommandRunner") -> tuple[bool, float]:
     return has_audio, duration
 
 
+def _parse_fps(value: str) -> float:
+    """Parse an ffprobe rational frame-rate (e.g. ``"30/1"``) into fps.
+
+    Returns ``0.0`` for missing, malformed, or ``0/0`` values so callers can
+    fall back gracefully.
+    """
+    num, _, den = str(value or "").partition("/")
+    try:
+        n = float(num) if num else 0.0
+        d = float(den) if den else 1.0
+    except ValueError:
+        return 0.0
+    if n <= 0 or d <= 0:
+        return 0.0
+    return n / d
+
+
 def _probe_video_frame_span(path: Path, run: "CommandRunner", fallback: float = 0.0) -> float:
     """Probe the *true* video frame span of *path* in seconds.
 
     ``_probe_media`` reads the container's **declared** ``format.duration``, which
     a concat-demuxer stream-copy can under-report relative to the real frame span
     (issue #549). The true span is ``frame_count / fps``: count the coded video
-    packets (one per frame for H.264) and divide by the average frame rate. On any
-    probe failure, returns *fallback* so callers degrade gracefully.
+    packets (one per frame for H.264) and divide by the average frame rate
+    (``avg_frame_rate``, falling back to ``r_frame_rate``). On any probe failure
+    returns *fallback* so callers degrade gracefully.
     """
     cmd = [
         "ffprobe",
@@ -837,7 +855,7 @@ def _probe_video_frame_span(path: Path, run: "CommandRunner", fallback: float = 
         "v:0",
         "-count_packets",
         "-show_entries",
-        "stream=nb_read_packets,r_frame_rate",
+        "stream=nb_read_packets,avg_frame_rate,r_frame_rate",
         "-of",
         "json",
         str(path),
@@ -847,8 +865,9 @@ def _probe_video_frame_span(path: Path, run: "CommandRunner", fallback: float = 
         info = json.loads(proc.stdout or "{}")
         stream = (info.get("streams") or [{}])[0]
         nb_packets = int(stream.get("nb_read_packets", 0) or 0)
-        num, _, den = str(stream.get("r_frame_rate", "")).partition("/")
-        fps = float(num) / float(den) if den and float(den) != 0 else 0.0
+        fps = _parse_fps(stream.get("avg_frame_rate", "")) or _parse_fps(
+            stream.get("r_frame_rate", "")
+        )
     except Exception:  # noqa: BLE001 — probing is best-effort
         return fallback
     if nb_packets <= 0 or fps <= 0:
@@ -2190,13 +2209,16 @@ def _finalize_output(
             )
         )
         pre_final_path = muxed_target
-        # Audio is never truncated and is padded to at least the video length,
-        # so the muxed output runs for the longer stream.
-        total_duration = (
-            max(effective_video_duration, audio_duration)
-            if audio_duration > 0
-            else effective_video_duration
-        )
+        # Audio is never truncated. When the video is the longer stream the audio
+        # is padded to ``effective_video_duration + AUDIO_PAD_EPSILON`` (issue
+        # #549), so the muxed container — muxed without ``-shortest`` — runs for
+        # that padded length; otherwise it runs for the longer real stream.
+        if audio_duration <= 0:
+            total_duration = effective_video_duration
+        elif audio_duration < effective_video_duration:
+            total_duration = effective_video_duration + AUDIO_PAD_EPSILON
+        else:
+            total_duration = audio_duration
     else:
         pre_final_path = video_only_path
         total_duration = video_duration
