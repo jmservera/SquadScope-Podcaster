@@ -232,6 +232,24 @@ class TestVideoDescription:
         # Default attribution must NOT appear when custom credits provided
         assert _DEFAULT_MUSIC_CREDITS not in desc
 
+    def test_configured_show_name_in_credits(self):
+        """Issue #545: the brand credit line honors the per-job podcast_config
+        show name / spoken site instead of the hardcoded defaults."""
+        notes = "# Title\n\n**Hosts:** Ada & Bo\n\n### About this episode\n\nSummary text.\n"
+        storage = self._storage("j", notes)
+        desc = _build_video_description(
+            storage, "j", "fallback", show_name="My Show", spoken_site="myshow.example"
+        )
+        assert "My Show — myshow.example" in desc
+        assert "Claracle — www.claracle.com" not in desc
+
+    def test_blank_show_name_falls_back_to_default(self):
+        """Empty config values fall back to the module brand defaults."""
+        notes = "# Title\n\n### About this episode\n\nSummary text.\n"
+        storage = self._storage("j", notes)
+        desc = _build_video_description(storage, "j", "fallback", show_name="", spoken_site="  ")
+        assert "Claracle — www.claracle.com" in desc
+
 
 # --- Already Processed Tests ---
 
