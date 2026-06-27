@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from podcaster.config import PodcastConfig
 from podcaster.failure_reporting import report_failure
 from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE
 from podcaster.music import TRACK_ATTRIBUTION
@@ -167,18 +168,26 @@ def _build_video_description(
     job_id: str,
     fallback: str,
     music_credits: str | None = None,
+    show_name: str | None = None,
+    spoken_site: str | None = None,
 ) -> str:
     """Build the Spotify/YouTube video description from the episode show-notes.
 
     Reads ``jobs/{job_id}/show-notes.md`` (issue #363), extracts the episode
-    summary and host credits, and appends the Claracle podcast name and website
-    so the published video draft carries the same metadata as the audio episode.
+    summary and host credits, and appends the podcast name and website so the
+    published video draft carries the same metadata as the audio episode.
     Falls back to ``fallback`` when show-notes are unavailable.
+
+    ``show_name``/``spoken_site`` source the brand credit line from the per-job
+    ``request.podcast_config`` (issue #545); when omitted the module defaults
+    (``PODCAST_NAME``/``PODCAST_SPOKEN_SITE``) are used.
 
     ``music_credits`` is appended after the credits line so the video description
     matches the audio episode structure (summary + credits + music attribution).
     When omitted, the default music attribution constant is used.
     """
+    brand_name = (show_name or "").strip() or PODCAST_NAME
+    brand_site = (spoken_site or "").strip() or PODCAST_SPOKEN_SITE
     attribution = (music_credits or _DEFAULT_MUSIC_CREDITS).strip()
 
     def _with_attribution(base: str) -> str:
@@ -202,7 +211,7 @@ def _build_video_description(
     hosts = _extract_hosts(notes)
     if hosts:
         credit_parts.append(f"Hosts: {hosts}")
-    credit_parts.append(f"{PODCAST_NAME} — {PODCAST_SPOKEN_SITE}")
+    credit_parts.append(f"{brand_name} — {brand_site}")
     credits = "Credits: " + " · ".join(credit_parts)
 
     body = f"{summary}\n\n{credits}" if summary else credits
@@ -546,14 +555,48 @@ def run_video_generation(
             request = manifest.get("request")
             if not isinstance(request, dict):
                 request = {}
-            title = str(request.get("article_title", f"SquadScope Podcast — {job_id}"))
+            # Source the episode title from the job config; default only when it
+            # is genuinely absent, and log so the operator can tell config was
+            # missing rather than wrong (issue #545).
+            article_title = request.get("article_title")
+            if isinstance(article_title, str) and article_title.strip():
+                title = article_title.strip()
+            else:
+                title = f"SquadScope Podcast — {job_id}"
+                logger.warning(
+                    "article_title absent in manifest request for job_id=%s; "
+                    "using default title %r (supply request.article_title to "
+                    "override, issue #545)",
+                    job_id,
+                    title,
+                )
+            # Resolve the podcast identity from the per-job config so the brand
+            # credit line honors request.podcast_config rather than the module
+            # defaults; absent fields fall back to defaults (logged above, #545).
+            podcast_config = PodcastConfig.from_payload(request)
+            if not PodcastConfig.payload_provides_identity(request):
+                logger.warning(
+                    "podcast_config identity absent in manifest request for "
+                    "job_id=%s; the episode uses default show name %r and hosts "
+                    "%r/%r — supply request.podcast_config (name/host_a/host_b) "
+                    "to override (issue #545)",
+                    job_id,
+                    podcast_config.name,
+                    podcast_config.host_a.name,
+                    podcast_config.host_b.name,
+                )
             fallback_description = str(
                 request.get("description", f"Video podcast episode {job_id}")
             )
             template = request.get("description_template")
             music_credits = template if isinstance(template, str) and template.strip() else None
             description = _build_video_description(
-                storage, job_id, fallback_description, music_credits=music_credits
+                storage,
+                job_id,
+                fallback_description,
+                music_credits=music_credits,
+                show_name=podcast_config.name,
+                spoken_site=podcast_config.spoken_site,
             )
 
             season_number = _extract_year(manifest)

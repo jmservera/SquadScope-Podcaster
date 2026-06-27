@@ -72,6 +72,26 @@ def _string_or_default(value: object, default: str) -> str:
     return default
 
 
+def _has_text(value: object) -> bool:
+    """Return ``True`` when *value* is a non-empty/non-whitespace string."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _host_has_name(value: object) -> bool:
+    """Return ``True`` when a host block carries a usable (non-blank) name.
+
+    Accepts either a mapping with a ``name``/``host`` field or a bare string
+    name.  An empty ``{"name": ""}`` block does not count as supplied identity
+    (it would fall back to the default name), so it must not mask the
+    absence warning (issue #545).
+    """
+    if _has_text(value):
+        return True
+    if isinstance(value, Mapping):
+        return _has_text(value.get("name")) or _has_text(value.get("host"))
+    return False
+
+
 class _HTMLTruncator(HTMLParser):
     def __init__(self, max_length: int) -> None:
         super().__init__(convert_charrefs=False)
@@ -444,6 +464,37 @@ class PodcastConfig:
             style_guide=style_guide,
             languages=languages,
         )
+
+    @classmethod
+    def payload_provides_identity(cls, payload: Mapping[str, Any] | None) -> bool:
+        """Return ``True`` when *payload* explicitly supplies podcast identity.
+
+        "Identity" means the show name or either host (the fields that surface in
+        the spoken script and on-screen credits).  When this returns ``False``
+        the resolved config falls back to the module defaults, and callers should
+        log that the configuration was genuinely absent (issue #545).
+        """
+
+        if not isinstance(payload, Mapping):
+            return False
+        config_payload: object = payload
+        if "podcast_config" in payload:
+            config_payload = payload.get("podcast_config")
+        if not isinstance(config_payload, Mapping):
+            return False
+        # A bare show name counts as identity.
+        if _has_text(config_payload.get("name")):
+            return True
+        # A host block counts only when it carries a usable name; an empty
+        # ``{"name": ""}`` would otherwise fall back to the default name yet be
+        # treated as "provided", masking the absence warning (issue #545).
+        for key in ("host_a", "host_b"):
+            if _host_has_name(config_payload.get(key)):
+                return True
+        hosts = config_payload.get("hosts")
+        if isinstance(hosts, (list, tuple)) and any(_host_has_name(h) for h in hosts):
+            return True
+        return False
 
     def language_for(self, code: str | None) -> LanguageConfig:
         """Return the language block for ``code``, falling back to the default.

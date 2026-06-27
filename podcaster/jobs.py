@@ -65,6 +65,16 @@ def run_generation_job(
     )
     job_id = build_job_id(payload)
     podcast_config = PodcastConfig.from_payload(payload)
+    if not PodcastConfig.payload_provides_identity(payload):
+        logging.warning(
+            "podcast_config identity absent in payload job_id=%s; using default "
+            "hosts %r/%r and show name %r — supply payload.podcast_config "
+            "(name/host_a/host_b) to override (issue #545)",
+            job_id,
+            podcast_config.host_a.name,
+            podcast_config.host_b.name,
+            podcast_config.name,
+        )
     storage = storage or create_storage_backend()
     month = current.strftime("%Y-%m")
     monthly_path = monthly_ledger_path(month)

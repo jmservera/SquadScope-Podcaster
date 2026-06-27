@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -13,6 +14,8 @@ from podcaster.audio import placeholder_audio_validation
 from podcaster.config import PodcastConfig
 from podcaster.costs import build_cost_ledger
 from podcaster.sanitization import FIELD_LIMITS, sanitize_source_artifact
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -182,9 +185,16 @@ def _script(
     week = str(payload["week"])
     article_url = str(payload["article_url"])
     article_sha256 = str(payload.get("article_sha256") or "computed-on-retrieval")
-    article_title = str(
-        payload.get("article_title") or "[main article title pending editorial selection]"
-    )
+    article_title_raw = payload.get("article_title")
+    if isinstance(article_title_raw, str) and article_title_raw.strip():
+        article_title = article_title_raw.strip()
+    else:
+        logger.warning(
+            "article_title absent for job_id=%s; using placeholder title "
+            "(supply payload.article_title to override, issue #545)",
+            job_id,
+        )
+        article_title = "[main article title pending editorial selection]"
     source_artifacts = payload.get("source_artifacts") or []
     source_artifact_lines = [_source_artifact_line(item) for item in source_artifacts] or [
         "Source Artifact: none supplied"
