@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -404,6 +405,166 @@ class TestDistributeVideo:
             transport=transport,
         )
         assert result.status == "failed"
+
+    def test_skips_youtube_and_spotify_upload_when_already_published(
+        self,
+        video_file,
+        monkeypatch,
+    ):
+        def fail_youtube(*args, **kwargs):
+            raise AssertionError("YouTube upload should be skipped")
+
+        def fail_spotify(*args, **kwargs):
+            raise AssertionError("Spotify upload should be skipped")
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_spotify_episode", fail_spotify)
+
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            spotify_upload_enabled=True,
+            blob_archive_enabled=False,
+        )
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            published={
+                "youtube": {"status": "published", "video_id": "yt-prior"},
+                "spotify_upload": {"status": "published", "episode_id": 456},
+            },
+        )
+
+        assert result.status == "completed"
+        assert result.youtube_id == "yt-prior"
+        assert result.youtube_url == "https://www.youtube.com/watch?v=yt-prior"
+        assert result.spotify_upload_updated is True
+
+    def test_partial_publish_state_retries_only_missing_spotify_upload(
+        self,
+        video_file,
+        monkeypatch,
+    ):
+        calls: list[str] = []
+
+        def fail_youtube(*args, **kwargs):
+            raise AssertionError("YouTube upload should be skipped")
+
+        def fake_spotify(*args, **kwargs):
+            calls.append("spotify")
+            return True
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_spotify_episode", fake_spotify)
+
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            spotify_upload_enabled=True,
+            blob_archive_enabled=False,
+        )
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            published={"youtube": {"status": "published", "video_id": "yt-prior"}},
+        )
+
+        assert calls == ["spotify"]
+        assert result.youtube_id == "yt-prior"
+        assert result.spotify_upload_updated is True
+        assert result.status == "completed"
+
+    def test_on_published_called_for_each_new_success(self, video_file, monkeypatch):
+        records: list[tuple[str, dict]] = []
+
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: ("yt-new", "https://youtube.com/watch?v=yt-new"),
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution.update_spotify_rss",
+            lambda *args, **kwargs: True,
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_spotify_episode",
+            lambda *args, **kwargs: (True, 321),
+        )
+
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            spotify_rss_enabled=True,
+            spotify_upload_enabled=True,
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            on_published=lambda platform, record: records.append((platform, record)),
+        )
+
+        assert result.status == "completed"
+        assert [platform for platform, _ in records] == [
+            "youtube",
+            "spotify_rss",
+            "spotify_upload",
+        ]
+        by_platform = dict(records)
+        assert by_platform["youtube"]["status"] == "published"
+        assert by_platform["youtube"]["video_id"] == "yt-new"
+        assert by_platform["spotify_rss"]["status"] == "published"
+        assert by_platform["spotify_upload"]["status"] == "published"
+        assert by_platform["spotify_upload"]["episode_id"] == 321
+        for record in by_platform.values():
+            datetime.fromisoformat(record["at"])
+
+    def test_dry_run_does_not_persist_published_state(self, video_file, monkeypatch):
+        """Dry-run simulates publishes; it must NOT call on_published, otherwise the
+        manifest is poisoned and a later real run skips actual publishing (#564)."""
+        records: list[tuple[str, dict]] = []
+
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: ("dry-run-id", "https://youtube.com/watch?v=dry-run-id"),
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution.update_spotify_rss",
+            lambda *args, **kwargs: True,
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_spotify_episode",
+            lambda *args, **kwargs: (True, None),
+        )
+
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            spotify_rss_enabled=True,
+            spotify_upload_enabled=True,
+            blob_archive_enabled=False,
+            dry_run=True,
+        )
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            on_published=lambda platform, record: records.append((platform, record)),
+        )
+
+        assert result.status == "completed"
+        assert records == []
 
 
 # --- Helper Tests ---

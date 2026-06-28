@@ -338,6 +338,80 @@ def _create_episode(session: requests.Session, station_id: str) -> int:
     return anchor_id
 
 
+def _spotify_reconcile_enabled() -> bool:
+    """Whether video draft reconcile-before-create is enabled (default on)."""
+    raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _episode_items(data: Any) -> list[Any]:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("episodes", "items", "data", "results"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _draft_episode_id(episode: Any, title: str) -> int | None:
+    if not isinstance(episode, dict):
+        return None
+    raw_title = episode.get("title") or episode.get("name")
+    if not isinstance(raw_title, str) or raw_title.strip() != title.strip():
+        return None
+
+    status_values = [
+        episode.get("status"),
+        episode.get("state"),
+        episode.get("publishStatus"),
+        episode.get("publishState"),
+    ]
+    is_draft = bool(episode.get("isDraft")) or any(
+        isinstance(value, str) and value.strip().lower() == "draft" for value in status_values
+    )
+    if not is_draft:
+        return None
+
+    raw_id = episode.get("episodeId") or episode.get("id") or episode.get("anchorId")
+    try:
+        return int(raw_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_existing_draft(
+    session: requests.Session,
+    station_id: str,
+    title: str,
+    *,
+    exclude_id: int | None = None,
+) -> int | None:
+    """Best-effort lookup for an existing draft episode with an exact title match.
+
+    ``exclude_id`` (the audio anchor episode) is never returned, so a same-titled
+    audio draft can never be mistaken for the separate video draft (#564).
+    """
+    try:
+        url = f"{_BASE_URL}/v3/stations/{station_id}/episodes"
+        resp = _retry_request(session, "GET", url, params=_mums_params(), timeout=15)
+        for episode in _episode_items(resp.json()):
+            episode_id = _draft_episode_id(episode, title)
+            if episode_id is not None and episode_id != exclude_id:
+                logger.info(
+                    "Reconciled existing Spotify draft anchorId=%d for title=%r",
+                    episode_id,
+                    title,
+                )
+                return episode_id
+    except Exception:
+        logger.warning("Spotify draft reconcile failed for title=%r", title, exc_info=True)
+    return None
+
+
 _VIDEO_CHUNK_SIZE = 30 * 1024 * 1024  # 30MB per chunk for video multipart
 
 
@@ -713,8 +787,24 @@ def upload_video_to_episode(
         session = _build_session(sp_dc, sp_key, show_id)
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
-        # Create a NEW draft episode for the video — never touch the audio one.
-        video_anchor_id = _create_episode(session, station_id)
+        # Create or reconcile a separate video draft — never touch the audio one.
+        video_anchor_id = None
+        if title and _spotify_reconcile_enabled():
+            try:
+                exclude_audio_id = int(anchor_id) if anchor_id is not None else None
+            except (TypeError, ValueError):
+                exclude_audio_id = None
+            video_anchor_id = _find_existing_draft(
+                session, station_id, video_title, exclude_id=exclude_audio_id
+            )
+        if video_anchor_id is None:
+            video_anchor_id = _create_episode(session, station_id)
+        else:
+            logger.info(
+                "Reusing reconciled Spotify video draft anchorId=%d for title=%r",
+                video_anchor_id,
+                video_title,
+            )
 
         file_data = video_path.read_bytes()
         upload_result = _get_upload_url(

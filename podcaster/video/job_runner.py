@@ -351,6 +351,38 @@ def _record_video_state(
         logger.warning("failed to record video state for job_id=%s", job_id, exc_info=True)
 
 
+def _record_video_publish(
+    storage: StorageBackend,
+    job_id: str,
+    platform: str,
+    record: dict[str, Any],
+) -> None:
+    """Record one durable per-platform video publish result in the manifest."""
+    from podcaster.generation import manifest_bytes
+
+    def _apply(content: bytes | None) -> bytes:
+        doc = json.loads(content.decode("utf-8")) if content else {}
+        if not isinstance(doc, dict):
+            doc = {}
+        generation = doc.setdefault("generation", {})
+        video_publish = generation.setdefault("video_publish", {})
+        if not isinstance(video_publish, dict):
+            video_publish = {}
+            generation["video_publish"] = video_publish
+        video_publish[platform] = record
+        return manifest_bytes(doc)
+
+    try:
+        storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+    except Exception:
+        logger.warning(
+            "failed to record video publish state for job_id=%s platform=%s",
+            job_id,
+            platform,
+            exc_info=True,
+        )
+
+
 def realized_audio_metadata_path(job_id: str) -> str:
     """Blob path for the Layer 2 realized-audio-metadata document (#553)."""
     return f"jobs/{job_id}/realized_audio_metadata.json"
@@ -817,6 +849,10 @@ def run_video_generation(
             season_number = _extract_year(manifest)
             episode_number = _extract_week(manifest)
             job_language = str(request.get("language", "en"))
+            generation = manifest.get("generation")
+            published = None
+            if isinstance(generation, dict) and isinstance(generation.get("video_publish"), dict):
+                published = generation["video_publish"]
 
             with timings.phase("distribution"):
                 dist_result = distribute_video(
@@ -831,6 +867,13 @@ def run_video_generation(
                     season_number=season_number,
                     episode_number=episode_number,
                     language=job_language,
+                    published=published,
+                    on_published=lambda platform, record: _record_video_publish(
+                        storage,
+                        job_id,
+                        platform,
+                        record,
+                    ),
                 )
 
             # Emit the per-phase timing/resource breakdown (issue #396).
