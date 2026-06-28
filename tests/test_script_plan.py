@@ -326,3 +326,59 @@ def test_infer_repo_visual_markers_remarks_when_topic_returns():
     out = infer_repo_visual_markers(script, CONFIG)
     assert out.count("## Visual: repo https://github.com/a/one") == 2
     assert out.count("## Visual: repo https://github.com/b/two") == 1
+
+
+def test_infer_repo_visual_markers_from_bare_slug_anchors_to_first_naming():
+    """#558: hosts name repos as bare ``owner/repo`` slugs; the header carries the
+    full URLs. The marker must land at the first SPOKEN naming, not the header."""
+    script = (
+        "Title: Weekly\n"
+        "Repos featured: https://github.com/vercel/eve "
+        "https://github.com/openai/gym\n"
+        "---\n"
+        "Theo: Welcome, a quick intro with no repo named yet.\n"
+        "Vera: Agent frameworks matter. vercel/eve is the cleanest anchor here.\n"
+        "Theo: Later we also cover openai/gym for benchmarking work.\n"
+    )
+    out = infer_repo_visual_markers(script, CONFIG).splitlines()
+    eve_marker = out.index("## Visual: repo https://github.com/vercel/eve")
+    eve_turn = next(i for i, ln in enumerate(out) if ln.startswith("Vera: Agent frameworks"))
+    # Marker sits immediately before the turn that first names eve (audio cue).
+    assert eve_marker == eve_turn - 1
+    # No repo marker is injected before the first naming (lead-in stays article).
+    assert not any(ln.startswith("## Visual: repo") for ln in out[:eve_marker])
+    gym_marker = out.index("## Visual: repo https://github.com/openai/gym")
+    assert gym_marker > eve_marker
+
+    plan = parse_script_plan("\n".join(out), CONFIG)
+    repo_segs = [s for s in plan.segments if s.visual_mode is VisualMode.REPO]
+    assert repo_segs[0].repo_url == "https://github.com/vercel/eve"
+    assert plan.segments[0].visual_mode is VisualMode.ARTICLE
+
+
+def test_infer_repo_visual_markers_slug_boundaries_avoid_false_positives():
+    """A known slug must not match inside a longer token (owner/repo vs owner/repo-old)."""
+    script = (
+        "Repos featured: https://github.com/acme/tool\n"
+        "---\n"
+        "Theo: We tried acme/tool-old which is unrelated and different.\n"
+        "Vera: But acme/tool itself is the real one we mean.\n"
+    )
+    out = infer_repo_visual_markers(script, CONFIG).splitlines()
+    marker = out.index("## Visual: repo https://github.com/acme/tool")
+    real_turn = next(i for i, ln in enumerate(out) if ln.startswith("Vera: But acme/tool"))
+    # The marker attaches to the real bare-slug mention, not the -old substring.
+    assert marker == real_turn - 1
+
+
+def test_infer_repo_visual_markers_first_named_wins_in_multi_repo_turn():
+    """When one turn names several repos, the earliest-named repo owns the turn."""
+    script = (
+        "Repos featured: https://github.com/a/first https://github.com/b/second\n"
+        "---\n"
+        "Theo: Today b/second and a/first both appear, a/first comes second here.\n"
+    )
+    out = infer_repo_visual_markers(script, CONFIG).splitlines()
+    markers = [ln for ln in out if ln.startswith("## Visual: repo")]
+    # b/second is named first in the sentence, so it gets the marker.
+    assert markers[0] == "## Visual: repo https://github.com/b/second"
