@@ -194,12 +194,14 @@ def test_backchannel_not_placed_over_resumed_speech_issue_573():
     placements = I.resolve_placements(m, turns, durations, clips)
     a_placement = next(p for p in placements if p.interaction.under_turn_id == "a_000")
 
-    # The latest interior (mid-clause) comma sits before "but we fixed it.".
-    last_comma = speaking.rfind(",")
-    interior_time = 40.0 * (last_comma / len(speaking))
-    # The reaction must start *after* every interior boundary — i.e. only at the
-    # turn-final pause — so it cannot bleed over host_a's resumed words.
-    assert a_placement.start_seconds > interior_time
+    # Interior boundary times computed exactly as build_interaction_map does
+    # (char index = match.end(), i.e. *after* the punctuation), excluding the
+    # turn-final boundary. A regression that reintroduced mid-clause placement
+    # would land on one of these, so the placement must start strictly later.
+    boundaries = I.find_pause_points(speaking)
+    interior_times = [40.0 * (char_index / len(speaking)) for char_index, _ in boundaries[:-1]]
+    assert interior_times, "expected interior (mid-clause) boundaries in the fixture"
+    assert a_placement.start_seconds > max(interior_times)
     # And it must not start before host_a stops speaking (~end of the 40s turn).
     assert a_placement.start_seconds >= 39.0
 
