@@ -1,0 +1,75 @@
+# docker-compose.fanout.yml — local fan-out/fan-in harness (Azurite Blob+Queue)
+#
+# Exercises the scale-out recorder/editor split end-to-end (RFC §9): N stateless
+# recorders drain video-clip-jobs (one clip each) and the single editor fans out,
+# blocks on the fan-in barrier, composes, and publishes once. Reuses the existing
+# Azurite service + well-known dev connection string verbatim.
+#
+# NOTE on auth: production is identity-only (managed identity / IMDS) for Blob +
+# Queue. Azurite does not speak Azure AD, so the recorder/editor grow a thin
+# *connection-string* data plane gated on AZURE_STORAGE_CONNECTION_STRING for
+# local tests only — exactly as docker-compose.test.yml documents. Production
+# never sets this var, so the managed-identity path is unchanged.
+#
+# Usage:
+#   docker compose -f docker-compose.fanout.yml up -d azurite
+#   docker compose -f docker-compose.fanout.yml up --scale recorder=3 recorder
+#   docker compose -f docker-compose.fanout.yml up editor
+#   docker compose -f docker-compose.fanout.yml down -v
+
+x-azurite-dev-conn: &azurite_dev_conn "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;"
+
+services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: >-
+      azurite
+      --blobHost 0.0.0.0 --blobPort 10000
+      --queueHost 0.0.0.0 --queuePort 10001
+      --location /data --skipApiVersionCheck
+    ports:
+      - "10000:10000"   # Blob
+      - "10001:10001"   # Queue
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('net').connect(10000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  recorder:
+    # Scale with `--scale recorder=N`; one clip per replica.
+    image: podcaster-synthesis:test
+    build:
+      context: .
+      dockerfile: Containerfile
+    depends_on:
+      azurite:
+        condition: service_healthy
+    environment:
+      AZURE_STORAGE_CONNECTION_STRING: *azurite_dev_conn
+      PODCASTER_VIDEO_CLIP_QUEUE: "video-clip-jobs"
+      PODCASTER_VIDEO_SCRATCH_CONTAINER: "video-scratch"
+      PODCASTER_RECORDER_FAKE_BROWSER: "1"   # CI: synthesize a 1-frame clip, no Chromium
+    entrypoint: ["python", "-m", "podcaster.video.recorder"]
+
+  editor:
+    image: podcaster-synthesis:test
+    depends_on:
+      azurite:
+        condition: service_healthy
+    environment:
+      AZURE_STORAGE_CONNECTION_STRING: *azurite_dev_conn
+      PODCASTER_VIDEO_QUEUE: "video-jobs"
+      PODCASTER_VIDEO_CLIP_QUEUE: "video-clip-jobs"
+      PODCASTER_VIDEO_SCRATCH_CONTAINER: "video-scratch"
+      PODCASTER_STORAGE_CONTAINER: "podcaster-artifacts"
+    entrypoint: ["python", "-m", "podcaster.video.job_runner"]
+
+volumes:
+  azurite-data: {}

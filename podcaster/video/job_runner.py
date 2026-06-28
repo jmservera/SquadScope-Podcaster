@@ -1195,16 +1195,15 @@ def main() -> int:
     """Entry point for the video ACA container job."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-    queue_url = os.environ.get("PODCASTER_STORAGE_QUEUE_URL")
-    queue_name = os.environ.get("PODCASTER_VIDEO_QUEUE", "video-jobs")
+    from podcaster.queue import create_video_queue_backend
 
-    if not queue_url:
-        logger.error("PODCASTER_STORAGE_QUEUE_URL is not configured; cannot consume video queue")
+    queue = create_video_queue_backend()
+    if queue is None:
+        logger.error(
+            "video queue not configured; set PODCASTER_STORAGE_QUEUE_URL or "
+            "AZURE_STORAGE_CONNECTION_STRING to consume video queue"
+        )
         return 2
-
-    from podcaster.queue import AzureStorageQueueBackend
-
-    queue = AzureStorageQueueBackend(queue_url, queue_name)
     storage = create_storage_backend()
     config = VideoDistributionConfig.from_env()
 
