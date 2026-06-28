@@ -296,6 +296,63 @@ def _parse_messages(payload: bytes) -> list[QueueMessage]:
     return messages
 
 
+class ConnectionStringQueueBackend:
+    """Connection-string Storage Queue backend for local/test only (Azurite).
+
+    Production is identity-only; Azurite does not speak Azure AD, so this thin
+    path is gated on ``AZURE_STORAGE_CONNECTION_STRING`` exactly as
+    ``docker-compose.test.yml`` documents. Bodies are passed through verbatim
+    (callers already base64-encode JSON), so encoding matches the identity REST
+    backend and the official SDK default.
+    """
+
+    def __init__(self, connection_string: str, queue_name: str) -> None:
+        from azure.storage.queue import QueueClient
+
+        self._client = QueueClient.from_connection_string(connection_string, queue_name)
+        self._ensure_queue()
+
+    def _ensure_queue(self) -> None:
+        from azure.core.exceptions import ResourceExistsError
+
+        try:
+            self._client.create_queue()
+        except ResourceExistsError:
+            pass
+
+    def receive_messages(
+        self, max_messages: int = 1, *, visibility_timeout: int = 600
+    ) -> list[QueueMessage]:
+        received = self._client.receive_messages(
+            messages_per_page=max_messages,
+            visibility_timeout=visibility_timeout,
+        )
+        messages: list[QueueMessage] = []
+        for msg in received:
+            messages.append(
+                QueueMessage(
+                    message_id=msg.id,
+                    pop_receipt=msg.pop_receipt,
+                    body=msg.content,
+                    dequeue_count=int(msg.dequeue_count or 0),
+                )
+            )
+            if len(messages) >= max_messages:
+                break
+        return messages
+
+    def delete_message(self, message: QueueMessage) -> None:
+        self._client.delete_message(message.message_id, message.pop_receipt)
+
+    def send_message(self, body: str) -> None:
+        self._client.send_message(body)
+
+
+def _connection_string() -> str | None:
+    value = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "").strip()
+    return value or None
+
+
 def create_queue_backend() -> QueueBackend | None:
     """Build the synthesis queue backend from the environment.
 
@@ -305,6 +362,9 @@ def create_queue_backend() -> QueueBackend | None:
 
     queue_url = os.environ.get("PODCASTER_STORAGE_QUEUE_URL")
     queue_name = os.environ.get("PODCASTER_SYNTHESIS_QUEUE", "synthesis-jobs")
+    conn = _connection_string()
+    if conn:
+        return ConnectionStringQueueBackend(conn, queue_name)
     if not queue_url:
         return None
     return AzureStorageQueueBackend(queue_url, queue_name)
@@ -320,6 +380,9 @@ def create_video_queue_backend() -> QueueBackend | None:
 
     queue_url = os.environ.get("PODCASTER_STORAGE_QUEUE_URL")
     queue_name = os.environ.get("PODCASTER_VIDEO_QUEUE", "video-jobs")
+    conn = _connection_string()
+    if conn:
+        return ConnectionStringQueueBackend(conn, queue_name)
     if not queue_url:
         return None
     return AzureStorageQueueBackend(queue_url, queue_name)
@@ -347,7 +410,7 @@ def enqueue_synthesis_job(job_id: str, *, producer: QueueProducer | None = None)
     return True
 
 
-def create_clip_queue_backend() -> AzureStorageQueueBackend | None:
+def create_clip_queue_backend() -> QueueBackend | None:
     """Build the per-clip queue backend from the environment.
 
     Returns ``None`` when ``PODCASTER_STORAGE_QUEUE_URL`` is unset. The queue
@@ -357,6 +420,9 @@ def create_clip_queue_backend() -> AzureStorageQueueBackend | None:
 
     queue_url = os.environ.get("PODCASTER_STORAGE_QUEUE_URL")
     queue_name = os.environ.get("PODCASTER_VIDEO_CLIP_QUEUE", "video-clip-jobs")
+    conn = _connection_string()
+    if conn:
+        return ConnectionStringQueueBackend(conn, queue_name)
     if not queue_url:
         return None
     return AzureStorageQueueBackend(queue_url, queue_name)

@@ -608,9 +608,214 @@ class AzureBlobStorageBackend:
         return deleted
 
 
+class ConnectionStringStorageBackend:
+    """Connection-string Blob backend for local/test only (Azurite); NOT prod.
+
+    Production is identity-only (managed identity / IMDS); Azurite does not speak
+    Azure AD, so this thin path is gated on ``AZURE_STORAGE_CONNECTION_STRING``
+    exactly as ``docker-compose.test.yml`` documents. It covers the full
+    :class:`StorageBackend` protocol surface using ``azure-storage-blob``.
+    """
+
+    def __init__(self, connection_string: str, container_name: str) -> None:
+        from azure.storage.blob import ContainerClient
+
+        self._container_name = container_name
+        self._container = ContainerClient.from_connection_string(connection_string, container_name)
+        self._ensure_container()
+
+    def _ensure_container(self) -> None:
+        from azure.core.exceptions import ResourceExistsError
+
+        try:
+            self._container.create_container()
+        except ResourceExistsError:
+            pass
+
+    def put_bytes(self, path: str, content: bytes, content_type: str) -> StoredArtifact:
+        from azure.storage.blob import ContentSettings
+
+        safe_path = _safe_blob_path(path)
+        self._container.upload_blob(
+            safe_path,
+            content,
+            overwrite=True,
+            content_settings=ContentSettings(content_type=content_type),
+        )
+        return StoredArtifact(
+            path=safe_path,
+            url=f"{self._container.url}/{safe_path}",
+            size_bytes=len(content),
+            content_type=content_type,
+        )
+
+    def get_bytes(self, path: str) -> bytes | None:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            return self._container.download_blob(_safe_blob_path(path)).readall()
+        except ResourceNotFoundError:
+            return None
+
+    def update_bytes(
+        self,
+        path: str,
+        content_type: str,
+        update: Callable[[bytes | None], bytes],
+    ) -> StoredArtifact:
+        from azure.core import MatchConditions
+        from azure.core.exceptions import (
+            ResourceExistsError,
+            ResourceModifiedError,
+            ResourceNotFoundError,
+        )
+        from azure.storage.blob import ContentSettings
+
+        safe_path = _safe_blob_path(path)
+        blob = self._container.get_blob_client(safe_path)
+        settings = ContentSettings(content_type=content_type)
+        for _attempt in range(5):
+            try:
+                downloader = blob.download_blob()
+                current: bytes | None = downloader.readall()
+                etag = downloader.properties.etag
+            except ResourceNotFoundError:
+                current, etag = None, None
+            updated = update(current)
+            try:
+                if etag is None:
+                    # Create-if-absent: overwrite=False enforces If-None-Match=*.
+                    blob.upload_blob(
+                        updated,
+                        overwrite=False,
+                        content_settings=settings,
+                    )
+                else:
+                    blob.upload_blob(
+                        updated,
+                        overwrite=True,
+                        content_settings=settings,
+                        etag=etag,
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                return StoredArtifact(
+                    path=safe_path,
+                    url=f"{self._container.url}/{safe_path}",
+                    size_bytes=len(updated),
+                    content_type=content_type,
+                )
+            except (ResourceModifiedError, ResourceExistsError):
+                continue
+        raise RuntimeError(
+            f"conditional blob update failed for {safe_path}: concurrent updates did not settle"
+        )
+
+    def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
+        safe_prefix = _safe_blob_prefix(prefix)
+        if limit <= 0:
+            return []
+        names: list[str] = []
+        for name in self._container.list_blob_names(name_starts_with=safe_prefix):
+            names.append(name)
+            if len(names) >= limit:
+                break
+        return names
+
+    def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
+        safe_path = _safe_blob_path(path)
+        return SignedDownloadUrl(
+            path=safe_path,
+            url=f"{self._container.url}/{safe_path}",
+            expires_at=_format_sas_expiry(expiry),
+            method=DOWNLOAD_METHOD_LOCAL_LOCATOR,
+            signed=False,
+            https_only=self._container.url.lower().startswith("https://"),
+            account_key_used=False,
+        )
+
+    def blob_exists(self, path: str) -> bool:
+        return self._container.get_blob_client(_safe_blob_path(path)).exists()
+
+    def blob_size(self, path: str) -> int | None:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            return self._container.get_blob_client(_safe_blob_path(path)).get_blob_properties().size
+        except ResourceNotFoundError:
+            return None
+
+    def upload_file(self, path: str, source: Path, content_type: str) -> StoredArtifact:
+        from azure.storage.blob import ContentSettings
+
+        safe_path = _safe_blob_path(path)
+        size = source.stat().st_size
+        with source.open("rb") as handle:
+            self._container.upload_blob(
+                safe_path,
+                handle,
+                overwrite=True,
+                content_settings=ContentSettings(content_type=content_type),
+            )
+        return StoredArtifact(
+            path=safe_path,
+            url=f"{self._container.url}/{safe_path}",
+            size_bytes=size,
+            content_type=content_type,
+        )
+
+    def download_file(self, path: str, dest: Path) -> bool:
+        import os as _os
+
+        from azure.core.exceptions import ResourceNotFoundError
+
+        safe_path = _safe_blob_path(path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp_dest = dest.with_name(dest.name + ".part")
+        try:
+            with tmp_dest.open("wb") as handle:
+                self._container.download_blob(safe_path).readinto(handle)
+        except ResourceNotFoundError:
+            tmp_dest.unlink(missing_ok=True)
+            return False
+        _os.replace(tmp_dest, dest)
+        return True
+
+    def delete_blob(self, path: str) -> bool:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            self._container.delete_blob(_safe_blob_path(path))
+            return True
+        except ResourceNotFoundError:
+            return False
+
+    def delete_prefix(self, prefix: str) -> int:
+        safe_prefix = _safe_blob_prefix(prefix)
+        deleted = 0
+        while True:
+            names = self.list_blobs(safe_prefix, limit=5000)
+            if not names:
+                break
+            for name in names:
+                if self.delete_blob(name):
+                    deleted += 1
+            if len(names) < 5000:
+                break
+        return deleted
+
+
+def _connection_string() -> str | None:
+    value = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "").strip()
+    return value or None
+
+
 def create_storage_backend() -> StorageBackend:
-    account_url = os.environ.get("PODCASTER_STORAGE_ACCOUNT_URL")
     container = os.environ.get("PODCASTER_STORAGE_CONTAINER", "podcaster-artifacts")
+    conn = _connection_string()
+    if conn:
+        return ConnectionStringStorageBackend(conn, container)
+
+    account_url = os.environ.get("PODCASTER_STORAGE_ACCOUNT_URL")
     if account_url:
         return AzureBlobStorageBackend(account_url=account_url, container_name=container)
 
@@ -636,6 +841,9 @@ def create_scratch_storage_backend() -> StorageBackend | None:
     container = os.environ.get("PODCASTER_VIDEO_SCRATCH_CONTAINER", "").strip()
     if not container:
         return None
+    conn = _connection_string()
+    if conn:
+        return ConnectionStringStorageBackend(conn, container)
     if account_url:
         return AzureBlobStorageBackend(account_url=account_url, container_name=container)
 
