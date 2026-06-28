@@ -29,7 +29,7 @@ from podcaster.ownership_tone import (
     find_violations,
 )
 from podcaster.sanitization import cap_length, neutralize
-from podcaster.script_plan import build_visual_marker_guidance
+from podcaster.script_plan import build_visual_marker_guidance, infer_repo_visual_markers
 from podcaster.sections import parse_script_sections, sections_to_metadata, validate_sections
 from podcaster.storage import ManagedIdentityTokenCredential
 from podcaster.tts import OPENAI_SCOPE, TokenProvider, Transport, TtsConfig
@@ -690,6 +690,13 @@ def generate_script(
     dialogue = _enforce_ownership_tone(
         dialogue, messages=messages, url=url, token=token, transport=transport
     )
+
+    # Backfill explicit ``## Visual: repo`` markers from inline GitHub links when
+    # the model expressed repos as links instead of declaring markers. The video
+    # pipeline derives repo cards only from explicit markers, so this keeps repo
+    # visuals reliable regardless of model marker compliance (#555). Run before
+    # truncation so injected markers stay within MAX_SCRIPT_CHARS.
+    dialogue = infer_repo_visual_markers(dialogue, podcast_config)
 
     # Truncate overly long scripts
     if len(dialogue) > MAX_SCRIPT_CHARS:

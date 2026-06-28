@@ -15,6 +15,7 @@ from podcaster.script_plan import (
     VisualMode,
     build_visual_marker_guidance,
     contains_visual_marker,
+    infer_repo_visual_markers,
     match_visual_marker,
     parse_script_plan,
     strip_visual_markers,
@@ -267,3 +268,61 @@ def test_generation_system_prompt_includes_guidance():
     prompt = _build_system_prompt(podcast_config=CONFIG)
     assert "VISUAL INTENT" in prompt
     assert "## Visual: repo" in prompt
+
+
+def test_infer_repo_visual_markers_injects_from_inline_links():
+    """Inline repo links become explicit markers so repo cards render (#555)."""
+    script = (
+        "Theo: Welcome to the show.\n"
+        "Vera: Check out [vercel/eve](https://github.com/vercel/eve), it's great.\n"
+        "Theo: And [openai/gym](https://github.com/openai/gym) too.\n"
+    )
+    out = infer_repo_visual_markers(script, CONFIG)
+    assert "## Visual: repo https://github.com/vercel/eve" in out
+    assert "## Visual: repo https://github.com/openai/gym" in out
+
+    plan = parse_script_plan(out, CONFIG)
+    repos = [s.repo_url for s in plan.segments if s.visual_mode is VisualMode.REPO]
+    assert "https://github.com/vercel/eve" in repos
+    assert "https://github.com/openai/gym" in repos
+
+
+def test_infer_repo_visual_markers_first_marker_precedes_first_repo_turn():
+    script = (
+        "Theo: Intro with no repo.\n"
+        "Vera: Now [vercel/eve](https://github.com/vercel/eve) is the anchor.\n"
+    )
+    out = infer_repo_visual_markers(script, CONFIG).splitlines()
+    marker_idx = out.index("## Visual: repo https://github.com/vercel/eve")
+    turn_idx = next(i for i, line in enumerate(out) if line.startswith("Vera:"))
+    assert marker_idx == turn_idx - 1
+
+
+def test_infer_repo_visual_markers_is_idempotent_and_preserves_explicit():
+    script = (
+        "## Visual: repo https://github.com/vercel/eve\n"
+        "Theo: Talking about [vercel/eve](https://github.com/vercel/eve).\n"
+        "Vera: Still the same repo here.\n"
+    )
+    once = infer_repo_visual_markers(script, CONFIG)
+    twice = infer_repo_visual_markers(once, CONFIG)
+    # No duplicate marker injected when one is already in effect.
+    assert once.count("## Visual: repo") == 1
+    assert once == twice
+
+
+def test_infer_repo_visual_markers_no_repo_is_noop():
+    script = "Theo: Just a friendly chat.\nVera: No repositories at all today.\n"
+    assert infer_repo_visual_markers(script, CONFIG) == script
+
+
+def test_infer_repo_visual_markers_remarks_when_topic_returns():
+    """Returning to an earlier repo after another repo re-emits its marker."""
+    script = (
+        "Theo: See [a/one](https://github.com/a/one).\n"
+        "Vera: Then [b/two](https://github.com/b/two).\n"
+        "Theo: Back to [a/one](https://github.com/a/one) again.\n"
+    )
+    out = infer_repo_visual_markers(script, CONFIG)
+    assert out.count("## Visual: repo https://github.com/a/one") == 2
+    assert out.count("## Visual: repo https://github.com/b/two") == 1
