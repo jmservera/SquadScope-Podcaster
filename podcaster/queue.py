@@ -33,6 +33,7 @@ from podcaster.storage import (
 
 SYNTHESIS_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-synthesis-queue-v1"
 VIDEO_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-video-queue-v1"
+CLIP_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-clip-queue-v1"
 _STORAGE_SCOPE = "https://storage.azure.com/.default"
 _QUEUE_API_VERSION = "2023-11-03"
 
@@ -111,6 +112,81 @@ def encode_video_message(job_id: str) -> str:
         separators=(",", ":"),
     )
     return base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def encode_clip_message(job_id: str, clip_index: int) -> str:
+    """Encode a per-clip queue message body for ``(job_id, clip_index)``.
+
+    Mirrors :func:`encode_video_message` but stamps the clip queue schema
+    version and carries the additional ``clip_index`` so a recorder
+    (which parses with :func:`parse_clip_job`) records exactly one segment.
+
+    Only ``job_id`` and ``clip_index`` are placed on the wire — never secrets
+    or PII.
+    """
+
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise ValueError("job_id is required to build a clip message")
+    if isinstance(clip_index, bool) or not isinstance(clip_index, int):
+        raise ValueError("clip_index must be an int to build a clip message")
+    if clip_index < 0:
+        raise ValueError("clip_index must be non-negative to build a clip message")
+    payload = json.dumps(
+        {
+            "schema_version": CLIP_QUEUE_SCHEMA_VERSION,
+            "job_id": job_id.strip(),
+            "clip_index": clip_index,
+        },
+        separators=(",", ":"),
+    )
+    return base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def parse_clip_job(body: str) -> tuple[str, int]:
+    """Extract ``(job_id, clip_index)`` from a clip queue message body.
+
+    Accepts base64-encoded JSON (the wire format) and falls back to raw JSON,
+    mirroring :func:`parse_job_id`'s resilience. Raises :class:`ValueError`
+    when either field is missing or malformed so a bad message is treated as a
+    hard (poison) failure rather than being silently processed.
+    """
+
+    text = (body or "").strip()
+    if not text:
+        raise ValueError("clip queue message was empty")
+
+    candidates: list[str] = []
+    try:
+        decoded = base64.b64decode(text, validate=True).decode("utf-8")
+        candidates.append(decoded)
+    except (ValueError, UnicodeDecodeError):
+        pass
+    candidates.append(text)
+
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        schema_version = data.get("schema_version")
+        if schema_version is not None and schema_version != CLIP_QUEUE_SCHEMA_VERSION:
+            # A present-but-mismatched schema means this is the wrong message
+            # type (e.g. a video-jobs envelope) — reject rather than risk
+            # consuming it as a clip job. Absent schema stays accepted for
+            # raw-JSON resilience, mirroring parse_job_id.
+            continue
+        job_id = data.get("job_id")
+        clip_index = data.get("clip_index")
+        if not isinstance(job_id, str) or not job_id.strip():
+            continue
+        if isinstance(clip_index, bool) or not isinstance(clip_index, int):
+            continue
+        if clip_index < 0:
+            continue
+        return job_id.strip(), clip_index
+    raise ValueError("clip queue message did not contain a valid job_id and clip_index")
 
 
 def parse_job_id(body: str) -> str:
@@ -271,6 +347,21 @@ def enqueue_synthesis_job(job_id: str, *, producer: QueueProducer | None = None)
     return True
 
 
+def create_clip_queue_backend() -> AzureStorageQueueBackend | None:
+    """Build the per-clip queue backend from the environment.
+
+    Returns ``None`` when ``PODCASTER_STORAGE_QUEUE_URL`` is unset. The queue
+    name defaults to ``video-clip-jobs`` and is overridable with
+    ``PODCASTER_VIDEO_CLIP_QUEUE`` (matching the recorder's consumer).
+    """
+
+    queue_url = os.environ.get("PODCASTER_STORAGE_QUEUE_URL")
+    queue_name = os.environ.get("PODCASTER_VIDEO_CLIP_QUEUE", "video-clip-jobs")
+    if not queue_url:
+        return None
+    return AzureStorageQueueBackend(queue_url, queue_name)
+
+
 def enqueue_video_job(job_id: str, *, producer: QueueProducer | None = None) -> bool:
     """Enqueue a video-generation message for ``job_id`` on the video queue.
 
@@ -300,4 +391,33 @@ def enqueue_video_job(job_id: str, *, producer: QueueProducer | None = None) -> 
         return False
     backend.send_message(encode_video_message(job_id))
     logging.info("enqueued video job_id=%s", job_id)
+    return True
+
+
+def enqueue_clip_job(
+    job_id: str, clip_index: int, *, producer: QueueProducer | None = None
+) -> bool:
+    """Enqueue a per-clip recording message on the clip queue.
+
+    Returns ``True`` when a message was sent. Returns ``False`` (without
+    raising) when the clip queue is not configured, so callers that fan out
+    recording can degrade gracefully when the scale-out infrastructure is not
+    provisioned.
+
+    Only ``job_id`` and ``clip_index`` are placed on the wire — never secrets
+    or PII.
+    """
+
+    backend = producer
+    if backend is None:
+        backend = create_clip_queue_backend()
+    if backend is None:
+        logging.info(
+            "clip queue not configured; skipping enqueue job_id=%s clip_index=%s",
+            job_id,
+            clip_index,
+        )
+        return False
+    backend.send_message(encode_clip_message(job_id, clip_index))
+    logging.info("enqueued clip job_id=%s clip_index=%s", job_id, clip_index)
     return True
