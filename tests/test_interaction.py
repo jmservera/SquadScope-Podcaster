@@ -71,8 +71,9 @@ def test_build_interaction_map_enforces_density_min_gap():
 
 def test_default_density_increases_backchannels_and_includes_hums():
     """#560: denser defaults land more reactions and surface hums ('hmm')."""
-    # A realistic multi-turn stretch with plenty of safe clause boundaries.
-    clause = "we kept building it, and it worked, and we liked the result"
+    # A realistic multi-turn stretch with several sentence ends per turn so the
+    # turn-final pause (issue #573) gives every turn a safe placement slot.
+    clause = "we kept building it. and it worked. and we liked the result."
     turns = I.assign_turn_ids([("host_a" if i % 2 == 0 else "host_b", clause) for i in range(8)])
     durations = [30.0] * len(turns)
 
@@ -88,14 +89,21 @@ def test_default_density_increases_backchannels_and_includes_hums():
     assert all(i.gain_db >= -12.0 for i in dense.interactions)
     # Hums must actually surface across the episode (tone cycle reaches 'thinking').
     assert any(i.text == "hmm" for i in dense.interactions)
-    # Only one boundary plus the terminal '.' -> after dropping the last clause,
-    # a single safe candidate remains; ensure the terminal punchline is avoided.
-    turns = I.assign_turn_ids([("host_a", "We loved the demo, it was the best thing ever!")])
+    # A reaction anchors on the speaking host's closing clause and lands in the
+    # pause *after* it (issue #573) — reinforcing the point, never talking over it.
+    turns = I.assign_turn_ids(
+        [
+            ("host_a", "We loved the demo, it was the best thing ever!"),
+            ("host_b", "Totally agree."),
+        ]
+    )
     cfg = BackchannelConfig(enabled=True, min_gap_seconds=1)
-    m = I.build_interaction_map(turns, [20.0], cfg)
-    # The placed anchor must not be the closing punchline clause.
-    for interaction in m.interactions:
-        assert "best thing ever" not in interaction.anchor_text
+    m = I.build_interaction_map(turns, [20.0, 10.0], cfg)
+    closing = next((i for i in m.interactions if i.under_turn_id == "a_000"), None)
+    assert closing is not None
+    # The anchor is the turn-final clause; there is no spoken word after it, so
+    # the reaction cannot overlap resumed speech from host_a.
+    assert "best thing ever" in closing.anchor_text
 
 
 def test_build_interaction_map_clamps_gain_and_uses_library():
@@ -113,17 +121,26 @@ def test_build_interaction_map_validates_parallel_durations():
 
 
 def test_resolve_placements_anchors_to_text_and_skips_missing_clips():
-    turns = I.assign_turn_ids([("host_a", "We tried graph retrieval, and it worked well here.")])
+    turns = I.assign_turn_ids(
+        [
+            ("host_a", "We tried graph retrieval, and it worked well here."),
+            ("host_b", "Nice, that lines up."),
+        ]
+    )
+    durations = [40.0, 20.0]
     cfg = BackchannelConfig(enabled=True, min_gap_seconds=1)
-    m = I.build_interaction_map(turns, [40.0], cfg)
+    m = I.build_interaction_map(turns, durations, cfg)
     assert len(m) >= 1
-    text = m.interactions[0].text
-    placements = I.resolve_placements(m, turns, [40.0], {text: b"clip-bytes"})
+    first = next(i for i in m.interactions if i.under_turn_id == "a_000")
+    placements = I.resolve_placements(m, turns, durations, {first.text: b"clip-bytes"})
     assert len(placements) == 1
     assert placements[0].clip == b"clip-bytes"
-    assert 0 < placements[0].start_seconds < 40.0
+    # The reaction lands at host_a's turn-final pause (~40s, the end of its 40s
+    # turn), not at a mid-clause comma — so it never overlaps resumed speech
+    # (issue #573) and still plays during the inter-turn gap into host_b's line.
+    assert 38.0 < placements[0].start_seconds <= 40.0
     # Missing clip -> placement skipped.
-    assert I.resolve_placements(m, turns, [40.0], {}) == []
+    assert I.resolve_placements(m, turns, durations, {}) == []
 
 
 def test_interaction_to_dict_matches_issue_schema():
@@ -153,6 +170,38 @@ def test_resolve_placements_validates_parallel_durations():
     m = I.build_interaction_map(turns, [40.0], BackchannelConfig(enabled=True, min_gap_seconds=1))
     with pytest.raises(ValueError):
         I.resolve_placements(m, turns, [40.0, 1.0], {})
+
+
+def test_backchannel_not_placed_over_resumed_speech_issue_573():
+    """#573: a reaction must never land at a mid-clause comma with no room.
+
+    The speaking host's line is full of mid-sentence commas; synthesized speech
+    is continuous, so the host resumes immediately after each comma. The only
+    place a reaction fits without overlapping resumed speech is the turn-final
+    pause. Prove no placement sits at an interior boundary.
+    """
+
+    speaking = "We tried it, then we shipped it, and then it broke, but we fixed it."
+    turns = I.assign_turn_ids([("host_a", speaking), ("host_b", "Right, that tracks.")])
+    durations = [40.0, 20.0]
+    cfg = BackchannelConfig(enabled=True, min_gap_seconds=1)
+
+    m = I.build_interaction_map(turns, durations, cfg)
+    a_turn = next((i for i in m.interactions if i.under_turn_id == "a_000"), None)
+    assert a_turn is not None, "expected a reaction on the host_a turn"
+
+    clips = {i.text: b"clip" for i in m.interactions}
+    placements = I.resolve_placements(m, turns, durations, clips)
+    a_placement = next(p for p in placements if p.interaction.under_turn_id == "a_000")
+
+    # The latest interior (mid-clause) comma sits before "but we fixed it.".
+    last_comma = speaking.rfind(",")
+    interior_time = 40.0 * (last_comma / len(speaking))
+    # The reaction must start *after* every interior boundary — i.e. only at the
+    # turn-final pause — so it cannot bleed over host_a's resumed words.
+    assert a_placement.start_seconds > interior_time
+    # And it must not start before host_a stops speaking (~end of the 40s turn).
+    assert a_placement.start_seconds >= 39.0
 
 
 def test_build_interaction_map_max_gap_widens_spacing():
