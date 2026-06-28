@@ -819,7 +819,7 @@ _DEFAULT_CREDITS_ENTRIES: list[CreditsEntry] = [
     CreditsEntry("AI Team", "Squad (Coordinator) \u00b7 Bender (Podcaster)"),
     CreditsEntry("AI Hosts", "Fable & Alloy"),
     CreditsEntry("Music", "Summer Sport by AudioCoffee (CC-BY-SA-3.0)"),
-    CreditsEntry("Powered by", "Claracle / SquadScope"),
+    CreditsEntry("Powered by", "Claracle"),
 ]
 
 # Expose default list as a public constant so tests and callers can inspect it

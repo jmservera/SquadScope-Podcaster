@@ -1255,6 +1255,19 @@ class TestRecordGenericSegment:
         assert "Joracle" in html
         assert "SquadScope" not in html
 
+    def test_background_escapes_brand_name(self, tmp_path):
+        """#559: config-derived brand strings are HTML-escaped before rendering."""
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        segment = VideoSegment(repo=None, start_seconds=0.0, duration_seconds=2.0)
+
+        _record_segment(browser, segment, out_dir, brand_name="<script>x</script>")
+
+        page.set_content.assert_called_once()
+        html = page.set_content.call_args[0][0]
+        # The raw tag must not survive; it is escaped to entities.
+        assert "<script>x</script>" not in html
+        assert "&lt;script&gt;" in html
+
 
 # --- repo URL recovery tests (issue #378) ---
 

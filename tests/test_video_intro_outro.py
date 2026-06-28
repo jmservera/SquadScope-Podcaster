@@ -691,6 +691,8 @@ class TestCreditsEntry:
     def test_powered_by_claracle(self):
         powered = next(e for e in DEFAULT_CREDITS_ENTRIES if e.label == "Powered by")
         assert "Claracle" in powered.value
+        # #559: no user-facing frame should show the internal pipeline name.
+        assert "SquadScope" not in powered.value
 
 
 class TestCreditsConfig:

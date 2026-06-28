@@ -19,6 +19,7 @@ Capture modes (issue #387):
 
 from __future__ import annotations
 
+import html
 import logging
 import math
 import os
@@ -49,6 +50,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     _PLAYWRIGHT_AVAILABLE = False
 
+from podcaster.generation import PODCAST_NAME
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
 from podcaster.video.recording_pool import (
     MAX_RECORDING_CONCURRENCY,
@@ -2001,7 +2003,7 @@ def _navigate_with_recovery(
     return _NavOutcome(repo, "fallback", False)
 
 
-GENERIC_BACKGROUND_TITLE = "Claracle"
+GENERIC_BACKGROUND_TITLE = PODCAST_NAME
 GENERIC_BACKGROUND_SUBTITLE = "Open Source Highlights"
 
 
@@ -2019,13 +2021,13 @@ def _render_generic_background(
     "Claracle") so the card never hardcodes the internal pipeline name — the
     pipeline is config-driven and may serve other sites (issue #559).
     """
-    html = GENERIC_BACKGROUND_HTML.format(
+    markup = GENERIC_BACKGROUND_HTML.format(
         width=WIDTH,
         height=HEIGHT,
-        title=(brand_name or "").strip() or GENERIC_BACKGROUND_TITLE,
-        subtitle=(brand_subtitle or "").strip() or GENERIC_BACKGROUND_SUBTITLE,
+        title=html.escape((brand_name or "").strip() or GENERIC_BACKGROUND_TITLE),
+        subtitle=html.escape((brand_subtitle or "").strip() or GENERIC_BACKGROUND_SUBTITLE),
     )
-    page.set_content(html)
+    page.set_content(markup)
     if capturer is not None:
         # Abandon any partially-captured scroll frames so the static background
         # is held as a still rather than a truncated motion sequence (#387).
