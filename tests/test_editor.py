@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from podcaster.video.clipset import (
     clip_blob_path,
     clip_manifest_blob_path,
@@ -448,3 +450,28 @@ def test_record_via_fanout_renews_lease_via_heartbeat(tmp_path):
     )
     assert len(result.recorded) == 2
     assert beats  # heartbeat fired at least once on the barrier poll
+
+
+def test_record_via_fanout_aborts_when_heartbeat_raises(tmp_path):
+    # A heartbeat that signals lost-lease (raises) must propagate out of the
+    # barrier wait so the editor stops before compose/publish (#563).
+    storage = FakeStorage()
+    producer = FakeProducer()
+    job_id = "job1"
+    for i in range(2):
+        _write_manifest(storage, job_id, i)
+
+    def _heartbeat() -> None:
+        raise RuntimeError("lease lost")
+
+    with pytest.raises(RuntimeError, match="lease lost"):
+        record_via_fanout(
+            job_id,
+            _segments(2),
+            tmp_path,
+            scratch=storage,
+            producer=producer,
+            sleep=lambda _s: None,
+            monotonic=lambda: 0.0,
+            heartbeat=_heartbeat,
+        )

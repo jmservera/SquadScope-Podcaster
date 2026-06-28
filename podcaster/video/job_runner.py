@@ -696,13 +696,19 @@ def run_video_generation(
                         # so a redelivered editor keeps seeing an unexpired lease.
                         # Use a FRESH timestamp each beat (not the run-start time)
                         # so a barrier longer than the lease TTL keeps extending it.
+                        # If renewal fails another editor now owns the lease — abort
+                        # immediately (per the acquire_or_renew_lease contract) rather
+                        # than risk a concurrent compose/publish for the same job_id.
+                        # Raising TransientVideoError leaves the message for redelivery;
+                        # our CAS release is a no-op since the successor owns the lease.
                         if not acquire_or_renew_lease(scratch, job_id, run_id):
                             logger.warning(
-                                "editor lease lost during fan-in job_id=%s run_id=%s "
-                                "(another editor may have taken over)",
+                                "editor lease lost during fan-in job_id=%s run_id=%s; "
+                                "aborting (another editor took over)",
                                 job_id,
                                 run_id,
                             )
+                            raise TransientVideoError(f"editor lease lost for job_id={job_id}")
 
                     logger.info(
                         "video fan-out recording job_id=%s segments=%d run_id=%s",
