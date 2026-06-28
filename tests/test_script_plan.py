@@ -371,6 +371,20 @@ def test_infer_repo_visual_markers_slug_boundaries_avoid_false_positives():
     assert marker == real_turn - 1
 
 
+def test_infer_repo_visual_markers_bare_slug_with_trailing_punctuation():
+    """A bare slug ending a sentence (``owner/repo.``) must still be detected (#558)."""
+    script = (
+        "Repos featured: https://github.com/acme/tool\n"
+        "---\n"
+        "Theo: This week's standout is acme/tool. It changes everything.\n"
+    )
+    out = infer_repo_visual_markers(script, CONFIG).splitlines()
+    marker = out.index("## Visual: repo https://github.com/acme/tool")
+    turn = next(i for i, ln in enumerate(out) if ln.startswith("Theo: This week's"))
+    # End-of-sentence period is a boundary, so the slug is still recognised.
+    assert marker == turn - 1
+
+
 def test_infer_repo_visual_markers_first_named_wins_in_multi_repo_turn():
     """When one turn names several repos, the earliest-named repo owns the turn."""
     script = (

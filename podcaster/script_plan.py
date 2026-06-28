@@ -289,13 +289,6 @@ def _first_repo_root(text: str) -> str | None:
     return f"https://github.com/{owner}/{repo}"
 
 
-#: Characters that, on either side of an ``owner/repo`` slug, mean the slug is
-#: part of a longer token/path (so it must NOT count as a bare mention). Letting
-#: ``/`` precede the slug is intentional so a full ``github.com/owner/repo`` URL
-#: still matches the same repo as its bare slug.
-_SLUG_WORD_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_.-")
-
-
 def _known_repo_urls(script: str) -> dict[str, str]:
     """Map ``owner/repo`` (lowercased) → canonical URL for every repo in *script*.
 
@@ -315,6 +308,43 @@ def _known_repo_urls(script: str) -> dict[str, str]:
         key = f"{owner.lower()}/{repo.lower()}"
         mapping.setdefault(key, f"https://github.com/{owner}/{repo}")
     return mapping
+
+
+def _boundary_before(text: str, idx: int) -> bool:
+    """True if the slug match starting at *idx* is not glued to a preceding token.
+
+    Alphanumerics always continue a token. A ``.``/``-``/``_`` only continues the
+    token when itself preceded by another word character (e.g. ``foo-acme/eve``);
+    leading punctuation is treated as a boundary.
+    """
+    if idx <= 0:
+        return True
+    ch = text[idx - 1]
+    if ch.isalnum():
+        return False
+    if ch in "._-":
+        prev = text[idx - 2] if idx - 2 >= 0 else ""
+        return not prev.isalnum()
+    return True
+
+
+def _boundary_after(text: str, pos: int) -> bool:
+    """True if a slug match ending just before *pos* is not glued to a following token.
+
+    Alphanumerics always continue a token. A ``.``/``-``/``_`` only continues the
+    token when itself followed by an alphanumeric (e.g. ``owner/repo-old``,
+    ``owner/next.js``); trailing punctuation such as an end-of-sentence period is
+    a boundary, so ``vercel/eve.`` still matches ``vercel/eve`` (#558).
+    """
+    if pos >= len(text):
+        return True
+    ch = text[pos]
+    if ch.isalnum():
+        return False
+    if ch in "._-":
+        nxt = text[pos + 1] if pos + 1 < len(text) else ""
+        return not nxt.isalnum()
+    return True
 
 
 def _first_named_repo(text: str, known: dict[str, str]) -> str | None:
@@ -338,10 +368,8 @@ def _first_named_repo(text: str, known: dict[str, str]) -> str | None:
             idx = lowered.find(key, start)
             if idx < 0:
                 break
-            before = lowered[idx - 1] if idx > 0 else ""
             after_pos = idx + len(key)
-            after = lowered[after_pos] if after_pos < len(lowered) else ""
-            if before not in _SLUG_WORD_CHARS and after not in _SLUG_WORD_CHARS:
+            if _boundary_before(lowered, idx) and _boundary_after(lowered, after_pos):
                 candidate = (idx, -len(key), key, url)
                 if best is None or candidate < best:
                     best = candidate
