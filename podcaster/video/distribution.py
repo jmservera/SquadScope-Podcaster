@@ -720,7 +720,7 @@ def distribute_video(
             if not video_id:
                 result.errors.append("YouTube upload failed after retries")
             else:
-                if on_published is not None:
+                if on_published is not None and not config.dry_run:
                     on_published(
                         "youtube",
                         {
@@ -764,7 +764,7 @@ def distribute_video(
                     storage=storage,
                 )
                 result.spotify_rss_updated = rss_ok
-                if rss_ok and on_published is not None:
+                if rss_ok and on_published is not None and not config.dry_run:
                     on_published(
                         "spotify_rss",
                         {
@@ -801,7 +801,7 @@ def distribute_video(
                 upload_ok = upload_result
                 spotify_episode_id = None
             result.spotify_upload_updated = upload_ok
-            if upload_ok and on_published is not None:
+            if upload_ok and on_published is not None and not config.dry_run:
                 on_published(
                     "spotify_upload",
                     {

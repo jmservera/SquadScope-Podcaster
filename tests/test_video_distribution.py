@@ -501,7 +501,7 @@ class TestDistributeVideo:
             spotify_rss_enabled=True,
             spotify_upload_enabled=True,
             blob_archive_enabled=False,
-            dry_run=True,
+            dry_run=False,
         )
         result = distribute_video(
             video_file,
@@ -527,6 +527,44 @@ class TestDistributeVideo:
         assert by_platform["spotify_upload"]["episode_id"] == 321
         for record in by_platform.values():
             datetime.fromisoformat(record["at"])
+
+    def test_dry_run_does_not_persist_published_state(self, video_file, monkeypatch):
+        """Dry-run simulates publishes; it must NOT call on_published, otherwise the
+        manifest is poisoned and a later real run skips actual publishing (#564)."""
+        records: list[tuple[str, dict]] = []
+
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: ("dry-run-id", "https://youtube.com/watch?v=dry-run-id"),
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution.update_spotify_rss",
+            lambda *args, **kwargs: True,
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_spotify_episode",
+            lambda *args, **kwargs: (True, None),
+        )
+
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            spotify_rss_enabled=True,
+            spotify_upload_enabled=True,
+            blob_archive_enabled=False,
+            dry_run=True,
+        )
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            on_published=lambda platform, record: records.append((platform, record)),
+        )
+
+        assert result.status == "completed"
+        assert records == []
 
 
 # --- Helper Tests ---

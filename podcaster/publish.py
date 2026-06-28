@@ -383,14 +383,24 @@ def _draft_episode_id(episode: Any, title: str) -> int | None:
         return None
 
 
-def _find_existing_draft(session: requests.Session, station_id: str, title: str) -> int | None:
-    """Best-effort lookup for an existing draft episode with an exact title match."""
+def _find_existing_draft(
+    session: requests.Session,
+    station_id: str,
+    title: str,
+    *,
+    exclude_id: int | None = None,
+) -> int | None:
+    """Best-effort lookup for an existing draft episode with an exact title match.
+
+    ``exclude_id`` (the audio anchor episode) is never returned, so a same-titled
+    audio draft can never be mistaken for the separate video draft (#564).
+    """
     try:
         url = f"{_BASE_URL}/v3/stations/{station_id}/episodes"
         resp = _retry_request(session, "GET", url, params=_mums_params(), timeout=15)
         for episode in _episode_items(resp.json()):
             episode_id = _draft_episode_id(episode, title)
-            if episode_id is not None:
+            if episode_id is not None and episode_id != exclude_id:
                 logger.info(
                     "Reconciled existing Spotify draft anchorId=%d for title=%r",
                     episode_id,
@@ -780,7 +790,13 @@ def upload_video_to_episode(
         # Create or reconcile a separate video draft — never touch the audio one.
         video_anchor_id = None
         if title and _spotify_reconcile_enabled():
-            video_anchor_id = _find_existing_draft(session, station_id, video_title)
+            try:
+                exclude_audio_id = int(anchor_id) if anchor_id is not None else None
+            except (TypeError, ValueError):
+                exclude_audio_id = None
+            video_anchor_id = _find_existing_draft(
+                session, station_id, video_title, exclude_id=exclude_audio_id
+            )
         if video_anchor_id is None:
             video_anchor_id = _create_episode(session, station_id)
         else:

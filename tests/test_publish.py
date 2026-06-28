@@ -972,6 +972,36 @@ class TestUploadVideoToEpisode:
         assert seen["metadata_anchor"] == 888
         assert seen["metadata_title"] == "My Show"
 
+    def test_reconcile_never_reuses_audio_anchor_episode(self, tmp_path, monkeypatch):
+        """A same-titled audio draft (the anchor_id) must never be reused as the
+        video draft — doing so would attach video to the audio episode (#564)."""
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+        session = MagicMock()
+        # The ONLY same-titled draft is the audio anchor episode (id 555).
+        session.request.return_value = _mock_json_resp(
+            {"episodes": [{"episodeId": 555, "title": "My Show", "status": "draft"}]}
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        seen = {}
+        self._patch_successful_video_upload(monkeypatch, pub, seen)
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.status == "draft"
+        # A brand-new video draft is created instead of reusing the audio anchor.
+        assert result.anchor_episode_id == 777
+        create.assert_called_once_with(session, "99")
+        assert seen["upload_anchor"] == 777
+
     def test_crash_after_create_second_call_reconciles_same_draft(
         self,
         tmp_path,
