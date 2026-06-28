@@ -46,6 +46,34 @@ def test_from_payload_nested_under_script_directions():
     assert cfg.enabled is True
 
 
+def test_library_includes_agreement_tokens():
+    """Operator intent (#555): the listening host's agreement sounds must be available."""
+    for token in ("hmm", "mhm", "yes", "yeah"):
+        assert token in BACKCHANNEL_LIBRARY
+
+
+def test_production_request_shape_enables_backchannels():
+    """Mirror the production request built from SquadScope config/podcast.json.
+
+    The handoff passes the show config's ``script_directions`` straight through to
+    the manifest ``request``; enabling backchannels there must turn the feature on
+    with sensible defaults for every production render (#555).
+    """
+    production_request = {
+        "week": "2026-W26",
+        "script_directions": {
+            "episode_style": {"format": "Two-host conversational podcast"},
+            "backchannels": {"enabled": True},
+        },
+    }
+    cfg = BackchannelConfig.from_payload(production_request)
+    assert cfg.enabled is True
+    # Defaults stay conservative so production audio is not over-saturated.
+    assert cfg.min_gap_seconds == 45.0
+    assert cfg.max_gap_seconds == 60.0
+    assert cfg.library == BACKCHANNEL_LIBRARY
+
+
 def test_from_payload_ignores_empty_library_override():
     cfg = BackchannelConfig.from_payload({"backchannels": {"enabled": True, "library": []}})
     assert cfg.library == BACKCHANNEL_LIBRARY

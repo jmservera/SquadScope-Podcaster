@@ -92,8 +92,8 @@ _TECH_KEYWORDS = frozenset(
 
 # Tone -> ordered phrase preferences (intersected with the configured library).
 _TONE_PREFERENCES: dict[str, tuple[str, ...]] = {
-    "agreeing": ("right", "yeah", "exactly", "that's true"),
-    "affirming": ("exactly", "that's true", "right", "yeah"),
+    "agreeing": ("right", "yeah", "yes", "mhm", "exactly", "that's true"),
+    "affirming": ("exactly", "that's true", "yes", "right", "yeah", "mhm"),
     "interested": ("interesting", "oh wow", "hmm"),
     "surprised": ("oh wow", "interesting", "hmm"),
     "thinking": ("hmm", "interesting", "right"),

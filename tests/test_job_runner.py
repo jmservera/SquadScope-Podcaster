@@ -826,6 +826,23 @@ def test_request_backchannels_parses_enabled_config_from_manifest():
     assert config.max_gap_seconds == 40
 
 
+def test_request_backchannels_enabled_via_production_script_directions():
+    """Production shape: SquadScope config/podcast.json enables backchannels under
+    ``script_directions``; the manifest request must carry it through to enabled (#555)."""
+
+    from podcaster.config import BackchannelConfig
+
+    manifest = {
+        "request": {
+            "week": "2026-W26",
+            "script_directions": {"backchannels": {"enabled": True}},
+        }
+    }
+    config = job_runner._request_backchannels(manifest)
+    assert isinstance(config, BackchannelConfig)
+    assert config.enabled is True
+
+
 @pytest.mark.parametrize(
     "manifest",
     [
