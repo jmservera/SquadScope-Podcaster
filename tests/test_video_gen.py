@@ -1236,7 +1236,37 @@ class TestRecordGenericSegment:
         assert page.set_content.call_count == 2
         contents = [c.args[0] for c in page.set_content.call_args_list]
         assert contents[0] == DARK_HOLD_HTML
-        assert "SquadScope" in contents[1]
+        # Default brand is the configured site name (Claracle), never the
+        # internal pipeline name (issue #559).
+        assert "Claracle" in contents[1]
+        assert "SquadScope" not in contents[1]
+
+    def test_background_uses_configured_brand_name(self, tmp_path):
+        """#559: the generic card title comes from config, not a hardcode."""
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        segment = VideoSegment(repo=None, start_seconds=0.0, duration_seconds=2.0)
+
+        result = _record_segment(browser, segment, out_dir, brand_name="Joracle")
+
+        assert result.video_path.exists()
+        page.set_content.assert_called_once()
+        html = page.set_content.call_args[0][0]
+        # Changing config changes the on-screen card name.
+        assert "Joracle" in html
+        assert "SquadScope" not in html
+
+    def test_background_escapes_brand_name(self, tmp_path):
+        """#559: config-derived brand strings are HTML-escaped before rendering."""
+        browser, page, out_dir = self._mock_browser(tmp_path)
+        segment = VideoSegment(repo=None, start_seconds=0.0, duration_seconds=2.0)
+
+        _record_segment(browser, segment, out_dir, brand_name="<script>x</script>")
+
+        page.set_content.assert_called_once()
+        html = page.set_content.call_args[0][0]
+        # The raw tag must not survive; it is escaped to entities.
+        assert "<script>x</script>" not in html
+        assert "&lt;script&gt;" in html
 
 
 # --- repo URL recovery tests (issue #378) ---
@@ -2229,7 +2259,9 @@ class TestRecordEpisodeCheckpointResume:
 
         out_dir = tmp_path / "out"
 
-        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+        def _fake_record(
+            browser, segment, output_dir, check_accessibility, source_url=None, brand_name=None
+        ):
             from podcaster.video.video_gen import RecordedSegment
 
             path = Path(output_dir) / "fresh_000.mp4"
@@ -2265,7 +2297,9 @@ class TestRecordEpisodeCheckpointResume:
         mock_pw.return_value.__enter__ = MagicMock(return_value=pw_instance)
         mock_pw.return_value.__exit__ = MagicMock(return_value=False)
 
-        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+        def _fake_record(
+            browser, segment, output_dir, check_accessibility, source_url=None, brand_name=None
+        ):
             from podcaster.video.video_gen import RecordedSegment
 
             path = Path(output_dir) / "fresh_001.mp4"
@@ -2300,7 +2334,9 @@ class TestRecordEpisodeCheckpointResume:
         out_dir = tmp_path / "out"
         recorded_paths = []
 
-        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+        def _fake_record(
+            browser, segment, output_dir, check_accessibility, source_url=None, brand_name=None
+        ):
             from podcaster.video.video_gen import RecordedSegment
 
             path = Path(output_dir) / "fresh_000.mp4"
@@ -2342,7 +2378,9 @@ class TestRecordEpisodeTaskRetry:
         out_dir.mkdir(parents=True, exist_ok=True)
         attempts: dict[str, int] = {}
 
-        def _fake_record(browser, segment, output_dir, check_accessibility, source_url=None):
+        def _fake_record(
+            browser, segment, output_dir, check_accessibility, source_url=None, brand_name=None
+        ):
             key = segment.repo.name
             attempts[key] = attempts.get(key, 0) + 1
             # Segment "ruff" fails transiently on its first attempt only.
@@ -2378,7 +2416,9 @@ class TestRecordEpisodeTaskRetry:
 
         calls = {"n": 0}
 
-        def _always_fail(browser, segment, output_dir, check_accessibility, source_url=None):
+        def _always_fail(
+            browser, segment, output_dir, check_accessibility, source_url=None, brand_name=None
+        ):
             calls["n"] += 1
             raise RuntimeError("persistent failure")
 

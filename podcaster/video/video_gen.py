@@ -19,6 +19,7 @@ Capture modes (issue #387):
 
 from __future__ import annotations
 
+import html
 import logging
 import math
 import os
@@ -49,6 +50,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     _PLAYWRIGHT_AVAILABLE = False
 
+from podcaster.generation import PODCAST_NAME
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
 from podcaster.video.recording_pool import (
     MAX_RECORDING_CONCURRENCY,
@@ -2001,7 +2003,7 @@ def _navigate_with_recovery(
     return _NavOutcome(repo, "fallback", False)
 
 
-GENERIC_BACKGROUND_TITLE = "SquadScope"
+GENERIC_BACKGROUND_TITLE = PODCAST_NAME
 GENERIC_BACKGROUND_SUBTITLE = "Open Source Highlights"
 
 
@@ -2009,15 +2011,23 @@ def _render_generic_background(
     page: Page,
     duration_seconds: float,
     capturer: "_Capturer | None" = None,
+    *,
+    brand_name: str | None = None,
+    brand_subtitle: str | None = None,
 ) -> None:
-    """Show the animated branded background for a generic (no-repo) segment."""
-    html = GENERIC_BACKGROUND_HTML.format(
+    """Show the animated branded background for a generic (no-repo) segment.
+
+    The on-screen title is the configured show/site name (``brand_name``, e.g.
+    "Claracle") so the card never hardcodes the internal pipeline name — the
+    pipeline is config-driven and may serve other sites (issue #559).
+    """
+    markup = GENERIC_BACKGROUND_HTML.format(
         width=WIDTH,
         height=HEIGHT,
-        title=GENERIC_BACKGROUND_TITLE,
-        subtitle=GENERIC_BACKGROUND_SUBTITLE,
+        title=html.escape((brand_name or "").strip() or GENERIC_BACKGROUND_TITLE),
+        subtitle=html.escape((brand_subtitle or "").strip() or GENERIC_BACKGROUND_SUBTITLE),
     )
-    page.set_content(html)
+    page.set_content(markup)
     if capturer is not None:
         # Abandon any partially-captured scroll frames so the static background
         # is held as a still rather than a truncated motion sequence (#387).
@@ -2031,12 +2041,15 @@ def _record_generic_segment(
     browser: Browser,
     segment: VideoSegment,
     output_dir: Path,
+    *,
+    brand_name: str | None = None,
 ) -> RecordedSegment:
     """Record a generic background segment (no repo).
 
     When the segment has a ``source_url`` (e.g. the article's weekly page),
     that page is navigated to and scrolled like a regular repo recording;
-    otherwise the static branded background animation is shown.
+    otherwise the static branded background animation is shown, titled with the
+    configured show/site name (``brand_name``, issue #559).
     """
     context, capturer = _make_recording_context(
         browser, output_dir, segment_label="generic segment"
@@ -2065,9 +2078,13 @@ def _record_generic_segment(
                     "Error recording generic source %s — using background",
                     source_url,
                 )
-                _render_generic_background(page, segment.duration_seconds, capturer)
+                _render_generic_background(
+                    page, segment.duration_seconds, capturer, brand_name=brand_name
+                )
         else:
-            _render_generic_background(page, segment.duration_seconds, capturer)
+            _render_generic_background(
+                page, segment.duration_seconds, capturer, brand_name=brand_name
+            )
         dest_path = _finalize_segment(
             page,
             context,
@@ -2142,6 +2159,8 @@ def _record_segment(
     output_dir: Path,
     check_accessibility: bool = True,
     source_url: str | None = None,
+    *,
+    brand_name: str | None = None,
 ) -> RecordedSegment:
     """Record a single video segment for a repo.
 
@@ -2151,10 +2170,11 @@ def _record_segment(
     When the repo URL fails to load, navigation is retried and validated
     against the episode's source article before falling back to a generic
     branded screen (issue #378). *source_url* is the script header's
-    ``Source URL:`` used to recover a corrected repo URL.
+    ``Source URL:`` used to recover a corrected repo URL. ``brand_name`` is the
+    configured show/site name used to title generic background cards (#559).
     """
     if segment.is_generic:
-        return _record_generic_segment(browser, segment, output_dir)
+        return _record_generic_segment(browser, segment, output_dir, brand_name=brand_name)
 
     repo = segment.repo
 
@@ -2364,6 +2384,7 @@ def record_episode(
     source_url: str | None = None,
     intermediates=None,
     concurrency: int | None = None,
+    brand_name: str | None = None,
 ) -> RecordingResult:
     """Record all video segments for an episode plan.
 
@@ -2386,6 +2407,9 @@ def record_episode(
             :data:`PODCASTER_RECORDING_CONCURRENCY` from the environment; ``1``
             forces fully-sequential recording. Values are clamped to the
             RAM-safe pool maximum.
+        brand_name: Configured show/site name (e.g. "Claracle") used to title
+            generic background cards instead of the internal pipeline name
+            (issue #559). ``None`` falls back to the module default.
 
     Returns:
         RecordingResult with paths to all recorded WebM files.
@@ -2444,6 +2468,7 @@ def record_episode(
                 output_dir,
                 check_accessibility,
                 source_url=source_url,
+                brand_name=brand_name,
             ),
             attempts=RECORD_TASK_RETRIES,
             description=f"record segment {index} ({segment.label})",
