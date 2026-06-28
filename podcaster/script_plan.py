@@ -274,6 +274,67 @@ def contains_visual_marker(text: str) -> bool:
     return any(match_visual_marker(line) is not None for line in text.splitlines())
 
 
+def _first_repo_root(text: str) -> str | None:
+    """Return the first canonical ``https://github.com/owner/repo`` root in *text*.
+
+    Lenient extraction (mirrors :data:`_GITHUB_URL_RE`) normalised to a clean repo
+    root so the synthesized marker passes :data:`_GITHUB_REPO_ROOT_RE` validation.
+    Returns ``None`` when *text* has no GitHub repo URL.
+    """
+    match = _GITHUB_URL_RE.search(text or "")
+    if match is None:
+        return None
+    owner, repo = match.group(1), match.group(2)
+    repo = repo[:-4] if repo.lower().endswith(".git") else repo
+    return f"https://github.com/{owner}/{repo}"
+
+
+def infer_repo_visual_markers(script: str, podcast_config: Any = None) -> str:
+    """Backfill ``## Visual: repo <url>`` markers from inline GitHub links.
+
+    The script-generation prompt asks the model to declare explicit ``## Visual:``
+    markers, but models routinely express repositories as inline links
+    (``[owner/repo](https://github.com/owner/repo)``) instead. The video pipeline
+    derives repo cards *only* from explicit markers (see :func:`parse_script_plan`),
+    so an otherwise good dialogue renders with **no** repo visuals.
+
+    This deterministic pass walks the script in order and, whenever a host turn
+    introduces a GitHub repo that is not already the repo shown by the in-effect
+    ``## Visual: repo`` marker, injects the marker just before that turn. It is
+    **idempotent**: turns already covered by a matching marker are left untouched,
+    so scripts where the model *did* emit markers are unchanged.
+    """
+    if not script or not script.strip():
+        return script
+
+    host_labels = _host_labels(script, podcast_config)
+    effective_repo_url: str | None = None
+    out: list[str] = []
+    for raw_line in script.splitlines():
+        line = raw_line.strip()
+
+        marker = match_visual_marker(line) if line else None
+        if marker is not None:
+            mode, url = marker
+            effective_repo_url = url if mode is VisualMode.REPO else None
+            out.append(raw_line)
+            continue
+
+        speaker_text = _split_speaker(line, host_labels) if line else None
+        if speaker_text is not None:
+            repo_url = _first_repo_root(speaker_text[1])
+            if repo_url is not None and repo_url != effective_repo_url:
+                out.append(f"{VISUAL_MARKER_PREFIX} repo {repo_url}")
+                effective_repo_url = repo_url
+
+        out.append(raw_line)
+
+    result = "\n".join(out)
+    if script.endswith("\n") and not result.endswith("\n"):
+        result += "\n"
+    return result
+
+
 def strip_visual_markers(text: str) -> str:
     """Remove ``## Visual:`` marker lines so they never reach TTS.
 
