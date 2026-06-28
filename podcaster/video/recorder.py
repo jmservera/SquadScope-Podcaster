@@ -81,6 +81,7 @@ OUTCOME_RECORDED = "recorded"
 OUTCOME_SKIPPED = "skipped"
 OUTCOME_FALLBACK = "fallback"
 OUTCOME_RETRY = "retry"
+OUTCOME_MALFORMED = "malformed"
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,31 @@ def _clip_id(clip_index: int) -> str:
     return f"clip-{clip_index:03d}"
 
 
+def _write_manifest_if_absent(
+    scratch: StorageBackend, path: str, content: bytes, content_type: str
+) -> bool:
+    """Atomically write *content* to *path* only if no blob is there yet.
+
+    Uses :meth:`StorageBackend.update_bytes` (ETag ``If-None-Match: *`` CAS on
+    Azure, ``flock`` locally) so the "never overwrite a terminal manifest"
+    invariant holds even when two recorders race on the same ``clip_index``
+    (double-delivery / additive re-enqueue). Returns ``True`` when this call
+    wrote the blob, ``False`` when an authoritative manifest already existed.
+    """
+    wrote = False
+
+    def _update(current: bytes | None) -> bytes:
+        nonlocal wrote
+        if current:
+            # A terminal manifest is already present — keep it byte-for-byte.
+            return current
+        wrote = True
+        return content
+
+    scratch.update_bytes(path, content_type, _update)
+    return wrote
+
+
 def record_clip(
     job_id: str,
     clip_index: int,
@@ -176,6 +202,18 @@ def record_clip(
 
         clip_path = clip_blob_path(job_id, clip_index)
         expected_size = video_path.stat().st_size
+        # Re-check the sentinel after the (potentially slow) record: a concurrent
+        # recorder may have completed this clip while we worked. If so, leave the
+        # authoritative clip/manifest pair untouched and skip.
+        if scratch.blob_exists(manifest_path):
+            logger.info(
+                "terminal manifest appeared during recording; skipping write "
+                "job_id=%s clip_index=%d",
+                job_id,
+                clip_index,
+            )
+            return ClipOutcome(job_id, clip_index, OUTCOME_SKIPPED)
+
         scratch.upload_file(clip_path, video_path, _WEBM_CONTENT_TYPE)
         if not _verify_size(scratch, clip_path, expected_size):
             # Drop the torn upload so the manifest is never written over an
@@ -192,11 +230,23 @@ def record_clip(
             is_fallback=bool(result.is_fallback),
         )
         status = STATUS_FALLBACK if result.is_fallback else STATUS_SUCCESS
-        scratch.put_bytes(
+        # Conditional create: never overwrite a terminal manifest another worker
+        # may have just written (the .webm is content-addressed, so a duplicate
+        # upload is harmless / last-write-wins same bytes).
+        wrote = _write_manifest_if_absent(
+            scratch,
             manifest_path,
             _clip_manifest_bytes(manifest, status=status),
             _JSON_CONTENT_TYPE,
         )
+
+    if not wrote:
+        logger.info(
+            "terminal manifest already present at write time; skipped job_id=%s clip_index=%d",
+            job_id,
+            clip_index,
+        )
+        return ClipOutcome(job_id, clip_index, OUTCOME_SKIPPED)
 
     logger.info("recorded clip job_id=%s clip_index=%d status=%s", job_id, clip_index, status)
     return ClipOutcome(job_id, clip_index, OUTCOME_RECORDED)
@@ -215,6 +265,8 @@ def write_fallback_manifest(
     (success or fallback) already exists for the index this is a no-op.
     """
     manifest_path = clip_manifest_blob_path(job_id, clip_index)
+    # Fast-path skip (cheap) — the conditional write below is the authoritative
+    # guard that holds under concurrency.
     if scratch.blob_exists(manifest_path):
         logger.info(
             "terminal manifest already present; not writing fallback job_id=%s clip_index=%d",
@@ -236,17 +288,27 @@ def write_fallback_manifest(
         repo_url=repo_url,
         is_fallback=True,
     )
-    scratch.put_bytes(
+    # Conditional create so a racing success-write is never clobbered by a
+    # fallback (and vice-versa): "never overwrite a terminal manifest" (§4).
+    wrote = _write_manifest_if_absent(
+        scratch,
         manifest_path,
         _clip_manifest_bytes(manifest, status=STATUS_FALLBACK, failure_reason=reason),
         _JSON_CONTENT_TYPE,
     )
-    logger.warning(
-        "wrote terminal fallback manifest job_id=%s clip_index=%d reason=%s",
-        job_id,
-        clip_index,
-        reason,
-    )
+    if wrote:
+        logger.warning(
+            "wrote terminal fallback manifest job_id=%s clip_index=%d reason=%s",
+            job_id,
+            clip_index,
+            reason,
+        )
+    else:
+        logger.info(
+            "terminal manifest won by another worker; fallback not written job_id=%s clip_index=%d",
+            job_id,
+            clip_index,
+        )
     return ClipOutcome(job_id, clip_index, OUTCOME_FALLBACK)
 
 
@@ -264,8 +326,22 @@ def process_clip_message(
     * otherwise record the clip; delete the msg only on a terminal disposition
       (recorded/skipped/fallback). On a transient error the message is **left**
       on the queue for redelivery.
+
+    A body that cannot be parsed into ``(job_id, clip_index)`` is unactionable
+    poison: it is logged and **deleted** (mirroring
+    :func:`podcaster.video.job_runner.process_message`) so it cannot crash-loop
+    the recorder.
     """
-    job_id, clip_index = parse_clip_job(message.body)
+    try:
+        job_id, clip_index = parse_clip_job(message.body)
+    except ValueError:
+        logger.warning(
+            "discarding malformed clip message message_id=%s dequeue_count=%d",
+            message.message_id,
+            message.dequeue_count,
+        )
+        queue.delete_message(message)
+        return ClipOutcome("", -1, OUTCOME_MALFORMED)
 
     if message.dequeue_count >= MAX_DEQUEUE_COUNT:
         outcome = write_fallback_manifest(

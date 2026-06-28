@@ -190,6 +190,55 @@ def test_write_fallback_manifest_is_terminal_and_never_overwrites(tmp_path) -> N
     assert preserved.get("sentinel") is True
 
 
+def test_process_message_malformed_body_is_deleted(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    queue = FakeQueue()
+    message = QueueMessage(
+        message_id="bad-1",
+        pop_receipt="pr",
+        body="not-base64-or-json",
+        dequeue_count=1,
+    )
+
+    outcome = process_clip_message(message, scratch=scratch, queue=queue)
+
+    assert outcome.status == recorder.OUTCOME_MALFORMED
+    assert queue.deleted == [message]  # poison removed, no crash-loop
+
+
+def test_write_manifest_if_absent_never_overwrites(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    path = "video-jobs/job-x/clips/000.manifest.json"
+
+    assert recorder._write_manifest_if_absent(scratch, path, b"first", "application/json")
+    # A second writer with different bytes must NOT overwrite the terminal blob.
+    assert not recorder._write_manifest_if_absent(scratch, path, b"second", "application/json")
+    assert scratch.get_bytes(path) == b"first"
+
+
+def test_record_clip_skips_if_manifest_appears_mid_record(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+
+    def _record(segment, output_dir):
+        # Simulate a concurrent recorder finishing this clip while we record.
+        scratch.put_bytes(
+            clip_manifest_blob_path(JOB_ID, 1),
+            b'{"clip_id":"clip-001","winner":true}',
+            "application/json",
+        )
+        path = output_dir / "clip.webm"
+        path.write_bytes(b"late-bytes")
+        return RecordResult(video_path=path, duration_ms=1, is_fallback=False)
+
+    outcome = record_clip(JOB_ID, 1, scratch=scratch, record_segment=_record)
+
+    assert outcome.status == OUTCOME_SKIPPED
+    # The authoritative manifest from the "winner" is preserved untouched.
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest.get("winner") is True
+
+
 def test_process_message_records_and_deletes(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)
