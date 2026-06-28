@@ -101,11 +101,16 @@ def azurite_stack():
     import time
 
     deadline = time.monotonic() + 60
+    healthy = False
     while time.monotonic() < deadline:
         ps = _compose("ps", check=False)
         if "healthy" in ps.stdout:
+            healthy = True
             break
         time.sleep(2)
+    if not healthy:
+        _compose("down", "-v", check=False, timeout=120)
+        pytest.skip("azurite did not become healthy within deadline")
     yield
     _compose("down", "-v", check=False, timeout=120)
 
@@ -145,7 +150,7 @@ def test_scaleout_fanout_end_to_end(azurite_stack):
     # --- Fan-out: 3 recorder replicas each record exactly one clip + manifest ---
     for i in range(n):
         clipq.send_message(encode_clip_message(job_id, i))
-    res = _compose("up", "--scale", "recorder=3", "--abort-on-container-exit", "recorder")
+    res = _compose("up", "--scale", "recorder=3", "--abort-on-container-failure", "recorder")
     assert res.returncode == 0, res.stderr
     for i in range(n):
         assert scratch.blob_exists(clip_blob_path(job_id, i)), f"clip {i} missing"

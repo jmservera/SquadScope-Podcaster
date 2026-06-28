@@ -664,7 +664,11 @@ class ConnectionStringStorageBackend:
         update: Callable[[bytes | None], bytes],
     ) -> StoredArtifact:
         from azure.core import MatchConditions
-        from azure.core.exceptions import ResourceModifiedError, ResourceNotFoundError
+        from azure.core.exceptions import (
+            ResourceExistsError,
+            ResourceModifiedError,
+            ResourceNotFoundError,
+        )
         from azure.storage.blob import ContentSettings
 
         safe_path = _safe_blob_path(path)
@@ -680,11 +684,11 @@ class ConnectionStringStorageBackend:
             updated = update(current)
             try:
                 if etag is None:
+                    # Create-if-absent: overwrite=False enforces If-None-Match=*.
                     blob.upload_blob(
                         updated,
-                        overwrite=True,
+                        overwrite=False,
                         content_settings=settings,
-                        match_condition=MatchConditions.IfMissing,
                     )
                 else:
                     blob.upload_blob(
@@ -700,7 +704,7 @@ class ConnectionStringStorageBackend:
                     size_bytes=len(updated),
                     content_type=content_type,
                 )
-            except ResourceModifiedError:
+            except (ResourceModifiedError, ResourceExistsError):
                 continue
         raise RuntimeError(
             f"conditional blob update failed for {safe_path}: concurrent updates did not settle"

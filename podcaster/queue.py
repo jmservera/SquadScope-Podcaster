@@ -325,7 +325,6 @@ class ConnectionStringQueueBackend:
     ) -> list[QueueMessage]:
         received = self._client.receive_messages(
             messages_per_page=max_messages,
-            max_messages=max_messages,
             visibility_timeout=visibility_timeout,
         )
         messages: list[QueueMessage] = []
@@ -338,6 +337,8 @@ class ConnectionStringQueueBackend:
                     dequeue_count=int(msg.dequeue_count or 0),
                 )
             )
+            if len(messages) >= max_messages:
+                break
         return messages
 
     def delete_message(self, message: QueueMessage) -> None:
