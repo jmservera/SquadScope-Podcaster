@@ -264,6 +264,33 @@ def _select_phrase_and_tone(library: tuple[str, ...], slot: int) -> tuple[str, s
 #: every value keeps the spacing within the configured window (issue #419).
 _GAP_WINDOW_CYCLE: tuple[float, ...] = (0.0, 0.6, 0.25, 1.0, 0.4)
 
+#: Small safety margin (seconds) added on top of the reaction clip length when
+#: checking that a backchannel fits in the pause before the speaking host's
+#: voice returns. Keeps a sliver of silence between the reaction's tail and the
+#: next speech so the mix never sounds like two voices colliding (issue #573).
+_GAP_FIT_MARGIN_SECONDS: float = 0.15
+
+_WORD_CHAR_RE = re.compile(r"\w")
+
+
+def _next_same_speaker_onset(turns: list[Turn], starts: list[float], index: int) -> float:
+    """Absolute time (seconds) at which ``turns[index]``'s speaker speaks again.
+
+    Used to size the pause after a turn-final boundary: a backchannel may only
+    overlap *silence* and the listening host's own next line — never the
+    speaking host's resumed speech. For the usual two-host alternation the next
+    same-speaker turn is two turns away (a long gap); if the very next turn is
+    the *same* speaker (back-to-back lines) the available pause is just the
+    inter-turn gap, so the guard correctly rejects a reaction that wouldn't fit.
+    Returns ``+inf`` when the speaker never speaks again (e.g. the final turn).
+    """
+
+    speaker = turns[index].speaker
+    for j in range(index + 1, len(turns)):
+        if turns[j].speaker == speaker:
+            return starts[j]
+    return float("inf")
+
 
 def build_interaction_map(
     turns: list[Turn],
@@ -280,7 +307,18 @@ def build_interaction_map(
 
     - the feature is enabled,
     - the candidate sits at a safe clause boundary (:func:`is_safe_anchor`),
-    - it is not in the final clause of a turn (punchline avoidance), and
+    - the boundary is **turn-final** — the speaking host has actually stopped
+      (no further words in the turn) — so the reaction lands in a real pause and
+      never bleeds over resumed speech (issue #573). Mid-clause commas and
+      mid-turn sentence ends are rejected because synthesized speech is
+      continuous within a turn: the host resumes immediately, so a reaction
+      there would overlap live speech (made audibly worse by #560's louder mix),
+    - the reaction clip fits in the gap before the *same* host speaks again,
+      i.e. ``next_same_speaker_onset - boundary_time >=
+      max_duration_ms/1000 + _GAP_FIT_MARGIN_SECONDS``. The clip is hard-capped
+      to ``max_duration_ms`` by :mod:`podcaster.audio`, so that cap is the
+      conservative reaction length to fit (no whisper / clip metadata needed),
+      and
     - at least the current required gap has elapsed since the last placement.
       The required gap varies deterministically across the
       ``[min_gap_seconds, max_gap_seconds]`` window (see
@@ -300,25 +338,34 @@ def build_interaction_map(
 
     gain_db = config.clamped_gain_db
     gap_window = max(0.0, config.max_gap_seconds - config.min_gap_seconds)
+    reaction_seconds = config.max_duration_ms / 1000.0
     placed: list[Interaction] = []
     last_time = -float("inf")
     slot = 0
 
     starts = _turn_starts(durations, gap_seconds)
-    for turn, start, duration in zip(turns, starts, durations):
+    for index, (turn, start, duration) in enumerate(zip(turns, starts, durations)):
         if duration <= 0 or not turn.text.strip():
             continue
         text_len = len(turn.text)
         candidates = find_pause_points(turn.text)
-        # Drop the very last clause boundary of a turn — likely a punchline /
-        # closing beat where a backchannel reads as performative.
-        if candidates:
-            candidates = candidates[:-1]
         for char_index, anchor_text in candidates:
             if not is_safe_anchor(anchor_text):
                 continue
-            # Estimate absolute time of this pause via character proportion.
+            # Only place where the speaking host has actually finished: a
+            # boundary with no remaining word characters in this turn. A mid-turn
+            # boundary (comma or sentence end) is continuous speech — the host
+            # resumes immediately, so a reaction there overlaps live words.
+            if _WORD_CHAR_RE.search(turn.text[char_index:]):
+                continue
+            # Estimate the boundary's absolute time and require the reaction clip
+            # to fit before this host speaks again (issue #573). Overlap into the
+            # ensuing silence / the listening host's next line is fine; overlap of
+            # the *speaking* host is not.
             position = start + duration * (char_index / text_len)
+            resume = _next_same_speaker_onset(turns, starts, index)
+            if resume - position < reaction_seconds + _GAP_FIT_MARGIN_SECONDS:
+                continue
             # Required spacing varies across the [min_gap, max_gap] window so the
             # cadence isn't metronomic (issue #419).
             fraction = _GAP_WINDOW_CYCLE[slot % len(_GAP_WINDOW_CYCLE)]
@@ -428,7 +475,11 @@ def _anchor_time(
     turn_text = next((t.text for t in turns if t.turn_id == interaction.under_turn_id), "")
     if not turn_text:
         return start
-    idx = turn_text.find(interaction.anchor_text)
+    # Anchor on the *last* occurrence: backchannels are validated at turn-final
+    # boundaries (issue #573), and the trailing-clause anchor naturally sits at
+    # the end of the turn, so rfind keeps placement consistent with the guard
+    # even if the same short phrase appears earlier in the turn.
+    idx = turn_text.rfind(interaction.anchor_text)
     if idx < 0:
         return start + duration  # anchor not found -> end of turn
     char_end = idx + len(interaction.anchor_text)
