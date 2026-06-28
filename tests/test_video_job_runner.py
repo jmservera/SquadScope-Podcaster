@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from podcaster.queue import QueueMessage
-from podcaster.video.audio_align import TranscriptionUnavailable
 from podcaster.video.distribution import VideoDistributionConfig
 from podcaster.video.job_runner import (
     _DEFAULT_MUSIC_CREDITS,
@@ -40,18 +39,33 @@ from podcaster.video.job_runner import (
 
 
 @pytest.fixture(autouse=True)
-def _no_audio_cue_transcription():
-    """Force audio-cue sync (#374) to fall back to proportional timing.
+def _no_repo_removal_probe():
+    """Skip the network HEAD pre-flight so video-runner tests stay hermetic.
 
-    These tests provide placeholder audio bytes, not real speech, and assert on
-    proportional/mention-based plans. Patching transcription to be unavailable
-    keeps them hermetic and fast (no faster-whisper model load / download).
+    The whisper forced-alignment path (and its transcription patch) is gone:
+    timing now comes from the Layer 2 realized-audio metadata persisted at
+    synthesis (#553), and these tests assert the no-metadata fallback plan.
     """
-    with patch(
-        "podcaster.video.audio_align.transcribe_words",
-        side_effect=TranscriptionUnavailable("disabled in tests"),
-    ):
+    with patch("podcaster.video.sync_plan.check_repo_removed", return_value=False):
         yield
+
+
+def test_video_runner_does_not_import_audio_align():
+    """The video runner must not depend on whisper forced alignment (#553/#551).
+
+    Asserts the module exposes no ``audio_align`` reference and that importing
+    the deleted module fails — proof the whisper path is fully removed.
+    """
+    import importlib
+
+    from podcaster.video import job_runner as vjr
+
+    source = Path(vjr.__file__).read_text(encoding="utf-8")
+    assert "audio_align" not in source
+    assert "plan_from_script_aligned" not in source
+    assert not hasattr(vjr, "plan_from_script_aligned")
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("podcaster.video.audio_align")
 
 
 class FakeStorage:

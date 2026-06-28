@@ -54,9 +54,11 @@ from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
     extract_source_url,
-    plan_from_script_aligned,
+    plan_from_realized_metadata,
+    plan_from_script_timed,
     prepend_weekly_segment,
     removed_repo_speaker_notes,
+    weekly_url_from_job_id,
 )
 
 logger = logging.getLogger("podcaster.video.job_runner")
@@ -331,6 +333,50 @@ def _record_video_state(
         logger.warning("failed to record video state for job_id=%s", job_id, exc_info=True)
 
 
+def realized_audio_metadata_path(job_id: str) -> str:
+    """Blob path for the Layer 2 realized-audio-metadata document (#553)."""
+    return f"jobs/{job_id}/realized_audio_metadata.json"
+
+
+def _load_realized_metadata(manifest: dict[str, Any], job_id: str, storage: StorageBackend):
+    """Load Layer 2 realized audio metadata persisted at synthesis time (#553).
+
+    Returns a :class:`~podcaster.audio_metadata.RealizedAudioMetadata` when the
+    synthesis runner wrote one (deterministic repo/section timing derived from
+    the measured TTS clip durations), else ``None`` so the caller falls back to
+    mention-based proportional timing. Never raises — a missing/corrupt blob just
+    degrades to the fallback planner.
+    """
+    path = None
+    generation = manifest.get("generation")
+    if isinstance(generation, dict):
+        runner_state = generation.get("synthesis_runner")
+        if isinstance(runner_state, dict):
+            candidate = runner_state.get("realized_audio_metadata_path")
+            if isinstance(candidate, str) and candidate:
+                path = candidate
+    if path is None:
+        path = realized_audio_metadata_path(job_id)
+    try:
+        raw = storage.get_bytes(path)
+    except Exception:  # noqa: BLE001 — metadata is best-effort
+        logger.warning("failed to read realized metadata blob %s", path, exc_info=True)
+        return None
+    if raw is None:
+        return None
+    try:
+        from podcaster.audio_metadata import RealizedAudioMetadata
+
+        document = json.loads(raw.decode("utf-8"))
+        payload = document.get("metadata") if isinstance(document, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        return RealizedAudioMetadata.from_dict(payload)
+    except Exception:  # noqa: BLE001 — corrupt metadata must not abort video
+        logger.warning("invalid realized metadata blob %s; using fallback timing", path)
+        return None
+
+
 def _get_audio_duration(manifest: dict[str, Any]) -> float | None:
     """Extract audio duration from manifest if available."""
     generation = manifest.get("generation")
@@ -464,18 +510,39 @@ def run_video_generation(
                     job_id,
                 )
 
-            # Parse script and generate plan. Timing is synced to the audio via
-            # forced alignment (issue #374): each repo appears exactly when the
-            # hosts begin discussing it. Falls back automatically to
-            # proportional, mention-based timing (issue #355) when audio-cue
-            # sync is unavailable. Scripts without GitHub repo URLs produce a
-            # generic background plan (issue #335) instead of being skipped.
+            # Build the episode plan. The deterministic path consumes the Layer 2
+            # realized audio metadata persisted at synthesis (#486/#553): repo and
+            # section timing come from the measured TTS clip durations — each repo
+            # appears when the hosts name it, with the intro-music speech offset
+            # and inter-segment gap already baked in. This replaces the whisper
+            # forced-alignment path (#374/#544) and its silent ACA cache
+            # degradation (#551). When no metadata is present (legacy jobs), fall
+            # back to mention-based proportional timing (issue #355) — never
+            # whisper. Scripts without GitHub repo URLs produce a generic
+            # background plan (issue #335) instead of being skipped.
+            realized_metadata = _load_realized_metadata(manifest, job_id, storage)
+            weekly_url = weekly_url_from_job_id(job_id)
+            used_metadata_plan = False
             try:
-                plan = plan_from_script_aligned(
-                    script,
-                    audio_duration,
-                    str(audio_path) if audio_path is not None else None,
-                )
+                if realized_metadata is not None and realized_metadata.topics:
+                    plan = plan_from_realized_metadata(
+                        realized_metadata,
+                        audio_duration,
+                        weekly_url=weekly_url,
+                        source_url=extract_source_url(script),
+                    )
+                    used_metadata_plan = True
+                    logger.info(
+                        "video plan from realized metadata job_id=%s topics=%d",
+                        job_id,
+                        len(realized_metadata.topics),
+                    )
+                else:
+                    plan = plan_from_script_timed(script, audio_duration)
+                    logger.info(
+                        "video plan from mention-based timing (no realized metadata) job_id=%s",
+                        job_id,
+                    )
             except ValueError as exc:
                 logger.warning(
                     "video skipped job_id=%s reason=%s: %s",
@@ -496,8 +563,11 @@ def run_video_generation(
 
             # Show the claracle.com weekly page (derived from the job_id) as the
             # first content segment, right after the intro and before any repo is
-            # discussed (issue #382).
-            plan = prepend_weekly_segment(plan, job_id)
+            # discussed (issue #382). On the metadata path the leading ``article``
+            # topic already covers that pre-repo range (carrying the weekly URL),
+            # so prepending again would double-insert it (#553) — skip it.
+            if not used_metadata_plan:
+                plan = prepend_weekly_segment(plan, job_id)
 
             # Pre-flight each repo URL (HEAD) so repos GitHub has removed (e.g. a
             # polymarket/spam bot like ``mktail``) are detected before recording.

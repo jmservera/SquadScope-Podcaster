@@ -22,7 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "httpx2>=0.1", "ruff==0.15.7"]
-video = ["playwright>=1.53,<2", "faster-whisper>=1.0,<2"]
+video = ["playwright>=1.53,<2"]
 
 [tool.ruff]
 # Phase A of the DevSecOps Guardrails epic (#518): conservative, warning-only

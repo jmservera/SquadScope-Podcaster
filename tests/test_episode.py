@@ -572,3 +572,126 @@ def test_no_repeated_crutch_phrases_and_unique_segment_transitions():
     lowered = script.lower()
     for crutch in ("goosebumps", "the thing i keep coming back to", "the detail i love"):
         assert crutch not in lowered, f"repeated crutch phrase present: {crutch!r}"
+
+
+# --- Layer 2 realized audio metadata persistence + marker guard (#553) ---
+
+_MARKED_SCRIPT = (
+    "Title: T\n"
+    "Voices: Theo=fable; Vera=alloy\n"
+    "---\n"
+    "Theo: Welcome to the show everyone.\n"
+    "## Visual: repo https://github.com/owner/repo-a\n"
+    "Vera: This first repo is wild, check it out.\n"
+    "Theo: Totally agree my friend.\n"
+)
+
+_UNMARKED_REPO_SCRIPT = (
+    "Title: T\n"
+    "Voices: Theo=fable; Vera=alloy\n"
+    "---\n"
+    "Theo: Welcome to the show everyone.\n"
+    "Vera: Check out https://github.com/owner/repo-a today, it is wild.\n"
+)
+
+
+def test_build_realized_metadata_is_parallel_to_script_plan():
+    from podcaster.script_plan import parse_script_plan
+
+    plan = parse_script_plan(_MARKED_SCRIPT, None)
+    durations = [2.0] * len(plan.segments)
+    metadata, warnings = episode._build_realized_metadata(
+        _MARKED_SCRIPT,
+        durations,
+        podcast_config=None,
+        gap_seconds=0.35,
+        speech_offset_seconds=10.0,
+    )
+    assert metadata is not None
+    assert len(metadata.utterances) == len(plan.segments)
+    assert metadata.repo_topics  # the '## Visual: repo' marker produced a repo topic
+    assert warnings == ()
+
+
+def test_build_realized_metadata_flags_repo_urls_without_visual_markers():
+    """Regression (#553): repo URLs but no '## Visual: repo' markers must be
+    flagged — not silently collapsed into a generic plan."""
+    from podcaster.script_plan import parse_script_plan
+
+    plan = parse_script_plan(_UNMARKED_REPO_SCRIPT, None)
+    durations = [2.0] * len(plan.segments)
+    metadata, warnings = episode._build_realized_metadata(
+        _UNMARKED_REPO_SCRIPT,
+        durations,
+        podcast_config=None,
+        gap_seconds=0.35,
+        speech_offset_seconds=0.0,
+    )
+    assert metadata is not None
+    assert not metadata.repo_topics
+    assert any("Visual: repo" in w for w in warnings)
+
+
+def test_build_realized_metadata_skips_on_segment_mismatch():
+    metadata, warnings = episode._build_realized_metadata(
+        _MARKED_SCRIPT,
+        [2.0],  # only one duration for a 3-segment plan
+        podcast_config=None,
+        gap_seconds=0.35,
+        speech_offset_seconds=0.0,
+    )
+    assert metadata is None
+    assert any("not parallel" in w for w in warnings)
+
+
+def test_synthesize_episode_persists_realized_metadata(tmp_path, monkeypatch):
+    """Integration (#553): synthesis returns Layer 2 metadata with one utterance
+    per ScriptPlan segment."""
+    from podcaster.script_plan import parse_script_plan
+
+    article = episode.sanitize_article(**_article_kwargs())
+    script = episode.build_episode_script(article)
+    config = _production_config()
+    decision = episode.operator_review_decision(config)
+    output_path = tmp_path / "episode.mp3"
+    plan = parse_script_plan(script, None)
+
+    def fake_transport(request):
+        return b"fake-mp3-segment-bytes"
+
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
+        kwargs["segment_durations_out"].extend([1.5] * len(segments))
+        Path(wav_out).write_bytes(b"RIFFfake-wav")
+        Path(out).write_bytes(b"stitched-mp3")
+        return Path(wav_out), Path(out)
+
+    def fake_probe(path, sha256, runner=None):
+        from podcaster.audio import AudioMetadata
+
+        return AudioMetadata(
+            duration_seconds=300.0,
+            loudness_lufs=-16.0,
+            sample_rate_hz=44100,
+            bitrate_bps=192000 if not str(path).endswith(".wav") else 705600,
+            channels=1,
+            content_type="audio/wav" if str(path).endswith(".wav") else "audio/mpeg",
+            byte_length=Path(path).stat().st_size,
+            sha256=sha256,
+            codec_name="pcm_s16le" if str(path).endswith(".wav") else None,
+        )
+
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
+    monkeypatch.setattr(episode, "probe_audio", fake_probe)
+
+    result = episode.synthesize_episode(
+        script,
+        config,
+        decision,
+        output_path,
+        token_provider=lambda scope: "token",
+        transport=fake_transport,
+    )
+
+    assert result.realized_metadata is not None
+    assert len(result.realized_metadata.utterances) == len(plan.segments)
+    assert len(result.segment_durations) == result.segment_count == len(plan.segments)
