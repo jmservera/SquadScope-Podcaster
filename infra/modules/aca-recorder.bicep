@@ -72,6 +72,7 @@ param queueLengthPerReplica int = 1
 
 @description('Maximum concurrent recorder replicas. Fans recording out across up to 10 boxes; scales to zero when the queue drains (RFC §7).')
 @minValue(1)
+@maxValue(10)
 param maxExecutions int = 10
 
 var storageDnsSuffix = environment().suffixes.storage
