@@ -1,5 +1,13 @@
-// Video generation runner (#324): a queue-triggered Azure Container Apps Job that consumes
-// the video-jobs queue and drives the ffmpeg-backed video pipeline (podcaster.video.job_runner).
+// Video EDITOR / orchestrator (#324, scale-out #552/#565): a queue-triggered Azure Container
+// Apps Job that consumes the video-jobs queue and drives the ffmpeg-backed video pipeline
+// (podcaster.video.job_runner).
+//
+// PLANNED scale-out target (docs/scaleout-recorder-rfc.md): once the editor refactor (#563)
+// lands, this job stops recording inline — it will plan, fan per-clip messages onto the
+// video-clip-jobs queue (consumed by the recorder ACA Job, aca-recorder.bicep), block on the
+// fan-in barrier, then run the unchanged download -> compose -> distribute -> cleanup path.
+// Until #563 merges the runtime still records inline; this module ships the infra seam ahead of
+// that (single-replica cap + clip queue env) so the topology is ready when the code lands.
 //
 // Reuses the synthesis container image (ffmpeg already baked in) but overrides the entrypoint
 // command to run the video job runner instead of the audio synthesis runner. It also reuses the
@@ -8,6 +16,9 @@
 // Contributor. Because the Blob role is account-scoped it automatically covers the new
 // video-scratch container used for intermediate checkpoint/resume (#410) — no new role
 // assignment is required.
+//
+// Capped at a single concurrent replica (maxExecutions = 1) so a redelivered video-jobs message
+// can never spin up a second editor that double-publishes (RFC §6 single-publish).
 //
 // Identity-only data plane (Blob + Queue). No keys, tokens, or secrets logged.
 targetScope = 'resourceGroup'
@@ -33,6 +44,9 @@ param storageAccountName string
 @description('Storage Queue that carries video-generation messages (job_id only; no secrets/PII).')
 param videoQueueName string = 'video-jobs'
 
+@description('Storage Queue the editor fans per-clip recording messages onto for the recorder job (job_id + clip_index only).')
+param videoClipQueueName string = 'video-clip-jobs'
+
 @description('Private blob container holding generated podcaster artifacts.')
 param storageContainerName string = 'podcaster-artifacts'
 
@@ -51,18 +65,24 @@ param jobCpu string = '4.0'
 @description('Memory allocated to the video replica (video compose is ffmpeg-heavy).')
 param jobMemory string = '8.0Gi'
 
-@description('Replica timeout (seconds) sized for full video segment generation + ffmpeg compose + distribution. 90 min covers ~65 min typical run with headroom.')
+@description('Replica timeout (seconds) sized for the editor: fan-in wait + ffmpeg compose + distribution. 90 min covers ~65 min typical run with headroom.')
 @minValue(60)
 @maxValue(172800)
 param replicaTimeoutSeconds int = 5400
+
+@description('video-jobs receive visibility timeout (seconds) the editor applies while it holds a job. Must be >= the editor worst-case runtime (fan-in wait + compose + publish) so the message is not redelivered to a second editor mid-run (RFC §8). Defaults to the replica timeout.')
+@minValue(60)
+@maxValue(172800)
+param videoVisibilityTimeoutSeconds int = 5400
 
 @description('Queue length per replica that triggers scaling (one message per episode).')
 @minValue(1)
 param queueLengthPerReplica int = 1
 
-@description('Maximum concurrent video replicas. Bursty weekly duty cycle; scales to zero when idle.')
+@description('Maximum concurrent video editor replicas. Capped at 1 so a redelivered video-jobs message cannot start a second editor that double-publishes (RFC §6 single-publish).')
 @minValue(1)
-param maxExecutions int = 2
+@maxValue(1)
+param maxExecutions int = 1
 
 @description('Azure OpenAI endpoint (empty when OpenAI is not deployed).')
 param openAiEndpoint string = ''
@@ -179,6 +199,19 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'PODCASTER_VIDEO_QUEUE'
               value: videoQueueName
+            }
+            {
+              // Queue the editor fans per-clip recording messages onto (#552/#565).
+              name: 'PODCASTER_VIDEO_CLIP_QUEUE'
+              value: videoClipQueueName
+            }
+            {
+              // Visibility timeout the editor applies to its own video-jobs message while it
+              // works, so the job is not redelivered to a second editor mid-run (RFC §8). The
+              // editor refactor (#563) wires job_runner's receive call to honour this; until
+              // then the value is inert (single-replica cap already prevents concurrent editors).
+              name: 'PODCASTER_VIDEO_VISIBILITY_TIMEOUT'
+              value: string(videoVisibilityTimeoutSeconds)
             }
             {
               name: 'AZURE_OPENAI_ENDPOINT'

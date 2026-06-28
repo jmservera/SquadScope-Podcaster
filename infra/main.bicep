@@ -103,6 +103,9 @@ param synthesisJobName string = '${baseName}-synth'
 @description('Queue-triggered video Container Apps Job name (#324).')
 param videoJobName string = '${baseName}-video'
 
+@description('Queue-triggered scale-out recorder Container Apps Job name (#552/#565).')
+param videoRecorderJobName string = '${baseName}-recorder'
+
 @description('User-assigned managed identity used by the synthesis job.')
 param synthesisJobIdentityName string = '${baseName}-synthesis-id'
 
@@ -111,6 +114,9 @@ param synthesisQueueName string = 'synthesis-jobs'
 
 @description('Storage Queue carrying video-generation messages (job_id only; no secrets/PII).')
 param videoQueueName string = 'video-jobs'
+
+@description('Storage Queue carrying per-clip recording messages (job_id + clip_index only; no secrets/PII).')
+param videoClipQueueName string = 'video-clip-jobs'
 
 @description('Whether the synthesis job enqueues a video-generation message after publishing audio (#324).')
 param videoGenerationEnabled string = 'true'
@@ -282,6 +288,9 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
           // Auto-delete video pipeline intermediates after 7 days (#410). The job
           // deletes its own scratch blobs on successful publish; this policy is the
           // safety net for interrupted/abandoned jobs so scratch never accumulates.
+          // The video-jobs/ prefix also covers the scale-out per-clip scratch
+          // (video-jobs/{job_id}/clips/** and clipset.json, #552/#565), so abandoned
+          // fan-out clips are reaped by the same backstop — no extra rule needed.
           name: 'expire-video-scratch'
           enabled: true
           type: 'Lifecycle'
@@ -356,6 +365,7 @@ module aca 'modules/aca.bicep' = {
     logAnalyticsWorkspaceName: workspace.name
     synthesisQueueName: synthesisQueueName
     videoQueueName: videoQueueName
+    videoClipQueueName: videoClipQueueName
     videoGenerationEnabled: videoGenerationEnabled
     storageContainerName: storageContainerName
     synthesisImage: synthesisImage
@@ -393,6 +403,7 @@ module acaVideo 'modules/aca-video.bicep' = {
     jobIdentityClientId: aca.outputs.jobIdentityClientId
     storageAccountName: storage.name
     videoQueueName: aca.outputs.videoQueueName
+    videoClipQueueName: aca.outputs.videoClipQueueName
     storageContainerName: storageContainerName
     videoScratchContainerName: videoScratchContainerName
     videoImage: synthesisImage
@@ -402,6 +413,31 @@ module acaVideo 'modules/aca-video.bicep' = {
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     spotifyShowId: spotifyShowId
+  }
+  dependsOn: [
+    artifactContainer
+    videoScratchContainer
+  ]
+}
+
+// Scale-out video recorder (#552/#565): a queue-triggered ACA Job consuming the video-clip-jobs
+// queue. Records exactly one clip per message and writes it to the shared video-scratch container.
+// Reuses the synthesis image + managed identity (Blob + Queue RBAC already account-scoped) and
+// fans out across up to 10 replicas, scaling to zero when the clip queue drains.
+module acaRecorder 'modules/aca-recorder.bicep' = {
+  name: 'video-recorder-job'
+  params: {
+    location: location
+    containerAppsEnvId: aca.outputs.environmentId
+    recorderJobName: videoRecorderJobName
+    jobIdentityResourceId: aca.outputs.jobIdentityResourceId
+    jobIdentityClientId: aca.outputs.jobIdentityClientId
+    storageAccountName: storage.name
+    videoClipQueueName: aca.outputs.videoClipQueueName
+    storageContainerName: storageContainerName
+    videoScratchContainerName: videoScratchContainerName
+    recorderImage: synthesisImage
+    containerRegistryServer: acrLoginServer
   }
   dependsOn: [
     artifactContainer
@@ -506,6 +542,8 @@ output containerAppsEnvName string = aca.outputs.environmentName
 output synthesisQueueName string = aca.outputs.queueName
 output videoQueueName string = aca.outputs.videoQueueName
 output videoJobName string = acaVideo.outputs.jobName
+output videoRecorderJobName string = acaRecorder.outputs.jobName
+output videoClipQueueName string = aca.outputs.videoClipQueueName
 output synthesisJobIdentityClientId string = aca.outputs.jobIdentityClientId
 output apiAppFqdn string = deployApiApp ? api!.outputs.apiAppFqdn : ''
 output uiAppFqdn string = deployUiApp ? ui!.outputs.uiAppFqdn : ''
