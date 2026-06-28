@@ -117,6 +117,27 @@ def test_utterance_timings_use_durations_and_gap():
     assert meta.gap_ms == 500
 
 
+def test_repo_topic_start_equals_segment_start_plus_gap_and_offset():
+    """#553: with gap=0.35 and speech_offset=10.0 the first repo topic starts at
+    segment_start + gap + offset — the deterministic timing the video pipeline
+    consumes instead of whisper forced alignment.
+    """
+    plan = _plan()
+    # Segment 0 (article cold open) is 8s; the first repo turn is segment 1.
+    durations = [8.0, 3.0, 1.0, 2.0, 1.5]
+    meta = extract_realized_audio_metadata(
+        plan,
+        durations,
+        gap_seconds=0.35,
+        speech_offset_seconds=10.0,
+    )
+    repo_topic = meta.repo_topics[0]
+    # First repo turn starts after the 8s article segment + one inter-segment
+    # gap (0.35) + the 10s intro-music speech offset.
+    expected_start_ms = int(round((8.0 + 0.35 + 10.0) * 1000))
+    assert repo_topic.start_ms == expected_start_ms
+
+
 def test_speech_offset_shifts_every_timestamp():
     plan = _plan()
     durations = [2.0, 3.0, 1.0, 2.0, 1.5]

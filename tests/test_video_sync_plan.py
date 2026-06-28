@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from podcaster.script_plan import VisualMode
 from podcaster.video.sync_plan import (
     REMOVED_REPO_REASON,
     VISUAL_KIND_IMAGE,
@@ -25,11 +26,10 @@ from podcaster.video.sync_plan import (
     extract_source_url,
     fetch_repos_from_article,
     generate_episode_plan,
-    generate_episode_plan_from_times,
     generate_episode_plan_timed,
     generate_generic_plan,
+    plan_from_realized_metadata,
     plan_from_script,
-    plan_from_script_aligned,
     plan_from_script_timed,
     prepend_weekly_segment,
     removed_repo_speaker_notes,
@@ -740,14 +740,21 @@ class TestPrependWeeklySegment:
             RepoReference("microsoft", "vscode"),
         )
         for first_start in (5.0, 18.0, 106.0):
-            plan = generate_episode_plan_from_times(
-                list(repos),
-                {
-                    repos[0]: first_start,
-                    repos[1]: first_start + 90.0,
-                    repos[2]: first_start + 180.0,
-                },
+            plan = EpisodePlan(
                 total_duration_seconds=first_start + 280.0,
+                segments=(
+                    VideoSegment(repo=repos[0], start_seconds=first_start, duration_seconds=90.0),
+                    VideoSegment(
+                        repo=repos[1],
+                        start_seconds=first_start + 90.0,
+                        duration_seconds=90.0,
+                    ),
+                    VideoSegment(
+                        repo=repos[2],
+                        start_seconds=first_start + 180.0,
+                        duration_seconds=100.0,
+                    ),
+                ),
             )
             out = prepend_weekly_segment(plan, "podcast-2026-W26-x")
             assert out.segments[0].is_generic
@@ -1119,130 +1126,190 @@ class TestRemovedReasonSerialization:
         assert data["segments"][0]["removed_reason"] == REMOVED_REPO_REASON
 
 
-# --- Audio-cue (forced-alignment) sync planning (#374) ---
+# --- Realized-audio-metadata (Layer 2) sync planning (#553) ---
 
 
-class TestGenerateEpisodePlanFromTimes:
-    """Tests for generate_episode_plan_from_times()."""
+class TestPlanFromRealizedMetadata:
+    """Tests for plan_from_realized_metadata() — the whisper replacement (#553)."""
 
-    R1 = RepoReference("acme", "alpha")
-    R2 = RepoReference("acme", "beta")
-    R3 = RepoReference("acme", "gamma")
+    @staticmethod
+    def _meta(total_duration_ms: int, topics):
+        from podcaster.audio_metadata import RealizedAudioMetadata, TopicRange
 
-    def test_segments_start_at_aligned_times(self):
-        times = {self.R1: 10.0, self.R2: 40.0, self.R3: 80.0}
-        plan = generate_episode_plan_from_times(
-            [self.R1, self.R2, self.R3], times, total_duration_seconds=120.0
+        ranges = []
+        for mode, repo_url, start_ms, end_ms in topics:
+            ranges.append(
+                TopicRange(
+                    visual_mode=mode,
+                    repo_url=repo_url,
+                    section_id=None,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    utterance_indices=(),
+                )
+            )
+        return RealizedAudioMetadata(topics=tuple(ranges), total_duration_ms=total_duration_ms)
+
+    def test_repo_topics_map_to_on_screen_windows_within_one_second(self):
+        meta = self._meta(
+            190_000,
+            [
+                # Leading article (cold open) starts after a 10s intro lead-in.
+                (VisualMode.ARTICLE, None, 10_000, 25_000),
+                (VisualMode.REPO, "https://github.com/acme/alpha", 25_350, 70_000),
+                (VisualMode.REPO, "https://github.com/acme/beta", 70_350, 130_000),
+                (VisualMode.REPO, "https://github.com/acme/gamma", 130_350, 180_000),
+            ],
         )
-        starts = [s.start_seconds for s in plan.segments]
-        assert starts == pytest.approx([10.0, 40.0, 80.0])
-        # Durations fill the gaps; last extends to total.
-        durs = [s.duration_seconds for s in plan.segments]
-        assert durs == pytest.approx([30.0, 40.0, 40.0])
+        plan = plan_from_realized_metadata(meta, total_duration_seconds=190.0)
 
-    def test_orders_by_aligned_time_not_input_order(self):
-        times = {self.R1: 90.0, self.R2: 20.0, self.R3: 50.0}
-        plan = generate_episode_plan_from_times(
-            [self.R1, self.R2, self.R3], times, total_duration_seconds=120.0
+        # Cumulative on-screen start of each segment (composition lays out by
+        # duration, not start_seconds) must match each REPO topic start ±1s.
+        cursor = 0.0
+        windows = {}
+        for seg in plan.segments:
+            if seg.repo is not None:
+                windows[(seg.repo.owner, seg.repo.name)] = cursor
+            cursor += seg.duration_seconds
+        assert windows[("acme", "alpha")] == pytest.approx(25.35, abs=1.0)
+        assert windows[("acme", "beta")] == pytest.approx(70.35, abs=1.0)
+        assert windows[("acme", "gamma")] == pytest.approx(130.35, abs=1.0)
+
+    def test_plan_tiles_timeline_gap_free_and_covers_outro_tail(self):
+        # total (probed MP3) extends past the last spoken word → last segment
+        # must stretch to cover the mixed-outro tail (never black).
+        meta = self._meta(
+            120_000,
+            [
+                (VisualMode.ARTICLE, None, 10_000, 30_000),
+                (VisualMode.REPO, "https://github.com/acme/alpha", 30_350, 118_000),
+            ],
         )
-        labels = [s.repo for s in plan.segments]
-        assert labels == [self.R2, self.R3, self.R1]
+        plan = plan_from_realized_metadata(meta, total_duration_seconds=130.0)
+        assert plan.segments[0].start_seconds == 0.0
+        cursor = 0.0
+        for seg in plan.segments:
+            assert abs(seg.start_seconds - cursor) < 1e-6
+            cursor += seg.duration_seconds
+        assert cursor == pytest.approx(130.0)
 
-    def test_unaligned_repo_packed_after_previous(self):
-        # R2 has no timestamp: it should trail R1 by the min segment floor.
-        times = {self.R1: 10.0, self.R3: 80.0}
-        plan = generate_episode_plan_from_times(
-            [self.R1, self.R2, self.R3],
-            times,
-            total_duration_seconds=120.0,
-            min_segment_seconds=5.0,
+    def test_leading_article_topic_carries_weekly_url(self):
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.ARTICLE, None, 10_000, 30_000),
+                (VisualMode.REPO, "https://github.com/acme/alpha", 30_350, 55_000),
+            ],
         )
-        by_repo = {s.repo: s for s in plan.segments}
-        assert by_repo[self.R2].start_seconds == pytest.approx(15.0)
-        # No repo is dropped.
-        assert set(by_repo) == {self.R1, self.R2, self.R3}
-
-    def test_enforces_monotonic_starts_with_min_gap(self):
-        # Two repos aligned to nearly the same time get separated by the floor.
-        times = {self.R1: 10.0, self.R2: 10.2}
-        plan = generate_episode_plan_from_times(
-            [self.R1, self.R2],
-            times,
+        plan = plan_from_realized_metadata(
+            meta,
             total_duration_seconds=60.0,
-            min_segment_seconds=5.0,
+            weekly_url="https://claracle.com/weekly/2026/w26/",
         )
-        starts = [s.start_seconds for s in plan.segments]
-        assert starts[1] - starts[0] >= 5.0 - 1e-6
+        assert plan.segments[0].is_generic
+        assert plan.segments[0].source_url == "https://claracle.com/weekly/2026/w26/"
 
-    def test_all_segments_fit_within_total(self):
-        times = {self.R1: 110.0, self.R2: 115.0, self.R3: 118.0}
-        plan = generate_episode_plan_from_times(
-            [self.R1, self.R2, self.R3],
-            times,
-            total_duration_seconds=120.0,
-            min_segment_seconds=5.0,
+    def test_no_topics_falls_back_to_generic_plan(self):
+        meta = self._meta(60_000, [])
+        plan = plan_from_realized_metadata(
+            meta, total_duration_seconds=60.0, weekly_url="https://claracle.com/x/"
         )
-        for s in plan.segments:
-            assert s.end_seconds <= 120.0 + 1e-6
-            assert s.duration_seconds > 0
-
-    def test_empty_repos_raises(self):
-        with pytest.raises(ValueError):
-            generate_episode_plan_from_times([], {}, 60.0)
-
-    def test_non_positive_duration_raises(self):
-        with pytest.raises(ValueError):
-            generate_episode_plan_from_times([self.R1], {self.R1: 0.0}, 0.0)
-
-
-class TestPlanFromScriptAligned:
-    """Tests for plan_from_script_aligned() including the fallback paths."""
-
-    SCRIPT = (
-        "Title: T\n---\n"
-        "Theo: First https://github.com/acme/alpha then "
-        "https://github.com/acme/beta later.\n"
-    )
-
-    def test_no_audio_path_falls_back_to_proportional(self):
-        plan = plan_from_script_aligned(self.SCRIPT, 100.0, audio_path=None)
-        # Falls back to plan_from_script_timed → two repo segments.
-        assert len(plan.segments) == 2
-        assert all(s.repo is not None for s in plan.segments)
-
-    def test_uses_aligned_times_when_available(self, monkeypatch):
-        alpha = RepoReference("acme", "alpha")
-        beta = RepoReference("acme", "beta")
-        monkeypatch.setattr(
-            "podcaster.video.audio_align.repo_audio_timestamps",
-            lambda *_a, **_k: {alpha: 12.0, beta: 60.0},
-        )
-        plan = plan_from_script_aligned(self.SCRIPT, 100.0, audio_path="a.mp3")
-        starts = {s.repo: s.start_seconds for s in plan.segments}
-        assert starts[alpha] == pytest.approx(12.0)
-        assert starts[beta] == pytest.approx(60.0)
-
-    def test_falls_back_when_alignment_returns_none(self, monkeypatch):
-        monkeypatch.setattr(
-            "podcaster.video.audio_align.repo_audio_timestamps",
-            lambda *_a, **_k: None,
-        )
-        plan = plan_from_script_aligned(self.SCRIPT, 100.0, audio_path="a.mp3")
-        # Proportional fallback still produces both repo segments.
-        assert len(plan.segments) == 2
-
-    def test_script_without_repos_falls_back(self, monkeypatch):
-        # Should not even attempt transcription when there are no repos.
-        called = {"n": 0}
-
-        def _spy(*_a, **_k):
-            called["n"] += 1
-            return None
-
-        monkeypatch.setattr("podcaster.video.audio_align.repo_audio_timestamps", _spy)
-        script = "Title: T\nSource URL: https://claracle.com/x\n---\nHi there.\n"
-        plan = plan_from_script_aligned(script, 100.0, audio_path="a.mp3")
-        assert called["n"] == 0
-        # Generic background plan (single full-length segment).
         assert len(plan.segments) == 1
         assert plan.segments[0].is_generic
+        assert plan.segments[0].source_url == "https://claracle.com/x/"
+
+    def test_non_positive_duration_raises(self):
+        meta = self._meta(60_000, [])
+        with pytest.raises(ValueError):
+            plan_from_realized_metadata(meta, total_duration_seconds=0.0)
+
+    def test_excluded_repo_becomes_generic(self):
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.REPO, "https://github.com/jmservera/squadscope", 0, 60_000),
+            ],
+        )
+        plan = plan_from_realized_metadata(meta, total_duration_seconds=60.0)
+        assert plan.segments[0].repo is None
+
+    def test_repo_first_topic_prepends_weekly_lead_article(self):
+        # A script that opens directly on a `## Visual: repo` marker must not drop
+        # the weekly page nor show the repo during the intro lead-in (#382/#544).
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.REPO, "https://github.com/acme/alpha", 12_000, 40_000),
+                (VisualMode.REPO, "https://github.com/acme/beta", 40_000, 58_000),
+            ],
+        )
+        plan = plan_from_realized_metadata(
+            meta,
+            total_duration_seconds=60.0,
+            weekly_url="https://claracle.com/weekly/2026/w26/",
+        )
+        # A synthetic leading article segment covers the bridge before the repo.
+        assert plan.segments[0].is_generic
+        assert plan.segments[0].start_seconds == 0.0
+        assert plan.segments[0].source_url == "https://claracle.com/weekly/2026/w26/"
+        # The first repo appears at its measured start, not at 0.
+        cursor = 0.0
+        windows = {}
+        for seg in plan.segments:
+            if seg.repo is not None:
+                windows[(seg.repo.owner, seg.repo.name)] = cursor
+            cursor += seg.duration_seconds
+        assert windows[("acme", "alpha")] == pytest.approx(12.0, abs=1.0)
+        assert cursor == pytest.approx(60.0)
+
+    def test_repo_first_topic_without_weekly_url_keeps_lead_in_absorption(self):
+        # Without a weekly/source URL there is nothing to show, so fall back to
+        # the lead-in-absorbing behaviour (first topic starts at 0).
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.REPO, "https://github.com/acme/alpha", 12_000, 60_000),
+            ],
+        )
+        plan = plan_from_realized_metadata(meta, total_duration_seconds=60.0)
+        assert plan.segments[0].start_seconds == 0.0
+        assert plan.segments[0].repo is not None
+
+    def test_drops_zero_duration_segments_for_out_of_range_topics(self):
+        # A topic starting at/after the probed duration clamps to a 0s window and
+        # must be dropped (otherwise ffmpeg gets a ``-t 0`` trim). Remaining
+        # segments still tile [0, total] with no gap.
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.ARTICLE, None, 0, 30_000),
+                (VisualMode.REPO, "https://github.com/acme/alpha", 30_000, 60_000),
+                # Stale/corrupt topic past the end of the audio → 0s window.
+                (VisualMode.REPO, "https://github.com/acme/beta", 90_000, 95_000),
+            ],
+        )
+        plan = plan_from_realized_metadata(meta, total_duration_seconds=60.0)
+        assert all(s.duration_seconds > 0 for s in plan.segments)
+        assert not any(s.repo is not None and s.repo.name == "beta" for s in plan.segments)
+        cursor = 0.0
+        for seg in plan.segments:
+            assert abs(seg.start_seconds - cursor) < 1e-6
+            cursor += seg.duration_seconds
+        assert cursor == pytest.approx(60.0)
+
+    def test_all_out_of_range_topics_fall_back_to_generic(self):
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.REPO, "https://github.com/acme/alpha", 90_000, 95_000),
+            ],
+        )
+        plan = plan_from_realized_metadata(
+            meta,
+            total_duration_seconds=60.0,
+            weekly_url="https://claracle.com/weekly/2026/w26/",
+        )
+        assert len(plan.segments) == 1
+        assert plan.segments[0].is_generic
+        assert plan.segments[0].source_url == "https://claracle.com/weekly/2026/w26/"
+        assert plan.segments[0].duration_seconds == pytest.approx(60.0)

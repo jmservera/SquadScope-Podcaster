@@ -13,11 +13,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 from urllib.parse import urlparse
 
 import requests
 import yaml
+
+if TYPE_CHECKING:
+    from podcaster.audio_metadata import RealizedAudioMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -671,155 +674,165 @@ def removed_repo_speaker_notes(plan: EpisodePlan) -> list[str]:
     return notes
 
 
-# --- Audio-cue (forced-alignment) sync planning (#374) ---
+# --- Realized-audio-metadata (Layer 2) sync planning (#553) ---
 
 
-def generate_episode_plan_from_times(
-    repos: Sequence[RepoReference],
-    mention_times: dict[RepoReference, float],
+def _repo_ref_from_url(url: str | None) -> RepoReference | None:
+    """Build a :class:`RepoReference` from a GitHub repo URL, or ``None``."""
+    if not url:
+        return None
+    match = _GITHUB_REPO_RE.search(url)
+    if match is None:
+        return None
+    name = match.group(2).rstrip(".")
+    if name.endswith(".git"):
+        name = name[:-4]
+    return RepoReference(owner=match.group(1), name=name)
+
+
+# Segments shorter than this are dropped from a metadata-backed plan: they would
+# otherwise feed ffmpeg a near-zero ``-t`` trim (empty/failed output). The value
+# is well below any real on-screen window yet absorbs float/rounding drift.
+_MIN_SEGMENT_DURATION_SECONDS = 0.05
+
+
+def plan_from_realized_metadata(
+    metadata: "RealizedAudioMetadata",
     total_duration_seconds: float,
-    min_segment_seconds: float = 5.0,
+    *,
+    weekly_url: str | None = None,
+    source_url: str | None = None,
 ) -> EpisodePlan:
-    """Generate a plan from explicit per-repo audio timestamps.
+    """Build an :class:`EpisodePlan` from Layer 2 realized audio metadata (#553).
 
-    Unlike :func:`generate_episode_plan_timed` (which estimates timing from
-    character positions in the script), this uses real audio timestamps — e.g.
-    obtained via forced alignment in
-    :func:`podcaster.video.audio_align.repo_audio_timestamps` — so each repo
-    appears exactly when the hosts begin discussing it.
+    This is the deterministic replacement for whisper forced alignment. The
+    metadata's :class:`~podcaster.audio_metadata.TopicRange` list already encodes
+    — in milliseconds and from the *measured* TTS clip durations — when each repo
+    is discussed, the article/weekly rundown is on screen, and where
+    intermissions fall. Topic boundaries fall exactly at the script's
+    ``## Visual:`` markers, and the metadata already bakes in the inter-segment
+    ``gap_seconds`` and the intro-music ``speech_offset`` so the timings agree
+    with the final mixed audio.
 
-    Repos missing from *mention_times* are still included: each is placed
-    immediately after the previous segment using the minimum-segment floor, so
-    no repo is dropped just because its mention could not be aligned.
+    The resulting segments **tile the timeline gap-free** because composition lays
+    segments out by list order + ``duration_seconds`` (not ``start_seconds``):
+
+    * the first segment absorbs the pre-speech lead-in (it starts at 0), so the
+      cumulative start of every later segment equals its topic's ``start_ms`` —
+      each repo appears on screen when the hosts name it;
+    * the last segment is extended to ``total_duration_seconds`` so a mixed outro
+      that runs past the final spoken word is still covered (never black);
+    * ``repo`` topics become repo segments; ``article`` topics show the weekly
+      page (``weekly_url``) / source article; ``intermission`` topics render the
+      static background.
+
+    Falls back to a single generic, full-length segment when the metadata has no
+    topics.
 
     Args:
-        repos: Repo references to include.
-        mention_times: Map of repo → audio start time (seconds). May cover only
-            a subset of *repos*.
-        total_duration_seconds: Total audio duration in seconds.
-        min_segment_seconds: Minimum duration for any single segment.
+        metadata: Layer 2 :class:`~podcaster.audio_metadata.RealizedAudioMetadata`.
+        total_duration_seconds: Probed final-MP3 duration in seconds.
+        weekly_url: claracle.com weekly page URL for ``article`` topics (#382).
+        source_url: Optional article ``Source URL:`` fallback for ``article``
+            topics when no ``weekly_url`` is available.
 
     Returns:
-        EpisodePlan with segment timing derived from the supplied timestamps.
+        An :class:`EpisodePlan` whose segments cover ``[0, total_duration_seconds]``.
 
     Raises:
-        ValueError: If *repos* is empty or *total_duration_seconds* is
-            non-positive.
+        ValueError: If ``total_duration_seconds`` is non-positive.
     """
-    if not repos:
-        raise ValueError("No repos provided for episode plan generation")
+    from podcaster.script_plan import VisualMode
+
     if total_duration_seconds <= 0:
         raise ValueError(f"Total duration must be positive, got {total_duration_seconds}")
 
-    n = len(repos)
-    effective_min = min(min_segment_seconds, total_duration_seconds / n)
+    topics = list(metadata.topics)
+    if not topics:
+        logger.info("realized metadata has no topics; using generic full-length plan")
+        return generate_generic_plan(total_duration_seconds, weekly_url or source_url)
 
-    # Compute an effective time for every repo. *repos* is in script-mention
-    # order, so a repo without an aligned timestamp inherits the previous
-    # repo's time (leading unaligned repos default to 0.0). This keeps unaligned
-    # repos in their natural position instead of dumping them at the end.
-    effective: dict[RepoReference, float] = {}
-    carried = 0.0
-    for repo in repos:
-        t = mention_times.get(repo)
-        if t is not None:
-            carried = t
-        effective[repo] = carried
+    # Normally the script opens with host banter under the default
+    # ``VisualMode.ARTICLE``, so the first topic is the article/weekly view that
+    # naturally absorbs the pre-speech lead-in (see below). If a script instead
+    # opens directly on a ``## Visual: repo`` (or intermission) marker, forcing
+    # that topic to start at 0 would show the repo during the intro and drop the
+    # weekly page entirely. Guard that by synthesising a leading article segment
+    # spanning the bridge before the first topic, so the weekly page is never
+    # lost and the first real topic keeps its measured start (issues #382/#544).
+    weekly_source = weekly_url or source_url
+    lead_article: VideoSegment | None = None
+    if topics[0].visual_mode is not VisualMode.ARTICLE and weekly_source:
+        first_start = max(0.0, min(topics[0].start_ms / 1000.0, total_duration_seconds))
+        if first_start > 0.0:
+            lead_article = VideoSegment(
+                start_seconds=0.0,
+                duration_seconds=first_start,
+                repo=None,
+                source_url=weekly_source,
+            )
 
-    # Stable sort by effective time preserves input order for equal times.
-    indexed = list(enumerate(repos))
-    indexed.sort(key=lambda pair: (effective[pair[1]], pair[0]))
-    ordered = [repo for _, repo in indexed]
-
-    start_times: list[float] = []
-    for i, repo in enumerate(ordered):
-        # Leave room for this segment and every subsequent one.
-        max_start = total_duration_seconds - (n - i) * effective_min
-        base = effective[repo]
-        start = max(0.0, min(base, max_start))
-        if i > 0:
-            start = max(start, start_times[i - 1] + effective_min)
-        start_times.append(start)
+    n = len(topics)
+    # Boundary start of each segment. When no synthetic lead article is
+    # prepended, the first segment absorbs the pre-speech lead-in (starts at 0);
+    # every later segment starts at its topic's measured start. Clamp into range
+    # and keep the sequence non-decreasing so durations never go negative under
+    # floating-point/rounding drift.
+    starts: list[float] = []
+    for i, topic in enumerate(topics):
+        raw = topic.start_ms / 1000.0 if (i > 0 or lead_article is not None) else 0.0
+        bounded = max(0.0, min(raw, total_duration_seconds))
+        if starts:
+            bounded = max(bounded, starts[-1])
+        starts.append(bounded)
 
     segments: list[VideoSegment] = []
-    for i, (repo, start) in enumerate(zip(ordered, start_times)):
-        if i < n - 1:
-            duration = start_times[i + 1] - start
-        else:
-            duration = total_duration_seconds - start
-        duration = max(duration, effective_min)
-        segments.append(VideoSegment(repo=repo, start_seconds=start, duration_seconds=duration))
+    if lead_article is not None:
+        segments.append(lead_article)
+    for i, topic in enumerate(topics):
+        start = starts[i]
+        end = starts[i + 1] if i + 1 < n else total_duration_seconds
+        duration = max(0.0, end - start)
+        repo = _repo_ref_from_url(topic.repo_url) if topic.visual_mode is VisualMode.REPO else None
+        if repo is not None and _is_excluded_repo(repo):
+            repo = None
+        seg_source: str | None = None
+        if repo is None and topic.visual_mode is VisualMode.ARTICLE:
+            seg_source = weekly_source
+        segments.append(
+            VideoSegment(
+                start_seconds=start,
+                duration_seconds=duration,
+                repo=repo,
+                source_url=seg_source,
+            )
+        )
 
+    # Drop zero-/near-zero-duration segments. A topic whose measured start lands
+    # at or past the probed audio duration (e.g. stale/corrupt metadata) clamps
+    # to a 0s window, which downstream would feed ffmpeg a ``-t 0`` trim and fail
+    # or yield empty output. Dropping them keeps the timeline tiling intact (each
+    # contributes 0 to the cumulative layout) and is monotonic-safe. If nothing
+    # survives, fall back to a generic full-length plan.
+    segments = [s for s in segments if s.duration_seconds > _MIN_SEGMENT_DURATION_SECONDS]
+    if not segments:
+        logger.warning(
+            "realized metadata produced no positive-duration segments "
+            "(total=%.3fs); using generic full-length plan",
+            total_duration_seconds,
+        )
+        return generate_generic_plan(total_duration_seconds, weekly_source)
+
+    repo_count = sum(1 for s in segments if s.repo is not None)
+    logger.info(
+        "metadata-backed plan: %d segment(s), %d repo window(s) from %d topic(s)",
+        len(segments),
+        repo_count,
+        n,
+    )
     return EpisodePlan(
         total_duration_seconds=total_duration_seconds,
         segments=tuple(segments),
-    )
-
-
-def plan_from_script_aligned(
-    script: str,
-    total_duration_seconds: float,
-    audio_path: str | None,
-    min_segment_seconds: float = 5.0,
-    model_size: str | None = None,
-) -> EpisodePlan:
-    """End-to-end planner that syncs segments to the audio via forced alignment.
-
-    Transcribes *audio_path*, aligns it to *script*, and times each repo
-    segment to the moment the hosts actually begin discussing it (issue #374).
-
-    Falls back to :func:`plan_from_script_timed` (proportional, mention-based
-    timing) whenever audio-cue sync is unavailable or unreliable:
-
-    * *audio_path* is ``None`` (no audio resolved),
-    * the script contains no GitHub repo URLs,
-    * faster-whisper is missing / transcription fails,
-    * alignment confidence is too low, or no repo mention could be aligned.
-
-    Args:
-        script: Full podcast script text (header + body).
-        total_duration_seconds: Total audio duration in seconds.
-        audio_path: Path to the synthesised episode audio, or ``None``.
-        min_segment_seconds: Minimum segment duration. Default 5.0 s.
-        model_size: Optional faster-whisper model override.
-
-    Returns:
-        EpisodePlan synced to the audio, or the proportional fallback plan.
-
-    Raises:
-        ValueError: If duration is non-positive.
-    """
-    if audio_path is None:
-        return plan_from_script_timed(script, total_duration_seconds, min_segment_seconds)
-
-    repos = extract_repo_urls(script)
-    if not repos:
-        # No repos anywhere in the script (header or body) → alignment can't
-        # help. Reuse the existing article-fetch / generic fallbacks.
-        return plan_from_script_timed(script, total_duration_seconds, min_segment_seconds)
-
-    # Import lazily so the heavy faster-whisper dependency is only touched when
-    # audio-cue sync is actually attempted.
-    from podcaster.video.audio_align import repo_audio_timestamps
-
-    kwargs = {"model_size": model_size} if model_size else {}
-    mention_times = repo_audio_timestamps(script, repos, audio_path, **kwargs)
-    if not mention_times:
-        logger.info(
-            "audio-cue sync produced no timings; using proportional timing for %d repo(s)",
-            len(repos),
-        )
-        return generate_episode_plan_timed(
-            script, repos, total_duration_seconds, min_segment_seconds
-        )
-
-    logger.info(
-        "audio-cue sync: timed %d/%d repo segment(s) from audio",
-        len(mention_times),
-        len(repos),
-    )
-    return generate_episode_plan_from_times(
-        repos, mention_times, total_duration_seconds, min_segment_seconds
     )
 
 

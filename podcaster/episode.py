@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -35,6 +36,12 @@ from podcaster.audio import (
     render_distribution_audio,
     validate_audio_outputs,
 )
+from podcaster.audio_metadata import (
+    DEFAULT_GAP_SECONDS,
+    RealizedAudioMetadata,
+    RealizedAudioMetadataError,
+    extract_realized_audio_metadata,
+)
 from podcaster.config import BackchannelConfig, PodcastConfig
 from podcaster.generation import (
     checksum,
@@ -42,6 +49,11 @@ from podcaster.generation import (
 from podcaster.hooks import _GENERIC_HOOKS, HostHooks
 from podcaster.interaction import assign_turn_ids, build_interaction_map, resolve_placements
 from podcaster.sanitization import flag_injection, neutralize
+from podcaster.script_plan import (
+    ScriptPlanValidationError,
+    parse_script_plan,
+    validate_script_plan,
+)
 from podcaster.sections import match_section_header
 from podcaster.tts import (
     AUTH_MODE_MANAGED_IDENTITY,
@@ -599,6 +611,99 @@ class EpisodeAudio:
     validation: AudioValidationResult
     voices: tuple[str, ...] = field(default_factory=tuple)
     timestamps: tuple[SectionTimestamp, ...] = field(default_factory=tuple)
+    # Layer 2 realized audio metadata (#486/#553): millisecond utterance/topic
+    # timing derived from the measured per-segment TTS durations. ``None`` when
+    # the script plan could not be parsed parallel to the synthesized segments.
+    realized_metadata: RealizedAudioMetadata | None = None
+    # Measured duration (seconds) of each synthesized host turn, parallel to the
+    # script plan's spoken segments — the ground-truth timing source the video
+    # pipeline consumes instead of forced alignment.
+    segment_durations: tuple[float, ...] = field(default_factory=tuple)
+    # Soft validation warnings (e.g. repo URLs present but no ``## Visual: repo``
+    # markers). Persisted to the job manifest so a Layer 1 regression is visible.
+    plan_warnings: tuple[str, ...] = field(default_factory=tuple)
+
+
+def _build_realized_metadata(
+    script: str,
+    segment_durations: list[float],
+    *,
+    podcast_config: PodcastConfig | None,
+    gap_seconds: float,
+    speech_offset_seconds: float,
+) -> tuple[RealizedAudioMetadata | None, tuple[str, ...]]:
+    """Build Layer 2 realized audio metadata and collect plan warnings (#553).
+
+    Parses the Layer 1 :class:`~podcaster.script_plan.ScriptPlan`, validates it
+    (surfacing soft warnings such as repo URLs present without ``## Visual:
+    repo`` markers — *flagged, not silently collapsed*), and derives realized
+    utterance / topic timing from the measured per-segment TTS durations using
+    the same gap / speech-offset the final mix uses.
+
+    Returns ``(metadata, warnings)``. ``metadata`` is ``None`` (with a warning)
+    when the plan cannot be parsed parallel to the synthesized segments, so a
+    synthesis is never aborted by a Layer 1/2 mismatch.
+    """
+
+    warnings: list[str] = []
+    try:
+        plan = parse_script_plan(script, podcast_config)
+    except Exception as exc:  # noqa: BLE001 — never abort synthesis on plan parse
+        log.warning("script plan parse failed; skipping realized metadata: %s", exc)
+        return None, ("script plan parse failed",)
+
+    try:
+        warnings.extend(validate_script_plan(plan))
+    except ScriptPlanValidationError as exc:
+        # Blocking Layer 1 rule violated. Surface it as a warning rather than
+        # failing the (already-rendered) audio synthesis; the video pipeline
+        # falls back to mention-based timing when metadata is absent.
+        log.warning("script plan validation error: %s", exc)
+        warnings.append(f"script plan invalid: {exc}")
+        return None, tuple(warnings)
+
+    # Guard markers (#553 item 5): if the script body references GitHub repos but
+    # the plan declared no ``repo`` visual markers, flag it loudly instead of
+    # silently collapsing every repo into a generic/article view.
+    if not plan.repo_urls and _script_has_repo_urls(script):
+        warnings.append(
+            "script references GitHub repo URLs but declares no '## Visual: repo' "
+            "markers — repo/dialogue sync will degrade to generic timing"
+        )
+        log.warning("script plan: %s", warnings[-1])
+
+    if len(plan.segments) != len(segment_durations):
+        msg = (
+            "script plan segments "
+            f"({len(plan.segments)}) not parallel to synthesized segments "
+            f"({len(segment_durations)}); skipping realized metadata"
+        )
+        log.warning(msg)
+        warnings.append(msg)
+        return None, tuple(warnings)
+
+    host_labels = _host_labels(script, podcast_config)
+    try:
+        metadata = extract_realized_audio_metadata(
+            plan,
+            segment_durations,
+            gap_seconds=gap_seconds,
+            speech_offset_seconds=speech_offset_seconds,
+            host_labels=host_labels,
+        )
+    except RealizedAudioMetadataError as exc:
+        log.warning("realized metadata extraction failed: %s", exc)
+        warnings.append(f"realized metadata extraction failed: {exc}")
+        return None, tuple(warnings)
+    return metadata, tuple(warnings)
+
+
+_GITHUB_REPO_URL_RE = re.compile(r"https?://github\.com/[A-Za-z0-9\-_.]+/[A-Za-z0-9\-_.]+")
+
+
+def _script_has_repo_urls(script: str) -> bool:
+    """True when the script body mentions any ``github.com/owner/repo`` URL."""
+    return bool(_GITHUB_REPO_URL_RE.search(script or ""))
 
 
 def synthesize_episode(
@@ -727,6 +832,18 @@ def synthesize_episode(
     except (RuntimeError, OSError):
         section_timestamps = ()
 
+    # Layer 2 realized audio metadata (#486/#553): the deterministic, measured
+    # repo/section timing the video pipeline consumes instead of whisper forced
+    # alignment. Uses the same gap (0.35) and speech offset as the final mix so
+    # the timings agree with the assembled audio.
+    realized_metadata, plan_warnings = _build_realized_metadata(
+        script,
+        segment_durations,
+        podcast_config=podcast_config,
+        gap_seconds=DEFAULT_GAP_SECONDS,
+        speech_offset_seconds=speech_offset,
+    )
+
     return EpisodeAudio(
         output_path=output_path,
         wav_output_path=wav_output_path,
@@ -738,6 +855,9 @@ def synthesize_episode(
         validation=validation,
         voices=tuple(turn.voice for turn in plan),
         timestamps=section_timestamps,
+        realized_metadata=realized_metadata,
+        segment_durations=tuple(segment_durations),
+        plan_warnings=plan_warnings,
     )
 
 

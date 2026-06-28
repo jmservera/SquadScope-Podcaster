@@ -36,19 +36,12 @@ RUN groupadd --system synth \
     && useradd --system --gid synth --home-dir /app --shell /usr/sbin/nologin synth
 
 # Install Python deps first for better layer caching. pyproject.toml is the
-# single source of dependency truth; the [video] extra brings in playwright and
-# faster-whisper (audio-cue video sync, issue #374) and [dev] brings pytest so
-# the container can run the integration suite (docker-compose.test.yml).
+# single source of dependency truth; the [video] extra brings in playwright for
+# intro/outro HTML rendering and [dev] brings pytest so the container can run
+# the integration suite (docker-compose.test.yml).
 COPY pyproject.toml ./
 COPY podcaster ./podcaster
 RUN python -m pip install --no-cache-dir '.[dev,video]'
-
-# Pre-download the "tiny" model at build time so audio-cue sync works without a
-# runtime network round-trip to the Hugging Face Hub (the synthesis container
-# may run with restricted egress). Failure is non-fatal: the code degrades to
-# proportional timing if the model is unavailable at runtime.
-RUN python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu', compute_type='int8')" \
-    || echo "WARN: whisper model pre-download failed; audio-cue sync will fall back at runtime"
 
 # Install Playwright Chromium browser for the video pipeline (intro/outro
 # HTML rendering). --with-deps pulls required system libraries (libnss3,

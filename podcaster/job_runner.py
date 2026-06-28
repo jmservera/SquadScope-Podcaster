@@ -116,6 +116,11 @@ def script_path(job_id: str) -> str:
     return f"jobs/{job_id}/script.txt"
 
 
+def realized_audio_metadata_path(job_id: str) -> str:
+    """Blob path for the Layer 2 realized-audio-metadata document (#553)."""
+    return f"jobs/{job_id}/realized_audio_metadata.json"
+
+
 def run_synthesis(
     job_id: str,
     storage: StorageBackend,
@@ -358,6 +363,41 @@ def run_synthesis(
             voices = sorted({voice for voice in episode_audio.voices if voice})
             validation_ready = episode_audio.validation.ready
 
+            # Persist Layer 2 realized audio metadata (#486/#553) as its own blob
+            # so the video pipeline derives repo/section timing from the measured
+            # TTS clip durations instead of whisper forced alignment. Best-effort:
+            # never fail synthesis if the metadata could not be built/written.
+            realized_metadata_blob_path: str | None = None
+            plan_warnings = list(episode_audio.plan_warnings)
+            if episode_audio.realized_metadata is not None:
+                try:
+                    metadata_doc = {
+                        "schema_version": SYNTHESIS_SCHEMA_VERSION,
+                        "job_id": job_id,
+                        "segment_durations": list(episode_audio.segment_durations),
+                        "metadata": episode_audio.realized_metadata.to_dict(),
+                        "warnings": plan_warnings,
+                    }
+                    metadata_bytes = json.dumps(metadata_doc, ensure_ascii=False).encode("utf-8")
+                    storage.put_bytes(
+                        realized_audio_metadata_path(job_id),
+                        metadata_bytes,
+                        "application/json; charset=utf-8",
+                    )
+                    realized_metadata_blob_path = realized_audio_metadata_path(job_id)
+                except Exception:  # noqa: BLE001 — metadata is non-fatal to audio
+                    logger.warning(
+                        "failed to persist realized audio metadata for job_id=%s",
+                        job_id,
+                        exc_info=True,
+                    )
+            else:
+                logger.info(
+                    "no realized audio metadata for job_id=%s (warnings=%s)",
+                    job_id,
+                    plan_warnings,
+                )
+
             def _apply(content: bytes | None) -> bytes:
                 document = json.loads(content.decode("utf-8")) if content else manifest
                 if not isinstance(document, dict):
@@ -380,6 +420,8 @@ def run_synthesis(
                     validation_ready=validation_ready,
                     config_summary=config.safe_summary(),
                     completed_at=_iso(current),
+                    realized_metadata_path=realized_metadata_blob_path,
+                    plan_warnings=plan_warnings,
                 )
                 return manifest_bytes(document)
 
@@ -887,6 +929,8 @@ def _apply_completion(
     validation_ready: bool,
     config_summary: dict[str, Any],
     completed_at: str,
+    realized_metadata_path: str | None = None,
+    plan_warnings: list[str] | None = None,
 ) -> None:
     generation = manifest.setdefault("generation", {})
     if not isinstance(generation, dict):
@@ -923,6 +967,11 @@ def _apply_completion(
             },
         },
     }
+    # Layer 2 realized audio metadata reference + soft plan warnings (#553) so the
+    # video runner can derive deterministic repo/section timing and a Layer 1
+    # marker regression stays visible in the manifest.
+    generation["synthesis_runner"]["realized_audio_metadata_path"] = realized_metadata_path
+    generation["synthesis_runner"]["plan_warnings"] = list(plan_warnings or [])
 
     artifacts = manifest.get("artifacts")
     if isinstance(artifacts, dict):

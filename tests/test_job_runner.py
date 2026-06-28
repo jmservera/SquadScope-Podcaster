@@ -279,6 +279,63 @@ def test_run_synthesis_completes_and_marks_publish_ready(monkeypatch):
     assert pub["readiness_checks"]["audio_validation_passed"] is True
 
 
+def test_run_synthesis_persists_realized_audio_metadata(monkeypatch):
+    """#553: synthesis writes the Layer 2 realized-audio-metadata blob and
+    references it (plus plan warnings) in the manifest synthesis_runner."""
+    from podcaster.audio import AudioMetadata
+    from podcaster.script_plan import parse_script_plan
+
+    script = _two_voice_script()
+    plan = parse_script_plan(script, None)
+
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
+        # Populate measured per-segment durations so realized metadata is built.
+        kwargs["segment_durations_out"].extend([1.5] * len(segments))
+        Path(wav_out).write_bytes(b"W" * 512)
+        Path(out).write_bytes(b"M" * 512)
+        return Path(wav_out), Path(out)
+
+    def fake_probe(path, sha256, runner=None):
+        is_wav = str(path).endswith(".wav")
+        return AudioMetadata(
+            duration_seconds=300.0,
+            loudness_lufs=-16.0,
+            sample_rate_hz=44100,
+            bitrate_bps=705600 if is_wav else 192000,
+            channels=1,
+            content_type="audio/wav" if is_wav else "audio/mpeg",
+            byte_length=Path(path).stat().st_size,
+            sha256=sha256,
+            codec_name="pcm_s16le" if is_wav else None,
+        )
+
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
+    monkeypatch.setattr(episode, "probe_audio", fake_probe)
+
+    storage = FakeStorage()
+    _stage(storage, _base_manifest(), script)
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
+    )
+    assert outcome.status == job_runner.STATUS_COMPLETED
+
+    metadata_path = job_runner.realized_audio_metadata_path(JOB_ID)
+    raw = storage.get_bytes(metadata_path)
+    assert raw is not None
+    document = json.loads(raw.decode("utf-8"))
+    assert len(document["metadata"]["utterances"]) == len(plan.segments)
+
+    manifest = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode("utf-8"))
+    runner_state = manifest["generation"]["synthesis_runner"]
+    assert runner_state["realized_audio_metadata_path"] == metadata_path
+    assert "plan_warnings" in runner_state
+
+
 def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
     _patch_audio(monkeypatch)
     storage = FakeStorage()
