@@ -86,11 +86,23 @@ OUTCOME_MALFORMED = "malformed"
 
 @dataclass(frozen=True)
 class RecordResult:
-    """Output of a single segment recording: the clip file and its nature."""
+    """Output of a single segment recording: the clip file and its nature.
+
+    Beyond the clip file, this carries the recording-outcome flags the editor
+    needs to reproduce **identical** compose output (the compose path keys off
+    ``is_fallback`` and ``has_pages``): ``has_pages``/``website_url`` (a GitHub
+    Pages site was recorded), ``is_removed`` (planning flagged the repo gone), and
+    which ``recovery_path`` produced the clip. They default to the no-website,
+    direct-record case so existing callers are unaffected.
+    """
 
     video_path: Path
     duration_ms: int
     is_fallback: bool = False
+    has_pages: bool = False
+    website_url: str | None = None
+    is_removed: bool = False
+    recovery_path: str = "direct"
 
 
 @dataclass(frozen=True)
@@ -113,19 +125,31 @@ def load_clipset(scratch: StorageBackend, job_id: str) -> Clipset:
 
 
 def _clip_manifest_bytes(
-    manifest: ClipManifest, *, status: str, failure_reason: str | None = None
+    manifest: ClipManifest,
+    *,
+    status: str,
+    failure_reason: str | None = None,
+    recording: "RecordResult | None" = None,
 ) -> bytes:
     """Serialise a clip manifest with the recorder's terminal ``status`` marker.
 
     Extends ``ClipManifest.to_dict()`` with ``status`` (``success``/``fallback``)
     and an optional ``failure_reason`` without modifying the shared
     :class:`ClipManifest` schema — :meth:`ClipManifest.from_dict` ignores the
-    extra keys, so the manifest still round-trips for the editor/EDL.
+    extra keys, so the manifest still round-trips for the editor/EDL. When a
+    *recording* is supplied its outcome flags (``has_pages``/``website_url``/
+    ``is_removed``/``recovery_path``) are persisted too so the editor reproduces
+    identical compose output (RFC §5).
     """
     data: dict[str, Any] = dict(manifest.to_dict())
     data["status"] = status
     if failure_reason:
         data["failure_reason"] = failure_reason
+    if recording is not None:
+        data["has_pages"] = bool(recording.has_pages)
+        data["website_url"] = recording.website_url
+        data["is_removed"] = bool(recording.is_removed)
+        data["recovery_path"] = recording.recovery_path
     return json.dumps(data, separators=(",", ":")).encode("utf-8")
 
 
@@ -236,7 +260,7 @@ def record_clip(
         wrote = _write_manifest_if_absent(
             scratch,
             manifest_path,
-            _clip_manifest_bytes(manifest, status=status),
+            _clip_manifest_bytes(manifest, status=status, recording=result),
             _JSON_CONTENT_TYPE,
         )
 
@@ -437,6 +461,10 @@ def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> Rec
         video_path=video_path,
         duration_ms=duration_ms,
         is_fallback=bool(recorded.is_fallback),
+        has_pages=bool(getattr(recorded, "has_pages", False)),
+        website_url=getattr(recorded, "website_url", None),
+        is_removed=bool(getattr(recorded, "is_removed", False)),
+        recovery_path=str(getattr(recorded, "recovery_path", "direct")),
     )
 
 

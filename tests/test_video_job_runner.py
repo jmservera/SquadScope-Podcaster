@@ -15,12 +15,14 @@ from podcaster.video.job_runner import (
     _DEFAULT_MUSIC_CREDITS,
     MAX_DEQUEUE_COUNT,
     REASON_ALREADY_PROCESSED,
+    REASON_EDITOR_LEASE_HELD,
     REASON_NO_REPOS,
     REASON_RETRY_EXHAUSTED,
     STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_SKIPPED,
     TransientVideoError,
+    VideoOutcome,
     _already_processed,
     _build_section_cards,
     _build_video_description,
@@ -1043,6 +1045,23 @@ class TestProcessMessage:
         assert outcome.status == STATUS_SKIPPED
         assert len(queue.deleted) == 1
 
+    def test_editor_lease_held_leaves_message(self, storage, queue, dry_config):
+        # A foreign editor lease must NOT delete the message: leave it for
+        # redelivery so the job is not lost if that editor later crashes (#563).
+        from podcaster.video.job_runner import REASON_EDITOR_LEASE_HELD
+
+        msg = _make_message("leased-job")
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=VideoOutcome(
+                "leased-job", STATUS_SKIPPED, reason=REASON_EDITOR_LEASE_HELD
+            ),
+        ):
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+        assert outcome.status == STATUS_SKIPPED
+        assert outcome.reason == REASON_EDITOR_LEASE_HELD
+        assert len(queue.deleted) == 0
+
 
 # --- Drain Tests ---
 
@@ -1209,3 +1228,212 @@ class TestBuildSectionCards:
         ):
             # Must never raise — composition proceeds without cards.
             assert _build_section_cards(script, recs, tmp_path) == []
+
+
+class _ScratchStorage:
+    """Richer in-memory scratch backend for the fan-out integration tests."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, bytes] = {}
+
+    def get_bytes(self, path):
+        return self._data.get(path)
+
+    def put_bytes(self, path, content, content_type):
+        self._data[path] = content
+        return MagicMock(path=path, size_bytes=len(content))
+
+    def update_bytes(self, path, content_type, update):
+        updated = update(self._data.get(path))
+        self._data[path] = updated
+        return MagicMock(path=path, size_bytes=len(updated))
+
+    def blob_exists(self, path):
+        return path in self._data
+
+    def delete_blob(self, path):
+        return self._data.pop(path, None) is not None
+
+    def delete_prefix(self, prefix):
+        keys = [k for k in self._data if k.startswith(prefix)]
+        for k in keys:
+            del self._data[k]
+        return len(keys)
+
+
+class _RecordingProducer:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    def send_message(self, body):
+        self.sent.append(body)
+
+
+class TestFanoutGating:
+    """run_video_generation editor fan-out path (#552/#563)."""
+
+    def _seed(self, storage):
+        job_id = "video-fanout"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Fan-out Episode"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        return job_id
+
+    @staticmethod
+    def _fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+        if output_path:
+            output_path.write_bytes(b"\x00" * 2048)
+        return MagicMock(output_path=output_path, duration_seconds=60.0, segment_count=2)
+
+    @patch("podcaster.video.editor.record_via_fanout")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_fanout_path_used_lease_acquired_and_cleaned_up(
+        self, mock_compose, mock_record_episode, mock_fanout, storage, dry_config
+    ):
+        from podcaster.video.clipset import clip_blob_path
+        from podcaster.video.editor import EditorLease, editor_lease_blob_path
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        producer = _RecordingProducer()
+        # A leftover clip blob proves cleanup runs after a successful compose.
+        scratch.put_bytes(clip_blob_path(job_id, 0), b"WEBM", "video/webm")
+
+        mock_fanout.return_value = MagicMock(recorded=[], output_dir=Path("."))
+        mock_compose.side_effect = self._fake_compose
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            fanout=True,
+            fanout_scratch=scratch,
+            clip_producer=producer,
+        )
+
+        assert outcome.status == STATUS_COMPLETED
+        # Fan-out path was taken; the legacy inline recorder was not called.
+        mock_fanout.assert_called_once()
+        mock_record_episode.assert_not_called()
+        # Lease released (reads as free) and clips cleaned on success.
+        assert EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id))) is None
+        assert not scratch.blob_exists(clip_blob_path(job_id, 0))
+
+    @patch("podcaster.video.editor.record_via_fanout")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_foreign_lease_skips_without_recording(
+        self, mock_compose, mock_record_episode, mock_fanout, storage, dry_config
+    ):
+        from datetime import datetime, timedelta, timezone
+
+        from podcaster.video.editor import EditorLease, editor_lease_blob_path
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        # Pre-write an unexpired lease owned by another editor run.
+        now = datetime.now(timezone.utc)
+        scratch.put_bytes(
+            editor_lease_blob_path(job_id),
+            EditorLease("other-run", now, now + timedelta(seconds=900)).to_bytes(),
+            "application/json",
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            fanout=True,
+            fanout_scratch=scratch,
+            clip_producer=_RecordingProducer(),
+        )
+
+        assert outcome.status == STATUS_SKIPPED
+        assert outcome.reason == REASON_EDITOR_LEASE_HELD
+        mock_fanout.assert_not_called()
+        mock_record_episode.assert_not_called()
+
+    @patch("podcaster.video.editor.record_via_fanout")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_lease_released_on_failure(
+        self, mock_compose, mock_record_episode, mock_fanout, storage, dry_config
+    ):
+        # A failure after the lease is acquired must release it (reads as free)
+        # so a retry is not blocked for the full lease TTL (#563).
+        from podcaster.video.editor import EditorLease, editor_lease_blob_path
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        mock_fanout.return_value = MagicMock(recorded=[], output_dir=Path("."))
+        mock_compose.side_effect = RuntimeError("compose boom")
+
+        with pytest.raises(TransientVideoError):
+            run_video_generation(
+                job_id,
+                storage,
+                config=dry_config,
+                fanout=True,
+                fanout_scratch=scratch,
+                clip_producer=_RecordingProducer(),
+            )
+
+        assert EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id))) is None
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_legacy_path_when_fanout_unconfigured(
+        self, mock_compose, mock_record_episode, storage, dry_config
+    ):
+        job_id = self._seed(storage)
+        mock_record_episode.return_value = MagicMock(recorded=[], output_dir=Path("."))
+        mock_compose.side_effect = self._fake_compose
+
+        # No scratch / no producer → fan-out disabled, inline recorder used.
+        outcome = run_video_generation(
+            job_id, storage, config=dry_config, fanout_scratch=None, clip_producer=None
+        )
+        assert outcome.status == STATUS_COMPLETED
+        mock_record_episode.assert_called_once()
+
+
+class _VisibilityQueue:
+    """Records the visibility_timeout each receive used."""
+
+    def __init__(self, messages):
+        self._messages = list(messages)
+        self.visibility_timeouts: list[int] = []
+        self.deleted: list = []
+
+    def receive_messages(self, max_messages=1, *, visibility_timeout=600):
+        self.visibility_timeouts.append(visibility_timeout)
+        if self._messages:
+            return [self._messages.pop(0)]
+        return []
+
+    def delete_message(self, message):
+        self.deleted.append(message)
+
+
+class TestEditorVisibilityTimeout:
+    def test_drain_uses_video_visibility_timeout(self, storage, dry_config, monkeypatch):
+        from podcaster.video.job_runner import DEFAULT_VIDEO_VISIBILITY_TIMEOUT
+
+        monkeypatch.delenv("PODCASTER_VIDEO_VISIBILITY_TIMEOUT", raising=False)
+        storage.set_manifest("j1", {"generation": {"video_runner": {"status": "completed"}}})
+        queue = _VisibilityQueue([_make_message("j1")])
+        drain(queue, storage, dry_config)
+        assert queue.visibility_timeouts[0] == DEFAULT_VIDEO_VISIBILITY_TIMEOUT
+
+    def test_drain_honours_env_override(self, storage, dry_config, monkeypatch):
+        monkeypatch.setenv("PODCASTER_VIDEO_VISIBILITY_TIMEOUT", "1234")
+        storage.set_manifest("j1", {"generation": {"video_runner": {"status": "completed"}}})
+        queue = _VisibilityQueue([_make_message("j1")])
+        drain(queue, storage, dry_config)
+        assert queue.visibility_timeouts[0] == 1234

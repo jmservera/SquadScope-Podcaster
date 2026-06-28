@@ -24,6 +24,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,11 +38,14 @@ from podcaster.pipeline_lock import PIPELINE_VIDEO, claim_pipeline
 from podcaster.queue import (
     QueueBackend,
     QueueMessage,
+    QueueProducer,
+    create_clip_queue_backend,
     parse_job_id,
 )
 from podcaster.storage import (
     ManagedIdentityTokenCredential,
     StorageBackend,
+    create_scratch_storage_backend,
     create_storage_backend,
 )
 from podcaster.video.distribution import (
@@ -75,8 +79,22 @@ REASON_INVALID_PLAN = "invalid_plan"
 REASON_COMPOSITION_FAILED = "composition_failed"
 REASON_RETRY_EXHAUSTED = "retry_exhausted"
 REASON_PIPELINE_CONFLICT = "pipeline_locked_by_audio"
+REASON_EDITOR_LEASE_HELD = "editor_lease_held"
 
 MAX_DEQUEUE_COUNT = 5
+
+#: Off-switch for the scale-out fan-out recording path (RFC §3). When unset the
+#: editor fans recording out across the ``video-clip-jobs`` queue **iff** both the
+#: scratch container and the clip queue are configured; set to a falsey value to
+#: force the legacy in-process ``record_episode`` path even when they are.
+ENV_FANOUT = "PODCASTER_VIDEO_FANOUT"
+
+#: Visibility timeout (seconds) the editor applies to its own ``video-jobs``
+#: message while it works, so the job is not redelivered to a second editor
+#: mid-run (RFC §8). Must be >= the editor's worst-case runtime (fan-in wait +
+#: compose + publish); the dedicated editor lease is the backstop if it is too low.
+ENV_VIDEO_VISIBILITY_TIMEOUT = "PODCASTER_VIDEO_VISIBILITY_TIMEOUT"
+DEFAULT_VIDEO_VISIBILITY_TIMEOUT = 5400
 
 # Minimum valid MP4 byte size
 _MIN_VALID_MP4_BYTES = 1024
@@ -418,6 +436,53 @@ def _probe_audio_duration(audio_path: Path) -> float | None:
     return duration if duration > 0 else None
 
 
+def _env_flag(env_value: str | None, *, default: bool) -> bool:
+    """Parse a truthy/falsey env string, falling back to *default* when unset."""
+    if env_value is None or not env_value.strip():
+        return default
+    return env_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_fanout(
+    fanout: bool | None,
+    scratch: StorageBackend | None,
+    producer: QueueProducer | None,
+) -> bool:
+    """Decide whether the scale-out fan-out recording path is active.
+
+    Fan-out needs both a scratch container (for clipset/clips) and a clip queue
+    (to dispatch recorders). When both are present the explicit *fanout* override
+    wins; otherwise the ``PODCASTER_VIDEO_FANOUT`` off-switch gates it (default on).
+    """
+    if scratch is None or producer is None:
+        return False
+    if fanout is not None:
+        return bool(fanout)
+    return _env_flag(os.environ.get(ENV_FANOUT), default=True)
+
+
+def _release_editor_lease(scratch: StorageBackend | None, job_id: str, run_id: str | None) -> None:
+    """Release the editor lease when fan-out is active (no-op otherwise)."""
+    if scratch is None or run_id is None:
+        return
+    from podcaster.video.editor import release_lease
+
+    release_lease(scratch, job_id, run_id)
+
+
+def _video_visibility_timeout(env: dict[str, str] | None = None) -> int:
+    """Editor ``video-jobs`` receive visibility timeout (seconds) (RFC §8)."""
+    source = env if env is not None else os.environ
+    raw = source.get(ENV_VIDEO_VISIBILITY_TIMEOUT, "")
+    if not raw.strip():
+        return DEFAULT_VIDEO_VISIBILITY_TIMEOUT
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return DEFAULT_VIDEO_VISIBILITY_TIMEOUT
+    return value if value > 0 else DEFAULT_VIDEO_VISIBILITY_TIMEOUT
+
+
 def run_video_generation(
     job_id: str,
     storage: StorageBackend,
@@ -425,10 +490,19 @@ def run_video_generation(
     config: VideoDistributionConfig | None = None,
     now: datetime | None = None,
     compose_runner=None,
+    fanout: bool | None = None,
+    fanout_scratch: StorageBackend | None = None,
+    clip_producer: QueueProducer | None = None,
 ) -> VideoOutcome:
     """Generate video for a staged job_id and distribute to configured targets.
 
     Pipeline: load manifest → parse script → plan segments → compose → distribute.
+
+    When the scale-out fan-out is enabled (``fanout``; default: auto when a scratch
+    container and clip queue are configured) the recording phase is fanned out
+    across the ``video-clip-jobs`` queue and the editor blocks on the fan-in
+    barrier instead of recording inline (RFC §3). The compose/distribute path is
+    unchanged. ``fanout_scratch`` / ``clip_producer`` are injectable for tests.
     """
     current = now or datetime.now(timezone.utc)
     dist_config = config or VideoDistributionConfig.from_env()
@@ -437,6 +511,13 @@ def run_video_generation(
     # scratch container is configured (local dev / tests) this is disabled and
     # every operation is a no-op, preserving the legacy all-local-disk path.
     intermediates = create_intermediate_store(job_id)
+
+    # Resolve the scale-out fan-out: enabled iff both the scratch container and
+    # the clip queue are available and the off-switch is not set (RFC §3).
+    scratch = fanout_scratch if fanout_scratch is not None else create_scratch_storage_backend()
+    producer = clip_producer if clip_producer is not None else create_clip_queue_backend()
+    fanout_enabled = _resolve_fanout(fanout, scratch, producer)
+    run_id = uuid.uuid4().hex if fanout_enabled else None
 
     # Load manifest
     raw_manifest = storage.get_bytes(manifest_path(job_id))
@@ -472,6 +553,20 @@ def run_video_generation(
     # MP3 duration (probed below, inside the temp dir) so the video length
     # matches the audio; the manifest value is only a fallback (issue #353).
     manifest_audio_duration = _get_audio_duration(manifest)
+
+    # Acquire the dedicated editor execution lease (RFC §6.2) immediately before
+    # the expensive plan/record/compose work. ``pipeline_lock`` alone permits a
+    # same-pipeline re-confirm, so a second editor for one job_id could otherwise
+    # proceed; an unexpired foreign lease makes us no-op. Acquired here (rather
+    # than earlier) so every exit path below runs through the ``try`` whose
+    # handlers release the lease — a transient failure must not block a retry for
+    # the full lease TTL.
+    if fanout_enabled and run_id is not None:
+        from podcaster.video.editor import acquire_or_renew_lease
+
+        if not acquire_or_renew_lease(scratch, job_id, run_id, now=current):
+            logger.info("video skipped job_id=%s reason=%s", job_id, REASON_EDITOR_LEASE_HELD)
+            return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_EDITOR_LEASE_HELD)
 
     # Compose video
     # TODO(#242): dispatch parallel ACA segment jobs instead of sequential local recording.
@@ -559,6 +654,7 @@ def run_video_generation(
                         "at": _iso(current),
                     },
                 )
+                _release_editor_lease(scratch, job_id, run_id)
                 return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
 
             # Show the claracle.com weekly page (derived from the job_id) as the
@@ -589,14 +685,54 @@ def run_video_generation(
             )
             brand_name = _brand_config.name
             with timings.phase("recording"):
-                recording = record_episode(
-                    plan,
-                    output_dir=output_dir,
-                    headless=True,
-                    source_url=extract_source_url(script),
-                    intermediates=intermediates,
-                    brand_name=brand_name,
-                )
+                if fanout_enabled and run_id is not None:
+                    from podcaster.video.editor import (
+                        acquire_or_renew_lease,
+                        record_via_fanout,
+                    )
+
+                    def _heartbeat() -> None:
+                        # Renew the editor lease while parked on the fan-in barrier
+                        # so a redelivered editor keeps seeing an unexpired lease.
+                        # Use a FRESH timestamp each beat (not the run-start time)
+                        # so a barrier longer than the lease TTL keeps extending it.
+                        # If renewal fails another editor now owns the lease — abort
+                        # immediately (per the acquire_or_renew_lease contract) rather
+                        # than risk a concurrent compose/publish for the same job_id.
+                        # Raising TransientVideoError leaves the message for redelivery;
+                        # our CAS release is a no-op since the successor owns the lease.
+                        if not acquire_or_renew_lease(scratch, job_id, run_id):
+                            logger.warning(
+                                "editor lease lost during fan-in job_id=%s run_id=%s; "
+                                "aborting (another editor took over)",
+                                job_id,
+                                run_id,
+                            )
+                            raise TransientVideoError(f"editor lease lost for job_id={job_id}")
+
+                    logger.info(
+                        "video fan-out recording job_id=%s segments=%d run_id=%s",
+                        job_id,
+                        len(plan.segments),
+                        run_id,
+                    )
+                    recording = record_via_fanout(
+                        job_id,
+                        plan.segments,
+                        output_dir,
+                        scratch=scratch,
+                        producer=producer,
+                        heartbeat=_heartbeat,
+                    )
+                else:
+                    recording = record_episode(
+                        plan,
+                        output_dir=output_dir,
+                        headless=True,
+                        source_url=extract_source_url(script),
+                        intermediates=intermediates,
+                        brand_name=brand_name,
+                    )
 
             # Compose final MP4
             output_path = output_dir / f"{job_id}.mp4"
@@ -725,6 +861,14 @@ def run_video_generation(
             # 7-day lifecycle policy on the scratch container is the safety net.
             intermediates.cleanup()
 
+            # Fan-out scratch (clipset + per-clip blobs) is likewise spent once the
+            # compose succeeded; delete it and release the editor lease (RFC §5).
+            if fanout_enabled and run_id is not None:
+                from podcaster.video.editor import cleanup_clips
+
+                cleanup_clips(scratch, job_id)
+            _release_editor_lease(scratch, job_id, run_id)
+
             return VideoOutcome(
                 job_id=job_id,
                 status=STATUS_COMPLETED,
@@ -734,6 +878,7 @@ def run_video_generation(
             )
 
     except TransientVideoError:
+        _release_editor_lease(scratch, job_id, run_id)
         raise
     except Exception as exc:
         # ffmpeg/ffprobe failures surface as CalledProcessError whose stderr
@@ -764,6 +909,7 @@ def run_video_generation(
                 "at": _iso(current),
             },
         )
+        _release_editor_lease(scratch, job_id, run_id)
         raise TransientVideoError(f"video generation failed for job_id={job_id}") from exc
 
 
@@ -964,6 +1110,18 @@ def process_message(
         )
         return VideoOutcome(job_id, STATUS_FAILED, reason="transient")
 
+    # An unexpired foreign editor lease means another editor already owns this
+    # job. Leave the message for redelivery (do NOT delete) so the job is not
+    # lost if that editor later crashes — once its lease expires a retry can
+    # proceed. The message stays invisible until its visibility timeout elapses.
+    if outcome.status == STATUS_SKIPPED and outcome.reason == REASON_EDITOR_LEASE_HELD:
+        logger.info(
+            "leaving video message for redelivery job_id=%s reason=%s",
+            job_id,
+            REASON_EDITOR_LEASE_HELD,
+        )
+        return outcome
+
     queue.delete_message(message)
     return outcome
 
@@ -977,8 +1135,12 @@ def drain(
 ) -> list[VideoOutcome]:
     """Process queued video messages until the queue is empty or capped."""
     outcomes: list[VideoOutcome] = []
+    # Hold each ``video-jobs`` message invisible for the editor's worst-case
+    # runtime (fan-in wait + compose + publish) so the job is not redelivered to a
+    # second editor mid-run; the dedicated editor lease is the backstop (RFC §8).
+    visibility_timeout = _video_visibility_timeout()
     for _ in range(max_messages):
-        messages = queue.receive_messages(max_messages=1)
+        messages = queue.receive_messages(max_messages=1, visibility_timeout=visibility_timeout)
         if not messages:
             break
         for message in messages:

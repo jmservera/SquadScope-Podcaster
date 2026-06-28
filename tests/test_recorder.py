@@ -147,6 +147,36 @@ def test_record_clip_fallback_segment_marks_status_fallback(tmp_path) -> None:
     assert manifest["status"] == "fallback"
 
 
+def test_record_clip_persists_recording_outcome_metadata(tmp_path) -> None:
+    """has_pages/website_url/is_removed/recovery_path round-trip to the manifest.
+
+    The editor reads these extras to reproduce identical compose output (#563).
+    """
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+
+    def _record(segment: VideoSegment, output_dir: Path) -> RecordResult:
+        path = output_dir / "clip.webm"
+        path.write_bytes(b"clip-bytes")
+        return RecordResult(
+            video_path=path,
+            duration_ms=12345,
+            is_fallback=False,
+            has_pages=True,
+            website_url="https://octo.github.io/api",
+            is_removed=False,
+            recovery_path="website",
+        )
+
+    record_clip(JOB_ID, 1, scratch=scratch, record_segment=_record)
+
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["has_pages"] is True
+    assert manifest["website_url"] == "https://octo.github.io/api"
+    assert manifest["is_removed"] is False
+    assert manifest["recovery_path"] == "website"
+
+
 def test_record_clip_out_of_plan_index_raises(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)
