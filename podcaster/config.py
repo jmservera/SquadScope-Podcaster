@@ -827,6 +827,8 @@ class MusicMixConfig:
 BACKCHANNEL_LIBRARY: tuple[str, ...] = (
     "right",
     "yeah",
+    "yes",
+    "mhm",
     "exactly",
     "interesting",
     "oh wow",
