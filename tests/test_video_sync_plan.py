@@ -1232,3 +1232,84 @@ class TestPlanFromRealizedMetadata:
         )
         plan = plan_from_realized_metadata(meta, total_duration_seconds=60.0)
         assert plan.segments[0].repo is None
+
+    def test_repo_first_topic_prepends_weekly_lead_article(self):
+        # A script that opens directly on a `## Visual: repo` marker must not drop
+        # the weekly page nor show the repo during the intro lead-in (#382/#544).
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.REPO, "https://github.com/acme/alpha", 12_000, 40_000),
+                (VisualMode.REPO, "https://github.com/acme/beta", 40_000, 58_000),
+            ],
+        )
+        plan = plan_from_realized_metadata(
+            meta,
+            total_duration_seconds=60.0,
+            weekly_url="https://claracle.com/weekly/2026/w26/",
+        )
+        # A synthetic leading article segment covers the bridge before the repo.
+        assert plan.segments[0].is_generic
+        assert plan.segments[0].start_seconds == 0.0
+        assert plan.segments[0].source_url == "https://claracle.com/weekly/2026/w26/"
+        # The first repo appears at its measured start, not at 0.
+        cursor = 0.0
+        windows = {}
+        for seg in plan.segments:
+            if seg.repo is not None:
+                windows[(seg.repo.owner, seg.repo.name)] = cursor
+            cursor += seg.duration_seconds
+        assert windows[("acme", "alpha")] == pytest.approx(12.0, abs=1.0)
+        assert cursor == pytest.approx(60.0)
+
+    def test_repo_first_topic_without_weekly_url_keeps_lead_in_absorption(self):
+        # Without a weekly/source URL there is nothing to show, so fall back to
+        # the lead-in-absorbing behaviour (first topic starts at 0).
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.REPO, "https://github.com/acme/alpha", 12_000, 60_000),
+            ],
+        )
+        plan = plan_from_realized_metadata(meta, total_duration_seconds=60.0)
+        assert plan.segments[0].start_seconds == 0.0
+        assert plan.segments[0].repo is not None
+
+    def test_drops_zero_duration_segments_for_out_of_range_topics(self):
+        # A topic starting at/after the probed duration clamps to a 0s window and
+        # must be dropped (otherwise ffmpeg gets a ``-t 0`` trim). Remaining
+        # segments still tile [0, total] with no gap.
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.ARTICLE, None, 0, 30_000),
+                (VisualMode.REPO, "https://github.com/acme/alpha", 30_000, 60_000),
+                # Stale/corrupt topic past the end of the audio → 0s window.
+                (VisualMode.REPO, "https://github.com/acme/beta", 90_000, 95_000),
+            ],
+        )
+        plan = plan_from_realized_metadata(meta, total_duration_seconds=60.0)
+        assert all(s.duration_seconds > 0 for s in plan.segments)
+        assert not any(s.repo is not None and s.repo.name == "beta" for s in plan.segments)
+        cursor = 0.0
+        for seg in plan.segments:
+            assert abs(seg.start_seconds - cursor) < 1e-6
+            cursor += seg.duration_seconds
+        assert cursor == pytest.approx(60.0)
+
+    def test_all_out_of_range_topics_fall_back_to_generic(self):
+        meta = self._meta(
+            60_000,
+            [
+                (VisualMode.REPO, "https://github.com/acme/alpha", 90_000, 95_000),
+            ],
+        )
+        plan = plan_from_realized_metadata(
+            meta,
+            total_duration_seconds=60.0,
+            weekly_url="https://claracle.com/weekly/2026/w26/",
+        )
+        assert len(plan.segments) == 1
+        assert plan.segments[0].is_generic
+        assert plan.segments[0].source_url == "https://claracle.com/weekly/2026/w26/"
+        assert plan.segments[0].duration_seconds == pytest.approx(60.0)

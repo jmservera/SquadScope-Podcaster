@@ -690,6 +690,12 @@ def _repo_ref_from_url(url: str | None) -> RepoReference | None:
     return RepoReference(owner=match.group(1), name=name)
 
 
+# Segments shorter than this are dropped from a metadata-backed plan: they would
+# otherwise feed ffmpeg a near-zero ``-t`` trim (empty/failed output). The value
+# is well below any real on-screen window yet absorbs float/rounding drift.
+_MIN_SEGMENT_DURATION_SECONDS = 0.05
+
+
 def plan_from_realized_metadata(
     metadata: "RealizedAudioMetadata",
     total_duration_seconds: float,
@@ -746,20 +752,43 @@ def plan_from_realized_metadata(
         logger.info("realized metadata has no topics; using generic full-length plan")
         return generate_generic_plan(total_duration_seconds, weekly_url or source_url)
 
+    # Normally the script opens with host banter under the default
+    # ``VisualMode.ARTICLE``, so the first topic is the article/weekly view that
+    # naturally absorbs the pre-speech lead-in (see below). If a script instead
+    # opens directly on a ``## Visual: repo`` (or intermission) marker, forcing
+    # that topic to start at 0 would show the repo during the intro and drop the
+    # weekly page entirely. Guard that by synthesising a leading article segment
+    # spanning the bridge before the first topic, so the weekly page is never
+    # lost and the first real topic keeps its measured start (issues #382/#544).
+    weekly_source = weekly_url or source_url
+    lead_article: VideoSegment | None = None
+    if topics[0].visual_mode is not VisualMode.ARTICLE and weekly_source:
+        first_start = max(0.0, min(topics[0].start_ms / 1000.0, total_duration_seconds))
+        if first_start > 0.0:
+            lead_article = VideoSegment(
+                start_seconds=0.0,
+                duration_seconds=first_start,
+                repo=None,
+                source_url=weekly_source,
+            )
+
     n = len(topics)
-    # Boundary start of each segment. The first segment absorbs the pre-speech
-    # lead-in (starts at 0); every later segment starts at its topic's measured
-    # start. Clamp into range and keep the sequence non-decreasing so durations
-    # never go negative under floating-point/rounding drift.
+    # Boundary start of each segment. When no synthetic lead article is
+    # prepended, the first segment absorbs the pre-speech lead-in (starts at 0);
+    # every later segment starts at its topic's measured start. Clamp into range
+    # and keep the sequence non-decreasing so durations never go negative under
+    # floating-point/rounding drift.
     starts: list[float] = []
     for i, topic in enumerate(topics):
-        raw = 0.0 if i == 0 else topic.start_ms / 1000.0
+        raw = topic.start_ms / 1000.0 if (i > 0 or lead_article is not None) else 0.0
         bounded = max(0.0, min(raw, total_duration_seconds))
         if starts:
             bounded = max(bounded, starts[-1])
         starts.append(bounded)
 
     segments: list[VideoSegment] = []
+    if lead_article is not None:
+        segments.append(lead_article)
     for i, topic in enumerate(topics):
         start = starts[i]
         end = starts[i + 1] if i + 1 < n else total_duration_seconds
@@ -769,7 +798,7 @@ def plan_from_realized_metadata(
             repo = None
         seg_source: str | None = None
         if repo is None and topic.visual_mode is VisualMode.ARTICLE:
-            seg_source = weekly_url or source_url
+            seg_source = weekly_source
         segments.append(
             VideoSegment(
                 start_seconds=start,
@@ -778,6 +807,21 @@ def plan_from_realized_metadata(
                 source_url=seg_source,
             )
         )
+
+    # Drop zero-/near-zero-duration segments. A topic whose measured start lands
+    # at or past the probed audio duration (e.g. stale/corrupt metadata) clamps
+    # to a 0s window, which downstream would feed ffmpeg a ``-t 0`` trim and fail
+    # or yield empty output. Dropping them keeps the timeline tiling intact (each
+    # contributes 0 to the cumulative layout) and is monotonic-safe. If nothing
+    # survives, fall back to a generic full-length plan.
+    segments = [s for s in segments if s.duration_seconds > _MIN_SEGMENT_DURATION_SECONDS]
+    if not segments:
+        logger.warning(
+            "realized metadata produced no positive-duration segments "
+            "(total=%.3fs); using generic full-length plan",
+            total_duration_seconds,
+        )
+        return generate_generic_plan(total_duration_seconds, weekly_source)
 
     repo_count = sum(1 for s in segments if s.repo is not None)
     logger.info(
