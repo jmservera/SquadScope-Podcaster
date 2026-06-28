@@ -691,16 +691,17 @@ def generate_script(
         dialogue, messages=messages, url=url, token=token, transport=transport
     )
 
+    # Backfill explicit ``## Visual: repo`` markers from inline GitHub links when
+    # the model expressed repos as links instead of declaring markers. The video
+    # pipeline derives repo cards only from explicit markers, so this keeps repo
+    # visuals reliable regardless of model marker compliance (#555). Run before
+    # truncation so injected markers stay within MAX_SCRIPT_CHARS.
+    dialogue = infer_repo_visual_markers(dialogue, podcast_config)
+
     # Truncate overly long scripts
     if len(dialogue) > MAX_SCRIPT_CHARS:
         lines = dialogue[:MAX_SCRIPT_CHARS].rsplit("\n", 1)
         dialogue = lines[0] if len(lines) > 1 else dialogue[:MAX_SCRIPT_CHARS]
-
-    # Backfill explicit ``## Visual: repo`` markers from inline GitHub links when
-    # the model expressed repos as links instead of declaring markers. The video
-    # pipeline derives repo cards only from explicit markers, so this keeps repo
-    # visuals reliable regardless of model marker compliance (#555).
-    dialogue = infer_repo_visual_markers(dialogue, podcast_config)
 
     logger.info("script generated lines=%s chars=%s", dialogue.count("\n") + 1, len(dialogue))
 
