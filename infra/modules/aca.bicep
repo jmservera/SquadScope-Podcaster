@@ -33,6 +33,9 @@ param synthesisQueueName string = 'synthesis-jobs'
 @description('Storage Queue that carries video-generation messages (job_id only; no secrets/PII).')
 param videoQueueName string = 'video-jobs'
 
+@description('Storage Queue that carries per-clip recording messages (job_id + clip_index only; no secrets/PII).')
+param videoClipQueueName string = 'video-clip-jobs'
+
 @description('Whether the synthesis job should enqueue a video-generation message after publishing audio (#324).')
 param videoGenerationEnabled string = 'true'
 
@@ -143,6 +146,15 @@ resource synthesisQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@
 // synthesis queue so both share the single 'default' queue service on the storage account.
 resource videoQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
   name: videoQueueName
+  parent: queueService
+}
+
+// Per-clip recording queue consumed by the scale-out recorder ACA Job (#552/#565). The editor
+// fans one message per expected clip onto this queue; KEDA scales recorder replicas (min 0 /
+// max 10) against its length. Created next to the synthesis/video queues on the same 'default'
+// queue service. Body carries (job_id, clip_index) only — never secrets/PII.
+resource videoClipQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  name: videoClipQueueName
   parent: queueService
 }
 
@@ -368,6 +380,7 @@ output environmentName string = useVnet ? managedEnvWithVnet.name : managedEnvNo
 output environmentId string = useVnet ? managedEnvWithVnet.id : managedEnvNoVnet.id
 output queueName string = synthesisQueueName
 output videoQueueName string = videoQueueName
+output videoClipQueueName string = videoClipQueueName
 output jobIdentityName string = jobIdentity.name
 output jobIdentityPrincipalId string = jobIdentity.properties.principalId
 output jobIdentityClientId string = jobIdentity.properties.clientId
