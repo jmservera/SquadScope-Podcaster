@@ -1313,3 +1313,77 @@ class TestPlanFromRealizedMetadata:
         assert plan.segments[0].is_generic
         assert plan.segments[0].source_url == "https://claracle.com/weekly/2026/w26/"
         assert plan.segments[0].duration_seconds == pytest.approx(60.0)
+
+
+# --- #558: end-to-end audio-master cue placement (slug naming → on-screen time) ---
+
+
+class TestAudioMasterCuePlacement:
+    """Each repo's on-screen window must start at the spoken-cue time derived
+    from the realized clip metadata, even when the dialogue names repos as bare
+    ``owner/repo`` slugs (issue #558)."""
+
+    def _config(self):
+        from podcaster.config import HostConfig, PodcastConfig
+
+        return PodcastConfig(
+            host_a=HostConfig(name="Theo", voice="fable", style=""),
+            host_b=HostConfig(name="Vera", voice="alloy", style=""),
+        )
+
+    def test_repo_window_tracks_spoken_cue_from_clip_metadata(self):
+        from podcaster.audio_metadata import extract_realized_audio_metadata
+        from podcaster.script_plan import infer_repo_visual_markers, parse_script_plan
+
+        config = self._config()
+        eve = "https://github.com/vercel/eve"
+        gym = "https://github.com/openai/gym"
+        # Full URLs only in the header; dialogue uses bare slugs (like W26).
+        script = (
+            "Title: Weekly\n"
+            f"Repos featured: {eve} {gym}\n"
+            "---\n"
+            "Theo: Welcome to the show, here is a quick intro with no repo yet.\n"
+            "Vera: A heads-up about the format before we get into anything.\n"
+            "Vera: Agent frameworks matter and vercel/eve is the cleanest anchor.\n"
+            "Theo: Later we also cover openai/gym for the benchmarking angle.\n"
+        )
+        marked = infer_repo_visual_markers(script, config)
+        plan = parse_script_plan(marked, config)
+
+        # One realized duration per spoken segment; intro turns precede eve.
+        durations = [12.0, 10.0, 15.0, 14.0]
+        assert len(plan.segments) == len(durations)
+        gap = 0.35
+        offset = 10.0
+        meta = extract_realized_audio_metadata(
+            plan,
+            durations,
+            gap_seconds=gap,
+            speech_offset_seconds=offset,
+            host_labels=("Theo", "Vera"),
+        )
+
+        # Spoken cue for eve = realized start of the first turn that names it.
+        eve_utt = next(u for u in meta.utterances if u.repo_url == eve)
+        cue_seconds = eve_utt.start_ms / 1000.0
+        # Sanity: that cue is the intro lead-in + the two intro turns + gaps,
+        # i.e. ~32.7s — early, not pushed to the back of the episode.
+        assert cue_seconds == pytest.approx(offset + 12.0 + gap + 10.0 + gap, abs=0.01)
+
+        total = offset + sum(durations) + gap * (len(durations) - 1) + 5.0
+        video_plan = plan_from_realized_metadata(
+            meta, total_duration_seconds=total, weekly_url="https://claracle.com/weekly/2026/w26/"
+        )
+
+        eve_seg = next(s for s in video_plan.segments if s.repo and s.repo.name == "eve")
+        gym_seg = next(s for s in video_plan.segments if s.repo and s.repo.name == "gym")
+        # The on-screen window starts within a couple seconds of the spoken cue.
+        assert eve_seg.start_seconds == pytest.approx(cue_seconds, abs=2.0)
+        # Repos transition in discussion order: gym follows eve.
+        assert gym_seg.start_seconds > eve_seg.start_seconds
+        # The lead-in (article/weekly) covers everything before the first repo.
+        first = video_plan.segments[0]
+        assert first.repo is None
+        assert first.start_seconds == pytest.approx(0.0)
+        assert first.duration_seconds == pytest.approx(eve_seg.start_seconds, abs=0.01)

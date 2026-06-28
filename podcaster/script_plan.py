@@ -289,24 +289,129 @@ def _first_repo_root(text: str) -> str | None:
     return f"https://github.com/{owner}/{repo}"
 
 
+def _known_repo_urls(script: str) -> dict[str, str]:
+    """Map ``owner/repo`` (lowercased) → canonical URL for every repo in *script*.
+
+    The authoritative repo set is harvested from the full ``github.com/owner/repo``
+    URLs that appear anywhere in the script — including the non-spoken
+    ``Repos featured:`` header — so the spoken dialogue can be matched against
+    real repos even when it names them as bare ``owner/repo`` slugs (#558).
+    First occurrence wins, preserving the canonical casing of the URL.
+    """
+    mapping: dict[str, str] = {}
+    for match in _GITHUB_URL_RE.finditer(script or ""):
+        owner, repo = match.group(1), match.group(2)
+        repo = repo[:-4] if repo.lower().endswith(".git") else repo
+        repo = repo.rstrip(".")
+        if not repo:
+            continue
+        key = f"{owner.lower()}/{repo.lower()}"
+        mapping.setdefault(key, f"https://github.com/{owner}/{repo}")
+    return mapping
+
+
+def _boundary_before(text: str, idx: int) -> bool:
+    """True if the slug match starting at *idx* is not glued to a preceding token.
+
+    Alphanumerics always continue a token. A ``.``/``-``/``_`` only continues the
+    token when itself preceded by another word character (e.g. ``foo-acme/eve``);
+    leading punctuation is treated as a boundary.
+    """
+    if idx <= 0:
+        return True
+    ch = text[idx - 1]
+    if ch.isalnum():
+        return False
+    if ch in "._-":
+        prev = text[idx - 2] if idx - 2 >= 0 else ""
+        return not prev.isalnum()
+    return True
+
+
+def _boundary_after(text: str, pos: int) -> bool:
+    """True if a slug match ending just before *pos* is not glued to a following token.
+
+    Alphanumerics always continue a token. A ``.``/``-``/``_`` only continues the
+    token when itself followed by an alphanumeric (e.g. ``owner/repo-old``,
+    ``owner/next.js``); trailing punctuation such as an end-of-sentence period is
+    a boundary, so ``vercel/eve.`` still matches ``vercel/eve`` (#558).
+    """
+    if pos >= len(text):
+        return True
+    ch = text[pos]
+    if ch.isalnum():
+        return False
+    if ch in "._-":
+        nxt = text[pos + 1] if pos + 1 < len(text) else ""
+        return not nxt.isalnum()
+    return True
+
+
+def _first_named_repo(text: str, known: dict[str, str]) -> str | None:
+    """Return the canonical URL of the first *known* repo named in *text*.
+
+    "Named" means an inline full GitHub URL or a bare ``owner/repo`` slug
+    (case-insensitive) belonging to the authoritative *known* set, bounded so a
+    slug is not matched inside a longer token (e.g. ``owner/repo`` must not match
+    ``owner/repo-old``). When several repos are named, the earliest by character
+    position wins; ties break toward the longer (more specific) then
+    lexicographically smaller slug for determinism. Returns ``None`` when no
+    known repo is named.
+    """
+    if not text or not known:
+        return None
+    lowered = text.lower()
+    best: tuple[int, int, str, str] | None = None
+    for key, url in known.items():
+        start = 0
+        while True:
+            idx = lowered.find(key, start)
+            if idx < 0:
+                break
+            after_pos = idx + len(key)
+            if _boundary_before(lowered, idx) and _boundary_after(lowered, after_pos):
+                candidate = (idx, -len(key), key, url)
+                if best is None or candidate < best:
+                    best = candidate
+                break  # earliest occurrence of this slug is enough
+            start = idx + 1
+    return best[3] if best is not None else None
+
+
 def infer_repo_visual_markers(script: str, podcast_config: Any = None) -> str:
     """Backfill ``## Visual: repo <url>`` markers from inline GitHub links.
 
     The script-generation prompt asks the model to declare explicit ``## Visual:``
     markers, but models routinely express repositories as inline links
-    (``[owner/repo](https://github.com/owner/repo)``) instead. The video pipeline
-    derives repo cards *only* from explicit markers (see :func:`parse_script_plan`),
-    so an otherwise good dialogue renders with **no** repo visuals.
+    (``[owner/repo](https://github.com/owner/repo)``) or, very commonly, as bare
+    ``owner/repo`` slugs in the spoken prose (``vercel/eve is the cleanest
+    anchor``) with the full URLs living only in a non-spoken ``Repos featured:``
+    header. The video pipeline derives repo cards *only* from explicit markers
+    (see :func:`parse_script_plan`), so an otherwise good dialogue renders with
+    **no** repo visuals — or, worse, falls back to mention/header-order timing
+    that shows each repo far from when the hosts actually name it (#558).
 
-    This deterministic pass walks the script in order and, whenever a host turn
-    introduces a GitHub repo that is not already the repo shown by the in-effect
-    ``## Visual: repo`` marker, injects the marker just before that turn. It is
-    **idempotent**: turns already covered by a matching marker are left untouched,
-    so scripts where the model *did* emit markers are unchanged.
+    This deterministic pass first harvests the authoritative repo set from every
+    ``github.com/owner/repo`` URL in the script (header included), then walks the
+    script in order and, whenever a host turn **first names** one of those repos
+    — by inline URL or bare ``owner/repo`` slug — that is not already the repo
+    shown by the in-effect ``## Visual: repo`` marker, injects the marker just
+    before that turn. Anchoring the marker to the first spoken naming makes the
+    repo's Layer-2 topic (and therefore its on-screen window) start at the
+    measured audio time of that turn — audio as the master timeline.
+
+    When a single turn names several repos, only the first-named repo gets the
+    marker for that turn; the others get their own window if/when the discussion
+    narrows to them in a later turn. The article/weekly lead-in naturally fills
+    everything before the first repo is named (those turns stay ``article``).
+
+    It is **idempotent**: turns already covered by a matching marker are left
+    untouched, so scripts where the model *did* emit markers are unchanged.
     """
     if not script or not script.strip():
         return script
 
+    known = _known_repo_urls(script)
     host_labels = _host_labels(script, podcast_config)
     effective_repo_url: str | None = None
     out: list[str] = []
@@ -322,7 +427,11 @@ def infer_repo_visual_markers(script: str, podcast_config: Any = None) -> str:
 
         speaker_text = _split_speaker(line, host_labels) if line else None
         if speaker_text is not None:
-            repo_url = _first_repo_root(speaker_text[1])
+            # Prefer the authoritative known-repo set (matches bare slugs); fall
+            # back to inline-URL-only detection when no full URLs exist anywhere.
+            repo_url = _first_named_repo(speaker_text[1], known) if known else None
+            if repo_url is None and not known:
+                repo_url = _first_repo_root(speaker_text[1])
             if repo_url is not None and repo_url != effective_repo_url:
                 out.append(f"{VISUAL_MARKER_PREFIX} repo {repo_url}")
                 effective_repo_url = repo_url
