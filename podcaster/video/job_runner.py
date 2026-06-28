@@ -580,6 +580,14 @@ def run_video_generation(
             # Record segments. Pass the script's Source URL so failed repo
             # navigations can be retried and corrected against the source
             # article before falling back to a generic screen (issue #378).
+            # Resolve the configured show/site name up front so generic
+            # background cards are branded with it, never the internal pipeline
+            # name (issue #559).
+            _brand_request = manifest.get("request")
+            _brand_config = PodcastConfig.from_payload(
+                _brand_request if isinstance(_brand_request, dict) else None
+            )
+            brand_name = _brand_config.name
             with timings.phase("recording"):
                 recording = record_episode(
                     plan,
@@ -587,6 +595,7 @@ def run_video_generation(
                     headless=True,
                     source_url=extract_source_url(script),
                     intermediates=intermediates,
+                    brand_name=brand_name,
                 )
 
             # Compose final MP4
@@ -632,7 +641,7 @@ def run_video_generation(
             if isinstance(article_title, str) and article_title.strip():
                 title = article_title.strip()
             else:
-                title = f"SquadScope Podcast — {job_id}"
+                title = f"{brand_name} Podcast — {job_id}"
                 logger.warning(
                     "article_title absent in manifest request for job_id=%s; "
                     "using default title %r (supply request.article_title to "

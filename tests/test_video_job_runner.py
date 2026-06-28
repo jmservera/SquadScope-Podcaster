@@ -577,7 +577,7 @@ class TestRunVideoGeneration:
             run_video_generation(job_id, storage, config=dry_config)
 
         title = mock_distribute.call_args.args[2]
-        assert title == f"SquadScope Podcast — {job_id}"
+        assert title == f"Claracle Podcast — {job_id}"
         assert any("article_title absent" in r.getMessage() for r in caplog.records)
         assert any("podcast_config identity absent" in r.getMessage() for r in caplog.records)
 
