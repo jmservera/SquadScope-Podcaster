@@ -29,6 +29,7 @@ def _clean_env(monkeypatch):
         "SPOTIFY_CLIENT_ID",
         "SP_DC",
         "SP_KEY",
+        "PODCASTER_SPOTIFY_RECONCILE",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -836,6 +837,27 @@ class TestUploadVideoToEpisode:
         v.write_bytes(b"\x00" * 4096)
         return v
 
+    def _patch_successful_video_upload(self, monkeypatch, pub, seen):
+        def fake_get_url(session, anchor_id, **kwargs):
+            seen["upload_anchor"] = anchor_id
+            return ([{"partNumber": 1, "url": "https://gcs/part"}], "up1")
+
+        def fake_process(session, upload_id, **kwargs):
+            seen["process_anchor"] = kwargs.get("anchor_id")
+
+        def fake_metadata(session, anchor_id, user_id, **kwargs):
+            seen["metadata_anchor"] = anchor_id
+            seen["metadata_title"] = kwargs.get("title")
+
+        monkeypatch.setattr(pub, "_get_upload_url", fake_get_url)
+        monkeypatch.setattr(
+            pub,
+            "_upload_video_multipart",
+            lambda s, parts, data: [{"partNumber": 1, "etag": "e1"}],
+        )
+        monkeypatch.setattr(pub, "_process_upload", fake_process)
+        monkeypatch.setattr(pub, "_set_metadata", fake_metadata)
+
     def test_dry_run(self, tmp_path, monkeypatch):
         from podcaster.publish import upload_video_to_episode
 
@@ -920,6 +942,98 @@ class TestUploadVideoToEpisode:
         assert calls["metadata_anchor"] == 777
         assert calls["metadata_title"] == "My Show"
         assert calls["publish_behavior"] == "draft"
+
+    def test_reconcile_reuses_existing_draft_by_title(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {"episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}]}
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        seen = {}
+        self._patch_successful_video_upload(monkeypatch, pub, seen)
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 888
+        create.assert_not_called()
+        assert seen["upload_anchor"] == 888
+        assert seen["process_anchor"] == 888
+        assert seen["metadata_anchor"] == 888
+        assert seen["metadata_title"] == "My Show"
+
+    def test_crash_after_create_second_call_reconciles_same_draft(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+        episodes: list[dict] = []
+        session = MagicMock()
+
+        def fake_request(method, url, **kwargs):
+            return _mock_json_resp({"episodes": list(episodes)})
+
+        session.request.side_effect = fake_request
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        created: list[int] = []
+
+        def fake_create(session, station_id):
+            episode_id = 901
+            created.append(episode_id)
+            episodes.append({"episodeId": episode_id, "title": "My Show", "status": "draft"})
+            return episode_id
+
+        monkeypatch.setattr(pub, "_create_episode", fake_create)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        first = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+        second = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert first.anchor_episode_id == 901
+        assert second.anchor_episode_id == 901
+        assert created == [901]
+
+    def test_reconcile_disabled_falls_back_to_create(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+
+        session = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        seen = {}
+        self._patch_successful_video_upload(monkeypatch, pub, seen)
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 777
+        create.assert_called_once_with(session, "99")
+        assert session.request.call_count == 0
 
 
 class TestPollUploadErrorExtraction:

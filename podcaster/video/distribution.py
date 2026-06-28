@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -500,7 +501,8 @@ def upload_to_spotify_episode(
     description: str | None = None,
     season_number: int | None = None,
     episode_number: int | None = None,
-) -> bool:
+    return_episode_id: bool = False,
+) -> bool | tuple[bool, int | None]:
     """Publish the MP4 as a NEW separate Spotify episode draft (#340).
 
     Spotify rejects attaching a video to an episode that already holds audio, so
@@ -513,7 +515,7 @@ def upload_to_spotify_episode(
 
     if config.dry_run:
         logger.info("Spotify video upload dry-run: audio_anchor=%s", anchor_id)
-        return True
+        return (True, None) if return_episode_id else True
 
     try:
         from podcaster.publish import upload_video_to_episode
@@ -529,17 +531,19 @@ def upload_to_spotify_episode(
         )
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)
-            return False
+            return (False, None) if return_episode_id else False
         logger.info(
             "Spotify video published as new episode draft anchorId=%s "
             "(audio episode anchorId=%s untouched)",
             result.anchor_episode_id,
             anchor_id,
         )
+        if return_episode_id:
+            return True, result.anchor_episode_id
         return True
     except Exception as exc:
         logger.error("Spotify video upload error: %s", exc)
-        return False
+        return (False, None) if return_episode_id else False
 
 
 # --- Orchestrator ---
@@ -618,6 +622,8 @@ def distribute_video(
     episode_number: int | None = None,
     locale: str | None = None,
     language: str = "en",
+    published: Mapping[str, Any] | None = None,
+    on_published: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
@@ -639,8 +645,15 @@ def distribute_video(
 
     ``locale`` is forwarded to :func:`~podcaster.video.youtube_playlist.add_to_show_playlist`
     to select the per-language playlist after a successful YouTube upload (#449).
+
+    Per-platform ``published`` state is the durable at-most-once guard for
+    provider side effects. Residual risk: a crash after a provider create but
+    before ``on_published`` persists is still at-least-once for YouTube (no cheap
+    reconcile key); Spotify closes that window by reconciling drafts by title
+    before creating one.
     """
     result = DistributionResult()
+    prior_published = published or {}
 
     # Abort only if no distribution target at all is enabled (#337)
     if not (
@@ -681,7 +694,18 @@ def distribute_video(
             "YouTube upload skipped for language=%s (not in VIDEO_YOUTUBE_LANGUAGES)",
             language,
         )
-    if youtube_active:
+    youtube_record = prior_published.get("youtube")
+    if (
+        youtube_active
+        and isinstance(youtube_record, Mapping)
+        and youtube_record.get("status") == "published"
+    ):
+        video_id = youtube_record.get("video_id")
+        if video_id is not None:
+            result.youtube_id = str(video_id)
+            result.youtube_url = f"https://www.youtube.com/watch?v={result.youtube_id}"
+        logger.info("YouTube upload skipped for job_id=%s: already published", job_id)
+    elif youtube_active:
         try:
             video_id, video_url = upload_to_youtube(
                 video_path,
@@ -695,53 +719,99 @@ def distribute_video(
             result.youtube_url = video_url
             if not video_id:
                 result.errors.append("YouTube upload failed after retries")
-            elif not config.dry_run:
-                # 2a. Add to show playlist — idempotent, failure is non-fatal (#449)
-                try:
-                    _http = transport or _DefaultTransport()
-                    _token = _get_youtube_access_token(config, _http)
-                    _add_to_show_playlist(config, locale, video_id, _token, transport=transport)
-                except Exception as exc:
-                    logger.warning("Playlist add skipped for %s: %s", video_id, exc)
+            else:
+                if on_published is not None:
+                    on_published(
+                        "youtube",
+                        {
+                            "status": "published",
+                            "video_id": video_id,
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                if not config.dry_run:
+                    # 2a. Add to show playlist — idempotent, failure is non-fatal (#449)
+                    try:
+                        _http = transport or _DefaultTransport()
+                        _token = _get_youtube_access_token(config, _http)
+                        _add_to_show_playlist(config, locale, video_id, _token, transport=transport)
+                    except Exception as exc:
+                        logger.warning("Playlist add skipped for %s: %s", video_id, exc)
         except Exception as exc:
             result.errors.append(f"YouTube upload error: {exc}")
             logger.error("YouTube distribution failed: %s", exc)
 
     # 3. Update Spotify RSS
     if config.spotify_rss_enabled:
-        # blob_path is now a full URL returned from storage.upload(); prefer it over YouTube URL
-        enclosure_url = blob_path or result.youtube_url or ""
-
-        if not enclosure_url:
-            logger.warning("No enclosure URL available for Spotify RSS — skipping")
-            result.errors.append("Spotify RSS skipped: no enclosure URL")
+        rss_record = prior_published.get("spotify_rss")
+        if isinstance(rss_record, Mapping) and rss_record.get("status") == "published":
+            result.spotify_rss_updated = True
+            logger.info("Spotify RSS update skipped for job_id=%s: already published", job_id)
         else:
-            rss_ok = update_spotify_rss(
-                enclosure_url,
-                title,
-                description,
-                duration_seconds,
-                config,
-                storage=storage,
-            )
-            result.spotify_rss_updated = rss_ok
-            if not rss_ok:
-                result.errors.append("Spotify RSS update failed")
+            # blob_path is now a full URL returned from storage.upload(); prefer it over YouTube URL
+            enclosure_url = blob_path or result.youtube_url or ""
+
+            if not enclosure_url:
+                logger.warning("No enclosure URL available for Spotify RSS — skipping")
+                result.errors.append("Spotify RSS skipped: no enclosure URL")
+            else:
+                rss_ok = update_spotify_rss(
+                    enclosure_url,
+                    title,
+                    description,
+                    duration_seconds,
+                    config,
+                    storage=storage,
+                )
+                result.spotify_rss_updated = rss_ok
+                if rss_ok and on_published is not None:
+                    on_published(
+                        "spotify_rss",
+                        {
+                            "status": "published",
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                if not rss_ok:
+                    result.errors.append("Spotify RSS update failed")
 
     # 4. Publish MP4 as a NEW separate Spotify episode draft (#340)
     if config.spotify_upload_enabled:
-        upload_ok = upload_to_spotify_episode(
-            video_path,
-            spotify_anchor_id,
-            config,
-            title=title,
-            description=description,
-            season_number=season_number,
-            episode_number=episode_number,
-        )
-        result.spotify_upload_updated = upload_ok
-        if not upload_ok:
-            result.errors.append("Spotify video upload failed")
+        spotify_upload_record = prior_published.get("spotify_upload")
+        if (
+            isinstance(spotify_upload_record, Mapping)
+            and spotify_upload_record.get("status") == "published"
+        ):
+            result.spotify_upload_updated = True
+            logger.info("Spotify video upload skipped for job_id=%s: already published", job_id)
+        else:
+            upload_result = upload_to_spotify_episode(
+                video_path,
+                spotify_anchor_id,
+                config,
+                title=title,
+                description=description,
+                season_number=season_number,
+                episode_number=episode_number,
+                return_episode_id=True,
+            )
+            if isinstance(upload_result, tuple):
+                upload_ok, spotify_episode_id = upload_result
+            else:
+                upload_ok = upload_result
+                spotify_episode_id = None
+            result.spotify_upload_updated = upload_ok
+            if upload_ok and on_published is not None:
+                on_published(
+                    "spotify_upload",
+                    {
+                        "status": "published",
+                        "episode_id": spotify_episode_id,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            if not upload_ok:
+                result.errors.append("Spotify video upload failed")
 
     # Determine overall status
     targets_attempted = sum(
