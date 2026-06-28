@@ -56,7 +56,7 @@ param jobCpu string = '2.0'
 @description('Memory allocated to a recorder replica (one Chromium clip recording).')
 param jobMemory string = '4.0Gi'
 
-@description('Replica timeout (seconds) — the per-clip record budget. Kept above the clip queue visibility timeout so a clip is not redelivered while a replica is still recording it (RFC §8).')
+@description('Replica timeout (seconds) — the per-clip record budget. Kept >= the clip queue visibility timeout (equality is valid) so a replica is not killed before its received message can either be deleted or fall back to visible (RFC §8).')
 @minValue(60)
 @maxValue(172800)
 param replicaTimeoutSeconds int = 900

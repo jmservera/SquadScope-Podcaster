@@ -1,9 +1,13 @@
 // Video EDITOR / orchestrator (#324, scale-out #552/#565): a queue-triggered Azure Container
-// Apps Job that consumes the video-jobs queue and drives the ffmpeg-backed compose/distribute
-// pipeline (podcaster.video.job_runner). In the scale-out design (docs/scaleout-recorder-rfc.md)
-// this job no longer records inline: it plans, fans per-clip messages onto the video-clip-jobs
-// queue (consumed by the recorder ACA Job, aca-recorder.bicep), blocks on the fan-in barrier,
-// then runs the unchanged download -> compose -> distribute -> cleanup path.
+// Apps Job that consumes the video-jobs queue and drives the ffmpeg-backed video pipeline
+// (podcaster.video.job_runner).
+//
+// PLANNED scale-out target (docs/scaleout-recorder-rfc.md): once the editor refactor (#563)
+// lands, this job stops recording inline — it will plan, fan per-clip messages onto the
+// video-clip-jobs queue (consumed by the recorder ACA Job, aca-recorder.bicep), block on the
+// fan-in barrier, then run the unchanged download -> compose -> distribute -> cleanup path.
+// Until #563 merges the runtime still records inline; this module ships the infra seam ahead of
+// that (single-replica cap + clip queue env) so the topology is ready when the code lands.
 //
 // Reuses the synthesis container image (ffmpeg already baked in) but overrides the entrypoint
 // command to run the video job runner instead of the audio synthesis runner. It also reuses the
@@ -203,7 +207,9 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             }
             {
               // Visibility timeout the editor applies to its own video-jobs message while it
-              // works, so the job is not redelivered to a second editor mid-run (RFC §8).
+              // works, so the job is not redelivered to a second editor mid-run (RFC §8). The
+              // editor refactor (#563) wires job_runner's receive call to honour this; until
+              // then the value is inert (single-replica cap already prevents concurrent editors).
               name: 'PODCASTER_VIDEO_VISIBILITY_TIMEOUT'
               value: string(videoVisibilityTimeoutSeconds)
             }
