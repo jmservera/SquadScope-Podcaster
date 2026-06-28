@@ -837,7 +837,11 @@ BACKCHANNEL_LIBRARY: tuple[str, ...] = (
 )
 
 # Allowed mixing gain window for backchannels (dB under the main speaker).
-BACKCHANNEL_GAIN_DB_MAX = -14.0
+# The ceiling was raised from -14 to -10 dB (issue #560): on the W26 render the
+# reactions fired but were too quiet to register. -10 dB is still clearly a
+# background voice (well under the main speaker) yet audible. The floor stays at
+# -18 dB so a caller can still ask for a very subtle layer.
+BACKCHANNEL_GAIN_DB_MAX = -10.0
 BACKCHANNEL_GAIN_DB_MIN = -18.0
 
 
@@ -857,10 +861,16 @@ class BackchannelConfig:
 
     enabled: bool = False
     # Density: at most one backchannel per [min_gap, max_gap] window of speech.
-    min_gap_seconds: float = 45.0
-    max_gap_seconds: float = 60.0
-    # Mixing gain in dB under the main speaker (clamped to [-18, -14]).
-    gain_db: float = -16.0
+    # Tightened from 45-60s (issue #560): the W26 render fired reactions far too
+    # rarely, so hums and agreements barely registered. 18-30s lands reactions at
+    # natural pauses often enough to read as a live second host while staying
+    # below "every pause" saturation. Callers can still widen these.
+    min_gap_seconds: float = 18.0
+    max_gap_seconds: float = 30.0
+    # Mixing gain in dB under the main speaker (clamped to [-18, -10]). Raised
+    # from -16 to -12 (issue #560) so reactions are clearly audible as a
+    # background voice rather than buried under the main speaker.
+    gain_db: float = -12.0
     # Hard cap on a single backchannel clip's duration.
     max_duration_ms: int = 600
     # TTS-safe phrase library (overridable by the caller).
@@ -878,7 +888,7 @@ class BackchannelConfig:
 
     @property
     def clamped_gain_db(self) -> float:
-        """Gain clamped to the documented [-18, -14] dB window."""
+        """Gain clamped to the documented [-18, -10] dB window."""
         return max(BACKCHANNEL_GAIN_DB_MIN, min(BACKCHANNEL_GAIN_DB_MAX, self.gain_db))
 
     @classmethod

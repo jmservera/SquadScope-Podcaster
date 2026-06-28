@@ -69,7 +69,25 @@ def test_build_interaction_map_enforces_density_min_gap():
     assert len({i.under_turn_id for i in m.interactions}) == len(m.interactions)
 
 
-def test_build_interaction_map_skips_final_clause_punchline():
+def test_default_density_increases_backchannels_and_includes_hums():
+    """#560: denser defaults land more reactions and surface hums ('hmm')."""
+    # A realistic multi-turn stretch with plenty of safe clause boundaries.
+    clause = "we kept building it, and it worked, and we liked the result"
+    turns = I.assign_turn_ids([("host_a" if i % 2 == 0 else "host_b", clause) for i in range(8)])
+    durations = [30.0] * len(turns)
+
+    dense = I.build_interaction_map(turns, durations, BackchannelConfig(enabled=True))
+    sparse = I.build_interaction_map(
+        turns, durations, BackchannelConfig(enabled=True, min_gap_seconds=45, max_gap_seconds=60)
+    )
+
+    # Tighter default gaps must yield a measurable density increase (#560).
+    assert len(dense) > len(sparse)
+    # Reactions come from the listening host and are clearly audible (>= -12 dB
+    # default, well above the old -16 dB) but still a background voice.
+    assert all(i.gain_db >= -12.0 for i in dense.interactions)
+    # Hums must actually surface across the episode (tone cycle reaches 'thinking').
+    assert any(i.text == "hmm" for i in dense.interactions)
     # Only one boundary plus the terminal '.' -> after dropping the last clause,
     # a single safe candidate remains; ensure the terminal punchline is avoided.
     turns = I.assign_turn_ids([("host_a", "We loved the demo, it was the best thing ever!")])
@@ -84,7 +102,7 @@ def test_build_interaction_map_clamps_gain_and_uses_library():
     turns = I.assign_turn_ids([("host_a", "We tried it, and it worked, and we shipped it.")])
     cfg = BackchannelConfig(enabled=True, min_gap_seconds=1, gain_db=-30.0)
     m = I.build_interaction_map(turns, [40.0], cfg)
-    assert m.interactions[0].gain_db == -18.0  # clamped to [-18, -14]
+    assert m.interactions[0].gain_db == -18.0  # clamped to [-18, -10] floor
     assert all(i.text in BACKCHANNEL_LIBRARY for i in m.interactions)
 
 
