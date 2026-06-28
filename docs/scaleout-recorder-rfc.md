@@ -4,7 +4,14 @@
 - **Date:** 2026-06-28
 - **Epic:** [jmservera/SquadScope-Podcaster#552](https://github.com/jmservera/SquadScope-Podcaster/issues/552)
 - **Owner (design):** Podcaster subsquad (Coordinator-driven)
-- **Gated on:** A/V-sync fixes #558, #559, #560 must merge first (see [Sequencing](#sequencing--gating)).
+- **Gating update (2026-06-28):** The original design-only / "gated on #558/#559/#560
+  first" stance is **lifted** by operator directive — implement the scale-out fan-out
+  in parallel with the A/V-sync fixes to speed up every test cycle. The foundational,
+  conflict-free pieces land first (clip-queue schema/codec, recorder entrypoint, KEDA
+  bicep); the **editor refactor still lands LAST** and rebases on `main` after the
+  A/V-sync quality fixes merge (it is the only shared touch point). The original
+  sequencing below is retained for context.
+- **Gated on (historical):** A/V-sync fixes #558, #559, #560 (see [Sequencing](#sequencing--gating)).
 
 > **Concurrency note:** Another subsquad is fixing the A/V-sync pipeline (#558/#559/#560)
 > on the main tree. This RFC deliberately touches **no** video-pipeline code. It reuses

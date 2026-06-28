@@ -170,6 +170,13 @@ def parse_clip_job(body: str) -> tuple[str, int]:
             continue
         if not isinstance(data, dict):
             continue
+        schema_version = data.get("schema_version")
+        if schema_version is not None and schema_version != CLIP_QUEUE_SCHEMA_VERSION:
+            # A present-but-mismatched schema means this is the wrong message
+            # type (e.g. a video-jobs envelope) — reject rather than risk
+            # consuming it as a clip job. Absent schema stays accepted for
+            # raw-JSON resilience, mirroring parse_job_id.
+            continue
         job_id = data.get("job_id")
         clip_index = data.get("clip_index")
         if not isinstance(job_id, str) or not job_id.strip():
@@ -340,7 +347,7 @@ def enqueue_synthesis_job(job_id: str, *, producer: QueueProducer | None = None)
     return True
 
 
-def create_clip_queue_backend() -> QueueBackend | None:
+def create_clip_queue_backend() -> AzureStorageQueueBackend | None:
     """Build the per-clip queue backend from the environment.
 
     Returns ``None`` when ``PODCASTER_STORAGE_QUEUE_URL`` is unset. The queue

@@ -112,6 +112,17 @@ def test_parse_rejects_bool_clip_index() -> None:
         parse_clip_job(raw)
 
 
+def test_parse_rejects_mismatched_schema_version() -> None:
+    raw = json.dumps({"schema_version": "some-other-queue-v1", "job_id": "job-1", "clip_index": 1})
+    with pytest.raises(ValueError):
+        parse_clip_job(raw)
+
+
+def test_parse_accepts_absent_schema_version() -> None:
+    raw = json.dumps({"job_id": "job-1", "clip_index": 1})
+    assert parse_clip_job(raw) == ("job-1", 1)
+
+
 def test_enqueue_clip_job_sends_only_job_id_and_clip_index(caplog) -> None:
     producer = RecordingProducer()
     job_id = "podcast-2026-W23-deadbeef0003"
