@@ -859,7 +859,9 @@ def ensure_branded_intro_outro(
         _default_intro_outro_cache_dir,
     )
 
-    src_dir = Path(asset_dir) if asset_dir is not None else branded_intro_outro_asset_dir()
+    src_dir = (
+        Path(asset_dir).expanduser() if asset_dir is not None else branded_intro_outro_asset_dir()
+    )
     intro_src = src_dir / "intro.mp4"
     outro_src = src_dir / "outro.mp4"
     if not intro_src.is_file() or not outro_src.is_file():

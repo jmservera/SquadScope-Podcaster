@@ -96,6 +96,18 @@ class TestBrandedAssetDirResolution:
         monkeypatch.setenv(INTRO_OUTRO_ASSET_DIR_ENV, str(tmp_path / "ops-staged"))
         assert branded_intro_outro_asset_dir() == tmp_path / "ops-staged"
 
+    def test_explicit_string_asset_dir_expands_user(self, tmp_path, monkeypatch):
+        # A "~"-prefixed explicit asset_dir is expanded just like the env path.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        asset_dir = tmp_path / "branded"
+        _write_branded_assets(asset_dir)
+        storage = _RecordingStorage()
+
+        seeded = ensure_branded_intro_outro(storage, asset_dir="~/branded")
+
+        assert seeded is True
+        assert {p for p, _, _ in storage.puts} == {INTRO_BLOB_PATH, OUTRO_BLOB_PATH}
+
     def test_default_points_at_scripts_intro_outro_output(self, monkeypatch):
         monkeypatch.delenv(INTRO_OUTRO_ASSET_DIR_ENV, raising=False)
         resolved = branded_intro_outro_asset_dir()
