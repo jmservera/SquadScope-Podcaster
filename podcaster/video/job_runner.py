@@ -614,6 +614,23 @@ def run_video_generation(
             # document so overlapping workers stay individually observable.
             normalize_reporter = make_task_reporter(storage, job_id, stage=PipelineStage.COMPOSE)
 
+            # Branded intro/outro (#586): seed the standard branded bumpers into
+            # storage before composing so the real pipeline always uses them and
+            # they are never hidden by a stale title-card clip (which also
+            # swallows the pre-first-repo bridge, #588). Graceful no-op when the
+            # branded assets are not staged in the asset dir.
+            from podcaster.video.intro_outro import ensure_branded_intro_outro
+
+            try:
+                ensure_branded_intro_outro(storage)
+            except Exception:  # noqa: BLE001 - seeding is best-effort, never break compose
+                logger.warning(
+                    "branded intro/outro seeding failed for job_id=%s; composing with "
+                    "whatever bumpers are already stored/cached",
+                    job_id,
+                    exc_info=True,
+                )
+
             output_dir = Path(tmp)
 
             # Per-phase timing/resource instrumentation for the performance
