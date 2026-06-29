@@ -419,3 +419,27 @@ def test_parse_script_plan_backfills_each_later_named_repo():
         "https://github.com/astral-sh/ruff",
     )
     assert [seg.repo_url for seg in plan.segments] == list(plan.repo_urls)
+
+
+def test_parse_script_plan_does_not_backfill_header_without_host_labels():
+    """#582 review: ``Repos featured:`` is metadata, not a speaker turn."""
+    script = (
+        "Title: Weekly\n"
+        "Repos featured: https://github.com/vercel/eve https://github.com/openai/gym\n"
+        "---\n"
+        "Alice: vercel/eve is the first project we actually say out loud.\n"
+        "Bob: openai/gym follows at its own spoken cue.\n"
+    )
+
+    marked = infer_repo_visual_markers(script)
+    lines = marked.splitlines()
+    separator = lines.index("---")
+    eve_marker = lines.index("## Visual: repo https://github.com/vercel/eve")
+    eve_turn = next(i for i, line in enumerate(lines) if line.startswith("Alice:"))
+
+    assert eve_marker > separator
+    assert eve_marker == eve_turn - 1
+
+    plan = parse_script_plan(script)
+    assert [seg.visual_mode for seg in plan.segments] == [VisualMode.REPO, VisualMode.REPO]
+    assert plan.repo_urls == ("https://github.com/vercel/eve", "https://github.com/openai/gym")
