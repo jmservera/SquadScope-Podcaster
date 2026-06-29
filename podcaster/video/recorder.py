@@ -428,11 +428,15 @@ def _select_record_segment(env: Mapping[str, str]) -> RecordSegmentFn:
 
 def _fake_record_segment(segment: "VideoSegment", output_dir: Path) -> RecordResult:
     """Synthesise a tiny placeholder clip (no Chromium) for CI / fan-out tests."""
+    from podcaster.video.video_gen import capped_record_seconds
+
     video_path = output_dir / "clip.webm"
     # A minimal non-empty payload — the fan-out harness only asserts the blob and
     # manifest appear; compose is exercised separately with its own fakes.
     video_path.write_bytes(b"\x1aE\xdf\xa3FAKE-CLIP")
-    duration_ms = int(round(float(segment.duration_seconds) * 1000))
+    # Report the cap-clamped duration so the manifest matches what a real
+    # recording would produce for an over-long segment (issue #592).
+    duration_ms = int(round(capped_record_seconds(float(segment.duration_seconds)) * 1000))
     return RecordResult(video_path=video_path, duration_ms=duration_ms, is_fallback=False)
 
 
@@ -440,7 +444,7 @@ def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> Rec
     """Record one segment with a real Chromium browser via the unchanged path."""
     from playwright.sync_api import sync_playwright
 
-    from podcaster.video.video_gen import _record_segment
+    from podcaster.video.video_gen import _record_segment, capped_record_seconds
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
@@ -456,7 +460,11 @@ def _production_record_segment(segment: "VideoSegment", output_dir: Path) -> Rec
             browser.close()
 
     video_path = Path(recorded.video_path)
-    duration_ms = int(round(float(segment.duration_seconds) * 1000))
+    # The recorder caps the effective recording length (issue #592), so the
+    # realized clip is at most ``MAX_CLIP_RECORD_SECONDS`` long. Persist the
+    # cap-clamped duration in the manifest so the editor's EDL trims/loops within
+    # the clip's actual bounds (never seeking past EOF).
+    duration_ms = int(round(capped_record_seconds(float(segment.duration_seconds)) * 1000))
     return RecordResult(
         video_path=video_path,
         duration_ms=duration_ms,

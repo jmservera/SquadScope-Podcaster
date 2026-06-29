@@ -70,6 +70,7 @@ from podcaster.video.video_gen import (
     _smooth_scroll,
     _try_navigate_repo,
     _try_record_project_site,
+    capped_record_seconds,
     record_episode,
 )
 
@@ -1161,6 +1162,126 @@ class TestRecordSegment:
         # Website failed to load — record the GitHub page, no website recorded.
         assert result.website_url is None
         assert result.is_fallback is False
+        assert result.video_path.exists()
+
+
+# --- Per-clip recording duration cap (issue #592) ---
+
+
+class TestCappedRecordSeconds:
+    def test_passes_through_when_under_cap(self):
+        with patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600):
+            assert capped_record_seconds(120.0) == 120.0
+            assert capped_record_seconds(600.0) == 600.0
+
+    def test_caps_when_over_cap(self):
+        with patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600):
+            assert capped_record_seconds(1440.0) == 600.0
+
+    def test_disabled_when_non_positive(self):
+        # A non-positive cap disables truncation entirely (opt-out knob).
+        with patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 0):
+            assert capped_record_seconds(1440.0) == 1440.0
+        with patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", -1):
+            assert capped_record_seconds(1440.0) == 1440.0
+
+
+@pytest.mark.usefixtures("stub_compose")
+class TestRecordingCap:
+    """A very long (e.g. 24min) segment must record only up to the cap and still
+    produce a valid clip — regression for the recorder ACA timeout (issue #592).
+    """
+
+    def _mock_browser(self, tmp_path: Path):
+        browser = MagicMock()
+        context = MagicMock()
+        page = MagicMock()
+        video = MagicMock()
+        browser.new_context.return_value = context
+        context.new_page.return_value = page
+        page.viewport_size = {"width": WIDTH, "height": HEIGHT}
+        # A synthetic *very tall* page so the scroll path has plenty to cover.
+        page.evaluate.side_effect = lambda js: 500_000 if "scrollHeight" in js else None
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        fake_video = raw_dir / "long.webm"
+        fake_video.write_bytes(b"\x1a\x45\xdf\xa3")
+        video.path.return_value = str(fake_video)
+        page.video = video
+        return browser, page, tmp_path
+
+    def test_long_segment_records_only_up_to_cap(self, tmp_path):
+        browser, _page, out_dir = self._mock_browser(tmp_path)
+        # 24 minutes — the awesome-evals scenario that timed out the recorder.
+        segment = _make_segment(owner="big", name="awesome-evals", duration=1440.0)
+
+        seen: dict[str, float] = {}
+
+        def _capture_scroll(page, duration_seconds, capturer=None):
+            seen["scroll"] = duration_seconds
+
+        real_finalize = None
+        from podcaster.video import video_gen as vg
+
+        real_finalize = vg._finalize_segment
+
+        def _capture_finalize(page, context, capturer, output_dir, dest_stem, duration_seconds):
+            seen["finalize"] = duration_seconds
+            return real_finalize(page, context, capturer, output_dir, dest_stem, duration_seconds)
+
+        with (
+            patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch("podcaster.video.video_gen._extract_website_url", return_value=None),
+            patch("podcaster.video.video_gen._scroll_github_readme", side_effect=_capture_scroll),
+            patch("podcaster.video.video_gen._finalize_segment", side_effect=_capture_finalize),
+        ):
+            result = _record_segment(browser, segment, out_dir, check_accessibility=False)
+
+        # Recording (scroll) and finalize both clamp to the 600s cap, not 1440s.
+        assert seen["scroll"] == 600.0
+        assert seen["finalize"] == 600.0
+        # A valid clip is still produced — the clip is never failed (issue #592).
+        assert result.video_path.exists()
+        assert result.is_fallback is False
+
+    def test_short_segment_is_not_capped(self, tmp_path):
+        browser, _page, out_dir = self._mock_browser(tmp_path)
+        segment = _make_segment(owner="small", name="repo", duration=30.0)
+
+        seen: dict[str, float] = {}
+
+        def _capture_scroll(page, duration_seconds, capturer=None):
+            seen["scroll"] = duration_seconds
+
+        with (
+            patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen._check_repo_accessible", return_value=True),
+            patch("podcaster.video.video_gen._check_gh_pages", return_value=False),
+            patch("podcaster.video.video_gen._extract_website_url", return_value=None),
+            patch("podcaster.video.video_gen._scroll_github_readme", side_effect=_capture_scroll),
+        ):
+            result = _record_segment(browser, segment, out_dir, check_accessibility=False)
+
+        assert seen["scroll"] == 30.0
+        assert result.video_path.exists()
+
+    def test_generic_long_segment_records_only_up_to_cap(self, tmp_path):
+        browser, _page, out_dir = self._mock_browser(tmp_path)
+        segment = VideoSegment(repo=None, start_seconds=0.0, duration_seconds=1440.0)
+
+        seen: dict[str, float] = {}
+
+        with (
+            patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
+            patch("podcaster.video.video_gen._render_generic_background") as bg,
+        ):
+            bg.side_effect = lambda page, d, cap, brand_name=None: seen.__setitem__("bg", d)
+            result = _record_segment(browser, segment, out_dir)
+
+        # Static generic background hold is clamped to the cap, valid clip made.
+        assert seen["bg"] == 600.0
         assert result.video_path.exists()
 
 
