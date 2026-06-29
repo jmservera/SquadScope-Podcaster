@@ -166,6 +166,53 @@ def _env_int(name: str, default: int) -> int:
 RECORD_TASK_RETRIES = max(1, _env_int("VIDEO_RECORD_TASK_RETRIES", DEFAULT_TASK_RETRIES))
 
 
+# --- Per-clip recording duration cap (issue #592) ----------------------------
+#
+# A single clip's recording (page scroll / screenshot capture) takes wall-clock
+# time roughly proportional to its duration: in hyperframe mode one screenshot
+# is captured per composed frame, so a 24-minute clip captures ~43k screenshots.
+# In the scale-out recorder, a clip's recorded length is ``required_clip_seconds
+# = max(60s, discussion * 1.5)`` (clip_manifest), which for a long discussion
+# (e.g. a huge README like awesome-evals) can reach ~24min — long enough that the
+# recorder ACA job blows past its 900s ``replicaTimeout`` (DeadlineExceeded ->
+# container ManuallyStopped -> downstream Playwright TargetClosedError).
+#
+# We cap the *effective* recording duration so the capture phase always finishes
+# with comfortable headroom under that timeout. When a segment's planned
+# duration exceeds the cap we record only up to the cap and finalize the partial
+# clip (no failure): downstream composition fits the short clip to the planned
+# slot — the monolithic composer freeze-holds the last frame
+# (``tpad=stop_mode=clone``) and the EDL editor loops/trims using the manifest's
+# realized ``duration_ms`` — so a capped clip never desyncs or crashes the
+# pipeline. 600s (10min) leaves ~5min of headroom under the 900s timeout for
+# setup/upload. Set ``VIDEO_MAX_CLIP_RECORD_SECONDS`` to override; ``0`` (or any
+# non-positive value) disables the cap entirely.
+DEFAULT_MAX_CLIP_RECORD_SECONDS = 600
+MAX_CLIP_RECORD_SECONDS = _env_int("VIDEO_MAX_CLIP_RECORD_SECONDS", DEFAULT_MAX_CLIP_RECORD_SECONDS)
+
+
+def capped_record_seconds(duration_seconds: float) -> float:
+    """Clamp a planned segment duration to the per-clip recording cap (#592).
+
+    Returns ``min(duration_seconds, MAX_CLIP_RECORD_SECONDS)`` when the cap is
+    active (positive) and the planned duration exceeds it, logging once that the
+    clip is being truncated; otherwise returns *duration_seconds* unchanged. A
+    non-positive :data:`MAX_CLIP_RECORD_SECONDS` disables the cap so callers can
+    opt out via the ``VIDEO_MAX_CLIP_RECORD_SECONDS`` env var.
+    """
+    cap = MAX_CLIP_RECORD_SECONDS
+    if cap <= 0 or duration_seconds <= cap:
+        return duration_seconds
+    logger.warning(
+        "Capping per-clip recording duration from %.1fs to %ds "
+        "(VIDEO_MAX_CLIP_RECORD_SECONDS); partial clip will be fit to its planned "
+        "slot downstream (issue #592)",
+        duration_seconds,
+        cap,
+    )
+    return float(cap)
+
+
 # --- Screenshot-based (hyperframe) capture (issue #387) ---
 #
 # Playwright's screencast (page.video) encodes VP8 in real time, which is lossy
@@ -2055,6 +2102,9 @@ def _record_generic_segment(
         browser, output_dir, segment_label="generic segment"
     )
     page: Page = context.new_page()
+    # Cap the effective recording length (issue #592); the partial clip is fit
+    # to its planned slot during composition.
+    record_seconds = capped_record_seconds(segment.duration_seconds)
     try:
         source_url = segment.source_url
         if source_url:
@@ -2072,26 +2122,22 @@ def _record_generic_segment(
                 _dismiss_overlays(page)
                 _dismiss_cookie_consent(page)
                 _prepare_page_for_recording(page)
-                _smooth_scroll(page, segment.duration_seconds, capturer)
+                _smooth_scroll(page, record_seconds, capturer)
             except Exception:
                 logger.exception(
                     "Error recording generic source %s — using background",
                     source_url,
                 )
-                _render_generic_background(
-                    page, segment.duration_seconds, capturer, brand_name=brand_name
-                )
+                _render_generic_background(page, record_seconds, capturer, brand_name=brand_name)
         else:
-            _render_generic_background(
-                page, segment.duration_seconds, capturer, brand_name=brand_name
-            )
+            _render_generic_background(page, record_seconds, capturer, brand_name=brand_name)
         dest_path = _finalize_segment(
             page,
             context,
             capturer,
             output_dir,
             "generic",
-            segment.duration_seconds,
+            record_seconds,
         )
     except Exception:
         try:
@@ -2178,6 +2224,11 @@ def _record_segment(
 
     repo = segment.repo
 
+    # Cap the effective recording length so the capture phase stays well under
+    # the recorder's ACA replicaTimeout; the partial clip is fit to its planned
+    # slot during composition (issue #592).
+    record_seconds = capped_record_seconds(segment.duration_seconds)
+
     # A planning-time pre-flight check flagged this repo as removed from GitHub
     # (HTTP 404 — e.g. a polymarket/spam bot GitHub took down).  Skip navigation
     # entirely and render a clean "Repo removed" card so no recording time is
@@ -2196,7 +2247,7 @@ def _record_segment(
                 repo.owner,
                 repo.name,
                 segment.removed_reason or "This repo was removed from GitHub",
-                segment.duration_seconds,
+                record_seconds,
                 capturer,
             )
         except Exception:
@@ -2207,7 +2258,7 @@ def _record_segment(
             capturer,
             output_dir,
             f"{repo.owner}_{repo.name}",
-            segment.duration_seconds,
+            record_seconds,
         )
         return RecordedSegment(
             segment=segment,
@@ -2242,8 +2293,9 @@ def _record_segment(
     page: Page = context.new_page()
 
     # Reference point for the recorded clip length. If a later step fails after
-    # the page has loaded, we pad the recording up to ``segment.duration_seconds``
-    # so the clip isn't truncated (issue #381).
+    # the page has loaded, we pad the recording up to ``record_seconds`` (the
+    # cap-clamped segment duration, issue #592) so the clip isn't truncated
+    # (issue #381).
     record_start = time.monotonic()
 
     try:
@@ -2261,14 +2313,14 @@ def _record_segment(
             # Before showing a static card, try the repo's project website —
             # its GitHub Pages site — so we record real content when the repo
             # page 404s or requires login (issue #386).
-            pages_url = _try_record_project_site(page, repo, segment.duration_seconds, capturer)
+            pages_url = _try_record_project_site(page, repo, record_seconds, capturer)
             if pages_url is not None:
                 website_url = pages_url
                 has_pages = True
                 recovery_path = "website"
             else:
                 is_fallback = True
-                _render_url_card(page, repo.owner, repo.name, segment.duration_seconds, capturer)
+                _render_url_card(page, repo.owner, repo.name, record_seconds, capturer)
         else:
             # Navigation may have corrected the repo (e.g. via the source
             # article); use the effective repo for naming and the website flow.
@@ -2322,7 +2374,7 @@ def _record_segment(
                 # README-first scroll for GitHub repo pages; falls back to a
                 # plain deterministic scroll for non-GitHub pages / no README
                 # (issue #415).
-                _scroll_github_readme(page, segment.duration_seconds, capturer)
+                _scroll_github_readme(page, record_seconds, capturer)
             except Exception:
                 # Keep the successfully recorded repo page; do not render a
                 # fallback on top of it (issue #381).
@@ -2338,9 +2390,7 @@ def _record_segment(
                 # screenshot mode the composition pads frames to the expected
                 # count instead, so no real-time wait is needed (issue #387).
                 if capturer is None:
-                    remaining_ms = int(
-                        (segment.duration_seconds - (time.monotonic() - record_start)) * 1000
-                    )
+                    remaining_ms = int((record_seconds - (time.monotonic() - record_start)) * 1000)
                     if remaining_ms > 0:
                         try:
                             page.wait_for_timeout(remaining_ms)
@@ -2355,7 +2405,7 @@ def _record_segment(
         logger.exception("Error recording %s — using fallback", repo.url)
         is_fallback = True
         recovery_path = "fallback"
-        _render_fallback_page(page, repo.owner, repo.name, segment.duration_seconds, capturer)
+        _render_fallback_page(page, repo.owner, repo.name, record_seconds, capturer)
 
     dest_path = _finalize_segment(
         page,
@@ -2363,7 +2413,7 @@ def _record_segment(
         capturer,
         output_dir,
         f"{repo.owner}_{repo.name}",
-        segment.duration_seconds,
+        record_seconds,
     )
 
     return RecordedSegment(
