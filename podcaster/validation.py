@@ -15,6 +15,7 @@ from podcaster.localization_qa import (  # noqa: F401
     evaluate_localization,
     localization_gate,
 )
+from podcaster.script_gen import validate_article_inputs
 
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 WEEK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
@@ -159,16 +160,25 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
         if secret_name is not None and not isinstance(secret_name, str):
             errors.append("callback.secret_name must be a string")
 
+    article_title_supplied = "article_title" in payload
     article_title = payload.get("article_title")
     if article_title is not None and not isinstance(article_title, str):
         errors.append("article_title must be a string")
 
+    article_content_supplied = "article_content" in payload
     article_content = payload.get("article_content")
     if article_content is not None:
         if not isinstance(article_content, str):
             errors.append("article_content must be a string")
-        elif len(article_content) < 50:
-            warnings.append("article_content is very short; script quality may be limited")
+
+    if (article_title_supplied or article_content_supplied) and (
+        article_title is None or isinstance(article_title, str)
+    ):
+        if article_content is None or isinstance(article_content, str):
+            try:
+                validate_article_inputs(article_title, article_content)
+            except ValueError as exc:
+                errors.append(str(exc))
 
     breaking_news = payload.get("breaking_news")
     if breaking_news is not None:

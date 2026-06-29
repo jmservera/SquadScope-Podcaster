@@ -9,6 +9,7 @@ import pytest
 
 from podcaster.config import HistoricalContext, PodcastConfig
 from podcaster.script_gen import (
+    ARTICLE_MIN_CHARS,
     MAX_ARTICLE_CHARS,
     MAX_HISTORICAL_CONTEXT_CHARS,
     ScriptGenConfig,
@@ -16,6 +17,13 @@ from podcaster.script_gen import (
     _build_user_prompt,
     _format_script,
     generate_script,
+    validate_article_inputs,
+)
+
+VALID_ARTICLE_CONTENT = (
+    "This article walks through a meaningful product launch, the engineering tradeoffs behind "
+    "it, the rollout plan, customer reaction, and the platform implications for teams shipping "
+    "AI tools this week."
 )
 
 
@@ -90,6 +98,38 @@ class TestScriptGenConfig:
         assert config.ready is False
 
 
+class TestValidateArticleInputs:
+    def test_raises_when_article_title_empty(self):
+        with pytest.raises(ValueError, match="article_title.*empty"):
+            validate_article_inputs("", VALID_ARTICLE_CONTENT)
+
+    def test_raises_when_article_title_whitespace_only(self):
+        with pytest.raises(ValueError, match="article_title.*empty"):
+            validate_article_inputs("   ", VALID_ARTICLE_CONTENT)
+
+    def test_raises_when_article_content_empty(self):
+        with pytest.raises(ValueError, match="article_content.*empty"):
+            validate_article_inputs("Test Article", "")
+
+    def test_raises_when_article_content_whitespace_only(self):
+        with pytest.raises(ValueError, match="article_content.*empty"):
+            validate_article_inputs("Test Article", "   ")
+
+    def test_raises_when_article_content_too_short(self):
+        expected_message = (
+            rf"article_content is too short \({ARTICLE_MIN_CHARS - 1} chars\); "
+            rf"minimum is {ARTICLE_MIN_CHARS}"
+        )
+        with pytest.raises(
+            ValueError,
+            match=expected_message,
+        ):
+            validate_article_inputs("Test Article", "x" * (ARTICLE_MIN_CHARS - 1))
+
+    def test_accepts_valid_article_inputs(self):
+        validate_article_inputs("Test Article", VALID_ARTICLE_CONTENT)
+
+
 class TestGenerateScript:
     def test_generates_formatted_script(self):
         dialogue = "Theo: Welcome to Claracle!\nVera: Great to be here."
@@ -100,7 +140,7 @@ class TestGenerateScript:
             week="2026-W24",
             article_title="Test Article",
             article_url="https://example.com/article",
-            article_content="This is a test article about testing things.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=config,
             token_provider=_fake_token_provider,
             transport=transport,
@@ -135,7 +175,7 @@ class TestGenerateScript:
                 week="2026-W24",
                 article_title="Test",
                 article_url="https://example.com",
-                article_content="Content here.",
+                article_content=VALID_ARTICLE_CONTENT,
                 config=config,
                 token_provider=_fake_token_provider,
                 transport=transport,
@@ -186,7 +226,7 @@ class TestGenerateScript:
             week="2026-W24",
             article_title="Test",
             article_url="https://example.com",
-            article_content=injection_content,
+            article_content=f"{VALID_ARTICLE_CONTENT} {injection_content}",
             config=config,
             token_provider=_fake_token_provider,
             transport=capture_transport,
@@ -221,7 +261,7 @@ class TestGenerateScript:
             week="2026-W24",
             article_title="Custom",
             article_url="https://example.com",
-            article_content="Article about custom stuff.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=config,
             podcast_config=custom_config,
             token_provider=_fake_token_provider,
@@ -455,7 +495,7 @@ class TestSystemPromptWithDirections:
             week="2026-W24",
             article_title="Test",
             article_url="https://example.com",
-            article_content="Some content here.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=config,
             script_directions=directions,
             token_provider=_fake_token_provider,
@@ -480,7 +520,7 @@ class TestSystemPromptWithDirections:
             week="2026-W24",
             article_title="Test",
             article_url="https://example.com",
-            article_content="Some content here.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=config,
             historical_context=HistoricalContext(
                 summary="Hosts have tracked this market for several months already."
@@ -529,7 +569,7 @@ class TestSectionGuidance:
             week="2026-W24",
             article_title="Test Article",
             article_url="https://example.com/a",
-            article_content="An article about frameworks and agents.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=_mock_config(),
             token_provider=_fake_token_provider,
             transport=_make_transport(dialogue),
@@ -550,7 +590,7 @@ class TestSectionGuidance:
                 week="2026-W24",
                 article_title="Test Article",
                 article_url="https://example.com/a",
-                article_content="content",
+                article_content=VALID_ARTICLE_CONTENT,
                 config=_mock_config(),
                 token_provider=_fake_token_provider,
                 transport=_make_transport(dialogue),
@@ -572,7 +612,7 @@ class TestSectionGuidance:
                 week="2026-W24",
                 article_title="Test Article",
                 article_url="https://example.com/a",
-                article_content="content",
+                article_content=VALID_ARTICLE_CONTENT,
                 config=_mock_config(),
                 token_provider=_fake_token_provider,
                 transport=_make_transport(dialogue),
@@ -584,9 +624,28 @@ class TestSectionGuidance:
             week="2026-W24",
             article_title="Test Article",
             article_url="https://example.com/a",
-            article_content="content",
+            article_content=VALID_ARTICLE_CONTENT,
             config=_mock_config(),
             token_provider=_fake_token_provider,
             transport=_make_transport(dialogue),
         )
         assert "Theo: Welcome!" in script
+
+    def test_rejects_short_article_content_before_llm_call(self):
+        expected_message = (
+            rf"article_content is too short \({ARTICLE_MIN_CHARS - 1} chars\); "
+            rf"minimum is {ARTICLE_MIN_CHARS}"
+        )
+        with pytest.raises(
+            ValueError,
+            match=expected_message,
+        ):
+            generate_script(
+                week="2026-W24",
+                article_title="Test Article",
+                article_url="https://example.com/a",
+                article_content="x" * (ARTICLE_MIN_CHARS - 1),
+                config=_mock_config(),
+                token_provider=_fake_token_provider,
+                transport=_make_transport("Theo: Welcome!\nVera: Great to be here."),
+            )

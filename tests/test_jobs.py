@@ -26,6 +26,11 @@ from podcaster.storage import (
 )
 from podcaster.validation import RESPONSE_KEYS
 
+VALID_ARTICLE_CONTENT = (
+    "This article explains a real product rollout, the engineering tradeoffs behind it, the "
+    "customer impact, and the competitive context the hosts should react to in detail this week."
+)
+
 
 def test_generation_job_warns_when_podcast_identity_absent(caplog) -> None:
     # Issue #545: when the payload omits podcast_config identity, the pipeline
@@ -45,25 +50,61 @@ def test_generation_job_warns_when_podcast_identity_absent(caplog) -> None:
     assert any("podcast_config identity absent" in r.getMessage() for r in caplog.records)
 
 
-def test_generation_job_whitespace_article_title_uses_placeholder(caplog) -> None:
-    # Issue #545: a blank/whitespace article_title must be treated as absent —
-    # the placeholder is used and the absence is logged (not the raw whitespace).
+def test_generation_job_whitespace_article_title_raises_value_error() -> None:
     artifact_root = Path(".test-artifacts-545c")
     shutil.rmtree(artifact_root, ignore_errors=True)
     storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
 
-    with caplog.at_level(logging.WARNING):
+    with pytest.raises(ValueError, match="article_title is missing or empty"):
         run_generation_job(
             {
                 "week": "2026-W23",
                 "article_url": "https://example.com/article",
                 "article_title": "   ",
+                "article_content": VALID_ARTICLE_CONTENT,
             },
             storage=storage,
             now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
         )
     shutil.rmtree(artifact_root, ignore_errors=True)
-    assert any("article_title absent" in r.getMessage() for r in caplog.records)
+
+
+def test_generation_job_whitespace_article_content_raises_value_error() -> None:
+    artifact_root = Path(".test-artifacts-545d")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    with pytest.raises(ValueError, match="article_content is missing or empty"):
+        run_generation_job(
+            {
+                "week": "2026-W23",
+                "article_url": "https://example.com/article",
+                "article_title": "A Real Title",
+                "article_content": "   ",
+            },
+            storage=storage,
+            now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+        )
+    shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_generation_job_short_article_content_raises_value_error() -> None:
+    artifact_root = Path(".test-artifacts-545e")
+    shutil.rmtree(artifact_root, ignore_errors=True)
+    storage = LocalStorageBackend(artifact_root, "https://example.invalid/artifacts")
+
+    with pytest.raises(ValueError, match="article_content is too short"):
+        run_generation_job(
+            {
+                "week": "2026-W23",
+                "article_url": "https://example.com/article",
+                "article_title": "A Real Title",
+                "article_content": "too short",
+            },
+            storage=storage,
+            now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+        )
+    shutil.rmtree(artifact_root, ignore_errors=True)
 
 
 def test_generation_job_silent_when_podcast_identity_present(caplog) -> None:
@@ -82,6 +123,7 @@ def test_generation_job_silent_when_podcast_identity_present(caplog) -> None:
                     "host_a": {"name": "Ada"},
                     "host_b": {"name": "Bo"},
                 },
+                "article_content": VALID_ARTICLE_CONTENT,
             },
             storage=storage,
             now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
@@ -959,7 +1001,7 @@ def test_llm_script_generation_replaces_placeholder_when_article_content_provide
             "week": "2026-W24",
             "article_url": "https://example.com/ai-article",
             "article_title": "AI Revolution",
-            "article_content": "This article discusses the latest AI developments in June 2026.",
+            "article_content": VALID_ARTICLE_CONTENT,
         },
         storage=storage,
         now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc),
@@ -1020,7 +1062,7 @@ def test_llm_script_generation_falls_back_on_failure(monkeypatch) -> None:
             "week": "2026-W24",
             "article_url": "https://example.com/ai-article",
             "article_title": "AI Revolution",
-            "article_content": "Some article content here.",
+            "article_content": VALID_ARTICLE_CONTENT,
         },
         storage=storage,
         now=datetime(2026, 6, 12, 10, 0, 0, tzinfo=timezone.utc),

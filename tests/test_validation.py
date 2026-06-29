@@ -41,6 +41,27 @@ def test_missing_required_fields_return_errors() -> None:
     assert "article_url is required" in errors
 
 
+def test_rejects_short_or_missing_article_inputs_when_article_fields_are_supplied() -> None:
+    errors = validate_payload(
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "article_title": "Test Article",
+            "article_content": "too short",
+        }
+    )
+    assert any("article_content is too short" in error for error in errors)
+
+    errors = validate_payload(
+        {
+            "week": "2026-W23",
+            "article_url": "https://example.com/article",
+            "article_title": "Test Article",
+        }
+    )
+    assert any("article_content is missing or empty" in error for error in errors)
+
+
 def test_rejects_bad_types_and_urls() -> None:
     errors = validate_payload(
         {

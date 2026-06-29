@@ -26,7 +26,7 @@ from podcaster.costs import (
 from podcaster.generation import checksum, generate_artifacts, manifest_bytes
 from podcaster.prior_episodes import fetch_prior_episode_themes
 from podcaster.queue import enqueue_synthesis_job
-from podcaster.script_gen import ScriptGenConfig, generate_script
+from podcaster.script_gen import ScriptGenConfig, generate_script, validate_article_inputs
 from podcaster.sections import parse_script_sections, sections_to_metadata
 from podcaster.storage import StorageBackend, StoredArtifact, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
@@ -75,6 +75,8 @@ def run_generation_job(
             podcast_config.host_b.name,
             podcast_config.name,
         )
+    if "article_title" in payload or "article_content" in payload:
+        validate_article_inputs(payload.get("article_title"), payload.get("article_content"))
     storage = storage or create_storage_backend()
     month = current.strftime("%Y-%m")
     monthly_path = monthly_ledger_path(month)
