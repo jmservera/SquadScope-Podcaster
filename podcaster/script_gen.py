@@ -21,6 +21,7 @@ from dataclasses import replace as _dataclass_replace
 from typing import Any, Mapping
 from urllib.request import Request
 
+from podcaster.article_validation import ARTICLE_MIN_CHARS, validate_article_inputs
 from podcaster.config import HistoricalContext, HostConfig, PodcastConfig, ScriptDirections
 from podcaster.ownership_tone import (
     OWNERSHIP_TONE_PROMPT,
@@ -35,6 +36,15 @@ from podcaster.storage import ManagedIdentityTokenCredential
 from podcaster.tts import OPENAI_SCOPE, TokenProvider, Transport, TtsConfig
 
 logger = logging.getLogger("podcaster.script_gen")
+
+__all__ = [
+    "ARTICLE_MIN_CHARS",
+    "MAX_ARTICLE_CHARS",
+    "MAX_HISTORICAL_CONTEXT_CHARS",
+    "ScriptGenConfig",
+    "generate_script",
+    "validate_article_inputs",
+]
 
 # Maximum article content length sent to the LLM (chars). Longer articles are
 # truncated to stay within token limits. 12k chars ≈ 3k tokens.
@@ -628,6 +638,8 @@ def generate_script(
 
     if not config.ready:
         raise ValueError("script generation requires a configured Azure OpenAI chat endpoint")
+
+    validate_article_inputs(article_title, article_content)
 
     podcast_config = podcast_config or PodcastConfig()
 

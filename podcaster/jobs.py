@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from podcaster.article_validation import validate_article_inputs
 from podcaster.artifact_access import ACCESS_MODEL, artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.claim_extraction import claims_to_ledger_json, extract_claims
@@ -75,6 +76,8 @@ def run_generation_job(
             podcast_config.host_b.name,
             podcast_config.name,
         )
+    if "article_title" in payload or "article_content" in payload:
+        validate_article_inputs(payload.get("article_title"), payload.get("article_content"))
     storage = storage or create_storage_backend()
     month = current.strftime("%Y-%m")
     monthly_path = monthly_ledger_path(month)
