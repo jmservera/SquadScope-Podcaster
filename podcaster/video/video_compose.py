@@ -330,6 +330,16 @@ OUTRO_VIDEO_FADE_SECONDS = 2.0
 # (issue #355): the content must still occupy at least this many seconds.
 MIN_CONTENT_WINDOW_SECONDS = 1.0
 
+# Minimum on-screen lead-in (seconds) preserved for the first content segment —
+# the claracle.com weekly page / article "bridge" shown before the first repo is
+# named — when the intro bumper is trimmed off it (#588). The intro bumper covers
+# audio [0, intro_dur], so the weekly's visible time is ``first_seg − intro_dur``;
+# a pathologically long intro (e.g. a ~30s title card) drove that to ~0, hiding
+# the weekly scroll. This floor only engages in that degenerate case — when the
+# branded intro is shorter than the bridge it does not bind, so every repo stays
+# exactly at its measured audio cue.
+MIN_WEEKLY_LEAD_SECONDS = 8.0
+
 # --- Reusable intro/outro (#314, #319) ---
 # Stored once in the artifacts container and prepended/appended to every episode.
 INTRO_BLOB_PATH = "assets/video/intro.mp4"
@@ -676,6 +686,27 @@ def _build_fit_segment_cmd(
         "tv",
         str(output_path),
     ]
+
+
+def _trim_first_for_intro(first_duration: float, intro_dur: float) -> float:
+    """Trim the first content segment by the intro bumper, preserving a lead-in.
+
+    The intro bumper plays over audio ``[0, intro_dur]`` (the spoken welcome), so
+    the first content segment — the claracle.com weekly page / article bridge —
+    is trimmed by ``intro_dur`` to stay aligned with the audio (issue #544).
+
+    A pathologically long intro (e.g. a ~30s title card, #586) drove that trim to
+    ``~0``, swallowing the whole pre-first-repo bridge so the weekly scroll
+    appeared far too briefly or not at all (#588). Floor the result at
+    :data:`MIN_WEEKLY_LEAD_SECONDS` (never above the segment's natural length) so
+    the weekly always keeps a minimum on-screen lead-in. When the intro is shorter
+    than the bridge the floor does not bind and the trim is unchanged, so every
+    repo stays exactly at its measured audio cue.
+    """
+    if intro_dur <= 0:
+        return first_duration
+    lead_floor = min(first_duration, MIN_WEEKLY_LEAD_SECONDS)
+    return max(first_duration - intro_dur, lead_floor)
 
 
 def _fit_target_durations(
@@ -2415,12 +2446,14 @@ def compose_video(
         # is proportionally squeezed into the window AND shifted by intro_dur,
         # drifting each repo away from when the hosts actually name it. After the
         # trim the content represents audio [intro_dur, audio - outro_dur] at 1:1.
-        # Clamp only to 0 here and let _fit_target_durations apply the single
-        # xfade-valid floor (transition + 0.5) consistently, so the proportional
-        # scaling is not skewed by a pre-applied floor when the intro/outro span
-        # exceeds the first/last segment length.
+        # The first-segment trim additionally preserves a minimum weekly/article
+        # lead-in (#588) so a pathologically long intro can never erase the
+        # pre-first-repo bridge; the outro trim clamps only to 0 and lets
+        # _fit_target_durations apply the single xfade-valid floor (transition +
+        # 0.5) consistently, so the proportional scaling is not skewed by a
+        # pre-applied floor when the outro span exceeds the last segment length.
         if plan_durations and intro_dur > 0:
-            plan_durations[0] = max(plan_durations[0] - intro_dur, 0.0)
+            plan_durations[0] = _trim_first_for_intro(plan_durations[0], intro_dur)
         if plan_durations and outro_dur > 0:
             plan_durations[-1] = max(plan_durations[-1] - outro_dur, 0.0)
         fit_durations = _fit_target_durations(plan_durations, content_window, transition_duration)
