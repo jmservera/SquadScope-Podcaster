@@ -24,6 +24,7 @@ from podcaster.video.video_compose import (
     ENCODE_PRESET,
     INTRO_BLOB_PATH,
     LOWER_THIRD_DURATION,
+    MIN_WEEKLY_LEAD_SECONDS,
     OUTPUT_FPS,
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
@@ -53,6 +54,7 @@ from podcaster.video.video_compose import (
     _join_intro_outro,
     _probe_drawtext_ffmpeg,
     _splice_section_cards,
+    _trim_first_for_intro,
     apply_sync,
     build_sync_map,
     compose_video,
@@ -175,6 +177,44 @@ class TestFitTargetDurations:
         # An audio window smaller than the floor still yields a positive target.
         targets = _fit_target_durations([10.0], -5.0, 0.0)
         assert targets[0] > 0
+
+
+# --- Tests for _trim_first_for_intro (weekly scroll lead-in, #588) ---
+
+
+class TestTrimFirstForIntro:
+    def test_no_intro_is_noop(self):
+        assert _trim_first_for_intro(40.0, 0.0) == 40.0
+
+    def test_normal_intro_trims_exactly_keeping_repo_cues(self):
+        # Branded 18s intro, 40s weekly bridge -> 22s weekly, identical to the
+        # old `max(first - intro, 0)` behaviour (floor does not bind), so every
+        # repo stays at its measured audio cue.
+        first = 40.0
+        intro = 18.0
+        trimmed = _trim_first_for_intro(first, intro)
+        assert trimmed == pytest.approx(22.0)
+        assert trimmed == pytest.approx(max(first - intro, 0.0))
+
+    def test_long_intro_floors_to_minimum_lead_in(self):
+        # A pathologically long ~30s title card would zero the 28s bridge; the
+        # floor keeps a minimum visible weekly lead-in instead of erasing it.
+        trimmed = _trim_first_for_intro(28.0, 30.0)
+        assert trimmed == pytest.approx(MIN_WEEKLY_LEAD_SECONDS)
+        assert trimmed > 0.0
+
+    def test_floor_never_inflates_a_short_first_segment(self):
+        # A first segment naturally shorter than the floor is never grown beyond
+        # its own length (which would push the whole timeline).
+        first = 5.0
+        trimmed = _trim_first_for_intro(first, 30.0)
+        assert trimmed == pytest.approx(first)
+        assert trimmed <= first
+
+    def test_boundary_exact_floor(self):
+        # When the trim lands exactly at the floor, it is preserved.
+        trimmed = _trim_first_for_intro(MIN_WEEKLY_LEAD_SECONDS + 10.0, 10.0)
+        assert trimmed == pytest.approx(MIN_WEEKLY_LEAD_SECONDS)
 
 
 # --- Tests for _build_xfade_filter ---

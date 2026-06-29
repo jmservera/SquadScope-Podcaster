@@ -21,6 +21,11 @@ from podcaster.script_gen import (
     generate_script,
 )
 
+VALID_ARTICLE_CONTENT = (
+    "This article surveys a real software shift, the reasons teams are adopting it, the "
+    "practical tradeoffs involved, and the broader developer impact the hosts should analyze."
+)
+
 
 class TestBannedPhraseDetection:
     @pytest.mark.parametrize(
@@ -183,7 +188,7 @@ class TestGenerateScriptRepairFlow:
             week="2026-W26",
             article_title="Test",
             article_url="https://example.com/a",
-            article_content="x" * 100,
+            article_content=VALID_ARTICLE_CONTENT,
             config=_mock_config(),
             token_provider=_fake_token_provider,
             transport=transport,

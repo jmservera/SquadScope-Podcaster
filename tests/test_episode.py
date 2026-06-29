@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from podcaster import config as config_mod
 from podcaster import episode
 from podcaster.audio import MusicMixSpec
 from podcaster.config import BackchannelConfig
@@ -404,6 +405,8 @@ def test_synthesize_episode_reuses_rendered_segment_durations_for_timestamps(tmp
 
 
 def test_synthesize_episode_wires_enabled_backchannels_to_render(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_mod, "BACKCHANNEL_FEATURE_ENABLED", True)
+
     script = "\n".join(
         [
             "Title: Test",
@@ -476,11 +479,18 @@ def test_synthesize_episode_wires_enabled_backchannels_to_render(tmp_path, monke
     assert "right" in requested_inputs
 
 
-@pytest.mark.parametrize("backchannel_config", [None, BackchannelConfig()])
-def test_synthesize_episode_skips_backchannels_when_disabled(
+@pytest.mark.parametrize(
+    "backchannel_config",
+    [
+        None,
+        BackchannelConfig(),
+        BackchannelConfig(enabled=True, min_gap_seconds=1, max_gap_seconds=1),
+    ],
+)
+def test_synthesize_episode_skips_backchannels_when_disabled_or_gated(
     tmp_path, monkeypatch, backchannel_config
 ):
-    """Disabled-by-default contract: no extra probe pass and no overlays."""
+    """Disabled/gated contract: no extra probe pass and zero reaction overlays."""
 
     script = "\n".join(
         [
@@ -545,7 +555,8 @@ def test_synthesize_episode_skips_backchannels_when_disabled(
     # Disabled path must not run the dedicated duration-probe pass and must not
     # hand any backchannel overlays to the renderer.
     assert ffprobe_calls == 0
-    assert render_kwargs["backchannels"] is None
+    assert backchannel_config is None or backchannel_config.enabled is False
+    assert not render_kwargs["backchannels"]
     assert render_kwargs["precomputed_segment_durations"] is None
     # No leftover scratch directory from the backchannel branch.
     assert not list(output_path.parent.glob(".backchannels-*"))
@@ -613,9 +624,8 @@ def test_build_realized_metadata_is_parallel_to_script_plan():
     assert warnings == ()
 
 
-def test_build_realized_metadata_flags_repo_urls_without_visual_markers():
-    """Regression (#553): repo URLs but no '## Visual: repo' markers must be
-    flagged — not silently collapsed into a generic plan."""
+def test_build_realized_metadata_backfills_repo_urls_without_visual_markers():
+    """Regression (#579): unmarked repo URLs are backfilled into repo topics."""
     from podcaster.script_plan import parse_script_plan
 
     plan = parse_script_plan(_UNMARKED_REPO_SCRIPT, None)
@@ -628,8 +638,8 @@ def test_build_realized_metadata_flags_repo_urls_without_visual_markers():
         speech_offset_seconds=0.0,
     )
     assert metadata is not None
-    assert not metadata.repo_topics
-    assert any("Visual: repo" in w for w in warnings)
+    assert [topic.repo_url for topic in metadata.repo_topics] == ["https://github.com/owner/repo-a"]
+    assert warnings == ()
 
 
 def test_build_realized_metadata_skips_on_segment_mismatch():

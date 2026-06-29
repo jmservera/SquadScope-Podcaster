@@ -9,6 +9,11 @@ from podcaster.jobs import run_generation_job
 from podcaster.prior_episodes import fetch_prior_episode_themes
 from podcaster.storage import LocalStorageBackend
 
+VALID_ARTICLE_CONTENT = (
+    "This article covers a fresh platform release, the migration strategy behind it, the "
+    "customer impact, and the operational lessons the hosts should react to on air this week."
+)
+
 
 def test_local_storage_backend_list_blobs_returns_prefix_matches(tmp_path: Path) -> None:
     storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
@@ -128,7 +133,7 @@ def test_run_generation_job_threads_auto_prior_episode_themes(monkeypatch, tmp_p
             "week": "2026-W28",
             "article_url": "https://example.com/latest",
             "article_title": "Latest platform story",
-            "article_content": "Fresh article content.",
+            "article_content": VALID_ARTICLE_CONTENT,
             "script_directions": {
                 "historical_context": {
                     "summary": "The hosts have tracked this market for weeks.",

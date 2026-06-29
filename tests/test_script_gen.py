@@ -7,6 +7,8 @@ from urllib.request import Request
 
 import pytest
 
+import podcaster.script_gen as script_gen
+from podcaster.article_validation import ARTICLE_MIN_CHARS, validate_article_inputs
 from podcaster.config import HistoricalContext, PodcastConfig
 from podcaster.script_gen import (
     MAX_ARTICLE_CHARS,
@@ -15,7 +17,15 @@ from podcaster.script_gen import (
     _build_system_prompt,
     _build_user_prompt,
     _format_script,
+    extract_spoken_cue,
     generate_script,
+    strip_leaked_directions,
+)
+
+VALID_ARTICLE_CONTENT = (
+    "This article walks through a meaningful product launch, the engineering tradeoffs behind "
+    "it, the rollout plan, customer reaction, and the platform implications for teams shipping "
+    "AI tools this week."
 )
 
 
@@ -90,6 +100,42 @@ class TestScriptGenConfig:
         assert config.ready is False
 
 
+class TestValidateArticleInputs:
+    def test_script_gen_reexports_article_validation_helpers(self):
+        assert script_gen.ARTICLE_MIN_CHARS == ARTICLE_MIN_CHARS
+        assert script_gen.validate_article_inputs is validate_article_inputs
+
+    def test_raises_when_article_title_empty(self):
+        with pytest.raises(ValueError, match="article_title.*empty"):
+            validate_article_inputs("", VALID_ARTICLE_CONTENT)
+
+    def test_raises_when_article_title_whitespace_only(self):
+        with pytest.raises(ValueError, match="article_title.*empty"):
+            validate_article_inputs("   ", VALID_ARTICLE_CONTENT)
+
+    def test_raises_when_article_content_empty(self):
+        with pytest.raises(ValueError, match="article_content.*empty"):
+            validate_article_inputs("Test Article", "")
+
+    def test_raises_when_article_content_whitespace_only(self):
+        with pytest.raises(ValueError, match="article_content.*empty"):
+            validate_article_inputs("Test Article", "   ")
+
+    def test_raises_when_article_content_too_short(self):
+        expected_message = (
+            rf"article_content is too short \({ARTICLE_MIN_CHARS - 1} chars\); "
+            rf"minimum is {ARTICLE_MIN_CHARS}"
+        )
+        with pytest.raises(
+            ValueError,
+            match=expected_message,
+        ):
+            validate_article_inputs("Test Article", "x" * (ARTICLE_MIN_CHARS - 1))
+
+    def test_accepts_valid_article_inputs(self):
+        validate_article_inputs("Test Article", VALID_ARTICLE_CONTENT)
+
+
 class TestGenerateScript:
     def test_generates_formatted_script(self):
         dialogue = "Theo: Welcome to Claracle!\nVera: Great to be here."
@@ -100,7 +146,7 @@ class TestGenerateScript:
             week="2026-W24",
             article_title="Test Article",
             article_url="https://example.com/article",
-            article_content="This is a test article about testing things.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=config,
             token_provider=_fake_token_provider,
             transport=transport,
@@ -135,7 +181,7 @@ class TestGenerateScript:
                 week="2026-W24",
                 article_title="Test",
                 article_url="https://example.com",
-                article_content="Content here.",
+                article_content=VALID_ARTICLE_CONTENT,
                 config=config,
                 token_provider=_fake_token_provider,
                 transport=transport,
@@ -186,7 +232,7 @@ class TestGenerateScript:
             week="2026-W24",
             article_title="Test",
             article_url="https://example.com",
-            article_content=injection_content,
+            article_content=f"{VALID_ARTICLE_CONTENT} {injection_content}",
             config=config,
             token_provider=_fake_token_provider,
             transport=capture_transport,
@@ -221,7 +267,7 @@ class TestGenerateScript:
             week="2026-W24",
             article_title="Custom",
             article_url="https://example.com",
-            article_content="Article about custom stuff.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=config,
             podcast_config=custom_config,
             token_provider=_fake_token_provider,
@@ -455,7 +501,7 @@ class TestSystemPromptWithDirections:
             week="2026-W24",
             article_title="Test",
             article_url="https://example.com",
-            article_content="Some content here.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=config,
             script_directions=directions,
             token_provider=_fake_token_provider,
@@ -480,7 +526,7 @@ class TestSystemPromptWithDirections:
             week="2026-W24",
             article_title="Test",
             article_url="https://example.com",
-            article_content="Some content here.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=config,
             historical_context=HistoricalContext(
                 summary="Hosts have tracked this market for several months already."
@@ -529,7 +575,7 @@ class TestSectionGuidance:
             week="2026-W24",
             article_title="Test Article",
             article_url="https://example.com/a",
-            article_content="An article about frameworks and agents.",
+            article_content=VALID_ARTICLE_CONTENT,
             config=_mock_config(),
             token_provider=_fake_token_provider,
             transport=_make_transport(dialogue),
@@ -550,7 +596,7 @@ class TestSectionGuidance:
                 week="2026-W24",
                 article_title="Test Article",
                 article_url="https://example.com/a",
-                article_content="content",
+                article_content=VALID_ARTICLE_CONTENT,
                 config=_mock_config(),
                 token_provider=_fake_token_provider,
                 transport=_make_transport(dialogue),
@@ -572,7 +618,7 @@ class TestSectionGuidance:
                 week="2026-W24",
                 article_title="Test Article",
                 article_url="https://example.com/a",
-                article_content="content",
+                article_content=VALID_ARTICLE_CONTENT,
                 config=_mock_config(),
                 token_provider=_fake_token_provider,
                 transport=_make_transport(dialogue),
@@ -584,9 +630,139 @@ class TestSectionGuidance:
             week="2026-W24",
             article_title="Test Article",
             article_url="https://example.com/a",
-            article_content="content",
+            article_content=VALID_ARTICLE_CONTENT,
             config=_mock_config(),
             token_provider=_fake_token_provider,
             transport=_make_transport(dialogue),
         )
         assert "Theo: Welcome!" in script
+
+    def test_rejects_short_article_content_before_llm_call(self):
+        expected_message = (
+            rf"article_content is too short \({ARTICLE_MIN_CHARS - 1} chars\); "
+            rf"minimum is {ARTICLE_MIN_CHARS}"
+        )
+        with pytest.raises(
+            ValueError,
+            match=expected_message,
+        ):
+            generate_script(
+                week="2026-W24",
+                article_title="Test Article",
+                article_url="https://example.com/a",
+                article_content="x" * (ARTICLE_MIN_CHARS - 1),
+                config=_mock_config(),
+                token_provider=_fake_token_provider,
+                transport=_make_transport("Theo: Welcome!\nVera: Great to be here."),
+            )
+
+
+class TestHummsGuidance:
+    def test_prompt_includes_humms_guidance(self):
+        prompt = _build_system_prompt(PodcastConfig())
+        assert "HUMMS" in prompt
+        assert "Mm-hmm" in prompt
+
+    def test_humms_are_spoken_turns_not_a_mix_layer(self):
+        prompt = _build_system_prompt(PodcastConfig())
+        assert "standalone acknowledgment turn" in prompt
+        assert "spoken aloud" in prompt
+        assert "NOT stage" in prompt
+
+
+SHOW_INTRO_CUE = (
+    "Start with a one-line show description: "
+    '"Claracle — where AI-powered GitHub trend analysis meets the biggest stories '
+    'from TechCrunch, and the tech blogosphere."'
+)
+SHOW_INTRO_LITERAL = (
+    "Claracle — where AI-powered GitHub trend analysis meets the biggest stories "
+    "from TechCrunch, and the tech blogosphere."
+)
+SPOTIFY_CTA_CUE = (
+    "Before the AI disclosure, include a natural call-to-action: "
+    "'If you want to stay ahead of tech trends, follow Claracle on Spotify so you "
+    "never miss a signal.' Make it conversational, not salesy."
+)
+
+
+class TestExtractSpokenCue:
+    """extract_spoken_cue isolates the quoted spoken line from an authoring cue."""
+
+    def test_extracts_quoted_show_description(self):
+        assert extract_spoken_cue(SHOW_INTRO_CUE) == SHOW_INTRO_LITERAL
+
+    def test_extracts_quoted_cta(self):
+        assert extract_spoken_cue(SPOTIFY_CTA_CUE) == (
+            "If you want to stay ahead of tech trends, follow Claracle on Spotify "
+            "so you never miss a signal."
+        )
+
+    def test_pure_direction_returns_none(self):
+        assert extract_spoken_cue("One provocative stat from this week's data.") is None
+
+    def test_double_quoted_body_keeps_contraction(self):
+        # An apostrophe inside a double-quoted span must not terminate the span.
+        cue = "Start with a one-line show description: \"Don't miss this week's signal.\""
+        assert extract_spoken_cue(cue) == "Don't miss this week's signal."
+
+    def test_apostrophe_in_plain_text_is_not_a_span(self):
+        # A stray apostrophe (contraction) in unquoted guidance is not a span.
+        assert extract_spoken_cue("Keep it short; don't ramble or editorialize.") is None
+
+    def test_empty_and_none(self):
+        assert extract_spoken_cue("") is None
+        assert extract_spoken_cue(None) is None
+
+
+class TestStripLeakedDirections:
+    """strip_leaked_directions removes leaked instruction text from spoken lines."""
+
+    def test_strips_show_intro_instruction_prefix(self):
+        dialogue = (
+            f"## Section: Show Intro\nClarabel: {SHOW_INTRO_CUE}\nJoracle: Welcome to the show."
+        )
+        cleaned = strip_leaked_directions(dialogue, [SHOW_INTRO_CUE])
+        assert "Start with a one-line show description" not in cleaned
+        assert f"Clarabel: {SHOW_INTRO_LITERAL}" in cleaned
+        assert "Joracle: Welcome to the show." in cleaned
+
+    def test_strips_cta_wrapping_instructions(self):
+        dialogue = f"Joracle: {SPOTIFY_CTA_CUE}"
+        cleaned = strip_leaked_directions(dialogue, [SPOTIFY_CTA_CUE])
+        assert "include a natural call-to-action" not in cleaned
+        assert "conversational, not salesy" not in cleaned
+        assert "follow Claracle on Spotify" in cleaned
+
+    def test_preserves_section_and_visual_headers(self):
+        dialogue = (
+            "## Section: Show Intro\n"
+            "## Visual: repo https://github.com/foo/bar\n"
+            "Clarabel: Hello there."
+        )
+        assert strip_leaked_directions(dialogue, [SHOW_INTRO_CUE]) == dialogue
+
+    def test_no_quoted_cue_is_noop(self):
+        dialogue = "Clarabel: We open with a provocative question."
+        assert strip_leaked_directions(dialogue, ["One provocative stat."]) == dialogue
+
+    def test_idempotent(self):
+        dialogue = f"Clarabel: {SHOW_INTRO_CUE}"
+        once = strip_leaked_directions(dialogue, [SHOW_INTRO_CUE])
+        twice = strip_leaked_directions(once, [SHOW_INTRO_CUE])
+        assert once == twice
+
+
+class TestShowIntroPromptLiteral:
+    """The episode structure presents only the spoken show-intro words."""
+
+    def test_structure_uses_spoken_literal_not_instruction(self):
+        from podcaster.config import EpisodeStyle, ScriptDirections
+
+        directions = ScriptDirections(
+            episode_style=EpisodeStyle(segment_order=("Show Intro", "Outro")),
+            show_intro=SHOW_INTRO_CUE,
+        )
+        prompt = _build_system_prompt(PodcastConfig(), directions)
+        assert SHOW_INTRO_LITERAL in prompt
+        assert "Start with a one-line show description" not in prompt

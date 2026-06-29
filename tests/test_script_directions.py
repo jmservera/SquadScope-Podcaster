@@ -29,9 +29,9 @@ class TestScriptDirections:
             {"script_directions": {"backchannels": {"enabled": True}}}
         )
 
-        assert top_level.backchannels.enabled is True
+        assert top_level.backchannels.enabled is False
         assert top_level.backchannels.min_gap_seconds == 12
-        assert nested.backchannels.enabled is True
+        assert nested.backchannels.enabled is False
 
     def test_full_payload_parses(self) -> None:
         payload = {

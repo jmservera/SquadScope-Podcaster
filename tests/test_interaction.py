@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+from podcaster import config as config_mod
 from podcaster import interaction as I
 from podcaster.config import BACKCHANNEL_LIBRARY, BackchannelConfig
+
+
+@pytest.fixture(autouse=True)
+def _enable_recoverable_backchannel_feature(monkeypatch):
+    monkeypatch.setattr(config_mod, "BACKCHANNEL_FEATURE_ENABLED", True)
 
 
 def test_assign_turn_ids_uses_speaker_letter_and_index():
@@ -42,6 +48,18 @@ def test_is_safe_anchor_blocks_numbers_urls_repos_and_tech_terms():
 def test_build_interaction_map_disabled_returns_empty():
     turns = I.assign_turn_ids([("host_a", "We built it, then we shipped it, and it worked.")])
     m = I.build_interaction_map(turns, [30.0], BackchannelConfig(enabled=False))
+    assert len(m) == 0
+    assert m.to_dict() == {"interactions": []}
+
+
+def test_build_interaction_map_feature_gate_returns_empty(monkeypatch):
+    monkeypatch.setattr(config_mod, "BACKCHANNEL_FEATURE_ENABLED", False)
+
+    turns = I.assign_turn_ids([("host_a", "We built it, then we shipped it, and it worked.")])
+    cfg = BackchannelConfig(enabled=True, min_gap_seconds=1)
+    m = I.build_interaction_map(turns, [30.0], cfg)
+
+    assert cfg.enabled is False
     assert len(m) == 0
     assert m.to_dict() == {"interactions": []}
 
