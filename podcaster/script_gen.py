@@ -241,6 +241,27 @@ def _build_section_guidance() -> str:
     )
 
 
+def _build_humms_guidance() -> str:
+    """Build the HUMMS guidance block: short standalone acknowledgment turns.
+
+    Humms are reactions like "Mm-hmm", "Yeah", "Right", "Exactly" written as
+    their own SPOKEN dialogue lines so they are synthesised on the master audio
+    timeline alongside every other turn. This replaces the deprecated audio mix
+    layer (#578): keeping reactions in-script avoids amplitude dilution and
+    overlap issues while still making the conversation feel alive.
+    """
+    return (
+        "\nHUMMS (short reactions — feel alive without a mix layer):\n"
+        "- Occasionally drop a SHORT standalone acknowledgment turn from the listening "
+        'host: "Mm-hmm.", "Yeah.", "Right.", "Exactly.", "Oh nice." — 1-4 words on its '
+        "own dialogue line.\n"
+        "- Write them as ordinary turns using the listening host's normal name prefix — "
+        "NOT stage directions, sound effects, or overlapping audio. They are spoken aloud.\n"
+        "- Use them sparingly: roughly 1 every 4-6 exchanges, mid-conversation only, "
+        "never two in a row and never to open or close the episode.\n"
+    )
+
+
 # Human-readable English display names for the script-gen directive, keyed by
 # both bare language code and full locale. The directive instructs the model to
 # author the podcast ORIGINALLY in this language — never to translate English.
@@ -455,6 +476,7 @@ def _build_system_prompt(
     base += _build_historical_context_block(resolved_historical_context)
 
     base += _build_section_guidance()
+    base += _build_humms_guidance()
     base += build_visual_marker_guidance()
 
     if breaking_news:
