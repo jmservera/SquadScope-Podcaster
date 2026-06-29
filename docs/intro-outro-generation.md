@@ -126,6 +126,21 @@ az storage blob upload --account-name squadscopepo3f9a07d60de7 \
 > clear that cache on the worker (or it will reuse the previously downloaded
 > clips until the cache entry is removed).
 
+### Automatic seeding from the pipeline (#586)
+
+Instead of (or in addition to) the manual `az storage blob upload` above, the
+pipeline can seed the **branded** clips into the blobs itself so a stale title
+card can never hide them. Before composing, `run_video_generation()` calls
+`ensure_branded_intro_outro(storage)`
+(`podcaster/video/intro_outro.py`), which uploads `intro.mp4` / `outro.mp4` to
+`INTRO_BLOB_PATH` / `OUTRO_BLOB_PATH` and clears the local fetch cache.
+
+It reads the clips from the directory given by
+`PODCASTER_INTRO_OUTRO_ASSET_DIR` (default `scripts/intro-outro/output`). Stage
+the rendered branded clips there on the worker and the pipeline keeps the blobs
+in sync on every render. When the directory (or either clip) is absent it is a
+graceful no-op — the pipeline falls back to whatever clips are already stored.
+
 ## Storage in Azure Blob Storage
 
 The clips live in the **`podcaster-artifacts`** container under the `assets/video/`

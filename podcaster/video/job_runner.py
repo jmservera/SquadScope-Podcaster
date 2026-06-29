@@ -614,6 +614,15 @@ def run_video_generation(
             # document so overlapping workers stay individually observable.
             normalize_reporter = make_task_reporter(storage, job_id, stage=PipelineStage.COMPOSE)
 
+            # Branded intro/outro (#586): seed the standard branded bumpers into
+            # storage before composing so the real pipeline always uses them and
+            # they are never hidden by a stale title-card clip (which also
+            # swallows the pre-first-repo bridge, #588). Graceful no-op when the
+            # branded assets are not staged in the asset dir.
+            from podcaster.video.intro_outro import ensure_branded_intro_outro
+
+            ensure_branded_intro_outro(storage)
+
             output_dir = Path(tmp)
 
             # Per-phase timing/resource instrumentation for the performance

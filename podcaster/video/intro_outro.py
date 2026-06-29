@@ -19,14 +19,18 @@ from __future__ import annotations
 
 import html as html_mod
 import logging
+import os
 import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from podcaster.video.localization import overlay_copy_for
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from podcaster.storage import StorageBackend
 
 try:
     from playwright.sync_api import sync_playwright
@@ -791,6 +795,104 @@ def generate_outro_ffmpeg(
         width=config.width,
         height=config.height,
     )
+
+
+# --- Standard branded intro/outro seeding (#586) ---
+#
+# The real video pipeline fetches the intro/outro bumpers from the storage
+# blobs ``INTRO_BLOB_PATH`` / ``OUTRO_BLOB_PATH`` (see ``video_compose``). When a
+# plain ffmpeg *title card* ends up in those blobs (e.g. seeded by an earlier
+# run), the standard **branded** clips — the neon "Claracle Weekly Report" intro
+# and the full-credits outro produced by ``scripts/intro-outro`` — are hidden,
+# and an over-long title card swallows the pre-first-repo bridge (#588).
+#
+# ``ensure_branded_intro_outro`` ports the W27 manual-render workaround into the
+# pipeline: it uploads the rendered branded clips to the canonical blob paths and
+# invalidates the on-disk fetch cache so the branded clips always win over any
+# stale title card. It is a graceful no-op when the branded assets are absent, so
+# the pipeline still degrades to whatever clips are already stored.
+
+# Default location of the branded clips produced by ``scripts/intro-outro/render.sh``.
+# Overridable via the env var below so operators/CI can point at wherever the
+# rendered branded clips are staged at runtime (the rendered ``output/`` dir is
+# git-ignored and not bundled into the source tree).
+INTRO_OUTRO_ASSET_DIR_ENV = "PODCASTER_INTRO_OUTRO_ASSET_DIR"
+_DEFAULT_INTRO_OUTRO_ASSET_DIR = (
+    Path(__file__).resolve().parents[2] / "scripts" / "intro-outro" / "output"
+)
+
+
+def branded_intro_outro_asset_dir() -> Path:
+    """Resolve the directory holding the branded ``intro.mp4`` / ``outro.mp4``.
+
+    Uses the :data:`INTRO_OUTRO_ASSET_DIR_ENV` env var when set, otherwise the
+    repo's ``scripts/intro-outro/output`` directory.
+    """
+    override = os.environ.get(INTRO_OUTRO_ASSET_DIR_ENV)
+    if override:
+        return Path(override).expanduser()
+    return _DEFAULT_INTRO_OUTRO_ASSET_DIR
+
+
+def ensure_branded_intro_outro(
+    storage: "StorageBackend",
+    *,
+    asset_dir: Path | str | None = None,
+) -> bool:
+    """Seed the standard branded intro/outro clips into storage (#586).
+
+    Uploads ``intro.mp4`` / ``outro.mp4`` from *asset_dir* (default
+    :func:`branded_intro_outro_asset_dir`) to ``INTRO_BLOB_PATH`` /
+    ``OUTRO_BLOB_PATH`` and clears the on-disk intro/outro fetch cache so the
+    branded clips win over any previously-cached or stored title card.
+
+    Both branded clips must be present for the seed to run — partial assets are a
+    no-op so a half-rendered asset dir never overwrites only one bumper.
+
+    Returns:
+        ``True`` when the branded clips were seeded, ``False`` when the assets are
+        absent (graceful no-op — the pipeline keeps using whatever is stored).
+    """
+    from podcaster.video.video_compose import (
+        INTRO_BLOB_PATH,
+        OUTRO_BLOB_PATH,
+        _default_intro_outro_cache_dir,
+    )
+
+    src_dir = Path(asset_dir) if asset_dir is not None else branded_intro_outro_asset_dir()
+    intro_src = src_dir / "intro.mp4"
+    outro_src = src_dir / "outro.mp4"
+    if not intro_src.is_file() or not outro_src.is_file():
+        logger.info(
+            "branded intro/outro assets not found in %s (intro=%s, outro=%s); "
+            "leaving stored bumpers unchanged",
+            src_dir,
+            intro_src.is_file(),
+            outro_src.is_file(),
+        )
+        return False
+
+    storage.put_bytes(INTRO_BLOB_PATH, intro_src.read_bytes(), "video/mp4")
+    storage.put_bytes(OUTRO_BLOB_PATH, outro_src.read_bytes(), "video/mp4")
+
+    # Invalidate the local fetch cache so the freshly-seeded branded clips win
+    # over any previously-downloaded title card.
+    cache_dir = _default_intro_outro_cache_dir()
+    for name in ("intro.mp4", "outro.mp4"):
+        cached = cache_dir / name
+        try:
+            if cached.exists():
+                cached.unlink()
+        except OSError:  # pragma: no cover - best-effort cache invalidation
+            logger.debug("could not remove cached intro/outro clip %s", cached, exc_info=True)
+
+    logger.info(
+        "seeded branded intro/outro from %s -> %s / %s (fetch cache cleared)",
+        src_dir,
+        INTRO_BLOB_PATH,
+        OUTRO_BLOB_PATH,
+    )
+    return True
 
 
 # --- End credits sequence (#300) ---
