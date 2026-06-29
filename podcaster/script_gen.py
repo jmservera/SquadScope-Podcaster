@@ -255,8 +255,8 @@ def _build_humms_guidance() -> str:
         "- Occasionally drop a SHORT standalone acknowledgment turn from the listening "
         'host: "Mm-hmm.", "Yeah.", "Right.", "Exactly.", "Oh nice." — 1-4 words on its '
         "own dialogue line.\n"
-        "- Write them as ordinary host turns (same speaker prefix) — NOT stage "
-        "directions, sound effects, or overlapping audio. They are spoken aloud.\n"
+        "- Write them as ordinary turns using the listening host's normal name prefix — "
+        "NOT stage directions, sound effects, or overlapping audio. They are spoken aloud.\n"
         "- Use them sparingly: roughly 1 every 4-6 exchanges, mid-conversation only, "
         "never two in a row and never to open or close the episode.\n"
     )
