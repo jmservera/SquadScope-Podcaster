@@ -195,9 +195,9 @@ def capped_record_seconds(duration_seconds: float) -> float:
     """Clamp a planned segment duration to the per-clip recording cap (#592).
 
     Returns ``min(duration_seconds, MAX_CLIP_RECORD_SECONDS)`` when the cap is
-    active (positive) and the planned duration exceeds it, logging once that the
-    clip is being truncated; otherwise returns *duration_seconds* unchanged. A
-    non-positive :data:`MAX_CLIP_RECORD_SECONDS` disables the cap so callers can
+    active (positive) and the planned duration exceeds it, logging a warning that
+    the clip is being truncated; otherwise returns *duration_seconds* unchanged.
+    A non-positive :data:`MAX_CLIP_RECORD_SECONDS` disables the cap so callers can
     opt out via the ``VIDEO_MAX_CLIP_RECORD_SECONDS`` env var.
     """
     cap = MAX_CLIP_RECORD_SECONDS

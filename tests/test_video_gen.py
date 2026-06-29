@@ -1273,9 +1273,6 @@ class TestRecordingCap:
 
         seen: dict[str, float] = {}
 
-        def _capture_smooth(page, duration_seconds, capturer=None, **kwargs):
-            seen["scroll"] = duration_seconds
-
         with (
             patch("podcaster.video.video_gen.MAX_CLIP_RECORD_SECONDS", 600),
             patch("podcaster.video.video_gen._render_generic_background") as bg,
