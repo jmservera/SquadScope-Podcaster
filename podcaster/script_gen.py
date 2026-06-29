@@ -21,6 +21,7 @@ from dataclasses import replace as _dataclass_replace
 from typing import Any, Mapping
 from urllib.request import Request
 
+from podcaster.article_validation import ARTICLE_MIN_CHARS, validate_article_inputs
 from podcaster.config import HistoricalContext, HostConfig, PodcastConfig, ScriptDirections
 from podcaster.ownership_tone import (
     OWNERSHIP_TONE_PROMPT,
@@ -36,14 +37,18 @@ from podcaster.tts import OPENAI_SCOPE, TokenProvider, Transport, TtsConfig
 
 logger = logging.getLogger("podcaster.script_gen")
 
+__all__ = [
+    "ARTICLE_MIN_CHARS",
+    "MAX_ARTICLE_CHARS",
+    "MAX_HISTORICAL_CONTEXT_CHARS",
+    "ScriptGenConfig",
+    "generate_script",
+    "validate_article_inputs",
+]
+
 # Maximum article content length sent to the LLM (chars). Longer articles are
 # truncated to stay within token limits. 12k chars ≈ 3k tokens.
 MAX_ARTICLE_CHARS = 12000
-
-# Minimum usable article body length required for script generation. Shorter
-# inputs are almost always crawl failures, summaries, or otherwise incomplete
-# source material that should be fixed upstream instead of sent to the LLM.
-ARTICLE_MIN_CHARS = 150
 
 # Maximum generated script length (chars). Overly long scripts are truncated.
 MAX_SCRIPT_CHARS = 8000
@@ -58,31 +63,6 @@ MAX_HISTORICAL_CONTEXT_CHARS = 3000
 MAX_OWNERSHIP_REPAIRS = 1
 
 DEFAULT_CHAT_API_VERSION = "2024-12-01-preview"
-
-
-def validate_article_inputs(article_title: object, article_content: object) -> None:
-    """Reject missing/blank/undersized article inputs before any LLM call."""
-
-    normalized_title = article_title.strip() if isinstance(article_title, str) else ""
-    if not normalized_title:
-        raise ValueError(
-            "article_title is missing or empty — cannot generate script; provide the source "
-            "article title in the job payload"
-        )
-
-    normalized_content = article_content.strip() if isinstance(article_content, str) else ""
-    if not normalized_content:
-        raise ValueError(
-            "article_content is missing or empty — cannot generate script; provide the full "
-            "article body in the job payload"
-        )
-
-    if len(normalized_content) < ARTICLE_MIN_CHARS:
-        raise ValueError(
-            "article_content is too short "
-            f"({len(normalized_content)} chars); minimum is {ARTICLE_MIN_CHARS} — "
-            "cannot generate script; provide the full scraped article text before retrying"
-        )
 
 
 @dataclass(frozen=True)

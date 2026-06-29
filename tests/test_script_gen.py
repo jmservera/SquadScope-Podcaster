@@ -7,9 +7,10 @@ from urllib.request import Request
 
 import pytest
 
+import podcaster.script_gen as script_gen
+from podcaster.article_validation import ARTICLE_MIN_CHARS, validate_article_inputs
 from podcaster.config import HistoricalContext, PodcastConfig
 from podcaster.script_gen import (
-    ARTICLE_MIN_CHARS,
     MAX_ARTICLE_CHARS,
     MAX_HISTORICAL_CONTEXT_CHARS,
     ScriptGenConfig,
@@ -17,7 +18,6 @@ from podcaster.script_gen import (
     _build_user_prompt,
     _format_script,
     generate_script,
-    validate_article_inputs,
 )
 
 VALID_ARTICLE_CONTENT = (
@@ -99,6 +99,10 @@ class TestScriptGenConfig:
 
 
 class TestValidateArticleInputs:
+    def test_script_gen_reexports_article_validation_helpers(self):
+        assert script_gen.ARTICLE_MIN_CHARS == ARTICLE_MIN_CHARS
+        assert script_gen.validate_article_inputs is validate_article_inputs
+
     def test_raises_when_article_title_empty(self):
         with pytest.raises(ValueError, match="article_title.*empty"):
             validate_article_inputs("", VALID_ARTICLE_CONTENT)

@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
+from podcaster.article_validation import validate_article_inputs
+
 # Re-exported so callers can reach the per-locale localization QA gate (#440)
 # through the validation surface alongside payload validation.
 from podcaster.localization_qa import (  # noqa: F401
@@ -15,7 +17,6 @@ from podcaster.localization_qa import (  # noqa: F401
     evaluate_localization,
     localization_gate,
 )
-from podcaster.script_gen import validate_article_inputs
 
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 WEEK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
