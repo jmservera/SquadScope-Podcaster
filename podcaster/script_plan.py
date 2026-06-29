@@ -474,10 +474,16 @@ def parse_script_plan(script: str, podcast_config: Any = None) -> ScriptPlan:
     Returns an empty plan for blank input (the feature stays dormant for legacy
     scripts rather than erroring).
     """
-    plan_sections = tuple(parse_script_sections(script, podcast_config))
     if not script or not script.strip():
-        return ScriptPlan(sections=plan_sections)
+        return ScriptPlan(sections=tuple(parse_script_sections(script, podcast_config)))
 
+    # Be defensive at parse time, not only at generation time. Some persisted
+    # scripts contain one explicit repo marker followed by later bare
+    # ``owner/repo`` mentions; without this backfill the first marker stays in
+    # effect and Layer 2 collapses all subsequent repo cues into that first repo.
+    script = infer_repo_visual_markers(script, podcast_config)
+
+    plan_sections = tuple(parse_script_sections(script, podcast_config))
     host_labels = _host_labels(script, podcast_config)
     body = _script_body(script)
 
