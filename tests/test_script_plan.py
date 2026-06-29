@@ -396,3 +396,50 @@ def test_infer_repo_visual_markers_first_named_wins_in_multi_repo_turn():
     markers = [ln for ln in out if ln.startswith("## Visual: repo")]
     # b/second is named first in the sentence, so it gets the marker.
     assert markers[0] == "## Visual: repo https://github.com/b/second"
+
+
+def test_parse_script_plan_backfills_each_later_named_repo():
+    """#579: a first explicit repo marker must not mask later bare-slug cues."""
+    script = (
+        "Title: Weekly\n"
+        "Repos featured: https://github.com/vercel/eve "
+        "https://github.com/openai/gym https://github.com/astral-sh/ruff\n"
+        "---\n"
+        "## Visual: repo https://github.com/vercel/eve\n"
+        "Theo: vercel/eve sets the stage for this sequence.\n"
+        "Vera: openai/gym is next in the script and needs its own clip.\n"
+        "Theo: astral-sh/ruff closes the loop with a third cue.\n"
+    )
+
+    plan = parse_script_plan(script, CONFIG)
+
+    assert plan.repo_urls == (
+        "https://github.com/vercel/eve",
+        "https://github.com/openai/gym",
+        "https://github.com/astral-sh/ruff",
+    )
+    assert [seg.repo_url for seg in plan.segments] == list(plan.repo_urls)
+
+
+def test_parse_script_plan_does_not_backfill_header_without_host_labels():
+    """#582 review: ``Repos featured:`` is metadata, not a speaker turn."""
+    script = (
+        "Title: Weekly\n"
+        "Repos featured: https://github.com/vercel/eve https://github.com/openai/gym\n"
+        "---\n"
+        "Alice: vercel/eve is the first project we actually say out loud.\n"
+        "Bob: openai/gym follows at its own spoken cue.\n"
+    )
+
+    marked = infer_repo_visual_markers(script)
+    lines = marked.splitlines()
+    separator = lines.index("---")
+    eve_marker = lines.index("## Visual: repo https://github.com/vercel/eve")
+    eve_turn = next(i for i, line in enumerate(lines) if line.startswith("Alice:"))
+
+    assert eve_marker > separator
+    assert eve_marker == eve_turn - 1
+
+    plan = parse_script_plan(script)
+    assert [seg.visual_mode for seg in plan.segments] == [VisualMode.REPO, VisualMode.REPO]
+    assert plan.repo_urls == ("https://github.com/vercel/eve", "https://github.com/openai/gym")

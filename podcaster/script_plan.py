@@ -393,11 +393,11 @@ def infer_repo_visual_markers(script: str, podcast_config: Any = None) -> str:
 
     This deterministic pass first harvests the authoritative repo set from every
     ``github.com/owner/repo`` URL in the script (header included), then walks the
-    script in order and, whenever a host turn **first names** one of those repos
-    — by inline URL or bare ``owner/repo`` slug — that is not already the repo
-    shown by the in-effect ``## Visual: repo`` marker, injects the marker just
-    before that turn. Anchoring the marker to the first spoken naming makes the
-    repo's Layer-2 topic (and therefore its on-screen window) start at the
+    dialogue body in order and, whenever a host turn **first names** one of those
+    repos — by inline URL or bare ``owner/repo`` slug — that is not already the
+    repo shown by the in-effect ``## Visual: repo`` marker, injects the marker
+    just before that turn. Anchoring the marker to the first spoken naming makes
+    the repo's Layer-2 topic (and therefore its on-screen window) start at the
     measured audio time of that turn — audio as the master timeline.
 
     When a single turn names several repos, only the first-named repo gets the
@@ -413,9 +413,12 @@ def infer_repo_visual_markers(script: str, podcast_config: Any = None) -> str:
 
     known = _known_repo_urls(script)
     host_labels = _host_labels(script, podcast_config)
+    header, separator, body = script.partition("\n---")
+    prefix = header + separator if separator else ""
+    marker_source = body if separator else script
     effective_repo_url: str | None = None
     out: list[str] = []
-    for raw_line in script.splitlines():
+    for raw_line in marker_source.splitlines():
         line = raw_line.strip()
 
         marker = match_visual_marker(line) if line else None
@@ -438,7 +441,7 @@ def infer_repo_visual_markers(script: str, podcast_config: Any = None) -> str:
 
         out.append(raw_line)
 
-    result = "\n".join(out)
+    result = prefix + "\n".join(out)
     if script.endswith("\n") and not result.endswith("\n"):
         result += "\n"
     return result
@@ -474,10 +477,16 @@ def parse_script_plan(script: str, podcast_config: Any = None) -> ScriptPlan:
     Returns an empty plan for blank input (the feature stays dormant for legacy
     scripts rather than erroring).
     """
-    plan_sections = tuple(parse_script_sections(script, podcast_config))
     if not script or not script.strip():
-        return ScriptPlan(sections=plan_sections)
+        return ScriptPlan(sections=tuple(parse_script_sections(script, podcast_config)))
 
+    # Be defensive at parse time, not only at generation time. Some persisted
+    # scripts contain one explicit repo marker followed by later bare
+    # ``owner/repo`` mentions; without this backfill the first marker stays in
+    # effect and Layer 2 collapses all subsequent repo cues into that first repo.
+    script = infer_repo_visual_markers(script, podcast_config)
+
+    plan_sections = tuple(parse_script_sections(script, podcast_config))
     host_labels = _host_labels(script, podcast_config)
     body = _script_body(script)
 

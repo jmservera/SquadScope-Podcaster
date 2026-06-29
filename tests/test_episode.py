@@ -624,9 +624,8 @@ def test_build_realized_metadata_is_parallel_to_script_plan():
     assert warnings == ()
 
 
-def test_build_realized_metadata_flags_repo_urls_without_visual_markers():
-    """Regression (#553): repo URLs but no '## Visual: repo' markers must be
-    flagged — not silently collapsed into a generic plan."""
+def test_build_realized_metadata_backfills_repo_urls_without_visual_markers():
+    """Regression (#579): unmarked repo URLs are backfilled into repo topics."""
     from podcaster.script_plan import parse_script_plan
 
     plan = parse_script_plan(_UNMARKED_REPO_SCRIPT, None)
@@ -639,8 +638,8 @@ def test_build_realized_metadata_flags_repo_urls_without_visual_markers():
         speech_offset_seconds=0.0,
     )
     assert metadata is not None
-    assert not metadata.repo_topics
-    assert any("Visual: repo" in w for w in warnings)
+    assert [topic.repo_url for topic in metadata.repo_topics] == ["https://github.com/owner/repo-a"]
+    assert warnings == ()
 
 
 def test_build_realized_metadata_skips_on_segment_mismatch():
