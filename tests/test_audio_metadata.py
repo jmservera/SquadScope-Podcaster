@@ -14,7 +14,7 @@ from podcaster.audio_metadata import (
     distribute_word_timings,
     extract_realized_audio_metadata,
 )
-from podcaster.script_plan import ScriptPlan, ScriptPlanSegment, VisualMode
+from podcaster.script_plan import ScriptPlan, ScriptPlanSegment, VisualMode, parse_script_plan
 
 
 def _seg(index, speaker, text, mode, repo_url=None, section_id=None):
@@ -219,6 +219,42 @@ def test_consecutive_same_repo_stays_one_topic():
     meta = extract_realized_audio_metadata(plan, [1.0, 1.0, 1.0])
     assert len(meta.topics) == 1
     assert meta.topics[0].utterance_indices == (0, 1, 2)
+
+
+def test_backfilled_repo_topics_follow_cumulative_clip_offsets():
+    """#579: every later named repo gets a topic at its realized audio cue."""
+    script = (
+        "Title: Weekly\n"
+        "Repos featured: https://github.com/vercel/eve "
+        "https://github.com/openai/gym https://github.com/astral-sh/ruff\n"
+        "---\n"
+        "Theo: Cold open before the repo run.\n"
+        "## Visual: repo https://github.com/vercel/eve\n"
+        "Vera: vercel/eve is first on the timeline.\n"
+        "Theo: openai/gym follows in the very next turn.\n"
+        "Vera: astral-sh/ruff is the third repo we name.\n"
+    )
+    plan = parse_script_plan(script)
+    durations = [4.0, 5.0, 6.0, 7.0]
+
+    meta = extract_realized_audio_metadata(
+        plan,
+        durations,
+        gap_seconds=0.25,
+        speech_offset_seconds=1.0,
+        host_labels=("Theo", "Vera"),
+    )
+
+    assert [topic.repo_url for topic in meta.repo_topics] == [
+        "https://github.com/vercel/eve",
+        "https://github.com/openai/gym",
+        "https://github.com/astral-sh/ruff",
+    ]
+    assert [topic.start_ms for topic in meta.repo_topics] == [
+        5250,  # offset + cold open + one gap
+        10500,  # previous cue + eve duration + one gap
+        16750,  # previous cue + gym duration + one gap
+    ]
 
 
 # --- validation ---
