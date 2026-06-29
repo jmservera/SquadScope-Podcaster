@@ -822,6 +822,10 @@ class MusicMixConfig:
 # --- Backchannels (Natural audio, issue #419 Phase A) ---
 
 
+# Master kill-switch for the recoverable backchannel/reaction feature.
+# Re-enable by flipping this flag once operators are ready to revisit it.
+BACKCHANNEL_FEATURE_ENABLED = False
+
 # TTS-safe backchannel library (issue #419). Pre-recorded clips ("mm-hmm",
 # "uh-huh", laughter) are future/optional work and intentionally excluded here.
 BACKCHANNEL_LIBRARY: tuple[str, ...] = (
@@ -854,9 +858,9 @@ class BackchannelConfig:
     ("right", "yeah", "exactly", ...) mixed quietly under the main speaker at
     natural pause points.
 
-    The feature is **disabled by default** (``enabled=False``) so existing
-    callers and rendered audio are unchanged until a caller opts in. All fields
-    are optional and backward compatible with the config payload.
+    The feature is gated by :data:`BACKCHANNEL_FEATURE_ENABLED` and **disabled
+    by default** (``enabled=False``), so caller payloads cannot enable rendered
+    reactions until operators flip the single recoverability switch.
     """
 
     enabled: bool = False
@@ -877,6 +881,8 @@ class BackchannelConfig:
     library: tuple[str, ...] = BACKCHANNEL_LIBRARY
 
     def __post_init__(self) -> None:
+        if not BACKCHANNEL_FEATURE_ENABLED and self.enabled:
+            object.__setattr__(self, "enabled", False)
         if self.min_gap_seconds < 0:
             raise ValueError("min_gap_seconds must be non-negative")
         if self.max_gap_seconds < self.min_gap_seconds:
