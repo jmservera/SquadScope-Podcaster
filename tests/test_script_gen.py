@@ -553,6 +553,19 @@ class TestSectionGuidance:
         assert "## Section:" in prompt
         assert "non-spoken" in prompt.lower()
 
+
+class TestHummsGuidance:
+    def test_prompt_includes_humms_guidance(self):
+        prompt = _build_system_prompt(PodcastConfig())
+        assert "HUMMS" in prompt
+        assert "Mm-hmm" in prompt
+
+    def test_humms_are_spoken_turns_not_a_mix_layer(self):
+        prompt = _build_system_prompt(PodcastConfig())
+        assert "standalone acknowledgment turn" in prompt
+        assert "spoken aloud" in prompt
+        assert "NOT stage" in prompt
+
     def test_generate_script_with_valid_sections(self):
         dialogue = (
             "Theo: Welcome to Claracle, your weekly developer trends show today!\n"
