@@ -17,7 +17,9 @@ from podcaster.script_gen import (
     _build_system_prompt,
     _build_user_prompt,
     _format_script,
+    extract_spoken_cue,
     generate_script,
+    strip_leaked_directions,
 )
 
 VALID_ARTICLE_CONTENT = (
@@ -666,3 +668,101 @@ class TestHummsGuidance:
         assert "standalone acknowledgment turn" in prompt
         assert "spoken aloud" in prompt
         assert "NOT stage" in prompt
+
+
+SHOW_INTRO_CUE = (
+    "Start with a one-line show description: "
+    '"Claracle — where AI-powered GitHub trend analysis meets the biggest stories '
+    'from TechCrunch, and the tech blogosphere."'
+)
+SHOW_INTRO_LITERAL = (
+    "Claracle — where AI-powered GitHub trend analysis meets the biggest stories "
+    "from TechCrunch, and the tech blogosphere."
+)
+SPOTIFY_CTA_CUE = (
+    "Before the AI disclosure, include a natural call-to-action: "
+    "'If you want to stay ahead of tech trends, follow Claracle on Spotify so you "
+    "never miss a signal.' Make it conversational, not salesy."
+)
+
+
+class TestExtractSpokenCue:
+    """extract_spoken_cue isolates the quoted spoken line from an authoring cue."""
+
+    def test_extracts_quoted_show_description(self):
+        assert extract_spoken_cue(SHOW_INTRO_CUE) == SHOW_INTRO_LITERAL
+
+    def test_extracts_quoted_cta(self):
+        assert extract_spoken_cue(SPOTIFY_CTA_CUE) == (
+            "If you want to stay ahead of tech trends, follow Claracle on Spotify "
+            "so you never miss a signal."
+        )
+
+    def test_pure_direction_returns_none(self):
+        assert extract_spoken_cue("One provocative stat from this week's data.") is None
+
+    def test_double_quoted_body_keeps_contraction(self):
+        # An apostrophe inside a double-quoted span must not terminate the span.
+        cue = "Start with a one-line show description: \"Don't miss this week's signal.\""
+        assert extract_spoken_cue(cue) == "Don't miss this week's signal."
+
+    def test_apostrophe_in_plain_text_is_not_a_span(self):
+        # A stray apostrophe (contraction) in unquoted guidance is not a span.
+        assert extract_spoken_cue("Keep it short; don't ramble or editorialize.") is None
+
+    def test_empty_and_none(self):
+        assert extract_spoken_cue("") is None
+        assert extract_spoken_cue(None) is None
+
+
+class TestStripLeakedDirections:
+    """strip_leaked_directions removes leaked instruction text from spoken lines."""
+
+    def test_strips_show_intro_instruction_prefix(self):
+        dialogue = (
+            f"## Section: Show Intro\nClarabel: {SHOW_INTRO_CUE}\nJoracle: Welcome to the show."
+        )
+        cleaned = strip_leaked_directions(dialogue, [SHOW_INTRO_CUE])
+        assert "Start with a one-line show description" not in cleaned
+        assert f"Clarabel: {SHOW_INTRO_LITERAL}" in cleaned
+        assert "Joracle: Welcome to the show." in cleaned
+
+    def test_strips_cta_wrapping_instructions(self):
+        dialogue = f"Joracle: {SPOTIFY_CTA_CUE}"
+        cleaned = strip_leaked_directions(dialogue, [SPOTIFY_CTA_CUE])
+        assert "include a natural call-to-action" not in cleaned
+        assert "conversational, not salesy" not in cleaned
+        assert "follow Claracle on Spotify" in cleaned
+
+    def test_preserves_section_and_visual_headers(self):
+        dialogue = (
+            "## Section: Show Intro\n"
+            "## Visual: repo https://github.com/foo/bar\n"
+            "Clarabel: Hello there."
+        )
+        assert strip_leaked_directions(dialogue, [SHOW_INTRO_CUE]) == dialogue
+
+    def test_no_quoted_cue_is_noop(self):
+        dialogue = "Clarabel: We open with a provocative question."
+        assert strip_leaked_directions(dialogue, ["One provocative stat."]) == dialogue
+
+    def test_idempotent(self):
+        dialogue = f"Clarabel: {SHOW_INTRO_CUE}"
+        once = strip_leaked_directions(dialogue, [SHOW_INTRO_CUE])
+        twice = strip_leaked_directions(once, [SHOW_INTRO_CUE])
+        assert once == twice
+
+
+class TestShowIntroPromptLiteral:
+    """The episode structure presents only the spoken show-intro words."""
+
+    def test_structure_uses_spoken_literal_not_instruction(self):
+        from podcaster.config import EpisodeStyle, ScriptDirections
+
+        directions = ScriptDirections(
+            episode_style=EpisodeStyle(segment_order=("Show Intro", "Outro")),
+            show_intro=SHOW_INTRO_CUE,
+        )
+        prompt = _build_system_prompt(PodcastConfig(), directions)
+        assert SHOW_INTRO_LITERAL in prompt
+        assert "Start with a one-line show description" not in prompt
