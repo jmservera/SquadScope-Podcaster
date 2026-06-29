@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from dataclasses import replace as _dataclass_replace
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.request import Request
 
 from podcaster.article_validation import ARTICLE_MIN_CHARS, validate_article_inputs
@@ -42,7 +43,9 @@ __all__ = [
     "MAX_ARTICLE_CHARS",
     "MAX_HISTORICAL_CONTEXT_CHARS",
     "ScriptGenConfig",
+    "extract_spoken_cue",
     "generate_script",
+    "strip_leaked_directions",
     "validate_article_inputs",
 ]
 
@@ -153,6 +156,115 @@ def _build_historical_context_block(historical_context: HistoricalContext | None
     return cap_length(full_block, MAX_HISTORICAL_CONTEXT_CHARS)
 
 
+# --- Spoken-cue extraction / stage-direction stripping (#587) ---
+#
+# Several ``script_directions`` cues are *authoring instructions* that embed the
+# words to speak inside quotes, e.g.
+#   show_intro: Start with a one-line show description: "Claracle — where ..."
+# The literal spoken line is the quoted span; the surrounding prose ("Start with
+# a one-line show description:", "Make it conversational, not salesy.") is a
+# direction that must NEVER be read aloud. These helpers extract the intended
+# spoken words and scrub any leaked direction text from generated dialogue so the
+# hosts speak only the quoted line, never the instruction wrapping it.
+
+# Straight + curly single/double quote characters used to delimit a spoken span.
+_OPEN_QUOTES = "\"'\u201c\u2018"
+_CLOSE_QUOTES = "\"'\u201d\u2019"
+_QUOTE_SPAN_RE = re.compile(
+    r"[" + re.escape(_OPEN_QUOTES) + r"]"
+    r"(?P<body>[^" + re.escape(_OPEN_QUOTES + _CLOSE_QUOTES) + r"]+?)"
+    r"[" + re.escape(_CLOSE_QUOTES) + r"]"
+)
+# Leading speaker tag on a dialogue line, e.g. "Clarabel: ".
+_SPEAKER_TAG_RE = re.compile(r"^(?P<tag>[A-Za-z][\w'\u2019\- ]*:\s*)(?P<rest>.*)$")
+
+
+def extract_spoken_cue(cue: str | None) -> str | None:
+    """Return the words a cue means to be *spoken*, or ``None``.
+
+    When a cue embeds its spoken line in quotes (``Start with ...: "Hello"``),
+    the quoted span is the literal line and is returned unquoted. A cue that is
+    pure guidance (no quoted span, e.g. ``"One provocative stat ..."``) returns
+    ``None`` — it should steer the model, never be read verbatim.
+    """
+    if not cue:
+        return None
+    spans = [m.group("body").strip() for m in _QUOTE_SPAN_RE.finditer(cue)]
+    spans = [s for s in spans if s]
+    if not spans:
+        return None
+    # Join multiple quoted spans (rare) with a space; longest is usually the line.
+    return " ".join(spans)
+
+
+def _cue_instruction_fragments(cue: str) -> list[str]:
+    """Non-spoken instruction fragments of *cue* (text outside the quoted span).
+
+    For ``Start with a one-line show description: "Claracle — where ..."`` this is
+    ``["Start with a one-line show description:"]``. Used to scrub leaked
+    directions from generated dialogue. Fragments shorter than 8 chars are
+    dropped so common words are never stripped from legitimate speech.
+    """
+    if not cue or extract_spoken_cue(cue) is None:
+        return []
+    without_quotes = _QUOTE_SPAN_RE.sub("\u0000", cue)
+    fragments: list[str] = []
+    for piece in without_quotes.split("\u0000"):
+        piece = piece.strip().strip("\"'\u201c\u201d\u2018\u2019").strip()
+        if len(piece) >= 8:
+            fragments.append(piece)
+    return fragments
+
+
+def _unwrap_quotes(text: str) -> str:
+    """Strip a single layer of matching wrapping quotes from *text*."""
+    text = text.strip()
+    if len(text) >= 2 and text[0] in _OPEN_QUOTES and text[-1] in _CLOSE_QUOTES:
+        return text[1:-1].strip()
+    return text
+
+
+def strip_leaked_directions(dialogue: str, cues: "Iterable[str | None]") -> str:
+    """Remove leaked authoring-instruction text from spoken dialogue lines.
+
+    For every cue that embeds a quoted spoken line, any verbatim instruction
+    fragment (the prose around the quote) is removed from each spoken line,
+    leaving only the intended quoted words. Non-spoken header lines (``##`` /
+    ``---``) are passed through untouched. Idempotent and safe when no cue text
+    leaked (the dialogue is returned unchanged).
+    """
+    fragments: list[str] = []
+    for cue in cues:
+        fragments.extend(_cue_instruction_fragments(cue or ""))
+    if not fragments:
+        return dialogue
+    # Longest fragments first so a superset is removed before its substrings.
+    fragments = sorted(set(fragments), key=len, reverse=True)
+
+    out_lines: list[str] = []
+    for line in dialogue.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("##") or stripped.startswith("---"):
+            out_lines.append(line)
+            continue
+        m = _SPEAKER_TAG_RE.match(line)
+        tag, rest = (m.group("tag"), m.group("rest")) if m else ("", line)
+        changed = False
+        for frag in fragments:
+            idx = rest.lower().find(frag.lower())
+            while idx != -1:
+                rest = (rest[:idx] + " " + rest[idx + len(frag) :]).strip()
+                changed = True
+                idx = rest.lower().find(frag.lower())
+        if changed:
+            rest = _unwrap_quotes(re.sub(r"\s{2,}", " ", rest).strip())
+        # Drop a line that collapsed to nothing meaningful after scrubbing.
+        if m and not rest:
+            continue
+        out_lines.append(f"{tag}{rest}" if m else rest)
+    return "\n".join(out_lines)
+
+
 _SHOW_INTRO_SEGMENT_ALIASES = frozenset({"show intro", "show_intro", "intro", "introduction"})
 _COLD_OPEN_SEGMENT_ALIASES = frozenset({"cold open", "cold-open", "cold_open", "coldopen"})
 
@@ -180,10 +292,19 @@ def _build_episode_structure(directions: "ScriptDirections", podcast_config: Pod
 
     items: list[str] = []
     if directions.show_intro:
-        items.append(
-            "Show Intro — the VERY FIRST line of the episode, before the cold open and before "
-            f"anything else: {directions.show_intro}"
-        )
+        spoken = extract_spoken_cue(directions.show_intro)
+        if spoken:
+            items.append(
+                "Show Intro — the VERY FIRST line of the episode, before the cold open and "
+                "before anything else. Speak EXACTLY and ONLY these words (a direct show "
+                "description), never any instruction wrapping them: "
+                f'"{spoken}"'
+            )
+        else:
+            items.append(
+                "Show Intro — the VERY FIRST line of the episode, before the cold open and "
+                f"before anything else: {directions.show_intro}"
+            )
     if directions.cold_open or has_cold_open_segment:
         position = (
             "immediately after the show intro"
@@ -724,6 +845,21 @@ def generate_script(
     dialogue = _enforce_ownership_tone(
         dialogue, messages=messages, url=url, token=token, transport=transport
     )
+
+    # Stage-direction scrub (#587): strip any authoring-instruction text that
+    # leaked into spoken lines (e.g. the host literally reading "Start with a
+    # one-line show description:"), keeping only the intended quoted words.
+    if script_directions is not None:
+        dialogue = strip_leaked_directions(
+            dialogue,
+            [
+                script_directions.show_intro,
+                script_directions.cold_open,
+                script_directions.ai_disclosure_cue,
+                script_directions.source_article_link,
+                script_directions.corrections_path,
+            ],
+        )
 
     # Backfill explicit ``## Visual: repo`` markers from inline GitHub links when
     # the model expressed repos as links instead of declaring markers. The video
