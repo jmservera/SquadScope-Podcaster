@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from podcaster import config as config_mod
 from podcaster.config import BACKCHANNEL_LIBRARY, BackchannelConfig
 
 
@@ -33,7 +34,7 @@ def test_from_payload_top_level():
             }
         }
     )
-    assert cfg.enabled is True
+    assert cfg.enabled is False
     assert cfg.min_gap_seconds == 30
     assert cfg.max_gap_seconds == 50
     assert cfg.gain_db == -15
@@ -43,7 +44,19 @@ def test_from_payload_top_level():
 
 def test_from_payload_nested_under_script_directions():
     cfg = BackchannelConfig.from_payload({"script_directions": {"backchannels": {"enabled": True}}})
-    assert cfg.enabled is True
+    assert cfg.enabled is False
+
+
+def test_from_payload_honors_enabled_when_feature_flag_on(monkeypatch):
+    monkeypatch.setattr(config_mod, "BACKCHANNEL_FEATURE_ENABLED", True)
+
+    top_level = BackchannelConfig.from_payload({"backchannels": {"enabled": True}})
+    nested = BackchannelConfig.from_payload(
+        {"script_directions": {"backchannels": {"enabled": True}}}
+    )
+
+    assert top_level.enabled is True
+    assert nested.enabled is True
 
 
 def test_library_includes_agreement_tokens():
@@ -52,12 +65,12 @@ def test_library_includes_agreement_tokens():
         assert token in BACKCHANNEL_LIBRARY
 
 
-def test_production_request_shape_enables_backchannels():
+def test_production_request_shape_keeps_backchannels_gated_off():
     """Mirror the production request built from SquadScope config/podcast.json.
 
     The handoff passes the show config's ``script_directions`` straight through to
-    the manifest ``request``; enabling backchannels there must turn the feature on
-    with sensible defaults for every production render (#555).
+    the manifest ``request``; the master switch must still keep production renders
+    reaction-free while preserving the parsed defaults for reversibility (#578).
     """
     production_request = {
         "week": "2026-W26",
@@ -67,7 +80,7 @@ def test_production_request_shape_enables_backchannels():
         },
     }
     cfg = BackchannelConfig.from_payload(production_request)
-    assert cfg.enabled is True
+    assert cfg.enabled is False
     # Defaults stay conservative so production audio is not over-saturated, but
     # are now audible/dense enough to register (#560).
     assert cfg.min_gap_seconds == 18.0

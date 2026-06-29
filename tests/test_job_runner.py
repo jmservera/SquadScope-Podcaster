@@ -811,8 +811,8 @@ def _fake_metadata(path, sha256, runner=None):
     )
 
 
-def test_request_backchannels_parses_enabled_config_from_manifest():
-    """Phase B wiring: a request manifest's backchannels payload becomes a parsed config."""
+def test_request_backchannels_parses_gated_config_from_manifest():
+    """A request manifest's backchannels payload is parsed but cannot bypass the gate."""
 
     from podcaster.config import BackchannelConfig
 
@@ -821,14 +821,14 @@ def test_request_backchannels_parses_enabled_config_from_manifest():
     }
     config = job_runner._request_backchannels(manifest)
     assert isinstance(config, BackchannelConfig)
-    assert config.enabled is True
+    assert config.enabled is False
     assert config.min_gap_seconds == 30
     assert config.max_gap_seconds == 40
 
 
-def test_request_backchannels_enabled_via_production_script_directions():
+def test_request_backchannels_gated_off_via_production_script_directions():
     """Production shape: SquadScope config/podcast.json enables backchannels under
-    ``script_directions``; the manifest request must carry it through to enabled (#555)."""
+    ``script_directions``; the feature gate must still keep renders disabled (#578)."""
 
     from podcaster.config import BackchannelConfig
 
@@ -840,7 +840,7 @@ def test_request_backchannels_enabled_via_production_script_directions():
     }
     config = job_runner._request_backchannels(manifest)
     assert isinstance(config, BackchannelConfig)
-    assert config.enabled is True
+    assert config.enabled is False
 
 
 @pytest.mark.parametrize(
