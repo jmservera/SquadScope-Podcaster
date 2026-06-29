@@ -865,7 +865,7 @@ def ensure_branded_intro_outro(
     intro_src = src_dir / "intro.mp4"
     outro_src = src_dir / "outro.mp4"
     if not intro_src.is_file() or not outro_src.is_file():
-        logger.info(
+        logger.debug(
             "branded intro/outro assets not found in %s (intro=%s, outro=%s); "
             "leaving stored bumpers unchanged",
             src_dir,

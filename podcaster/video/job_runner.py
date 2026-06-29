@@ -621,7 +621,15 @@ def run_video_generation(
             # branded assets are not staged in the asset dir.
             from podcaster.video.intro_outro import ensure_branded_intro_outro
 
-            ensure_branded_intro_outro(storage)
+            try:
+                ensure_branded_intro_outro(storage)
+            except Exception:  # noqa: BLE001 - seeding is best-effort, never break compose
+                logger.warning(
+                    "branded intro/outro seeding failed for job_id=%s; composing with "
+                    "whatever bumpers are already stored/cached",
+                    job_id,
+                    exc_info=True,
+                )
 
             output_dir = Path(tmp)
 
