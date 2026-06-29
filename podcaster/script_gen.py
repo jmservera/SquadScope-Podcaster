@@ -170,13 +170,24 @@ def _build_historical_context_block(historical_context: HistoricalContext | None
 # Straight + curly single/double quote characters used to delimit a spoken span.
 _OPEN_QUOTES = "\"'\u201c\u2018"
 _CLOSE_QUOTES = "\"'\u201d\u2019"
-_QUOTE_SPAN_RE = re.compile(
-    r"[" + re.escape(_OPEN_QUOTES) + r"]"
-    r"(?P<body>[^" + re.escape(_OPEN_QUOTES + _CLOSE_QUOTES) + r"]+?)"
-    r"[" + re.escape(_CLOSE_QUOTES) + r"]"
-)
+# A spoken span is delimited by either double or single quotes. The two are
+# matched separately so a double-quoted body may contain apostrophes/contractions
+# (e.g. `"Don't miss it"`), while single-quoted spans are guarded by word
+# boundaries so a stray apostrophe in a contraction is never mistaken for an
+# opening/closing quote.
+_DQUOTE_SPAN = r"[\"\u201c](?P<dbody>[^\"\u201c\u201d]+?)[\"\u201d]"
+_SQUOTE_SPAN = r"(?<!\w)['\u2018](?P<sbody>[^'\u2018\u2019]+?)['\u2019](?!\w)"
+_QUOTE_SPAN_RE = re.compile(_DQUOTE_SPAN + "|" + _SQUOTE_SPAN)
 # Leading speaker tag on a dialogue line, e.g. "Clarabel: ".
 _SPEAKER_TAG_RE = re.compile(r"^(?P<tag>[A-Za-z][\w'\u2019\- ]*:\s*)(?P<rest>.*)$")
+
+
+def _quote_span_body(match: "re.Match[str]") -> str:
+    """Return the spoken body of a quote-span match (double- or single-quoted)."""
+    body = match.group("dbody")
+    if body is None:
+        body = match.group("sbody")
+    return body or ""
 
 
 def extract_spoken_cue(cue: str | None) -> str | None:
@@ -189,7 +200,7 @@ def extract_spoken_cue(cue: str | None) -> str | None:
     """
     if not cue:
         return None
-    spans = [m.group("body").strip() for m in _QUOTE_SPAN_RE.finditer(cue)]
+    spans = [_quote_span_body(m).strip() for m in _QUOTE_SPAN_RE.finditer(cue)]
     spans = [s for s in spans if s]
     if not spans:
         return None

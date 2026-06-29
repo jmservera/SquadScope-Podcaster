@@ -701,6 +701,15 @@ class TestExtractSpokenCue:
     def test_pure_direction_returns_none(self):
         assert extract_spoken_cue("One provocative stat from this week's data.") is None
 
+    def test_double_quoted_body_keeps_contraction(self):
+        # An apostrophe inside a double-quoted span must not terminate the span.
+        cue = "Start with a one-line show description: \"Don't miss this week's signal.\""
+        assert extract_spoken_cue(cue) == "Don't miss this week's signal."
+
+    def test_apostrophe_in_plain_text_is_not_a_span(self):
+        # A stray apostrophe (contraction) in unquoted guidance is not a span.
+        assert extract_spoken_cue("Keep it short; don't ramble or editorialize.") is None
+
     def test_empty_and_none(self):
         assert extract_spoken_cue("") is None
         assert extract_spoken_cue(None) is None
