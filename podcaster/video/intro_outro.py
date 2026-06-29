@@ -874,8 +874,10 @@ def ensure_branded_intro_outro(
         )
         return False
 
-    storage.put_bytes(INTRO_BLOB_PATH, intro_src.read_bytes(), "video/mp4")
-    storage.put_bytes(OUTRO_BLOB_PATH, outro_src.read_bytes(), "video/mp4")
+    # Stream the on-disk clips to storage (upload_file is the backend's
+    # streamed/atomic path, avoiding loading the whole MP4 into memory).
+    storage.upload_file(INTRO_BLOB_PATH, intro_src, "video/mp4")
+    storage.upload_file(OUTRO_BLOB_PATH, outro_src, "video/mp4")
 
     # Invalidate the local fetch cache so the freshly-seeded branded clips win
     # over any previously-downloaded title card.

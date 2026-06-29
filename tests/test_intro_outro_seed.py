@@ -22,13 +22,16 @@ from podcaster.video.video_compose import (
 
 
 class _RecordingStorage:
-    """Captures put_bytes(path, data, content_type) calls."""
+    """Captures upload_file/put_bytes calls, normalising both to (path, bytes, ct)."""
 
     def __init__(self) -> None:
         self.puts: list[tuple[str, bytes, str]] = []
 
     def put_bytes(self, path: str, data: bytes, content_type: str) -> None:
         self.puts.append((path, data, content_type))
+
+    def upload_file(self, path: str, source: Path, content_type: str) -> None:
+        self.puts.append((path, Path(source).read_bytes(), content_type))
 
 
 def _write_branded_assets(asset_dir: Path) -> tuple[bytes, bytes]:
