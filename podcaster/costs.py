@@ -4,10 +4,10 @@ import os
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
-# Default monthly episode cap. Overridable per-deployment via the
-# PODCAST_MAX_EPISODES_PER_MONTH environment variable (see _resolved_max_episodes).
+# Default monthly episode cap. The enforced cap is resolved at call time from the
+# PODCAST_MAX_EPISODES_PER_MONTH environment variable (see _resolved_max_episodes);
+# this constant is only the fallback used when the env var is unset or invalid.
 DEFAULT_MAX_EPISODES_PER_MONTH = 10
-MAX_EPISODES_PER_MONTH = DEFAULT_MAX_EPISODES_PER_MONTH
 MAX_EPISODES_PER_MONTH_ENV_VAR = "PODCAST_MAX_EPISODES_PER_MONTH"
 MAX_MONTHLY_SPEND_USD = Decimal("5.00")
 USD_ZERO = Decimal("0.00")
