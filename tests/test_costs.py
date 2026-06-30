@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
+
 from podcaster.costs import (
     build_cost_ledger,
     cost_gate_blockers,
@@ -152,3 +154,69 @@ def test_cost_gate_blocks_over_budget_without_override() -> None:
     assert ledger["budget"]["status"] == "over_budget"
     assert ledger["readiness"]["complete"] is False
     assert cost_gate_blockers(ledger) == ["monthly_budget_exceeded"]
+
+
+def test_episode_cap_configurable_via_env_allows_up_to_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PODCAST_MAX_EPISODES_PER_MONTH", "20")
+
+    allowed = evaluate_monthly_guardrail(
+        prior_episode_count=19,
+        prior_monthly_spend_usd=Decimal("0.00"),
+        projected_episode_cost_usd=Decimal("0.00"),
+    )
+    blocked = evaluate_monthly_guardrail(
+        prior_episode_count=20,
+        prior_monthly_spend_usd=Decimal("0.00"),
+        projected_episode_cost_usd=Decimal("0.00"),
+    )
+
+    assert allowed["max_episodes_per_month"] == 20
+    assert allowed["projected_episode_count"] == 20
+    assert allowed["episode_limit_exceeded"] is False
+    assert allowed["status"] == "within_budget"
+    assert blocked["projected_episode_count"] == 21
+    assert blocked["episode_limit_exceeded"] is True
+    assert blocked["status"] == "over_budget"
+
+
+def test_episode_cap_defaults_to_ten_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PODCAST_MAX_EPISODES_PER_MONTH", raising=False)
+
+    allowed = evaluate_monthly_guardrail(
+        prior_episode_count=9,
+        prior_monthly_spend_usd=Decimal("0.00"),
+        projected_episode_cost_usd=Decimal("0.00"),
+    )
+    blocked = evaluate_monthly_guardrail(
+        prior_episode_count=10,
+        prior_monthly_spend_usd=Decimal("0.00"),
+        projected_episode_cost_usd=Decimal("0.00"),
+    )
+
+    assert allowed["max_episodes_per_month"] == 10
+    assert allowed["episode_limit_exceeded"] is False
+    assert blocked["max_episodes_per_month"] == 10
+    assert blocked["episode_limit_exceeded"] is True
+    assert blocked["status"] == "over_budget"
+
+
+@pytest.mark.parametrize("raw", ["abc", "-5", "0", "", "  ", "3.5"])
+def test_episode_cap_falls_back_to_default_for_invalid_env(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setenv("PODCAST_MAX_EPISODES_PER_MONTH", raw)
+
+    budget = evaluate_monthly_guardrail(
+        prior_episode_count=10,
+        prior_monthly_spend_usd=Decimal("0.00"),
+        projected_episode_cost_usd=Decimal("0.00"),
+    )
+
+    assert budget["max_episodes_per_month"] == 10
+    assert budget["projected_episode_count"] == 11
+    assert budget["episode_limit_exceeded"] is True
+    assert budget["status"] == "over_budget"

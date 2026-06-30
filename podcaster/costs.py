@@ -1,11 +1,36 @@
 from __future__ import annotations
 
+import os
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
-MAX_EPISODES_PER_MONTH = 10
+# Default monthly episode cap. Overridable per-deployment via the
+# PODCAST_MAX_EPISODES_PER_MONTH environment variable (see _resolved_max_episodes).
+DEFAULT_MAX_EPISODES_PER_MONTH = 10
+MAX_EPISODES_PER_MONTH = DEFAULT_MAX_EPISODES_PER_MONTH
+MAX_EPISODES_PER_MONTH_ENV_VAR = "PODCAST_MAX_EPISODES_PER_MONTH"
 MAX_MONTHLY_SPEND_USD = Decimal("5.00")
 USD_ZERO = Decimal("0.00")
+
+
+def _resolved_max_episodes() -> int:
+    """Resolve the monthly episode cap from the environment at call time.
+
+    Reads PODCAST_MAX_EPISODES_PER_MONTH and falls back to the default when the
+    value is unset, non-integer, zero, or negative. Read at call time so tests can
+    set/monkeypatch the env per-test without import-order flakiness.
+    """
+    raw = os.environ.get(MAX_EPISODES_PER_MONTH_ENV_VAR)
+    if raw is None:
+        return DEFAULT_MAX_EPISODES_PER_MONTH
+    try:
+        value = int(raw.strip())
+    except (ValueError, AttributeError):
+        return DEFAULT_MAX_EPISODES_PER_MONTH
+    if value <= 0:
+        return DEFAULT_MAX_EPISODES_PER_MONTH
+    return value
+
 
 COST_CATEGORIES = (
     "script_generation",
@@ -94,7 +119,8 @@ def evaluate_monthly_guardrail(
 
     projected_episode_count = prior_episode_count + 1
     projected_spend = prior_monthly_spend_usd + projected_episode_cost_usd
-    episode_limit_exceeded = projected_episode_count > MAX_EPISODES_PER_MONTH
+    max_episodes_per_month = _resolved_max_episodes()
+    episode_limit_exceeded = projected_episode_count > max_episodes_per_month
     spend_limit_exceeded = projected_spend > MAX_MONTHLY_SPEND_USD
     limit_exceeded = episode_limit_exceeded or spend_limit_exceeded
     override_recorded = _valid_override(override)
@@ -107,7 +133,7 @@ def evaluate_monthly_guardrail(
         status = "within_budget"
 
     return {
-        "max_episodes_per_month": MAX_EPISODES_PER_MONTH,
+        "max_episodes_per_month": max_episodes_per_month,
         "max_monthly_spend_usd": _money(MAX_MONTHLY_SPEND_USD),
         "prior_episode_count": prior_episode_count,
         "projected_episode_count": projected_episode_count,
