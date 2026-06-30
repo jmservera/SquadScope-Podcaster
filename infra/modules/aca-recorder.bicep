@@ -66,6 +66,11 @@ param replicaTimeoutSeconds int = 900
 @maxValue(172800)
 param clipVisibilityTimeoutSeconds int = 900
 
+@description('Hard cap (seconds) on a single clip\'s recording/scroll duration. Keeps the capture phase under replicaTimeout for very long pages (e.g. huge READMEs); the partial clip is fit to its planned slot downstream (issue #592). Set 0 to disable.')
+@minValue(0)
+@maxValue(172800)
+param maxClipRecordSeconds int = 600
+
 @description('Queue length per replica that triggers scaling (one replica per pending clip).')
 @minValue(1)
 param queueLengthPerReplica int = 1
@@ -166,6 +171,10 @@ resource recorderJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'PODCASTER_CLIP_VISIBILITY_TIMEOUT'
               value: string(clipVisibilityTimeoutSeconds)
+            }
+            {
+              name: 'VIDEO_MAX_CLIP_RECORD_SECONDS'
+              value: string(maxClipRecordSeconds)
             }
             {
               name: 'AZURE_OPENAI_AUTH_MODE'
