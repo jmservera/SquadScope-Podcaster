@@ -160,6 +160,20 @@ class HttpTransport(Protocol):
         ...
 
 
+def _read_http_error_body(exc: HTTPError) -> bytes:
+    """Read an HTTPError body, tolerating instances with no underlying stream.
+
+    HTTPError can be raised/constructed with ``fp=None`` (urllib does this for
+    some responses, and tests construct them this way), in which case
+    ``read()`` is unavailable or raises. Return ``b""`` in that case so the
+    transport always yields a usable ``(status, body)`` tuple.
+    """
+    try:
+        return exc.read()
+    except (AttributeError, ValueError, OSError):
+        return b""
+
+
 class _DefaultTransport:
     """Default HTTP transport using urllib."""
 
@@ -179,7 +193,7 @@ class _DefaultTransport:
             # Non-2xx responses (e.g. 308 "Resume Incomplete" during a resumable
             # chunked upload) are surfaced by urllib as exceptions. Return them as
             # ordinary (status, body) results so callers can act on the status.
-            return exc.code, exc.read()
+            return exc.code, _read_http_error_body(exc)
 
     def request_with_headers(
         self,
@@ -197,8 +211,8 @@ class _DefaultTransport:
         except HTTPError as exc:
             # See request(): 308 and other non-2xx codes arrive as HTTPError but
             # are an expected part of the resumable upload protocol.
-            resp_headers = {k.lower(): v for k, v in exc.headers.items()}
-            return exc.code, resp_headers, exc.read()
+            resp_headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
+            return exc.code, resp_headers, _read_http_error_body(exc)
 
 
 class StorageUploader(Protocol):
