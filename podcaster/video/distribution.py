@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -171,8 +172,14 @@ class _DefaultTransport:
         data: bytes | None = None,
     ) -> tuple[int, bytes]:
         req = Request(url, data=data, method=method, headers=headers or {})
-        with urlopen(req, timeout=300) as resp:
-            return resp.status, resp.read()
+        try:
+            with urlopen(req, timeout=300) as resp:
+                return resp.status, resp.read()
+        except HTTPError as exc:
+            # Non-2xx responses (e.g. 308 "Resume Incomplete" during a resumable
+            # chunked upload) are surfaced by urllib as exceptions. Return them as
+            # ordinary (status, body) results so callers can act on the status.
+            return exc.code, exc.read()
 
     def request_with_headers(
         self,
@@ -183,9 +190,15 @@ class _DefaultTransport:
         data: bytes | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
         req = Request(url, data=data, method=method, headers=headers or {})
-        with urlopen(req, timeout=300) as resp:
-            resp_headers = {k.lower(): v for k, v in resp.getheaders()}
-            return resp.status, resp_headers, resp.read()
+        try:
+            with urlopen(req, timeout=300) as resp:
+                resp_headers = {k.lower(): v for k, v in resp.getheaders()}
+                return resp.status, resp_headers, resp.read()
+        except HTTPError as exc:
+            # See request(): 308 and other non-2xx codes arrive as HTTPError but
+            # are an expected part of the resumable upload protocol.
+            resp_headers = {k.lower(): v for k, v in exc.headers.items()}
+            return exc.code, resp_headers, exc.read()
 
 
 class StorageUploader(Protocol):
