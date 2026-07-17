@@ -1399,6 +1399,13 @@ class TestProgressPoll:
         resp = client.get("/api/jobs/missing/progress")
         assert resp.status_code == 404
 
+    def test_malformed_job_id_400(self, client, storage):
+        for bad in ("bad id", "bad$id", "bad@id"):
+            from urllib.parse import quote
+
+            resp = client.get(f"/api/jobs/{quote(bad, safe='')}/progress")
+            assert resp.status_code == 400, bad
+
     def test_job_without_progress_returns_empty(self, client, storage):
         _store_manifest(storage, "job-1")
         resp = client.get("/api/jobs/job-1/progress")

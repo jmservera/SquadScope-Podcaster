@@ -657,6 +657,7 @@ def list_jobs(limit: int = Query(default=20, ge=1, le=100), offset: int = Query(
 def get_job(job_id: str):
     """Get detailed information for a specific job."""
     storage = get_storage()
+    job_id = _require_safe_job_id(job_id)
     manifest_path = f"jobs/{job_id}/manifest.json"
     raw = storage.get_bytes(manifest_path)
     if raw is None:
@@ -689,6 +690,7 @@ def get_job_logs(
     structured records sharing a timestamp.
     """
     storage = get_storage()
+    job_id = _require_safe_job_id(job_id)
     manifest_path = f"jobs/{job_id}/manifest.json"
     raw = storage.get_bytes(manifest_path)
     if raw is None:
@@ -737,6 +739,7 @@ def get_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
     exist (have a manifest); a job with no progress yet returns an empty list.
     """
     storage = get_storage()
+    job_id = _require_safe_job_id(job_id)
     if not _job_exists(storage, job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
 
@@ -792,6 +795,7 @@ def get_job_progress_summary(job_id: str):
     manifest); a job with no progress yet returns a ``pending`` summary.
     """
     storage = get_storage()
+    job_id = _require_safe_job_id(job_id)
     if not _job_exists(storage, job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
 
@@ -829,6 +833,7 @@ def list_job_assets(job_id: str):
     list.
     """
     storage = get_storage()
+    job_id = _require_safe_job_id(job_id)
     if not _job_exists(storage, job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
 
@@ -958,6 +963,7 @@ def enqueue_video(job_id: str):
     queue is not configured.
     """
     storage = get_storage()
+    job_id = _require_safe_job_id(job_id)
     manifest_path = f"jobs/{job_id}/manifest.json"
     raw = storage.get_bytes(manifest_path)
     if raw is None:
