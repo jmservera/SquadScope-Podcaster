@@ -1170,7 +1170,7 @@ def mint_stream_token(path: str = Query(...)):
         )
 
     storage = get_storage()
-    if storage.get_bytes(path) is None:
+    if not storage.blob_exists(path):
         raise HTTPException(status_code=404, detail="Blob not found")
 
     creds = get_credentials()

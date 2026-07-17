@@ -68,9 +68,13 @@ function useScopedAssetUrl(streamUrl: string): string {
 
   useEffect(() => {
     let cancelled = false;
-    void getScopedStreamUrl(streamUrl).then((url) => {
-      if (!cancelled) setScopedUrl({ streamUrl, url });
-    });
+    void getScopedStreamUrl(streamUrl)
+      .then((url) => {
+        if (!cancelled) setScopedUrl({ streamUrl, url });
+      })
+      .catch(() => {
+        if (!cancelled) setScopedUrl({ streamUrl, url: resolveStreamUrl(streamUrl) });
+      });
     return () => {
       cancelled = true;
     };

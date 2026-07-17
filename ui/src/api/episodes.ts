@@ -56,10 +56,10 @@ export async function getScopedStreamUrl(streamUrl: string): Promise<string> {
   if (markerIndex === -1) return resolved;
 
   const pathWithSuffix = resolved.slice(markerIndex + marker.length);
-  const blobPath = decodeURIComponent(pathWithSuffix.split(/[?#]/, 1)[0]);
-  if (!blobPath) return resolved;
 
   try {
+    const blobPath = decodeURIComponent(pathWithSuffix.split(/[?#]/, 1)[0]);
+    if (!blobPath) return resolved;
     const resp = await authenticatedFetch(
       `${API_BASE}/api/stream-token?path=${encodeURIComponent(blobPath)}`
     );
