@@ -21,6 +21,9 @@ class _MinimalStorage:
     def get_bytes(self, path: str) -> bytes | None:
         return None
 
+    def blob_exists(self, path: str) -> bool:
+        return False
+
 
 @pytest.fixture
 def storage():
@@ -217,7 +220,14 @@ class TestAuthMiddleware:
         # Auth passes (blob is absent → 404), i.e. it is NOT rejected as 401.
         assert resp.status_code != 401
 
-    def test_query_token_rejected_on_sensitive_path(self, client, monkeypatch):
+    def test_query_token_accepted_on_progress_stream_path(self, client, monkeypatch):
+        # The SSE progress stream is consumed via EventSource (#469), which
+        # cannot send an Authorization header, so it must accept ?token= (#606).
+        _configure_auth(monkeypatch)
+        token = create_token(_USERNAME, _SECRET)
+        resp = client.get(f"/api/jobs/job-1/progress/stream?token={token}")
+        # Auth passes (job is absent → 404), i.e. it is NOT rejected as 401.
+        assert resp.status_code != 401
         # A token leaked in a URL must not authorize credential/config/generation
         # endpoints via the query string (#606).
         _configure_auth(monkeypatch)

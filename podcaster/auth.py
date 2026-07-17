@@ -66,6 +66,23 @@ class MeResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _query_token_allowed(path: str) -> bool:
+    """Return True for the browser-native streaming endpoints that must accept
+    a ``?token=`` query parameter because the browser primitive loading them
+    cannot send an ``Authorization`` header.
+
+    * ``/api/stream/…`` — media proxy loaded via ``<audio>``/``<video>``/``<img>``.
+    * ``…/progress/stream`` — the SSE progress endpoint consumed via
+      ``EventSource`` (issue #469), which likewise cannot set request headers.
+
+    Every other endpoint rejects query tokens: a token in a URL leaks via
+    browser history, access/proxy/CDN logs, and ``Referer`` headers, so
+    honouring it on sensitive endpoints would let a leaked URL authorize
+    privileged actions (#606).
+    """
+    return path.startswith("/api/stream/") or path.endswith("/progress/stream")
+
+
 def verify_auth(
     request: Request,
     authorization: str = Header(default=""),
@@ -108,14 +125,15 @@ def verify_auth(
 
     # --- Try query parameter token (browser media elements only) ---
     query_token = request.query_params.get("token", "")
-    # Query-string tokens are honoured *only* for the streaming/media proxy,
-    # which browsers load via <audio>/<video>/<img> elements that cannot send
-    # an Authorization header. They are never accepted for credential,
+    # Query-string tokens are honoured *only* for browser-native streaming
+    # endpoints (the media proxy and the SSE progress stream) whose loading
+    # primitive — ``<audio>``/``<video>``/``<img>`` or ``EventSource`` — cannot
+    # send an Authorization header. They are never accepted for credential,
     # generation, review, or config endpoints: a token placed in a URL leaks
     # via browser history, server access logs, proxy/CDN logs, and Referer
     # headers, so honouring it on sensitive endpoints would let a leaked URL
     # authorize privileged actions (#606).
-    if query_token and creds is not None and request.url.path.startswith("/api/stream/"):
+    if query_token and creds is not None and _query_token_allowed(request.url.path):
         _secret = creds[2]
         try:
             verify_token(query_token, _secret)
