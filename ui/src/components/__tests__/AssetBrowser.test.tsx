@@ -5,7 +5,8 @@ vi.mock('../../api/jobs', () => ({
   fetchJobAssets: vi.fn(),
 }));
 vi.mock('../../api/episodes', () => ({
-  getAuthenticatedStreamUrl: vi.fn((url: string) => `http://localhost${url}?token=test-token`),
+  getScopedStreamUrl: vi.fn(async (url: string) => `http://localhost${url}?token=scoped-token`),
+  resolveStreamUrl: vi.fn((url: string) => `http://localhost${url}`),
 }));
 
 import { fetchJobAssets } from '../../api/jobs';

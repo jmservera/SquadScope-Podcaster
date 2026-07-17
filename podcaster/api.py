@@ -88,10 +88,19 @@ def _cors_headers(handler: BaseHTTPRequestHandler) -> list[tuple[str, str]]:
     ]
 
 
+def _security_headers() -> list[tuple[str, str]]:
+    return [
+        ("Referrer-Policy", "no-referrer"),
+        ("X-Content-Type-Options", "nosniff"),
+    ]
+
+
 def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str, Any]) -> None:
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
     handler.send_response(status)
     for name, value in _cors_headers(handler):
+        handler.send_header(name, value)
+    for name, value in _security_headers():
         handler.send_header(name, value)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(payload)))
@@ -102,6 +111,8 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str,
 def _empty_response(handler: BaseHTTPRequestHandler, status: int) -> None:
     handler.send_response(status)
     for name, value in _cors_headers(handler):
+        handler.send_header(name, value)
+    for name, value in _security_headers():
         handler.send_header(name, value)
     handler.send_header("Content-Length", "0")
     handler.end_headers()
@@ -117,6 +128,8 @@ class GenerateHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.OK)
         for name, value in _cors_headers(self):
+            self.send_header(name, value)
+        for name, value in _security_headers():
             self.send_header(name, value)
         self.end_headers()
 

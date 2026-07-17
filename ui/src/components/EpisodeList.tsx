@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
   fetchEpisodes,
-  getAuthenticatedAudioUrl,
-  getAuthenticatedStreamUrl,
+  getScopedStreamUrl,
+  resolveStreamUrl,
   type Episode,
 } from '../api/episodes';
 
@@ -14,7 +14,7 @@ function badgeClass(status: string): string {
 }
 
 function AudioPlayer({ audioUrl }: { audioUrl: string }) {
-  const resolvedUrl = getAuthenticatedAudioUrl(audioUrl);
+  const resolvedUrl = useScopedStreamUrl(audioUrl);
 
   return (
     <audio className="audio-player" controls preload="metadata">
@@ -25,7 +25,7 @@ function AudioPlayer({ audioUrl }: { audioUrl: string }) {
 }
 
 function VideoPlayer({ videoUrl }: { videoUrl: string }) {
-  const resolvedUrl = getAuthenticatedStreamUrl(videoUrl);
+  const resolvedUrl = useScopedStreamUrl(videoUrl);
 
   return (
     <video
@@ -40,16 +40,43 @@ function VideoPlayer({ videoUrl }: { videoUrl: string }) {
   );
 }
 
+function useScopedStreamUrl(streamUrl: string): string {
+  const [scopedUrl, setScopedUrl] = useState<{ streamUrl: string; url: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getScopedStreamUrl(streamUrl).then((url) => {
+      if (!cancelled) setScopedUrl({ streamUrl, url });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [streamUrl]);
+
+  return scopedUrl?.streamUrl === streamUrl ? scopedUrl.url : resolveStreamUrl(streamUrl);
+}
+
+function ScopedDownloadLink({
+  streamUrl,
+  children,
+}: {
+  streamUrl: string;
+  children: React.ReactNode;
+}) {
+  const resolvedUrl = useScopedStreamUrl(streamUrl);
+  return (
+    <a className="btn btn-secondary" href={resolvedUrl} download>
+      {children}
+    </a>
+  );
+}
+
 const EpisodeList: React.FC = () => {
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  useEffect(() => {
-    loadEpisodes();
-  }, []);
 
   async function loadEpisodes() {
     setLoading(true);
@@ -64,6 +91,10 @@ const EpisodeList: React.FC = () => {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    void Promise.resolve().then(loadEpisodes);
+  }, []);
 
   function toggleExpand(jobId: string) {
     setExpandedId((prev) => (prev === jobId ? null : jobId));
@@ -130,13 +161,9 @@ const EpisodeList: React.FC = () => {
                       {ep.audio_url ? (
                         <>
                           <AudioPlayer audioUrl={ep.audio_url} />
-                          <a
-                            className="btn btn-secondary"
-                            href={getAuthenticatedAudioUrl(ep.audio_url)}
-                            download
-                          >
+                          <ScopedDownloadLink streamUrl={ep.audio_url}>
                             Download MP3
-                          </a>
+                          </ScopedDownloadLink>
                         </>
                       ) : (
                         <span className="muted-text">No audio file available</span>
@@ -148,13 +175,9 @@ const EpisodeList: React.FC = () => {
                         <strong>Video Preview</strong>
                         <div className="video-preview-body">
                           <VideoPlayer videoUrl={ep.video_url} />
-                          <a
-                            className="btn btn-secondary"
-                            href={getAuthenticatedStreamUrl(ep.video_url)}
-                            download
-                          >
+                          <ScopedDownloadLink streamUrl={ep.video_url}>
                             Download MP4
-                          </a>
+                          </ScopedDownloadLink>
                         </div>
                       </div>
                     )}
@@ -164,14 +187,12 @@ const EpisodeList: React.FC = () => {
                         <strong>Artifacts</strong>
                         <div className="artifacts-list">
                           {ep.artifacts.map((artifact) => (
-                            <a
+                            <ScopedDownloadLink
                               key={artifact.path}
-                              className="btn btn-secondary"
-                              href={getAuthenticatedStreamUrl(artifact.url)}
-                              download
+                              streamUrl={artifact.url}
                             >
                               Download {artifact.name}
-                            </a>
+                            </ScopedDownloadLink>
                           ))}
                         </div>
                       </div>

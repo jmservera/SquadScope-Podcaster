@@ -4,8 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../api/episodes', () => ({
   fetchEpisodes: vi.fn(),
-  getAuthenticatedAudioUrl: vi.fn((url: string) => `http://localhost${url}?token=test-token`),
-  getAuthenticatedStreamUrl: vi.fn((url: string) => `http://localhost${url}?token=test-token`),
+  getScopedStreamUrl: vi.fn(async (url: string) => `http://localhost${url}?token=scoped-token`),
+  resolveStreamUrl: vi.fn((url: string) => `http://localhost${url}`),
 }));
 
 import { fetchEpisodes } from '../../api/episodes';

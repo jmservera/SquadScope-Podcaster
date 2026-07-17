@@ -161,10 +161,13 @@ class TestHealthEndpoint:
         handler = make_handler("GET", "/healthz")
         assert handler.response_code == HTTPStatus.OK
         assert handler.get_response_json() == {"status": "healthy"}
+        assert handler.response_headers["Referrer-Policy"] == "no-referrer"
+        assert handler.response_headers["X-Content-Type-Options"] == "nosniff"
 
     def test_unknown_get_returns_404(self):
         handler = make_handler("GET", "/unknown")
         assert handler.response_code == HTTPStatus.NOT_FOUND
+        assert handler.response_headers["Referrer-Policy"] == "no-referrer"
 
 
 class TestAuthCheck:

@@ -6,7 +6,12 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
-from podcaster.auth import create_token, verify_token
+from podcaster.auth import (
+    create_scoped_token,
+    create_token,
+    verify_scoped_token,
+    verify_token,
+)
 from podcaster.monitoring import app, set_storage
 
 # ---------------------------------------------------------------------------
@@ -72,6 +77,30 @@ class TestTokenHelpers:
         token = create_token("alice", _SECRET)
         with pytest.raises(jwt.InvalidSignatureError):
             verify_token(token, "wrong-secret")
+
+    def test_scoped_token_roundtrip(self):
+        token = create_scoped_token(_SECRET, scope="stream", resource="jobs/job-1/out.mp3")
+        payload = verify_scoped_token(token, _SECRET, scope="stream", resource="jobs/job-1/out.mp3")
+        assert payload["sub"] == "scoped"
+        assert payload["scope"] == "stream"
+        assert payload["resource"] == "jobs/job-1/out.mp3"
+
+    def test_scoped_token_wrong_scope_rejected(self):
+        token = create_scoped_token(_SECRET, scope="stream", resource="jobs/job-1/out.mp3")
+        with pytest.raises(jwt.InvalidTokenError, match="scope/resource mismatch"):
+            verify_scoped_token(token, _SECRET, scope="progress", resource="jobs/job-1/out.mp3")
+
+    def test_scoped_token_wrong_resource_rejected(self):
+        token = create_scoped_token(_SECRET, scope="stream", resource="jobs/job-1/out.mp3")
+        with pytest.raises(jwt.InvalidTokenError, match="scope/resource mismatch"):
+            verify_scoped_token(token, _SECRET, scope="stream", resource="jobs/job-2/out.mp3")
+
+    def test_expired_scoped_token_rejected(self):
+        token = create_scoped_token(
+            _SECRET, scope="stream", resource="jobs/job-1/out.mp3", expiry_seconds=-1
+        )
+        with pytest.raises(jwt.ExpiredSignatureError):
+            verify_scoped_token(token, _SECRET, scope="stream", resource="jobs/job-1/out.mp3")
 
 
 # ---------------------------------------------------------------------------
@@ -208,3 +237,21 @@ class TestAuthMiddleware:
             headers={"x-podcaster-api-key": "machine-key"},
         )
         assert resp2.status_code == 200
+
+    def test_full_jwt_query_param_is_rejected(self, client, monkeypatch):
+        _configure_auth(monkeypatch)
+        token = create_token(_USERNAME, _SECRET)
+        resp = client.get(f"/api/jobs?token={token}")
+        assert resp.status_code == 401
+
+    def test_scoped_query_access_accepts_matching_token(self, client, monkeypatch):
+        _configure_auth(monkeypatch)
+        token = create_scoped_token(_SECRET, scope="stream", resource="jobs/job-1/out.mp3")
+        resp = client.get(f"/api/stream/jobs/job-1/out.mp3?token={token}")
+        assert resp.status_code == 404
+
+    def test_scoped_query_access_rejects_wrong_resource(self, client, monkeypatch):
+        _configure_auth(monkeypatch)
+        token = create_scoped_token(_SECRET, scope="stream", resource="jobs/job-2/out.mp3")
+        resp = client.get(f"/api/stream/jobs/job-1/out.mp3?token={token}")
+        assert resp.status_code == 401

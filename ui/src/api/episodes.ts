@@ -1,5 +1,5 @@
 import { authenticatedFetch } from './apiClient';
-import { env, getAuthToken } from '../env';
+import { env } from '../env';
 
 const API_BASE = env.VITE_MONITORING_API_URL || env.VITE_API_BASE_URL || '';
 
@@ -43,13 +43,34 @@ export function resolveStreamUrl(streamUrl: string): string {
   return `${API_BASE}${streamUrl}`;
 }
 
-/** Build a stream URL with token query param for browser media/download elements. */
+/** Build a plain resolved stream URL without embedding the full login JWT. */
 export function getAuthenticatedStreamUrl(streamUrl: string): string {
+  return resolveStreamUrl(streamUrl);
+}
+
+/** Build a stream URL carrying a short-lived, blob-scoped query token. */
+export async function getScopedStreamUrl(streamUrl: string): Promise<string> {
   const resolved = resolveStreamUrl(streamUrl);
-  const token = getAuthToken();
-  if (!token) return resolved;
-  const separator = resolved.includes('?') ? '&' : '?';
-  return `${resolved}${separator}token=${encodeURIComponent(token)}`;
+  const marker = '/api/stream/';
+  const markerIndex = resolved.indexOf(marker);
+  if (markerIndex === -1) return resolved;
+
+  const pathWithSuffix = resolved.slice(markerIndex + marker.length);
+  const blobPath = decodeURIComponent(pathWithSuffix.split(/[?#]/, 1)[0]);
+  if (!blobPath) return resolved;
+
+  try {
+    const resp = await authenticatedFetch(
+      `${API_BASE}/api/stream-token?path=${encodeURIComponent(blobPath)}`
+    );
+    if (!resp.ok) return resolved;
+    const data = (await resp.json()) as { token?: string };
+    if (!data.token) return resolved;
+    const separator = resolved.includes('?') ? '&' : '?';
+    return `${resolved}${separator}token=${encodeURIComponent(data.token)}`;
+  } catch {
+    return resolved;
+  }
 }
 
 /** Resolve an episode's audio_url path to an absolute URL. */

@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from podcaster.auth import create_scoped_token, create_token, verify_scoped_token
 from podcaster.jobs import ReplayCollisionError
 from podcaster.monitoring import app, set_storage
 from podcaster.orchestration import JobPublishOutcome
@@ -809,6 +810,8 @@ class TestUiNavigationEndpoints:
         resp = client.get("/api/jobs")
 
         assert resp.status_code == 200
+        assert resp.headers["referrer-policy"] == "no-referrer"
+        assert resp.headers["x-content-type-options"] == "nosniff"
 
     def test_rejects_missing_or_invalid_api_key_when_configured(self, client, storage, monkeypatch):
         monkeypatch.setenv("MONITORING_API_KEY", "monitor-key")
@@ -841,6 +844,7 @@ class TestStreamBlob:
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "audio/mpeg"
         assert resp.headers["content-length"] == str(len(audio_data))
+        assert resp.headers["referrer-policy"] == "no-referrer"
         assert resp.content == audio_data
 
     def test_streams_image(self, client, storage):
@@ -876,6 +880,88 @@ class TestStreamBlob:
 
         resp = client.get("/api/stream/jobs/test-job/episode.mp3")
         assert "max-age=3600" in resp.headers.get("cache-control", "")
+
+    def test_stream_accepts_valid_scoped_query_token(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        storage.put_bytes("jobs/test-job/episode.mp3", b"\xff" * 10, "audio/mpeg")
+        token = create_scoped_token(
+            "test-secret-256-bits-long-enough",
+            scope="stream",
+            resource="jobs/test-job/episode.mp3",
+        )
+
+        resp = client.get("/api/stream/jobs/test-job/episode.mp3", params={"token": token})
+
+        assert resp.status_code == 200
+        assert resp.content == b"\xff" * 10
+
+    def test_stream_rejects_full_jwt_query_token(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        storage.put_bytes("jobs/test-job/episode.mp3", b"\xff" * 10, "audio/mpeg")
+        token = create_token("admin", "test-secret-256-bits-long-enough")
+
+        resp = client.get("/api/stream/jobs/test-job/episode.mp3", params={"token": token})
+
+        assert resp.status_code == 401
+
+    def test_stream_token_mints_scoped_token_for_streamable_blob(
+        self, client, storage, monkeypatch
+    ):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        storage.put_bytes("jobs/test-job/episode.mp3", b"\xff" * 10, "audio/mpeg")
+        bearer = create_token("admin", "test-secret-256-bits-long-enough")
+
+        resp = client.get(
+            "/api/stream-token",
+            params={"path": "jobs/test-job/episode.mp3"},
+            headers={"Authorization": f"Bearer {bearer}"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["expires_in"] == 300
+        payload = verify_scoped_token(
+            data["token"],
+            "test-secret-256-bits-long-enough",
+            scope="stream",
+            resource="jobs/test-job/episode.mp3",
+        )
+        assert payload["resource"] == "jobs/test-job/episode.mp3"
+
+    def test_stream_token_404_for_missing_blob(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        bearer = create_token("admin", "test-secret-256-bits-long-enough")
+
+        resp = client.get(
+            "/api/stream-token",
+            params={"path": "jobs/test-job/missing.mp3"},
+            headers={"Authorization": f"Bearer {bearer}"},
+        )
+
+        assert resp.status_code == 404
+
+    def test_stream_token_403_for_non_streamable_blob(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        storage.put_bytes("jobs/test-job/data.json", b"{}", "application/json")
+        bearer = create_token("admin", "test-secret-256-bits-long-enough")
+
+        resp = client.get(
+            "/api/stream-token",
+            params={"path": "jobs/test-job/data.json"},
+            headers={"Authorization": f"Bearer {bearer}"},
+        )
+
+        assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -1373,6 +1459,61 @@ class TestProgressStream:
         # Only the event after seq=1 should be replayed.
         assert len(data_lines) == 1
         assert json.loads(data_lines[0][len("data: ") :])["stage"] == PipelineStage.COMPLETED
+
+    def test_stream_accepts_scoped_progress_token(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        _store_manifest(storage, "job-1")
+        emit_progress(storage, "job-1", stage=PipelineStage.COMPLETED)
+        token = create_scoped_token(
+            "test-secret-256-bits-long-enough",
+            scope="progress",
+            resource="job-1",
+        )
+
+        resp = client.get("/api/jobs/job-1/progress/stream", params={"token": token})
+
+        assert resp.status_code == 200
+        assert "data: " in resp.text
+
+    def test_progress_token_mints_scoped_token_for_existing_job(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        _store_manifest(storage, "job-1")
+        bearer = create_token("admin", "test-secret-256-bits-long-enough")
+
+        resp = client.get(
+            "/api/progress-token",
+            params={"job_id": "job-1"},
+            headers={"Authorization": f"Bearer {bearer}"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["expires_in"] == 300
+        payload = verify_scoped_token(
+            data["token"],
+            "test-secret-256-bits-long-enough",
+            scope="progress",
+            resource="job-1",
+        )
+        assert payload["resource"] == "job-1"
+
+    def test_progress_token_404_for_missing_job(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        bearer = create_token("admin", "test-secret-256-bits-long-enough")
+
+        resp = client.get(
+            "/api/progress-token",
+            params={"job_id": "missing"},
+            headers={"Authorization": f"Bearer {bearer}"},
+        )
+
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

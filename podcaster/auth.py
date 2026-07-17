@@ -23,20 +23,27 @@ from pydantic import BaseModel
 
 from podcaster.auth_core import (
     _JWT_ALGORITHM,
+    _STREAM_TOKEN_EXPIRY_SECONDS,
     _TOKEN_EXPIRY_SECONDS,
+    create_scoped_token,
     create_token,
     get_credentials,
+    verify_scoped_token,
     verify_token,
 )
 
 __all__ = [
     "_JWT_ALGORITHM",
+    "_STREAM_TOKEN_EXPIRY_SECONDS",
     "_TOKEN_EXPIRY_SECONDS",
     "LoginRequest",
     "LoginResponse",
     "MeResponse",
+    "create_scoped_token",
     "create_token",
     "get_credentials",
+    "verify_scoped_query_access",
+    "verify_scoped_token",
     "verify_auth",
     "verify_token",
 ]
@@ -66,6 +73,31 @@ class MeResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _full_auth_is_valid(
+    *,
+    creds: tuple[str, str, str] | None,
+    configured_api_key: str,
+    authorization: str,
+    x_podcaster_api_key: str,
+) -> bool:
+    """Return true when a full bearer JWT or API key authorizes the request."""
+    if authorization.startswith("Bearer "):
+        token = authorization[7:]
+        if creds is not None:
+            _secret = creds[2]
+            try:
+                verify_token(token, _secret)
+                return True
+            except jwt.PyJWTError:
+                pass
+
+    if configured_api_key and x_podcaster_api_key:
+        if hmac.compare_digest(x_podcaster_api_key, configured_api_key):
+            return True
+
+    return False
+
+
 def verify_auth(
     request: Request,
     authorization: str = Header(default=""),
@@ -90,28 +122,40 @@ def verify_auth(
     if creds is None and not configured_api_key:
         return
 
-    # --- Try Bearer JWT first ---
-    if authorization.startswith("Bearer "):
-        token = authorization[7:]
-        if creds is not None:
-            _secret = creds[2]
-            try:
-                verify_token(token, _secret)
-                return  # valid JWT
-            except jwt.PyJWTError:
-                pass  # fall through to API-key check
+    if _full_auth_is_valid(
+        creds=creds,
+        configured_api_key=configured_api_key,
+        authorization=authorization,
+        x_podcaster_api_key=x_podcaster_api_key,
+    ):
+        return
 
-    # --- Try API key ---
-    if configured_api_key and x_podcaster_api_key:
-        if hmac.compare_digest(x_podcaster_api_key, configured_api_key):
-            return
+    raise HTTPException(status_code=401, detail="Invalid or missing credentials")
 
-    # --- Try query parameter token (for browser media elements) ---
+
+def verify_scoped_query_access(request: Request, scope: str, resource: str) -> None:
+    """Authorize browser URL access using full headers or a scoped query token."""
+    creds = get_credentials()
+    configured_api_key = os.environ.get("MONITORING_API_KEY") or os.environ.get(
+        "PODCASTER_API_KEY", ""
+    )
+
+    if creds is None and not configured_api_key:
+        return
+
+    if _full_auth_is_valid(
+        creds=creds,
+        configured_api_key=configured_api_key,
+        authorization=request.headers.get("Authorization", ""),
+        x_podcaster_api_key=request.headers.get("x-podcaster-api-key", ""),
+    ):
+        return
+
     query_token = request.query_params.get("token", "")
     if query_token and creds is not None:
         _secret = creds[2]
         try:
-            verify_token(query_token, _secret)
+            verify_scoped_token(query_token, _secret, scope=scope, resource=resource)
             return
         except jwt.PyJWTError:
             pass

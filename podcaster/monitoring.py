@@ -43,12 +43,15 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from podcaster.auth import (
+    _STREAM_TOKEN_EXPIRY_SECONDS,
     LoginRequest,
     LoginResponse,
     MeResponse,
+    create_scoped_token,
     create_token,
     get_credentials,
     verify_auth,
+    verify_scoped_query_access,
     verify_token,
 )
 from podcaster.credentials import CredentialStore
@@ -103,6 +106,14 @@ if _CORS_ORIGINS:
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "x-podcaster-api-key"],
     )
+
+
+@app.middleware("http")
+async def _security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -749,6 +760,22 @@ def get_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
     )
 
 
+@app.get("/api/progress-token", dependencies=[Depends(verify_auth)])
+def mint_progress_token(job_id: str = Query(...)):
+    """Mint a short-lived query token for the SSE progress stream."""
+    storage = get_storage()
+    if not _job_exists(storage, job_id):
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+
+    creds = get_credentials()
+    if creds is None:
+        return {"token": "", "expires_in": 0}
+    return {
+        "token": create_scoped_token(creds[2], scope="progress", resource=job_id),
+        "expires_in": _STREAM_TOKEN_EXPIRY_SECONDS,
+    }
+
+
 @app.get(
     "/api/jobs/{job_id}/progress/summary",
     response_model=StageProgressResponse,
@@ -889,8 +916,12 @@ async def _progress_event_stream(job_id: str, since: int) -> AsyncIterator[str]:
             last_emit = loop.time()
 
 
-@app.get("/api/jobs/{job_id}/progress/stream", dependencies=[Depends(verify_auth)])
-async def stream_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
+@app.get("/api/jobs/{job_id}/progress/stream")
+async def stream_job_progress(
+    request: Request,
+    job_id: str,
+    since: int = Query(default=0, ge=0),
+):
     """Stream real-time progress for a job over Server-Sent Events (issue #469).
 
     Preferred transport for the observability UI: a single long-lived HTTP
@@ -899,6 +930,7 @@ async def stream_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
     event; reconnects can resume from the last ``id`` via the ``since`` query
     parameter. Backed by the same durable store as the polling endpoint.
     """
+    verify_scoped_query_access(request, scope="progress", resource=job_id)
     storage = get_storage()
     if not _job_exists(storage, job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
@@ -1089,13 +1121,40 @@ def _content_type_for_path(path: str) -> str | None:
     return None
 
 
-@app.get("/api/stream/{blob_path:path}", dependencies=[Depends(verify_auth)])
-def stream_blob(blob_path: str):
+@app.get("/api/stream-token", dependencies=[Depends(verify_auth)])
+def mint_stream_token(path: str = Query(...)):
+    """Mint a short-lived query token for a single streamable blob."""
+    content_type = _content_type_for_path(path)
+    if content_type is None or not any(
+        content_type.startswith(prefix) for prefix in _STREAMABLE_PREFIXES
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Content type {content_type!r} is not streamable",
+        )
+
+    storage = get_storage()
+    if storage.get_bytes(path) is None:
+        raise HTTPException(status_code=404, detail="Blob not found")
+
+    creds = get_credentials()
+    if creds is None:
+        return {"token": "", "expires_in": 0}
+    return {
+        "token": create_scoped_token(creds[2], scope="stream", resource=path),
+        "expires_in": _STREAM_TOKEN_EXPIRY_SECONDS,
+    }
+
+
+@app.get("/api/stream/{blob_path:path}")
+def stream_blob(request: Request, blob_path: str):
     """Stream a blob from storage to the client.
 
     The UI calls this endpoint to play audio/video or display images
     without needing direct Azure Blob Storage credentials.
     """
+    verify_scoped_query_access(request, scope="stream", resource=blob_path)
+
     if not blob_path or blob_path.strip("/") == "":
         raise HTTPException(status_code=400, detail="blob_path must not be empty")
 

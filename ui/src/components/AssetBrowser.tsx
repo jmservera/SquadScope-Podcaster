@@ -1,27 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import { fetchJobAssets, type JobAsset } from '../api/jobs';
-import { getAuthenticatedStreamUrl } from '../api/episodes';
+import { getScopedStreamUrl, resolveStreamUrl } from '../api/episodes';
 
 /**
  * Per-job asset browser (issue #471).
  *
  * Lists the streamable media artifacts for a job and lets users preview them
  * inline: video and per-segment audio players plus a thumbnail gallery. URLs
- * come from the authenticated streaming proxy (`/api/stream/...`), which is
- * authorized by `verify_auth`: any valid token may fetch any streamable blob.
- * The URL is not a per-artifact capability (it is not SAS-like), so it must
- * never be treated as a shareable, scoped grant.
+ * come from the authenticated streaming proxy (`/api/stream/...`) and use
+ * short-lived, per-asset query tokens for browser media elements.
  */
 interface AssetBrowserProps {
   jobId: string;
 }
 
 function VideoAsset({ asset }: { asset: JobAsset }) {
+  const resolvedUrl = useScopedAssetUrl(asset.url);
   return (
     <figure className="asset-item asset-video">
       <video className="video-player" controls preload="metadata">
         <source
-          src={getAuthenticatedStreamUrl(asset.url)}
+          src={resolvedUrl}
           type={asset.content_type || 'video/mp4'}
         />
         Your browser does not support the video element.
@@ -32,12 +31,13 @@ function VideoAsset({ asset }: { asset: JobAsset }) {
 }
 
 function AudioAsset({ asset }: { asset: JobAsset }) {
+  const resolvedUrl = useScopedAssetUrl(asset.url);
   return (
     <figure className="asset-item asset-audio">
       <figcaption className="mono-text asset-caption">{asset.name}</figcaption>
       <audio className="audio-player" controls preload="metadata">
         <source
-          src={getAuthenticatedStreamUrl(asset.url)}
+          src={resolvedUrl}
           type={asset.content_type || 'audio/mpeg'}
         />
         Your browser does not support the audio element.
@@ -47,12 +47,13 @@ function AudioAsset({ asset }: { asset: JobAsset }) {
 }
 
 function ImageAsset({ asset }: { asset: JobAsset }) {
+  const resolvedUrl = useScopedAssetUrl(asset.url);
   return (
     <figure className="asset-item asset-image">
-      <a href={getAuthenticatedStreamUrl(asset.url)} target="_blank" rel="noreferrer">
+      <a href={resolvedUrl} target="_blank" rel="noreferrer">
         <img
           className="asset-thumb"
-          src={getAuthenticatedStreamUrl(asset.url)}
+          src={resolvedUrl}
           alt={asset.name}
           loading="lazy"
         />
@@ -60,6 +61,22 @@ function ImageAsset({ asset }: { asset: JobAsset }) {
       <figcaption className="mono-text asset-caption">{asset.name}</figcaption>
     </figure>
   );
+}
+
+function useScopedAssetUrl(streamUrl: string): string {
+  const [scopedUrl, setScopedUrl] = useState<{ streamUrl: string; url: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getScopedStreamUrl(streamUrl).then((url) => {
+      if (!cancelled) setScopedUrl({ streamUrl, url });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [streamUrl]);
+
+  return scopedUrl?.streamUrl === streamUrl ? scopedUrl.url : resolveStreamUrl(streamUrl);
 }
 
 const AssetBrowser: React.FC<AssetBrowserProps> = ({ jobId }) => {
