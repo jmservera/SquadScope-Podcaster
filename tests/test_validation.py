@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from datetime import datetime, timezone
@@ -60,6 +61,27 @@ def test_rejects_short_or_missing_article_inputs_when_article_fields_are_supplie
         }
     )
     assert any("article_content is missing or empty" in error for error in errors)
+
+
+def test_article_sha256_must_cover_exact_article_content_bytes() -> None:
+    content = (
+        "This is a sufficiently detailed article body with enough context to satisfy "
+        "the article validation rules for immutable replay input hashing, including "
+        "additional facts and provenance details."
+    )
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_title": "Immutable replay",
+        "article_content": content,
+        "article_sha256": "0" * 64,
+    }
+
+    assert "article_sha256 must match the exact UTF-8 article_content bytes" in validate_payload(
+        payload
+    )
+    payload["article_sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    assert validate_payload(payload) == []
 
 
 def test_rejects_bad_types_and_urls() -> None:
@@ -144,6 +166,7 @@ def test_stub_response_shape_is_contract_complete(monkeypatch) -> None:
     )
     assert tuple(response.keys()) == RESPONSE_KEYS
     assert response["job_id"].startswith("podcast-2026-W23-")
+    assert response["job_id"].endswith("-dry-run")
     assert response["status"] == "dry_run"
     assert response["manifest_url"].endswith(f"/jobs/{response['job_id']}/manifest.json")
     assert response["mp3_url"].endswith(f"/audio/{response['job_id']}.mp3")

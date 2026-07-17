@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import os
 import re
@@ -171,6 +172,10 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
     if article_content is not None:
         if not isinstance(article_content, str):
             errors.append("article_content must be a string")
+        elif isinstance(article_sha256, str) and SHA256_RE.match(article_sha256):
+            computed_article_sha256 = hashlib.sha256(article_content.encode("utf-8")).hexdigest()
+            if article_sha256 != computed_article_sha256:
+                errors.append("article_sha256 must match the exact UTF-8 article_content bytes")
 
     if (article_title_supplied or article_content_supplied) and (
         article_title is None or isinstance(article_title, str)

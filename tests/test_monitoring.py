@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from podcaster.jobs import ReplayCollisionError
 from podcaster.monitoring import app, set_storage
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
@@ -596,6 +597,37 @@ class TestGenerateEndpoint:
 
         assert resp.status_code == 202
         assert resp.json()["job_id"] == "job-123"
+
+    @patch("podcaster.monitoring.run_generation_job")
+    def test_replay_collision_returns_sanitized_409(self, mock_run_generation_job, client, storage):
+        mock_run_generation_job.side_effect = ReplayCollisionError(
+            "private storage path must not leak"
+        )
+
+        resp = client.post(
+            "/api/generate",
+            json={"week": "2026-W24", "article_url": "https://example.com/article"},
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["errors"] == ["replay output already exists"]
+        assert "private storage path" not in resp.text
+
+    @patch("podcaster.monitoring.report_failure")
+    @patch("podcaster.monitoring.run_generation_job")
+    def test_unrelated_generation_failure_remains_500(
+        self, mock_run_generation_job, mock_report_failure, client, storage
+    ):
+        mock_run_generation_job.side_effect = RuntimeError("unexpected")
+
+        resp = client.post(
+            "/api/generate",
+            json={"week": "2026-W24", "article_url": "https://example.com/article"},
+        )
+
+        assert resp.status_code == 500
+        assert resp.json()["errors"] == ["internal server error"]
+        mock_report_failure.assert_called_once()
 
 
 class TestReviewEndpoint:

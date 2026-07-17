@@ -32,6 +32,22 @@ from podcaster.sections import parse_script_sections, sections_to_metadata
 from podcaster.storage import StorageBackend, StoredArtifact, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
 
+_REPLAY_IDENTITY_FIELDS = (
+    "article_content",
+    "article_sha256",
+    "article_title",
+    "backchannels",
+    "breaking_news",
+    "description",
+    "description_template",
+    "language",
+    "music_mix",
+    "podcast_config",
+    "script_directions",
+    "source_artifacts",
+    "spotify_publish",
+)
+
 
 @dataclass(frozen=True)
 class JobResult:
@@ -45,12 +61,113 @@ class MonthlyBudgetExceeded(RuntimeError):
         self.budget = budget
 
 
+class ReplayCollisionError(RuntimeError):
+    """Raised when immutable generation inputs already own a job namespace."""
+
+
+def _canonical_replay_inputs(payload: dict[str, Any]) -> dict[str, Any]:
+    inputs = {
+        "week": str(payload["week"]).strip(),
+        "article_url": str(payload["article_url"]).strip(),
+    }
+    for field in _REPLAY_IDENTITY_FIELDS:
+        if field in payload:
+            inputs[field] = payload[field]
+    return inputs
+
+
+def _replay_identity_bytes(payload: dict[str, Any]) -> bytes:
+    return json.dumps(
+        _canonical_replay_inputs(payload),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def replay_identity_sha256(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(_replay_identity_bytes(payload)).hexdigest()
+
+
 def build_job_id(payload: dict[str, Any]) -> str:
     week = str(payload["week"]).strip()
-    article_url = str(payload["article_url"]).strip()
-    digest = hashlib.sha256(f"{week}|{article_url}".encode("utf-8")).hexdigest()[:12]
+    digest = replay_identity_sha256(payload)[:12]
     safe_week = re.sub(r"[^A-Za-z0-9_.-]", "-", week)
-    return f"podcast-{safe_week}-{digest}"
+    job_id = f"podcast-{safe_week}-{digest}"
+    return f"{job_id}-dry-run" if payload.get("dry_run") else job_id
+
+
+def _summary_bytes(payload: dict[str, Any]) -> bytes | None:
+    script_directions = payload.get("script_directions")
+    if not isinstance(script_directions, dict):
+        return None
+    historical_context = script_directions.get("historical_context")
+    if not isinstance(historical_context, dict):
+        return None
+    summary = historical_context.get("summary")
+    if not isinstance(summary, str) or not summary:
+        return None
+    return summary.encode("utf-8")
+
+
+def _reserve_replay_inputs(
+    storage: StorageBackend,
+    job_id: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, StoredArtifact], dict[str, Any]]:
+    identity_sha256 = replay_identity_sha256(payload)
+    input_prefix = f"jobs/{job_id}/inputs"
+    article_content = payload.get("article_content")
+    article_bytes = article_content.encode("utf-8") if isinstance(article_content, str) else None
+    summary_bytes = _summary_bytes(payload)
+    article_path = f"{input_prefix}/article.txt" if article_bytes is not None else None
+    summary_path = f"{input_prefix}/summary.txt" if summary_bytes is not None else None
+    replay_path = f"{input_prefix}/replay.json"
+    replay_metadata = {
+        "schema_version": "squadscope-podcaster-replay-input-v1",
+        "identity_sha256": identity_sha256,
+        "input_manifest_path": replay_path,
+        "article_path": article_path,
+        "article_sha256": hashlib.sha256(article_bytes).hexdigest()
+        if article_bytes is not None
+        else payload.get("article_sha256"),
+        "summary_path": summary_path,
+        "summary_sha256": hashlib.sha256(summary_bytes).hexdigest()
+        if summary_bytes is not None
+        else None,
+    }
+    reservation = {
+        **replay_metadata,
+        "inputs": _canonical_replay_inputs(payload),
+    }
+    reservation_bytes = manifest_bytes(reservation)
+    if storage.get_bytes(f"jobs/{job_id}/manifest.json") is not None:
+        raise ReplayCollisionError("immutable replay output namespace already exists")
+
+    def create_only(content: bytes | None) -> bytes:
+        if content is not None:
+            raise ReplayCollisionError("immutable replay output namespace already exists")
+        return reservation_bytes
+
+    replay_artifact = storage.update_bytes(
+        replay_path,
+        "application/json; charset=utf-8",
+        create_only,
+    )
+    stored = {replay_path: replay_artifact}
+    if article_bytes is not None and article_path is not None:
+        stored[article_path] = storage.put_bytes(
+            article_path,
+            article_bytes,
+            "text/plain; charset=utf-8",
+        )
+    if summary_bytes is not None and summary_path is not None:
+        stored[summary_path] = storage.put_bytes(
+            summary_path,
+            summary_bytes,
+            "text/plain; charset=utf-8",
+        )
+    return stored, replay_metadata
 
 
 def run_generation_job(
@@ -79,6 +196,10 @@ def run_generation_job(
     if "article_title" in payload or "article_content" in payload:
         validate_article_inputs(payload.get("article_title"), payload.get("article_content"))
     storage = storage or create_storage_backend()
+    stored, replay_metadata = _reserve_replay_inputs(storage, job_id, payload)
+    payload = dict(payload)
+    if replay_metadata["article_sha256"] is not None:
+        payload["article_sha256"] = replay_metadata["article_sha256"]
     month = current.strftime("%Y-%m")
     monthly_path = monthly_ledger_path(month)
     cost_override = _cost_override(payload)
@@ -113,27 +234,34 @@ def run_generation_job(
             )
         )
 
-    try:
-        storage.update_bytes(
-            monthly_path, "application/json; charset=utf-8", reserve_monthly_budget
+    if payload.get("dry_run"):
+        monthly_ledger = load_monthly_ledger(storage.get_bytes(monthly_path), month=month)
+        prior_episode_count, prior_monthly_spend = monthly_budget_inputs(
+            monthly_ledger, job_id=job_id
         )
-    except MonthlyBudgetExceeded as exc:
-        logging.warning(
-            "podcaster job blocked by monthly budget job_id=%s week=%s "
-            "projected_episode_count=%s projected_monthly_spend_usd=%s",
-            job_id,
-            payload.get("week"),
-            exc.budget["projected_episode_count"],
-            exc.budget["projected_monthly_spend_usd"],
-        )
-        return JobResult(
-            response=failed_response(
-                ["monthly podcast budget exceeded; explicit operator override required"]
-            ),
-            manifest={"job_id": job_id, "status": "failed", "budget": exc.budget},
-        )
-    prior_episode_count = int(budget_context["prior_episode_count"])
-    prior_monthly_spend = budget_context["prior_monthly_spend"]
+    else:
+        try:
+            storage.update_bytes(
+                monthly_path, "application/json; charset=utf-8", reserve_monthly_budget
+            )
+        except MonthlyBudgetExceeded as exc:
+            storage.delete_prefix(f"jobs/{job_id}")
+            logging.warning(
+                "podcaster job blocked by monthly budget job_id=%s week=%s "
+                "projected_episode_count=%s projected_monthly_spend_usd=%s",
+                job_id,
+                payload.get("week"),
+                exc.budget["projected_episode_count"],
+                exc.budget["projected_monthly_spend_usd"],
+            )
+            return JobResult(
+                response=failed_response(
+                    ["monthly podcast budget exceeded; explicit operator override required"]
+                ),
+                manifest={"job_id": job_id, "status": "failed", "budget": exc.budget},
+            )
+        prior_episode_count = int(budget_context["prior_episode_count"])
+        prior_monthly_spend = budget_context["prior_monthly_spend"]
 
     warnings = [
         *(validation_warnings or []),
@@ -156,7 +284,12 @@ def run_generation_job(
     )
     if not script_directions.historical_context.prior_episode_themes:
         try:
-            prior_episode_themes = fetch_prior_episode_themes(storage, job_id)
+            prior_episode_themes = fetch_prior_episode_themes(
+                storage,
+                job_id,
+                current_week=str(payload["week"]),
+                current_created_at=current,
+            )
         except Exception:
             logging.exception("prior episode theme extraction failed job_id=%s", job_id)
             prior_episode_themes = ()
@@ -223,8 +356,7 @@ def run_generation_job(
     if llm_script is None:
         warnings.append("audio is a deterministic placeholder pending TTS implementation")
 
-    stored: dict[str, StoredArtifact] = {}
-    checksums: dict[str, str] = {}
+    checksums: dict[str, str] = {path: checksum(storage.get_bytes(path) or b"") for path in stored}
     cost_ledger: dict[str, Any] | None = None
     audio_validation = None
     for artifact in generate_artifacts(
@@ -290,7 +422,7 @@ def run_generation_job(
         "status": manifest_status,
         "created_at": created_at,
         "expires_at": expires_at,
-        "request": _request_metadata(payload),
+        "request": _request_metadata(payload, replay_metadata),
         "lifecycle": _lifecycle_metadata(payload, created_at, manifest_status),
         "review": _review_metadata(payload),
         "cost_ledger": cost_ledger,
@@ -367,7 +499,12 @@ def run_generation_job(
         )
         return manifest_bytes(updated_monthly_ledger)
 
-    storage.update_bytes(monthly_path, "application/json; charset=utf-8", finalize_monthly_budget)
+    if not payload.get("dry_run"):
+        storage.update_bytes(
+            monthly_path,
+            "application/json; charset=utf-8",
+            finalize_monthly_budget,
+        )
     logging.info(
         "podcaster job staged job_id=%s status=%s dry_run=%s artifact_count=%s",
         job_id,
@@ -462,14 +599,17 @@ def _job_already_in_ledger(monthly_ledger: dict[str, Any], job_id: str) -> bool:
     return any(isinstance(ep, dict) and ep.get("job_id") == job_id for ep in episodes)
 
 
-def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+def _request_metadata(
+    payload: dict[str, Any],
+    replay_metadata: dict[str, Any],
+) -> dict[str, Any]:
     callback = payload.get("callback") if isinstance(payload.get("callback"), dict) else {}
     callback_url = callback.get("url") if isinstance(callback, dict) else None
     cost_override = _cost_override(payload)
     request = {
         "week": payload.get("week"),
         "article_url": payload.get("article_url"),
-        "article_sha256": payload.get("article_sha256"),
+        "article_sha256": replay_metadata["article_sha256"],
         "article_title": payload.get("article_title"),
         "article_content_provided": bool(payload.get("article_content")),
         "source_artifacts": payload.get("source_artifacts", []),
@@ -487,15 +627,20 @@ def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
             if isinstance(callback, dict)
             else False,
         },
+        "replay": replay_metadata,
     }
-    if isinstance(payload.get("podcast_config"), dict):
-        request["podcast_config"] = payload["podcast_config"]
-    if isinstance(payload.get("script_directions"), dict):
-        request["script_directions"] = payload["script_directions"]
-    if isinstance(payload.get("backchannels"), dict):
-        request["backchannels"] = payload["backchannels"]
-    if isinstance(payload.get("spotify_publish"), dict):
-        request["spotify_publish"] = payload["spotify_publish"]
+    for field in (
+        "backchannels",
+        "description",
+        "description_template",
+        "language",
+        "music_mix",
+        "podcast_config",
+        "script_directions",
+        "spotify_publish",
+    ):
+        if field in payload:
+            request[field] = payload[field]
     return request
 
 

@@ -15,14 +15,11 @@ COPY . .
 RUN npm run build
 
 # --- runtime stage ---
-FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:cc300bd2e8776708a8c2c8686a74f06eadf221c5ce01e85d0e821955d7a730ab
+# Alpine 3.24 supplies the supported c-ares 1.34.8-r0 and libexpat 2.8.2-r0
+# packages directly; no repository override or binary overlay is needed.
+FROM nginxinc/nginx-unprivileged:1.31.3-alpine3.24@sha256:a718212f9cf21e241f14067333000a3f0930292f5354fe0db269e9a2a2596b9e
 
 USER root
-
-# Patch libexpat for CVE-2026-45186 without changing the base image pin.
-# Pin the known-fixed minimum version so the build is deterministic and
-# fails fast if the patched package is unavailable.
-RUN apk add --no-cache --upgrade "libexpat>=2.8.1-r0"
 
 # Remove default site.
 RUN rm -rf /usr/share/nginx/html/*

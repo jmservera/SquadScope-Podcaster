@@ -15,7 +15,12 @@ import pytest
 
 from podcaster.costs import monthly_ledger_path
 from podcaster.generation import generate_artifacts, manifest_bytes
-from podcaster.jobs import build_job_id, run_generation_job
+from podcaster.jobs import (
+    ReplayCollisionError,
+    build_job_id,
+    replay_identity_sha256,
+    run_generation_job,
+)
 from podcaster.storage import (
     AzureBlobStorageBackend,
     LocalStorageBackend,
@@ -249,7 +254,150 @@ def test_dry_run_preserves_response_shape_and_review_metadata() -> None:
     assert result.manifest["generation"]["tts_synthesis"]["dry_run_bypass_allowed"] is True
     assert "callback accepted by contract but not invoked yet" in result.response["warnings"]
     assert "CALLBACK_SECRET" not in json.dumps(result.manifest)
+    assert result.response["job_id"].endswith("-dry-run")
+    assert not (artifact_root / monthly_ledger_path("2026-06")).exists()
     shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_replay_identity_covers_content_title_breaking_news_and_config() -> None:
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_title": "Pinned title",
+        "article_content": VALID_ARTICLE_CONTENT,
+        "breaking_news": "Pinned correction",
+        "podcast_config": {"name": "Pinned show"},
+        "script_directions": {"episode_style": {"tone": "analytical"}},
+        "backchannels": {"enabled": True},
+    }
+
+    assert build_job_id(payload) == build_job_id(dict(payload))
+    for field, changed in (
+        ("article_title", "Changed title"),
+        ("article_content", VALID_ARTICLE_CONTENT + " Changed."),
+        ("breaking_news", "Changed correction"),
+        ("podcast_config", {"name": "Changed show"}),
+        ("script_directions", {"episode_style": {"tone": "playful"}}),
+        ("backchannels", {"enabled": False}),
+    ):
+        changed_payload = dict(payload)
+        changed_payload[field] = changed
+        assert build_job_id(changed_payload) != build_job_id(payload)
+
+    dry_payload = {**payload, "dry_run": True}
+    assert replay_identity_sha256(dry_payload) == replay_identity_sha256(payload)
+    assert build_job_id(dry_payload).endswith("-dry-run")
+    assert build_job_id(dry_payload) != build_job_id(payload)
+
+
+def test_generation_pins_exact_article_and_summary_hashes(tmp_path: Path) -> None:
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    summary = "Exact historical summary.\nSecond line."
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_title": "Pinned title",
+        "article_content": VALID_ARTICLE_CONTENT,
+        "script_directions": {"historical_context": {"summary": summary}},
+    }
+
+    result = run_generation_job(
+        payload,
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+
+    replay = result.manifest["request"]["replay"]
+    article_bytes = VALID_ARTICLE_CONTENT.encode("utf-8")
+    summary_bytes = summary.encode("utf-8")
+    assert storage.get_bytes(replay["article_path"]) == article_bytes
+    assert storage.get_bytes(replay["summary_path"]) == summary_bytes
+    assert replay["article_sha256"] == hashlib.sha256(article_bytes).hexdigest()
+    assert replay["summary_sha256"] == hashlib.sha256(summary_bytes).hexdigest()
+    assert result.manifest["request"]["article_sha256"] == replay["article_sha256"]
+
+
+def test_replay_collision_refuses_overwrite_before_budget_or_artifacts(tmp_path: Path) -> None:
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_title": "Pinned title",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    first = run_generation_job(
+        payload,
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+    manifest_path = tmp_path / "jobs" / first.response["job_id"] / "manifest.json"
+    manifest_before = manifest_path.read_bytes()
+    ledger_before = (tmp_path / monthly_ledger_path("2026-06")).read_bytes()
+
+    with pytest.raises(ReplayCollisionError):
+        run_generation_job(
+            payload,
+            storage=storage,
+            now=datetime(2026, 6, 7, 20, 0, 0, tzinfo=timezone.utc),
+        )
+
+    assert manifest_path.read_bytes() == manifest_before
+    assert (tmp_path / monthly_ledger_path("2026-06")).read_bytes() == ledger_before
+
+
+def test_concurrent_identical_replays_reserve_namespace_atomically(tmp_path: Path) -> None:
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_title": "Pinned title",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+
+    def run_once() -> str:
+        try:
+            return run_generation_job(
+                payload,
+                storage=storage,
+                now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+            ).response["status"]
+        except ReplayCollisionError:
+            return "collision"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(lambda _index: run_once(), range(2)))
+
+    assert sorted(outcomes) == ["accepted", "collision"]
+
+
+def test_dry_run_does_not_mutate_accepted_namespace_or_monthly_ledger(tmp_path: Path) -> None:
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_title": "Pinned title",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    accepted = run_generation_job(
+        payload,
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+    accepted_manifest_path = tmp_path / "jobs" / accepted.response["job_id"] / "manifest.json"
+    manifest_before = accepted_manifest_path.read_bytes()
+    ledger_path = tmp_path / monthly_ledger_path("2026-06")
+    ledger_before = ledger_path.read_bytes()
+
+    dry_run = run_generation_job(
+        {**payload, "dry_run": True},
+        storage=storage,
+        now=datetime(2026, 6, 7, 20, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert dry_run.response["status"] == "dry_run"
+    assert dry_run.response["job_id"] != accepted.response["job_id"]
+    assert accepted_manifest_path.read_bytes() == manifest_before
+    assert ledger_path.read_bytes() == ledger_before
 
 
 def test_backchannels_payload_is_threaded_into_request_manifest() -> None:
@@ -512,6 +660,15 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
         "force": True,
         "cost_override": {"recorded": False, "actor": None, "recorded_at": None},
         "callback": {"requested": False, "url_host": None, "secret_name_provided": False},
+        "replay": {
+            "schema_version": "squadscope-podcaster-replay-input-v1",
+            "identity_sha256": replay_identity_sha256(payload),
+            "input_manifest_path": f"jobs/{job_id}/inputs/replay.json",
+            "article_path": None,
+            "article_sha256": "b" * 64,
+            "summary_path": None,
+            "summary_sha256": None,
+        },
     }
     assert manifest["lifecycle"]["force"] is True
     assert manifest["lifecycle"]["transitions"][-1]["to"] == "accepted"
@@ -563,7 +720,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
     serialized = json.loads(manifest_bytes(manifest).decode("utf-8"))
     assert serialized == manifest
     assert (
-        f"podcaster job staged job_id={job_id} status=accepted dry_run=False artifact_count=9"
+        f"podcaster job staged job_id={job_id} status=accepted dry_run=False artifact_count=10"
         in caplog.text
     )
     shutil.rmtree(artifact_root, ignore_errors=True)
@@ -679,6 +836,7 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
 
     assert result.response["status"] == "accepted"
     assert storage.monthly_updates == [
+        f"jobs/{result.response['job_id']}/inputs/replay.json",
         monthly_ledger_path("2026-06"),
         monthly_ledger_path("2026-06"),
     ]
@@ -910,7 +1068,8 @@ def test_azure_conditional_update_retry_exhaustion_stops_before_artifacts() -> N
             now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
         )
 
-    assert storage.get_attempts == 5
+    # One read checks for a legacy manifest before the five atomic reservation attempts.
+    assert storage.get_attempts == 6
     assert storage.put_attempts == 5
     assert storage.artifact_puts == []
 

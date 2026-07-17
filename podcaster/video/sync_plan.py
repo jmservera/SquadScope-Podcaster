@@ -866,7 +866,12 @@ def weekly_url_from_job_id(job_id: str) -> str | None:
     return f"https://claracle.com/weekly/{year}/w{week:02d}/"
 
 
-def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
+def prepend_weekly_segment(
+    plan: EpisodePlan,
+    job_id: str,
+    *,
+    use_live_source: bool = True,
+) -> EpisodePlan:
     """Insert the claracle.com weekly page as the first content segment (issue #382).
 
     The weekly page (derived from *job_id*) is shown right after the intro and
@@ -885,13 +890,21 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
     The plan is returned unchanged when *job_id* yields no weekly URL or the
     weekly page is already the first segment (idempotent).
     """
-    url = weekly_url_from_job_id(job_id)
-    if url is None:
+    url = weekly_url_from_job_id(job_id) if use_live_source else None
+    if not use_live_source:
         logger.info(
-            "No weekly URL derivable from job_id=%s; skipping weekly segment",
+            "Using pinned replay input instead of live weekly URL for job_id=%s",
             job_id,
         )
-        return plan
+    if url is None:
+        if not use_live_source:
+            url = ""
+        else:
+            logger.info(
+                "No weekly URL derivable from job_id=%s; skipping weekly segment",
+                job_id,
+            )
+            return plan
 
     segments = list(plan.segments)
     # A plan with no repo segments is already a generic/full-length page (often
@@ -902,7 +915,7 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
             job_id,
         )
         return plan
-    if segments and segments[0].source_url == url and segments[0].is_generic:
+    if segments and segments[0].source_url == (url or None) and segments[0].is_generic:
         return plan
 
     # ``segments`` is guaranteed non-empty here: the function returns early above
@@ -917,7 +930,7 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
         start_seconds=0.0,
         duration_seconds=weekly_duration,
         repo=None,
-        source_url=url,
+        source_url=url or None,
     )
 
     # The first repo already starts at ``first_start`` (the pre-first-repo
