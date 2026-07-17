@@ -1121,9 +1121,28 @@ def _content_type_for_path(path: str) -> str | None:
     return None
 
 
+# Blob paths reaching the streaming proxy are caller-controlled. Validate them
+# at the API boundary against a strict allowlist and reject path traversal
+# before the value is used to address storage, so a request can never escape
+# the storage namespace (defense-in-depth over the backend's own sanitizer).
+_SAFE_BLOB_PATH_RE = re.compile(r"[A-Za-z0-9._/\-]+")
+
+
+def _require_safe_blob_path(path: str) -> str:
+    segments = path.split("/")
+    if (
+        not _SAFE_BLOB_PATH_RE.fullmatch(path)
+        or path.startswith("/")
+        or any(segment in ("", ".", "..") for segment in segments)
+    ):
+        raise HTTPException(status_code=400, detail="Invalid blob path")
+    return path
+
+
 @app.get("/api/stream-token", dependencies=[Depends(verify_auth)])
 def mint_stream_token(path: str = Query(...)):
     """Mint a short-lived query token for a single streamable blob."""
+    path = _require_safe_blob_path(path)
     content_type = _content_type_for_path(path)
     if content_type is None or not any(
         content_type.startswith(prefix) for prefix in _STREAMABLE_PREFIXES
@@ -1157,6 +1176,8 @@ def stream_blob(request: Request, blob_path: str):
 
     if not blob_path or blob_path.strip("/") == "":
         raise HTTPException(status_code=400, detail="blob_path must not be empty")
+
+    blob_path = _require_safe_blob_path(blob_path)
 
     content_type = _content_type_for_path(blob_path)
     if content_type is None or not any(

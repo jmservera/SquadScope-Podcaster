@@ -963,10 +963,33 @@ class TestStreamBlob:
 
         assert resp.status_code == 403
 
+    def test_stream_token_400_for_traversal_path(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        bearer = create_token("admin", "test-secret-256-bits-long-enough")
 
-# ---------------------------------------------------------------------------
-# Tests: GET /api/episodes
-# ---------------------------------------------------------------------------
+        for bad in ("../../etc/passwd.mp3", "/abs/episode.mp3", "jobs/../secret.mp3"):
+            resp = client.get(
+                "/api/stream-token",
+                params={"path": bad},
+                headers={"Authorization": f"Bearer {bearer}"},
+            )
+            assert resp.status_code == 400, bad
+
+    def test_stream_rejects_traversal_blob_path(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        token = create_scoped_token(
+            "test-secret-256-bits-long-enough",
+            scope="stream",
+            resource="jobs/../secret.mp3",
+        )
+
+        resp = client.get("/api/stream/jobs/..%2Fsecret.mp3", params={"token": token})
+
+        assert resp.status_code in (400, 401, 404)
 
 
 class TestListEpisodes:
