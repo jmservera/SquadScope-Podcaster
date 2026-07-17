@@ -496,6 +496,20 @@ module openAi 'modules/openai.bicep' = {
     chatModelCapacity: chatModelCapacity
     synthesisJobPrincipalId: aca.outputs.jobIdentityPrincipalId
     audioJobPrincipalId: ''
+    deployVnet: deployVnet
+  }
+}
+
+// Private endpoint for the OpenAI account in VNet mode (#598). Runs after both the
+// network module and the OpenAI account so the account is reachable over the VNet.
+module openAiPrivateEndpoint 'modules/openai-private-endpoint.bicep' = if (deployVnet) {
+  name: 'openai-private-endpoint'
+  params: {
+    location: location
+    peSubnetId: network!.outputs.peSubnetId
+    openAiAccountId: openAi.outputs.accountId
+    openAiAccountName: openAiAccountName
+    openAiDnsZoneId: network!.outputs.openAiDnsZoneId
   }
 }
 
