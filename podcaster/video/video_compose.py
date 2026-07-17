@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import tempfile
 import urllib.parse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -24,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 
 from podcaster.progress import TaskStatus
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
+from podcaster.ssrf import host_is_blocked, redact_url, safe_urlopen
 from podcaster.video.intermediates import ensure_disk_budget
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 from podcaster.video.video_gen import RecordedSegment, _recording_blob_name
@@ -443,6 +443,19 @@ def _default_dog_cache_dir() -> Path:
     return Path(tempfile.gettempdir()) / "podcaster-dog-logo-cache"
 
 
+def _redact_url(url: str) -> str:
+    """Return *url* stripped of secrets for safe logging.
+
+    Delegates to :func:`podcaster.ssrf.redact_url`, which removes ``user:pass@``
+    userinfo *and* the query string and fragment (either may carry signed
+    tokens), keeping only scheme/host/port/path.
+
+    The DOG logo URL is caller-controlled; logging it verbatim could leak
+    embedded credentials (``https://user:secret@host/logo.png``).
+    """
+    return redact_url(url)
+
+
 def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
     """Download (and cache) the DOG logo image from *url*.
 
@@ -455,7 +468,24 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
         logger.warning(
             "Skipping DOG logo fetch: unsupported URL scheme %r in %s; composing without watermark",
             scheme,
-            url,
+            _redact_url(url),
+        )
+        return None
+
+    # SSRF guard (#601): the URL is caller-controlled config, so refuse targets
+    # that resolve to loopback / private / link-local / cloud-metadata hosts.
+    hostname = urllib.parse.urlparse(url).hostname
+    if hostname is None:
+        logger.warning(
+            "Skipping DOG logo fetch: URL has no host in %s; composing without watermark",
+            _redact_url(url),
+        )
+        return None
+    if host_is_blocked(hostname):
+        logger.warning(
+            "Skipping DOG logo fetch: URL host is not publicly routable / is "
+            "blocked by the SSRF guard in %s; composing without watermark",
+            _redact_url(url),
         )
         return None
 
@@ -469,22 +499,24 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
 
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(url, timeout=15) as resp:  # noqa: S310 — config-driven URL
+        with safe_urlopen(url, timeout=15) as resp:
             data = resp.read()
     except Exception as exc:  # noqa: BLE001 — never fail composition on fetch error
         logger.warning(
             "Failed to download DOG logo from %s: %s; composing without watermark",
-            url,
+            _redact_url(url),
             exc,
         )
         return None
 
     if not data:
-        logger.warning("DOG logo at %s was empty; composing without watermark", url)
+        logger.warning("DOG logo at %s was empty; composing without watermark", _redact_url(url))
         return None
 
     cache_path.write_bytes(data)
-    logger.info("Downloaded DOG logo (%d bytes) from %s to %s", len(data), url, cache_path)
+    logger.info(
+        "Downloaded DOG logo (%d bytes) from %s to %s", len(data), _redact_url(url), cache_path
+    )
     return cache_path
 
 
