@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 
 from podcaster.progress import TaskStatus
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
-from podcaster.ssrf import host_is_blocked, safe_urlopen
+from podcaster.ssrf import host_is_blocked, redact_url, safe_urlopen
 from podcaster.video.intermediates import ensure_disk_budget
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 from podcaster.video.video_gen import RecordedSegment, _recording_blob_name
@@ -449,16 +449,7 @@ def _redact_url(url: str) -> str:
     The DOG logo URL is caller-controlled; logging it verbatim could leak
     embedded credentials (``https://user:secret@host/logo.png``).
     """
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except ValueError:
-        return "<unparseable-url>"
-    if parsed.hostname is None:
-        return f"{parsed.scheme}:<no-host>" if parsed.scheme else "<no-host>"
-    netloc = parsed.hostname
-    if parsed.port is not None:
-        netloc = f"{netloc}:{parsed.port}"
-    return urllib.parse.urlunparse(parsed._replace(netloc=netloc))
+    return redact_url(url)
 
 
 def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:

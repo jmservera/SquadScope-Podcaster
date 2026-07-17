@@ -75,6 +75,25 @@ class TestUrlIsSafe:
         assert ssrf.url_is_safe("https://example.com/logo.png") is True
 
 
+class TestRedactUrl:
+    def test_strips_userinfo(self):
+        assert ssrf.redact_url("https://user:secret@example.com/logo.png") == (
+            "https://example.com/logo.png"
+        )
+
+    def test_strips_query_and_fragment(self):
+        assert ssrf.redact_url("https://example.com/a?token=abc#frag") == "https://example.com/a"
+
+    def test_preserves_port_and_path(self):
+        assert ssrf.redact_url("http://example.com:8080/x/y") == "http://example.com:8080/x/y"
+
+    def test_brackets_ipv6(self):
+        assert ssrf.redact_url("https://[2001:db8::1]:443/p?q=1") == "https://[2001:db8::1]:443/p"
+
+    def test_no_host(self):
+        assert ssrf.redact_url("not-a-url") in ("<no-host>", "not-a-url:<no-host>")
+
+
 class TestSafeUrlopen:
     def test_refuses_unsafe_initial_url(self):
         with pytest.raises(ValueError):

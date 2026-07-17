@@ -1976,8 +1976,13 @@ class TestFetchDogLogoSSRF:
             "https://example.com/logo.png"
         )
         assert vc._redact_url("http://user:pw@10.0.0.1:8443/x") == "http://10.0.0.1:8443/x"
-        # A URL without credentials is preserved (host/port/path intact).
-        assert vc._redact_url("https://example.com:9000/a?b=c") == "https://example.com:9000/a?b=c"
+        # Query string and fragment are dropped (may carry signed tokens); the
+        # host/port/path are preserved for debugging.
+        assert vc._redact_url("https://example.com:9000/a?b=c#frag") == "https://example.com:9000/a"
+        # IPv6 literal hosts are bracketed so the result stays a valid URL.
+        assert vc._redact_url("https://[2001:db8::1]:8443/logo.png?t=x") == (
+            "https://[2001:db8::1]:8443/logo.png"
+        )
 
 
 # --- Hardware-accelerated encoding (NVENC) — issue #396 ---
