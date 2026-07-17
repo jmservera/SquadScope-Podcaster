@@ -161,9 +161,30 @@ class TestMe:
 
 
 class TestAuthMiddleware:
-    def test_open_mode_when_nothing_configured(self, client):
+    def test_fails_closed_when_nothing_configured(self, client, monkeypatch):
+        # #604: with no auth env vars the API must reject requests rather than
+        # silently exposing every endpoint (fail closed, not fail open).
+        monkeypatch.delenv("MONITORING_AUTH_DISABLED", raising=False)
+        resp = client.get("/api/jobs")
+        assert resp.status_code == 401
+
+    def test_open_mode_requires_explicit_opt_in(self, client, monkeypatch):
+        # #604: unauthenticated access is only allowed when an operator
+        # explicitly opts in via MONITORING_AUTH_DISABLED (local dev only).
+        monkeypatch.delenv("UI_AUTH_USERNAME", raising=False)
+        monkeypatch.delenv("MONITORING_API_KEY", raising=False)
+        monkeypatch.delenv("PODCASTER_API_KEY", raising=False)
+        monkeypatch.setenv("MONITORING_AUTH_DISABLED", "true")
         resp = client.get("/api/jobs")
         assert resp.status_code == 200
+
+    def test_disable_flag_ignored_when_auth_configured(self, client, monkeypatch):
+        # The opt-out only applies when nothing is configured; if credentials
+        # ARE configured, requests without them are still rejected (#604).
+        _configure_auth(monkeypatch)
+        monkeypatch.setenv("MONITORING_AUTH_DISABLED", "true")
+        resp = client.get("/api/jobs")
+        assert resp.status_code == 401
 
     def test_bearer_jwt_accepted(self, client, monkeypatch):
         _configure_auth(monkeypatch)

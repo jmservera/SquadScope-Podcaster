@@ -15,6 +15,7 @@ disabled (same behaviour as before this change).
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import re
 
@@ -29,6 +30,11 @@ from podcaster.auth_core import (
     get_credentials,
     verify_token,
 )
+
+logger = logging.getLogger(__name__)
+
+# Truthy values accepted for boolean opt-in env vars.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 __all__ = [
     "_JWT_ALGORITHM",
@@ -93,6 +99,18 @@ def _query_token_allowed(path: str) -> bool:
     return path.startswith("/api/stream/") or bool(_PROGRESS_STREAM_PATH.fullmatch(path))
 
 
+def _auth_explicitly_disabled() -> bool:
+    """Return True only when an operator has *explicitly* opted out of auth.
+
+    Set ``MONITORING_AUTH_DISABLED=true`` (or ``1``/``yes``/``on``) to run the
+    monitoring/admin API without authentication — intended for local-only
+    development. Absent this flag the API fails **closed**: if no credentials
+    are configured every request is rejected with ``401`` rather than silently
+    exposing review, credential, job, and artifact endpoints (#604).
+    """
+    return os.environ.get("MONITORING_AUTH_DISABLED", "").strip().lower() in _TRUTHY
+
+
 def verify_auth(
     request: Request,
     authorization: str = Header(default=""),
@@ -105,17 +123,31 @@ def verify_auth(
     2. A valid X-Podcaster-Api-Key header (existing machine-to-machine auth).
 
     When neither UI_AUTH_* nor MONITORING_API_KEY / PODCASTER_API_KEY are
-    configured, all requests are allowed (open mode — mirrors pre-#273
-    behaviour).
+    configured the API fails **closed** and rejects every request with ``401``.
+    Unauthenticated (open) access is only allowed when an operator explicitly
+    sets ``MONITORING_AUTH_DISABLED=true`` for local development (#604).
     """
     creds = get_credentials()
     configured_api_key = os.environ.get("MONITORING_API_KEY") or os.environ.get(
         "PODCASTER_API_KEY", ""
     )
 
-    # If nothing is configured at all, allow everything (open mode).
+    # Nothing configured: fail closed unless auth is explicitly disabled.
     if creds is None and not configured_api_key:
-        return
+        if _auth_explicitly_disabled():
+            logger.warning(
+                "Monitoring auth is DISABLED via MONITORING_AUTH_DISABLED — all "
+                "requests are unauthenticated. Do not use this in production."
+            )
+            return
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Authentication is not configured. Set UI_AUTH_* or "
+                "MONITORING_API_KEY/PODCASTER_API_KEY, or explicitly set "
+                "MONITORING_AUTH_DISABLED=true for local development."
+            ),
+        )
 
     # --- Try Bearer JWT first ---
     if authorization.startswith("Bearer "):
