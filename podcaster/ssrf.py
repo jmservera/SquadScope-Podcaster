@@ -95,13 +95,16 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def safe_urlopen(url: str, *, timeout: float):
+def safe_urlopen(url: str | urllib.request.Request, *, timeout: float):
     """``urlopen`` variant that blocks SSRF targets, including via redirects.
 
-    Raises :class:`ValueError` if the initial URL is unsafe, and
+    Accepts either a URL string or a :class:`urllib.request.Request` (a true
+    drop-in for ``urlopen``), so ``Request``-based call sites can share the same
+    guard. Raises :class:`ValueError` if the initial URL is unsafe, and
     :class:`urllib.error.HTTPError` if a redirect points at a blocked host.
     """
-    if not url_is_safe(url):
-        raise ValueError(f"refusing to fetch blocked or unsupported URL: {url!r}")
+    target = url.full_url if isinstance(url, urllib.request.Request) else url
+    if not url_is_safe(target):
+        raise ValueError(f"refusing to fetch blocked or unsupported URL: {target!r}")
     opener = urllib.request.build_opener(_SafeRedirectHandler())
     return opener.open(url, timeout=timeout)

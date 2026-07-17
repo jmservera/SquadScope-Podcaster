@@ -91,3 +91,12 @@ class TestSafeUrlopen:
                 headers={},
                 newurl="http://169.254.169.254/",
             )
+
+    def test_refuses_unsafe_request_object(self):
+        # safe_urlopen accepts urllib.request.Request too and validates its
+        # full_url, so Request-based call sites share the same SSRF guard (#601).
+        import urllib.request
+
+        req = urllib.request.Request("http://169.254.169.254/latest/meta-data/")
+        with pytest.raises(ValueError):
+            ssrf.safe_urlopen(req, timeout=1)
