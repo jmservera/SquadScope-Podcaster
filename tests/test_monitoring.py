@@ -716,6 +716,7 @@ class TestUiNavigationEndpoints:
 
         allowed = "https://ui.example.com"
         monkeypatch.setenv("MONITORING_CORS_ORIGINS", allowed)
+        reloaded = None
         try:
             reloaded = importlib.reload(monitoring_module)
             reloaded.set_storage(MemoryStorageBackend())
@@ -745,7 +746,8 @@ class TestUiNavigationEndpoints:
                 "https://evil.example.com"
             )
         finally:
-            reloaded.set_storage(None)
+            if reloaded is not None:
+                reloaded.set_storage(None)
             # Restore the import-time (deny-by-default) app for other tests.
             monkeypatch.delenv("MONITORING_CORS_ORIGINS", raising=False)
             importlib.reload(monitoring_module)
@@ -759,6 +761,7 @@ class TestUiNavigationEndpoints:
         import podcaster.monitoring as monitoring_module
 
         monkeypatch.setenv("MONITORING_CORS_ORIGINS", "*")
+        reloaded = None
         try:
             with caplog.at_level(logging.WARNING, logger="podcaster.monitoring"):
                 reloaded = importlib.reload(monitoring_module)
@@ -778,12 +781,30 @@ class TestUiNavigationEndpoints:
             )
             assert resp.headers.get("access-control-allow-origin") != "*"
         finally:
-            reloaded.set_storage(None)
+            if reloaded is not None:
+                reloaded.set_storage(None)
             monkeypatch.delenv("MONITORING_CORS_ORIGINS", raising=False)
             importlib.reload(monitoring_module)
 
+    def test_cors_control_char_origin_is_dropped(self, monkeypatch):
+        """Defense-in-depth: a CRLF-carrying allowlist entry is filtered out so a
+        misconfigured/tainted env var cannot inject response headers (#607)."""
+        import importlib
 
-class TestMonitoringAuth:
+        import podcaster.monitoring as monitoring_module
+
+        monkeypatch.setenv(
+            "MONITORING_CORS_ORIGINS",
+            "https://ui.example.com\r\nSet-Cookie: x=1, https://ok.example.com",
+        )
+        reloaded = None
+        try:
+            reloaded = importlib.reload(monitoring_module)
+            assert reloaded._CORS_ORIGINS == ["https://ok.example.com"]
+        finally:
+            monkeypatch.delenv("MONITORING_CORS_ORIGINS", raising=False)
+            importlib.reload(monitoring_module)
+
     def test_allows_requests_without_configured_key(self, client, storage):
         resp = client.get("/api/jobs")
 

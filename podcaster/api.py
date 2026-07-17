@@ -50,9 +50,23 @@ HEALTH_PATH = "/healthz"
 # Set PODCASTER_CORS_ORIGINS to a comma-separated allowlist of trusted browser
 # origins to opt in; a literal "*" is ignored (wildcard CORS on authenticated
 # endpoints is a security risk, #607).
+def _has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
+
+
 def _cors_allowlist() -> list[str]:
     raw = os.environ.get("PODCASTER_CORS_ORIGINS", "")
-    return [origin.strip() for origin in raw.split(",") if origin.strip() and origin.strip() != "*"]
+    allowlist: list[str] = []
+    for candidate in raw.split(","):
+        origin = candidate.strip()
+        # Skip blanks, the wildcard, and — as defense-in-depth — any origin
+        # carrying control characters (e.g. CR/LF). A misconfigured or tainted
+        # env var must never be able to inject response headers through
+        # Access-Control-Allow-Origin (#607).
+        if not origin or origin == "*" or _has_control_chars(origin):
+            continue
+        allowlist.append(origin)
+    return allowlist
 
 
 def _cors_headers(handler: BaseHTTPRequestHandler) -> list[tuple[str, str]]:

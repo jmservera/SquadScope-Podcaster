@@ -78,10 +78,16 @@ MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MiB
 # cross-origin browser access. A literal "*" is rejected: wildcard CORS on
 # authenticated credential/generation endpoints is a security risk (#607).
 _CORS_ORIGINS_RAW = os.environ.get("MONITORING_CORS_ORIGINS", "")
+
+
+def _has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
+
+
 _CORS_ORIGINS = [
     origin.strip()
     for origin in _CORS_ORIGINS_RAW.split(",")
-    if origin.strip() and origin.strip() != "*"
+    if origin.strip() and origin.strip() != "*" and not _has_control_chars(origin.strip())
 ]
 if "*" in (o.strip() for o in _CORS_ORIGINS_RAW.split(",")):
     logging.getLogger("podcaster.monitoring").warning(

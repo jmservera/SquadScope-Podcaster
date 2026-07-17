@@ -136,6 +136,17 @@ class TestCors:
         assert "Access-Control-Allow-Origin" not in handler.response_headers
         assert "Set-Cookie" not in handler.response_headers
 
+    def test_control_char_allowlist_entry_is_dropped(self):
+        # Defense-in-depth: a CRLF-carrying allowlist entry (misconfigured or
+        # tainted env var) must never be echoed into Access-Control-Allow-Origin.
+        with patch.dict(
+            os.environ,
+            {"PODCASTER_CORS_ORIGINS": "https://ui.example.com\r\nSet-Cookie: x=1"},
+        ):
+            handler = self._options({"Origin": "https://ui.example.com\r\nSet-Cookie: x=1"})
+        assert "Access-Control-Allow-Origin" not in handler.response_headers
+        assert "Set-Cookie" not in handler.response_headers
+
     def test_echoed_origin_comes_from_allowlist(self):
         # The value written into the response header must be the trusted
         # allowlist entry, not the raw request header.
