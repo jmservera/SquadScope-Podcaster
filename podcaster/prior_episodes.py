@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Iterable
 from urllib.parse import unquote, urlparse
 
@@ -16,17 +18,28 @@ _MAX_SCRIPTS = 3
 _MAX_THEMES = 8
 _MAX_THEME_CHARS = 100
 _JOB_PATH_RE = re.compile(r"^jobs/(podcast-[^/]+)/")
+_JOB_WEEK_RE = re.compile(r"^podcast-(\d{4})-W(\d{2})-")
 _DIALOGUE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 .'\-]{0,40}:\s*(.+)$")
 
 
-def fetch_prior_episode_themes(storage: StorageBackend, current_job_id: str) -> tuple[str, ...]:
+def fetch_prior_episode_themes(
+    storage: StorageBackend,
+    current_job_id: str,
+    *,
+    current_created_at: datetime | None = None,
+) -> tuple[str, ...]:
     try:
         blob_names = storage.list_blobs(_JOB_PREFIX, limit=_MAX_BLOB_LIST)
     except Exception:
         logger.exception("prior episode blob listing failed for job_id=%s", current_job_id)
         return ()
 
-    prior_job_ids = _prior_job_ids(blob_names, current_job_id=current_job_id)
+    prior_job_ids = _prior_job_ids(
+        storage,
+        blob_names,
+        current_job_id=current_job_id,
+        current_created_at=current_created_at,
+    )
     if not prior_job_ids:
         return ()
 
@@ -51,31 +64,63 @@ def fetch_prior_episode_themes(storage: StorageBackend, current_job_id: str) -> 
     return tuple(themes)
 
 
-def _prior_job_ids(blob_names: Iterable[str], *, current_job_id: str) -> list[str]:
-    job_ids = {
+def _prior_job_ids(
+    storage: StorageBackend,
+    blob_names: Iterable[str],
+    *,
+    current_job_id: str,
+    current_created_at: datetime | None,
+) -> list[str]:
+    job_ids = dict.fromkeys(
         match.group(1) for blob_name in blob_names if (match := _JOB_PATH_RE.match(blob_name))
-    }
-    job_ids.discard(current_job_id)
-    # Bind history to the week-level: only include jobs whose week prefix sorts
-    # strictly before the current job's week prefix.  Job IDs have the form
-    # ``podcast-YYYY-WNN-<12-hex>``; the trailing hash is arbitrary (not
-    # chronological), so a full-string comparison incorrectly treats a same-week
-    # job with a low-valued hash as "prior".  Stripping the hash via rsplit
-    # (the hash never contains a hyphen) gives a stable week key that faithfully
-    # reflects calendar ordering.
-    current_week_key = _week_key(current_job_id)
-    job_ids = {jid for jid in job_ids if _week_key(jid) < current_week_key}
-    return sorted(job_ids, reverse=True)
+    )
+    job_ids.pop(current_job_id, None)
+    current_week = _job_week(current_job_id)
+    historical: list[tuple[tuple[int, int, datetime], str]] = []
+    for job_id in job_ids:
+        week = _job_week(job_id)
+        if week is None or current_week is None or week > current_week:
+            continue
+        created_at = None
+        if week == current_week:
+            created_at = _accepted_manifest_created_at(storage, job_id)
+            if (
+                created_at is None
+                or current_created_at is None
+                or created_at >= current_created_at.astimezone(timezone.utc)
+            ):
+                continue
+        key = (week[0], week[1], created_at or datetime.min.replace(tzinfo=timezone.utc))
+        historical.append((key, job_id))
+    historical.sort(key=lambda item: item[0], reverse=True)
+    return [job_id for _, job_id in historical]
 
 
-def _week_key(job_id: str) -> str:
-    """Return the week prefix of a job ID by stripping the trailing hash segment.
+def _job_week(job_id: str) -> tuple[int, int] | None:
+    match = _JOB_WEEK_RE.match(job_id)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
-    Job IDs have the form ``podcast-YYYY-WNN-<12-hex>``.  The hash is always
-    hex (no hyphens), so a single ``rsplit("-", 1)`` isolates it reliably.
-    """
-    parts = job_id.rsplit("-", 1)
-    return parts[0] if len(parts) == 2 else job_id
+
+def _accepted_manifest_created_at(storage: StorageBackend, job_id: str) -> datetime | None:
+    try:
+        content = storage.get_bytes(f"jobs/{job_id}/manifest.json")
+        manifest = json.loads(content) if content else None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(manifest, dict) or manifest.get("status") == "dry_run":
+        return None
+    created_at = manifest.get("created_at")
+    if not isinstance(created_at, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _extract_script_themes(script: str) -> tuple[str, ...]:

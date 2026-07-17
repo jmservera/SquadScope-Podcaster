@@ -54,7 +54,12 @@ from podcaster.auth import (
 from podcaster.credentials import CredentialStore
 from podcaster.failure_reporting import report_failure
 from podcaster.job_logs import LogLevel, read_logs
-from podcaster.jobs import ReplayCollisionError, failed_response, run_generation_job
+from podcaster.jobs import (
+    REPLAY_COLLISION_MESSAGE,
+    ReplayCollisionError,
+    failed_response,
+    run_generation_job,
+)
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
 from podcaster.progress import (
@@ -501,13 +506,7 @@ async def api_generate(request: Request):
     try:
         result = run_generation_job(payload, validation_warnings=validation.warnings or None)
     except ReplayCollisionError:
-        response = failed_response(
-            [
-                "replay collision: an accepted job already exists for these inputs; "
-                "submit different inputs to generate a distinct job"
-            ],
-            validation.warnings or None,
-        )
+        response = failed_response([REPLAY_COLLISION_MESSAGE], validation.warnings or None)
         return JSONResponse(status_code=409, content=response)
     except Exception:
         logger.exception("unhandled error in generation job")
