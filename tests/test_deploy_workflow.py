@@ -338,3 +338,59 @@ def test_openai_private_endpoint_wired_in_vnet_mode() -> None:
     ), "main.bicep must deploy the OpenAI private endpoint module only in VNet mode"
     assert "openAiAccountId: openAi.outputs.accountId" in main
     assert "openAiDnsZoneId: network!.outputs.openAiDnsZoneId" in main
+
+
+ACR_MODULE = ROOT / "infra/modules/acr.bicep"
+ACR_PE_MODULE = ROOT / "infra/modules/acr-private-endpoint.bicep"
+
+
+def test_acr_private_by_default_in_vnet_mode() -> None:
+    # #598: In VNet mode (deployVnet=true) the container registry must be
+    # private-by-default — public network access disabled — mirroring Storage and
+    # OpenAI. Private endpoints require the Premium SKU, so VNet mode forces it.
+    # The public endpoint + Basic SKU are kept only for local dev/test.
+    module = ACR_MODULE.read_text(encoding="utf-8")
+    main = BICEP.read_text(encoding="utf-8")
+
+    assert "param deployVnet bool = false" in module, (
+        "acr.bicep must accept deployVnet to gate its network posture"
+    )
+    assert "publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'" in module, (
+        "ACR public network access must be disabled in VNet mode (#598)"
+    )
+    assert "effectiveSkuName = deployVnet ? 'Premium' : skuName" in module, (
+        "ACR must use the Premium SKU in VNet mode so a private endpoint can attach"
+    )
+    # main.bicep must actually thread deployVnet into the ACR module.
+    assert re.search(r"module acr 'modules/acr\.bicep'[\s\S]*?deployVnet: deployVnet", main), (
+        "main.bicep must pass deployVnet to the ACR module"
+    )
+
+
+def test_acr_private_endpoint_wired_in_vnet_mode() -> None:
+    # #598: VNet mode must add a private endpoint + private DNS zone for the ACR so
+    # ACA pulls images over the VNet instead of the public endpoint.
+    network = NETWORK_MODULE.read_text(encoding="utf-8")
+    pe_module = ACR_PE_MODULE.read_text(encoding="utf-8")
+    main = BICEP.read_text(encoding="utf-8")
+
+    assert "name: 'privatelink.azurecr.io'" in network, (
+        "network.bicep must create the ACR private DNS zone"
+    )
+    assert "output acrDnsZoneId string" in network, (
+        "network.bicep must expose the ACR DNS zone id for the PE module"
+    )
+    # ACR private endpoints use the 'registry' group id — assert on the actual
+    # groupIds entry, not the module comment which also mentions 'registry'.
+    assert re.search(r"groupIds:\s*\[\s*'registry'\s*\]", pe_module)
+    assert "Microsoft.Network/privateEndpoints@" in pe_module
+    assert "privateDnsZoneGroups@" in pe_module
+    # The PE module must be deployed only when both VNet mode and ACR are enabled,
+    # and fed the registry id + DNS zone.
+    assert re.search(
+        r"module acrPrivateEndpoint 'modules/acr-private-endpoint\.bicep' "
+        r"= if \(deployVnet && deployAcr\)",
+        main,
+    ), "main.bicep must deploy the ACR private endpoint module only in VNet mode"
+    assert "registryId: acr!.outputs.registryId" in main
+    assert "acrDnsZoneId: network!.outputs.acrDnsZoneId" in main
