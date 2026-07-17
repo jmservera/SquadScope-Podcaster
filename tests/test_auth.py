@@ -217,8 +217,8 @@ class TestAuthMiddleware:
         _configure_auth(monkeypatch)
         token = create_token(_USERNAME, _SECRET)
         resp = client.get(f"/api/stream/jobs/job-1/episode.mp3?token={token}")
-        # Auth passes (blob is absent → 404), i.e. it is NOT rejected as 401.
-        assert resp.status_code != 401
+        # Auth succeeds; the blob is absent so the proxy returns 404 (not 401).
+        assert resp.status_code == 404
 
     def test_query_token_accepted_on_progress_stream_path(self, client, monkeypatch):
         # The SSE progress stream is consumed via EventSource (#469), which
@@ -226,8 +226,8 @@ class TestAuthMiddleware:
         _configure_auth(monkeypatch)
         token = create_token(_USERNAME, _SECRET)
         resp = client.get(f"/api/jobs/job-1/progress/stream?token={token}")
-        # Auth passes (job is absent → 404), i.e. it is NOT rejected as 401.
-        assert resp.status_code != 401
+        # Auth succeeds; the job is absent so the endpoint returns 404 (not 401).
+        assert resp.status_code == 404
         # A token leaked in a URL must not authorize credential/config/generation
         # endpoints via the query string (#606).
         _configure_auth(monkeypatch)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 
 import jwt
 from fastapi import Header, HTTPException, Request
@@ -65,6 +66,11 @@ class MeResponse(BaseModel):
 # FastAPI dependency — replaces the old API-key-only check
 # ---------------------------------------------------------------------------
 
+# Exact route shape of the SSE progress endpoint (issue #469) that may accept a
+# ``?token=`` query param — matched precisely so unrelated future endpoints do
+# not inherit query-token access (#606).
+_PROGRESS_STREAM_PATH = re.compile(r"/api/jobs/[^/]+/progress/stream")
+
 
 def _query_token_allowed(path: str) -> bool:
     """Return True for the browser-native streaming endpoints that must accept
@@ -72,15 +78,19 @@ def _query_token_allowed(path: str) -> bool:
     cannot send an ``Authorization`` header.
 
     * ``/api/stream/…`` — media proxy loaded via ``<audio>``/``<video>``/``<img>``.
-    * ``…/progress/stream`` — the SSE progress endpoint consumed via
-      ``EventSource`` (issue #469), which likewise cannot set request headers.
+    * ``/api/jobs/{job_id}/progress/stream`` — the SSE progress endpoint consumed
+      via ``EventSource`` (issue #469), which likewise cannot set request headers.
+
+    The progress endpoint is matched by its exact route shape rather than a
+    loose suffix so a future endpoint that merely ends in ``/progress/stream``
+    does not silently inherit query-token access.
 
     Every other endpoint rejects query tokens: a token in a URL leaks via
     browser history, access/proxy/CDN logs, and ``Referer`` headers, so
     honouring it on sensitive endpoints would let a leaked URL authorize
     privileged actions (#606).
     """
-    return path.startswith("/api/stream/") or path.endswith("/progress/stream")
+    return path.startswith("/api/stream/") or bool(_PROGRESS_STREAM_PATH.fullmatch(path))
 
 
 def verify_auth(
