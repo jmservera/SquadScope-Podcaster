@@ -372,7 +372,8 @@ class LanguageConfig:
                     continue
                 # Drop overrides that neutralize to empty (e.g. only zero-width
                 # chars) so we never register a "present" prompt that is blank at
-                # runtime — matching validate_language_block()'s non-empty rule.
+                # runtime — kept consistent with validate_language_block(), which
+                # rejects the same neutralize-to-empty values on strict ingest.
                 neutralized = neutralize(v, limit=_CONFIG_FIELD_LIMITS["prompt"])
                 if neutralized:
                     prompts[str(k)] = neutralized
@@ -458,7 +459,12 @@ def validate_language_block(language: str, payload: object) -> None:
         if not isinstance(prompts, Mapping):
             raise ValueError(f"language {language!r}: prompts must be an object")
         for pkey, pval in prompts.items():
-            if not isinstance(pval, str) or not pval.strip():
+            # Reject values that are empty *after* neutralization (whitespace-,
+            # zero-width- or control-only), matching LanguageConfig.from_payload()
+            # which drops the same values rather than registering a blank prompt.
+            if not isinstance(pval, str) or not neutralize(
+                pval, limit=_CONFIG_FIELD_LIMITS["prompt"]
+            ):
                 raise ValueError(
                     f"language {language!r}: prompts[{pkey!r}] must be a non-empty string"
                 )
