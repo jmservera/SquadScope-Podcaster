@@ -132,9 +132,7 @@ class TestCors:
         # An Origin carrying header-splitting payload never matches an allowlist
         # entry, so nothing is echoed (CodeQL py/http-response-splitting).
         with patch.dict(os.environ, {"PODCASTER_CORS_ORIGINS": "https://ui.example.com"}):
-            handler = self._options(
-                {"Origin": "https://ui.example.com\r\nSet-Cookie: injected=1"}
-            )
+            handler = self._options({"Origin": "https://ui.example.com\r\nSet-Cookie: injected=1"})
         assert "Access-Control-Allow-Origin" not in handler.response_headers
         assert "Set-Cookie" not in handler.response_headers
 
