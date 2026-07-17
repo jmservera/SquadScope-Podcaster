@@ -324,7 +324,7 @@ class TestSuccessfulGeneration:
 
     def test_valid_request_returns_202(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
-        monkeypatch.setenv("PODCASTER_LOCAL_ARTIFACT_DIR", str(tmp_path))
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
         body = json.dumps(
             {
                 "week": "2026-W24",
@@ -341,7 +341,7 @@ class TestSuccessfulGeneration:
 
     def test_dry_run_returns_200(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
-        monkeypatch.setenv("PODCASTER_LOCAL_ARTIFACT_DIR", str(tmp_path))
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
         body = json.dumps(
             {
                 "week": "2026-W24",
@@ -354,6 +354,23 @@ class TestSuccessfulGeneration:
         resp = handler.get_response_json()
         assert resp["status"] == "dry_run"
         assert resp["errors"] == []
+
+    def test_replay_collision_returns_409(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
+        body = json.dumps(
+            {
+                "week": "2026-W24",
+                "article_url": "https://example.com/article",
+            }
+        ).encode()
+
+        first = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+        second = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+
+        assert first.response_code == HTTPStatus.ACCEPTED
+        assert second.response_code == HTTPStatus.CONFLICT
+        assert "replay collision:" in second.get_response_json()["errors"][0]
 
     def test_wrong_path_returns_404(self):
         body = json.dumps({"week": "2026-W24", "article_url": "https://example.com/a"}).encode()
@@ -374,7 +391,7 @@ class TestResponseShape:
 
     def test_response_has_all_contract_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
-        monkeypatch.setenv("PODCASTER_LOCAL_ARTIFACT_DIR", str(tmp_path))
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
         body = json.dumps(
             {
                 "week": "2026-W24",

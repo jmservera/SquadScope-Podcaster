@@ -597,6 +597,18 @@ class TestGenerateEndpoint:
         assert resp.status_code == 202
         assert resp.json()["job_id"] == "job-123"
 
+    def test_replay_collision_returns_409(self, client, storage, tmp_path, monkeypatch):
+        monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
+        body = {"week": "2026-W24", "article_url": "https://example.com/article"}
+
+        first = client.post("/api/generate", json=body)
+        second = client.post("/api/generate", json=body)
+
+        assert first.status_code == 202
+        assert second.status_code == 409
+        assert "replay collision:" in second.json()["errors"][0]
+
 
 class TestReviewEndpoint:
     def test_missing_required_fields_return_400(self, client, storage):

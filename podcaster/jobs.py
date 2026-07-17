@@ -146,13 +146,10 @@ def run_generation_job(
         validate_article_inputs(payload.get("article_title"), payload.get("article_content"))
     storage = storage or create_storage_backend()
 
-    # Refuse replay output collision: if a manifest already exists for this job_id
-    # the inputs are identical (job_id is content+config addressed) and overwriting
-    # silently would hide divergence caused by non-deterministic generation or
-    # infrastructure changes. Return a collision failure so the caller can inspect
-    # the existing manifest explicitly.
+    # Refuse non-dry-run replay output collisions. Dry runs intentionally remain
+    # repeatable because they do not enqueue synthesis or publish output.
     existing_manifest_raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
-    if existing_manifest_raw is not None:
+    if not payload.get("dry_run") and existing_manifest_raw is not None:
         logging.warning(
             "replay collision detected job_id=%s; existing manifest not overwritten",
             job_id,

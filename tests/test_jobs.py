@@ -252,6 +252,20 @@ def test_dry_run_preserves_response_shape_and_review_metadata() -> None:
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
+def test_dry_run_allows_repeated_identical_inputs(tmp_path: Path) -> None:
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "dry_run": True,
+    }
+
+    run_generation_job(payload, storage=storage)
+    result = run_generation_job(payload, storage=storage)
+
+    assert result.response["status"] == "dry_run"
+
+
 def test_backchannels_payload_is_threaded_into_request_manifest() -> None:
     """Phase B wiring: a top-level ``backchannels`` payload reaches the request manifest."""
 
