@@ -375,6 +375,14 @@ It is opt-in:
 
 - `SPOTIFY_PUBLISH_ENABLED=true`
 
+Because this uses an **unofficial**, cookie-authenticated API (a cookie leak is
+Spotify-account-takeover material), publishing **fails safe**: enabling the
+module only ever produces **drafts** unless an operator has *also* explicitly
+accepted the risk by setting `SPOTIFY_ALLOW_LIVE_PUBLISH=true`. Without that
+second flag, any `immediate`/`scheduled` request is downgraded to a draft (a
+warning is logged). Keep it unset in production until an official OAuth flow
+replaces the cookie path (jmservera/SquadScope-Podcaster#602).
+
 The repository includes the open-source `spotifyconnector` dependency, and the current publishing module implements the same unofficial Spotify for Creators flow by exchanging browser cookies for a short-lived Bearer token against Spotify Accounts, then calling the internal `api-v5.anchor.fm` REST API:
 
 - `SP_DC`
@@ -414,6 +422,7 @@ Why this design: podcast generation is the core product; distribution integratio
 | Variable | Required | Purpose |
 |---|---|---|
 | `SPOTIFY_PUBLISH_ENABLED` | Optional, default `false` | Enables publishing module |
+| `SPOTIFY_ALLOW_LIVE_PUBLISH` | Optional, default `false` | Required to make episodes **public**; without it `immediate`/`scheduled` requests fail safe to drafts (#602) |
 | `SPOTIFY_SHOW_ID` | Required if publishing enabled | Target Spotify show |
 | `SP_DC` | Required if publishing enabled | Spotify browser session cookie |
 | `SP_KEY` | Required if publishing enabled | Spotify browser session cookie |

@@ -114,6 +114,7 @@ def test_audio_and_video_publish_paths_are_independent(
     video_path.write_bytes(fake_mp4.read_bytes())
 
     monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
+    monkeypatch.setenv("SPOTIFY_ALLOW_LIVE_PUBLISH", "true")
     monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
     monkeypatch.setenv("SPOTIFY_SHOW_ID", "fake-show-id")
     monkeypatch.setenv("SP_DC", "fake-sp-dc")
