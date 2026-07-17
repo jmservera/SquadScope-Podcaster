@@ -13,10 +13,16 @@ Security:
 - Cookies are read from environment variables, never logged or committed.
 - Dry-run mode (``SPOTIFY_PUBLISH_DRY_RUN=true``) simulates all steps without
   making real API calls.
+- Fail-safe publishing: because this uses an unofficial cookie-authenticated
+  API (a cookie leak is account-takeover material), episodes are only ever made
+  public when an operator explicitly sets ``SPOTIFY_ALLOW_LIVE_PUBLISH=true``.
+  Otherwise any ``immediate``/``scheduled`` request is downgraded to a draft
+  (jmservera/SquadScope-Podcaster#602).
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -94,6 +100,39 @@ def _is_enabled() -> bool:
 def _is_dry_run() -> bool:
     """Check if dry-run mode is active."""
     return os.environ.get("SPOTIFY_PUBLISH_DRY_RUN", "").lower() == "true"
+
+
+# Truthy values accepted for boolean opt-in env vars.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _live_publish_allowed() -> bool:
+    """Whether going *live* on Spotify (publish/schedule) is explicitly allowed.
+
+    The Spotify integration authenticates with browser session cookies against
+    an **unofficial** internal API — a cookie leak is Spotify-account-takeover
+    material and the API can break without notice
+    (jmservera/SquadScope-Podcaster#602). Because of that risk the publisher
+    fails **safe**: unless an operator has explicitly accepted the risk by
+    setting ``SPOTIFY_ALLOW_LIVE_PUBLISH`` truthy, any ``immediate``/``scheduled``
+    request is downgraded to a **draft** so nothing is ever silently made public.
+
+    ``SPOTIFY_PUBLISH_ENABLED`` only gates whether the integration runs at all;
+    this separate flag gates whether it may make an episode *public*.
+    """
+    return os.environ.get("SPOTIFY_ALLOW_LIVE_PUBLISH", "").strip().lower() in _TRUTHY
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_live_publish_downgraded_once() -> None:
+    """Log the live-publish downgrade warning at most once per process."""
+    logger.warning(
+        "Spotify live publishing is not enabled (SPOTIFY_ALLOW_LIVE_PUBLISH is "
+        "unset) — downgrading to a DRAFT. The Spotify path uses an unofficial "
+        "cookie-authenticated API (jmservera/SquadScope-Podcaster#602); set "
+        "SPOTIFY_ALLOW_LIVE_PUBLISH=true only after accepting that risk to make "
+        "episodes public."
+    )
 
 
 def _get_credentials(
@@ -1074,6 +1113,15 @@ def publish_episode(
         article_title=article_title,
         article_summary=article_summary,
     )
+
+    # Fail safe: never make an episode public unless live publishing is
+    # explicitly enabled. The Spotify path uses an unofficial, cookie-authed
+    # API (#602), so any immediate/scheduled request is downgraded to a draft
+    # unless an operator has accepted that risk via SPOTIFY_ALLOW_LIVE_PUBLISH.
+    if publish_behavior != "draft" and not _live_publish_allowed():
+        _warn_live_publish_downgraded_once()
+        publish_behavior = "draft"
+        resolved_publish_on = None
 
     # Append timestamps to description if provided and within Spotify's limit
     if timestamps_html:
