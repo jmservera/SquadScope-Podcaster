@@ -78,6 +78,11 @@ jobs:
         env:
           SQUADSCOPE_SYNC_TOKEN: ${{ secrets.SQUADSCOPE_SYNC_TOKEN }}
           SYNC_SQUADSCOPE: ${{ inputs.sync_squadscope }}
+          VIDEO_YOUTUBE_ENABLED_VAR: ${{ vars.VIDEO_YOUTUBE_ENABLED }}
+          VIDEO_YOUTUBE_REQUIRED_VAR: ${{ vars.VIDEO_YOUTUBE_REQUIRED }}
+          VIDEO_YOUTUBE_CLIENT_ID_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_ID }}
+          VIDEO_YOUTUBE_CLIENT_SECRET_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_SECRET }}
+          VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET: ${{ secrets.VIDEO_YOUTUBE_REFRESH_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -101,6 +106,32 @@ jobs:
             require_config SQUADSCOPE_SYNC_TOKEN "secrets for sync_squadscope=true"
           fi
 
+          youtube_enabled="$(printf '%s' "${VIDEO_YOUTUBE_ENABLED_VAR:-false}" | tr '[:upper:]' '[:lower:]')"
+          youtube_required="$(printf '%s' "${VIDEO_YOUTUBE_REQUIRED_VAR:-false}" | tr '[:upper:]' '[:lower:]')"
+          case "$youtube_enabled" in
+            true|false) ;;
+            *)
+              echo "::error::VIDEO_YOUTUBE_ENABLED must be true or false"
+              missing=1
+              ;;
+          esac
+          case "$youtube_required" in
+            true|false) ;;
+            *)
+              echo "::error::VIDEO_YOUTUBE_REQUIRED must be true or false"
+              missing=1
+              ;;
+          esac
+          if [ "$youtube_required" = "true" ] && [ "$youtube_enabled" != "true" ]; then
+            echo "::error::VIDEO_YOUTUBE_REQUIRED=true requires VIDEO_YOUTUBE_ENABLED=true; required delivery cannot be enforced while YouTube upload is disabled"
+            missing=1
+          fi
+          if [ "$youtube_enabled" = "true" ] && [ "$youtube_required" = "true" ]; then
+            require_config VIDEO_YOUTUBE_CLIENT_ID_SECRET "secrets when required YouTube delivery is enabled"
+            require_config VIDEO_YOUTUBE_CLIENT_SECRET_SECRET "secrets when required YouTube delivery is enabled"
+            require_config VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET "secrets when required YouTube delivery is enabled"
+          fi
+
           if [ "$missing" -ne 0 ]; then
             exit 1
           fi
@@ -116,6 +147,13 @@ jobs:
           SP_DC_SECRET: ${{ secrets.SP_DC }}
           SP_KEY_SECRET: ${{ secrets.SP_KEY }}
           PODCAST_AUTO_PUBLISH_VAR: ${{ vars.PODCAST_AUTO_PUBLISH }}
+          VIDEO_YOUTUBE_ENABLED_VAR: ${{ vars.VIDEO_YOUTUBE_ENABLED }}
+          VIDEO_YOUTUBE_REQUIRED_VAR: ${{ vars.VIDEO_YOUTUBE_REQUIRED }}
+          VIDEO_YOUTUBE_CATEGORY_ID_VAR: ${{ vars.VIDEO_YOUTUBE_CATEGORY_ID }}
+          VIDEO_YOUTUBE_PRIVACY_VAR: ${{ vars.VIDEO_YOUTUBE_PRIVACY }}
+          VIDEO_YOUTUBE_CLIENT_ID_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_ID }}
+          VIDEO_YOUTUBE_CLIENT_SECRET_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_SECRET }}
+          VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET: ${{ secrets.VIDEO_YOUTUBE_REFRESH_TOKEN }}
           MSAL_CLIENT_ID_VAR: ${{ vars.MSAL_CLIENT_ID }}
           MSAL_AUTHORITY_VAR: ${{ vars.MSAL_AUTHORITY }}
           UI_AUTH_USERNAME_SECRET: ${{ secrets.UI_AUTH_USERNAME }}
@@ -154,6 +192,9 @@ jobs:
           echo "::add-mask::$podcaster_api_key"
           [ -n "${UI_AUTH_PASSWORD_SECRET:-}" ] && echo "::add-mask::$UI_AUTH_PASSWORD_SECRET"
           [ -n "${UI_AUTH_SECRET_SECRET:-}" ] && echo "::add-mask::$UI_AUTH_SECRET_SECRET"
+          [ -n "${VIDEO_YOUTUBE_CLIENT_ID_SECRET:-}" ] && echo "::add-mask::$VIDEO_YOUTUBE_CLIENT_ID_SECRET"
+          [ -n "${VIDEO_YOUTUBE_CLIENT_SECRET_SECRET:-}" ] && echo "::add-mask::$VIDEO_YOUTUBE_CLIENT_SECRET_SECRET"
+          [ -n "${VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET:-}" ] && echo "::add-mask::$VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET"
 
           {
             echo "AZURE_STORAGE_ACCOUNT_NAME=$storage_account_name"
@@ -164,6 +205,13 @@ jobs:
             echo "SP_DC=${SP_DC_SECRET:-}"
             echo "SP_KEY=${SP_KEY_SECRET:-}"
             echo "PODCAST_AUTO_PUBLISH=${PODCAST_AUTO_PUBLISH_VAR:-false}"
+            echo "VIDEO_YOUTUBE_ENABLED=${VIDEO_YOUTUBE_ENABLED_VAR:-false}"
+            echo "VIDEO_YOUTUBE_REQUIRED=${VIDEO_YOUTUBE_REQUIRED_VAR:-false}"
+            echo "VIDEO_YOUTUBE_CATEGORY_ID=${VIDEO_YOUTUBE_CATEGORY_ID_VAR:-28}"
+            echo "VIDEO_YOUTUBE_PRIVACY=${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}"
+            echo "VIDEO_YOUTUBE_CLIENT_ID=${VIDEO_YOUTUBE_CLIENT_ID_SECRET:-}"
+            echo "VIDEO_YOUTUBE_CLIENT_SECRET=${VIDEO_YOUTUBE_CLIENT_SECRET_SECRET:-}"
+            echo "VIDEO_YOUTUBE_REFRESH_TOKEN=${VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET:-}"
             echo "MSAL_CLIENT_ID=${MSAL_CLIENT_ID_VAR:-}"
             echo "MSAL_AUTHORITY=${MSAL_AUTHORITY_VAR:-}"
             echo "UI_AUTH_USERNAME=${UI_AUTH_USERNAME_SECRET:-}"
@@ -284,6 +332,13 @@ jobs:
             --parameters spotifySessionCookieDc="${SP_DC:-}" \
             --parameters spotifySessionCookieKey="${SP_KEY:-}" \
             --parameters podcastAutoPublish="${PODCAST_AUTO_PUBLISH:-false}" \
+            --parameters videoYoutubeEnabled="${VIDEO_YOUTUBE_ENABLED:-false}" \
+            --parameters videoYoutubeRequired="${VIDEO_YOUTUBE_REQUIRED:-false}" \
+            --parameters videoYoutubeCategoryId="${VIDEO_YOUTUBE_CATEGORY_ID:-28}" \
+            --parameters videoYoutubePrivacy="${VIDEO_YOUTUBE_PRIVACY:-unlisted}" \
+            --parameters videoYoutubeClientId="${VIDEO_YOUTUBE_CLIENT_ID:-}" \
+            --parameters videoYoutubeClientSecret="${VIDEO_YOUTUBE_CLIENT_SECRET:-}" \
+            --parameters videoYoutubeRefreshToken="${VIDEO_YOUTUBE_REFRESH_TOKEN:-}" \
             --parameters deployVnet="${DEPLOY_VNET}" \
             --parameters deployUiApp=true \
             --parameters uiImage="${UI_IMAGE}" \
