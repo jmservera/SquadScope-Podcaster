@@ -122,6 +122,10 @@ jobs:
               missing=1
               ;;
           esac
+          if [ "$youtube_required" = "true" ] && [ "$youtube_enabled" != "true" ]; then
+            echo "::error::VIDEO_YOUTUBE_REQUIRED=true requires VIDEO_YOUTUBE_ENABLED=true; required delivery cannot be enforced while YouTube upload is disabled"
+            missing=1
+          fi
           if [ "$youtube_enabled" = "true" ] && [ "$youtube_required" = "true" ]; then
             require_config VIDEO_YOUTUBE_CLIENT_ID_SECRET "secrets when required YouTube delivery is enabled"
             require_config VIDEO_YOUTUBE_CLIENT_SECRET_SECRET "secrets when required YouTube delivery is enabled"

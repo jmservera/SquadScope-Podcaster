@@ -810,7 +810,7 @@ def _try_chunked_upload(
                 stage="upload_chunked",
                 retryable=True,
             ) from exc
-        logger.error("YouTube chunked upload failed: network error")
+        logger.error("YouTube chunked upload failed: network error", exc_info=True)
         return None, None
     if result.succeeded:
         return result.video_id, result.video_url
@@ -1030,15 +1030,39 @@ def distribute_video(
                     retryable=False,
                 )
 
-    if config.youtube_required and youtube_active and result.youtube_id is None:
+    if config.youtube_required and result.youtube_id is None:
         result.youtube_required_failed = True
         if youtube_required_failure is None:
-            youtube_required_failure = YouTubeDeliveryError(
-                "Required YouTube upload failed",
-                code="youtube_upload_failed",
-                stage="upload",
-                retryable=False,
-            )
+            if not youtube_active:
+                # Required delivery is configured but YouTube is not active for
+                # this run (disabled outright, or the language is excluded from
+                # VIDEO_YOUTUBE_LANGUAGES). Treat it as a terminal
+                # misconfiguration so the job cannot silently complete without
+                # the mandated YouTube upload.
+                reason = (
+                    "VIDEO_YOUTUBE_REQUIRED=true but VIDEO_YOUTUBE_ENABLED is not true"
+                    if not config.youtube_enabled
+                    else (
+                        "VIDEO_YOUTUBE_REQUIRED=true but YouTube is not active for "
+                        f"language={language} (excluded by VIDEO_YOUTUBE_LANGUAGES)"
+                    )
+                )
+                logger.error(
+                    "required YouTube delivery misconfigured job_id=%s: %s", job_id, reason
+                )
+                youtube_required_failure = YouTubeDeliveryError(
+                    reason,
+                    code="youtube_required_but_disabled",
+                    stage="config",
+                    retryable=False,
+                )
+            else:
+                youtube_required_failure = YouTubeDeliveryError(
+                    "Required YouTube upload failed",
+                    code="youtube_upload_failed",
+                    stage="upload",
+                    retryable=False,
+                )
         result.youtube_failure_retryable = youtube_required_failure.retryable
         result.youtube_failure_code = youtube_required_failure.code
         result.youtube_failure_stage = youtube_required_failure.stage

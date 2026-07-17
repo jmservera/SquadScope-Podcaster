@@ -583,6 +583,28 @@ class TestDistributeVideo:
         assert result.youtube_failure_retryable is True
         assert result.youtube_failure_code == "youtube_oauth_http_503"
 
+    def test_required_youtube_but_disabled_is_terminal_config_failure(
+        self, video_file, monkeypatch
+    ):
+        def fail_youtube(*args, **kwargs):
+            raise AssertionError("YouTube upload should not run when disabled")
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        result = distribute_video(
+            video_file,
+            "job-required-but-disabled",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(youtube_enabled=False, youtube_required=True, dry_run=False),
+            storage=FakeStorage(),
+        )
+        assert result.status == "failed"
+        assert result.youtube_required_failed is True
+        assert result.youtube_failure_retryable is False
+        assert result.youtube_failure_code == "youtube_required_but_disabled"
+        assert result.youtube_failure_stage == "config"
+
     def test_skips_youtube_and_spotify_upload_when_already_published(
         self,
         video_file,
