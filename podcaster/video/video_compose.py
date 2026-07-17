@@ -444,7 +444,11 @@ def _default_dog_cache_dir() -> Path:
 
 
 def _redact_url(url: str) -> str:
-    """Return *url* with any ``user:pass@`` userinfo removed, for safe logging.
+    """Return *url* stripped of secrets for safe logging.
+
+    Delegates to :func:`podcaster.ssrf.redact_url`, which removes ``user:pass@``
+    userinfo *and* the query string and fragment (either may carry signed
+    tokens), keeping only scheme/host/port/path.
 
     The DOG logo URL is caller-controlled; logging it verbatim could leak
     embedded credentials (``https://user:secret@host/logo.png``).
