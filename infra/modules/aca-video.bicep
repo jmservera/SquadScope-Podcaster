@@ -101,6 +101,30 @@ param spotifySessionCookieKey string = ''
 @description('Spotify show ID for video upload target.')
 param spotifyShowId string = ''
 
+@description('Whether YouTube uploads are enabled for video distribution.')
+param videoYoutubeEnabled string = 'true'
+
+@description('Whether YouTube upload is a required delivery target (failure marks the job failed).')
+param videoYoutubeRequired string = 'true'
+
+@description('YouTube upload category id (default 28 = Science & Technology).')
+param videoYoutubeCategoryId string = '28'
+
+@description('YouTube upload privacy status (default unlisted draft).')
+param videoYoutubePrivacy string = 'unlisted'
+
+@secure()
+@description('YouTube OAuth client ID for runtime token exchange.')
+param videoYoutubeClientId string = ''
+
+@secure()
+@description('YouTube OAuth client secret for runtime token exchange.')
+param videoYoutubeClientSecret string = ''
+
+@secure()
+@description('YouTube OAuth refresh token for runtime token exchange.')
+param videoYoutubeRefreshToken string = ''
+
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
 
@@ -127,6 +151,18 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
         {
           name: 'spotify-sp-key'
           value: spotifySessionCookieKey
+        }
+        {
+          name: 'youtube-client-id'
+          value: videoYoutubeClientId
+        }
+        {
+          name: 'youtube-client-secret'
+          value: videoYoutubeClientSecret
+        }
+        {
+          name: 'youtube-refresh-token'
+          value: videoYoutubeRefreshToken
         }
       ]
       registries: hasContainerRegistry ? [
@@ -228,6 +264,34 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'VIDEO_BLOB_ARCHIVE_ENABLED'
               value: 'true'
+            }
+            {
+              name: 'VIDEO_YOUTUBE_ENABLED'
+              value: videoYoutubeEnabled
+            }
+            {
+              name: 'VIDEO_YOUTUBE_REQUIRED'
+              value: videoYoutubeRequired
+            }
+            {
+              name: 'VIDEO_YOUTUBE_CATEGORY_ID'
+              value: videoYoutubeCategoryId
+            }
+            {
+              name: 'VIDEO_YOUTUBE_PRIVACY'
+              value: videoYoutubePrivacy
+            }
+            {
+              name: 'VIDEO_YOUTUBE_CLIENT_ID'
+              secretRef: 'youtube-client-id'
+            }
+            {
+              name: 'VIDEO_YOUTUBE_CLIENT_SECRET'
+              secretRef: 'youtube-client-secret'
+            }
+            {
+              name: 'VIDEO_YOUTUBE_REFRESH_TOKEN'
+              secretRef: 'youtube-refresh-token'
             }
             {
               name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED'

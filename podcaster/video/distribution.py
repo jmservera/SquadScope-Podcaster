@@ -19,13 +19,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -40,6 +41,9 @@ VIDEO_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-video-queue-v1"
 _YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 _YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3/videos"
 _YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+_TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
+_OAUTH_IDENTIFIER_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+_TRANSIENT_TRANSPORT_ERRORS = (ConnectionError, TimeoutError, URLError)
 
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_BASE = 2.0
@@ -74,6 +78,7 @@ class VideoDistributionConfig:
     youtube_refresh_token: str = ""
     youtube_category_id: str = "28"  # Science & Technology
     youtube_privacy: str = "unlisted"
+    youtube_required: bool = False
 
     spotify_rss_enabled: bool = False
     spotify_rss_feed_path: str = ""
@@ -93,6 +98,7 @@ class VideoDistributionConfig:
             youtube_refresh_token=_load_youtube_refresh_token(),
             youtube_category_id=os.environ.get("VIDEO_YOUTUBE_CATEGORY_ID", "28"),
             youtube_privacy=os.environ.get("VIDEO_YOUTUBE_PRIVACY", "unlisted"),
+            youtube_required=os.environ.get("VIDEO_YOUTUBE_REQUIRED", "").lower() == "true",
             spotify_rss_enabled=os.environ.get("VIDEO_SPOTIFY_RSS_ENABLED", "").lower() == "true",
             spotify_rss_feed_path=os.environ.get("VIDEO_SPOTIFY_RSS_FEED_PATH", ""),
             spotify_upload_enabled=(
@@ -111,6 +117,7 @@ class VideoDistributionConfig:
             youtube_enabled=bool(payload.get("youtube_enabled", False)),
             youtube_category_id=str(payload.get("youtube_category_id", "28")),
             youtube_privacy=str(payload.get("youtube_privacy", "unlisted")),
+            youtube_required=bool(payload.get("youtube_required", False)),
             spotify_rss_enabled=bool(payload.get("spotify_rss_enabled", False)),
             spotify_rss_feed_path=str(payload.get("spotify_rss_feed_path", "")),
             spotify_upload_enabled=bool(payload.get("spotify_upload_enabled", False)),
@@ -130,6 +137,13 @@ class DistributionResult:
     spotify_upload_updated: bool = False
     blob_path: str | None = None
     errors: list[str] = field(default_factory=list)
+    youtube_required_failed: bool = False
+    youtube_failure_retryable: bool = False
+    youtube_failure_code: str | None = None
+    youtube_failure_stage: str | None = None
+    youtube_failure_http_status: int | None = None
+    youtube_oauth_error: str | None = None
+    youtube_oauth_error_subtype: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -158,6 +172,94 @@ class HttpTransport(Protocol):
     ) -> tuple[int, dict[str, str], bytes]:
         """Like request() but also returns response headers."""
         ...
+
+
+class YouTubeDeliveryError(RuntimeError):
+    """Sanitized YouTube failure with retryability and optional OAuth subtype."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        stage: str,
+        retryable: bool,
+        http_status: int | None = None,
+        oauth_error: str | None = None,
+        oauth_error_subtype: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.stage = stage
+        self.retryable = retryable
+        self.http_status = http_status
+        self.oauth_error = oauth_error
+        self.oauth_error_subtype = oauth_error_subtype
+
+    def as_sanitized_dict(self) -> dict[str, Any]:
+        details: dict[str, Any] = {
+            "code": self.code,
+            "stage": self.stage,
+            "retryable": self.retryable,
+        }
+        if self.http_status is not None:
+            details["http_status"] = self.http_status
+        if self.oauth_error:
+            details["oauth_error"] = self.oauth_error
+        if self.oauth_error_subtype:
+            details["oauth_error_subtype"] = self.oauth_error_subtype
+        return details
+
+
+def _is_transient_http_status(status: int) -> bool:
+    return status in _TRANSIENT_HTTP_STATUSES
+
+
+def _decode_body_text(body: bytes | str) -> str:
+    return body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body or "")
+
+
+def _sanitize_oauth_identifier(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    identifier = value.strip().lower()
+    return identifier if _OAUTH_IDENTIFIER_RE.fullmatch(identifier) else None
+
+
+def _extract_oauth_error_fields(body: bytes | str) -> tuple[str | None, str | None]:
+    text = _decode_body_text(body)
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+
+    error = payload.get("error")
+    error_code: str | None = None
+    error_subtype: str | None = None
+    if isinstance(error, str):
+        error_code = _sanitize_oauth_identifier(error)
+    elif isinstance(error, dict):
+        error_code = _sanitize_oauth_identifier(error.get("code"))
+        error_subtype = _sanitize_oauth_identifier(error.get("error_subtype"))
+
+    subtype = payload.get("error_subtype")
+    if error_subtype is None:
+        error_subtype = _sanitize_oauth_identifier(subtype)
+    return error_code, error_subtype
+
+
+def _notify_youtube_reauthorization() -> None:
+    """Dispatch the existing sanitized invalid-grant operator alert."""
+    try:
+        from podcaster.credential_expiry import notify_youtube_credential_expiry
+
+        notify_youtube_credential_expiry(
+            "YouTube OAuth refresh token was revoked or expired (invalid_grant)."
+        )
+    except Exception:  # noqa: BLE001 - alerting must never replace the delivery failure
+        logger.warning("failed to dispatch YouTube re-auth alert", exc_info=True)
 
 
 def _read_http_error_body(exc: HTTPError) -> bytes:
@@ -237,19 +339,52 @@ def _get_youtube_access_token(config: VideoDistributionConfig, transport: HttpTr
         }
     ).encode()
 
-    status, body = transport.request(
-        "https://oauth2.googleapis.com/token",
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data=data,
-    )
+    try:
+        status, body = transport.request(
+            "https://oauth2.googleapis.com/token",
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data=data,
+        )
+    except _TRANSIENT_TRANSPORT_ERRORS as exc:
+        raise YouTubeDeliveryError(
+            "YouTube token refresh failed: network error",
+            code="youtube_oauth_network_error",
+            stage="oauth_token",
+            retryable=True,
+        ) from exc
     if status != 200:
-        raise RuntimeError(f"YouTube token refresh failed: HTTP {status}")
+        oauth_error, oauth_subtype = _extract_oauth_error_fields(body)
+        if oauth_error == "invalid_grant":
+            _notify_youtube_reauthorization()
+        code = f"youtube_oauth_{oauth_error}" if oauth_error else f"youtube_oauth_http_{status}"
+        raise YouTubeDeliveryError(
+            f"YouTube token refresh failed: HTTP {status}",
+            code=code,
+            stage="oauth_token",
+            retryable=_is_transient_http_status(status),
+            http_status=status,
+            oauth_error=oauth_error,
+            oauth_error_subtype=oauth_subtype,
+        )
 
-    token_data = json.loads(body)
+    try:
+        token_data = json.loads(body)
+    except ValueError as exc:
+        raise YouTubeDeliveryError(
+            "YouTube token response was not valid JSON",
+            code="youtube_oauth_invalid_json",
+            stage="oauth_token",
+            retryable=False,
+        ) from exc
     access_token = token_data.get("access_token")
     if not access_token:
-        raise RuntimeError("YouTube token response missing access_token")
+        raise YouTubeDeliveryError(
+            "YouTube token response missing access_token",
+            code="youtube_oauth_missing_access_token",
+            stage="oauth_token",
+            retryable=False,
+        )
     return access_token
 
 
@@ -261,6 +396,7 @@ def upload_to_youtube(
     *,
     tags: list[str] | None = None,
     transport: HttpTransport | None = None,
+    raise_on_failure: bool = False,
 ) -> tuple[str | None, str | None]:
     """Upload a video to YouTube via the Data API v3.
 
@@ -309,20 +445,39 @@ def upload_to_youtube(
     init_url = f"{_YOUTUBE_UPLOAD_URL}?{params}"
     metadata_bytes = json.dumps(metadata).encode("utf-8")
 
-    status, resp_headers, body = http.request_with_headers(
-        init_url,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json; charset=utf-8",
-            "X-Upload-Content-Length": str(file_size),
-            "X-Upload-Content-Type": "video/mp4",
-        },
-        data=metadata_bytes,
-    )
+    try:
+        status, resp_headers, body = http.request_with_headers(
+            init_url,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; charset=utf-8",
+                "X-Upload-Content-Length": str(file_size),
+                "X-Upload-Content-Type": "video/mp4",
+            },
+            data=metadata_bytes,
+        )
+    except _TRANSIENT_TRANSPORT_ERRORS as exc:
+        if raise_on_failure:
+            raise YouTubeDeliveryError(
+                "YouTube resumable upload init failed: network error",
+                code="youtube_upload_init_network_error",
+                stage="upload_init",
+                retryable=True,
+            ) from exc
+        logger.error("YouTube resumable upload init failed: network error")
+        return None, None
 
     if status not in (200, 308):
         logger.error("YouTube resumable upload init failed: HTTP %s", status)
+        if raise_on_failure:
+            raise YouTubeDeliveryError(
+                f"YouTube resumable upload init failed: HTTP {status}",
+                code=f"youtube_upload_init_http_{status}",
+                stage="upload_init",
+                retryable=_is_transient_http_status(status),
+                http_status=status,
+            )
         return None, None
 
     # Use the resumable session URI returned in the Location header
@@ -339,6 +494,7 @@ def upload_to_youtube(
             config,
             tags=tags,
             transport=http,
+            raise_on_failure=raise_on_failure,
         )
         if chunked is not None:
             return chunked
@@ -351,6 +507,8 @@ def upload_to_youtube(
         return None, None
 
     video_bytes = video_path.read_bytes()
+    last_status: int | None = None
+    last_error: Exception | None = None
 
     for attempt in range(_MAX_RETRIES):
         try:
@@ -370,17 +528,55 @@ def upload_to_youtube(
                 video_url = f"https://youtube.com/watch?v={video_id}"
                 logger.info("YouTube upload succeeded: %s", video_url)
                 return video_id, video_url
-            else:
-                logger.warning(
-                    "YouTube upload attempt %d failed: HTTP %s", attempt + 1, upload_status
-                )
+            last_status = upload_status
+            logger.warning("YouTube upload attempt %d failed: HTTP %s", attempt + 1, upload_status)
+            if not _is_transient_http_status(upload_status):
+                break
+        except _TRANSIENT_TRANSPORT_ERRORS as exc:
+            last_error = exc
+            logger.warning("YouTube upload attempt %d network error", attempt + 1)
         except Exception as exc:
-            logger.warning("YouTube upload attempt %d error: %s", attempt + 1, exc)
+            if raise_on_failure:
+                raise YouTubeDeliveryError(
+                    "YouTube upload failed: non-network error",
+                    code="youtube_upload_error",
+                    stage="upload_put",
+                    retryable=False,
+                ) from exc
+            logger.error("YouTube upload failed: non-network error", exc_info=True)
+            return None, None
 
-        if attempt < _MAX_RETRIES - 1:
+        should_retry = last_error is not None or (
+            last_status is not None and _is_transient_http_status(last_status)
+        )
+        if should_retry and attempt < _MAX_RETRIES - 1:
             time.sleep(_RETRY_BACKOFF_BASE**attempt)
+        elif not should_retry:
+            break
 
     logger.error("YouTube upload failed after %d attempts", _MAX_RETRIES)
+    if raise_on_failure:
+        if last_status is not None:
+            raise YouTubeDeliveryError(
+                f"YouTube upload failed after retries: HTTP {last_status}",
+                code=f"youtube_upload_http_{last_status}",
+                stage="upload_put",
+                retryable=_is_transient_http_status(last_status),
+                http_status=last_status,
+            )
+        if last_error is not None:
+            raise YouTubeDeliveryError(
+                "YouTube upload failed after retries: network error",
+                code="youtube_upload_network_error",
+                stage="upload_put",
+                retryable=True,
+            ) from last_error
+        raise YouTubeDeliveryError(
+            "YouTube upload failed after retries",
+            code="youtube_upload_failed",
+            stage="upload_put",
+            retryable=False,
+        )
     return None, None
 
 
@@ -584,6 +780,7 @@ def _try_chunked_upload(
     *,
     tags: list[str] | None,
     transport: HttpTransport,
+    raise_on_failure: bool = False,
 ) -> tuple[str | None, str | None] | None:
     """Delegate to the resumable chunked uploader (#442) when available.
 
@@ -596,16 +793,55 @@ def _try_chunked_upload(
     except ImportError:  # noqa: BLE001 - optional module; degrade gracefully
         return None
 
-    result = upload_video(
-        video_path,
-        title,
-        description,
-        config,
-        tags=tags,
-        transport=transport,
-    )
+    try:
+        result = upload_video(
+            video_path,
+            title,
+            description,
+            config,
+            tags=tags,
+            transport=transport,
+        )
+    except _TRANSIENT_TRANSPORT_ERRORS as exc:
+        if raise_on_failure:
+            raise YouTubeDeliveryError(
+                "YouTube chunked upload failed: network error",
+                code="youtube_chunked_network_error",
+                stage="upload_chunked",
+                retryable=True,
+            ) from exc
+        logger.error("YouTube chunked upload failed: network error")
+        return None, None
     if result.succeeded:
         return result.video_id, result.video_url
+    if raise_on_failure:
+        error_text = (result.error or "").strip()
+        lowered = error_text.lower()
+        http_status: int | None = None
+        if "http " in lowered:
+            try:
+                http_status = int(lowered.split("http ", 1)[1].split()[0])
+            except (ValueError, IndexError):
+                http_status = None
+        retryable = (http_status is not None and _is_transient_http_status(http_status)) or (
+            "network error" in lowered
+        )
+        code = (
+            f"youtube_chunked_http_{http_status}"
+            if http_status is not None
+            else (
+                "youtube_chunked_network_error"
+                if "network error" in lowered
+                else "youtube_chunked_failed"
+            )
+        )
+        raise YouTubeDeliveryError(
+            "YouTube chunked upload failed",
+            code=code,
+            stage="upload_chunked",
+            retryable=retryable,
+            http_status=http_status,
+        )
     logger.error("YouTube chunked upload failed: %s", result.error)
     return None, None
 
@@ -681,6 +917,7 @@ def distribute_video(
     """
     result = DistributionResult()
     prior_published = published or {}
+    youtube_required_failure: YouTubeDeliveryError | None = None
 
     # Abort only if no distribution target at all is enabled (#337)
     if not (
@@ -741,11 +978,19 @@ def distribute_video(
                 config,
                 tags=tags,
                 transport=transport,
+                raise_on_failure=config.youtube_required,
             )
             result.youtube_id = video_id
             result.youtube_url = video_url
             if not video_id:
                 result.errors.append("YouTube upload failed after retries")
+                if config.youtube_required:
+                    youtube_required_failure = YouTubeDeliveryError(
+                        "Required YouTube upload failed after retries",
+                        code="youtube_upload_failed",
+                        stage="upload",
+                        retryable=False,
+                    )
             else:
                 if on_published is not None and not config.dry_run:
                     on_published(
@@ -764,9 +1009,42 @@ def distribute_video(
                         _add_to_show_playlist(config, locale, video_id, _token, transport=transport)
                     except Exception as exc:
                         logger.warning("Playlist add skipped for %s: %s", video_id, exc)
+        except YouTubeDeliveryError as exc:
+            result.errors.append(str(exc))
+            if config.youtube_required:
+                youtube_required_failure = exc
+            logger.error(
+                "YouTube distribution failed stage=%s code=%s retryable=%s",
+                exc.stage,
+                exc.code,
+                exc.retryable,
+            )
         except Exception as exc:
             result.errors.append(f"YouTube upload error: {exc}")
             logger.error("YouTube distribution failed: %s", exc)
+            if config.youtube_required:
+                youtube_required_failure = YouTubeDeliveryError(
+                    "Required YouTube upload failed",
+                    code="youtube_upload_exception",
+                    stage="upload",
+                    retryable=False,
+                )
+
+    if config.youtube_required and youtube_active and result.youtube_id is None:
+        result.youtube_required_failed = True
+        if youtube_required_failure is None:
+            youtube_required_failure = YouTubeDeliveryError(
+                "Required YouTube upload failed",
+                code="youtube_upload_failed",
+                stage="upload",
+                retryable=False,
+            )
+        result.youtube_failure_retryable = youtube_required_failure.retryable
+        result.youtube_failure_code = youtube_required_failure.code
+        result.youtube_failure_stage = youtube_required_failure.stage
+        result.youtube_failure_http_status = youtube_required_failure.http_status
+        result.youtube_oauth_error = youtube_required_failure.oauth_error
+        result.youtube_oauth_error_subtype = youtube_required_failure.oauth_error_subtype
 
     # 3. Update Spotify RSS
     if config.spotify_rss_enabled:
@@ -858,7 +1136,9 @@ def distribute_video(
         ]
     )
 
-    if targets_succeeded == 0 and targets_attempted > 0:
+    if result.youtube_required_failed:
+        result.status = "failed"
+    elif targets_succeeded == 0 and targets_attempted > 0:
         result.status = "failed"
     elif targets_succeeded < targets_attempted:
         result.status = "partial"

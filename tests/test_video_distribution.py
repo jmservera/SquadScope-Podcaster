@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from urllib.error import URLError
 
 import pytest
 
 from podcaster.video.distribution import (
     DistributionResult,
     VideoDistributionConfig,
+    YouTubeDeliveryError,
     _create_rss_feed,
     _escape_xml,
+    _try_chunked_upload,
     archive_to_blob,
     distribute_video,
     update_spotify_rss,
@@ -225,6 +228,127 @@ class TestUploadToYouTube:
         assert vid_id is None
         assert vid_url is None
 
+    def test_required_permanent_upload_failure_is_not_retried(self, video_file, youtube_config):
+        transport = FakeTransport(
+            responses=[
+                (200, json.dumps({"access_token": "tok"}).encode()),
+                (200, b"{}"),
+                (403, b"forbidden"),
+            ]
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            upload_to_youtube(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                transport=transport,
+                raise_on_failure=True,
+            )
+        assert raised.value.retryable is False
+        assert raised.value.http_status == 403
+        assert len(transport.requests) == 3
+
+    def test_required_token_transport_failure_is_retryable(self, video_file, youtube_config):
+        class FailingTransport:
+            def request(self, *args, **kwargs):
+                raise URLError("temporary DNS failure")
+
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            upload_to_youtube(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                transport=FailingTransport(),
+                raise_on_failure=True,
+            )
+        assert raised.value.code == "youtube_oauth_network_error"
+        assert raised.value.retryable is True
+
+    def test_invalid_grant_notifies_with_sanitized_fields(
+        self, video_file, youtube_config, monkeypatch
+    ):
+        notified: list[str] = []
+        monkeypatch.setattr(
+            "podcaster.video.distribution._notify_youtube_reauthorization",
+            lambda: notified.append("sent"),
+        )
+        transport = FakeTransport(
+            responses=[
+                (
+                    400,
+                    json.dumps(
+                        {
+                            "error": "invalid_grant",
+                            "error_subtype": "invalid_rapt",
+                            "error_description": "sensitive provider detail",
+                        }
+                    ).encode(),
+                )
+            ]
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            upload_to_youtube(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                transport=transport,
+                raise_on_failure=True,
+            )
+        assert notified == ["sent"]
+        assert raised.value.oauth_error == "invalid_grant"
+        assert raised.value.oauth_error_subtype == "invalid_rapt"
+        assert "sensitive provider detail" not in str(raised.value)
+
+    def test_oauth_diagnostics_reject_untrusted_free_text(self, video_file, youtube_config):
+        transport = FakeTransport(
+            responses=[
+                (
+                    400,
+                    json.dumps(
+                        {
+                            "error": {"message": "token text\n::error::forged"},
+                            "error_subtype": "invalid rapt; token=secret",
+                        }
+                    ).encode(),
+                )
+            ]
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            upload_to_youtube(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                transport=transport,
+                raise_on_failure=True,
+            )
+        assert raised.value.code == "youtube_oauth_http_400"
+        assert raised.value.oauth_error is None
+        assert raised.value.oauth_error_subtype is None
+
+    def test_required_chunked_transport_failure_is_retryable(
+        self, video_file, youtube_config, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "podcaster.video.youtube.upload_video",
+            lambda *args, **kwargs: (_ for _ in ()).throw(URLError("temporary failure")),
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            _try_chunked_upload(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                tags=None,
+                transport=FakeTransport(),
+                raise_on_failure=True,
+            )
+        assert raised.value.code == "youtube_chunked_network_error"
+        assert raised.value.retryable is True
+
 
 # --- Spotify RSS Tests ---
 
@@ -405,6 +529,59 @@ class TestDistributeVideo:
             transport=transport,
         )
         assert result.status == "failed"
+
+    def test_required_youtube_auth_failure_is_terminal(self, video_file, monkeypatch):
+        def fail_youtube(*args, **kwargs):
+            raise YouTubeDeliveryError(
+                "YouTube token refresh failed: HTTP 400",
+                code="youtube_oauth_invalid_grant",
+                stage="oauth_token",
+                retryable=False,
+                http_status=400,
+                oauth_error="invalid_grant",
+                oauth_error_subtype="invalid_rapt",
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        result = distribute_video(
+            video_file,
+            "job-required-auth",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(youtube_enabled=True, youtube_required=True, dry_run=False),
+            storage=FakeStorage(),
+        )
+        assert result.status == "failed"
+        assert result.youtube_required_failed is True
+        assert result.youtube_failure_retryable is False
+        assert result.youtube_oauth_error_subtype == "invalid_rapt"
+        assert result.youtube_failure_code == "youtube_oauth_invalid_grant"
+
+    def test_required_youtube_transient_failure_marks_retryable(self, video_file, monkeypatch):
+        def fail_youtube(*args, **kwargs):
+            raise YouTubeDeliveryError(
+                "YouTube token refresh failed: HTTP 503",
+                code="youtube_oauth_http_503",
+                stage="oauth_token",
+                retryable=True,
+                http_status=503,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        result = distribute_video(
+            video_file,
+            "job-required-transient",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(youtube_enabled=True, youtube_required=True, dry_run=False),
+            storage=FakeStorage(),
+        )
+        assert result.status == "failed"
+        assert result.youtube_required_failed is True
+        assert result.youtube_failure_retryable is True
+        assert result.youtube_failure_code == "youtube_oauth_http_503"
 
     def test_skips_youtube_and_spotify_upload_when_already_published(
         self,
@@ -771,7 +948,9 @@ class TestPlaylistIntegration:
         # dry_run skips playlist call — use a monkeypatched upload_to_youtube instead
         captured_upload: list = []
 
-        def fake_upload(path, title, desc, cfg, *, tags=None, transport=None):
+        def fake_upload(
+            path, title, desc, cfg, *, tags=None, transport=None, raise_on_failure=False
+        ):
             captured_upload.append(True)
             return "yt-vid-001", "https://youtube.com/watch?v=yt-vid-001"
 
@@ -823,7 +1002,9 @@ class TestPlaylistIntegration:
     def test_playlist_failure_does_not_abort_distribution(self, video_file, monkeypatch):
         """A playlist error is logged but does not fail the distribution result."""
 
-        def fake_upload(path, title, desc, cfg, *, tags=None, transport=None):
+        def fake_upload(
+            path, title, desc, cfg, *, tags=None, transport=None, raise_on_failure=False
+        ):
             return "yt-vid-002", "https://youtube.com/watch?v=yt-vid-002"
 
         monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fake_upload)
