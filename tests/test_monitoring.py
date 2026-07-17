@@ -764,8 +764,7 @@ class TestUiNavigationEndpoints:
                 reloaded = importlib.reload(monitoring_module)
             assert reloaded._CORS_ORIGINS == []
             assert any(
-                "wildcard CORS is not permitted" in record.getMessage()
-                for record in caplog.records
+                "wildcard CORS is not permitted" in record.getMessage() for record in caplog.records
             )
 
             reloaded.set_storage(MemoryStorageBackend())
