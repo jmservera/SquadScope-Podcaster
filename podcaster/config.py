@@ -107,10 +107,16 @@ def _neutralized_or_default(value: object, default: str, limit: int) -> str:
     (control and zero-width characters), collapses whitespace to single spaces,
     and length-caps the value before it can reach the LLM system prompt (#605).
     ``default`` is a trusted module constant and is returned unchanged when the
-    caller supplies no usable value.
+    caller supplies no usable value. Note that ``str.strip()`` does not remove
+    zero-width/control characters, so a value that is non-empty before
+    neutralization can still reduce to an empty string afterwards (e.g. a value
+    made up solely of zero-width chars); in that case we also fall back to the
+    default so required fields are never blanked out.
     """
     if isinstance(value, str) and value.strip():
-        return neutralize(value, limit=limit)
+        neutralized = neutralize(value, limit=limit)
+        if neutralized:
+            return neutralized
     return default
 
 
@@ -359,15 +365,19 @@ class LanguageConfig:
             host_b_payload = _merge_voice(host_b_payload, voices.get("host_b"))
 
         prompts_payload = payload.get("prompts")
-        prompts = (
-            {
-                str(k): neutralize(v, limit=_CONFIG_FIELD_LIMITS["prompt"])
-                for k, v in prompts_payload.items()
-                if isinstance(v, str) and v.strip()
-            }
-            if isinstance(prompts_payload, Mapping)
-            else dict(defaults.prompts)
-        )
+        if isinstance(prompts_payload, Mapping):
+            prompts = {}
+            for k, v in prompts_payload.items():
+                if not (isinstance(v, str) and v.strip()):
+                    continue
+                # Drop overrides that neutralize to empty (e.g. only zero-width
+                # chars) so we never register a "present" prompt that is blank at
+                # runtime — matching validate_language_block()'s non-empty rule.
+                neutralized = neutralize(v, limit=_CONFIG_FIELD_LIMITS["prompt"])
+                if neutralized:
+                    prompts[str(k)] = neutralized
+        else:
+            prompts = dict(defaults.prompts)
 
         enabled = payload.get("enabled")
         return cls(

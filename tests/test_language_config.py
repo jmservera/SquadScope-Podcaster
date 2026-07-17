@@ -95,6 +95,28 @@ def test_language_block_overrides_voices_prompts_and_locale():
     assert es.enabled is False
 
 
+def test_language_block_drops_prompt_overrides_that_neutralize_to_empty():
+    # A prompt value that is non-empty before neutralization but reduces to an
+    # empty string afterwards (only zero-width chars) must not register a
+    # "present" but blank prompt override — matching validate_language_block()'s
+    # non-empty rule (#605).
+    payload = {
+        "podcast_config": {
+            "languages": {
+                "es": {
+                    "prompts": {
+                        "script_system": "\u200b\u200b\ufeff",
+                        "intro": "Hola",
+                    },
+                }
+            }
+        }
+    }
+    es = PodcastConfig.from_payload(payload).languages["es"]
+    assert "script_system" not in es.prompts
+    assert es.prompts["intro"] == "Hola"
+
+
 def test_hosts_array_format_supported_in_language_block():
     payload = {
         "podcast_config": {

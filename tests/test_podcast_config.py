@@ -353,3 +353,13 @@ def test_script_directions_cues_neutralized() -> None:
         assert "\n" not in value and "\r" not in value
     for seg in directions.episode_style.segment_order:
         assert "\n" not in seg
+
+
+def test_podcast_config_zero_width_only_field_falls_back_to_default() -> None:
+    # A value that is non-empty before neutralization but reduces to an empty
+    # string afterwards (only zero-width chars) must not blank out a required
+    # field — it falls back to the trusted default instead (#605).
+    payload = {"podcast_config": {"name": "\u200b\u200b\ufeff", "host_a": {"name": "\u200b"}}}
+    config = PodcastConfig.from_payload(payload)
+    assert config.name == PODCAST_NAME
+    assert config.host_a.name == HOST_A_NAME
