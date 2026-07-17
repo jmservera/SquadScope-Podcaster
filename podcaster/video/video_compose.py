@@ -483,9 +483,8 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
         return None
     if host_is_blocked(hostname):
         logger.warning(
-            "Skipping DOG logo fetch: URL host is blocked "
-            "(loopback/private/link-local/reserved/metadata) in %s; "
-            "composing without watermark",
+            "Skipping DOG logo fetch: URL host is not publicly routable / is "
+            "blocked by the SSRF guard in %s; composing without watermark",
             _redact_url(url),
         )
         return None

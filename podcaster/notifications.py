@@ -82,9 +82,10 @@ def _host_is_blocked(hostname: str) -> bool:
 
     Thin wrapper preserved for backwards compatibility; the implementation now
     lives in :func:`podcaster.ssrf.host_is_blocked` so every outbound fetch
-    shares one hardened SSRF guard. Note the shared guard is slightly stricter
-    than the previous webhook check: it also blocks reserved, unspecified and
-    multicast destinations, which is intended SSRF hardening.
+    shares one hardened SSRF guard. The shared guard adds one destination class
+    the previous inlined webhook check missed — **multicast** — on top of the
+    loopback/private/link-local/reserved/unspecified ranges it already blocked
+    (intended SSRF hardening).
     """
     return host_is_blocked(hostname)
 

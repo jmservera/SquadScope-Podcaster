@@ -31,6 +31,20 @@ BLOCKED_HOSTNAMES = frozenset(
 
 
 def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    # Normalize IPv6 forms that embed an IPv4 address (e.g. ``::ffff:127.0.0.1``,
+    # 6to4, Teredo) so a mapped IPv4 literal can't smuggle past the range checks.
+    if isinstance(ip, ipaddress.IPv6Address):
+        # Normalize IPv6 forms that embed IPv4 (``::ffff:127.0.0.1``, 6to4,
+        # Teredo) so a mapped IPv4 literal can't smuggle past the range checks.
+        embedded: list[ipaddress.IPv4Address] = []
+        if ip.ipv4_mapped is not None:
+            embedded.append(ip.ipv4_mapped)
+        if ip.sixtofour is not None:
+            embedded.append(ip.sixtofour)
+        if ip.teredo is not None:
+            embedded.extend(ip.teredo)
+        if any(_ip_is_blocked(mapped) for mapped in embedded):
+            return True
     return (
         ip.is_loopback
         or ip.is_private

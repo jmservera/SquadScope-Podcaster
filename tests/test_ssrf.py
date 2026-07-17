@@ -26,6 +26,10 @@ class TestHostIsBlocked:
             "169.254.169.254",  # cloud metadata IMDS
             "224.0.0.1",  # multicast
             "0.0.0.0",  # noqa: S104 — testing that unspecified is blocked
+            "::ffff:127.0.0.1",  # IPv4-mapped IPv6 loopback
+            "::ffff:169.254.169.254",  # IPv4-mapped IPv6 IMDS
+            "::ffff:10.0.0.5",  # IPv4-mapped IPv6 private
+            "2002:7f00:1::",  # 6to4 wrapping 127.0.0.1
             "",  # empty -> fail closed
         ],
     )
