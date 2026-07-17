@@ -27,10 +27,10 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
   request is rejected with `401` rather than silently exposing review,
   credential-status, jobs, and artifact endpoints (jmservera/SquadScope-Podcaster#604).
 - **Local development opt-out:** set `MONITORING_AUTH_DISABLED=true`
-  (`1`/`yes`/`on` also accepted) to run the API without authentication. This
-  logs a loud warning on every startup path and must **never** be set in
-  production. Production deployments configure `PODCASTER_API_KEY`, so this flag
-  is not needed there.
+  (`1`/`yes`/`on` also accepted) to run the API without authentication. A loud
+  warning is logged (once per process) the first time an unauthenticated request
+  is served in this mode. It must **never** be set in production. Production
+  deployments configure `PODCASTER_API_KEY`, so this flag is not needed there.
 
 ### Secrets Passed to SquadScope
 
