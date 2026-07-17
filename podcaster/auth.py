@@ -8,13 +8,17 @@ from environment variables:
   UI_AUTH_PASSWORD  — required login password
   UI_AUTH_SECRET    — HMAC secret used to sign/verify JWTs
 
-When none of the UI_AUTH_* vars are set the auth layer is effectively
-disabled (same behaviour as before this change).
+When none of the UI_AUTH_* vars (nor MONITORING_API_KEY / PODCASTER_API_KEY)
+are set, the monitoring API fails **closed** and rejects every request with
+``401``. Unauthenticated access requires an explicit
+``MONITORING_AUTH_DISABLED=true`` opt-in for local development (#604).
 """
 
 from __future__ import annotations
 
+import functools
 import hmac
+import logging
 import os
 import re
 
@@ -29,6 +33,38 @@ from podcaster.auth_core import (
     get_credentials,
     verify_token,
 )
+
+logger = logging.getLogger(__name__)
+
+# Truthy values accepted for boolean opt-in env vars.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# Every environment variable whose mere *presence* signals that an operator has
+# started configuring authentication. Presence (not validity) is what matters:
+# if any of these is set — even empty or only partially — the deployment is
+# treated as "auth is being configured", so the MONITORING_AUTH_DISABLED opt-out
+# is ignored and the API fails closed rather than silently running open (#604).
+_AUTH_ENV_VARS = (
+    "UI_AUTH_USERNAME",
+    "UI_AUTH_PASSWORD",
+    "UI_AUTH_SECRET",
+    "MONITORING_API_KEY",
+    "PODCASTER_API_KEY",
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_auth_disabled_once() -> None:
+    """Log the 'auth disabled' warning at most once per process.
+
+    ``verify_auth`` runs on every request; emitting this on each call would
+    flood local-dev and test logs, so the message is cached to fire only once.
+    """
+    logger.warning(
+        "Monitoring auth is DISABLED via MONITORING_AUTH_DISABLED — all "
+        "requests are unauthenticated. Do not use this in production."
+    )
+
 
 __all__ = [
     "_JWT_ALGORITHM",
@@ -93,6 +129,31 @@ def _query_token_allowed(path: str) -> bool:
     return path.startswith("/api/stream/") or bool(_PROGRESS_STREAM_PATH.fullmatch(path))
 
 
+def _auth_explicitly_disabled() -> bool:
+    """Return True only when an operator has *explicitly* opted out of auth.
+
+    Set ``MONITORING_AUTH_DISABLED=true`` (or ``1``/``yes``/``on``) to run the
+    monitoring/admin API without authentication — intended for local-only
+    development. This flag is only honoured when **no** auth env var is present
+    at all (see :func:`_any_auth_env_present`); a partially configured
+    deployment always fails closed. Absent this flag the API fails **closed**:
+    every request is rejected with ``401`` rather than silently exposing review,
+    credential, job, and artifact endpoints (#604).
+    """
+    return os.environ.get("MONITORING_AUTH_DISABLED", "").strip().lower() in _TRUTHY
+
+
+def _any_auth_env_present() -> bool:
+    """Return True if any auth-related env var is set at all (even empty).
+
+    Presence — not validity — is deliberate: if an operator has begun
+    configuring auth (any ``UI_AUTH_*`` or API-key var exists, even empty or
+    partial), the ``MONITORING_AUTH_DISABLED`` opt-out is ignored so a
+    half-configured deployment fails closed instead of running open (#604).
+    """
+    return any(name in os.environ for name in _AUTH_ENV_VARS)
+
+
 def verify_auth(
     request: Request,
     authorization: str = Header(default=""),
@@ -105,17 +166,32 @@ def verify_auth(
     2. A valid X-Podcaster-Api-Key header (existing machine-to-machine auth).
 
     When neither UI_AUTH_* nor MONITORING_API_KEY / PODCASTER_API_KEY are
-    configured, all requests are allowed (open mode — mirrors pre-#273
-    behaviour).
+    configured the API fails **closed** and rejects every request with ``401``.
+    Unauthenticated (open) access is only allowed when an operator explicitly
+    sets ``MONITORING_AUTH_DISABLED=true`` for local development (#604).
     """
     creds = get_credentials()
     configured_api_key = os.environ.get("MONITORING_API_KEY") or os.environ.get(
         "PODCASTER_API_KEY", ""
     )
 
-    # If nothing is configured at all, allow everything (open mode).
+    # Nothing configured: fail closed unless auth is explicitly disabled *and*
+    # no auth env var is present at all. A partially/empty-configured deployment
+    # (e.g. only UI_AUTH_SECRET, or an empty MONITORING_API_KEY) ignores the
+    # disable flag and fails closed, so the opt-out cannot be left on by accident
+    # while auth is being set up (#604).
     if creds is None and not configured_api_key:
-        return
+        if _auth_explicitly_disabled() and not _any_auth_env_present():
+            _warn_auth_disabled_once()
+            return
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Authentication is not configured. Set UI_AUTH_* or "
+                "MONITORING_API_KEY/PODCASTER_API_KEY, or explicitly set "
+                "MONITORING_AUTH_DISABLED=true for local development."
+            ),
+        )
 
     # --- Try Bearer JWT first ---
     if authorization.startswith("Bearer "):

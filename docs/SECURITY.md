@@ -20,6 +20,21 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
   - If not configured, the sync step is skipped unless `sync_squadscope=true` is explicitly requested.
   - Must have scope: `repository` and permissions: `secrets:write, variables:write`.
 
+### Monitoring / Admin API Authentication
+
+- The monitoring & admin API (`verify_auth`) **fails closed**: when neither
+  `UI_AUTH_*` nor `MONITORING_API_KEY`/`PODCASTER_API_KEY` is configured, every
+  request is rejected with `401` rather than silently exposing review,
+  credential-status, jobs, and artifact endpoints (jmservera/SquadScope-Podcaster#604).
+- **Local development opt-out:** set `MONITORING_AUTH_DISABLED=true`
+  (`1`/`yes`/`on` also accepted) to run the API without authentication. A loud
+  warning is logged (once per process) the first time an unauthenticated request
+  is served in this mode. It must **never** be set in production. The flag is
+  **ignored** whenever any auth env var (`UI_AUTH_*`, `MONITORING_API_KEY`,
+  `PODCASTER_API_KEY`) is present — even empty or partially set — so a
+  half-configured deployment always fails closed. Production deployments
+  configure `PODCASTER_API_KEY`, so this flag is not needed there.
+
 ### Secrets Passed to SquadScope
 
 - **`PODCASTER_ENDPOINT`** (variable in SquadScope)
