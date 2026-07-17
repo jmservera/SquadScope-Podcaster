@@ -93,6 +93,19 @@ class TestRedactUrl:
     def test_no_host(self):
         assert ssrf.redact_url("not-a-url") in ("<no-host>", "not-a-url:<no-host>")
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://example.com:99999/logo.png",  # out-of-range port
+            "http://example.com:-1/logo.png",  # negative port
+            "http://example.com:abc/logo.png",  # non-numeric port
+        ],
+    )
+    def test_invalid_port_never_raises(self, url):
+        # redact_url logs attacker-controlled URLs on error paths and must never
+        # raise, even when urlparse().port would raise ValueError.
+        assert ssrf.redact_url(url) == "<unparseable-url>"
+
 
 class TestSafeUrlopen:
     def test_refuses_unsafe_initial_url(self):

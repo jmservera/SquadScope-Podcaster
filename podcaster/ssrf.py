@@ -95,16 +95,21 @@ def redact_url(url: str) -> str:
     access tokens. IPv6 literal hosts are bracketed so the result stays a valid,
     unambiguous URL.
     """
+    # ``urlparse`` is lazy: an invalid/out-of-range port only raises ``ValueError``
+    # when ``.port`` is accessed, so both the parse and the port read must be
+    # guarded. This helper logs attacker-controlled URLs on error paths and must
+    # never raise.
     try:
         parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port
     except ValueError:
         return "<unparseable-url>"
-    host = parsed.hostname
     if host is None:
         return f"{parsed.scheme}:<no-host>" if parsed.scheme else "<no-host>"
     if ":" in host:  # IPv6 literal
         host = f"[{host}]"
-    netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
+    netloc = f"{host}:{port}" if port is not None else host
     return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
 
 
