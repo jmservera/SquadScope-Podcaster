@@ -8,12 +8,15 @@ from environment variables:
   UI_AUTH_PASSWORD  — required login password
   UI_AUTH_SECRET    — HMAC secret used to sign/verify JWTs
 
-When none of the UI_AUTH_* vars are set the auth layer is effectively
-disabled (same behaviour as before this change).
+When none of the UI_AUTH_* vars (nor MONITORING_API_KEY / PODCASTER_API_KEY)
+are set, the monitoring API fails **closed** and rejects every request with
+``401``. Unauthenticated access requires an explicit
+``MONITORING_AUTH_DISABLED=true`` opt-in for local development (#604).
 """
 
 from __future__ import annotations
 
+import functools
 import hmac
 import logging
 import os
@@ -35,6 +38,20 @@ logger = logging.getLogger(__name__)
 
 # Truthy values accepted for boolean opt-in env vars.
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_auth_disabled_once() -> None:
+    """Log the 'auth disabled' warning at most once per process.
+
+    ``verify_auth`` runs on every request; emitting this on each call would
+    flood local-dev and test logs, so the message is cached to fire only once.
+    """
+    logger.warning(
+        "Monitoring auth is DISABLED via MONITORING_AUTH_DISABLED — all "
+        "requests are unauthenticated. Do not use this in production."
+    )
+
 
 __all__ = [
     "_JWT_ALGORITHM",
@@ -135,10 +152,7 @@ def verify_auth(
     # Nothing configured: fail closed unless auth is explicitly disabled.
     if creds is None and not configured_api_key:
         if _auth_explicitly_disabled():
-            logger.warning(
-                "Monitoring auth is DISABLED via MONITORING_AUTH_DISABLED — all "
-                "requests are unauthenticated. Do not use this in production."
-            )
+            _warn_auth_disabled_once()
             return
         raise HTTPException(
             status_code=401,

@@ -164,7 +164,15 @@ class TestAuthMiddleware:
     def test_fails_closed_when_nothing_configured(self, client, monkeypatch):
         # #604: with no auth env vars the API must reject requests rather than
         # silently exposing every endpoint (fail closed, not fail open).
-        monkeypatch.delenv("MONITORING_AUTH_DISABLED", raising=False)
+        for var in (
+            "MONITORING_AUTH_DISABLED",
+            "UI_AUTH_USERNAME",
+            "UI_AUTH_PASSWORD",
+            "UI_AUTH_SECRET",
+            "MONITORING_API_KEY",
+            "PODCASTER_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
         resp = client.get("/api/jobs")
         assert resp.status_code == 401
 
