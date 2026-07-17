@@ -33,6 +33,7 @@ import hmac
 import json
 import logging
 import os
+import posixpath
 import re
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
@@ -763,6 +764,7 @@ def get_job_progress(job_id: str, since: int = Query(default=0, ge=0)):
 @app.get("/api/progress-token", dependencies=[Depends(verify_auth)])
 def mint_progress_token(job_id: str = Query(...)):
     """Mint a short-lived query token for the SSE progress stream."""
+    job_id = _require_safe_job_id(job_id)
     storage = get_storage()
     if not _job_exists(storage, job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
@@ -931,6 +933,7 @@ async def stream_job_progress(
     parameter. Backed by the same durable store as the polling endpoint.
     """
     verify_scoped_query_access(request, scope="progress", resource=job_id)
+    job_id = _require_safe_job_id(job_id)
     storage = get_storage()
     if not _job_exists(storage, job_id):
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
@@ -1121,22 +1124,30 @@ def _content_type_for_path(path: str) -> str | None:
     return None
 
 
-# Blob paths reaching the streaming proxy are caller-controlled. Validate them
-# at the API boundary against a strict allowlist and reject path traversal
-# before the value is used to address storage, so a request can never escape
-# the storage namespace (defense-in-depth over the backend's own sanitizer).
-_SAFE_BLOB_PATH_RE = re.compile(r"[A-Za-z0-9._/\-]+")
+# Blob paths and job ids reaching the streaming/progress endpoints are
+# caller-controlled. Validate them at the API boundary before the value is used
+# to address storage, so a request can never escape the storage namespace via
+# path traversal (defense-in-depth over the backend's own sanitizer).
+_SAFE_JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*")
 
 
 def _require_safe_blob_path(path: str) -> str:
-    segments = path.split("/")
+    normalized = posixpath.normpath(path)
     if (
-        not _SAFE_BLOB_PATH_RE.fullmatch(path)
+        not path
+        or "\\" in path
         or path.startswith("/")
-        or any(segment in ("", ".", "..") for segment in segments)
+        or normalized != path
+        or normalized.startswith("..")
     ):
         raise HTTPException(status_code=400, detail="Invalid blob path")
-    return path
+    return normalized
+
+
+def _require_safe_job_id(job_id: str) -> str:
+    if not _SAFE_JOB_ID_RE.fullmatch(job_id):
+        raise HTTPException(status_code=400, detail="Invalid job id")
+    return job_id
 
 
 @app.get("/api/stream-token", dependencies=[Depends(verify_auth)])

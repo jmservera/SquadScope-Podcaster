@@ -1538,6 +1538,20 @@ class TestProgressStream:
 
         assert resp.status_code == 404
 
+    def test_progress_token_400_for_invalid_job_id(self, client, storage, monkeypatch):
+        monkeypatch.setenv("UI_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("UI_AUTH_PASSWORD", "hunter2")
+        monkeypatch.setenv("UI_AUTH_SECRET", "test-secret-256-bits-long-enough")
+        bearer = create_token("admin", "test-secret-256-bits-long-enough")
+
+        for bad in ("../secret", "jobs/../x", "a/b"):
+            resp = client.get(
+                "/api/progress-token",
+                params={"job_id": bad},
+                headers={"Authorization": f"Bearer {bearer}"},
+            )
+            assert resp.status_code == 400, bad
+
 
 # ---------------------------------------------------------------------------
 # Tests: GET /api/jobs/{id}/progress/summary (issue #470)
