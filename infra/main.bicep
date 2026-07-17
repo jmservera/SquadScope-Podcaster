@@ -157,10 +157,10 @@ param spotifySessionCookieKey string = ''
 param podcastAutoPublish string = 'false'
 
 @description('Whether YouTube uploads are enabled for the video runner.')
-param videoYoutubeEnabled string = 'true'
+param videoYoutubeEnabled string = 'false'
 
 @description('Whether YouTube upload is required for a successful video run.')
-param videoYoutubeRequired string = 'true'
+param videoYoutubeRequired string = 'false'
 
 @description('YouTube upload category ID (default 28 = Science & Technology).')
 param videoYoutubeCategoryId string = '28'

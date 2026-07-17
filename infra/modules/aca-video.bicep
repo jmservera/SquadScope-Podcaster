@@ -102,10 +102,10 @@ param spotifySessionCookieKey string = ''
 param spotifyShowId string = ''
 
 @description('Whether YouTube uploads are enabled for video distribution.')
-param videoYoutubeEnabled string = 'true'
+param videoYoutubeEnabled string = 'false'
 
 @description('Whether YouTube upload is a required delivery target (failure marks the job failed).')
-param videoYoutubeRequired string = 'true'
+param videoYoutubeRequired string = 'false'
 
 @description('YouTube upload category id (default 28 = Science & Technology).')
 param videoYoutubeCategoryId string = '28'

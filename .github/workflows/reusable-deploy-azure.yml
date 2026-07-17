@@ -106,8 +106,8 @@ jobs:
             require_config SQUADSCOPE_SYNC_TOKEN "secrets for sync_squadscope=true"
           fi
 
-          youtube_enabled="$(printf '%s' "${VIDEO_YOUTUBE_ENABLED_VAR:-true}" | tr '[:upper:]' '[:lower:]')"
-          youtube_required="$(printf '%s' "${VIDEO_YOUTUBE_REQUIRED_VAR:-true}" | tr '[:upper:]' '[:lower:]')"
+          youtube_enabled="$(printf '%s' "${VIDEO_YOUTUBE_ENABLED_VAR:-false}" | tr '[:upper:]' '[:lower:]')"
+          youtube_required="$(printf '%s' "${VIDEO_YOUTUBE_REQUIRED_VAR:-false}" | tr '[:upper:]' '[:lower:]')"
           case "$youtube_enabled" in
             true|false) ;;
             *)
@@ -205,8 +205,8 @@ jobs:
             echo "SP_DC=${SP_DC_SECRET:-}"
             echo "SP_KEY=${SP_KEY_SECRET:-}"
             echo "PODCAST_AUTO_PUBLISH=${PODCAST_AUTO_PUBLISH_VAR:-false}"
-            echo "VIDEO_YOUTUBE_ENABLED=${VIDEO_YOUTUBE_ENABLED_VAR:-true}"
-            echo "VIDEO_YOUTUBE_REQUIRED=${VIDEO_YOUTUBE_REQUIRED_VAR:-true}"
+            echo "VIDEO_YOUTUBE_ENABLED=${VIDEO_YOUTUBE_ENABLED_VAR:-false}"
+            echo "VIDEO_YOUTUBE_REQUIRED=${VIDEO_YOUTUBE_REQUIRED_VAR:-false}"
             echo "VIDEO_YOUTUBE_CATEGORY_ID=${VIDEO_YOUTUBE_CATEGORY_ID_VAR:-28}"
             echo "VIDEO_YOUTUBE_PRIVACY=${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}"
             echo "VIDEO_YOUTUBE_CLIENT_ID=${VIDEO_YOUTUBE_CLIENT_ID_SECRET:-}"
@@ -332,8 +332,8 @@ jobs:
             --parameters spotifySessionCookieDc="${SP_DC:-}" \
             --parameters spotifySessionCookieKey="${SP_KEY:-}" \
             --parameters podcastAutoPublish="${PODCAST_AUTO_PUBLISH:-false}" \
-            --parameters videoYoutubeEnabled="${VIDEO_YOUTUBE_ENABLED:-true}" \
-            --parameters videoYoutubeRequired="${VIDEO_YOUTUBE_REQUIRED:-true}" \
+            --parameters videoYoutubeEnabled="${VIDEO_YOUTUBE_ENABLED:-false}" \
+            --parameters videoYoutubeRequired="${VIDEO_YOUTUBE_REQUIRED:-false}" \
             --parameters videoYoutubeCategoryId="${VIDEO_YOUTUBE_CATEGORY_ID:-28}" \
             --parameters videoYoutubePrivacy="${VIDEO_YOUTUBE_PRIVACY:-unlisted}" \
             --parameters videoYoutubeClientId="${VIDEO_YOUTUBE_CLIENT_ID:-}" \
