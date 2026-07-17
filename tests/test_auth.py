@@ -228,6 +228,8 @@ class TestAuthMiddleware:
         resp = client.get(f"/api/jobs/job-1/progress/stream?token={token}")
         # Auth succeeds; the job is absent so the endpoint returns 404 (not 401).
         assert resp.status_code == 404
+
+    def test_query_token_rejected_on_sensitive_path(self, client, monkeypatch):
         # A token leaked in a URL must not authorize credential/config/generation
         # endpoints via the query string (#606).
         _configure_auth(monkeypatch)
