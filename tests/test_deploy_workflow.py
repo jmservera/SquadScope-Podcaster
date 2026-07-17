@@ -374,7 +374,7 @@ def test_acr_private_endpoint_wired_in_vnet_mode() -> None:
     pe_module = ACR_PE_MODULE.read_text(encoding="utf-8")
     main = BICEP.read_text(encoding="utf-8")
 
-    assert re.search(r"privatelink\.azurecr\.io", network), (
+    assert "name: 'privatelink.azurecr.io'" in network, (
         "network.bicep must create the ACR private DNS zone"
     )
     assert "output acrDnsZoneId string" in network, (
