@@ -114,6 +114,8 @@ def _reserve_replay_inputs(
     storage: StorageBackend,
     job_id: str,
     payload: dict[str, Any],
+    *,
+    dry_run: bool = False,
 ) -> tuple[dict[str, StoredArtifact], dict[str, Any]]:
     identity_sha256 = replay_identity_sha256(payload)
     input_prefix = f"jobs/{job_id}/inputs"
@@ -141,11 +143,17 @@ def _reserve_replay_inputs(
         "inputs": _canonical_replay_inputs(payload),
     }
     reservation_bytes = manifest_bytes(reservation)
-    if storage.get_bytes(f"jobs/{job_id}/manifest.json") is not None:
+    if not dry_run and storage.get_bytes(f"jobs/{job_id}/manifest.json") is not None:
         raise ReplayCollisionError("immutable replay output namespace already exists")
 
     def create_only(content: bytes | None) -> bytes:
         if content is not None:
+            # Dry runs are a repeatable preview/validation mode: reusing the
+            # existing reservation keeps them idempotent instead of returning a
+            # surprising 409 on retry. Accepted jobs stay create-only so the
+            # immutable replay namespace can never be silently overwritten.
+            if dry_run:
+                return content
             raise ReplayCollisionError("immutable replay output namespace already exists")
         return reservation_bytes
 
@@ -196,7 +204,9 @@ def run_generation_job(
     if "article_title" in payload or "article_content" in payload:
         validate_article_inputs(payload.get("article_title"), payload.get("article_content"))
     storage = storage or create_storage_backend()
-    stored, replay_metadata = _reserve_replay_inputs(storage, job_id, payload)
+    stored, replay_metadata = _reserve_replay_inputs(
+        storage, job_id, payload, dry_run=bool(payload.get("dry_run"))
+    )
     payload = dict(payload)
     if replay_metadata["article_sha256"] is not None:
         payload["article_sha256"] = replay_metadata["article_sha256"]

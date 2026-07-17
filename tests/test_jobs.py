@@ -400,7 +400,31 @@ def test_dry_run_does_not_mutate_accepted_namespace_or_monthly_ledger(tmp_path: 
     assert ledger_path.read_bytes() == ledger_before
 
 
-def test_backchannels_payload_is_threaded_into_request_manifest() -> None:
+def test_repeated_dry_runs_are_idempotent_and_do_not_collide(tmp_path: Path) -> None:
+    """Dry runs are a repeatable preview mode: re-submitting the same request
+    must not raise ReplayCollisionError (issue #609 review)."""
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_title": "Pinned title",
+        "article_content": VALID_ARTICLE_CONTENT,
+        "dry_run": True,
+    }
+    first = run_generation_job(
+        payload,
+        storage=storage,
+        now=datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc),
+    )
+    second = run_generation_job(
+        payload,
+        storage=storage,
+        now=datetime(2026, 6, 7, 20, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert first.response["status"] == "dry_run"
+    assert second.response["status"] == "dry_run"
+    assert first.response["job_id"] == second.response["job_id"]
     """Phase B wiring: a top-level ``backchannels`` payload reaches the request manifest."""
 
     artifact_root = Path(".test-artifacts-backchannels")
