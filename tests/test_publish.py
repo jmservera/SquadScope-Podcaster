@@ -14,6 +14,8 @@ from podcaster.publish import (
     _build_session,
     _is_dry_run,
     _is_enabled,
+    _live_publish_allowed,
+    _warn_live_publish_downgraded_once,
     publish_episode,
     verify_spotify_auth,
 )
@@ -25,6 +27,7 @@ def _clean_env(monkeypatch):
     for var in (
         "SPOTIFY_PUBLISH_ENABLED",
         "SPOTIFY_PUBLISH_DRY_RUN",
+        "SPOTIFY_ALLOW_LIVE_PUBLISH",
         "SPOTIFY_SHOW_ID",
         "SPOTIFY_CLIENT_ID",
         "SP_DC",
@@ -36,8 +39,14 @@ def _clean_env(monkeypatch):
 
 @pytest.fixture
 def spotify_env(monkeypatch):
-    """Set up all required Spotify env vars."""
+    """Set up all required Spotify env vars.
+
+    Represents a fully-configured operator that has explicitly accepted the
+    unofficial-API risk (#602), so live publishing is allowed here — the
+    fail-safe downgrade is exercised separately in ``TestLivePublishGuard``.
+    """
     monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
+    monkeypatch.setenv("SPOTIFY_ALLOW_LIVE_PUBLISH", "true")
     monkeypatch.setenv("SPOTIFY_SHOW_ID", "test-show-123")
     monkeypatch.setenv("SP_DC", "test-sp-dc-cookie")
     monkeypatch.setenv("SP_KEY", "test-sp-key-cookie")
@@ -459,6 +468,120 @@ class TestPublishEpisode:
         assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
         assert metadata_call.kwargs["json"]["episodeNumber"] == 24
         assert metadata_call.kwargs["json"]["isPublished"] is False
+
+    @patch("podcaster.publish._build_session")
+    def test_immediate_downgraded_to_draft_without_opt_in(
+        self, mock_build, mp3_file, wav_file, spotify_env, monkeypatch, caplog
+    ):
+        # #602: publishing is enabled but the live opt-in is NOT set, so an
+        # "immediate" request must fail safe to a DRAFT — no publish call and
+        # isPublished stays False so nothing is ever silently made public.
+        monkeypatch.delenv("SPOTIFY_ALLOW_LIVE_PUBLISH", raising=False)
+        _warn_live_publish_downgraded_once.cache_clear()
+        assert _live_publish_allowed() is False
+
+        mock_session = MagicMock()
+        mock_build.return_value = mock_session
+        mock_session.request.side_effect = [
+            _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_json_resp({"episodeId": 4242}),
+            _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
+            _mock_resp_with_headers({"ETag": '"e1"'}),
+            _mock_json_resp({}),
+            _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
+        ]
+
+        with caplog.at_level("WARNING"):
+            result = publish_episode(
+                mp3_file,
+                "Live Attempt",
+                "<p>notes</p>",
+                spotify_publish_config=SpotifyPublishConfig(publish_mode="immediate"),
+                wav_path=wav_file,
+            )
+
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 4242
+        # No publish step: metadata (7th) is the last request, no /publish call.
+        assert mock_session.request.call_count == 7
+        metadata_call = mock_session.request.call_args_list[-1]
+        assert metadata_call.kwargs["json"]["isPublished"] is False
+        assert "publishOn" not in metadata_call.kwargs["json"]
+        assert "SPOTIFY_ALLOW_LIVE_PUBLISH" in caplog.text
+
+    @patch("podcaster.publish._build_session")
+    def test_scheduled_downgraded_to_draft_without_opt_in(
+        self, mock_build, mp3_file, wav_file, spotify_env, monkeypatch
+    ):
+        # #602: a scheduled request is also downgraded to a draft when the live
+        # opt-in is absent — the publishOn schedule must not be applied.
+        monkeypatch.delenv("SPOTIFY_ALLOW_LIVE_PUBLISH", raising=False)
+        _warn_live_publish_downgraded_once.cache_clear()
+
+        mock_session = MagicMock()
+        mock_build.return_value = mock_session
+        mock_session.request.side_effect = [
+            _mock_json_resp({"stationId": "1", "userId": "2"}),
+            _mock_json_resp({"episodeId": 555}),
+            _mock_json_resp({"signedUrl": "https://x.com/u", "uploadId": "up1"}),
+            _mock_resp_with_headers({"ETag": '"e1"'}),
+            _mock_json_resp({}),
+            _mock_json_resp({"status": "completed"}),
+            _mock_json_resp({}),
+        ]
+
+        result = publish_episode(
+            mp3_file,
+            "Scheduled Attempt",
+            "<p>notes</p>",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="2026-06-20T09:00:00Z"),
+            wav_path=wav_file,
+        )
+
+        assert result.status == "draft"
+        assert mock_session.request.call_count == 7
+        metadata_call = mock_session.request.call_args_list[-1]
+        assert metadata_call.kwargs["json"]["isPublished"] is False
+        assert "publishOn" not in metadata_call.kwargs["json"]
+
+    def test_dry_run_reports_draft_without_opt_in(
+        self, mp3_file, wav_file, spotify_env, monkeypatch
+    ):
+        # #602: even in dry-run the reported behaviour must reflect the safe
+        # downgrade when the live opt-in is absent.
+        monkeypatch.delenv("SPOTIFY_ALLOW_LIVE_PUBLISH", raising=False)
+        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
+        _warn_live_publish_downgraded_once.cache_clear()
+
+        result = publish_episode(
+            mp3_file,
+            "Dry Live Attempt",
+            "<p>notes</p>",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="immediate"),
+            wav_path=wav_file,
+        )
+
+        assert result.dry_run is True
+        assert result.status == "draft"
+        assert result.details["publish_behavior"] == "draft"
+
+    def test_dry_run_reports_published_with_opt_in(
+        self, mp3_file, wav_file, spotify_env, monkeypatch
+    ):
+        # With the opt-in present (via spotify_env) live publishing is allowed,
+        # so an immediate request is reported as published.
+        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
+        result = publish_episode(
+            mp3_file,
+            "Dry Live Attempt",
+            "<p>notes</p>",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="immediate"),
+            wav_path=wav_file,
+        )
+
+        assert result.status == "published"
+        assert result.details["publish_behavior"] == "immediate"
 
     @patch("podcaster.publish._build_session")
     def test_missing_config_fallback(self, mock_build, mp3_file, wav_file, spotify_env):
