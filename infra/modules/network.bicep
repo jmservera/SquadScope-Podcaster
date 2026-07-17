@@ -87,6 +87,16 @@ resource openAiDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   location: 'global'
 }
 
+// Azure Container Registry private DNS zone (#598). The private endpoint + zone
+// group are created in acr-private-endpoint.bicep after the registry exists; the
+// zone lives here so it shares the VNet link lifecycle. A single
+// privatelink.azurecr.io zone resolves both the registry FQDN and its regional
+// data endpoints.
+resource acrDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'privatelink.azurecr.io'
+  location: 'global'
+}
+
 resource blobDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
   name: '${vnetName}-blob-link'
   parent: blobDnsZone
@@ -114,6 +124,18 @@ resource queueDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks
 resource openAiDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
   name: '${vnetName}-openai-link'
   parent: openAiDnsZone
+  location: 'global'
+  properties: {
+    virtualNetwork: {
+      id: vnet.id
+    }
+    registrationEnabled: false
+  }
+}
+
+resource acrDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  name: '${vnetName}-acr-link'
+  parent: acrDnsZone
   location: 'global'
   properties: {
     virtualNetwork: {
@@ -204,3 +226,4 @@ output vnetName string = vnet.name
 output acaSubnetId string = '${vnet.id}/subnets/${acaSubnetName}'
 output peSubnetId string = '${vnet.id}/subnets/${peSubnetName}'
 output openAiDnsZoneId string = openAiDnsZone.id
+output acrDnsZoneId string = acrDnsZone.id

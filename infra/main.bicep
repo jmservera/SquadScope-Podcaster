@@ -572,6 +572,21 @@ module acr 'modules/acr.bicep' = if (deployAcr) {
     registryName: acrName
     synthesisPullPrincipalId: aca.outputs.jobIdentityPrincipalId
     pushPrincipalId: deploymentPrincipalObjectId
+    deployVnet: deployVnet
+  }
+}
+
+// Private endpoint for the ACR in VNet mode (#598). Runs after both the network
+// module and the registry so images are pulled over the VNet with the public
+// endpoint disabled. Only created when both VNet mode and ACR are enabled.
+module acrPrivateEndpoint 'modules/acr-private-endpoint.bicep' = if (deployVnet && deployAcr) {
+  name: 'acr-private-endpoint'
+  params: {
+    location: location
+    peSubnetId: network!.outputs.peSubnetId
+    registryId: acr!.outputs.registryId
+    registryName: acrName
+    acrDnsZoneId: network!.outputs.acrDnsZoneId
   }
 }
 

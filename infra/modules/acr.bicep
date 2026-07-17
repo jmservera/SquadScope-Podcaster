@@ -1,6 +1,14 @@
 // Azure Container Registry for synthesis + API container images (#129).
 // Basic SKU keeps costs low (~$5/mo); the managed identity pull is configured
 // in the ACA modules via the registry server output.
+//
+// Private-by-default in VNet mode (#598): when deployVnet=true the registry
+// disables its public endpoint and is reached over a private endpoint (wired in
+// acr-private-endpoint.bicep). Private endpoints and Disabled public access are
+// Premium-only features, so VNet mode forces the Premium SKU regardless of the
+// requested skuName. This is a deliberate cost trade-off (~$50/mo Premium vs
+// ~$5/mo Basic) accepted only on the opt-in production hardening path; the
+// default (deployVnet=false, local dev/test) keeps Basic + public access.
 targetScope = 'resourceGroup'
 
 @description('Azure region for the container registry.')
@@ -18,6 +26,13 @@ param registryName string
   'Premium'
 ])
 param skuName string = 'Basic'
+
+@description('When true (VNet mode), disable the ACR public endpoint and force the Premium SKU so a private endpoint can be attached (#598).')
+param deployVnet bool = false
+
+// Private endpoints + Disabled public network access require the Premium SKU, so
+// VNet mode overrides the requested SKU. Non-VNet deployments keep skuName.
+var effectiveSkuName = deployVnet ? 'Premium' : skuName
 
 @description('Principal ID of the synthesis job managed identity (granted AcrPull).')
 param synthesisPullPrincipalId string = ''
@@ -37,11 +52,11 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: registryName
   location: location
   sku: {
-    name: skuName
+    name: effectiveSkuName
   }
   properties: {
     adminUserEnabled: false
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
     policies: {
       retentionPolicy: {
         status: 'disabled'
@@ -72,3 +87,4 @@ resource pushRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (has
 
 output loginServer string = registry.properties.loginServer
 output registryName string = registry.name
+output registryId string = registry.id
