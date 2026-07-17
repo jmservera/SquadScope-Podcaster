@@ -179,12 +179,46 @@ class TestAuthMiddleware:
     def test_open_mode_requires_explicit_opt_in(self, client, monkeypatch):
         # #604: unauthenticated access is only allowed when an operator
         # explicitly opts in via MONITORING_AUTH_DISABLED (local dev only).
-        monkeypatch.delenv("UI_AUTH_USERNAME", raising=False)
-        monkeypatch.delenv("MONITORING_API_KEY", raising=False)
-        monkeypatch.delenv("PODCASTER_API_KEY", raising=False)
+        # Clear the full auth env-var set so the test is deterministic
+        # regardless of the developer's ambient environment.
+        for var in (
+            "UI_AUTH_USERNAME",
+            "UI_AUTH_PASSWORD",
+            "UI_AUTH_SECRET",
+            "MONITORING_API_KEY",
+            "PODCASTER_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("MONITORING_AUTH_DISABLED", "true")
         resp = client.get("/api/jobs")
         assert resp.status_code == 200
+
+    def test_disable_flag_ignored_when_auth_partially_configured(self, client, monkeypatch):
+        # #604 foot-gun guard: if ANY auth env var is present — even empty or
+        # only partially set (here just UI_AUTH_SECRET) — the disable flag is
+        # ignored and the API fails closed, so the opt-out cannot be left on
+        # while auth is mid-configuration.
+        for var in (
+            "UI_AUTH_USERNAME",
+            "UI_AUTH_PASSWORD",
+            "MONITORING_API_KEY",
+            "PODCASTER_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("UI_AUTH_SECRET", "half-configured")
+        monkeypatch.setenv("MONITORING_AUTH_DISABLED", "true")
+        resp = client.get("/api/jobs")
+        assert resp.status_code == 401
+
+    def test_disable_flag_ignored_when_api_key_env_present_but_empty(self, client, monkeypatch):
+        # An empty-but-present API key means "auth is being configured": the
+        # disable flag must be ignored and the request rejected (#604).
+        for var in ("UI_AUTH_USERNAME", "UI_AUTH_PASSWORD", "UI_AUTH_SECRET", "PODCASTER_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("MONITORING_API_KEY", "")
+        monkeypatch.setenv("MONITORING_AUTH_DISABLED", "true")
+        resp = client.get("/api/jobs")
+        assert resp.status_code == 401
 
     def test_disable_flag_ignored_when_auth_configured(self, client, monkeypatch):
         # The opt-out only applies when nothing is configured; if credentials

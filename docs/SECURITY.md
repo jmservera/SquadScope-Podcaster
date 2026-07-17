@@ -29,8 +29,11 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
 - **Local development opt-out:** set `MONITORING_AUTH_DISABLED=true`
   (`1`/`yes`/`on` also accepted) to run the API without authentication. A loud
   warning is logged (once per process) the first time an unauthenticated request
-  is served in this mode. It must **never** be set in production. Production
-  deployments configure `PODCASTER_API_KEY`, so this flag is not needed there.
+  is served in this mode. It must **never** be set in production. The flag is
+  **ignored** whenever any auth env var (`UI_AUTH_*`, `MONITORING_API_KEY`,
+  `PODCASTER_API_KEY`) is present — even empty or partially set — so a
+  half-configured deployment always fails closed. Production deployments
+  configure `PODCASTER_API_KEY`, so this flag is not needed there.
 
 ### Secrets Passed to SquadScope
 
