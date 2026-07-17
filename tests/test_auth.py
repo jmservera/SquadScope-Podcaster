@@ -208,3 +208,28 @@ class TestAuthMiddleware:
             headers={"x-podcaster-api-key": "machine-key"},
         )
         assert resp2.status_code == 200
+
+    def test_query_token_accepted_on_stream_path(self, client, monkeypatch):
+        # Browser media elements authenticate the streaming proxy via ?token=.
+        _configure_auth(monkeypatch)
+        token = create_token(_USERNAME, _SECRET)
+        resp = client.get(f"/api/stream/jobs/job-1/episode.mp3?token={token}")
+        # Auth passes (blob is absent → 404), i.e. it is NOT rejected as 401.
+        assert resp.status_code != 401
+
+    def test_query_token_rejected_on_sensitive_path(self, client, monkeypatch):
+        # A token leaked in a URL must not authorize credential/config/generation
+        # endpoints via the query string (#606).
+        _configure_auth(monkeypatch)
+        token = create_token(_USERNAME, _SECRET)
+        resp = client.get(f"/api/credentials?token={token}")
+        assert resp.status_code == 401
+        # The same token as a Bearer header is still accepted.
+        ok = client.get("/api/credentials", headers={"Authorization": f"Bearer {token}"})
+        assert ok.status_code == 200
+
+    def test_referrer_policy_header_on_every_response(self, client):
+        # Streaming URLs carry a ?token=; Referrer-Policy: no-referrer stops it
+        # leaking via the Referer header on outbound navigation (#606).
+        resp = client.get("/api/jobs")
+        assert resp.headers["referrer-policy"] == "no-referrer"

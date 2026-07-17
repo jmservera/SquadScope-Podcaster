@@ -105,6 +105,19 @@ if _CORS_ORIGINS:
     )
 
 
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Attach conservative security headers to every response.
+
+    ``Referrer-Policy: no-referrer`` stops streaming URLs — which carry a
+    short-lived ``?token=`` for browser media elements — from leaking into the
+    ``Referer`` header when the operator navigates to an external site (#606).
+    """
+    response = await call_next(request)
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------

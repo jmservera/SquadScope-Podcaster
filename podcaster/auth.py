@@ -106,9 +106,16 @@ def verify_auth(
         if hmac.compare_digest(x_podcaster_api_key, configured_api_key):
             return
 
-    # --- Try query parameter token (for browser media elements) ---
+    # --- Try query parameter token (browser media elements only) ---
     query_token = request.query_params.get("token", "")
-    if query_token and creds is not None:
+    # Query-string tokens are honoured *only* for the streaming/media proxy,
+    # which browsers load via <audio>/<video>/<img> elements that cannot send
+    # an Authorization header. They are never accepted for credential,
+    # generation, review, or config endpoints: a token placed in a URL leaks
+    # via browser history, server access logs, proxy/CDN logs, and Referer
+    # headers, so honouring it on sensitive endpoints would let a leaked URL
+    # authorize privileged actions (#606).
+    if query_token and creds is not None and request.url.path.startswith("/api/stream/"):
         _secret = creds[2]
         try:
             verify_token(query_token, _secret)
