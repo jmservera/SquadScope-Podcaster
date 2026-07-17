@@ -214,19 +214,17 @@ class LocalStorageBackend:
             if relative == safe_prefix or relative.startswith(safe_prefix.rstrip("/") + "/"):
                 target.unlink()
                 deleted += 1
-        prefix_root = self.root / safe_prefix
-        if prefix_root.is_dir():
-            for directory in sorted(
-                (path for path in prefix_root.rglob("*") if path.is_dir()),
-                key=lambda path: len(path.parts),
-                reverse=True,
-            ):
-                try:
-                    directory.rmdir()
-                except OSError:
-                    pass
+        directories = sorted(
+            (path for path in self.root.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+        for directory in directories:
+            relative = directory.relative_to(self.root).as_posix()
+            if relative != safe_prefix and not relative.startswith(safe_prefix.rstrip("/") + "/"):
+                continue
             try:
-                prefix_root.rmdir()
+                directory.rmdir()
             except OSError:
                 pass
         return deleted
