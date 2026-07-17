@@ -1163,3 +1163,29 @@ Review scope: `feat/spotify-publish-182` does not contain `podcaster/publish.py`
 7. Use `SPOTIFY_SHOW_ID` as non-secret config; keep only `SP_DC`/`SP_KEY` in secret stores.
 
 
+
+### Spotify live-publish fail-safe (jmservera/SquadScope-Podcaster#602)
+
+**Date:** 2026-07-17 · **Owner:** Hermes (Security)
+
+**Context:** `podcaster/publish.py` authenticates to Spotify for Creators with
+browser session cookies (`SP_DC`/`SP_KEY`) against the **unofficial** internal
+`api-v5.anchor.fm` API. A cookie leak is Spotify-account-takeover material and
+the API can break without notice — it is not a supported production integration.
+
+**Decision:** The publisher **fails safe**. `SPOTIFY_PUBLISH_ENABLED` still only
+gates whether the integration runs at all; a **separate** explicit opt-in,
+`SPOTIFY_ALLOW_LIVE_PUBLISH=true`, now gates whether an episode may be made
+*public*. Without that opt-in, any `immediate`/`scheduled` request is downgraded
+to a **draft** (a one-time warning is logged). This encodes the standing rule
+"drafts only — never auto-publish live" as a code-level default so a
+misconfiguration or leaked cookie cannot silently push a public episode.
+
+**Risk acceptance / follow-ups (not yet done):**
+- Live publishing must stay **off** in production (do not set
+  `SPOTIFY_ALLOW_LIVE_PUBLISH`) until an official OAuth/app-auth flow replaces
+  the cookie path.
+- Move `SP_DC`/`SP_KEY` into Azure Key Vault (same pattern as the YouTube
+  refresh token) rather than plain env/repo secrets — tracked separately.
+- Re-review before enabling live publishing; prefer a dedicated least-privilege
+  bot account if the unofficial path is kept.
