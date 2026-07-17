@@ -96,6 +96,39 @@ def make_handler(
     return handler
 
 
+class TestCors:
+    def _options(self, headers: dict[str, str] | None = None) -> FakeHandler:
+        handler = FakeHandler("OPTIONS", "/api/generate", b"", headers)
+        GenerateHandler.do_OPTIONS(handler)  # type: ignore[arg-type]
+        return handler
+
+    def test_no_cors_headers_without_allowlist(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PODCASTER_CORS_ORIGINS", None)
+            handler = self._options({"Origin": "https://evil.example"})
+        assert handler.response_code == HTTPStatus.OK
+        assert "Access-Control-Allow-Origin" not in handler.response_headers
+
+    def test_wildcard_env_is_ignored(self):
+        with patch.dict(os.environ, {"PODCASTER_CORS_ORIGINS": "*"}):
+            handler = self._options({"Origin": "https://evil.example"})
+        assert "Access-Control-Allow-Origin" not in handler.response_headers
+
+    def test_allowlisted_origin_is_echoed(self):
+        with patch.dict(
+            os.environ,
+            {"PODCASTER_CORS_ORIGINS": "https://ui.example.com, https://alt.example.com"},
+        ):
+            handler = self._options({"Origin": "https://ui.example.com"})
+        assert handler.response_headers["Access-Control-Allow-Origin"] == "https://ui.example.com"
+        assert handler.response_headers["Vary"] == "Origin"
+
+    def test_non_allowlisted_origin_is_denied(self):
+        with patch.dict(os.environ, {"PODCASTER_CORS_ORIGINS": "https://ui.example.com"}):
+            handler = self._options({"Origin": "https://evil.example"})
+        assert "Access-Control-Allow-Origin" not in handler.response_headers
+
+
 class TestHealthEndpoint:
     def test_healthz_returns_200(self):
         handler = make_handler("GET", "/healthz")

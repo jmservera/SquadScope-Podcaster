@@ -692,11 +692,11 @@ class TestUiNavigationEndpoints:
         assert get_resp.status_code == 200
         assert get_resp.json()["storage_backend"] == "local"
         assert get_resp.json()["storage_container"] == "episodes"
-        assert get_resp.json()["cors_origins"] == ["*"]
+        assert get_resp.json()["cors_origins"] == []
         assert post_resp.status_code == 200
         assert post_resp.json()["status"] == "accepted"
 
-    def test_cors_preflight_allows_wildcard_origin(self, client, storage):
+    def test_cors_denied_cross_origin_by_default(self, client, storage):
         resp = client.options(
             "/api/generate",
             headers={
@@ -705,8 +705,8 @@ class TestUiNavigationEndpoints:
             },
         )
 
-        assert resp.status_code == 200
-        assert resp.headers["access-control-allow-origin"] == "*"
+        # No allowlist configured → no CORS middleware → cross-origin not granted.
+        assert "access-control-allow-origin" not in resp.headers
 
 
 class TestMonitoringAuth:
