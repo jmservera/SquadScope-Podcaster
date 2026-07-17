@@ -319,7 +319,7 @@ def test_openai_private_endpoint_wired_in_vnet_mode() -> None:
     pe_module = OPENAI_PE_MODULE.read_text(encoding="utf-8")
     main = BICEP.read_text(encoding="utf-8")
 
-    assert "privatelink.openai.azure.com" in network, (
+    assert re.search(r"privatelink\.openai\.azure\.com", network), (
         "network.bicep must create the OpenAI private DNS zone"
     )
     assert "output openAiDnsZoneId string" in network, (
