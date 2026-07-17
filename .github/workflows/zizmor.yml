@@ -40,17 +40,16 @@ jobs:
 
       - name: Collect zizmor workflow inputs
         id: zizmor-inputs
-        # Squad workflows are generated upstream; scan all repository-owned
-        # workflows while excluding the generated Squad workflow files.
+        # Scan every repository-owned workflow, including the generated
+        # `squad-*` / `sync-squad-labels` files. Those actions are pinned to
+        # commit SHAs in-repo (jmservera/SquadScope-Podcaster#603), so the
+        # supply-chain surface they add is now covered by this scan rather than
+        # excluded from it.
         run: |
           {
             echo "inputs<<EOF"
             find .github/workflows -maxdepth 1 -type f \
               \( -name "*.yml" -o -name "*.yaml" \) \
-              ! -name "squad-*.yml" \
-              ! -name "squad-*.yaml" \
-              ! -name "sync-squad-labels.yml" \
-              ! -name "sync-squad-labels.yaml" \
               | sort
             echo "EOF"
           } >> "$GITHUB_OUTPUT"

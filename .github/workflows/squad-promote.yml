@@ -10,15 +10,17 @@ on:
         type: choice
         options: ['false', 'true']
 
-permissions:
-  contents: write
+# No workflow-wide permissions: each job grants only the scope it needs.
+permissions: {}
 
 jobs:
   dev-to-preview:
     name: Promote dev → preview
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -69,8 +71,10 @@ jobs:
     name: Promote preview → main (release)
     needs: dev-to-preview
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}

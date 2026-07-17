@@ -54,7 +54,9 @@ review through Hermes.
   lint/format. Auto-fix with `ruff check --fix` and `ruff format`.
 - `checkov --directory . --framework dockerfile --skip-path .worktrees --skip-path ui/node_modules --baseline .checkov.baseline --soft-fail --compact`
   when you change `Containerfile*`/`ui/Dockerfile`; `checkov --directory infra --framework bicep` for infra.
-- `zizmor .github/workflows/` (exclude generated `squad-*`/`sync-squad-labels` files) when you change anything under `.github/workflows/`.
+- `zizmor .github/workflows/` when you change anything under `.github/workflows/`
+  (all workflows, including the generated `squad-*`/`sync-squad-labels` files, are
+  now scanned — their actions are SHA-pinned in-repo).
 
 **Installing the tools locally:**
 ```bash
