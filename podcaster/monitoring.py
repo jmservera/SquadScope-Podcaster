@@ -500,8 +500,14 @@ async def api_generate(request: Request):
 
     try:
         result = run_generation_job(payload, validation_warnings=validation.warnings or None)
-    except ReplayCollisionError as exc:
-        response = failed_response([str(exc)], validation.warnings or None)
+    except ReplayCollisionError:
+        response = failed_response(
+            [
+                "replay collision: an accepted job already exists for these inputs; "
+                "submit different inputs to generate a distinct job"
+            ],
+            validation.warnings or None,
+        )
         return JSONResponse(status_code=409, content=response)
     except Exception:
         logger.exception("unhandled error in generation job")

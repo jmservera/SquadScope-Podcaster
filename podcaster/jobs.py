@@ -90,21 +90,64 @@ def build_job_id(payload: dict[str, Any]) -> str:
     Identity covers:
     * ``week`` and ``article_url`` — the external primary key supplied by the caller.
     * ``article_sha256`` — content identity: different article bytes → different job.
-    * replay-relevant config (``podcast_config``, ``script_directions``) — config
-      changes that materially affect the script or audio must produce a distinct job.
+    * ``article_title`` — displayed in the script header; changes the generated output.
+    * ``breaking_news`` — changes the script tone and urgency framing.
+    * replay-relevant config (``podcast_config``, ``script_directions``,
+      ``backchannels``) — config changes that materially affect the script or audio
+      must produce a distinct job.
 
     Identical pinned inputs always produce the same job_id, so the generation pipeline
-    is safely idempotent; any input change (content or config) produces a new job_id,
-    preventing silent collision between historically distinct runs.
+    is safely idempotent; any input change (content, title, news flag, or config)
+    produces a new job_id, preventing silent collision between historically distinct
+    runs.
     """
     week = str(payload["week"]).strip()
     article_url = str(payload["article_url"]).strip()
     content_sha = str(payload.get("article_sha256") or "")
     config_sha = _replay_config_hash(payload)
-    identity = f"{week}|{article_url}|{content_sha}|{config_sha}"
+    article_title = str(payload.get("article_title") or "")
+    breaking_news_raw = payload.get("breaking_news")
+    breaking_news = (
+        json.dumps(breaking_news_raw, sort_keys=True, ensure_ascii=False, default=str)
+        if breaking_news_raw is not None
+        else ""
+    )
+    identity = f"{week}|{article_url}|{content_sha}|{config_sha}|{article_title}|{breaking_news}"
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
     safe_week = re.sub(r"[^A-Za-z0-9_.-]", "-", week)
     return f"podcast-{safe_week}-{digest}"
+
+
+def _reserve_namespace_or_raise(
+    existing: bytes | None,
+    *,
+    job_id: str,
+    is_dry_run: bool,
+) -> bytes:
+    """Atomically claim a job namespace or raise ReplayCollisionError.
+
+    Must be invoked as the callback of ``storage.update_bytes`` so the
+    read-check-write is executed under the backend's concurrency guard
+    (file lock for local storage; ETag CAS for Azure Blob).
+
+    Rules:
+    * No existing manifest → reserve (write placeholder, no collision).
+    * Existing ``dry_run`` manifest + dry-run request → allow repeat.
+    * Existing ``dry_run`` manifest + non-dry-run request → collision.
+    * Existing non-``dry_run`` manifest (accepted, reserving, …) + any request
+      → collision; dry runs must never mutate an accepted namespace.
+    """
+    if existing is not None:
+        existing_status: str | None = None
+        try:
+            existing_status = json.loads(existing).get("status")
+        except Exception:
+            pass
+        # Only a repeated dry run on an existing dry-run namespace is safe to
+        # allow.  Every other combination risks overwriting real output.
+        if not (is_dry_run and existing_status == "dry_run"):
+            raise ReplayCollisionError(job_id)
+    return json.dumps({"status": "reserving", "job_id": job_id}).encode("utf-8")
 
 
 def run_generation_job(
@@ -146,15 +189,28 @@ def run_generation_job(
         validate_article_inputs(payload.get("article_title"), payload.get("article_content"))
     storage = storage or create_storage_backend()
 
-    # Refuse non-dry-run replay output collisions. Dry runs intentionally remain
-    # repeatable because they do not enqueue synthesis or publish output.
-    existing_manifest_raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
-    if not payload.get("dry_run") and existing_manifest_raw is not None:
+    # Atomically reserve the job namespace before consuming any budget or
+    # writing artifacts.  _reserve_namespace_or_raise raises ReplayCollisionError
+    # under the backend's concurrency guard (file lock / ETag CAS), so two
+    # concurrent identical submissions cannot both proceed past this point.
+    manifest_path = f"jobs/{job_id}/manifest.json"
+    is_dry_run = bool(payload.get("dry_run"))
+    try:
+        storage.update_bytes(
+            manifest_path,
+            "application/json; charset=utf-8",
+            lambda existing: _reserve_namespace_or_raise(
+                existing,
+                job_id=job_id,
+                is_dry_run=is_dry_run,
+            ),
+        )
+    except ReplayCollisionError:
         logging.warning(
             "replay collision detected job_id=%s; existing manifest not overwritten",
             job_id,
         )
-        raise ReplayCollisionError(job_id)
+        raise
 
     month = current.strftime("%Y-%m")
     monthly_path = monthly_ledger_path(month)
@@ -203,6 +259,14 @@ def run_generation_job(
             exc.budget["projected_episode_count"],
             exc.budget["projected_monthly_spend_usd"],
         )
+        # Remove the reserving placeholder so the namespace is not permanently
+        # blocked and a later retry (after a budget override) can proceed.
+        try:
+            storage.delete_blob(manifest_path)
+        except Exception:
+            logging.warning(
+                "failed to clean up reserving manifest after budget failure job_id=%s", job_id
+            )
         return JobResult(
             response=failed_response(
                 ["monthly podcast budget exceeded; explicit operator override required"]
@@ -444,7 +508,6 @@ def run_generation_job(
         },
         "warnings": warnings,
     }
-    manifest_path = f"jobs/{job_id}/manifest.json"
     manifest_artifact = storage.put_bytes(
         manifest_path, manifest_bytes(manifest), "application/json; charset=utf-8"
     )

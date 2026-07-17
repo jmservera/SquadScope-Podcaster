@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from podcaster import jobs
 from podcaster.config import HistoricalContext
 from podcaster.jobs import run_generation_job
@@ -193,6 +195,48 @@ def test_prior_job_ids_excludes_future_jobs() -> None:
     assert "jobs/podcast-2026-W26-future/script.txt" not in storage.read_paths
 
 
+def test_prior_job_ids_excludes_same_week_jobs() -> None:
+    """Jobs from the same ISO week must never be selected as prior episodes.
+
+    Within one week the hash suffix is arbitrary (not chronological), so a
+    lexicographic comparison of the *full* job ID would incorrectly include a
+    same-week job whose hash happens to sort lower.
+
+    Regression for: podcast-2026-W25-aaaaaaaaaaaa selected as prior to
+    podcast-2026-W25-mmmmmmmmmmmm despite both being from the same week.
+    """
+    storage = _MockStorage(
+        blobs=[
+            "jobs/podcast-2026-W25-aaaaaaaaaaaa/script.txt",  # same week, low hash
+            "jobs/podcast-2026-W24-aaaa/script.txt",  # older week → include
+        ],
+        scripts={
+            "jobs/podcast-2026-W25-aaaaaaaaaaaa/script.txt": (
+                "Title: Same-week Episode\n"
+                "Source URL: https://example.com/same-week\n"
+                "---\n"
+                "Theo: In this episode we will talk about: Same-week theme.\n"
+            ).encode("utf-8"),
+            "jobs/podcast-2026-W24-aaaa/script.txt": (
+                "Title: Prior-week Episode\n"
+                "Source URL: https://example.com/prior-week\n"
+                "---\n"
+                "Theo: In this episode we will talk about: Prior-week theme.\n"
+            ).encode("utf-8"),
+        },
+    )
+
+    themes = fetch_prior_episode_themes(storage, "podcast-2026-W25-mmmmmmmmmmmm")
+
+    assert not any("Same-week" in t for t in themes), (
+        "same-week episode must be excluded regardless of hash ordering"
+    )
+    assert any("Prior-week" in t for t in themes), "prior-week episode must be included"
+    assert "jobs/podcast-2026-W25-aaaaaaaaaaaa/script.txt" not in storage.read_paths, (
+        "same-week script must not be read at all"
+    )
+
+
 def test_build_job_id_changes_with_content_and_config() -> None:
     """Changing content or replay-relevant config must change job identity;
     identical pinned inputs must produce the same job_id (idempotent)."""
@@ -250,6 +294,37 @@ def test_article_sha256_is_computed_from_content_bytes(monkeypatch, tmp_path: Pa
     )
 
 
+def test_build_job_id_changes_with_article_title_and_breaking_news() -> None:
+    """article_title and breaking_news are output-affecting inputs and must be part of job identity.
+
+    Regression: these fields were previously excluded from build_job_id, so two
+    payloads with different titles or different breaking_news values would produce
+    the same job_id — a distinct pinned replay would silently collide with the
+    original, or be refused as a false collision.
+    """
+    from podcaster.jobs import build_job_id
+
+    base = {"week": "2026-W28", "article_url": "https://example.com/a"}
+    with_title_a = dict(base, article_title="Title A")
+    with_title_b = dict(base, article_title="Title B")
+    with_breaking = dict(base, breaking_news={"urgent": True})
+    no_breaking = dict(base, breaking_news=None)
+
+    # Same title → same id (idempotent)
+    assert build_job_id(with_title_a) == build_job_id(dict(with_title_a))
+    # Different titles → different ids
+    assert build_job_id(with_title_a) != build_job_id(with_title_b)
+    # Title present vs absent → different id
+    assert build_job_id(base) != build_job_id(with_title_a)
+    # breaking_news present vs absent → different id
+    assert build_job_id(base) != build_job_id(with_breaking)
+    # breaking_news=None is treated as absent — idempotent
+    assert build_job_id(base) == build_job_id(no_breaking)
+    # All start with the expected week prefix
+    for payload in (base, with_title_a, with_title_b, with_breaking):
+        assert build_job_id(payload).startswith("podcast-2026-W28-")
+
+
 def test_replay_collision_is_refused(monkeypatch, tmp_path: Path) -> None:
     """Existing replay outputs must not be silently overwritten.
 
@@ -292,3 +367,94 @@ def test_replay_collision_is_refused(monkeypatch, tmp_path: Path) -> None:
             now=datetime(2026, 7, 14, 13, 0, 0, tzinfo=timezone.utc),
         )
     assert "replay collision" in str(exc_info.value).lower()
+
+
+def test_dry_run_on_accepted_namespace_is_refused(monkeypatch, tmp_path: Path) -> None:
+    """A dry run must not mutate or replace an existing accepted job namespace.
+
+    Reproduces: accepted job followed by dry_run=True with the same inputs
+    overwrote the manifest status from 'accepted' to 'dry_run'.
+    """
+    import pytest
+
+    from podcaster.jobs import ReplayCollisionError
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini")
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "managed_identity")
+    monkeypatch.setattr(
+        jobs, "generate_script", lambda **kw: "Title: T\n---\nTheo: Hello.\nVera: Hello.\n"
+    )
+
+    payload = {
+        "week": "2026-W31",
+        "article_url": "https://example.com/dry-overwrite-article",
+        "article_title": "Dry overwrite test",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+
+    # First submission: accepted (non-dry-run)
+    result = run_generation_job(
+        payload,
+        storage=storage,
+        now=datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    assert result.response["status"] == "accepted"
+    manifest_path = f"jobs/{result.response['job_id']}/manifest.json"
+    import json
+
+    original_status = json.loads(storage.get_bytes(manifest_path))["status"]
+    assert original_status == "accepted"
+
+    # Second submission: dry_run=True with the same inputs → must be refused
+    with pytest.raises(ReplayCollisionError):
+        run_generation_job(
+            dict(payload, dry_run=True),
+            storage=storage,
+            now=datetime(2026, 7, 14, 13, 0, 0, tzinfo=timezone.utc),
+        )
+
+    # The original accepted manifest must be intact
+    preserved_status = json.loads(storage.get_bytes(manifest_path))["status"]
+    assert preserved_status == "accepted", "dry run must not overwrite an accepted manifest"
+
+
+def test_reserve_namespace_atomic_collision_guard() -> None:
+    """_reserve_namespace_or_raise covers the concurrent-collision scenarios.
+
+    This unit test directly exercises the helper that runs inside update_bytes
+    to verify all branches without needing real concurrency.
+    """
+    import json
+
+    from podcaster.jobs import ReplayCollisionError, _reserve_namespace_or_raise
+
+    # Case 1: no existing manifest → reservation succeeds and returns placeholder
+    result = _reserve_namespace_or_raise(None, job_id="test-job", is_dry_run=False)
+    assert json.loads(result)["status"] == "reserving"
+
+    result_dry = _reserve_namespace_or_raise(None, job_id="test-job", is_dry_run=True)
+    assert json.loads(result_dry)["status"] == "reserving"
+
+    # Case 2: existing dry_run manifest + dry-run → allowed (repeated dry run)
+    dry_existing = json.dumps({"status": "dry_run"}).encode()
+    result = _reserve_namespace_or_raise(dry_existing, job_id="test-job", is_dry_run=True)
+    assert json.loads(result)["status"] == "reserving"
+
+    # Case 3: existing dry_run manifest + non-dry-run → collision
+    with pytest.raises(ReplayCollisionError):
+        _reserve_namespace_or_raise(dry_existing, job_id="test-job", is_dry_run=False)
+
+    # Case 4: existing accepted manifest + non-dry-run → collision
+    accepted_existing = json.dumps({"status": "accepted"}).encode()
+    with pytest.raises(ReplayCollisionError):
+        _reserve_namespace_or_raise(accepted_existing, job_id="test-job", is_dry_run=False)
+
+    # Case 5: existing accepted manifest + dry-run → collision (must not mutate)
+    with pytest.raises(ReplayCollisionError):
+        _reserve_namespace_or_raise(accepted_existing, job_id="test-job", is_dry_run=True)
+
+    # Case 6: malformed existing manifest → treated conservatively as collision
+    with pytest.raises(ReplayCollisionError):
+        _reserve_namespace_or_raise(b"not-json", job_id="test-job", is_dry_run=False)

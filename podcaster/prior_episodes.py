@@ -56,13 +56,26 @@ def _prior_job_ids(blob_names: Iterable[str], *, current_job_id: str) -> list[st
         match.group(1) for blob_name in blob_names if (match := _JOB_PATH_RE.match(blob_name))
     }
     job_ids.discard(current_job_id)
-    # Bind restore to historical source: only include jobs whose ID sorts strictly
-    # before the current job. Job IDs embed an ISO week (podcast-YYYY-WNN-hash) so
-    # lexicographic ordering faithfully reflects creation order — a job from a later
-    # week cannot be a prior episode, and replaying an older fixture must never pull
-    # in themes from episodes that did not yet exist at original generation time.
-    job_ids = {jid for jid in job_ids if jid < current_job_id}
+    # Bind history to the week-level: only include jobs whose week prefix sorts
+    # strictly before the current job's week prefix.  Job IDs have the form
+    # ``podcast-YYYY-WNN-<12-hex>``; the trailing hash is arbitrary (not
+    # chronological), so a full-string comparison incorrectly treats a same-week
+    # job with a low-valued hash as "prior".  Stripping the hash via rsplit
+    # (the hash never contains a hyphen) gives a stable week key that faithfully
+    # reflects calendar ordering.
+    current_week_key = _week_key(current_job_id)
+    job_ids = {jid for jid in job_ids if _week_key(jid) < current_week_key}
     return sorted(job_ids, reverse=True)
+
+
+def _week_key(job_id: str) -> str:
+    """Return the week prefix of a job ID by stripping the trailing hash segment.
+
+    Job IDs have the form ``podcast-YYYY-WNN-<12-hex>``.  The hash is always
+    hex (no hyphens), so a single ``rsplit("-", 1)`` isolates it reliably.
+    """
+    parts = job_id.rsplit("-", 1)
+    return parts[0] if len(parts) == 2 else job_id
 
 
 def _extract_script_themes(script: str) -> tuple[str, ...]:

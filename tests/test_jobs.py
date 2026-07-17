@@ -617,7 +617,12 @@ def test_non_dry_run_fails_closed_when_monthly_episode_limit_exceeded() -> None:
         "monthly podcast budget exceeded; explicit operator override required"
     ]
     assert result.manifest["budget"]["status"] == "over_budget"
-    assert not (artifact_root / "jobs" / str(result.manifest["job_id"])).exists()
+    # The namespace reservation is cleaned up on budget failure; no manifest
+    # should persist (an empty directory may remain, which is harmless).
+    job_dir = artifact_root / "jobs" / str(result.manifest["job_id"])
+    assert not (job_dir / "manifest.json").exists(), (
+        "manifest.json must not persist after a budget-exceeded failure"
+    )
     shutil.rmtree(artifact_root, ignore_errors=True)
 
 
@@ -672,14 +677,19 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
     class TrackingStorage(LocalStorageBackend):
         def __init__(self, root: Path, base_url: str) -> None:
             super().__init__(root, base_url)
-            self.monthly_updates: list[str] = []
+            self.update_calls: list[str] = []
 
         def update_bytes(self, path, content_type, update):
-            self.monthly_updates.append(path)
+            self.update_calls.append(path)
             return super().update_bytes(path, content_type, update)
 
         def put_bytes(self, path, content, content_type):
-            if path.startswith("jobs/") and not self.monthly_updates:
+            # Monthly budget must have been reserved before any job artifact put_bytes.
+            # The namespace reservation (jobs/.../manifest.json via update_bytes) now
+            # precedes the monthly update, so the guard must check specifically for
+            # the monthly ledger path rather than any update_bytes call.
+            monthly_path = monthly_ledger_path("2026-06")
+            if path.startswith("jobs/") and monthly_path not in self.update_calls:
                 raise AssertionError("job artifacts were staged before monthly budget reservation")
             return super().put_bytes(path, content, content_type)
 
@@ -692,7 +702,11 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
     )
 
     assert result.response["status"] == "accepted"
-    assert storage.monthly_updates == [
+    job_id_accepted = result.response["job_id"]
+    # update_bytes is now called three times: namespace reservation (manifest.json),
+    # monthly budget reservation, and monthly budget finalization.
+    assert storage.update_calls == [
+        f"jobs/{job_id_accepted}/manifest.json",
         monthly_ledger_path("2026-06"),
         monthly_ledger_path("2026-06"),
     ]
@@ -737,7 +751,11 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
         assert len({episode["job_id"] for episode in monthly["episodes"]}) == 10
         assert all(episode.get("state") != "reserved" for episode in monthly["episodes"])
 
-        staged_job_ids = {path.name for path in (artifact_root / "jobs").iterdir() if path.is_dir()}
+        staged_job_ids = {
+            path.name
+            for path in (artifact_root / "jobs").iterdir()
+            if path.is_dir() and any(path.iterdir())
+        }
         accepted_job_ids = {
             build_job_id(payload)
             for payload, result in zip(payloads, results, strict=True)
@@ -745,7 +763,13 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
         }
         failed_job_ids = {build_job_id(payload) for payload in payloads} - accepted_job_ids
         assert staged_job_ids == accepted_job_ids
-        assert not any((artifact_root / "jobs" / job_id).exists() for job_id in failed_job_ids)
+        # Failed jobs must have no real artifacts (an empty directory may remain
+        # as a harmless side-effect of the atomic namespace reservation cleanup).
+        for job_id in failed_job_ids:
+            job_dir = artifact_root / "jobs" / job_id
+            assert not any(job_dir.rglob("*") if job_dir.exists() else []), (
+                f"unexpected files in failed job dir {job_id}"
+            )
     finally:
         shutil.rmtree(artifact_root, ignore_errors=True)
 
@@ -924,7 +948,7 @@ def test_azure_conditional_update_retry_exhaustion_stops_before_artifacts() -> N
             now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
         )
 
-    assert storage.get_attempts == 6  # 1 collision-check get_bytes + 5 update_bytes retries
+    assert storage.get_attempts == 5  # 5 _get_blob_state retries for namespace reservation
     assert storage.put_attempts == 5
     assert storage.artifact_puts == []
 
