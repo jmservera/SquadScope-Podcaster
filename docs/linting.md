@@ -242,8 +242,10 @@ and overly-permissive `permissions:`. As of Phase C (#523) it runs in
 `.github/workflows/`. As of Phase C (#523) the job is **blocking** with
 `min-severity: high` — it fails CI on HIGH+ findings while the deferred
 Medium/Informational findings stay visible via the SARIF upload to GitHub Code
-Scanning. Generated Squad workflows (`squad-*`, `sync-squad-labels`) are excluded
-since they are produced upstream. Mirrors the SquadScope setup.
+Scanning. Generated Squad workflows (`squad-*`, `sync-squad-labels`) are also
+scanned: their actions are pinned to commit SHAs in-repo
+(jmservera/SquadScope-Podcaster#603) so the supply-chain surface they add is
+covered here rather than excluded. Mirrors the SquadScope setup.
 
 ### Local usage
 
@@ -251,9 +253,8 @@ since they are produced upstream. Mirrors the SquadScope setup.
 # One-time install:
 pip install zizmor==1.25.2   # or: brew install zizmor / cargo install zizmor
 
-# Scan the repository-owned workflows (excluding generated Squad files):
-files=$(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) \
-  ! -name 'squad-*.yml' ! -name 'squad-*.yaml' ! -name 'sync-squad-labels.yml' | sort)
+# Scan every repository-owned workflow (including the generated Squad files):
+files=$(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
 zizmor $files
 
 # Machine-readable output:
