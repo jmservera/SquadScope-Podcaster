@@ -11,17 +11,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from podcaster.queue import QueueMessage
-from podcaster.video.distribution import VideoDistributionConfig
+from podcaster.video.distribution import DistributionResult, VideoDistributionConfig
 from podcaster.video.job_runner import (
     _DEFAULT_MUSIC_CREDITS,
     MAX_DEQUEUE_COUNT,
     REASON_ALREADY_PROCESSED,
     REASON_EDITOR_LEASE_HELD,
     REASON_NO_REPOS,
+    REASON_REQUIRED_YOUTUBE_FAILURE,
     REASON_RETRY_EXHAUSTED,
     STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_SKIPPED,
+    PermanentVideoError,
     TransientVideoError,
     VideoOutcome,
     _already_processed,
@@ -454,6 +456,102 @@ class TestRunVideoGeneration:
         assert {"recording", "composition", "distribution"} <= phase_names
         assert perf["total_wall_seconds"] >= 0.0
 
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_required_youtube_transient_failure_is_retryable(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config
+    ):
+        job_id = "video-required-youtube-transient"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Test Episode"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+        mock_compose.side_effect = lambda *a, output_path=None, **k: (
+            output_path.write_bytes(b"\x00" * 2048) if output_path else None,
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+        mock_distribute.return_value = DistributionResult(
+            status="failed",
+            blob_path="https://blob/video.mp4",
+            errors=["YouTube token refresh failed: HTTP 503"],
+            youtube_required_failed=True,
+            youtube_failure_retryable=True,
+            youtube_failure_code="youtube_oauth_http_503",
+            youtube_failure_stage="oauth_token",
+            youtube_failure_http_status=503,
+        )
+
+        with pytest.raises(TransientVideoError, match="required YouTube delivery failed"):
+            run_video_generation(job_id, storage, config=dry_config)
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        state = manifest["generation"]["video_runner"]
+        assert state["status"] == STATUS_FAILED
+        assert state["reason"] == REASON_REQUIRED_YOUTUBE_FAILURE
+        assert state["distribution"]["youtube_failure_retryable"] is True
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_required_youtube_oauth_failure_is_permanent(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config
+    ):
+        job_id = "video-required-youtube-permanent"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Test Episode"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+        mock_compose.side_effect = lambda *a, output_path=None, **k: (
+            output_path.write_bytes(b"\x00" * 2048) if output_path else None,
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+        mock_distribute.return_value = DistributionResult(
+            status="failed",
+            blob_path="https://blob/video.mp4",
+            errors=["YouTube token refresh failed: HTTP 400"],
+            youtube_required_failed=True,
+            youtube_failure_retryable=False,
+            youtube_failure_code="youtube_oauth_invalid_grant",
+            youtube_failure_stage="oauth_token",
+            youtube_failure_http_status=400,
+            youtube_oauth_error="invalid_grant",
+            youtube_oauth_error_subtype="invalid_rapt",
+        )
+
+        with pytest.raises(PermanentVideoError, match="required YouTube delivery failed"):
+            run_video_generation(job_id, storage, config=dry_config)
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        state = manifest["generation"]["video_runner"]
+        assert state["status"] == STATUS_FAILED
+        assert state["reason"] == REASON_REQUIRED_YOUTUBE_FAILURE
+        assert state["distribution"]["youtube_oauth_error_subtype"] == "invalid_rapt"
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_removed_repo_annotated_and_notes_persisted(
@@ -585,7 +683,7 @@ class TestRunVideoGeneration:
             )
 
         mock_compose.side_effect = fake_compose
-        mock_distribute.return_value = MagicMock(
+        mock_distribute.return_value = DistributionResult(
             status="completed",
             youtube_id=None,
             blob_path=None,
@@ -633,7 +731,7 @@ class TestRunVideoGeneration:
             )
 
         mock_compose.side_effect = fake_compose
-        mock_distribute.return_value = MagicMock(
+        mock_distribute.return_value = DistributionResult(
             status="completed",
             youtube_id=None,
             blob_path=None,
@@ -686,7 +784,7 @@ class TestRunVideoGeneration:
             )
 
         mock_compose.side_effect = fake_compose
-        mock_distribute.return_value = MagicMock(
+        mock_distribute.return_value = DistributionResult(
             status="completed",
             youtube_id=None,
             blob_path=None,
@@ -738,7 +836,7 @@ class TestRunVideoGeneration:
             )
 
         mock_compose.side_effect = fake_compose
-        mock_distribute.return_value = MagicMock(
+        mock_distribute.return_value = DistributionResult(
             status="completed",
             youtube_id=None,
             blob_path=None,
@@ -788,7 +886,7 @@ class TestRunVideoGeneration:
             )
 
         mock_compose.side_effect = fake_compose
-        mock_distribute.return_value = MagicMock(
+        mock_distribute.return_value = DistributionResult(
             status="completed",
             youtube_id=None,
             blob_path=None,
@@ -837,7 +935,7 @@ class TestRunVideoGeneration:
             )
 
         mock_compose.side_effect = fake_compose
-        mock_distribute.return_value = MagicMock(
+        mock_distribute.return_value = DistributionResult(
             status="completed",
             youtube_id=None,
             blob_path=None,
@@ -883,7 +981,7 @@ class TestRunVideoGeneration:
             )
 
         mock_compose.side_effect = fake_compose
-        mock_distribute.return_value = MagicMock(
+        mock_distribute.return_value = DistributionResult(
             status="completed",
             youtube_id=None,
             blob_path=None,
@@ -1127,6 +1225,30 @@ class TestProcessMessage:
         assert outcome.status == STATUS_SKIPPED
         assert outcome.reason == REASON_EDITOR_LEASE_HELD
         assert len(queue.deleted) == 0
+
+    def test_permanent_failure_deletes_message_without_retry(self, storage, queue, dry_config):
+        msg = _make_message("permanent-youtube-failure", dequeue_count=1)
+        with (
+            patch("podcaster.video.job_runner.report_failure") as mock_report,
+            patch(
+                "podcaster.video.job_runner.run_video_generation",
+                side_effect=PermanentVideoError(
+                    "required YouTube delivery failed",
+                    reason=REASON_REQUIRED_YOUTUBE_FAILURE,
+                    details={
+                        "youtube_failure_code": "youtube_oauth_invalid_grant",
+                        "youtube_oauth_error_subtype": "invalid_rapt",
+                    },
+                ),
+            ),
+        ):
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+        assert outcome.status == STATUS_FAILED
+        assert outcome.reason == REASON_REQUIRED_YOUTUBE_FAILURE
+        assert len(queue.deleted) == 1
+        assert (
+            mock_report.call_args.kwargs["details"]["youtube_oauth_error_subtype"] == "invalid_rapt"
+        )
 
 
 # --- Drain Tests ---

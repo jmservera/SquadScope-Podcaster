@@ -156,6 +156,30 @@ param spotifySessionCookieKey string = ''
 @description('Whether reviewed jobs should auto-publish after synthesis.')
 param podcastAutoPublish string = 'false'
 
+@description('Whether YouTube uploads are enabled for the video runner.')
+param videoYoutubeEnabled string = 'false'
+
+@description('Whether YouTube upload is required for a successful video run.')
+param videoYoutubeRequired string = 'false'
+
+@description('YouTube upload category ID (default 28 = Science & Technology).')
+param videoYoutubeCategoryId string = '28'
+
+@description('YouTube upload privacy status (default unlisted).')
+param videoYoutubePrivacy string = 'unlisted'
+
+@secure()
+@description('YouTube OAuth client ID for runtime token exchange.')
+param videoYoutubeClientId string = ''
+
+@secure()
+@description('YouTube OAuth client secret for runtime token exchange.')
+param videoYoutubeClientSecret string = ''
+
+@secure()
+@description('YouTube OAuth refresh token for runtime token exchange.')
+param videoYoutubeRefreshToken string = ''
+
 @description('Deploy the Management UI app (#264).')
 param deployUiApp bool = true
 
@@ -413,6 +437,13 @@ module acaVideo 'modules/aca-video.bicep' = {
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     spotifyShowId: spotifyShowId
+    videoYoutubeEnabled: videoYoutubeEnabled
+    videoYoutubeRequired: videoYoutubeRequired
+    videoYoutubeCategoryId: videoYoutubeCategoryId
+    videoYoutubePrivacy: videoYoutubePrivacy
+    videoYoutubeClientId: videoYoutubeClientId
+    videoYoutubeClientSecret: videoYoutubeClientSecret
+    videoYoutubeRefreshToken: videoYoutubeRefreshToken
   }
   dependsOn: [
     artifactContainer

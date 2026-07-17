@@ -84,6 +84,7 @@ REASON_COMPOSITION_FAILED = "composition_failed"
 REASON_RETRY_EXHAUSTED = "retry_exhausted"
 REASON_PIPELINE_CONFLICT = "pipeline_locked_by_audio"
 REASON_EDITOR_LEASE_HELD = "editor_lease_held"
+REASON_REQUIRED_YOUTUBE_FAILURE = "required_youtube_delivery_failed"
 
 MAX_DEQUEUE_COUNT = 5
 
@@ -122,6 +123,15 @@ class VideoOutcome:
 
 class TransientVideoError(RuntimeError):
     """A failure that should leave the queue message for retry."""
+
+
+class PermanentVideoError(RuntimeError):
+    """A terminal failure that should stop queue retries for the message."""
+
+    def __init__(self, message: str, *, reason: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.details = details or {}
 
 
 class _StorageUploaderAdapter:
@@ -946,6 +956,53 @@ def run_video_generation(
                     ),
                 )
 
+            if dist_result.youtube_required_failed:
+                distribution_state = {
+                    "status": dist_result.status,
+                    "youtube_id": dist_result.youtube_id,
+                    "blob_path": dist_result.blob_path,
+                    "spotify_rss_updated": dist_result.spotify_rss_updated,
+                    "spotify_upload_updated": dist_result.spotify_upload_updated,
+                    "youtube_required_failed": dist_result.youtube_required_failed,
+                    "youtube_failure_retryable": dist_result.youtube_failure_retryable,
+                    "youtube_failure_code": dist_result.youtube_failure_code,
+                    "youtube_failure_stage": dist_result.youtube_failure_stage,
+                    "youtube_failure_http_status": dist_result.youtube_failure_http_status,
+                    "youtube_oauth_error": dist_result.youtube_oauth_error,
+                    "youtube_oauth_error_subtype": dist_result.youtube_oauth_error_subtype,
+                }
+                _record_video_state(
+                    storage,
+                    job_id,
+                    {
+                        "status": STATUS_FAILED,
+                        "reason": REASON_REQUIRED_YOUTUBE_FAILURE,
+                        "at": _iso(current),
+                        "performance": timings.to_dict(),
+                        "distribution": distribution_state,
+                    },
+                )
+                message = (
+                    f"required YouTube delivery failed for job_id={job_id} "
+                    f"code={dist_result.youtube_failure_code or 'unknown'} "
+                    f"stage={dist_result.youtube_failure_stage or 'unknown'} "
+                    f"retryable={dist_result.youtube_failure_retryable}"
+                )
+                if dist_result.youtube_failure_retryable:
+                    raise TransientVideoError(message)
+                raise PermanentVideoError(
+                    message,
+                    reason=REASON_REQUIRED_YOUTUBE_FAILURE,
+                    details={
+                        "job_id": job_id,
+                        "youtube_failure_code": dist_result.youtube_failure_code,
+                        "youtube_failure_stage": dist_result.youtube_failure_stage,
+                        "youtube_failure_http_status": dist_result.youtube_failure_http_status,
+                        "youtube_oauth_error": dist_result.youtube_oauth_error,
+                        "youtube_oauth_error_subtype": dist_result.youtube_oauth_error_subtype,
+                    },
+                )
+
             # Emit the per-phase timing/resource breakdown (issue #396).
             timings.log_summary(logger)
 
@@ -991,6 +1048,9 @@ def run_video_generation(
             )
 
     except TransientVideoError:
+        _release_editor_lease(scratch, job_id, run_id)
+        raise
+    except PermanentVideoError:
         _release_editor_lease(scratch, job_id, run_id)
         raise
     except Exception as exc:
@@ -1202,6 +1262,18 @@ def process_message(
 
     try:
         outcome = run_video_generation(job_id, storage, config=config, now=now)
+    except PermanentVideoError as exc:
+        logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)
+        details: dict[str, Any] = {"job_id": job_id, "reason": exc.reason}
+        details.update(exc.details)
+        report_failure(
+            container="podcaster-video",
+            error_type="PermanentVideoFailure",
+            error_message=str(exc),
+            details=details,
+        )
+        queue.delete_message(message)
+        return VideoOutcome(job_id, STATUS_FAILED, reason=exc.reason)
     except TransientVideoError:
         if message.dequeue_count >= MAX_DEQUEUE_COUNT:
             logger.error("video retry exhausted job_id=%s", job_id)

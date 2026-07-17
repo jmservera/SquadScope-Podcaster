@@ -15,9 +15,7 @@ COPY . .
 RUN npm run build
 
 # --- runtime stage ---
-# Alpine 3.24 supplies the supported c-ares 1.34.8-r0 and libexpat 2.8.2-r0
-# packages directly; no repository override or binary overlay is needed.
-FROM nginxinc/nginx-unprivileged:1.31.3-alpine3.24@sha256:a718212f9cf21e241f14067333000a3f0930292f5354fe0db269e9a2a2596b9e
+FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:a718212f9cf21e241f14067333000a3f0930292f5354fe0db269e9a2a2596b9e
 
 USER root
 

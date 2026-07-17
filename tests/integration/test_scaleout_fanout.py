@@ -180,6 +180,13 @@ def test_scaleout_fanout_end_to_end(azurite_stack):
         spotify_upload_updated=False,
         blob_url=None,
         dry_run=True,
+        youtube_required_failed=False,
+        youtube_failure_retryable=False,
+        youtube_failure_code=None,
+        youtube_failure_stage=None,
+        youtube_failure_http_status=None,
+        youtube_oauth_error=None,
+        youtube_oauth_error_subtype=None,
     )
     with (
         patch("podcaster.video.video_compose.compose_video", side_effect=fake_compose),

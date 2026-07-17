@@ -68,6 +68,48 @@ def test_reusable_deploy_workflow_threads_spotify_publish_settings() -> None:
         assert token in aca_module or token in api_module
 
 
+def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
+    workflow = _reusable_workflow_text()
+    aca_video_module = (ROOT / "infra/modules/aca-video.bicep").read_text(encoding="utf-8")
+    main_bicep = BICEP.read_text(encoding="utf-8")
+
+    for token in (
+        "VIDEO_YOUTUBE_ENABLED",
+        "VIDEO_YOUTUBE_REQUIRED",
+        "VIDEO_YOUTUBE_CATEGORY_ID",
+        "VIDEO_YOUTUBE_PRIVACY",
+        "VIDEO_YOUTUBE_CLIENT_ID",
+        "VIDEO_YOUTUBE_CLIENT_SECRET",
+        "VIDEO_YOUTUBE_REFRESH_TOKEN",
+    ):
+        assert token in workflow
+        assert token in aca_video_module
+
+    for token in (
+        "param videoYoutubeEnabled",
+        "param videoYoutubeRequired",
+        "param videoYoutubeClientId",
+        "param videoYoutubeClientSecret",
+        "param videoYoutubeRefreshToken",
+    ):
+        assert token in main_bicep
+
+    assert "VIDEO_YOUTUBE_ENABLED must be true or false" in workflow
+    assert "VIDEO_YOUTUBE_REQUIRED must be true or false" in workflow
+    assert "tr '[:upper:]' '[:lower:]'" in workflow
+
+    # YouTube delivery is opt-in: unset vars must default to disabled, matching the
+    # application's from_env() runtime default and the spotifyPublishEnabled toggle.
+    assert "VIDEO_YOUTUBE_ENABLED_VAR:-false" in workflow
+    assert "VIDEO_YOUTUBE_REQUIRED_VAR:-false" in workflow
+    assert "videoYoutubeEnabled string = 'false'" in aca_video_module
+    assert "videoYoutubeRequired string = 'false'" in aca_video_module
+    assert "videoYoutubeEnabled string = 'false'" in main_bicep
+    assert "videoYoutubeRequired string = 'false'" in main_bicep
+    # Preflight must fail fast on the inconsistent required=true/enabled!=true config.
+    assert "required delivery cannot be enforced while YouTube upload is disabled" in workflow
+
+
 def test_reusable_deploy_workflow_deploys_bicep_infrastructure() -> None:
     """Reusable ACA workflow deploys infra via az deployment group create with main.bicep."""
     workflow = _reusable_workflow_text()
