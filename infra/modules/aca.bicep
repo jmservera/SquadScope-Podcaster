@@ -378,6 +378,8 @@ resource jobQueueDataContributor 'Microsoft.Authorization/roleAssignments@2022-0
 output jobName string = synthesisJob.name
 output environmentName string = useVnet ? managedEnvWithVnet.name : managedEnvNoVnet.name
 output environmentId string = useVnet ? managedEnvWithVnet.id : managedEnvNoVnet.id
+#disable-next-line BCP318
+output defaultDomain string = useVnet ? managedEnvWithVnet.properties.defaultDomain : managedEnvNoVnet.properties.defaultDomain
 output queueName string = synthesisQueueName
 output videoQueueName string = videoQueueName
 output videoClipQueueName string = videoClipQueueName

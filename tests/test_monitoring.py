@@ -692,11 +692,11 @@ class TestUiNavigationEndpoints:
         assert get_resp.status_code == 200
         assert get_resp.json()["storage_backend"] == "local"
         assert get_resp.json()["storage_container"] == "episodes"
-        assert get_resp.json()["cors_origins"] == ["*"]
+        assert get_resp.json()["cors_origins"] == []
         assert post_resp.status_code == 200
         assert post_resp.json()["status"] == "accepted"
 
-    def test_cors_preflight_allows_wildcard_origin(self, client, storage):
+    def test_cors_denied_cross_origin_by_default(self, client, storage):
         resp = client.options(
             "/api/generate",
             headers={
@@ -705,11 +705,106 @@ class TestUiNavigationEndpoints:
             },
         )
 
-        assert resp.status_code == 200
-        assert resp.headers["access-control-allow-origin"] == "*"
+        # No allowlist configured → no CORS middleware → cross-origin not granted.
+        assert "access-control-allow-origin" not in resp.headers
 
+    def test_cors_allows_configured_origin(self, monkeypatch):
+        """Positive path: an allowlisted origin is granted CORS access (#607)."""
+        import importlib
 
-class TestMonitoringAuth:
+        import podcaster.monitoring as monitoring_module
+
+        allowed = "https://ui.example.com"
+        monkeypatch.setenv("MONITORING_CORS_ORIGINS", allowed)
+        reloaded = None
+        try:
+            reloaded = importlib.reload(monitoring_module)
+            reloaded.set_storage(MemoryStorageBackend())
+            assert reloaded._CORS_ORIGINS == [allowed]
+            reload_client = TestClient(reloaded.app)
+
+            # Allowlisted origin → preflight echoes it and permits credentials.
+            allowed_resp = reload_client.options(
+                "/api/generate",
+                headers={
+                    "Origin": allowed,
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+            assert allowed_resp.headers.get("access-control-allow-origin") == allowed
+            assert allowed_resp.headers.get("access-control-allow-credentials") == "true"
+
+            # A different, non-allowlisted origin is not granted access.
+            denied_resp = reload_client.options(
+                "/api/generate",
+                headers={
+                    "Origin": "https://evil.example.com",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+            assert denied_resp.headers.get("access-control-allow-origin") != (
+                "https://evil.example.com"
+            )
+        finally:
+            if reloaded is not None:
+                reloaded.set_storage(None)
+            # Restore the import-time (deny-by-default) app for other tests.
+            monkeypatch.delenv("MONITORING_CORS_ORIGINS", raising=False)
+            importlib.reload(monitoring_module)
+
+    def test_cors_wildcard_is_ignored_and_warns(self, monkeypatch, caplog):
+        """A literal '*' is rejected (not added to the allowlist) and logs a
+        warning so wildcard CORS never reaches authenticated endpoints (#607)."""
+        import importlib
+        import logging
+
+        import podcaster.monitoring as monitoring_module
+
+        monkeypatch.setenv("MONITORING_CORS_ORIGINS", "*")
+        reloaded = None
+        try:
+            with caplog.at_level(logging.WARNING, logger="podcaster.monitoring"):
+                reloaded = importlib.reload(monitoring_module)
+            assert reloaded._CORS_ORIGINS == []
+            assert any(
+                "wildcard CORS is not permitted" in record.getMessage() for record in caplog.records
+            )
+
+            reloaded.set_storage(MemoryStorageBackend())
+            reload_client = TestClient(reloaded.app)
+            resp = reload_client.options(
+                "/api/generate",
+                headers={
+                    "Origin": "*",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+            assert resp.headers.get("access-control-allow-origin") != "*"
+        finally:
+            if reloaded is not None:
+                reloaded.set_storage(None)
+            monkeypatch.delenv("MONITORING_CORS_ORIGINS", raising=False)
+            importlib.reload(monitoring_module)
+
+    def test_cors_control_char_origin_is_dropped(self, monkeypatch):
+        """Defense-in-depth: a CRLF-carrying allowlist entry is filtered out so a
+        misconfigured/tainted env var cannot inject response headers (#607)."""
+        import importlib
+
+        import podcaster.monitoring as monitoring_module
+
+        monkeypatch.setenv(
+            "MONITORING_CORS_ORIGINS",
+            "https://ui.example.com\r\nSet-Cookie: x=1, https://ok.example.com",
+        )
+        reloaded = None
+        try:
+            reloaded = importlib.reload(monitoring_module)
+            assert reloaded._CORS_ORIGINS == ["https://ok.example.com"]
+        finally:
+            monkeypatch.delenv("MONITORING_CORS_ORIGINS", raising=False)
+            importlib.reload(monitoring_module)
+
     def test_allows_requests_without_configured_key(self, client, storage):
         resp = client.get("/api/jobs")
 

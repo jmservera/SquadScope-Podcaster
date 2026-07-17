@@ -73,20 +73,36 @@ app = FastAPI(title="Podcaster Job Monitor", version="0.1.0")
 
 MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MiB
 
-# Allow all origins by default for backward compatibility with the API container.
-_CORS_ORIGINS_RAW = os.environ.get("MONITORING_CORS_ORIGINS", "*")
-_CORS_ORIGINS = (
-    ["*"]
-    if _CORS_ORIGINS_RAW.strip() == "*"
-    else [origin.strip() for origin in _CORS_ORIGINS_RAW.split(",") if origin.strip()]
-)
+# CORS is deny-by-default. Set MONITORING_CORS_ORIGINS to a comma-separated
+# allowlist of trusted UI origins (e.g. "https://ui.example.com") to enable
+# cross-origin browser access. A literal "*" is rejected: wildcard CORS on
+# authenticated credential/generation endpoints is a security risk (#607).
+_CORS_ORIGINS_RAW = os.environ.get("MONITORING_CORS_ORIGINS", "")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_CORS_ORIGINS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+def _has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
+
+
+_CORS_ORIGINS = [
+    origin.strip()
+    for origin in _CORS_ORIGINS_RAW.split(",")
+    if origin.strip() and origin.strip() != "*" and not _has_control_chars(origin.strip())
+]
+if "*" in (o.strip() for o in _CORS_ORIGINS_RAW.split(",")):
+    logging.getLogger("podcaster.monitoring").warning(
+        "MONITORING_CORS_ORIGINS contains '*'; wildcard CORS is not permitted and "
+        "will be ignored. Configure an explicit origin allowlist (#607)."
+    )
+
+if _CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "x-podcaster-api-key"],
+    )
 
 
 # ---------------------------------------------------------------------------

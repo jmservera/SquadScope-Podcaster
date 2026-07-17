@@ -39,6 +39,9 @@ param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 @description('Optional container registry login server for the API image.')
 param containerRegistryServer string = ''
 
+@description('Comma-separated CORS allowlist of trusted browser origins (e.g. the UI FQDN). Empty disables cross-origin browser access (#607).')
+param corsOrigins string = ''
+
 @description('Azure OpenAI endpoint URL for LLM script generation.')
 param openAiEndpoint string = ''
 
@@ -179,6 +182,10 @@ resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'PODCASTER_API_PORT'
               value: '8000'
+            }
+            {
+              name: 'PODCASTER_CORS_ORIGINS'
+              value: corsOrigins
             }
             {
               name: 'AZURE_OPENAI_ENDPOINT'

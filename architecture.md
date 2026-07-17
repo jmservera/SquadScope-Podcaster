@@ -94,6 +94,8 @@ Optional:
 - PODCASTER_STORAGE_ACCOUNT_URL, PODCASTER_STORAGE_QUEUE_URL
 - PODCASTER_VIDEO_SCRATCH_CONTAINER (video pipeline intermediates container; enables blob checkpoint/resume, #410)
 - SPOTIFY_PUBLISH_ENABLED, SPOTIFY_PUBLISH_DRY_RUN, SP_DC, SP_KEY
+- PODCASTER_CORS_ORIGINS — comma-separated CORS allowlist of trusted browser origins for the API server. Empty (default) denies cross-origin browser access; a literal `*` is ignored (#607). Set to the management UI's origin.
+- MONITORING_CORS_ORIGINS — same, for the FastAPI monitoring server. Empty (default) denies cross-origin access; `*` is ignored (#607).
 
 ## Video Pipeline Intermediates (checkpoint/resume, #410)
 - The video job stores all intermediates (segment recordings, normalized clips,

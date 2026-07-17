@@ -515,6 +515,7 @@ module api 'modules/api.bicep' = if (deployApiApp) {
     podcasterApiKey: podcasterApiKey
     apiImage: apiImage
     containerRegistryServer: acrLoginServer
+    corsOrigins: deployUiApp ? 'https://${uiAppName}.${aca.outputs.defaultDomain}' : ''
     openAiEndpoint: openAiEndpoint
     chatDeploymentName: chatDeploymentName
     spotifyPublishEnabled: spotifyPublishEnabled

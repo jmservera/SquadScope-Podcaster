@@ -46,15 +46,53 @@ MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MiB
 HEALTH_PATH = "/healthz"
 
 
+# CORS is deny-by-default for the lightweight machine-to-machine API server.
+# Set PODCASTER_CORS_ORIGINS to a comma-separated allowlist of trusted browser
+# origins to opt in; a literal "*" is ignored (wildcard CORS on authenticated
+# endpoints is a security risk, #607).
+def _has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
+
+
+def _cors_allowlist() -> list[str]:
+    raw = os.environ.get("PODCASTER_CORS_ORIGINS", "")
+    allowlist: list[str] = []
+    for candidate in raw.split(","):
+        origin = candidate.strip()
+        # Skip blanks, the wildcard, and — as defense-in-depth — any origin
+        # carrying control characters (e.g. CR/LF). A misconfigured or tainted
+        # env var must never be able to inject response headers through
+        # Access-Control-Allow-Origin (#607).
+        if not origin or origin == "*" or _has_control_chars(origin):
+            continue
+        allowlist.append(origin)
+    return allowlist
+
+
+def _cors_headers(handler: BaseHTTPRequestHandler) -> list[tuple[str, str]]:
+    origin = handler.headers.get("Origin")
+    # Echo back the matched entry from the trusted allowlist (sourced from
+    # PODCASTER_CORS_ORIGINS), never the raw request header. This preserves the
+    # exact-match semantics while ensuring the value written into the response
+    # header comes from server configuration, not attacker-controlled input, so
+    # it cannot be used for HTTP response splitting (CodeQL py/http-response-splitting).
+    allowed_origin = next((o for o in _cors_allowlist() if o == origin), None)
+    if allowed_origin is None:
+        return []
+    return [
+        ("Access-Control-Allow-Origin", allowed_origin),
+        ("Vary", "Origin"),
+        ("Access-Control-Allow-Credentials", "true"),
+        ("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS"),
+        ("Access-Control-Allow-Headers", "Content-Type, Authorization, x-podcaster-api-key"),
+    ]
+
+
 def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str, Any]) -> None:
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
     handler.send_response(status)
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS")
-    handler.send_header(
-        "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, x-podcaster-api-key",
-    )
+    for name, value in _cors_headers(handler):
+        handler.send_header(name, value)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
@@ -63,12 +101,8 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str,
 
 def _empty_response(handler: BaseHTTPRequestHandler, status: int) -> None:
     handler.send_response(status)
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS")
-    handler.send_header(
-        "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, x-podcaster-api-key",
-    )
+    for name, value in _cors_headers(handler):
+        handler.send_header(name, value)
     handler.send_header("Content-Length", "0")
     handler.end_headers()
 
@@ -82,12 +116,8 @@ class GenerateHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.OK)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS")
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, Authorization, x-podcaster-api-key",
-        )
+        for name, value in _cors_headers(self):
+            self.send_header(name, value)
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
