@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 
 import jwt
 from fastapi import Header, HTTPException, Request
@@ -65,6 +66,32 @@ class MeResponse(BaseModel):
 # FastAPI dependency — replaces the old API-key-only check
 # ---------------------------------------------------------------------------
 
+# Exact route shape of the SSE progress endpoint (issue #469) that may accept a
+# ``?token=`` query param — matched precisely so unrelated future endpoints do
+# not inherit query-token access (#606).
+_PROGRESS_STREAM_PATH = re.compile(r"/api/jobs/[^/]+/progress/stream")
+
+
+def _query_token_allowed(path: str) -> bool:
+    """Return True for the browser-native streaming endpoints that must accept
+    a ``?token=`` query parameter because the browser primitive loading them
+    cannot send an ``Authorization`` header.
+
+    * ``/api/stream/…`` — media proxy loaded via ``<audio>``/``<video>``/``<img>``.
+    * ``/api/jobs/{job_id}/progress/stream`` — the SSE progress endpoint consumed
+      via ``EventSource`` (issue #469), which likewise cannot set request headers.
+
+    The progress endpoint is matched by its exact route shape rather than a
+    loose suffix so a future endpoint that merely ends in ``/progress/stream``
+    does not silently inherit query-token access.
+
+    Every other endpoint rejects query tokens: a token in a URL leaks via
+    browser history, access/proxy/CDN logs, and ``Referer`` headers, so
+    honouring it on sensitive endpoints would let a leaked URL authorize
+    privileged actions (#606).
+    """
+    return path.startswith("/api/stream/") or bool(_PROGRESS_STREAM_PATH.fullmatch(path))
+
 
 def verify_auth(
     request: Request,
@@ -106,9 +133,17 @@ def verify_auth(
         if hmac.compare_digest(x_podcaster_api_key, configured_api_key):
             return
 
-    # --- Try query parameter token (for browser media elements) ---
+    # --- Try query parameter token (browser media elements only) ---
     query_token = request.query_params.get("token", "")
-    if query_token and creds is not None:
+    # Query-string tokens are honoured *only* for browser-native streaming
+    # endpoints (the media proxy and the SSE progress stream) whose loading
+    # primitive — ``<audio>``/``<video>``/``<img>`` or ``EventSource`` — cannot
+    # send an Authorization header. They are never accepted for credential,
+    # generation, review, or config endpoints: a token placed in a URL leaks
+    # via browser history, server access logs, proxy/CDN logs, and Referer
+    # headers, so honouring it on sensitive endpoints would let a leaked URL
+    # authorize privileged actions (#606).
+    if query_token and creds is not None and _query_token_allowed(request.url.path):
         _secret = creds[2]
         try:
             verify_token(query_token, _secret)

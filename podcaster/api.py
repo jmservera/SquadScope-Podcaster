@@ -93,6 +93,7 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str,
     handler.send_response(status)
     for name, value in _cors_headers(handler):
         handler.send_header(name, value)
+    handler.send_header("Referrer-Policy", "no-referrer")
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
@@ -103,6 +104,7 @@ def _empty_response(handler: BaseHTTPRequestHandler, status: int) -> None:
     handler.send_response(status)
     for name, value in _cors_headers(handler):
         handler.send_header(name, value)
+    handler.send_header("Referrer-Policy", "no-referrer")
     handler.send_header("Content-Length", "0")
     handler.end_headers()
 
@@ -118,6 +120,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         for name, value in _cors_headers(self):
             self.send_header(name, value)
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802

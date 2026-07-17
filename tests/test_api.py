@@ -166,6 +166,10 @@ class TestHealthEndpoint:
         handler = make_handler("GET", "/unknown")
         assert handler.response_code == HTTPStatus.NOT_FOUND
 
+    def test_referrer_policy_header_present(self):
+        handler = make_handler("GET", "/healthz")
+        assert handler.response_headers.get("Referrer-Policy") == "no-referrer"
+
 
 class TestAuthCheck:
     def test_missing_api_key_returns_401(self):
