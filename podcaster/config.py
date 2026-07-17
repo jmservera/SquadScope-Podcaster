@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Mapping
 
+from podcaster.sanitization import neutralize
+
 logger = logging.getLogger(__name__)
 MAX_SPOTIFY_TITLE_CHARS = 200
 MAX_SPOTIFY_DESCRIPTION_CHARS = 4_000
@@ -70,6 +72,64 @@ def _string_or_default(value: object, default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
+
+
+# Length caps for untrusted, caller-supplied config text that is embedded into
+# the LLM *system prompt* during script generation. These fields originate from
+# the API request body (``podcast_config`` / ``script_directions``) and are
+# therefore untrusted: they are neutralized at ingestion — control/zero-width
+# characters stripped, whitespace collapsed, and length-capped — so they cannot
+# smuggle indirect prompt-injection payloads (XPIA) into the system prompt
+# (jmservera/SquadScope-Podcaster#605).
+_CONFIG_FIELD_LIMITS: dict[str, int] = {
+    "name": 256,
+    "url": 512,
+    "spoken_site": 256,
+    "ai_voice_disclosure": 500,
+    "style_guide": 4096,
+    "host_name": 256,
+    "host_voice": 128,
+    "host_style": 512,
+    "cue": 1024,
+    "style": 256,
+    "segment": 128,
+    "show_name": 256,
+    "disclosure": 500,
+    "cta": 256,
+    "prompt": 2048,
+}
+
+
+def _neutralized_or_default(value: object, default: str, limit: int) -> str:
+    """Neutralize an untrusted config string, falling back to *default*.
+
+    Mirrors :func:`_string_or_default` but strips prompt-injection carriers
+    (control and zero-width characters), collapses whitespace to single spaces,
+    and length-caps the value before it can reach the LLM system prompt (#605).
+    ``default`` is a trusted module constant and is returned unchanged when the
+    caller supplies no usable value. Note that ``str.strip()`` does not remove
+    zero-width/control characters, so a value that is non-empty before
+    neutralization can still reduce to an empty string afterwards (e.g. a value
+    made up solely of zero-width chars); in that case we also fall back to the
+    default so required fields are never blanked out.
+    """
+    if isinstance(value, str) and value.strip():
+        neutralized = neutralize(value, limit=limit)
+        if neutralized:
+            return neutralized
+    return default
+
+
+def _neutralized_str(value: object, limit: int) -> str:
+    """Neutralize an optional untrusted config string (empty when absent).
+
+    Mirrors :func:`_safe_str` but additionally strips control/zero-width chars,
+    collapses whitespace, and length-caps so the value is safe to embed in the
+    LLM system prompt (#605).
+    """
+    if isinstance(value, str) and value.strip():
+        return neutralize(value, limit=limit)
+    return ""
 
 
 def _has_text(value: object) -> bool:
@@ -305,28 +365,39 @@ class LanguageConfig:
             host_b_payload = _merge_voice(host_b_payload, voices.get("host_b"))
 
         prompts_payload = payload.get("prompts")
-        prompts = (
-            {
-                str(k): v.strip()
-                for k, v in prompts_payload.items()
-                if isinstance(v, str) and v.strip()
-            }
-            if isinstance(prompts_payload, Mapping)
-            else dict(defaults.prompts)
-        )
+        if isinstance(prompts_payload, Mapping):
+            prompts = {}
+            for k, v in prompts_payload.items():
+                if not (isinstance(v, str) and v.strip()):
+                    continue
+                # Drop overrides that neutralize to empty (e.g. only zero-width
+                # chars) so we never register a "present" prompt that is blank at
+                # runtime — kept consistent with validate_language_block(), which
+                # rejects the same neutralize-to-empty values on strict ingest.
+                neutralized = neutralize(v, limit=_CONFIG_FIELD_LIMITS["prompt"])
+                if neutralized:
+                    prompts[str(k)] = neutralized
+        else:
+            prompts = dict(defaults.prompts)
 
         enabled = payload.get("enabled")
         return cls(
             language=language,
             locale=_string_or_default(payload.get("locale"), defaults.locale),
-            show_name=_string_or_default(
-                payload.get("show_name") or payload.get("showName"), defaults.show_name
+            show_name=_neutralized_or_default(
+                payload.get("show_name") or payload.get("showName"),
+                defaults.show_name,
+                _CONFIG_FIELD_LIMITS["show_name"],
             ),
             host_a=_host_from_payload(host_a_payload, defaults.host_a),
             host_b=_host_from_payload(host_b_payload, defaults.host_b),
             prompts=prompts,
-            disclosure=_string_or_default(payload.get("disclosure"), defaults.disclosure),
-            cta=_string_or_default(payload.get("cta"), defaults.cta),
+            disclosure=_neutralized_or_default(
+                payload.get("disclosure"), defaults.disclosure, _CONFIG_FIELD_LIMITS["disclosure"]
+            ),
+            cta=_neutralized_or_default(
+                payload.get("cta"), defaults.cta, _CONFIG_FIELD_LIMITS["cta"]
+            ),
             enabled=enabled if isinstance(enabled, bool) else defaults.enabled,
         )
 
@@ -388,7 +459,12 @@ def validate_language_block(language: str, payload: object) -> None:
         if not isinstance(prompts, Mapping):
             raise ValueError(f"language {language!r}: prompts must be an object")
         for pkey, pval in prompts.items():
-            if not isinstance(pval, str) or not pval.strip():
+            # Reject values that are empty *after* neutralization (whitespace-,
+            # zero-width- or control-only), matching LanguageConfig.from_payload()
+            # which drops the same values rather than registering a blank prompt.
+            if not isinstance(pval, str) or not neutralize(
+                pval, limit=_CONFIG_FIELD_LIMITS["prompt"]
+            ):
                 raise ValueError(
                     f"language {language!r}: prompts[{pkey!r}] must be a non-empty string"
                 )
@@ -441,7 +517,7 @@ class PodcastConfig:
                 host_b_payload = hosts_array[1]
 
         style_guide_raw = config_payload.get("style_guide")
-        style_guide = style_guide_raw.strip() if isinstance(style_guide_raw, str) else ""
+        style_guide = _neutralized_str(style_guide_raw, _CONFIG_FIELD_LIMITS["style_guide"])
 
         languages = dict(defaults.languages)
         languages_payload = config_payload.get("languages")
@@ -453,11 +529,21 @@ class PodcastConfig:
                 languages[key] = LanguageConfig.from_payload(key, block)
 
         return cls(
-            name=_string_or_default(config_payload.get("name"), defaults.name),
-            url=_string_or_default(config_payload.get("url"), defaults.url),
-            spoken_site=_string_or_default(config_payload.get("spoken_site"), defaults.spoken_site),
-            ai_voice_disclosure=_string_or_default(
-                config_payload.get("ai_voice_disclosure"), defaults.ai_voice_disclosure
+            name=_neutralized_or_default(
+                config_payload.get("name"), defaults.name, _CONFIG_FIELD_LIMITS["name"]
+            ),
+            url=_neutralized_or_default(
+                config_payload.get("url"), defaults.url, _CONFIG_FIELD_LIMITS["url"]
+            ),
+            spoken_site=_neutralized_or_default(
+                config_payload.get("spoken_site"),
+                defaults.spoken_site,
+                _CONFIG_FIELD_LIMITS["spoken_site"],
+            ),
+            ai_voice_disclosure=_neutralized_or_default(
+                config_payload.get("ai_voice_disclosure"),
+                defaults.ai_voice_disclosure,
+                _CONFIG_FIELD_LIMITS["ai_voice_disclosure"],
             ),
             host_a=_host_from_payload(host_a_payload, defaults.host_a),
             host_b=_host_from_payload(host_b_payload, defaults.host_b),
@@ -592,9 +678,15 @@ def _host_from_payload(payload: object, defaults: HostConfig) -> HostConfig:
         return defaults
 
     return HostConfig(
-        name=_string_or_default(payload.get("name"), defaults.name),
-        voice=_string_or_default(payload.get("voice"), defaults.voice),
-        style=_string_or_default(payload.get("style"), defaults.style),
+        name=_neutralized_or_default(
+            payload.get("name"), defaults.name, _CONFIG_FIELD_LIMITS["host_name"]
+        ),
+        voice=_neutralized_or_default(
+            payload.get("voice"), defaults.voice, _CONFIG_FIELD_LIMITS["host_voice"]
+        ),
+        style=_neutralized_or_default(
+            payload.get("style"), defaults.style, _CONFIG_FIELD_LIMITS["host_style"]
+        ),
     )
 
 
@@ -642,10 +734,14 @@ class EpisodeStyle:
         segment_order_raw = data.get("segment_order")
         segments: tuple[str, ...] = ()
         if isinstance(segment_order_raw, (list, tuple)):
-            segments = tuple(str(s) for s in segment_order_raw if s)
+            segments = tuple(
+                seg
+                for s in segment_order_raw
+                if s and (seg := _neutralized_str(s, _CONFIG_FIELD_LIMITS["segment"]))
+            )
         return cls(
-            format=_safe_str(data.get("format")),
-            tone=_safe_str(data.get("tone")),
+            format=_neutralized_str(data.get("format"), _CONFIG_FIELD_LIMITS["style"]),
+            tone=_neutralized_str(data.get("tone"), _CONFIG_FIELD_LIMITS["style"]),
             segment_order=segments,
         )
 
@@ -727,11 +823,17 @@ class ScriptDirections:
 
         return cls(
             episode_style=episode_style,
-            show_intro=_safe_str(opening.get("show_intro")),
-            cold_open=_safe_str(opening.get("cold_open")),
-            ai_disclosure_cue=_safe_str(opening.get("ai_disclosure")),
-            corrections_path=_safe_str(closing.get("corrections_path")),
-            source_article_link=_safe_str(closing.get("source_article_link")),
+            show_intro=_neutralized_str(opening.get("show_intro"), _CONFIG_FIELD_LIMITS["cue"]),
+            cold_open=_neutralized_str(opening.get("cold_open"), _CONFIG_FIELD_LIMITS["cue"]),
+            ai_disclosure_cue=_neutralized_str(
+                opening.get("ai_disclosure"), _CONFIG_FIELD_LIMITS["cue"]
+            ),
+            corrections_path=_neutralized_str(
+                closing.get("corrections_path"), _CONFIG_FIELD_LIMITS["cue"]
+            ),
+            source_article_link=_neutralized_str(
+                closing.get("source_article_link"), _CONFIG_FIELD_LIMITS["url"]
+            ),
             historical_context=HistoricalContext.from_value(sd.get("historical_context")),
             backchannels=backchannels,
         )
