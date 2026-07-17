@@ -64,10 +64,16 @@ class ReplayCollisionError(RuntimeError):
 def _replay_config_hash(payload: dict[str, Any]) -> str:
     """Hash replay-relevant configuration for stable job identity.
 
-    Only includes keys that materially affect the generated output: ``podcast_config``
-    (show name, hosts, voices), ``script_directions`` (LLM prompt shaping), and
-    ``backchannels`` (synthesis audio shaping). Keys that are absent from the payload
-    are omitted so two callers who both rely on defaults hash identically.
+    Only includes keys that materially affect the generated output:
+
+    * ``podcast_config`` — show name, hosts, voices; changes the script and audio.
+    * ``script_directions`` — LLM prompt shaping; changes the generated script.
+    * ``backchannels`` — per-section audio threading overrides; changes synthesis audio.
+
+    Other synthesis parameters (e.g. ``tts_provider``) are intentionally excluded
+    because they are resolved from ``podcast_config`` defaults and therefore already
+    covered by the ``podcast_config`` hash.  Keys absent from the payload are omitted
+    so callers who rely on defaults always hash identically to one another.
     """
     relevant: dict[str, Any] = {}
     for key in ("podcast_config", "script_directions", "backchannels"):
