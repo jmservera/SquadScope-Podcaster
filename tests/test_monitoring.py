@@ -708,6 +708,48 @@ class TestUiNavigationEndpoints:
         # No allowlist configured → no CORS middleware → cross-origin not granted.
         assert "access-control-allow-origin" not in resp.headers
 
+    def test_cors_allows_configured_origin(self, monkeypatch):
+        """Positive path: an allowlisted origin is granted CORS access (#607)."""
+        import importlib
+
+        import podcaster.monitoring as monitoring_module
+
+        allowed = "https://ui.example.com"
+        monkeypatch.setenv("MONITORING_CORS_ORIGINS", allowed)
+        try:
+            reloaded = importlib.reload(monitoring_module)
+            reloaded.set_storage(MemoryStorageBackend())
+            assert reloaded._CORS_ORIGINS == [allowed]
+            reload_client = TestClient(reloaded.app)
+
+            # Allowlisted origin → preflight echoes it and permits credentials.
+            allowed_resp = reload_client.options(
+                "/api/generate",
+                headers={
+                    "Origin": allowed,
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+            assert allowed_resp.headers.get("access-control-allow-origin") == allowed
+            assert allowed_resp.headers.get("access-control-allow-credentials") == "true"
+
+            # A different, non-allowlisted origin is not granted access.
+            denied_resp = reload_client.options(
+                "/api/generate",
+                headers={
+                    "Origin": "https://evil.example.com",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+            assert denied_resp.headers.get("access-control-allow-origin") != (
+                "https://evil.example.com"
+            )
+        finally:
+            reloaded.set_storage(None)
+            # Restore the import-time (deny-by-default) app for other tests.
+            monkeypatch.delenv("MONITORING_CORS_ORIGINS", raising=False)
+            importlib.reload(monitoring_module)
+
 
 class TestMonitoringAuth:
     def test_allows_requests_without_configured_key(self, client, storage):
