@@ -325,8 +325,9 @@ def test_openai_private_endpoint_wired_in_vnet_mode() -> None:
     assert "output openAiDnsZoneId string" in network, (
         "network.bicep must expose the OpenAI DNS zone id for the PE module"
     )
-    # Cognitive Services private endpoints use the 'account' group id.
-    assert "'account'" in pe_module
+    # Cognitive Services private endpoints use the 'account' group id — assert on the
+    # actual groupIds entry, not the module comment which also mentions 'account'.
+    assert re.search(r"groupIds:\s*\[\s*'account'\s*\]", pe_module)
     assert "Microsoft.Network/privateEndpoints@" in pe_module
     assert "privateDnsZoneGroups@" in pe_module
     # The PE module must be deployed only in VNet mode and fed the account + DNS zone.

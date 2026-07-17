@@ -57,7 +57,7 @@ param audioJobPrincipalId string = ''
 @description('Set to true to restore a soft-deleted account with the same name. Set to false for normal operation.')
 param restoreAccount bool = false
 
-@description('When true (VNet mode), the account is private-by-default: public network access is disabled and reached only via the private endpoint created in network.bicep. When false (local dev/test), the public endpoint stays enabled for convenience. See #598.')
+@description('When true (VNet mode), the account is private-by-default: public network access is disabled and reached only via the private endpoint created in modules/openai-private-endpoint.bicep. When false (local dev/test), the public endpoint stays enabled for convenience. See #598.')
 param deployVnet bool = false
 
 var hasAudioJobPrincipal = !empty(audioJobPrincipalId)
@@ -79,8 +79,9 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
     // ACA job authenticates with its managed identity only; account keys are disabled.
     disableLocalAuth: true
     // Private-by-default in VNet mode (#598): the ACA synthesis job runs inside the VNet
-    // and reaches this account over the private endpoint (see network.bicep). Public access
-    // stays enabled only for local dev/test (deployVnet=false).
+    // and reaches this account over the private endpoint (see
+    // modules/openai-private-endpoint.bicep; network.bicep owns the VNet + DNS zone).
+    // Public access stays enabled only for local dev/test (deployVnet=false).
     publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
     networkAcls: {
       bypass: 'AzureServices'
