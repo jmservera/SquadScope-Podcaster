@@ -206,37 +206,35 @@ class LocalStorageBackend:
         safe_prefix = _safe_blob_prefix(prefix)
         if not self.root.exists():
             return 0
-        # Scope the walk to the prefix subtree only. Walking the whole root
-        # would enumerate sibling prefixes and race with concurrent
-        # delete_prefix calls (e.g. multiple budget-blocked jobs cleaning up
-        # under a shared artifact root), which surfaced as FileNotFoundError.
-        base = self.root / safe_prefix
+        match_dir = safe_prefix.rstrip("/") + "/"
         deleted = 0
-        if base.is_file():
-            try:
-                base.unlink()
-                deleted += 1
-            except FileNotFoundError:
-                pass
-            return deleted
-        if not base.is_dir():
-            return 0
-        for target in list(base.rglob("*")):
-            try:
-                if target.is_file() or target.is_symlink():
-                    target.unlink()
-                    deleted += 1
-            except FileNotFoundError:
-                continue
-        directories = sorted(
-            (path for path in base.rglob("*") if path.is_dir()),
-            key=lambda path: len(path.parts),
-            reverse=True,
-        )
-        for directory in [*directories, base]:
+        matched_dirs: list[Path] = []
+        # Walk from the constant storage root and match by relative path so the
+        # user-derived prefix is only ever used in a string comparison, never
+        # flowed into a filesystem sink (path-injection safe). os.walk's
+        # onerror and the per-file guards make cleanup resilient to concurrent
+        # sibling deletions (e.g. parallel budget-blocked job cleanups), which
+        # otherwise surfaced as FileNotFoundError.
+        for dirpath, dirnames, filenames in os.walk(self.root, onerror=lambda _e: None):
+            current = Path(dirpath)
+            for name in filenames:
+                target = current / name
+                relative = target.relative_to(self.root).as_posix()
+                if relative == safe_prefix or relative.startswith(match_dir):
+                    try:
+                        target.unlink()
+                        deleted += 1
+                    except FileNotFoundError:
+                        continue
+            for name in dirnames:
+                directory = current / name
+                relative = directory.relative_to(self.root).as_posix()
+                if relative == safe_prefix or relative.startswith(match_dir):
+                    matched_dirs.append(directory)
+        for directory in sorted(matched_dirs, key=lambda path: len(path.parts), reverse=True):
             try:
                 directory.rmdir()
-            except (FileNotFoundError, OSError):
+            except OSError:
                 pass
         return deleted
 
