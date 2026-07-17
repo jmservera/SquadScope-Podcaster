@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.request import Request
 
-from podcaster.sanitization import neutralize
+from podcaster.sanitization import FIELD_LIMITS, neutralize
 from podcaster.script_gen import (
     MAX_ARTICLE_CHARS,
     ScriptGenConfig,
@@ -46,8 +46,14 @@ class Claim:
     editor_notes: str
 
 
-def _build_claim_extraction_prompt(article_content: str, article_url: str) -> tuple[str, str]:
-    """Build system and user prompts for claim extraction."""
+def _build_claim_extraction_prompt(article_content: str) -> tuple[str, str]:
+    """Build system and user prompts for claim extraction.
+
+    The source URL is deliberately **not** interpolated into the prompt: it is a
+    caller-controlled value and embedding it raw would let a crafted URL break
+    out of the JSON template and inject attacker instructions (#600). The system
+    fills ``source_url`` from the trusted value during post-processing instead.
+    """
 
     system_prompt = f"""You are a fact-checking assistant. Extract substantive factual claims from \
 the provided article.
@@ -62,11 +68,12 @@ OUTPUT FORMAT (you MUST return valid JSON):
 Return a JSON array of claim objects. Each object has:
 - "claim_id": string like "claim_001", "claim_002", etc.
 - "script_excerpt": the factual claim as it would be stated in conversation
-- "source_url": "{article_url}"
 - "source_quote": the exact quote from the article supporting this claim (or null if implicit)
 - "source_paragraph": approximate paragraph number (integer, 1-indexed, or null)
 - "verified": false (always — human review required)
 - "editor_notes": brief note about verification difficulty or context
+
+Do NOT include a "source_url" field — the system fills it in automatically.
 
 Extract {MAX_CLAIMS} or fewer claims. Focus on:
 - Quantitative assertions (numbers, percentages, dates)
@@ -103,7 +110,7 @@ def extract_claims(
 
     safe_content = neutralize(article_content, limit=MAX_ARTICLE_CHARS)
 
-    system_prompt, user_prompt = _build_claim_extraction_prompt(safe_content, article_url)
+    system_prompt, user_prompt = _build_claim_extraction_prompt(safe_content)
 
     token_provider = token_provider or ManagedIdentityTokenCredential().get_token
     transport = transport or _default_transport
@@ -161,7 +168,14 @@ def extract_claims(
 
 
 def _parse_claims(raw_json: str, article_url: str) -> list[Claim]:
-    """Parse the LLM response into Claim objects."""
+    """Parse the LLM response into Claim objects.
+
+    ``source_url`` is always set from the trusted caller-provided ``article_url``
+    (sanitized), never from the model's echoed value, so a crafted URL cannot
+    influence the claim ledger via the LLM response (#600).
+    """
+
+    safe_url = neutralize(article_url, limit=FIELD_LIMITS["reference"])
 
     try:
         parsed = json.loads(raw_json)
@@ -196,7 +210,7 @@ def _parse_claims(raw_json: str, article_url: str) -> list[Claim]:
             Claim(
                 claim_id=claim_id,
                 script_excerpt=script_excerpt,
-                source_url=str(item.get("source_url", article_url)),
+                source_url=safe_url,
                 source_quote=(
                     item.get("source_quote") if isinstance(item.get("source_quote"), str) else None
                 ),
