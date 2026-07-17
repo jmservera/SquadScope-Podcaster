@@ -45,10 +45,58 @@ class MonthlyBudgetExceeded(RuntimeError):
         self.budget = budget
 
 
+class ReplayCollisionError(RuntimeError):
+    """Raised when a replay job would overwrite existing output for the same job_id.
+
+    Existing artifacts are never silently overwritten. The caller must acknowledge
+    the collision (inspect the existing manifest) or submit a new job with different
+    inputs (which will produce a distinct job_id due to the content/config hash).
+    """
+
+    def __init__(self, job_id: str) -> None:
+        super().__init__(
+            f"replay collision: job_id={job_id} already has a manifest; "
+            "existing outputs are not overwritten"
+        )
+        self.job_id = job_id
+
+
+def _replay_config_hash(payload: dict[str, Any]) -> str:
+    """Hash replay-relevant configuration for stable job identity.
+
+    Only includes keys that materially affect the generated output: ``podcast_config``
+    (show name, hosts, voices), ``script_directions`` (LLM prompt shaping), and
+    ``backchannels`` (synthesis audio shaping). Keys that are absent from the payload
+    are omitted so two callers who both rely on defaults hash identically.
+    """
+    relevant: dict[str, Any] = {}
+    for key in ("podcast_config", "script_directions", "backchannels"):
+        value = payload.get(key)
+        if value is not None:
+            relevant[key] = value
+    data = json.dumps(relevant, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()[:12]
+
+
 def build_job_id(payload: dict[str, Any]) -> str:
+    """Derive a stable, content-addressed job identifier from immutable inputs.
+
+    Identity covers:
+    * ``week`` and ``article_url`` — the external primary key supplied by the caller.
+    * ``article_sha256`` — content identity: different article bytes → different job.
+    * replay-relevant config (``podcast_config``, ``script_directions``) — config
+      changes that materially affect the script or audio must produce a distinct job.
+
+    Identical pinned inputs always produce the same job_id, so the generation pipeline
+    is safely idempotent; any input change (content or config) produces a new job_id,
+    preventing silent collision between historically distinct runs.
+    """
     week = str(payload["week"]).strip()
     article_url = str(payload["article_url"]).strip()
-    digest = hashlib.sha256(f"{week}|{article_url}".encode("utf-8")).hexdigest()[:12]
+    content_sha = str(payload.get("article_sha256") or "")
+    config_sha = _replay_config_hash(payload)
+    identity = f"{week}|{article_url}|{content_sha}|{config_sha}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
     safe_week = re.sub(r"[^A-Za-z0-9_.-]", "-", week)
     return f"podcast-{safe_week}-{digest}"
 
@@ -64,6 +112,18 @@ def run_generation_job(
     expires_at = (
         (current + timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
+
+    # Normalise: when article_content is provided, compute the authoritative SHA-256
+    # from the *actual* content bytes so the manifest's article_sha256 always covers
+    # what its name implies — never a summary or a caller-supplied hash of different
+    # bytes. Do this before build_job_id so the content hash is part of identity.
+    article_content_raw = payload.get("article_content")
+    if isinstance(article_content_raw, str) and article_content_raw:
+        computed_article_sha = hashlib.sha256(article_content_raw.encode("utf-8")).hexdigest()
+        if payload.get("article_sha256") != computed_article_sha:
+            payload = dict(payload)
+            payload["article_sha256"] = computed_article_sha
+
     job_id = build_job_id(payload)
     podcast_config = PodcastConfig.from_payload(payload)
     if not PodcastConfig.payload_provides_identity(payload):
@@ -79,6 +139,20 @@ def run_generation_job(
     if "article_title" in payload or "article_content" in payload:
         validate_article_inputs(payload.get("article_title"), payload.get("article_content"))
     storage = storage or create_storage_backend()
+
+    # Refuse replay output collision: if a manifest already exists for this job_id
+    # the inputs are identical (job_id is content+config addressed) and overwriting
+    # silently would hide divergence caused by non-deterministic generation or
+    # infrastructure changes. Return a collision failure so the caller can inspect
+    # the existing manifest explicitly.
+    existing_manifest_raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
+    if existing_manifest_raw is not None:
+        logging.warning(
+            "replay collision detected job_id=%s; existing manifest not overwritten",
+            job_id,
+        )
+        raise ReplayCollisionError(job_id)
+
     month = current.strftime("%Y-%m")
     monthly_path = monthly_ledger_path(month)
     cost_override = _cost_override(payload)
@@ -276,6 +350,18 @@ def run_generation_job(
         stored_artifact = storage.put_bytes(artifact.path, artifact.content, artifact.content_type)
         stored[artifact.path] = stored_artifact
         checksums[artifact.path] = artifact_checksum
+
+    # Store the article content as a pinned blob so the video pipeline can replay
+    # against the exact bytes captured at generation time rather than re-fetching
+    # the live URL (which may have changed or been removed since enqueue).
+    if isinstance(article_content_raw, str) and article_content_raw:
+        article_blob_path = f"jobs/{job_id}/article.txt"
+        storage.put_bytes(
+            article_blob_path,
+            article_content_raw.encode("utf-8"),
+            "text/plain; charset=utf-8",
+        )
+
     if cost_ledger is None:
         raise RuntimeError("generated artifacts did not include cost-ledger.json")
     if audio_validation is None:

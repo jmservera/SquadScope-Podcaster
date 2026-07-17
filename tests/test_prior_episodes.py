@@ -149,3 +149,146 @@ def test_run_generation_job_threads_auto_prior_episode_themes(monkeypatch, tmp_p
         summary="The hosts have tracked this market for weeks.",
         prior_episode_themes=("AI agents in enterprise", "Eval loops and guardrails"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Pinned-replay regression contract (issue #609)
+# ---------------------------------------------------------------------------
+
+
+def test_prior_job_ids_excludes_future_jobs() -> None:
+    """Replaying an older fixture must never pull in themes from newer episodes.
+
+    _prior_job_ids should only return jobs whose ID sorts *before* the current
+    job_id. Job IDs embed an ISO week (podcast-YYYY-WNN-hash) so lexicographic
+    comparison faithfully reflects creation order.
+    """
+    storage = _MockStorage(
+        blobs=[
+            "jobs/podcast-2026-W26-future/script.txt",  # newer → must be excluded
+            "jobs/podcast-2026-W25-current/script.txt",  # current → discarded
+            "jobs/podcast-2026-W24-past/script.txt",  # older → must be included
+        ],
+        scripts={
+            "jobs/podcast-2026-W24-past/script.txt": (
+                "Title: Past Episode\n"
+                "Source URL: https://example.com/past\n"
+                "---\n"
+                "Theo: In this episode we will talk about: Past replay topic.\n"
+            ).encode("utf-8"),
+            "jobs/podcast-2026-W26-future/script.txt": (
+                "Title: Future Episode\n"
+                "Source URL: https://example.com/future\n"
+                "---\n"
+                "Theo: In this episode we will talk about: Future topic that must not appear.\n"
+            ).encode("utf-8"),
+        },
+    )
+
+    themes = fetch_prior_episode_themes(storage, "podcast-2026-W25-current")
+
+    assert any("Past replay topic" in t for t in themes), "older episode theme should appear"
+    assert not any("Future" in t for t in themes), "newer episode theme must be excluded"
+    # The future script was never read (excluded before I/O)
+    assert "jobs/podcast-2026-W26-future/script.txt" not in storage.read_paths
+
+
+def test_build_job_id_changes_with_content_and_config() -> None:
+    """Changing content or replay-relevant config must change job identity;
+    identical pinned inputs must produce the same job_id (idempotent)."""
+    from podcaster.jobs import build_job_id
+
+    base = {"week": "2026-W28", "article_url": "https://example.com/a"}
+    with_sha_a = dict(base, article_sha256="a" * 64)
+    with_sha_b = dict(base, article_sha256="b" * 64)
+    with_config = dict(base, podcast_config={"name": "OtherShow"})
+
+    # Same inputs → same job_id
+    assert build_job_id(with_sha_a) == build_job_id(dict(with_sha_a))
+    # Different content → different job_id
+    assert build_job_id(with_sha_a) != build_job_id(with_sha_b)
+    # Different config → different job_id
+    assert build_job_id(base) != build_job_id(with_config)
+    # All start with the expected week prefix
+    for payload in (base, with_sha_a, with_sha_b, with_config):
+        assert build_job_id(payload).startswith("podcast-2026-W28-")
+
+
+def test_article_sha256_is_computed_from_content_bytes(monkeypatch, tmp_path: Path) -> None:
+    """When article_content is provided the manifest's article_sha256 must cover
+    the actual content bytes — not a caller-supplied hash of different bytes."""
+    import hashlib
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini")
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "managed_identity")
+    monkeypatch.setattr(
+        jobs, "generate_script", lambda **kw: "Title: T\n---\nTheo: Hello.\nVera: Hello.\n"
+    )
+
+    content = VALID_ARTICLE_CONTENT
+    expected_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    # Caller supplies a wrong sha (e.g. hash of a summary, not the full article)
+    wrong_sha = "w" * 64
+
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+    result = run_generation_job(
+        {
+            "week": "2026-W29",
+            "article_url": "https://example.com/article",
+            "article_title": "Test article",
+            "article_content": content,
+            "article_sha256": wrong_sha,  # deliberately mismatched
+        },
+        storage=storage,
+        now=datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.response["status"] == "accepted"
+    assert result.manifest["request"]["article_sha256"] == expected_sha, (
+        "manifest must store the hash computed from the actual content bytes, not the caller's"
+    )
+
+
+def test_replay_collision_is_refused(monkeypatch, tmp_path: Path) -> None:
+    """Existing replay outputs must not be silently overwritten.
+
+    Submitting the same pinned inputs a second time must raise ReplayCollisionError
+    so callers are forced to acknowledge the collision rather than silently losing
+    the original artifacts.
+    """
+    import pytest
+
+    from podcaster.jobs import ReplayCollisionError
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini")
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "managed_identity")
+    monkeypatch.setattr(
+        jobs, "generate_script", lambda **kw: "Title: T\n---\nTheo: Hello.\nVera: Hello.\n"
+    )
+
+    payload = {
+        "week": "2026-W30",
+        "article_url": "https://example.com/replay-article",
+        "article_title": "Replay test",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+
+    # First submission succeeds
+    result = run_generation_job(
+        payload,
+        storage=storage,
+        now=datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    assert result.response["status"] == "accepted"
+
+    # Second submission with identical inputs must be refused
+    with pytest.raises(ReplayCollisionError) as exc_info:
+        run_generation_job(
+            payload,
+            storage=storage,
+            now=datetime(2026, 7, 14, 13, 0, 0, tzinfo=timezone.utc),
+        )
+    assert "replay collision" in str(exc_info.value).lower()

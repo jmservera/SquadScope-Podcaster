@@ -56,6 +56,12 @@ def _prior_job_ids(blob_names: Iterable[str], *, current_job_id: str) -> list[st
         match.group(1) for blob_name in blob_names if (match := _JOB_PATH_RE.match(blob_name))
     }
     job_ids.discard(current_job_id)
+    # Bind restore to historical source: only include jobs whose ID sorts strictly
+    # before the current job. Job IDs embed an ISO week (podcast-YYYY-WNN-hash) so
+    # lexicographic ordering faithfully reflects creation order — a job from a later
+    # week cannot be a prior episode, and replaying an older fixture must never pull
+    # in themes from episodes that did not yet exist at original generation time.
+    job_ids = {jid for jid in job_ids if jid < current_job_id}
     return sorted(job_ids, reverse=True)
 
 

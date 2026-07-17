@@ -1437,3 +1437,116 @@ class TestEditorVisibilityTimeout:
         queue = _VisibilityQueue([_make_message("j1")])
         drain(queue, storage, dry_config)
         assert queue.visibility_timeouts[0] == 1234
+
+
+# ---------------------------------------------------------------------------
+# Pinned-article replay contract (issue #609)
+# ---------------------------------------------------------------------------
+
+
+class TestPinnedArticleReplay:
+    """Video pipeline must use the pinned article blob instead of fetching a
+    mutable live URL when the blob is present (issue #609 §5)."""
+
+    _JOB_ID = "podcast-2026-W31-pinned0001"
+
+    def _seed(self, storage: FakeStorage, *, with_article: bool) -> str:
+        """Seed the job fixtures; optionally include a pinned article blob."""
+        job_id = self._JOB_ID
+        # Script deliberately contains NO inline GitHub repo URLs so the plan
+        # function falls back to the article content / live URL path.
+        script = (
+            "Title: Claracle Podcast – Week 2026-W31\n"
+            "Source URL: https://claracle.com/weekly/2026/W31/\n"
+            "---\n\n"
+            "Theo: Welcome to week 31.\n"
+            "Vera: Today we discuss platform trends.\n"
+        )
+        storage.set_script(job_id, script)
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "synthesized_publish_ready",
+                "generation": {
+                    "audio_mode": "synthesized",
+                    "tts_synthesis": {"status": "completed"},
+                },
+                "publishing": {
+                    "mode": "review_gate",
+                    "eligible": True,
+                    "blocked_by": [],
+                    "readiness_checks": {
+                        "editorial_review_complete": True,
+                        "real_audio_available": True,
+                        "audio_validation_passed": True,
+                    },
+                    "public_url": None,
+                },
+            },
+        )
+        if with_article:
+            # Pinned article with an explicit GitHub repo so the plan can find it.
+            article_text = "This week's article covers https://github.com/pinned/repo in depth."
+            storage._data[f"jobs/{job_id}/article.txt"] = article_text.encode("utf-8")
+        return job_id
+
+    @patch("podcaster.video.sync_plan.fetch_repos_from_article")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_pinned_article_prevents_live_url_fetch(
+        self,
+        mock_compose,
+        mock_record_episode,
+        mock_fetch,
+        storage,
+        dry_config,
+    ):
+        """When a pinned article.txt exists, fetch_repos_from_article must NOT
+        be called — the plan uses the pinned bytes exclusively."""
+        from podcaster.video.sync_plan import RepoReference
+
+        mock_fetch.return_value = [RepoReference("live", "repo")]
+        mock_record_episode.return_value = MagicMock(recorded=[], output_dir=Path("."))
+
+        def _fake_compose(*args, **kwargs):
+            out = kwargs.get("output_path") or (args[1] if len(args) > 1 else None)
+            if out:
+                Path(out).write_bytes(b"V" * 2048)
+            return MagicMock()
+
+        mock_compose.side_effect = _fake_compose
+
+        job_id = self._seed(storage, with_article=True)
+        run_video_generation(job_id, storage, config=dry_config, fanout=False)
+
+        mock_fetch.assert_not_called()
+
+    @patch("podcaster.video.sync_plan.fetch_repos_from_article")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_without_pinned_article_live_fetch_is_attempted(
+        self,
+        mock_compose,
+        mock_record_episode,
+        mock_fetch,
+        storage,
+        dry_config,
+    ):
+        """Without a pinned article.txt, the plan falls back to fetching the
+        live URL as before — no regression for legacy jobs."""
+        mock_fetch.return_value = []  # live fetch returns nothing (offline / 404)
+        mock_record_episode.return_value = MagicMock(recorded=[], output_dir=Path("."))
+
+        def _fake_compose(*args, **kwargs):
+            out = kwargs.get("output_path") or (args[1] if len(args) > 1 else None)
+            if out:
+                Path(out).write_bytes(b"V" * 2048)
+            return MagicMock()
+
+        mock_compose.side_effect = _fake_compose
+
+        job_id = self._seed(storage, with_article=False)
+        run_video_generation(job_id, storage, config=dry_config, fanout=False)
+
+        mock_fetch.assert_called_once()

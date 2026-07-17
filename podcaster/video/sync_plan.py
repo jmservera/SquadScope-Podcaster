@@ -349,6 +349,8 @@ def generate_generic_plan(
 def plan_from_script(
     script: str,
     total_duration_seconds: float,
+    *,
+    pinned_article_content: str | None = None,
 ) -> EpisodePlan:
     """End-to-end: parse script → extract repos → generate plan.
 
@@ -360,6 +362,10 @@ def plan_from_script(
     Args:
         script: Full podcast script text (header + body).
         total_duration_seconds: Total audio duration in seconds.
+        pinned_article_content: Optional pinned article text captured at generation
+            time. When provided, repo extraction falls back to this content instead
+            of fetching the live ``Source URL:`` — prevents a mutable live URL from
+            changing video output after the job was enqueued.
 
     Returns:
         An EpisodePlan ready to serialize to YAML.
@@ -370,7 +376,9 @@ def plan_from_script(
     repos = extract_repo_urls(script)
     if not repos:
         source_url = extract_source_url(script)
-        if source_url:
+        if pinned_article_content is not None:
+            repos = extract_repo_urls(pinned_article_content)
+        elif source_url:
             repos = fetch_repos_from_article(source_url)
         if repos:
             logger.info(
@@ -499,6 +507,8 @@ def plan_from_script_timed(
     script: str,
     total_duration_seconds: float,
     min_segment_seconds: float = 5.0,
+    *,
+    pinned_article_content: str | None = None,
 ) -> EpisodePlan:
     """End-to-end: parse script → extract repos → generate timing-aware plan.
 
@@ -513,6 +523,10 @@ def plan_from_script_timed(
         script: Full podcast script text (header + body).
         total_duration_seconds: Total audio duration in seconds.
         min_segment_seconds: Minimum segment duration. Default 5.0 s.
+        pinned_article_content: Optional pinned article text captured at generation
+            time. When provided, repo extraction falls back to this content instead
+            of fetching the live ``Source URL:`` — prevents a mutable live URL from
+            changing video output after the job was enqueued.
 
     Returns:
         EpisodePlan with timing matching script mention positions.
@@ -523,7 +537,9 @@ def plan_from_script_timed(
     repos = extract_repo_urls(script)
     if not repos:
         source_url = extract_source_url(script)
-        if source_url:
+        if pinned_article_content is not None:
+            repos = extract_repo_urls(pinned_article_content)
+        elif source_url:
             repos = fetch_repos_from_article(source_url)
         if repos:
             logger.info(

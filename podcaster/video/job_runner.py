@@ -581,6 +581,15 @@ def run_video_generation(
     script = raw_script.decode("utf-8")
     sections_metadata = _load_sections_metadata(storage, job_id)
 
+    # Load the pinned article content captured at generation time (issue #609).
+    # When present, the plan functions use it instead of re-fetching the live
+    # article URL — a URL that may have changed or been removed since the job
+    # was enqueued.
+    _pinned_article_raw = storage.get_bytes(f"jobs/{job_id}/article.txt")
+    pinned_article_content: str | None = (
+        _pinned_article_raw.decode("utf-8") if _pinned_article_raw else None
+    )
+
     # The target duration drives the segment plan. We prefer the REAL podcast
     # MP3 duration (probed below, inside the temp dir) so the video length
     # matches the audio; the manifest value is only a fallback (issue #353).
@@ -682,7 +691,9 @@ def run_video_generation(
                         len(realized_metadata.topics),
                     )
                 else:
-                    plan = plan_from_script_timed(script, audio_duration)
+                    plan = plan_from_script_timed(
+                        script, audio_duration, pinned_article_content=pinned_article_content
+                    )
                     logger.info(
                         "video plan from mention-based timing (no realized metadata) job_id=%s",
                         job_id,

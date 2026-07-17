@@ -910,7 +910,7 @@ def test_azure_conditional_update_retry_exhaustion_stops_before_artifacts() -> N
             now=datetime(2026, 6, 30, 19, 7, 49, tzinfo=timezone.utc),
         )
 
-    assert storage.get_attempts == 5
+    assert storage.get_attempts == 6  # 1 collision-check get_bytes + 5 update_bytes retries
     assert storage.put_attempts == 5
     assert storage.artifact_puts == []
 
