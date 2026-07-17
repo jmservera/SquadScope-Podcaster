@@ -697,6 +697,8 @@ class TestUiNavigationEndpoints:
         assert post_resp.json()["status"] == "accepted"
 
     def test_cors_denied_cross_origin_by_default(self, client, storage):
+        import podcaster.monitoring as monitoring_module
+
         resp = client.options(
             "/api/generate",
             headers={
@@ -705,8 +707,11 @@ class TestUiNavigationEndpoints:
             },
         )
 
-        # No allowlist configured → no CORS middleware → cross-origin not granted.
+        # No allowlist configured → deny-by-default: no middleware is registered
+        # and no cross-origin header is emitted.
+        assert monitoring_module._CORS_ORIGINS == []
         assert "access-control-allow-origin" not in resp.headers
+        assert "access-control-allow-credentials" not in resp.headers
 
     def test_cors_allows_configured_origin(self, monkeypatch):
         """Positive path: an allowlisted origin is granted CORS access (#607)."""
@@ -734,7 +739,8 @@ class TestUiNavigationEndpoints:
             assert allowed_resp.headers.get("access-control-allow-origin") == allowed
             assert allowed_resp.headers.get("access-control-allow-credentials") == "true"
 
-            # A different, non-allowlisted origin is not granted access.
+            # A different, non-allowlisted origin is not granted access: no
+            # Access-Control-Allow-Origin/-Credentials headers are emitted.
             denied_resp = reload_client.options(
                 "/api/generate",
                 headers={
@@ -742,9 +748,7 @@ class TestUiNavigationEndpoints:
                     "Access-Control-Request-Method": "POST",
                 },
             )
-            assert denied_resp.headers.get("access-control-allow-origin") != (
-                "https://evil.example.com"
-            )
+            assert "access-control-allow-origin" not in denied_resp.headers
         finally:
             if reloaded is not None:
                 reloaded.set_storage(None)
@@ -779,7 +783,9 @@ class TestUiNavigationEndpoints:
                     "Access-Control-Request-Method": "POST",
                 },
             )
-            assert resp.headers.get("access-control-allow-origin") != "*"
+            # Wildcard is ignored entirely: no CORS headers are emitted at all.
+            assert "access-control-allow-origin" not in resp.headers
+            assert "access-control-allow-credentials" not in resp.headers
         finally:
             if reloaded is not None:
                 reloaded.set_storage(None)
