@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -332,8 +333,6 @@ def test_replay_collision_is_refused(monkeypatch, tmp_path: Path) -> None:
     so callers are forced to acknowledge the collision rather than silently losing
     the original artifacts.
     """
-    import pytest
-
     from podcaster.jobs import ReplayCollisionError
 
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
@@ -375,8 +374,6 @@ def test_dry_run_on_accepted_namespace_is_refused(monkeypatch, tmp_path: Path) -
     Reproduces: accepted job followed by dry_run=True with the same inputs
     overwrote the manifest status from 'accepted' to 'dry_run'.
     """
-    import pytest
-
     from podcaster.jobs import ReplayCollisionError
 
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
@@ -402,8 +399,6 @@ def test_dry_run_on_accepted_namespace_is_refused(monkeypatch, tmp_path: Path) -
     )
     assert result.response["status"] == "accepted"
     manifest_path = f"jobs/{result.response['job_id']}/manifest.json"
-    import json
-
     original_status = json.loads(storage.get_bytes(manifest_path))["status"]
     assert original_status == "accepted"
 
@@ -426,8 +421,6 @@ def test_reserve_namespace_atomic_collision_guard() -> None:
     This unit test directly exercises the helper that runs inside update_bytes
     to verify all branches without needing real concurrency.
     """
-    import json
-
     from podcaster.jobs import ReplayCollisionError, _reserve_namespace_or_raise
 
     # Case 1: no existing manifest → reservation succeeds and returns placeholder

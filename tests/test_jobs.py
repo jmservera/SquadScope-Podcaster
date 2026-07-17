@@ -767,7 +767,7 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
         # as a harmless side-effect of the atomic namespace reservation cleanup).
         for job_id in failed_job_ids:
             job_dir = artifact_root / "jobs" / job_id
-            assert not any(job_dir.rglob("*") if job_dir.exists() else []), (
+            assert not job_dir.exists() or not any(job_dir.rglob("*")), (
                 f"unexpected files in failed job dir {job_id}"
             )
     finally:

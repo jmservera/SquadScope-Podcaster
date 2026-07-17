@@ -91,7 +91,12 @@ def build_job_id(payload: dict[str, Any]) -> str:
     * ``week`` and ``article_url`` — the external primary key supplied by the caller.
     * ``article_sha256`` — content identity: different article bytes → different job.
     * ``article_title`` — displayed in the script header; changes the generated output.
-    * ``breaking_news`` — changes the script tone and urgency framing.
+    * ``breaking_news`` — changes the script tone and urgency framing.  The value is
+      serialised with ``json.dumps(sort_keys=True)`` so the hash is stable for any
+      JSON-compatible payload (str, bool, dict, list, int, float, None).  Custom
+      objects are deliberately not supported; ``default=str`` is omitted here to
+      raise loudly if a non-serialisable type is ever passed, rather than silently
+      producing an unstable or non-reproducible hash.
     * replay-relevant config (``podcast_config``, ``script_directions``,
       ``backchannels``) — config changes that materially affect the script or audio
       must produce a distinct job.
@@ -108,7 +113,7 @@ def build_job_id(payload: dict[str, Any]) -> str:
     article_title = str(payload.get("article_title") or "")
     breaking_news_raw = payload.get("breaking_news")
     breaking_news = (
-        json.dumps(breaking_news_raw, sort_keys=True, ensure_ascii=False, default=str)
+        json.dumps(breaking_news_raw, sort_keys=True, ensure_ascii=False)
         if breaking_news_raw is not None
         else ""
     )
