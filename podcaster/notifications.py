@@ -28,11 +28,9 @@ Design, matching the repository's conventions:
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import logging
 import os
-import socket
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -40,6 +38,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from podcaster.sanitization import neutralize
+from podcaster.ssrf import host_is_blocked
 
 logger = logging.getLogger("podcaster.notifications")
 
@@ -58,12 +57,6 @@ _VALID_FORMATS = frozenset({FORMAT_GENERIC, FORMAT_TEAMS, FORMAT_SLACK})
 _HTTP_TIMEOUT = 10
 #: Cap applied to the error summary before it leaves the process.
 _SUMMARY_LIMIT = 1000
-
-#: Hosts a webhook may never resolve to (SSRF guard). Only the *literal* host is
-#: checked here; literal IPs are additionally range-checked below.
-_BLOCKED_HOSTNAMES = frozenset(
-    {"localhost", "metadata.google.internal", "metadata", "metadata.azure.com"}
-)
 
 
 class NotificationError(ValueError):
@@ -85,45 +78,13 @@ class _Transport(Protocol):
 
 
 def _host_is_blocked(hostname: str) -> bool:
-    """Return True if *hostname* is loopback / private / link-local / metadata."""
-    host = hostname.strip().lower().rstrip(".")
-    if not host or host in _BLOCKED_HOSTNAMES:
-        return True
-    # Literal IP? Range-check it directly without DNS.
-    try:
-        ip = ipaddress.ip_address(host)
-        return (
-            ip.is_loopback
-            or ip.is_private
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_unspecified
-        )
-    except ValueError:
-        pass
-    # Hostname: best-effort resolve and reject if it maps to a blocked range.
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
-        # Fail closed: if we cannot resolve the host now we cannot prove it is
-        # safe, and urlopen() may still resolve+connect later (possibly to a
-        # private/loopback/metadata IP). Treat unresolvable hosts as blocked.
-        return True
-    for info in infos:
-        addr = info[4][0]
-        try:
-            ip = ipaddress.ip_address(addr.split("%")[0])
-        except ValueError:
-            continue
-        if (
-            ip.is_loopback
-            or ip.is_private
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
-            return True
-    return False
+    """Return True if *hostname* is loopback / private / link-local / metadata.
+
+    Thin wrapper preserved for backwards compatibility; the implementation now
+    lives in :func:`podcaster.ssrf.host_is_blocked` so every outbound fetch
+    shares one hardened SSRF guard.
+    """
+    return host_is_blocked(hostname)
 
 
 @dataclass(frozen=True)

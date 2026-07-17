@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import tempfile
 import urllib.parse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -24,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 
 from podcaster.progress import TaskStatus
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
+from podcaster.ssrf import host_is_blocked, safe_urlopen
 from podcaster.video.intermediates import ensure_disk_budget
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 from podcaster.video.video_gen import RecordedSegment, _recording_blob_name
@@ -459,6 +459,16 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
         )
         return None
 
+    # SSRF guard (#601): the URL is caller-controlled config, so refuse targets
+    # that resolve to loopback / private / link-local / cloud-metadata hosts.
+    if host_is_blocked(urllib.parse.urlparse(url).hostname):
+        logger.warning(
+            "Skipping DOG logo fetch: URL host is blocked (loopback/private/metadata) in %s; "
+            "composing without watermark",
+            url,
+        )
+        return None
+
     digest = sha256(url.encode("utf-8")).hexdigest()[:16]
     suffix = Path(url.split("?", 1)[0]).suffix or ".img"
     cache_path = cache_dir / f"dog_{digest}{suffix}"
@@ -469,7 +479,7 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
 
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(url, timeout=15) as resp:  # noqa: S310 — config-driven URL
+        with safe_urlopen(url, timeout=15) as resp:
             data = resp.read()
     except Exception as exc:  # noqa: BLE001 — never fail composition on fetch error
         logger.warning(

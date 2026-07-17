@@ -1927,6 +1927,51 @@ class TestComposeVideoDogLogo:
             assert "overlay=" not in " ".join(c.args[0])
 
 
+class TestFetchDogLogoSSRF:
+    """#601: _fetch_dog_logo must refuse SSRF targets and degrade gracefully."""
+
+    def test_blocked_host_not_fetched(self, tmp_path, monkeypatch):
+        called = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", called)
+        result = vc._fetch_dog_logo("http://169.254.169.254/latest/meta-data/", tmp_path)
+        assert result is None
+        called.assert_not_called()
+
+    def test_loopback_host_not_fetched(self, tmp_path, monkeypatch):
+        called = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", called)
+        result = vc._fetch_dog_logo("http://127.0.0.1:8080/logo.png", tmp_path)
+        assert result is None
+        called.assert_not_called()
+
+    def test_unsupported_scheme_not_fetched(self, tmp_path, monkeypatch):
+        called = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", called)
+        result = vc._fetch_dog_logo("file:///etc/passwd", tmp_path)
+        assert result is None
+        called.assert_not_called()
+
+    def test_safe_urlopen_used_for_public_url(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def read(self):
+                return b"pngbytes"
+
+        opened = MagicMock(return_value=_Resp())
+        monkeypatch.setattr(vc, "safe_urlopen", opened)
+        result = vc._fetch_dog_logo("https://example.com/logo.png", tmp_path)
+        assert result is not None
+        assert result.read_bytes() == b"pngbytes"
+        opened.assert_called_once()
+
+
 # --- Hardware-accelerated encoding (NVENC) — issue #396 ---
 
 
