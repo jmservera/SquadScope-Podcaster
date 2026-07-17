@@ -57,6 +57,9 @@ param audioJobPrincipalId string = ''
 @description('Set to true to restore a soft-deleted account with the same name. Set to false for normal operation.')
 param restoreAccount bool = false
 
+@description('When true (VNet mode), the account is private-by-default: public network access is disabled and reached only via the private endpoint created in modules/openai-private-endpoint.bicep. When false (local dev/test), the public endpoint stays enabled for convenience. See #598.')
+param deployVnet bool = false
+
 var hasAudioJobPrincipal = !empty(audioJobPrincipalId)
 
 resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
@@ -75,9 +78,14 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
     restore: restoreAccount
     // ACA job authenticates with its managed identity only; account keys are disabled.
     disableLocalAuth: true
-    publicNetworkAccess: 'Enabled'
+    // Private-by-default in VNet mode (#598): the ACA synthesis job runs inside the VNet
+    // and reaches this account over the private endpoint (see
+    // modules/openai-private-endpoint.bicep; network.bicep owns the VNet + DNS zone).
+    // Public access stays enabled only for local dev/test (deployVnet=false).
+    publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
     networkAcls: {
-      defaultAction: 'Allow'
+      bypass: 'AzureServices'
+      defaultAction: deployVnet ? 'Deny' : 'Allow'
     }
   }
 }
@@ -141,6 +149,7 @@ resource audioJobOpenAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01'
 }
 
 output accountName string = openAiAccount.name
+output accountId string = openAiAccount.id
 output endpoint string = openAiAccount.properties.endpoint
 output ttsDeploymentName string = ttsDeployment.name
 output chatDeploymentName string = chatDeployment.name

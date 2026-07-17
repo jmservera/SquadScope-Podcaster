@@ -79,6 +79,14 @@ resource queueDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   location: 'global'
 }
 
+// Azure OpenAI private DNS zone (#598). The private endpoint + zone group are
+// created in a separate module (openai-private-endpoint.bicep) that runs after
+// the OpenAI account exists, so the zone lives here but is consumed there.
+resource openAiDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'privatelink.openai.azure.com'
+  location: 'global'
+}
+
 resource blobDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
   name: '${vnetName}-blob-link'
   parent: blobDnsZone
@@ -94,6 +102,18 @@ resource blobDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@
 resource queueDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
   name: '${vnetName}-queue-link'
   parent: queueDnsZone
+  location: 'global'
+  properties: {
+    virtualNetwork: {
+      id: vnet.id
+    }
+    registrationEnabled: false
+  }
+}
+
+resource openAiDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  name: '${vnetName}-openai-link'
+  parent: openAiDnsZone
   location: 'global'
   properties: {
     virtualNetwork: {
@@ -183,3 +203,4 @@ output vnetId string = vnet.id
 output vnetName string = vnet.name
 output acaSubnetId string = '${vnet.id}/subnets/${acaSubnetName}'
 output peSubnetId string = '${vnet.id}/subnets/${peSubnetName}'
+output openAiDnsZoneId string = openAiDnsZone.id
