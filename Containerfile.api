@@ -30,9 +30,11 @@ RUN groupadd --system api \
 
 # Install from pyproject.toml (single source of dependency truth). The API only
 # needs the core deps — no [video]/[dev] extras — so the image stays lean.
-COPY pyproject.toml ./
+# requirements.lock pins the fully-resolved transitive graph for reproducible
+# rebuilds (#599); constraints for unused extras are simply ignored here.
+COPY pyproject.toml requirements.lock ./
 COPY podcaster ./podcaster
-RUN python -m pip install --no-cache-dir . \
+RUN python -m pip install --no-cache-dir --constraint requirements.lock . \
     && python -m pip uninstall -y pip setuptools wheel
 
 USER api
