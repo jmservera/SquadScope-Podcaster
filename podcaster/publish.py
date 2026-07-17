@@ -128,9 +128,10 @@ def _warn_live_publish_downgraded_once() -> None:
     """Log the live-publish downgrade warning at most once per process."""
     logger.warning(
         "Spotify live publishing is not enabled (SPOTIFY_ALLOW_LIVE_PUBLISH is "
-        "unset) — downgrading to a DRAFT. The Spotify path uses an unofficial "
-        "cookie-authenticated API (jmservera/SquadScope-Podcaster#602); set "
-        "SPOTIFY_ALLOW_LIVE_PUBLISH=true only after accepting that risk to make "
+        "unset or not truthy) — downgrading to a DRAFT. The Spotify path uses an "
+        "unofficial cookie-authenticated API "
+        "(jmservera/SquadScope-Podcaster#602); set SPOTIFY_ALLOW_LIVE_PUBLISH to "
+        "a truthy value (1/true/yes/on) only after accepting that risk to make "
         "episodes public."
     )
 
