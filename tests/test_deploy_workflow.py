@@ -284,3 +284,57 @@ def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
         r"prefixMatch:\s*\[\s*'\$\{storageContainerName\}/'\s*\]", bicep
     ), "artifacts rule must not match the whole container (would auto-delete review/ artifacts)"
     assert "daysAfterModificationGreaterThan: artifactRetentionDays" in bicep
+
+
+NETWORK_MODULE = ROOT / "infra/modules/network.bicep"
+OPENAI_PE_MODULE = ROOT / "infra/modules/openai-private-endpoint.bicep"
+
+
+def test_openai_private_by_default_in_vnet_mode() -> None:
+    # #598: In VNet mode (deployVnet=true) the OpenAI account must be private-by-default —
+    # public network access disabled and network ACLs default to Deny — mirroring the
+    # Storage account. The public endpoint is only kept for local dev/test (deployVnet=false).
+    module = OPENAI_MODULE.read_text(encoding="utf-8")
+    main = BICEP.read_text(encoding="utf-8")
+
+    assert "param deployVnet bool = false" in module, (
+        "openai.bicep must accept deployVnet to gate its network posture"
+    )
+    assert "publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'" in module, (
+        "OpenAI public network access must be disabled in VNet mode (#598)"
+    )
+    assert "defaultAction: deployVnet ? 'Deny' : 'Allow'" in module, (
+        "OpenAI network ACLs must default to Deny in VNet mode (#598)"
+    )
+    # main.bicep must actually thread deployVnet into the OpenAI module.
+    assert re.search(
+        r"module openAi 'modules/openai\.bicep'[\s\S]*?deployVnet: deployVnet", main
+    ), "main.bicep must pass deployVnet to the OpenAI module"
+
+
+def test_openai_private_endpoint_wired_in_vnet_mode() -> None:
+    # #598: VNet mode must add a private endpoint + private DNS zone for OpenAI so the
+    # ACA synthesis job reaches TTS/chat over the VNet instead of the public endpoint.
+    network = NETWORK_MODULE.read_text(encoding="utf-8")
+    pe_module = OPENAI_PE_MODULE.read_text(encoding="utf-8")
+    main = BICEP.read_text(encoding="utf-8")
+
+    assert re.search(r"privatelink\.openai\.azure\.com", network), (
+        "network.bicep must create the OpenAI private DNS zone"
+    )
+    assert "output openAiDnsZoneId string" in network, (
+        "network.bicep must expose the OpenAI DNS zone id for the PE module"
+    )
+    # Cognitive Services private endpoints use the 'account' group id — assert on the
+    # actual groupIds entry, not the module comment which also mentions 'account'.
+    assert re.search(r"groupIds:\s*\[\s*'account'\s*\]", pe_module)
+    assert "Microsoft.Network/privateEndpoints@" in pe_module
+    assert "privateDnsZoneGroups@" in pe_module
+    # The PE module must be deployed only in VNet mode and fed the account + DNS zone.
+    assert re.search(
+        r"module openAiPrivateEndpoint 'modules/openai-private-endpoint\.bicep' "
+        r"= if \(deployVnet\)",
+        main,
+    ), "main.bicep must deploy the OpenAI private endpoint module only in VNet mode"
+    assert "openAiAccountId: openAi.outputs.accountId" in main
+    assert "openAiDnsZoneId: network!.outputs.openAiDnsZoneId" in main
