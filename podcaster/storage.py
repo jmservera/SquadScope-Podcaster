@@ -206,26 +206,37 @@ class LocalStorageBackend:
         safe_prefix = _safe_blob_prefix(prefix)
         if not self.root.exists():
             return 0
+        # Scope the walk to the prefix subtree only. Walking the whole root
+        # would enumerate sibling prefixes and race with concurrent
+        # delete_prefix calls (e.g. multiple budget-blocked jobs cleaning up
+        # under a shared artifact root), which surfaced as FileNotFoundError.
+        base = self.root / safe_prefix
         deleted = 0
-        for target in list(self.root.rglob("*")):
-            if not target.is_file():
-                continue
-            relative = target.relative_to(self.root).as_posix()
-            if relative == safe_prefix or relative.startswith(safe_prefix.rstrip("/") + "/"):
-                target.unlink()
+        if base.is_file():
+            try:
+                base.unlink()
                 deleted += 1
+            except FileNotFoundError:
+                pass
+            return deleted
+        if not base.is_dir():
+            return 0
+        for target in list(base.rglob("*")):
+            try:
+                if target.is_file() or target.is_symlink():
+                    target.unlink()
+                    deleted += 1
+            except FileNotFoundError:
+                continue
         directories = sorted(
-            (path for path in self.root.rglob("*") if path.is_dir()),
+            (path for path in base.rglob("*") if path.is_dir()),
             key=lambda path: len(path.parts),
             reverse=True,
         )
-        for directory in directories:
-            relative = directory.relative_to(self.root).as_posix()
-            if relative != safe_prefix and not relative.startswith(safe_prefix.rstrip("/") + "/"):
-                continue
+        for directory in [*directories, base]:
             try:
                 directory.rmdir()
-            except OSError:
+            except (FileNotFoundError, OSError):
                 pass
         return deleted
 
