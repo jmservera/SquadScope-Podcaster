@@ -10,9 +10,9 @@ cloud instance-metadata endpoint (e.g. ``http://169.254.169.254/``).
 This module centralises the host allow/deny logic so every outbound fetch shares
 one hardened implementation, provides :func:`redact_url` for logging
 caller-controlled URLs without leaking credentials/tokens, and provides
-:func:`safe_urlopen`, a ``urlopen`` drop-in (URL string or ``Request``) that
-also re-validates every redirect target (defence against a permitted host
-issuing a ``30x`` to an internal address).
+:func:`safe_urlopen`, a guarded ``urlopen``-style helper (URL string or
+``Request``) that also re-validates every redirect target (defence against a
+permitted host issuing a ``30x`` to an internal address).
 """
 
 from __future__ import annotations
@@ -126,9 +126,11 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 def safe_urlopen(url: str | urllib.request.Request, *, timeout: float):
     """``urlopen`` variant that blocks SSRF targets, including via redirects.
 
-    Accepts either a URL string or a :class:`urllib.request.Request` (a true
-    drop-in for ``urlopen``), so ``Request``-based call sites can share the same
-    guard. Raises :class:`ValueError` if the initial URL is unsafe, and
+    Accepts either a URL string or a :class:`urllib.request.Request`, so
+    ``Request``-based call sites can share the same guard. This is not a full
+    :func:`urllib.request.urlopen` replacement: it exposes only ``url`` and a
+    required keyword-only ``timeout`` (no ``data``/``context``/``cafile``).
+    Raises :class:`ValueError` if the initial URL is unsafe, and
     :class:`urllib.error.HTTPError` if a redirect points at a blocked host.
     """
     target = url.full_url if isinstance(url, urllib.request.Request) else url

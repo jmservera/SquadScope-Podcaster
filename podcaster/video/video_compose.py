@@ -476,7 +476,8 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
     # that resolve to loopback / private / link-local / cloud-metadata hosts.
     if host_is_blocked(urllib.parse.urlparse(url).hostname):
         logger.warning(
-            "Skipping DOG logo fetch: URL host is blocked (loopback/private/metadata) in %s; "
+            "Skipping DOG logo fetch: URL host is blocked "
+            "(loopback/private/link-local/reserved/metadata) in %s; "
             "composing without watermark",
             _redact_url(url),
         )
