@@ -1951,6 +1951,13 @@ class TestFetchDogLogoSSRF:
         assert result is None
         called.assert_not_called()
 
+    def test_missing_host_not_fetched(self, tmp_path, monkeypatch):
+        called = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", called)
+        result = vc._fetch_dog_logo("https:///logo.png", tmp_path)
+        assert result is None
+        called.assert_not_called()
+
     def test_safe_urlopen_used_for_public_url(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
 
