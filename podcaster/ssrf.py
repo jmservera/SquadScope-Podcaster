@@ -8,9 +8,9 @@ caller coerce the worker into probing internal infrastructure or reading the
 cloud instance-metadata endpoint (e.g. ``http://169.254.169.254/``).
 
 This module centralises the host allow/deny logic so every outbound fetch shares
-one hardened implementation, and provides :func:`safe_urlopen`, a drop-in
-``urlopen`` wrapper that also re-validates every redirect target (defence
-against a permitted host issuing a ``30x`` to an internal address).
+one hardened implementation, and provides :func:`safe_urlopen`, a ``urlopen``
+helper (accepting a URL string) that also re-validates every redirect target
+(defence against a permitted host issuing a ``30x`` to an internal address).
 """
 
 from __future__ import annotations
@@ -30,7 +30,12 @@ BLOCKED_HOSTNAMES = frozenset(
 
 def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return (
-        ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_unspecified
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
     )
 
 

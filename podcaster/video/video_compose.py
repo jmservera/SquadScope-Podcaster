@@ -443,6 +443,24 @@ def _default_dog_cache_dir() -> Path:
     return Path(tempfile.gettempdir()) / "podcaster-dog-logo-cache"
 
 
+def _redact_url(url: str) -> str:
+    """Return *url* with any ``user:pass@`` userinfo removed, for safe logging.
+
+    The DOG logo URL is caller-controlled; logging it verbatim could leak
+    embedded credentials (``https://user:secret@host/logo.png``).
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return "<unparseable-url>"
+    if parsed.hostname is None:
+        return f"{parsed.scheme}:<no-host>" if parsed.scheme else "<no-host>"
+    netloc = parsed.hostname
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urllib.parse.urlunparse(parsed._replace(netloc=netloc))
+
+
 def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
     """Download (and cache) the DOG logo image from *url*.
 
@@ -455,7 +473,7 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
         logger.warning(
             "Skipping DOG logo fetch: unsupported URL scheme %r in %s; composing without watermark",
             scheme,
-            url,
+            _redact_url(url),
         )
         return None
 
@@ -465,7 +483,7 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
         logger.warning(
             "Skipping DOG logo fetch: URL host is blocked (loopback/private/metadata) in %s; "
             "composing without watermark",
-            url,
+            _redact_url(url),
         )
         return None
 
@@ -484,17 +502,19 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
     except Exception as exc:  # noqa: BLE001 — never fail composition on fetch error
         logger.warning(
             "Failed to download DOG logo from %s: %s; composing without watermark",
-            url,
+            _redact_url(url),
             exc,
         )
         return None
 
     if not data:
-        logger.warning("DOG logo at %s was empty; composing without watermark", url)
+        logger.warning("DOG logo at %s was empty; composing without watermark", _redact_url(url))
         return None
 
     cache_path.write_bytes(data)
-    logger.info("Downloaded DOG logo (%d bytes) from %s to %s", len(data), url, cache_path)
+    logger.info(
+        "Downloaded DOG logo (%d bytes) from %s to %s", len(data), _redact_url(url), cache_path
+    )
     return cache_path
 
 

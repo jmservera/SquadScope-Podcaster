@@ -24,7 +24,8 @@ class TestHostIsBlocked:
             "192.168.1.10",
             "172.16.5.4",
             "169.254.169.254",  # cloud metadata IMDS
-            "0.0.0.0",
+            "224.0.0.1",  # multicast
+            "0.0.0.0",  # noqa: S104 — testing that unspecified is blocked
             "",  # empty -> fail closed
         ],
     )

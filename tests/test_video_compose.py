@@ -1971,6 +1971,14 @@ class TestFetchDogLogoSSRF:
         assert result.read_bytes() == b"pngbytes"
         opened.assert_called_once()
 
+    def test_redact_url_strips_credentials(self):
+        assert vc._redact_url("https://user:secret@example.com/logo.png") == (
+            "https://example.com/logo.png"
+        )
+        assert vc._redact_url("http://user:pw@10.0.0.1:8443/x") == "http://10.0.0.1:8443/x"
+        # A URL without credentials is preserved (host/port/path intact).
+        assert vc._redact_url("https://example.com:9000/a?b=c") == "https://example.com:9000/a?b=c"
+
 
 # --- Hardware-accelerated encoding (NVENC) — issue #396 ---
 
