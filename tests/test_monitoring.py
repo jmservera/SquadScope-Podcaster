@@ -750,6 +750,39 @@ class TestUiNavigationEndpoints:
             monkeypatch.delenv("MONITORING_CORS_ORIGINS", raising=False)
             importlib.reload(monitoring_module)
 
+    def test_cors_wildcard_is_ignored_and_warns(self, monkeypatch, caplog):
+        """A literal '*' is rejected (not added to the allowlist) and logs a
+        warning so wildcard CORS never reaches authenticated endpoints (#607)."""
+        import importlib
+        import logging
+
+        import podcaster.monitoring as monitoring_module
+
+        monkeypatch.setenv("MONITORING_CORS_ORIGINS", "*")
+        try:
+            with caplog.at_level(logging.WARNING, logger="podcaster.monitoring"):
+                reloaded = importlib.reload(monitoring_module)
+            assert reloaded._CORS_ORIGINS == []
+            assert any(
+                "wildcard CORS is not permitted" in record.getMessage()
+                for record in caplog.records
+            )
+
+            reloaded.set_storage(MemoryStorageBackend())
+            reload_client = TestClient(reloaded.app)
+            resp = reload_client.options(
+                "/api/generate",
+                headers={
+                    "Origin": "*",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+            assert resp.headers.get("access-control-allow-origin") != "*"
+        finally:
+            reloaded.set_storage(None)
+            monkeypatch.delenv("MONITORING_CORS_ORIGINS", raising=False)
+            importlib.reload(monitoring_module)
+
 
 class TestMonitoringAuth:
     def test_allows_requests_without_configured_key(self, client, storage):
