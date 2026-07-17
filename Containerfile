@@ -36,12 +36,13 @@ RUN groupadd --system synth \
     && useradd --system --gid synth --home-dir /app --shell /usr/sbin/nologin synth
 
 # Install Python deps first for better layer caching. pyproject.toml is the
-# single source of dependency truth; the [video] extra brings in playwright for
-# intro/outro HTML rendering and [dev] brings pytest so the container can run
-# the integration suite (docker-compose.test.yml).
-COPY pyproject.toml ./
+# single source of dependency truth; requirements.lock pins the fully-resolved
+# transitive graph so rebuilds are reproducible (#599). The [video] extra brings
+# in playwright for intro/outro HTML rendering and [dev] brings pytest so the
+# container can run the integration suite (docker-compose.test.yml).
+COPY pyproject.toml requirements.lock ./
 COPY podcaster ./podcaster
-RUN python -m pip install --no-cache-dir '.[dev,video]'
+RUN python -m pip install --no-cache-dir --constraint requirements.lock '.[dev,video]'
 
 # Install Playwright Chromium browser for the video pipeline (intro/outro
 # HTML rendering). --with-deps pulls required system libraries (libnss3,
