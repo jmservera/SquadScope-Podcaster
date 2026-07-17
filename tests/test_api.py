@@ -13,6 +13,7 @@ import pytest
 
 from podcaster.api import GenerateHandler
 from podcaster.auth import create_token
+from podcaster.jobs import ReplayCollisionError
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
 
@@ -324,7 +325,7 @@ class TestSuccessfulGeneration:
 
     def test_valid_request_returns_202(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
-        monkeypatch.setenv("PODCASTER_LOCAL_ARTIFACT_DIR", str(tmp_path))
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
         body = json.dumps(
             {
                 "week": "2026-W24",
@@ -341,7 +342,7 @@ class TestSuccessfulGeneration:
 
     def test_dry_run_returns_200(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
-        monkeypatch.setenv("PODCASTER_LOCAL_ARTIFACT_DIR", str(tmp_path))
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
         body = json.dumps(
             {
                 "week": "2026-W24",
@@ -354,6 +355,35 @@ class TestSuccessfulGeneration:
         resp = handler.get_response_json()
         assert resp["status"] == "dry_run"
         assert resp["errors"] == []
+
+    @patch("podcaster.api.run_generation_job")
+    def test_replay_collision_returns_sanitized_409(self, mock_run):
+        mock_run.side_effect = ReplayCollisionError("private storage path must not leak")
+        body = json.dumps(
+            {"week": "2026-W24", "article_url": "https://example.com/article"}
+        ).encode()
+
+        handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+
+        assert handler.response_code == HTTPStatus.CONFLICT
+        response = handler.get_response_json()
+        assert response["status"] == "failed"
+        assert response["errors"] == ["replay output already exists"]
+        assert "private storage path" not in json.dumps(response)
+
+    @patch("podcaster.api.report_failure")
+    @patch("podcaster.api.run_generation_job")
+    def test_unrelated_generation_failure_remains_500(self, mock_run, mock_report):
+        mock_run.side_effect = RuntimeError("unexpected")
+        body = json.dumps(
+            {"week": "2026-W24", "article_url": "https://example.com/article"}
+        ).encode()
+
+        handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+
+        assert handler.response_code == HTTPStatus.INTERNAL_SERVER_ERROR
+        assert handler.get_response_json()["errors"] == ["internal server error"]
+        mock_report.assert_called_once()
 
     def test_wrong_path_returns_404(self):
         body = json.dumps({"week": "2026-W24", "article_url": "https://example.com/a"}).encode()
@@ -374,7 +404,7 @@ class TestResponseShape:
 
     def test_response_has_all_contract_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
-        monkeypatch.setenv("PODCASTER_LOCAL_ARTIFACT_DIR", str(tmp_path))
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
         body = json.dumps(
             {
                 "week": "2026-W24",

@@ -19,6 +19,7 @@ Identity-only data plane (Blob + Queue). No keys, tokens, or secrets logged.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -57,7 +58,10 @@ from podcaster.video.intermediates import create_intermediate_store
 from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
+    extract_repo_urls,
     extract_source_url,
+    generate_episode_plan,
+    generate_generic_plan,
     plan_from_realized_metadata,
     plan_from_script_timed,
     prepend_weekly_segment,
@@ -147,6 +151,31 @@ def manifest_path(job_id: str) -> str:
 
 def script_path(job_id: str) -> str:
     return f"jobs/{job_id}/script.txt"
+
+
+def _load_pinned_article(
+    manifest: dict[str, Any],
+    storage: StorageBackend,
+    job_id: str,
+) -> str | None:
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        return None
+    replay = request.get("replay")
+    if not isinstance(replay, dict):
+        return None
+    article_path = replay.get("article_path")
+    article_sha256 = replay.get("article_sha256")
+    if article_path is None:
+        return None
+    if not isinstance(article_path, str) or not isinstance(article_sha256, str):
+        raise TransientVideoError(f"invalid pinned article metadata for job_id={job_id}")
+    article_bytes = storage.get_bytes(article_path)
+    if article_bytes is None:
+        raise TransientVideoError(f"missing pinned article for job_id={job_id}")
+    if hashlib.sha256(article_bytes).hexdigest() != article_sha256:
+        raise TransientVideoError(f"pinned article hash mismatch for job_id={job_id}")
+    return article_bytes.decode("utf-8", errors="replace")
 
 
 def video_artifact_path(job_id: str) -> str:
@@ -589,6 +618,7 @@ def run_video_generation(
     if raw_script is None:
         raise TransientVideoError(f"no script for job_id={job_id}")
     script = raw_script.decode("utf-8")
+    pinned_article = _load_pinned_article(manifest, storage, job_id)
     sections_metadata = _load_sections_metadata(storage, job_id)
 
     # The target duration drives the segment plan. We prefer the REAL podcast
@@ -675,7 +705,7 @@ def run_video_generation(
             # whisper. Scripts without GitHub repo URLs produce a generic
             # background plan (issue #335) instead of being skipped.
             realized_metadata = _load_realized_metadata(manifest, job_id, storage)
-            weekly_url = weekly_url_from_job_id(job_id)
+            weekly_url = None if pinned_article is not None else weekly_url_from_job_id(job_id)
             used_metadata_plan = False
             try:
                 if realized_metadata is not None and realized_metadata.topics:
@@ -683,7 +713,7 @@ def run_video_generation(
                         realized_metadata,
                         audio_duration,
                         weekly_url=weekly_url,
-                        source_url=extract_source_url(script),
+                        source_url=extract_source_url(script) if pinned_article is None else None,
                     )
                     used_metadata_plan = True
                     logger.info(
@@ -692,11 +722,30 @@ def run_video_generation(
                         len(realized_metadata.topics),
                     )
                 else:
-                    plan = plan_from_script_timed(script, audio_duration)
-                    logger.info(
-                        "video plan from mention-based timing (no realized metadata) job_id=%s",
-                        job_id,
+                    script_repos = extract_repo_urls(script)
+                    pinned_repos = (
+                        extract_repo_urls(pinned_article) if pinned_article is not None else []
                     )
+                    if not script_repos and pinned_article is not None:
+                        if pinned_repos:
+                            plan = generate_episode_plan(pinned_repos, audio_duration)
+                            logger.info(
+                                "video plan from pinned replay article job_id=%s repos=%d",
+                                job_id,
+                                len(pinned_repos),
+                            )
+                        else:
+                            plan = generate_generic_plan(audio_duration)
+                            logger.info(
+                                "video plan uses generic background for pinned replay job_id=%s",
+                                job_id,
+                            )
+                    else:
+                        plan = plan_from_script_timed(script, audio_duration)
+                        logger.info(
+                            "video plan from mention-based timing (no realized metadata) job_id=%s",
+                            job_id,
+                        )
             except ValueError as exc:
                 logger.warning(
                     "video skipped job_id=%s reason=%s: %s",
@@ -722,7 +771,11 @@ def run_video_generation(
             # topic already covers that pre-repo range (carrying the weekly URL),
             # so prepending again would double-insert it (#553) — skip it.
             if not used_metadata_plan:
-                plan = prepend_weekly_segment(plan, job_id)
+                plan = prepend_weekly_segment(
+                    plan,
+                    job_id,
+                    use_live_source=pinned_article is None,
+                )
 
             # Pre-flight each repo URL (HEAD) so repos GitHub has removed (e.g. a
             # polymarket/spam bot like ``mktail``) are detected before recording.
@@ -788,7 +841,7 @@ def run_video_generation(
                         plan,
                         output_dir=output_dir,
                         headless=True,
-                        source_url=extract_source_url(script),
+                        source_url=extract_source_url(script) if pinned_article is None else None,
                         intermediates=intermediates,
                         brand_name=brand_name,
                     )

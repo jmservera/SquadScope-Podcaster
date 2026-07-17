@@ -206,14 +206,36 @@ class LocalStorageBackend:
         safe_prefix = _safe_blob_prefix(prefix)
         if not self.root.exists():
             return 0
+        match_dir = safe_prefix.rstrip("/") + "/"
         deleted = 0
-        for target in list(self.root.rglob("*")):
-            if not target.is_file():
-                continue
-            relative = target.relative_to(self.root).as_posix()
-            if relative == safe_prefix or relative.startswith(safe_prefix.rstrip("/") + "/"):
-                target.unlink()
-                deleted += 1
+        matched_dirs: list[Path] = []
+        # Walk from the constant storage root and match by relative path so the
+        # user-derived prefix is only ever used in a string comparison, never
+        # flowed into a filesystem sink (path-injection safe). os.walk's
+        # onerror and the per-file guards make cleanup resilient to concurrent
+        # sibling deletions (e.g. parallel budget-blocked job cleanups), which
+        # otherwise surfaced as FileNotFoundError.
+        for dirpath, dirnames, filenames in os.walk(self.root, onerror=lambda _e: None):
+            current = Path(dirpath)
+            for name in filenames:
+                target = current / name
+                relative = target.relative_to(self.root).as_posix()
+                if relative == safe_prefix or relative.startswith(match_dir):
+                    try:
+                        target.unlink()
+                        deleted += 1
+                    except FileNotFoundError:
+                        continue
+            for name in dirnames:
+                directory = current / name
+                relative = directory.relative_to(self.root).as_posix()
+                if relative == safe_prefix or relative.startswith(match_dir):
+                    matched_dirs.append(directory)
+        for directory in sorted(matched_dirs, key=lambda path: len(path.parts), reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
         return deleted
 
 

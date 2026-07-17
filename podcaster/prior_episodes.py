@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Iterable
 from urllib.parse import unquote, urlparse
 
@@ -16,17 +18,30 @@ _MAX_SCRIPTS = 3
 _MAX_THEMES = 8
 _MAX_THEME_CHARS = 100
 _JOB_PATH_RE = re.compile(r"^jobs/(podcast-[^/]+)/")
+_WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
 _DIALOGUE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 .'\-]{0,40}:\s*(.+)$")
 
 
-def fetch_prior_episode_themes(storage: StorageBackend, current_job_id: str) -> tuple[str, ...]:
+def fetch_prior_episode_themes(
+    storage: StorageBackend,
+    current_job_id: str,
+    *,
+    current_week: str | None = None,
+    current_created_at: datetime | None = None,
+) -> tuple[str, ...]:
     try:
         blob_names = storage.list_blobs(_JOB_PREFIX, limit=_MAX_BLOB_LIST)
     except Exception:
         logger.exception("prior episode blob listing failed for job_id=%s", current_job_id)
         return ()
 
-    prior_job_ids = _prior_job_ids(blob_names, current_job_id=current_job_id)
+    prior_job_ids = _prior_job_ids(
+        storage,
+        blob_names,
+        current_job_id=current_job_id,
+        current_week=current_week,
+        current_created_at=current_created_at,
+    )
     if not prior_job_ids:
         return ()
 
@@ -51,12 +66,81 @@ def fetch_prior_episode_themes(storage: StorageBackend, current_job_id: str) -> 
     return tuple(themes)
 
 
-def _prior_job_ids(blob_names: Iterable[str], *, current_job_id: str) -> list[str]:
+def _parse_week(value: object) -> tuple[int, int] | None:
+    if not isinstance(value, str):
+        return None
+    match = _WEEK_RE.match(value)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _parse_created_at(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _prior_job_ids(
+    storage: StorageBackend,
+    blob_names: Iterable[str],
+    *,
+    current_job_id: str,
+    current_week: str | None,
+    current_created_at: datetime | None,
+) -> list[str]:
     job_ids = {
         match.group(1) for blob_name in blob_names if (match := _JOB_PATH_RE.match(blob_name))
     }
     job_ids.discard(current_job_id)
-    return sorted(job_ids, reverse=True)
+    current_week_key = _parse_week(current_week)
+    if current_created_at is not None:
+        current_created_at = current_created_at.astimezone(timezone.utc)
+
+    candidates: list[tuple[tuple[int, int], datetime, str]] = []
+    for job_id in job_ids:
+        try:
+            raw_manifest = storage.get_bytes(f"jobs/{job_id}/manifest.json")
+        except Exception:
+            logger.exception(
+                "prior episode manifest read failed for job_id=%s prior_job_id=%s",
+                current_job_id,
+                job_id,
+            )
+            continue
+        if not raw_manifest:
+            continue
+        try:
+            manifest = json.loads(raw_manifest.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            logger.warning("invalid prior episode manifest for prior_job_id=%s", job_id)
+            continue
+        if not isinstance(manifest, dict) or manifest.get("status") != "accepted":
+            continue
+        request = manifest.get("request")
+        candidate_week = _parse_week(request.get("week") if isinstance(request, dict) else None)
+        candidate_created_at = _parse_created_at(manifest.get("created_at"))
+        if candidate_week is None or candidate_created_at is None:
+            continue
+        if current_week_key is not None:
+            if candidate_week > current_week_key:
+                continue
+            if (
+                candidate_week == current_week_key
+                and current_created_at is not None
+                and candidate_created_at >= current_created_at
+            ):
+                continue
+        candidates.append((candidate_week, candidate_created_at, job_id))
+
+    candidates.sort(reverse=True)
+    return [job_id for _week, _created_at, job_id in candidates]
 
 
 def _extract_script_themes(script: str) -> tuple[str, ...]:

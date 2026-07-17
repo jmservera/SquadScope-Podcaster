@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,6 +50,16 @@ class _MockStorage:
 
 
 def test_fetch_prior_episode_themes_reads_latest_scripts_and_caps_budget() -> None:
+    def manifest(job_id: str, week: str, created_at: str) -> bytes:
+        return json.dumps(
+            {
+                "job_id": job_id,
+                "status": "accepted",
+                "created_at": created_at,
+                "request": {"week": week},
+            }
+        ).encode()
+
     storage = _MockStorage(
         blobs=[
             "jobs/podcast-2026-W27-dddd/script.txt",
@@ -57,6 +68,15 @@ def test_fetch_prior_episode_themes_reads_latest_scripts_and_caps_budget() -> No
             "jobs/podcast-2026-W24-aaaa/script.txt",
         ],
         scripts={
+            "jobs/podcast-2026-W26-cccc/manifest.json": manifest(
+                "podcast-2026-W26-cccc", "2026-W26", "2026-06-25T12:00:00Z"
+            ),
+            "jobs/podcast-2026-W25-bbbb/manifest.json": manifest(
+                "podcast-2026-W25-bbbb", "2026-W25", "2026-06-18T12:00:00Z"
+            ),
+            "jobs/podcast-2026-W24-aaaa/manifest.json": manifest(
+                "podcast-2026-W24-aaaa", "2026-W24", "2026-06-11T12:00:00Z"
+            ),
             "jobs/podcast-2026-W26-cccc/script.txt": (
                 "Title: Claracle Podcast – Week 2026-W26\n"
                 "Source URL: https://example.com/openai-agents-push-into-enterprise-it\n"
@@ -83,7 +103,12 @@ def test_fetch_prior_episode_themes_reads_latest_scripts_and_caps_budget() -> No
         },
     )
 
-    themes = fetch_prior_episode_themes(storage, "podcast-2026-W27-dddd")
+    themes = fetch_prior_episode_themes(
+        storage,
+        "podcast-2026-W27-dddd",
+        current_week="2026-W27",
+        current_created_at=datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc),
+    )
 
     assert themes == (
         "OpenAI agents push into enterprise IT",
@@ -95,7 +120,7 @@ def test_fetch_prior_episode_themes_reads_latest_scripts_and_caps_budget() -> No
         "Platform teams are turning prompts into repeatable operating procedures",
         "DevOps budgets tighten around inference costs",
     )
-    assert storage.read_paths == [
+    assert [path for path in storage.read_paths if path.endswith("/script.txt")] == [
         "jobs/podcast-2026-W26-cccc/script.txt",
         "jobs/podcast-2026-W25-bbbb/script.txt",
         "jobs/podcast-2026-W24-aaaa/script.txt",
@@ -109,6 +134,69 @@ def test_fetch_prior_episode_themes_gracefully_handles_listing_failures() -> Non
     assert storage.read_paths == []
 
 
+def test_prior_selection_excludes_newer_week_and_uses_same_week_creation_time() -> None:
+    def manifest(job_id: str, week: str, created_at: str) -> bytes:
+        return json.dumps(
+            {
+                "job_id": job_id,
+                "status": "accepted",
+                "created_at": created_at,
+                "request": {"week": week},
+            }
+        ).encode()
+
+    storage = _MockStorage(
+        blobs=[
+            "jobs/podcast-2026-W26-aaaaaaaaaaaa/script.txt",
+            "jobs/podcast-2026-W26-zzzzzzzzzzzz/script.txt",
+            "jobs/podcast-2026-W27-newer/script.txt",
+            "jobs/podcast-2026-W25-older/script.txt",
+        ],
+        scripts={
+            "jobs/podcast-2026-W26-aaaaaaaaaaaa/manifest.json": manifest(
+                "podcast-2026-W26-aaaaaaaaaaaa",
+                "2026-W26",
+                "2026-06-25T13:00:00Z",
+            ),
+            "jobs/podcast-2026-W26-zzzzzzzzzzzz/manifest.json": manifest(
+                "podcast-2026-W26-zzzzzzzzzzzz",
+                "2026-W26",
+                "2026-06-25T11:00:00Z",
+            ),
+            "jobs/podcast-2026-W27-newer/manifest.json": manifest(
+                "podcast-2026-W27-newer",
+                "2026-W27",
+                "2026-07-02T11:00:00Z",
+            ),
+            "jobs/podcast-2026-W25-older/manifest.json": manifest(
+                "podcast-2026-W25-older",
+                "2026-W25",
+                "2026-06-18T11:00:00Z",
+            ),
+            "jobs/podcast-2026-W26-zzzzzzzzzzzz/script.txt": (
+                "Source URL: https://example.com/historical-source\n---\n"
+                "Theo: In this episode we will talk about: Historical pinned source.\n"
+            ).encode(),
+            "jobs/podcast-2026-W25-older/script.txt": (
+                "Source URL: https://example.com/older-source\n---\n"
+                "Theo: In this episode we will talk about: Older source.\n"
+            ).encode(),
+        },
+    )
+
+    themes = fetch_prior_episode_themes(
+        storage,
+        "podcast-2026-W26-current",
+        current_week="2026-W26",
+        current_created_at=datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert "Historical pinned source" in themes
+    assert "Older source" in themes
+    assert not any("newer" in path for path in storage.read_paths if path.endswith("/script.txt"))
+    assert "jobs/podcast-2026-W26-aaaaaaaaaaaa/script.txt" not in storage.read_paths
+
+
 def test_run_generation_job_threads_auto_prior_episode_themes(monkeypatch, tmp_path: Path) -> None:
     storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
     captured: dict[str, object] = {}
@@ -119,7 +207,10 @@ def test_run_generation_job_threads_auto_prior_episode_themes(monkeypatch, tmp_p
     monkeypatch.setattr(
         jobs,
         "fetch_prior_episode_themes",
-        lambda storage_backend, job_id: ("AI agents in enterprise", "Eval loops and guardrails"),
+        lambda storage_backend, job_id, **_kwargs: (
+            "AI agents in enterprise",
+            "Eval loops and guardrails",
+        ),
     )
 
     def fake_generate_script(**kwargs) -> str:

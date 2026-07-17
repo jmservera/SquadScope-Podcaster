@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -345,6 +346,71 @@ class TestRunVideoGeneration:
         plan = mock_record.call_args.args[0]
         assert len(plan.segments) == 1
         assert plan.segments[0].is_generic
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_pinned_replay_article_drives_video_without_live_url_fetch(
+        self,
+        mock_compose,
+        mock_record,
+        storage,
+        dry_config,
+        monkeypatch,
+    ):
+        job_id = "podcast-2026-W25-pinned"
+        article_path = f"jobs/{job_id}/inputs/article.txt"
+        article_bytes = (
+            b"Pinned article bytes referencing https://github.com/microsoft/vscode exactly."
+        )
+        storage.put_bytes(article_path, article_bytes, "text/plain; charset=utf-8")
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Pinned Episode",
+                    "replay": {
+                        "article_path": article_path,
+                        "article_sha256": hashlib.sha256(article_bytes).hexdigest(),
+                    },
+                },
+            },
+        )
+        storage.set_script(
+            job_id,
+            "Source URL: https://claracle.com/weekly/2026/w25/\n---\n"
+            "HOST_A: This script intentionally has no repository URL.\n",
+        )
+        monkeypatch.setattr(
+            "podcaster.video.sync_plan.fetch_repos_from_article",
+            lambda _url: (_ for _ in ()).throw(AssertionError("live article fetched")),
+        )
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=len(segments),
+                has_audio=False,
+            )
+
+        mock_compose.side_effect = fake_compose
+
+        outcome = run_video_generation(job_id, storage, config=dry_config)
+
+        assert outcome.status == STATUS_COMPLETED
+        plan = mock_record.call_args.args[0]
+        assert any(
+            segment.repo is not None and segment.repo.url == "https://github.com/microsoft/vscode"
+            for segment in plan.segments
+        )
+        assert all(segment.source_url is None for segment in plan.segments)
+        assert mock_record.call_args.kwargs["source_url"] is None
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")

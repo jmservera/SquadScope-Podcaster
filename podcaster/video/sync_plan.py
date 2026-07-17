@@ -866,7 +866,12 @@ def weekly_url_from_job_id(job_id: str) -> str | None:
     return f"https://claracle.com/weekly/{year}/w{week:02d}/"
 
 
-def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
+def prepend_weekly_segment(
+    plan: EpisodePlan,
+    job_id: str,
+    *,
+    use_live_source: bool = True,
+) -> EpisodePlan:
     """Insert the claracle.com weekly page as the first content segment (issue #382).
 
     The weekly page (derived from *job_id*) is shown right after the intro and
@@ -882,11 +887,21 @@ def prepend_weekly_segment(plan: EpisodePlan, job_id: str) -> EpisodePlan:
     duration that gap collapsed and shifted every repo earlier than the moment
     the hosts actually name it (issue #544).
 
-    The plan is returned unchanged when *job_id* yields no weekly URL or the
-    weekly page is already the first segment (idempotent).
+    The plan is returned unchanged when the weekly page is already the first
+    segment (idempotent), the plan has no repo segments, or — when
+    *use_live_source* is true — *job_id* yields no weekly URL.
+
+    When *use_live_source* is false (pinned replay mode), the weekly segment is
+    still inserted but carries no ``source_url``: the recorder shows the pinned
+    replay input instead of navigating to a live weekly page.
     """
-    url = weekly_url_from_job_id(job_id)
-    if url is None:
+    url = weekly_url_from_job_id(job_id) if use_live_source else None
+    if not use_live_source:
+        logger.info(
+            "Using pinned replay input instead of live weekly URL for job_id=%s",
+            job_id,
+        )
+    elif url is None:
         logger.info(
             "No weekly URL derivable from job_id=%s; skipping weekly segment",
             job_id,

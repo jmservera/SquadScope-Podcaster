@@ -728,6 +728,26 @@ class TestPrependWeeklySegment:
         assert len(twice.segments) == len(once.segments)
         assert twice.segments[0].source_url == once.segments[0].source_url
 
+    def test_pinned_replay_inserts_generic_segment_without_source_url(self):
+        # use_live_source=False (pinned replay mode): the weekly segment is still
+        # inserted but carries no source_url so the recorder does not navigate to
+        # a live page (issue #609 review).
+        plan = self._repo_plan()
+        out = prepend_weekly_segment(plan, "podcast-2026-W26-de5f", use_live_source=False)
+        assert len(out.segments) == 3
+        first = out.segments[0]
+        assert first.is_generic
+        assert first.source_url is None
+        assert first.start_seconds == 0.0
+        assert out.segments[1].repo == RepoReference("microsoft", "vscode")
+
+    def test_pinned_replay_is_idempotent(self):
+        plan = self._repo_plan()
+        once = prepend_weekly_segment(plan, "podcast-2026-W26-x", use_live_source=False)
+        twice = prepend_weekly_segment(once, "podcast-2026-W26-x", use_live_source=False)
+        assert len(twice.segments) == len(once.segments)
+        assert twice.segments[0].source_url is None
+
     def test_plan_tiles_timeline_with_no_gap(self):
         # The composed video lays segments out by duration, so the plan must tile
         # [0, total] contiguously — any gap shifts every repo earlier than it is
