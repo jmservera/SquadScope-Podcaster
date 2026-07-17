@@ -119,7 +119,10 @@ def test_run_generation_job_threads_auto_prior_episode_themes(monkeypatch, tmp_p
     monkeypatch.setattr(
         jobs,
         "fetch_prior_episode_themes",
-        lambda storage_backend, job_id: ("AI agents in enterprise", "Eval loops and guardrails"),
+        lambda storage_backend, job_id, **kwargs: (
+            "AI agents in enterprise",
+            "Eval loops and guardrails",
+        ),
     )
 
     def fake_generate_script(**kwargs) -> str:
@@ -193,6 +196,47 @@ def test_prior_job_ids_excludes_future_jobs() -> None:
     assert "jobs/podcast-2026-W26-future/script.txt" not in storage.read_paths
 
 
+def test_same_week_prior_jobs_use_manifest_timestamps_not_hash_order() -> None:
+    earlier_job = "podcast-2026-W25-zzzzzzzzzzzz"
+    later_job = "podcast-2026-W25-aaaaaaaaaaaa"
+    storage = _MockStorage(
+        blobs=[
+            f"jobs/{later_job}/script.txt",
+            f"jobs/{earlier_job}/script.txt",
+        ],
+        scripts={
+            f"jobs/{earlier_job}/manifest.json": (
+                '{"status":"accepted","created_at":"2026-06-16T09:00:00Z"}'
+            ).encode(),
+            f"jobs/{later_job}/manifest.json": (
+                '{"status":"accepted","created_at":"2026-06-16T11:00:00Z"}'
+            ).encode(),
+            f"jobs/{earlier_job}/script.txt": (
+                "Title: Earlier Episode\n"
+                "Source URL: https://example.com/earlier\n"
+                "---\n"
+                "Theo: In this episode we will talk about: Earlier same-week topic.\n"
+            ).encode(),
+            f"jobs/{later_job}/script.txt": (
+                "Title: Later Episode\n"
+                "Source URL: https://example.com/later\n"
+                "---\n"
+                "Theo: In this episode we will talk about: Later same-week topic.\n"
+            ).encode(),
+        },
+    )
+
+    themes = fetch_prior_episode_themes(
+        storage,
+        "podcast-2026-W25-mmmmmmmmmmmm",
+        current_created_at=datetime(2026, 6, 16, 10, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert any("Earlier same-week topic" in theme for theme in themes)
+    assert not any("Later same-week topic" in theme for theme in themes)
+    assert f"jobs/{later_job}/script.txt" not in storage.read_paths
+
+
 def test_build_job_id_changes_with_content_and_config() -> None:
     """Changing content or replay-relevant config must change job identity;
     identical pinned inputs must produce the same job_id (idempotent)."""
@@ -202,6 +246,8 @@ def test_build_job_id_changes_with_content_and_config() -> None:
     with_sha_a = dict(base, article_sha256="a" * 64)
     with_sha_b = dict(base, article_sha256="b" * 64)
     with_config = dict(base, podcast_config={"name": "OtherShow"})
+    with_title = dict(base, article_title="A distinct pinned title")
+    with_breaking_news = dict(base, breaking_news="A distinct pinned update")
 
     # Same inputs → same job_id
     assert build_job_id(with_sha_a) == build_job_id(dict(with_sha_a))
@@ -209,8 +255,10 @@ def test_build_job_id_changes_with_content_and_config() -> None:
     assert build_job_id(with_sha_a) != build_job_id(with_sha_b)
     # Different config → different job_id
     assert build_job_id(base) != build_job_id(with_config)
+    assert build_job_id(base) != build_job_id(with_title)
+    assert build_job_id(base) != build_job_id(with_breaking_news)
     # All start with the expected week prefix
-    for payload in (base, with_sha_a, with_sha_b, with_config):
+    for payload in (base, with_sha_a, with_sha_b, with_config, with_title, with_breaking_news):
         assert build_job_id(payload).startswith("podcast-2026-W28-")
 
 

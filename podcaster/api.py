@@ -31,7 +31,12 @@ from urllib.parse import unquote, urlparse
 from podcaster.auth_core import create_token, get_credentials, verify_token
 from podcaster.credentials import CredentialStore
 from podcaster.failure_reporting import report_failure
-from podcaster.jobs import ReplayCollisionError, failed_response, run_generation_job
+from podcaster.jobs import (
+    REPLAY_COLLISION_MESSAGE,
+    ReplayCollisionError,
+    failed_response,
+    run_generation_job,
+)
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
 from podcaster.storage import create_storage_backend
@@ -450,8 +455,8 @@ class GenerateHandler(BaseHTTPRequestHandler):
 
         try:
             result = run_generation_job(payload, validation_warnings=validation.warnings or None)
-        except ReplayCollisionError as exc:
-            response = failed_response([str(exc)], validation.warnings or None)
+        except ReplayCollisionError:
+            response = failed_response([REPLAY_COLLISION_MESSAGE], validation.warnings or None)
             _json_response(self, HTTPStatus.CONFLICT, response)
             return
         except Exception:

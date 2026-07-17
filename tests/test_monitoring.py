@@ -607,7 +607,7 @@ class TestGenerateEndpoint:
 
         assert first.status_code == 202
         assert second.status_code == 409
-        assert "replay collision:" in second.json()["errors"][0]
+        assert second.json()["errors"] == ["replay collision: existing outputs are not overwritten"]
 
 
 class TestReviewEndpoint:

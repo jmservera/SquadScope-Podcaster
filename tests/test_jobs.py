@@ -266,6 +266,42 @@ def test_dry_run_allows_repeated_identical_inputs(tmp_path: Path) -> None:
     assert result.response["status"] == "dry_run"
 
 
+def test_dry_run_never_mutates_accepted_namespace_or_monthly_ledger(tmp_path: Path) -> None:
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "article_title": "Pinned title",
+        "article_content": VALID_ARTICLE_CONTENT,
+    }
+    now = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
+
+    accepted = run_generation_job(payload, storage=storage, now=now)
+    accepted_dir = tmp_path / "jobs" / accepted.response["job_id"]
+    accepted_snapshot = {
+        path.relative_to(accepted_dir): path.read_bytes()
+        for path in accepted_dir.rglob("*")
+        if path.is_file()
+    }
+    ledger_path = tmp_path / monthly_ledger_path("2026-06")
+    ledger_snapshot = ledger_path.read_bytes()
+
+    dry_run = run_generation_job(
+        {**payload, "dry_run": True},
+        storage=storage,
+        now=datetime(2026, 6, 7, 20, 7, 49, tzinfo=timezone.utc),
+    )
+
+    assert dry_run.response["job_id"] == f"{accepted.response['job_id']}-dry-run"
+    assert dry_run.response["status"] == "dry_run"
+    assert ledger_path.read_bytes() == ledger_snapshot
+    assert {
+        path.relative_to(accepted_dir): path.read_bytes()
+        for path in accepted_dir.rglob("*")
+        if path.is_file()
+    } == accepted_snapshot
+
+
 def test_backchannels_payload_is_threaded_into_request_manifest() -> None:
     """Phase B wiring: a top-level ``backchannels`` payload reaches the request manifest."""
 
@@ -675,7 +711,8 @@ def test_retry_of_existing_job_bypasses_monthly_budget_limit() -> None:
             self.monthly_updates: list[str] = []
 
         def update_bytes(self, path, content_type, update):
-            self.monthly_updates.append(path)
+            if path == monthly_ledger_path("2026-06"):
+                self.monthly_updates.append(path)
             return super().update_bytes(path, content_type, update)
 
         def put_bytes(self, path, content, content_type):
@@ -748,6 +785,36 @@ def test_concurrent_jobs_share_atomic_monthly_budget_reservation() -> None:
         assert not any((artifact_root / "jobs" / job_id).exists() for job_id in failed_job_ids)
     finally:
         shutil.rmtree(artifact_root, ignore_errors=True)
+
+
+def test_concurrent_identical_submissions_atomically_reserve_namespace(tmp_path: Path) -> None:
+    from threading import Barrier
+
+    from podcaster.jobs import ReplayCollisionError
+
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    payload = {"week": "2026-W30", "article_url": "https://example.com/concurrent-replay"}
+    start = Barrier(2)
+
+    def submit() -> str:
+        start.wait()
+        try:
+            return run_generation_job(
+                payload,
+                storage=storage,
+                now=datetime(2026, 7, 20, 12, 0, 0, tzinfo=timezone.utc),
+            ).response["status"]
+        except ReplayCollisionError:
+            return "collision"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(lambda _: submit(), range(2)))
+
+    assert sorted(outcomes) == ["accepted", "collision"]
+    job_id = build_job_id(payload)
+    monthly = json.loads((tmp_path / monthly_ledger_path("2026-07")).read_text())
+    assert [episode["job_id"] for episode in monthly["episodes"]] == [job_id]
+    assert (tmp_path / "jobs" / job_id / "manifest.json").exists()
 
 
 def test_non_dry_run_allows_explicit_operator_cost_override() -> None:

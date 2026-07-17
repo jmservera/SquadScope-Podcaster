@@ -32,6 +32,8 @@ from podcaster.sections import parse_script_sections, sections_to_metadata
 from podcaster.storage import StorageBackend, StoredArtifact, create_storage_backend
 from podcaster.validation import RESPONSE_KEYS
 
+REPLAY_COLLISION_MESSAGE = "replay collision: existing outputs are not overwritten"
+
 
 @dataclass(frozen=True)
 class JobResult:
@@ -66,6 +68,8 @@ def _replay_config_hash(payload: dict[str, Any]) -> str:
 
     Only includes keys that materially affect the generated output:
 
+    * ``article_title`` and ``breaking_news`` — direct script-generation inputs.
+    * ``source_artifacts`` — pinned provenance rendered into generated artifacts.
     * ``podcast_config`` — show name, hosts, voices; changes the script and audio.
     * ``script_directions`` — LLM prompt shaping; changes the generated script.
     * ``backchannels`` — per-section audio threading overrides; changes synthesis audio.
@@ -76,7 +80,14 @@ def _replay_config_hash(payload: dict[str, Any]) -> str:
     so callers who rely on defaults always hash identically to one another.
     """
     relevant: dict[str, Any] = {}
-    for key in ("podcast_config", "script_directions", "backchannels"):
+    for key in (
+        "article_title",
+        "breaking_news",
+        "source_artifacts",
+        "podcast_config",
+        "script_directions",
+        "backchannels",
+    ):
         value = payload.get(key)
         if value is not None:
             relevant[key] = value
@@ -130,7 +141,10 @@ def run_generation_job(
             payload = dict(payload)
             payload["article_sha256"] = computed_article_sha
 
-    job_id = build_job_id(payload)
+    canonical_job_id = build_job_id(payload)
+    is_dry_run = bool(payload.get("dry_run"))
+    job_id = f"{canonical_job_id}-dry-run" if is_dry_run else canonical_job_id
+    created_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     podcast_config = PodcastConfig.from_payload(payload)
     if not PodcastConfig.payload_provides_identity(payload):
         logging.warning(
@@ -146,15 +160,41 @@ def run_generation_job(
         validate_article_inputs(payload.get("article_title"), payload.get("article_content"))
     storage = storage or create_storage_backend()
 
-    # Refuse non-dry-run replay output collisions. Dry runs intentionally remain
-    # repeatable because they do not enqueue synthesis or publish output.
-    existing_manifest_raw = storage.get_bytes(f"jobs/{job_id}/manifest.json")
-    if not payload.get("dry_run") and existing_manifest_raw is not None:
-        logging.warning(
-            "replay collision detected job_id=%s; existing manifest not overwritten",
-            job_id,
-        )
-        raise ReplayCollisionError(job_id)
+    reservation_path: str | None = None
+    if not is_dry_run:
+        manifest_path = f"jobs/{job_id}/manifest.json"
+        if storage.get_bytes(manifest_path) is not None:
+            logging.warning(
+                "replay collision detected job_id=%s; existing manifest not overwritten",
+                job_id,
+            )
+            raise ReplayCollisionError(job_id)
+
+        reservation_path = f"job-reservations/{job_id}.json"
+
+        def reserve_job_namespace(content: bytes | None) -> bytes:
+            if content is not None:
+                raise ReplayCollisionError(job_id)
+            return manifest_bytes(
+                {
+                    "schema_version": "squadscope-podcaster-job-reservation-v1",
+                    "job_id": job_id,
+                    "reserved_at": created_at,
+                }
+            )
+
+        try:
+            storage.update_bytes(
+                reservation_path,
+                "application/json; charset=utf-8",
+                reserve_job_namespace,
+            )
+        except ReplayCollisionError:
+            logging.warning(
+                "replay collision detected job_id=%s; namespace already reserved",
+                job_id,
+            )
+            raise
 
     month = current.strftime("%Y-%m")
     monthly_path = monthly_ledger_path(month)
@@ -177,7 +217,7 @@ def run_generation_job(
             projected_episode_cost_usd=USD_ZERO,
             override=cost_override,
         )
-        if not payload.get("dry_run") and budget["status"] == "over_budget" and not is_retry:
+        if not is_dry_run and budget["status"] == "over_budget" and not is_retry:
             raise MonthlyBudgetExceeded(budget)
         budget_context["prior_episode_count"] = prior_episode_count
         budget_context["prior_monthly_spend"] = prior_monthly_spend
@@ -191,10 +231,15 @@ def run_generation_job(
         )
 
     try:
-        storage.update_bytes(
-            monthly_path, "application/json; charset=utf-8", reserve_monthly_budget
-        )
+        if is_dry_run:
+            reserve_monthly_budget(storage.get_bytes(monthly_path))
+        else:
+            storage.update_bytes(
+                monthly_path, "application/json; charset=utf-8", reserve_monthly_budget
+            )
     except MonthlyBudgetExceeded as exc:
+        if reservation_path is not None:
+            storage.delete_blob(reservation_path)
         logging.warning(
             "podcaster job blocked by monthly budget job_id=%s week=%s "
             "projected_episode_count=%s projected_monthly_spend_usd=%s",
@@ -233,7 +278,9 @@ def run_generation_job(
     )
     if not script_directions.historical_context.prior_episode_themes:
         try:
-            prior_episode_themes = fetch_prior_episode_themes(storage, job_id)
+            prior_episode_themes = fetch_prior_episode_themes(
+                storage, job_id, current_created_at=current
+            )
         except Exception:
             logging.exception("prior episode theme extraction failed job_id=%s", job_id)
             prior_episode_themes = ()
@@ -370,7 +417,6 @@ def run_generation_job(
     if audio_validation is None:
         audio_validation = placeholder_audio_validation(byte_length=0, sha256="")
 
-    created_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     auto_publish = os.environ.get("PODCAST_AUTO_PUBLISH", "").lower() == "true"
     manifest_status = "dry_run" if payload.get("dry_run") else "accepted"
     manifest = {
@@ -456,7 +502,10 @@ def run_generation_job(
         )
         return manifest_bytes(updated_monthly_ledger)
 
-    storage.update_bytes(monthly_path, "application/json; charset=utf-8", finalize_monthly_budget)
+    if not is_dry_run:
+        storage.update_bytes(
+            monthly_path, "application/json; charset=utf-8", finalize_monthly_budget
+        )
     logging.info(
         "podcaster job staged job_id=%s status=%s dry_run=%s artifact_count=%s",
         job_id,

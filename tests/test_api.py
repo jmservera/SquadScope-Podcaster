@@ -370,7 +370,9 @@ class TestSuccessfulGeneration:
 
         assert first.response_code == HTTPStatus.ACCEPTED
         assert second.response_code == HTTPStatus.CONFLICT
-        assert "replay collision:" in second.get_response_json()["errors"][0]
+        assert second.get_response_json()["errors"] == [
+            "replay collision: existing outputs are not overwritten"
+        ]
 
     def test_wrong_path_returns_404(self):
         body = json.dumps({"week": "2026-W24", "article_url": "https://example.com/a"}).encode()
