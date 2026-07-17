@@ -57,10 +57,16 @@ def _cors_allowlist() -> list[str]:
 
 def _cors_headers(handler: BaseHTTPRequestHandler) -> list[tuple[str, str]]:
     origin = handler.headers.get("Origin")
-    if not origin or origin not in _cors_allowlist():
+    # Echo back the matched entry from the trusted allowlist (sourced from
+    # PODCASTER_CORS_ORIGINS), never the raw request header. This preserves the
+    # exact-match semantics while ensuring the value written into the response
+    # header comes from server configuration, not attacker-controlled input, so
+    # it cannot be used for HTTP response splitting (CodeQL py/http-response-splitting).
+    allowed_origin = next((o for o in _cors_allowlist() if o == origin), None)
+    if allowed_origin is None:
         return []
     return [
-        ("Access-Control-Allow-Origin", origin),
+        ("Access-Control-Allow-Origin", allowed_origin),
         ("Vary", "Origin"),
         ("Access-Control-Allow-Credentials", "true"),
         ("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS"),

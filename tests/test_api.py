@@ -128,6 +128,24 @@ class TestCors:
             handler = self._options({"Origin": "https://evil.example"})
         assert "Access-Control-Allow-Origin" not in handler.response_headers
 
+    def test_crlf_injection_origin_is_denied(self):
+        # An Origin carrying header-splitting payload never matches an allowlist
+        # entry, so nothing is echoed (CodeQL py/http-response-splitting).
+        with patch.dict(os.environ, {"PODCASTER_CORS_ORIGINS": "https://ui.example.com"}):
+            handler = self._options(
+                {"Origin": "https://ui.example.com\r\nSet-Cookie: injected=1"}
+            )
+        assert "Access-Control-Allow-Origin" not in handler.response_headers
+        assert "Set-Cookie" not in handler.response_headers
+
+    def test_echoed_origin_comes_from_allowlist(self):
+        # The value written into the response header must be the trusted
+        # allowlist entry, not the raw request header.
+        allowlisted = "https://ui.example.com"
+        with patch.dict(os.environ, {"PODCASTER_CORS_ORIGINS": allowlisted}):
+            handler = self._options({"Origin": allowlisted})
+        assert handler.response_headers["Access-Control-Allow-Origin"] == allowlisted
+
 
 class TestHealthEndpoint:
     def test_healthz_returns_200(self):
