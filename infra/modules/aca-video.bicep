@@ -128,6 +128,42 @@ param videoYoutubeRefreshToken string = ''
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
 
+// YouTube OAuth credentials are only wired when the upload feature is enabled.
+// ACA rejects secrets with empty values, so emitting empty youtube-* secrets (and
+// dangling secretRefs) when YouTube is disabled fails the deploy with
+// ContainerAppSecretInvalid. Gate both the secret definitions and their env
+// secretRefs on videoYoutubeEnabled so a disabled/unconfigured YouTube target
+// omits them entirely. (Fixes deploy regression from #613.)
+var youtubeConfigured = videoYoutubeEnabled == 'true'
+var youtubeSecrets = youtubeConfigured ? [
+  {
+    name: 'youtube-client-id'
+    value: videoYoutubeClientId
+  }
+  {
+    name: 'youtube-client-secret'
+    value: videoYoutubeClientSecret
+  }
+  {
+    name: 'youtube-refresh-token'
+    value: videoYoutubeRefreshToken
+  }
+] : []
+var youtubeSecretEnv = youtubeConfigured ? [
+  {
+    name: 'VIDEO_YOUTUBE_CLIENT_ID'
+    secretRef: 'youtube-client-id'
+  }
+  {
+    name: 'VIDEO_YOUTUBE_CLIENT_SECRET'
+    secretRef: 'youtube-client-secret'
+  }
+  {
+    name: 'VIDEO_YOUTUBE_REFRESH_TOKEN'
+    secretRef: 'youtube-refresh-token'
+  }
+] : []
+
 resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
   name: videoJobName
   location: location
@@ -143,7 +179,7 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
       triggerType: 'Event'
       replicaTimeout: replicaTimeoutSeconds
       replicaRetryLimit: 1
-      secrets: [
+      secrets: concat([
         {
           name: 'spotify-sp-dc'
           value: spotifySessionCookieDc
@@ -152,19 +188,7 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
           name: 'spotify-sp-key'
           value: spotifySessionCookieKey
         }
-        {
-          name: 'youtube-client-id'
-          value: videoYoutubeClientId
-        }
-        {
-          name: 'youtube-client-secret'
-          value: videoYoutubeClientSecret
-        }
-        {
-          name: 'youtube-refresh-token'
-          value: videoYoutubeRefreshToken
-        }
-      ]
+      ], youtubeSecrets)
       registries: hasContainerRegistry ? [
         {
           server: containerRegistryServer
@@ -208,7 +232,7 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             cpu: json(jobCpu)
             memory: jobMemory
           }
-          env: [
+          env: concat([
             {
               name: 'AZURE_CLIENT_ID'
               value: jobIdentityClientId
@@ -282,18 +306,6 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
               value: videoYoutubePrivacy
             }
             {
-              name: 'VIDEO_YOUTUBE_CLIENT_ID'
-              secretRef: 'youtube-client-id'
-            }
-            {
-              name: 'VIDEO_YOUTUBE_CLIENT_SECRET'
-              secretRef: 'youtube-client-secret'
-            }
-            {
-              name: 'VIDEO_YOUTUBE_REFRESH_TOKEN'
-              secretRef: 'youtube-refresh-token'
-            }
-            {
               name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED'
               value: 'true'
             }
@@ -309,7 +321,7 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
               name: 'SP_KEY'
               secretRef: 'spotify-sp-key'
             }
-          ]
+          ], youtubeSecretEnv)
         }
       ]
     }
