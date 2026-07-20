@@ -33,7 +33,6 @@ from podcaster.ownership_tone import (
 from podcaster.repo_naming import (
     ReadmeFetcher,
     build_spoken_name_map,
-    fetch_readme,
     rewrite_spoken_repo_names,
 )
 from podcaster.sanitization import cap_length, neutralize
@@ -781,7 +780,7 @@ def generate_script(
     generation_context: GenerationContext | None = None,
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
-    readme_fetcher: ReadmeFetcher | None = fetch_readme,
+    readme_fetcher: ReadmeFetcher | None = None,
 ) -> str:
     """Generate a two-voice Claracle script using the Azure OpenAI chat endpoint.
 
@@ -793,6 +792,11 @@ def generate_script(
             background from prior episodes (summary, month synthesis, yearly
             narrative, prior themes).  When supplied, the LLM is guided to
             reference evolving trends and avoid repetition.
+        readme_fetcher: Optional callable used to fetch repo READMEs so spoken
+            project names can prefer a repo's README H1 (#627). Defaults to
+            ``None`` (network-free): callers opt in — e.g. by passing
+            :func:`podcaster.repo_naming.fetch_readme` — where outbound internet
+            and the added latency budget are acceptable.
 
     Raises ``ValueError`` if the config is not ready or the LLM returns empty content.
     """

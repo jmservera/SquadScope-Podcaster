@@ -51,17 +51,25 @@ _GITHUB_URL_RE = re.compile(
 # Valid GitHub owner/repo path segment (used to guard the network fetch).
 _VALID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 
+# A scheme-less URL whose first path segment is a dotted host (e.g.
+# ``github.com/owner/repo``). Matching generically — rather than checking for a
+# specific host substring — drops *any* leading host before the ``owner/repo``
+# slug and avoids an incomplete host-substring check.
+_SCHEMELESS_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}/")
+
 # Fenced-code delimiters (``` or ~~~), up to three leading spaces.
 _FENCE_RE = re.compile(r"^\s{0,3}(```+|~~~+)")
 # ATX H1: up to three leading spaces, a single ``#`` (not ``##``), then space(s).
 _ATX_H1_RE = re.compile(r"^ {0,3}#(?!#)\s+(.*)$")
 _WHITESPACE_RE = re.compile(r"\s+")
 
-# A cleaned title that still looks like a URL / repo host reference is rejected:
-# left intact it would be spoken robotically and — for a ``github.com`` URL —
+# A cleaned title that still looks like a URL or a bare ``owner/repo`` path is
+# rejected: left intact it would be spoken robotically and — for a URL — could be
 # harvested downstream as a spurious new repo reference (defeating the invariant
-# that an untrusted README can never introduce a new canonical repo).
-_URLISH_RE = re.compile(r"https?://|www\.|github\.com|githubusercontent\.com", re.IGNORECASE)
+# that an untrusted README can never introduce a new canonical repo). Detection
+# is generic (URL scheme, or an ``x/y`` slug boundary) rather than a named-host
+# substring, so it cannot be bypassed by a lookalike host.
+_UNSAFE_SPOKEN_NAME_RE = re.compile(r"https?://|[A-Za-z0-9]/[A-Za-z0-9]")
 
 # Full-URL span within a line — left untouched by the spoken-name rewrite so all
 # URL-based harvesting (visual markers, section repo slugs, video windows) keeps
@@ -164,9 +172,15 @@ def extract_readme_title(readme_text: "str | None") -> "str | None":
         cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
         if not cleaned:
             continue
-        # Reject a title that still carries a URL / repo host reference so an
+        # Re-run the injection check on the *cleaned visible* text: the raw check
+        # above stops at periods, so injection markers can be smuggled inside
+        # Markdown links/badges with dotted URLs (``Ignore [previous](https://x.y)
+        # instructions``) that only surface once decoration is stripped.
+        if flag_injection(cleaned):
+            return None
+        # Reject a title that still carries a URL or an ``owner/repo`` path so an
         # untrusted README can never inject a spoken URL or a harvestable repo.
-        if _URLISH_RE.search(cleaned):
+        if _UNSAFE_SPOKEN_NAME_RE.search(cleaned):
             continue
         return _hard_cap(cleaned, _MAX_SPOKEN_NAME_CHARS) or None
     return None
@@ -179,9 +193,12 @@ def repo_name_from_slug(slug: str) -> str:
     and trailing dots are removed.
     """
     text = (slug or "").strip()
-    if "//" in text or text.lower().startswith("github.com"):
-        parsed = urlparse(text if "//" in text else "https://" + text)
-        segments = [seg for seg in parsed.path.split("/") if seg]
+    if "//" in text:
+        segments = [seg for seg in urlparse(text).path.split("/") if seg]
+    elif _SCHEMELESS_HOST_RE.match(text):
+        # Scheme-less ``host/owner/repo`` — prepend a scheme so ``urlparse``
+        # peels the host off into ``netloc`` and leaves ``owner/repo`` in path.
+        segments = [seg for seg in urlparse("https://" + text).path.split("/") if seg]
     else:
         segments = [seg for seg in text.split("/") if seg]
     if not segments:
@@ -232,11 +249,14 @@ def fetch_readme(
             for chunk in resp.iter_content(chunk_size=8192):
                 if not chunk:
                     break
-                chunks.append(chunk)
                 total += len(chunk)
-                if total >= max_bytes:
-                    break
-            return b"".join(chunks)[:max_bytes].decode("utf-8", errors="replace")
+                if total > max_bytes:
+                    # Oversize: bail deterministically rather than return a
+                    # truncated (possibly garbled) body, per the security
+                    # contract. Bandwidth is bounded to max_bytes + one chunk.
+                    return None
+                chunks.append(chunk)
+            return b"".join(chunks).decode("utf-8", errors="replace")
     except Exception:
         return None
 
@@ -321,7 +341,7 @@ def rewrite_spoken_repo_names(
         return dialogue
     out: list[str] = []
     for raw in dialogue.splitlines():
-        if raw.lstrip().startswith("#"):
+        if raw.lstrip().startswith("##"):
             out.append(raw)
             continue
         out.append(_rewrite_line(raw, name_map))
