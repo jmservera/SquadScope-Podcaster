@@ -330,7 +330,9 @@ class TestComputeLowerThirds:
         segments = [_make_recorded_segment(duration=20.0)]
         lts = _compute_lower_thirds(segments)
         assert len(lts) == 1
-        assert lts[0].text == "test-owner/test-repo"
+        # #627: on-screen label uses the natural name (org prefix dropped,
+        # ``-`` -> space), not the raw ``owner/repo`` slug.
+        assert lts[0].text == "test repo"
         assert lts[0].start_seconds == 0.5
         assert lts[0].end_seconds == 0.5 + LOWER_THIRD_DURATION
 
@@ -341,8 +343,8 @@ class TestComputeLowerThirds:
         ]
         lts = _compute_lower_thirds(segments, transition_duration=1.0)
         assert len(lts) == 2
-        assert lts[0].text == "a/b"
-        assert lts[1].text == "c/d"
+        assert lts[0].text == "b"
+        assert lts[1].text == "d"
         # Second segment starts after first minus transition
         assert lts[1].start_seconds > lts[0].end_seconds
 

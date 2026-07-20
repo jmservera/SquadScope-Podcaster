@@ -51,6 +51,7 @@ except ModuleNotFoundError:  # pragma: no cover
     _PLAYWRIGHT_AVAILABLE = False
 
 from podcaster.generation import PODCAST_NAME
+from podcaster.repo_naming import naturalize_name
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
 from podcaster.video.recording_pool import (
     MAX_RECORDING_CONCURRENCY,
@@ -457,7 +458,7 @@ h1 {{ font-size: 52px; margin: 0 0 24px; font-weight: 600; }}
  0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path>
     </svg>
   </div>
-  <h1>{owner}/{name}</h1>
+  <h1>{display}</h1>
   <div class="url">{url}</div>
 </div>
 </body></html>
@@ -488,7 +489,7 @@ h1 {{ font-size: 52px; margin: 0 0 20px; font-weight: 600; }}
 </style></head><body>
 <div class="card">
   <div class="icon">&#128683;</div>
-  <h1>{owner}/{name}</h1>
+  <h1>{display}</h1>
   <div class="reason">{reason}</div>
   <div class="url">{url}</div>
 </div>
@@ -1745,7 +1746,9 @@ def _render_url_card(
     in real time for the screencast recorder (issue #387).
     """
     url = f"github.com/{owner}/{name}"
-    html = FALLBACK_BRAND_HTML.format(width=WIDTH, height=HEIGHT, owner=owner, name=name, url=url)
+    html = FALLBACK_BRAND_HTML.format(
+        width=WIDTH, height=HEIGHT, display=naturalize_name(name), url=url
+    )
     page.set_content(html)
     if capturer is not None:
         # Discard any partially-captured frames so the fallback is held as a
@@ -1784,7 +1787,7 @@ def _render_removed_card(
     """
     url = f"github.com/{owner}/{name}"
     html = REMOVED_REPO_HTML.format(
-        width=WIDTH, height=HEIGHT, owner=owner, name=name, reason=reason, url=url
+        width=WIDTH, height=HEIGHT, display=naturalize_name(name), reason=reason, url=url
     )
     page.set_content(html)
     if capturer is not None:
