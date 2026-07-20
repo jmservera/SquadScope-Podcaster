@@ -65,6 +65,18 @@ class RepoReference:
     def url(self) -> str:
         return f"https://github.com/{self.owner}/{self.name}"
 
+    @property
+    def spoken_name(self) -> str:
+        """Natural, human-spoken name (org prefix dropped, ``-``/``_`` -> space).
+
+        Network-free naturalized fallback (issue #627), consistent with the
+        spoken-script name when no README title is available. The canonical
+        ``owner/repo`` slug is retained separately for links and lookups.
+        """
+        from podcaster.repo_naming import naturalize_name
+
+        return naturalize_name(self.name)
+
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, RepoReference):
             return NotImplemented

@@ -30,6 +30,12 @@ from podcaster.ownership_tone import (
     find_soft_flags,
     find_violations,
 )
+from podcaster.repo_naming import (
+    ReadmeFetcher,
+    build_spoken_name_map,
+    fetch_readme,
+    rewrite_spoken_repo_names,
+)
 from podcaster.sanitization import cap_length, neutralize
 from podcaster.script_plan import build_visual_marker_guidance, infer_repo_visual_markers
 from podcaster.sections import parse_script_sections, sections_to_metadata, validate_sections
@@ -775,6 +781,7 @@ def generate_script(
     generation_context: GenerationContext | None = None,
     token_provider: TokenProvider | None = None,
     transport: Transport | None = None,
+    readme_fetcher: ReadmeFetcher | None = fetch_readme,
 ) -> str:
     """Generate a two-voice Claracle script using the Azure OpenAI chat endpoint.
 
@@ -878,6 +885,13 @@ def generate_script(
     # visuals reliable regardless of model marker compliance (#555). Run before
     # truncation so injected markers stay within MAX_SCRIPT_CHARS.
     dialogue = infer_repo_visual_markers(dialogue, podcast_config)
+
+    # Speak natural project names instead of raw ``owner/repo`` slugs (#627).
+    # Runs *after* marker inference so every repo already has its canonical URL
+    # anchored in a ``## Visual: repo`` marker; the spoken bare slugs can then be
+    # replaced without disturbing any URL-based harvesting or video timing.
+    repo_name_map = build_spoken_name_map(dialogue, fetch=readme_fetcher)
+    dialogue = rewrite_spoken_repo_names(dialogue, repo_name_map)
 
     # Truncate overly long scripts
     if len(dialogue) > MAX_SCRIPT_CHARS:

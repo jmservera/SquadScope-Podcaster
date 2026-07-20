@@ -1543,7 +1543,7 @@ def _compute_lower_thirds_by_index(
 
         if lt_end > lt_start and not seg.is_generic:
             lower_thirds[i] = LowerThird(
-                text=f"{seg.repo.owner}/{seg.repo.name}",
+                text=seg.repo.spoken_name,
                 url=seg.repo.url,
                 start_seconds=lt_start,
                 end_seconds=lt_end,
