@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Sequence
 
+from podcaster.repo_naming import naturalize_name, repo_name_from_slug
 from podcaster.sections import (
     DEFAULT_TITLE_CARD_DURATION_SECONDS,
     ScriptSection,
@@ -310,6 +311,41 @@ def _known_repo_urls(script: str) -> dict[str, str]:
     return mapping
 
 
+# A cue-matchable spoken name must be specific enough that finding it in host
+# prose reliably means "the host just named this repo" rather than an incidental
+# common word. Short/blank names are dropped (matching by the ``owner/repo`` slug
+# still covers them when the hosts happen to read the slug aloud).
+_MIN_SPOKEN_MATCH_CHARS = 3
+
+
+def _spoken_name_matchers(script: str) -> dict[str, str]:
+    """Map each repo's **spoken natural name** (lowercased) → canonical repo URL.
+
+    #627/#628 made the hosts say a repo's natural product name ("DeepSpec")
+    instead of its raw ``owner/repo`` slug. Cue detection
+    (:func:`_first_named_repo`) previously only matched the slug, so once the
+    spoken script no longer contained the slug it could not find where a host
+    first names a repo — every repo window collapsed and the article segment
+    never got truncated by a repo cue (#631). This reconstructs the same
+    network-free natural name the hosts now say
+    (:func:`podcaster.repo_naming.naturalize_name` of the repo name after the
+    ``/``) for every known repo so those cues resolve again.
+
+    Names shorter than :data:`_MIN_SPOKEN_MATCH_CHARS`, or that collide with a
+    slug key, are skipped to avoid matching incidental prose. First occurrence
+    wins so the earliest (canonical) URL is retained on any collision.
+    """
+    slugs = _known_repo_urls(script)
+    matchers: dict[str, str] = {}
+    for key, url in slugs.items():
+        slug = key.split("/", 1)[-1]
+        spoken = naturalize_name(repo_name_from_slug(slug)).lower()
+        if len(spoken) < _MIN_SPOKEN_MATCH_CHARS or spoken in slugs:
+            continue
+        matchers.setdefault(spoken, url)
+    return matchers
+
+
 def _boundary_before(text: str, idx: int) -> bool:
     """True if the slug match starting at *idx* is not glued to a preceding token.
 
@@ -350,13 +386,13 @@ def _boundary_after(text: str, pos: int) -> bool:
 def _first_named_repo(text: str, known: dict[str, str]) -> str | None:
     """Return the canonical URL of the first *known* repo named in *text*.
 
-    "Named" means an inline full GitHub URL or a bare ``owner/repo`` slug
-    (case-insensitive) belonging to the authoritative *known* set, bounded so a
-    slug is not matched inside a longer token (e.g. ``owner/repo`` must not match
-    ``owner/repo-old``). When several repos are named, the earliest by character
-    position wins; ties break toward the longer (more specific) then
-    lexicographically smaller slug for determinism. Returns ``None`` when no
-    known repo is named.
+    "Named" means an inline full GitHub URL, a bare ``owner/repo`` slug, or the
+    repo's spoken natural name (#631) — any match key in the authoritative
+    *known* set (case-insensitive), bounded so a key is not matched inside a
+    longer token (e.g. ``owner/repo`` must not match ``owner/repo-old``). When
+    several repos are named, the earliest by character position wins; ties break
+    toward the longer (more specific) then lexicographically smaller key for
+    determinism. Returns ``None`` when no known repo is named.
     """
     if not text or not known:
         return None
@@ -412,11 +448,18 @@ def infer_repo_visual_markers(script: str, podcast_config: Any = None) -> str:
         return script
 
     known = _known_repo_urls(script)
+    spoken_names = _spoken_name_matchers(script)
     host_labels = _host_labels(script, podcast_config)
     header, separator, body = script.partition("\n---")
     prefix = header + separator if separator else ""
     marker_source = body if separator else script
     effective_repo_url: str | None = None
+    # Repos whose window has already been established (by an explicit marker or a
+    # prior cue). A repo's spoken natural name — a weaker signal that recurs in
+    # ordinary prose — only anchors its *first* window; it never re-opens an
+    # already-shown repo, so passing mentions ("how DeepSpec will evolve") don't
+    # spuriously flip the on-screen focus (#631).
+    seen_repo_urls: set[str] = set()
     out: list[str] = []
     for raw_line in marker_source.splitlines():
         line = raw_line.strip()
@@ -425,19 +468,32 @@ def infer_repo_visual_markers(script: str, podcast_config: Any = None) -> str:
         if marker is not None:
             mode, url = marker
             effective_repo_url = url if mode is VisualMode.REPO else None
+            if effective_repo_url is not None:
+                seen_repo_urls.add(effective_repo_url)
             out.append(raw_line)
             continue
 
         speaker_text = _split_speaker(line, host_labels) if line else None
         if speaker_text is not None:
-            # Prefer the authoritative known-repo set (matches bare slugs); fall
-            # back to inline-URL-only detection when no full URLs exist anywhere.
-            repo_url = _first_named_repo(speaker_text[1], known) if known else None
+            spoken = speaker_text[1]
+            # Strong signal first: an inline full URL or a bare ``owner/repo``
+            # slug the host actually reads aloud. This keeps the pre-#628
+            # behaviour (and its re-open semantics) exactly.
+            repo_url = _first_named_repo(spoken, known) if known else None
             if repo_url is None and not known:
-                repo_url = _first_repo_root(speaker_text[1])
-            if repo_url is not None and repo_url != effective_repo_url:
-                out.append(f"{VISUAL_MARKER_PREFIX} repo {repo_url}")
-                effective_repo_url = repo_url
+                repo_url = _first_repo_root(spoken)
+            # Weaker signal: the repo's spoken natural name ("DeepSpec"). Only
+            # used to anchor a repo the first time it is named, so it restores
+            # cue detection for #627/#628 scripts without re-opening windows.
+            if repo_url is None and spoken_names:
+                candidate = _first_named_repo(spoken, spoken_names)
+                if candidate is not None and candidate not in seen_repo_urls:
+                    repo_url = candidate
+            if repo_url is not None:
+                seen_repo_urls.add(repo_url)
+                if repo_url != effective_repo_url:
+                    out.append(f"{VISUAL_MARKER_PREFIX} repo {repo_url}")
+                    effective_repo_url = repo_url
 
         out.append(raw_line)
 
