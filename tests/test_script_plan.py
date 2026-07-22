@@ -443,3 +443,136 @@ def test_parse_script_plan_does_not_backfill_header_without_host_labels():
     plan = parse_script_plan(script)
     assert [seg.visual_mode for seg in plan.segments] == [VisualMode.REPO, VisualMode.REPO]
     assert plan.repo_urls == ("https://github.com/vercel/eve", "https://github.com/openai/gym")
+
+
+# --- #631: cues must resolve from the spoken NATURAL name (#627/#628) ---
+
+
+def test_infer_repo_visual_markers_anchors_on_spoken_natural_name():
+    """#631 regression: #627/#628 makes hosts say a repo's natural product name
+    ("DeepSpec"), not its ``owner/repo`` slug. Cue detection must still place a
+    ``## Visual: repo`` marker at the turn that first names the repo — even when
+    the spoken text no longer contains the slug and no explicit marker exists.
+
+    Before the fix this produced ZERO repo markers, so every repo window
+    collapsed and the article segment scrolled the whole episode.
+    """
+    script = (
+        "Title: Weekly\n"
+        "Repos featured: https://github.com/deepseek-ai/DeepSpec "
+        "https://github.com/abundantbeing/hermes-browser-extension "
+        "https://github.com/benchflow-ai/awesome-evals\n"
+        "---\n"
+        "Theo: Welcome, a quick intro with no repo named yet.\n"
+        "Vera: First up, DeepSpec pushes speculative decoding forward.\n"
+        "Theo: The hermes browser extension keeps everything local-first.\n"
+        "Vera: Finally awesome evals helps measure what really matters.\n"
+    )
+    out = infer_repo_visual_markers(script, CONFIG).splitlines()
+
+    deepspec = out.index("## Visual: repo https://github.com/deepseek-ai/DeepSpec")
+    deepspec_turn = next(i for i, ln in enumerate(out) if ln.startswith("Vera: First up"))
+    assert deepspec == deepspec_turn - 1
+    # Lead-in before the first naming stays article (no repo marker leaks early).
+    assert not any(ln.startswith("## Visual: repo") for ln in out[:deepspec])
+
+    hermes = out.index("## Visual: repo https://github.com/abundantbeing/hermes-browser-extension")
+    evals = out.index("## Visual: repo https://github.com/benchflow-ai/awesome-evals")
+    assert deepspec < hermes < evals
+
+    plan = parse_script_plan("\n".join(out), CONFIG)
+    windows: list[str] = []
+    for seg in plan.segments:
+        if seg.repo_url and (not windows or windows[-1] != seg.repo_url):
+            windows.append(seg.repo_url)
+    assert windows == [
+        "https://github.com/deepseek-ai/DeepSpec",
+        "https://github.com/abundantbeing/hermes-browser-extension",
+        "https://github.com/benchflow-ai/awesome-evals",
+    ]
+    # The article/lead-in is bounded by the first repo cue, not the whole show.
+    assert plan.segments[0].visual_mode is VisualMode.ARTICLE
+    assert sum(1 for s in plan.segments if s.visual_mode is VisualMode.ARTICLE) == 1
+
+
+def test_parse_script_plan_natural_name_windows_bound_article_segment():
+    """End-to-end #631: a natural-name script with no explicit markers must yield
+    one bounded article lead-in followed by a repo window per named project."""
+    script = (
+        "Title: Weekly\n"
+        "Voices: Clarabel = nova (OpenAI TTS); Joracle = alloy (OpenAI TTS)\n"
+        "Repos featured: https://github.com/deepseek-ai/DeepSpec "
+        "https://github.com/bikini/exploitarium\n"
+        "---\n"
+        "Clarabel: Welcome to the weekly rundown before we dive in.\n"
+        "Joracle: Setting the stage with the big themes this week.\n"
+        "Clarabel: DeepSpec is the standout for inference efficiency.\n"
+        "Joracle: And exploitarium raises some real security concerns.\n"
+    )
+    plan = parse_script_plan(script)
+    modes = [seg.visual_mode for seg in plan.segments]
+    assert modes == [
+        VisualMode.ARTICLE,
+        VisualMode.ARTICLE,
+        VisualMode.REPO,
+        VisualMode.REPO,
+    ]
+    assert plan.repo_urls == (
+        "https://github.com/deepseek-ai/DeepSpec",
+        "https://github.com/bikini/exploitarium",
+    )
+
+
+def test_infer_repo_visual_markers_natural_name_does_not_reopen_seen_window():
+    """A repo's natural name recurs in ordinary prose; a passing mention after
+    its window has been shown must NOT re-open it and flip the on-screen focus.
+
+    Slugs/URLs (strong signals) keep their re-open semantics; only the weaker
+    natural-name signal is first-mention-only (#631)."""
+    script = (
+        "Repos featured: https://github.com/deepseek-ai/DeepSpec "
+        "https://github.com/benchflow-ai/awesome-evals\n"
+        "---\n"
+        "Theo: DeepSpec is the standout for inference efficiency.\n"
+        "Vera: Now awesome evals gives us the measurement layer.\n"
+        "Theo: Later it'll be exciting to see how DeepSpec keeps evolving.\n"
+    )
+    out = infer_repo_visual_markers(script, CONFIG)
+    # DeepSpec is anchored exactly once (its first naming); the trailing prose
+    # mention does not emit a second marker that would steal awesome-evals' window.
+    assert out.count("## Visual: repo https://github.com/deepseek-ai/DeepSpec") == 1
+    assert out.count("## Visual: repo https://github.com/benchflow-ai/awesome-evals") == 1
+
+    plan = parse_script_plan(out, CONFIG)
+    assert plan.segments[-1].repo_url == "https://github.com/benchflow-ai/awesome-evals"
+
+
+def test_infer_repo_visual_markers_generate_script_natural_name_pipeline():
+    """The full #627/#628 pipeline (markers inferred, then spoken slugs rewritten
+    to natural names) must still parse to one window per repo (#631)."""
+    from podcaster.repo_naming import build_spoken_name_map, rewrite_spoken_repo_names
+
+    dialogue = (
+        "Repos featured: https://github.com/deepseek-ai/DeepSpec "
+        "https://github.com/bikini/exploitarium\n"
+        "\n"
+        "Theo: First up, deepseek-ai/DeepSpec pushes speculative decoding.\n"
+        "Vera: And bikini/exploitarium raises real security concerns.\n"
+    )
+    # Mirror script_gen order: infer markers on the bare-slug dialogue, then
+    # rewrite the spoken slugs to natural names.
+    marked = infer_repo_visual_markers(dialogue, CONFIG)
+    name_map = build_spoken_name_map(marked)
+    rewritten = rewrite_spoken_repo_names(marked, name_map)
+    # The spoken host line now says the natural name; the bare slug is gone from
+    # it (URLs in the header / markers are deliberately left intact).
+    spoken_line = next(ln for ln in rewritten.splitlines() if ln.startswith("Theo: First up"))
+    assert "deepseek-ai/DeepSpec" not in spoken_line
+    assert "DeepSpec" in spoken_line
+
+    # Re-parsing (as the render/metadata path does) must recover both windows.
+    plan = parse_script_plan(rewritten, CONFIG)
+    assert plan.repo_urls == (
+        "https://github.com/deepseek-ai/DeepSpec",
+        "https://github.com/bikini/exploitarium",
+    )
