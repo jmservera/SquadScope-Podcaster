@@ -642,6 +642,10 @@ def test_build_realized_metadata_backfills_repo_urls_without_visual_markers():
     assert warnings == ()
 
 
+def test_script_has_repo_urls_accepts_www_github_host():
+    assert episode._script_has_repo_urls("Theo: https://www.github.com/owner/repo-a is notable.")
+
+
 def test_build_realized_metadata_skips_on_segment_mismatch():
     metadata, warnings = episode._build_realized_metadata(
         _MARKED_SCRIPT,

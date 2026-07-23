@@ -186,6 +186,11 @@ class TestNormalizeRepoUrl:
         b = _normalize_repo_url("http://github.com/astral-sh/ruff")
         assert a == b
 
+    def test_www_urls_match_canonical_urls(self):
+        a = _normalize_repo_url("https://www.github.com/astral-sh/ruff.git")
+        b = _normalize_repo_url("https://github.com/astral-sh/ruff")
+        assert a == b
+
 
 # --- plan_section_card_inserts ---
 
@@ -220,6 +225,12 @@ class TestPlanSectionCardInserts:
             "## Trends\nAda: https://github.com/o/r is great.\n"
             "## Industry\nBeto: also https://github.com/o/r.\n"
         )
+        sections = parse_sections(script)
+        plan = plan_section_card_inserts(script, sections, ["https://github.com/o/r"])
+        assert plan == [("Trends", 0)]
+
+    def test_maps_www_urls_to_canonical_segment_urls(self):
+        script = "Title: X\n---\n\n## Trends\nAda: https://www.github.com/o/r is great.\n"
         sections = parse_sections(script)
         plan = plan_section_card_inserts(script, sections, ["https://github.com/o/r"])
         assert plan == [("Trends", 0)]
