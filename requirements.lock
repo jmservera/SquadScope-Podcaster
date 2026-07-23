@@ -2,7 +2,7 @@ alabaster==1.0.0
     # via sphinx
 annotated-doc==0.0.4
     # via fastapi
-annotated-types==0.7.0
+annotated-types==0.8.0
     # via pydantic
 anyio==4.14.2
     # via
@@ -50,11 +50,11 @@ h11==0.16.0
     # via
     #   httpcore2
     #   uvicorn
-httpcore2==2.7.0
+httpcore2==2.9.0
     # via httpx2
 httptools==0.8.0
     # via uvicorn
-httpx2==2.7.0
+httpx2==2.9.0
     # via squadscope-podcaster (pyproject.toml)
 idna==3.18
     # via
