@@ -164,7 +164,7 @@ class SectionCardInsert:
 # First GitHub repo URL after a header (mirrors sync_plan's repo detection but we
 # only need the position/owner/name to map a section to its opening segment).
 _GITHUB_URL_RE = re.compile(
-    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
+    r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
 )
 
 # Strip leading list/heading/emphasis/bracket decoration and an optional

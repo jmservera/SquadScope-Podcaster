@@ -462,7 +462,7 @@ _INTRO_END_MARKER_RE = re.compile(
 )
 
 # Regex to find the first GitHub repo URL (signals start of repo content)
-_GITHUB_URL_RE = re.compile(r"https?://github\.com/")
+_GITHUB_URL_RE = re.compile(r"https?://(?:www\.)?github\.com/")
 
 
 def derive_intro_duration(

@@ -406,6 +406,12 @@ class TestDeriveIntroDuration:
         result = derive_intro_duration(script, words_per_minute=130.0, default_seconds=8.0)
         assert result == pytest.approx(30.0, abs=1.0)
 
+    def test_estimates_from_intro_words_before_www_url(self):
+        intro_words = " ".join(["word"] * 65)
+        script = f"{intro_words}\nhttps://www.github.com/owner/repo\nMore content"
+        result = derive_intro_duration(script, words_per_minute=130.0, default_seconds=8.0)
+        assert result == pytest.approx(30.0, abs=1.0)
+
     def test_clamps_to_max(self):
         many_words = " ".join(["hello"] * 1000)
         script = f"{many_words}\nhttps://github.com/owner/repo"

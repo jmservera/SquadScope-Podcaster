@@ -698,7 +698,9 @@ def _build_realized_metadata(
     return metadata, tuple(warnings)
 
 
-_GITHUB_REPO_URL_RE = re.compile(r"https?://github\.com/[A-Za-z0-9\-_.]+/[A-Za-z0-9\-_.]+")
+_GITHUB_REPO_URL_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/[A-Za-z0-9\-_.]+/[A-Za-z0-9\-_.]+"
+)
 
 
 def _script_has_repo_urls(script: str) -> bool:

@@ -56,6 +56,10 @@ class TestRepoNameFromSlug:
     def test_full_url_takes_repo_segment_not_path(self):
         assert repo_name_from_slug("https://github.com/owner/repo/issues/1") == "repo"
         assert repo_name_from_slug("https://github.com/owner/repo") == "repo"
+        assert (
+            repo_name_from_slug("https://www.github.com/owner/SquadScope-Podcaster.git?tab=readme")
+            == "SquadScope-Podcaster"
+        )
 
     def test_scheme_less_host_is_dropped(self):
         # A scheme-less ``host/owner/repo`` must drop the host, not treat it as
@@ -66,6 +70,7 @@ class TestRepoNameFromSlug:
     def test_strips_git_suffix_and_trailing_dot(self):
         assert repo_name_from_slug("owner/repo.git") == "repo"
         assert repo_name_from_slug("owner/repo.") == "repo"
+        assert repo_name_from_slug("owner/repo.git?tab=readme#intro") == "repo"
 
 
 class TestExtractReadmeTitle:
@@ -186,6 +191,10 @@ class TestBuildSpokenNameMap:
         text = "## Visual: repo https://github.com/org/awesome-evals"
         assert build_spoken_name_map(text) == {("org", "awesome-evals"): "awesome evals"}
 
+    def test_maps_www_git_url_with_query(self):
+        text = "Theo: https://www.github.com/org/awesome-evals.git?tab=readme is great"
+        assert build_spoken_name_map(text) == {("org", "awesome-evals"): "awesome evals"}
+
     def test_ignores_bare_slugs_without_url(self):
         assert build_spoken_name_map("Leela: org/no-url is nice") == {}
 
@@ -220,10 +229,32 @@ class TestRewriteSpokenRepoNames:
         dialogue = "## Visual: repo https://github.com/org/awesome-evals"
         assert rewrite_spoken_repo_names(dialogue, name_map) == dialogue
 
-    def test_leaves_full_urls_untouched(self):
+    def test_replaces_full_urls_in_spoken_lines(self):
         name_map = {("org", "awesome-evals"): "awesome evals"}
         dialogue = "Fry: see https://github.com/org/awesome-evals for more"
+        assert rewrite_spoken_repo_names(dialogue, name_map) == "Fry: see awesome evals for more"
+
+    def test_does_not_rewrite_github_url_embedded_in_non_github_url(self):
+        name_map = {("org", "awesome-evals"): "awesome evals"}
+        url = "https://example.com/?next=https://github.com/org/awesome-evals"
+        dialogue = f"Fry: see {url} for more"
         assert rewrite_spoken_repo_names(dialogue, name_map) == dialogue
+
+    def test_lowercase_metadata_header_preserves_url(self):
+        name_map = {("org", "awesome-evals"): "awesome evals"}
+        dialogue = "repos featured: https://github.com/org/awesome-evals"
+        assert rewrite_spoken_repo_names(dialogue, name_map) == dialogue
+
+    def test_replaces_www_git_query_url_in_spoken_line_and_preserves_marker_url(self):
+        name_map = {("jmservera", "squadscope-podcaster"): "SquadScope Podcaster"}
+        url = "https://www.github.com/jmservera/SquadScope-Podcaster.git?tab=readme#intro"
+        dialogue = f"Theo: First up, {url} is worth watching.\n## Visual: repo {url}"
+
+        rewritten = rewrite_spoken_repo_names(dialogue, name_map)
+
+        assert "Theo: First up, SquadScope Podcaster is worth watching." in rewritten
+        assert f"## Visual: repo {url}" in rewritten
+        assert "Theo: First up, https" not in rewritten
 
     def test_does_not_replace_longer_glued_slug(self):
         name_map = {("org", "repo"): "the repo"}
@@ -325,7 +356,7 @@ class TestGenerateScriptIntegration:
         from podcaster.script_gen import ScriptGenConfig, generate_script
 
         dialogue = (
-            "Leela: This week we cover org/awesome-evals.\n"
+            "Leela: This week we cover https://www.github.com/org/awesome-evals.git?tab=readme.\n"
             "## Visual: repo https://github.com/org/awesome-evals\n"
             "Fry: Yeah, org/awesome-evals is great."
         )
@@ -362,6 +393,7 @@ class TestGenerateScriptIntegration:
         assert "Fry: Yeah, awesome evals is great." in script
         # ...but the canonical URL/marker is retained for links & video windows.
         assert "https://github.com/org/awesome-evals" in script
+        assert "## Visual: repo https://github.com/org/awesome-evals" in script
 
 
 if __name__ == "__main__":  # pragma: no cover
