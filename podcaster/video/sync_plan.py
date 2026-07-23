@@ -33,7 +33,9 @@ _ARTICLE_FETCH_TIMEOUT = 10
 _ARTICLE_FETCH_ALLOWED_HOSTS = frozenset({"claracle.com", "www.claracle.com"})
 
 # Matches GitHub repo URLs: https://github.com/owner/repo (with optional trailing path)
-_GITHUB_REPO_RE = re.compile(r"https?://github\.com/([A-Za-z0-9\-_.]+)/([A-Za-z0-9\-_.]+)")
+_GITHUB_REPO_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/([A-Za-z0-9\-_.]+)/([A-Za-z0-9\-_.]+)"
+)
 
 # Label used for generic background segments that are not tied to a repo.
 GENERIC_SEGMENT_LABEL = "__generic__"

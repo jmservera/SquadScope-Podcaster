@@ -45,7 +45,7 @@ _FETCH_TIMEOUT = 3.0
 # Full ``https://github.com/owner/repo`` URL (mirrors the lenient repo regexes
 # used elsewhere so a trailing period yields a clean slug).
 _GITHUB_URL_RE = re.compile(
-    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
+    r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
 )
 
 # Valid GitHub owner/repo path segment (used to guard the network fetch).
@@ -75,6 +75,14 @@ _UNSAFE_SPOKEN_NAME_RE = re.compile(r"https?://|[A-Za-z0-9]/[A-Za-z0-9]")
 # URL-based harvesting (visual markers, section repo slugs, video windows) keeps
 # working off the canonical slug.
 _URL_SPAN_RE = re.compile(r"https?://\S+")
+# Generic spoken dialogue line. Metadata/header lines are deliberately excluded
+# so full URLs remain available for downstream video/link harvesting.
+_SPOKEN_LINE_RE = re.compile(
+    r"^\s*"
+    r"(?!(?:Title|Episode|Podcast|Source(?: URL| SHA256| Artifact)?|Duration|"
+    r"License|Generated|Voices|Safety|Generator|Repos featured|Host outro)\b)"
+    r"[A-Za-z][A-Za-z0-9 _'.-]{0,30}:\s+"
+)
 # A bare ``owner/repo`` slug not glued to a surrounding token and not part of a
 # longer path (no trailing ``/`` segment).
 _BARE_SLUG_RE = re.compile(
@@ -193,6 +201,7 @@ def repo_name_from_slug(slug: str) -> str:
     and trailing dots are removed.
     """
     text = (slug or "").strip()
+    text = re.split(r"[?#]", text, maxsplit=1)[0].rstrip("/")
     if "//" in text:
         segments = [seg for seg in urlparse(text).path.split("/") if seg]
     elif _SCHEMELESS_HOST_RE.match(text):
@@ -207,6 +216,28 @@ def repo_name_from_slug(slug: str) -> str:
     if name.lower().endswith(".git"):
         name = name[:-4]
     return name.rstrip(".")
+
+
+def _repo_key_from_url(url: str) -> "tuple[str, str] | None":
+    """Return the lowercased ``(owner, repo)`` key for a GitHub URL span."""
+    match = _GITHUB_URL_RE.search(url or "")
+    if match is None:
+        return None
+    owner, repo = match.group(1), match.group(2)
+    repo = repo[:-4] if repo.lower().endswith(".git") else repo
+    repo = repo.rstrip(".")
+    if not owner or not repo:
+        return None
+    return owner.lower(), repo.lower()
+
+
+def _split_url_trailing_punctuation(url: str) -> tuple[str, str]:
+    """Separate sentence punctuation that ``\\S+`` captured after a URL."""
+    suffix = ""
+    while url and url[-1] in ".,;:!?)":
+        suffix = url[-1] + suffix
+        url = url[:-1]
+    return url, suffix
 
 
 def spoken_repo_name(slug: str, *, readme_text: "str | None" = None) -> str:
@@ -314,12 +345,20 @@ def _replace_bare_slugs(text: str, name_map: dict[tuple[str, str], str]) -> str:
 
 
 def _rewrite_line(line: str, name_map: dict[tuple[str, str], str]) -> str:
-    """Rewrite bare slugs in a spoken line, leaving any full URL spans intact."""
+    """Rewrite repo references in a spoken line while preserving metadata URLs."""
+    rewrite_urls = _SPOKEN_LINE_RE.match(line) is not None
     parts: list[str] = []
     last = 0
     for match in _URL_SPAN_RE.finditer(line):
         parts.append(_replace_bare_slugs(line[last : match.start()], name_map))
-        parts.append(match.group(0))
+        url = match.group(0)
+        clean_url, suffix = _split_url_trailing_punctuation(url)
+        key = _repo_key_from_url(clean_url)
+        parts.append(
+            f"{name_map[key]}{suffix}"
+            if rewrite_urls and key is not None and key in name_map
+            else url
+        )
         last = match.end()
     parts.append(_replace_bare_slugs(line[last:], name_map))
     return "".join(parts)
@@ -331,11 +370,11 @@ def rewrite_spoken_repo_names(
 ) -> str:
     """Replace robotic bare ``owner/repo`` slugs in spoken lines with natural names.
 
-    Only spoken dialogue is rewritten: ``##`` marker/section lines and full
-    ``https://`` URLs are left untouched so visual markers, ``Repos featured``
-    metadata, section repo slugs, and video repo-window lookups keep resolving
-    off the canonical slug. Because the substituted name is control-char cleaned
-    and single-line, it can never inject a new marker or script line.
+    Only spoken dialogue is rewritten: ``##`` marker/section lines and metadata
+    headers keep their full URLs so visual markers, ``Repos featured`` metadata,
+    section repo slugs, and video repo-window lookups keep resolving off the
+    canonical slug. Because the substituted name is control-char cleaned and
+    single-line, it can never inject a new marker or script line.
     """
     if not dialogue or not name_map:
         return dialogue

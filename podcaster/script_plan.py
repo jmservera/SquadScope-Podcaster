@@ -92,7 +92,7 @@ _VISUAL_MARKER_RE = re.compile(
 #: followed by sentence punctuation yields a clean ``owner/repo`` rather than a
 #: trailing-dot slug.
 _GITHUB_URL_RE = re.compile(
-    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
+    r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
 )
 
 #: Anchored variant used to validate that a ``repo_url`` is a canonical repo

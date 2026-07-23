@@ -84,7 +84,7 @@ _SECTION_HEADER_RE = re.compile(
 #: in one, so a URL followed by sentence punctuation (``.../org/repo.``) yields
 #: ``org/repo`` rather than an invalid ``org/repo.`` slug.
 _GITHUB_URL_RE = re.compile(
-    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
+    r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]*[A-Za-z0-9_-])",
 )
 
 #: Titles that read as article headings rather than video title cards. Kept as
