@@ -331,16 +331,16 @@ def _spoken_name_matchers(script: str) -> dict[str, str]:
     (:func:`podcaster.repo_naming.naturalize_name` of the repo name after the
     ``/``) for every known repo so those cues resolve again.
 
-    Names shorter than :data:`_MIN_SPOKEN_MATCH_CHARS`, or that collide with a
-    slug key, are skipped to avoid matching incidental prose. First occurrence
-    wins so the earliest (canonical) URL is retained on any collision.
+    Names shorter than :data:`_MIN_SPOKEN_MATCH_CHARS` are skipped to avoid
+    matching incidental prose. If several repos naturalize to the same spoken
+    name, first occurrence wins so the earliest canonical URL is retained.
     """
     slugs = _known_repo_urls(script)
     matchers: dict[str, str] = {}
     for key, url in slugs.items():
         slug = key.split("/", 1)[-1]
         spoken = naturalize_name(repo_name_from_slug(slug)).lower()
-        if len(spoken) < _MIN_SPOKEN_MATCH_CHARS or spoken in slugs:
+        if len(spoken) < _MIN_SPOKEN_MATCH_CHARS:
             continue
         matchers.setdefault(spoken, url)
     return matchers
