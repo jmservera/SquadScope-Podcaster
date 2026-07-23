@@ -22,7 +22,7 @@ azure-storage-queue==12.17.0
     # via squadscope-podcaster (pyproject.toml)
 babel==2.18.0
     # via sphinx
-certifi==2026.6.17
+certifi==2026.7.22
     # via requests
 cffi==2.1.0
     # via cryptography
@@ -44,7 +44,7 @@ docutils==0.22.4
     #   sphinx
 fastapi==0.139.2
     # via squadscope-podcaster (pyproject.toml)
-greenlet==3.5.3
+greenlet==3.5.4
     # via playwright
 h11==0.16.0
     # via
