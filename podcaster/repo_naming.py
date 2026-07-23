@@ -81,7 +81,8 @@ _SPOKEN_LINE_RE = re.compile(
     r"^\s*"
     r"(?!(?:Title|Episode|Podcast|Source(?: URL| SHA256| Artifact)?|Duration|"
     r"License|Generated|Voices|Safety|Generator|Repos featured|Host outro)\b)"
-    r"[A-Za-z][A-Za-z0-9 _'.-]{0,30}:\s+"
+    r"[A-Za-z][A-Za-z0-9 _'.-]{0,30}:\s+",
+    re.IGNORECASE,
 )
 # A bare ``owner/repo`` slug not glued to a surrounding token and not part of a
 # longer path (no trailing ``/`` segment).
@@ -220,7 +221,7 @@ def repo_name_from_slug(slug: str) -> str:
 
 def _repo_key_from_url(url: str) -> "tuple[str, str] | None":
     """Return the lowercased ``(owner, repo)`` key for a GitHub URL span."""
-    match = _GITHUB_URL_RE.search(url or "")
+    match = _GITHUB_URL_RE.match(url or "")
     if match is None:
         return None
     owner, repo = match.group(1), match.group(2)

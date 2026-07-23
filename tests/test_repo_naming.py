@@ -234,6 +234,17 @@ class TestRewriteSpokenRepoNames:
         dialogue = "Fry: see https://github.com/org/awesome-evals for more"
         assert rewrite_spoken_repo_names(dialogue, name_map) == "Fry: see awesome evals for more"
 
+    def test_does_not_rewrite_github_url_embedded_in_non_github_url(self):
+        name_map = {("org", "awesome-evals"): "awesome evals"}
+        url = "https://example.com/?next=https://github.com/org/awesome-evals"
+        dialogue = f"Fry: see {url} for more"
+        assert rewrite_spoken_repo_names(dialogue, name_map) == dialogue
+
+    def test_lowercase_metadata_header_preserves_url(self):
+        name_map = {("org", "awesome-evals"): "awesome evals"}
+        dialogue = "repos featured: https://github.com/org/awesome-evals"
+        assert rewrite_spoken_repo_names(dialogue, name_map) == dialogue
+
     def test_replaces_www_git_query_url_in_spoken_line_and_preserves_marker_url(self):
         name_map = {("jmservera", "squadscope-podcaster"): "SquadScope Podcaster"}
         url = "https://www.github.com/jmservera/SquadScope-Podcaster.git?tab=readme#intro"
