@@ -148,6 +148,10 @@ class ScriptPlanSegment:
         visual_mode: The declared :class:`VisualMode` in effect for this turn.
         repo_url: The repository URL when ``visual_mode`` is ``repo``; otherwise
             ``None``.
+        additional_repo_urls: Later repositories named in the same spoken turn
+            after ``repo_url``. These are auxiliary visual candidates for long
+            multi-repo section openings; the first-cue ``repo_url`` remains the
+            authoritative sync anchor.
         section_id: The id of the enclosing :class:`ScriptSection`, or ``None``
             for turns before the first ``## Section:`` header (the cold open).
     """
@@ -157,6 +161,7 @@ class ScriptPlanSegment:
     text: str
     visual_mode: VisualMode
     repo_url: str | None = None
+    additional_repo_urls: tuple[str, ...] = field(default_factory=tuple)
     section_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -166,6 +171,7 @@ class ScriptPlanSegment:
             "text": self.text,
             "visual_mode": self.visual_mode.value,
             "repo_url": self.repo_url,
+            "additional_repo_urls": list(self.additional_repo_urls),
             "section_id": self.section_id,
         }
 
@@ -177,6 +183,7 @@ class ScriptPlanSegment:
             text=str(data["text"]),
             visual_mode=VisualMode.from_value(data["visual_mode"]),
             repo_url=(str(data["repo_url"]) if data.get("repo_url") else None),
+            additional_repo_urls=tuple(str(url) for url in data.get("additional_repo_urls", [])),
             section_id=(str(data["section_id"]) if data.get("section_id") else None),
         )
 
@@ -414,6 +421,41 @@ def _first_named_repo(text: str, known: dict[str, str]) -> str | None:
     return best[3] if best is not None else None
 
 
+def _all_named_repos(text: str, known: dict[str, str]) -> tuple[str, ...]:
+    """Return all known repos named in *text*, ordered by first mention.
+
+    This reuses the same bounded matching semantics as :func:`_first_named_repo`
+    but preserves every distinct canonical URL. It is intentionally auxiliary:
+    callers still use :func:`_first_named_repo` for the first visual cue so the
+    existing first-spoken-cue synchronization remains unchanged.
+    """
+    if not text or not known:
+        return ()
+    lowered = text.lower()
+    matches: list[tuple[int, int, str, str]] = []
+    for key, url in known.items():
+        start = 0
+        while True:
+            idx = lowered.find(key, start)
+            if idx < 0:
+                break
+            after_pos = idx + len(key)
+            if _boundary_before(lowered, idx) and _boundary_after(lowered, after_pos):
+                matches.append((idx, -len(key), key, url))
+                break
+            start = idx + 1
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for _, _, _, url in sorted(matches):
+        key = url.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(url)
+    return tuple(ordered)
+
+
 def infer_repo_visual_markers(script: str, podcast_config: Any = None) -> str:
     """Backfill ``## Visual: repo <url>`` markers from inline GitHub links.
 
@@ -545,6 +587,8 @@ def parse_script_plan(script: str, podcast_config: Any = None) -> ScriptPlan:
     plan_sections = tuple(parse_script_sections(script, podcast_config))
     host_labels = _host_labels(script, podcast_config)
     body = _script_body(script)
+    known = _known_repo_urls(script)
+    spoken_names = _spoken_name_matchers(script)
 
     # Map each section title to its stable id, consumed in declaration order so
     # repeated titles still resolve to distinct sections.
@@ -575,6 +619,19 @@ def parse_script_plan(script: str, podcast_config: Any = None) -> ScriptPlan:
         if speaker_text is None:
             continue
         speaker, text = speaker_text
+        additional_repo_urls: tuple[str, ...] = ()
+        if current_mode is VisualMode.REPO and current_repo_url:
+            named = list(_all_named_repos(text, known))
+            named.extend(
+                url
+                for url in _all_named_repos(text, spoken_names)
+                if url.lower() not in {existing.lower() for existing in named}
+            )
+            named_keys = [url.lower() for url in named]
+            current_key = current_repo_url.lower()
+            if current_key in named_keys:
+                pos = named_keys.index(current_key)
+                additional_repo_urls = tuple(named[pos + 1 :])
         segments.append(
             ScriptPlanSegment(
                 index=index,
@@ -582,6 +639,7 @@ def parse_script_plan(script: str, podcast_config: Any = None) -> ScriptPlan:
                 text=text,
                 visual_mode=current_mode,
                 repo_url=current_repo_url if current_mode is VisualMode.REPO else None,
+                additional_repo_urls=additional_repo_urls,
                 section_id=current_section_id,
             )
         )

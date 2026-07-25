@@ -70,6 +70,9 @@ AUDIO_METADATA_SCHEMA_VERSION = "1.0"
 #: :func:`podcaster.episode.compute_section_timestamps`.
 DEFAULT_GAP_SECONDS = 0.35
 
+MULTI_REPO_MIN_WINDOW_MS = 12_000
+MULTI_REPO_START_SCAN_MS = 15_000
+
 
 class RealizedAudioMetadataError(ValueError):
     """Raised when realized audio metadata cannot be built from the inputs."""
@@ -165,6 +168,7 @@ class UtteranceTiming:
     end_ms: int
     visual_mode: VisualMode
     repo_url: str | None = None
+    additional_repo_urls: tuple[str, ...] = field(default_factory=tuple)
     section_id: str | None = None
     words: tuple[WordTiming, ...] = field(default_factory=tuple)
 
@@ -182,6 +186,7 @@ class UtteranceTiming:
             "end_ms": self.end_ms,
             "visual_mode": self.visual_mode.value,
             "repo_url": self.repo_url,
+            "additional_repo_urls": list(self.additional_repo_urls),
             "section_id": self.section_id,
             "words": [word.to_dict() for word in self.words],
         }
@@ -197,6 +202,7 @@ class UtteranceTiming:
             end_ms=int(data["end_ms"]),
             visual_mode=VisualMode.from_value(data["visual_mode"]),
             repo_url=(str(data["repo_url"]) if data.get("repo_url") else None),
+            additional_repo_urls=tuple(str(url) for url in data.get("additional_repo_urls", [])),
             section_id=(str(data["section_id"]) if data.get("section_id") else None),
             words=tuple(WordTiming.from_dict(w) for w in data.get("words", [])),
         )
@@ -347,10 +353,11 @@ def _build_topics(utterances: Sequence[UtteranceTiming]) -> tuple[TopicRange, ..
         if not run:
             return
         first, last = run[0], run[-1]
-        topics.append(
-            TopicRange(
+        topics.extend(
+            _topic_windows_for_run(
                 visual_mode=first.visual_mode,
                 repo_url=first.repo_url,
+                additional_repo_urls=_additional_repos_near_run_start(run),
                 section_id=first.section_id,
                 start_ms=first.start_ms,
                 end_ms=last.end_ms,
@@ -370,6 +377,88 @@ def _build_topics(utterances: Sequence[UtteranceTiming]) -> tuple[TopicRange, ..
         run_key = key
     flush()
     return tuple(topics)
+
+
+def _additional_repos_near_run_start(run: Sequence[UtteranceTiming]) -> tuple[str, ...]:
+    if not run:
+        return ()
+    first = run[0]
+    seen = {first.repo_url.lower()} if first.repo_url else set()
+    urls: list[str] = []
+    cutoff_ms = first.start_ms + MULTI_REPO_START_SCAN_MS
+    for utterance in run:
+        if utterance.start_ms >= cutoff_ms:
+            break
+        for url in utterance.additional_repo_urls:
+            key = url.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            urls.append(url)
+    return tuple(urls)
+
+
+def _topic_windows_for_run(
+    *,
+    visual_mode: VisualMode,
+    repo_url: str | None,
+    additional_repo_urls: Sequence[str],
+    section_id: str | None,
+    start_ms: int,
+    end_ms: int,
+    utterance_indices: tuple[int, ...],
+) -> tuple[TopicRange, ...]:
+    """Return topic windows for one Layer 1 run.
+
+    A long repo section opening may name several repositories in one spoken turn.
+    The first repository keeps the original first-cue start; only later windows
+    are added, and only when every resulting window is safely longer than the
+    EDL's 8s minimum visual duration.
+    """
+    base = TopicRange(
+        visual_mode=visual_mode,
+        repo_url=repo_url,
+        section_id=section_id,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        utterance_indices=utterance_indices,
+    )
+    if visual_mode is not VisualMode.REPO or not repo_url or not additional_repo_urls:
+        return (base,)
+
+    repos: list[str] = []
+    seen: set[str] = set()
+    for url in (repo_url, *additional_repo_urls):
+        key = url.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        repos.append(url)
+
+    duration_ms = end_ms - start_ms
+    window_count = min(len(repos), duration_ms // MULTI_REPO_MIN_WINDOW_MS)
+    if window_count < 2:
+        return (base,)
+
+    windows: list[TopicRange] = []
+    for index, url in enumerate(repos[:window_count]):
+        window_start = start_ms + (duration_ms * index // window_count)
+        window_end = (
+            end_ms
+            if index == window_count - 1
+            else start_ms + (duration_ms * (index + 1) // window_count)
+        )
+        windows.append(
+            TopicRange(
+                visual_mode=visual_mode,
+                repo_url=url,
+                section_id=section_id,
+                start_ms=window_start,
+                end_ms=window_end,
+                utterance_indices=utterance_indices,
+            )
+        )
+    return tuple(windows)
 
 
 # --- Public API ---
@@ -438,6 +527,7 @@ def extract_realized_audio_metadata(
                 end_ms=end_ms,
                 visual_mode=segment.visual_mode,
                 repo_url=segment.repo_url,
+                additional_repo_urls=segment.additional_repo_urls,
                 section_id=segment.section_id,
                 words=distribute_word_timings(segment.text, start_ms, end_ms),
             )

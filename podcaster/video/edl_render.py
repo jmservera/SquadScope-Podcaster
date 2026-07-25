@@ -30,6 +30,7 @@ an injectable runner so the builder can be unit-tested without rendering.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, replace
@@ -75,6 +76,7 @@ class RenderConfig:
     card_font_size: int = 72
     card_font_color: str = "white"
     enable_crossfades: bool = False
+    intermission_video_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,33 @@ def _normalize_chain(config: RenderConfig) -> str:
     )
 
 
+def resolve_intermission_video_path(config: RenderConfig) -> Path | None:
+    """Resolve the optional animated intermission asset.
+
+    The production asset is uploaded as ``assets/video/intermission.mp4``. For
+    local rendering/tests, the same file may exist in the repository. It is
+    generated from ``scripts/intro-outro/compositions/intermission.html`` by
+    ``scripts/intro-outro/render.sh``; if no local file exists, callers fall back
+    to the historical solid-color fill.
+    """
+    candidates: list[Path] = []
+    if config.intermission_video_path:
+        candidates.append(Path(config.intermission_video_path))
+    if env_path := os.getenv("PODCASTER_INTERMISSION_VIDEO_PATH"):
+        candidates.append(Path(env_path))
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates.extend(
+        [
+            repo_root / "assets" / "video" / "intermission.mp4",
+            repo_root / "scripts" / "intro-outro" / "output" / "intermission.mp4",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _title_card_filter(segment: EdlSegment, config: RenderConfig) -> str | None:
     """Build a ``drawtext`` filter for a segment's title card, if any."""
     if segment.title_card is None or not segment.title_card.text:
@@ -156,11 +185,14 @@ def _segment_filtergraph(
 
     if segment.kind is EdlSegmentKind.INTERMISSION:
         dur_s = _ms_to_s(segment.duration_ms)
-        chain = (
-            f"color=c={config.intermission_color}:"
-            f"s={config.width}x{config.height}:r={config.fps}:d={dur_s},"
-            f"format={config.pixel_format},setsar=1"
-        )
+        if input_index is None:
+            chain = (
+                f"color=c={config.intermission_color}:"
+                f"s={config.width}x{config.height}:r={config.fps}:d={dur_s},"
+                f"format={config.pixel_format},setsar=1"
+            )
+        else:
+            chain = f"[{input_index}:v]trim=duration={dur_s},setpts=PTS-STARTPTS,{norm}"
         if title:
             chain += f",{title}"
         statements.append(f"{chain}[{label}]")
@@ -289,6 +321,7 @@ def build_render_plan(
     image_paths = image_paths or {}
     if not edl.segments:
         raise EdlRenderError("cannot render an empty EDL")
+    intermission_video_path = resolve_intermission_video_path(config)
 
     # Assign a stable ffmpeg input index to each input, in first-use order, so the
     # argv and graph are deterministic. Clip files are shared across segments;
@@ -316,6 +349,10 @@ def build_render_plan(
             seg_input_index[i] = len(input_files)
             input_files.append(str(image_paths[seg.fallback_image_id]))
             input_pre_args.append(("-loop", "1", "-t", _ms_to_s(seg.duration_ms)))
+        elif seg.kind is EdlSegmentKind.INTERMISSION and intermission_video_path is not None:
+            seg_input_index[i] = len(input_files)
+            input_files.append(str(intermission_video_path))
+            input_pre_args.append(("-stream_loop", "-1", "-t", _ms_to_s(seg.duration_ms)))
 
     statements: list[str] = []
     for i, seg in enumerate(edl.segments):

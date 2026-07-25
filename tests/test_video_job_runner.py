@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from podcaster.generation import PODCAST_URL
 from podcaster.queue import QueueMessage
 from podcaster.video.distribution import DistributionResult, VideoDistributionConfig
 from podcaster.video.job_runner import (
@@ -29,6 +30,7 @@ from podcaster.video.job_runner import (
     _already_processed,
     _build_section_cards,
     _build_video_description,
+    _record_live_intro_outro,
     _resolve_anchor_id,
     _resolve_dog_logo,
     _section_card_duration_seconds,
@@ -44,15 +46,24 @@ from podcaster.video.job_runner import (
 
 
 @pytest.fixture(autouse=True)
-def _no_repo_removal_probe():
+def _no_repo_removal_probe(request):
     """Skip the network HEAD pre-flight so video-runner tests stay hermetic.
 
     The whisper forced-alignment path (and its transcription patch) is gone:
     timing now comes from the Layer 2 realized-audio metadata persisted at
     synthesis (#553), and these tests assert the no-metadata fallback plan.
     """
-    with patch("podcaster.video.sync_plan.check_repo_removed", return_value=False):
-        yield
+    patches = [patch("podcaster.video.sync_plan.check_repo_removed", return_value=False)]
+    if request.node.name != "test_record_live_intro_outro_uses_root_claracle_url":
+        patches.append(
+            patch("podcaster.video.job_runner._record_live_intro_outro", return_value=(None, None))
+        )
+    with patches[0]:
+        if len(patches) == 1:
+            yield
+        else:
+            with patches[1]:
+                yield
 
 
 def test_video_runner_does_not_import_audio_align():
@@ -71,6 +82,34 @@ def test_video_runner_does_not_import_audio_align():
     assert not hasattr(vjr, "plan_from_script_aligned")
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("podcaster.video.audio_align")
+
+
+def test_record_live_intro_outro_uses_root_claracle_url(tmp_path):
+    intro = tmp_path / "intro.webm"
+    outro = tmp_path / "outro.webm"
+    intro.write_bytes(b"i")
+    outro.write_bytes(b"o")
+    captured = {}
+
+    def fake_recorder(plan, **kwargs):
+        captured["plan"] = plan
+        captured["kwargs"] = kwargs
+        return MagicMock(
+            recorded=[
+                MagicMock(video_path=intro),
+                MagicMock(video_path=outro),
+            ]
+        )
+
+    result = _record_live_intro_outro(tmp_path, brand_name="Claracle", recorder=fake_recorder)
+
+    assert result == (intro, outro)
+    assert [segment.source_url for segment in captured["plan"].segments] == [
+        PODCAST_URL,
+        PODCAST_URL,
+    ]
+    assert all(segment.repo is None for segment in captured["plan"].segments)
+    assert captured["kwargs"]["source_url"] is None
 
 
 class FakeStorage:
