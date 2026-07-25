@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from podcaster.config import PodcastConfig
+from podcaster.config import PodcastConfig, SpotifyPublishConfig
 from podcaster.failure_reporting import report_failure
 from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE, PODCAST_URL
 from podcaster.music import TRACK_ATTRIBUTION
@@ -276,6 +276,41 @@ def _extract_hosts(notes: str) -> str:
     return ""
 
 
+def _is_generic_episode_summary(summary: str) -> bool:
+    normalized = " ".join(summary.split()).lower()
+    return (
+        "squadscope curated articles" in normalized
+        or "this episode covers key developments" in normalized
+        or "[topic to be added from source article]" in normalized
+        or "editorial synopsis pending" in normalized
+    )
+
+
+def _resolve_spotify_publish_config(request: dict[str, Any]) -> SpotifyPublishConfig | None:
+    spotify_publish = request.get("spotify_publish")
+    if not isinstance(spotify_publish, dict):
+        return None
+    return SpotifyPublishConfig.from_payload({"spotify_publish": spotify_publish})
+
+
+def _resolve_video_title(
+    request: dict[str, Any],
+    *,
+    brand_name: str,
+    job_id: str,
+) -> tuple[str, bool]:
+    """Resolve video title from the same publish metadata the audio path uses."""
+    spotify_config = _resolve_spotify_publish_config(request)
+    if spotify_config is not None and spotify_config.title.strip():
+        return spotify_config.title.strip(), False
+
+    article_title = request.get("article_title")
+    if isinstance(article_title, str) and article_title.strip():
+        return article_title.strip(), False
+
+    return f"{brand_name} Podcast — {job_id}", True
+
+
 def _build_video_description(
     storage: StorageBackend,
     job_id: str,
@@ -283,6 +318,7 @@ def _build_video_description(
     music_credits: str | None = None,
     show_name: str | None = None,
     spoken_site: str | None = None,
+    preferred_description: str | None = None,
 ) -> str:
     """Build the Spotify/YouTube video description from the episode show-notes.
 
@@ -295,30 +331,34 @@ def _build_video_description(
     ``request.podcast_config`` (issue #545); when omitted the module defaults
     (``PODCAST_NAME``/``PODCAST_SPOKEN_SITE``) are used.
 
-    ``music_credits`` is appended after the credits line so the video description
-    matches the audio episode structure (summary + credits + music attribution).
-    When omitted, the default music attribution constant is used.
+    ``preferred_description`` is the already-resolved audio publish description.
+    It is used when show-notes are absent or contain an old deterministic
+    placeholder, keeping the video episode metadata aligned with the audio
+    episode. ``music_credits`` is appended after the credits line so the video
+    description matches the audio episode structure (summary + credits + music
+    attribution). When omitted, the default music attribution constant is used.
     """
     brand_name = (show_name or "").strip() or PODCAST_NAME
     brand_site = (spoken_site or "").strip() or PODCAST_SPOKEN_SITE
     attribution = (music_credits or _DEFAULT_MUSIC_CREDITS).strip()
+    fallback_text = (preferred_description or "").strip() or fallback.strip()
 
     def _with_attribution(base: str) -> str:
         return f"{base}\n\n{attribution}" if attribution else base
 
     raw = storage.get_bytes(show_notes_path(job_id))
     if not raw:
-        return _with_attribution(fallback)
+        return _with_attribution(fallback_text)
     try:
         notes = raw.decode("utf-8").strip()
     except UnicodeDecodeError:
-        return _with_attribution(fallback)
+        return _with_attribution(fallback_text)
     if not notes:
-        return _with_attribution(fallback)
+        return _with_attribution(fallback_text)
 
     summary = _extract_section(notes, "About this episode", "Show notes")
-    if not summary:
-        summary = fallback.strip()
+    if not summary or _is_generic_episode_summary(summary):
+        summary = fallback_text
 
     credit_parts: list[str] = []
     hosts = _extract_hosts(notes)
@@ -943,14 +983,15 @@ def run_video_generation(
             request = manifest.get("request")
             if not isinstance(request, dict):
                 request = {}
-            # Source the episode title from the job config; default only when it
-            # is genuinely absent, and log so the operator can tell config was
-            # missing rather than wrong (issue #545).
-            article_title = request.get("article_title")
-            if isinstance(article_title, str) and article_title.strip():
-                title = article_title.strip()
-            else:
-                title = f"{brand_name} Podcast — {job_id}"
+            # Source the episode title from the same publish metadata the audio
+            # episode uses, then fall back to article_title/defaults. Log only
+            # when all listener-facing title metadata is genuinely absent.
+            title, used_default_title = _resolve_video_title(
+                request,
+                brand_name=brand_name,
+                job_id=job_id,
+            )
+            if used_default_title:
                 logger.warning(
                     "article_title absent in manifest request for job_id=%s; "
                     "using default title %r (supply request.article_title to "
@@ -973,8 +1014,14 @@ def run_video_generation(
                     podcast_config.host_a.name,
                     podcast_config.host_b.name,
                 )
+            spotify_publish_config = _resolve_spotify_publish_config(request)
             fallback_description = str(
                 request.get("description", f"Video podcast episode {job_id}")
+            )
+            preferred_description = (
+                spotify_publish_config.description
+                if spotify_publish_config is not None and spotify_publish_config.description.strip()
+                else None
             )
             template = request.get("description_template")
             music_credits = template if isinstance(template, str) and template.strip() else None
@@ -985,6 +1032,7 @@ def run_video_generation(
                 music_credits=music_credits,
                 show_name=podcast_config.name,
                 spoken_site=podcast_config.spoken_site,
+                preferred_description=preferred_description,
             )
 
             season_number = _extract_year(manifest)

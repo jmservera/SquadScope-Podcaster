@@ -11,7 +11,7 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from podcaster.artifact_access import artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
-from podcaster.config import PodcastConfig
+from podcaster.config import PodcastConfig, ScriptDirections
 from podcaster.costs import build_cost_ledger
 from podcaster.sanitization import FIELD_LIMITS, sanitize_source_artifact
 
@@ -317,7 +317,9 @@ def _transcript(script: str, config: PodcastConfig) -> str:
 def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastConfig) -> str:
     week = str(payload["week"])
     article_url = str(payload["article_url"])
+    article_title = str(payload.get("article_title") or "the week's featured article")
     published = generated_at.split("T")[0]
+    episode_summary = _episode_summary(payload, article_title, show_name=config.name)
 
     return "\n".join(
         [
@@ -337,16 +339,14 @@ def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastCo
             f"{config.name} is a weekly show. For every issue, extended write-ups, repo links, and",
             f"commented articles, visit {config.url}.",
             "",
-            "This episode covers key developments from the SquadScope curated articles "
-            "for this week.",
-            "Two AI hosts share a joyful, dynamic expert conversation on the most "
-            "relevant and surprising",
-            "parts of the article — they do not read it verbatim.",
+            episode_summary,
+            "Two AI hosts share a joyful, dynamic expert conversation on the most relevant and "
+            "surprising parts of the article — they do not read it verbatim.",
             "",
-            "### Segment 1: [Topic to be added from source article]",
+            f"### Segment 1: {article_title}",
             "",
-            f"- **Article:** [Title TBD]({article_url}) — Editorial synopsis pending",
-            f"- **Source:** SquadScope, {published}",
+            f"- **Article:** [{article_title}]({article_url})",
+            f"- **Source:** {config.name}, {published}",
             "- **Timestamp:** [Pending audio generation]",
             "",
             "## Quick links",
@@ -366,6 +366,17 @@ def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastCo
             "human editorial approval before distribution.",
             "",
         ]
+    )
+
+
+def _episode_summary(payload: dict[str, object], article_title: str, *, show_name: str) -> str:
+    directions = ScriptDirections.from_payload(payload)
+    if directions.historical_context.summary.strip():
+        return directions.historical_context.summary.strip()
+
+    return (
+        f"This {show_name} episode explores {article_title}, highlighting the open-source "
+        "developments, repo activity, and practical signals that matter this week."
     )
 
 
