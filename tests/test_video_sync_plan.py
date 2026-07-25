@@ -1407,3 +1407,46 @@ class TestAudioMasterCuePlacement:
         assert first.repo is None
         assert first.start_seconds == pytest.approx(0.0)
         assert first.duration_seconds == pytest.approx(eve_seg.start_seconds, abs=0.01)
+
+    def test_long_section_opening_cycles_later_named_repos_without_moving_first_cue(self):
+        from podcaster.audio_metadata import extract_realized_audio_metadata
+        from podcaster.script_plan import infer_repo_visual_markers, parse_script_plan
+
+        config = self._config()
+        grok = "https://github.com/xai-org/grok-1"
+        dejavu = "https://github.com/mozilla-mobile/firefox-ios"
+        gym = "https://github.com/openai/gym"
+        script = (
+            "Title: Weekly\n"
+            f"Repos featured: {grok} {dejavu} {gym}\n"
+            "---\n"
+            "Theo: Welcome before the repo roundup starts.\n"
+            "Vera: We open with xai-org/grok-1, then mozilla-mobile/firefox-ios, "
+            "and finally openai/gym because this section has enough time for all three.\n"
+            "Theo: Stay on the same roundup while we compare implementation details.\n"
+        )
+        marked = infer_repo_visual_markers(script, config)
+        plan = parse_script_plan(marked, config)
+
+        durations = [8.0, 36.0, 12.0]
+        meta = extract_realized_audio_metadata(
+            plan,
+            durations,
+            gap_seconds=0.35,
+            speech_offset_seconds=5.0,
+            host_labels=("Theo", "Vera"),
+        )
+        cue_seconds = next(u for u in meta.utterances if u.repo_url == grok).start_ms / 1000.0
+
+        video_plan = plan_from_realized_metadata(
+            meta,
+            total_duration_seconds=5.0 + sum(durations) + 0.35 * 2,
+            weekly_url="https://claracle.com/weekly/2026/w26/",
+        )
+        repo_segments = [segment for segment in video_plan.segments if segment.repo is not None]
+
+        assert [segment.repo.url for segment in repo_segments] == [grok, dejavu, gym]
+        assert repo_segments[0].start_seconds == pytest.approx(cue_seconds, abs=0.01)
+        assert all(segment.duration_seconds >= 12.0 for segment in repo_segments)
+        assert repo_segments[1].start_seconds > repo_segments[0].start_seconds
+        assert repo_segments[2].start_seconds > repo_segments[1].start_seconds

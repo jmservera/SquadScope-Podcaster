@@ -26,7 +26,12 @@ from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
 from podcaster.ssrf import host_is_blocked, redact_url, safe_urlopen
 from podcaster.video.intermediates import ensure_disk_budget
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
-from podcaster.video.video_gen import RecordedSegment, _recording_blob_name
+from podcaster.video.video_gen import (
+    GENERIC_BACKGROUND_SUBTITLE,
+    GENERIC_BACKGROUND_TITLE,
+    RecordedSegment,
+    _recording_blob_name,
+)
 
 if TYPE_CHECKING:
     from podcaster.storage import StorageBackend
@@ -344,6 +349,7 @@ MIN_WEEKLY_LEAD_SECONDS = 8.0
 # Stored once in the artifacts container and prepended/appended to every episode.
 INTRO_BLOB_PATH = "assets/video/intro.mp4"
 OUTRO_BLOB_PATH = "assets/video/outro.mp4"
+INTERMISSION_BLOB_PATH = "assets/video/intermission.mp4"
 # Canonical audio params for the concat-join step.
 CONCAT_AUDIO_SAMPLE_RATE = "48000"
 CONCAT_AUDIO_CHANNELS = "2"
@@ -720,6 +726,104 @@ def _build_fit_segment_cmd(
     ]
 
 
+def _escape_drawtext_text(text: str) -> str:
+    out = text.replace("\\", "\\\\")
+    out = out.replace(":", r"\:")
+    out = out.replace("'", r"\'")
+    out = out.replace(",", r"\,")
+    out = out.replace("%", r"\%")
+    return out
+
+
+def _build_intermission_overlay_cmd(
+    intermission_path: Path,
+    output_path: Path,
+    duration_seconds: float,
+    *,
+    title: str | None = None,
+    subtitle: str | None = None,
+) -> list[str]:
+    """Loop the intermission animation and overlay the generic card text."""
+    duration = max(duration_seconds, 1.0 / OUTPUT_FPS)
+    title = (title or "").strip() or GENERIC_BACKGROUND_TITLE
+    subtitle = (subtitle or "").strip() or GENERIC_BACKGROUND_SUBTITLE
+    vf = (
+        f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},fps={OUTPUT_FPS},format={ENCODE_PIX_FMT},setsar=1,"
+        f"drawtext=text='{_escape_drawtext_text(title)}':"
+        "fontcolor=0xc9d1d9:fontsize=64:"
+        "x=(w-text_w)/2:y=(h-text_h)/2-52:"
+        "box=1:boxcolor=black@0.35:boxborderw=18,"
+        f"drawtext=text='{_escape_drawtext_text(subtitle)}':"
+        "fontcolor=0x8b949e:fontsize=28:"
+        "x=(w-text_w)/2:y=(h-text_h)/2+38"
+    )
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-stream_loop",
+        "-1",
+        "-t",
+        f"{duration:.3f}",
+        "-i",
+        str(intermission_path),
+        "-vf",
+        vf,
+        "-an",
+        *_video_encode_args(INTERMEDIATE_PRESET),
+        "-colorspace",
+        "bt709",
+        "-color_trc",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_range",
+        "tv",
+        str(output_path),
+    ]
+    return cmd
+
+
+def _is_generic_background_recording(recorded: RecordedSegment) -> bool:
+    segment = recorded.segment
+    return segment.is_generic and segment.source_url is None and not segment.is_removed
+
+
+def _substitute_intermission_backgrounds(
+    segments: Sequence[RecordedSegment],
+    intermission_path: Path | None,
+    output_dir: Path,
+    run: "CommandRunner",
+    *,
+    title: str | None = None,
+    subtitle: str | None = None,
+) -> list[RecordedSegment]:
+    """Replace generic background recordings with the animated intermission asset."""
+    if intermission_path is None:
+        return list(segments)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    updated: list[RecordedSegment] = []
+    for index, recorded in enumerate(segments):
+        if not _is_generic_background_recording(recorded):
+            updated.append(recorded)
+            continue
+        dest = output_dir / f"intermission_{index:03d}.mp4"
+        cmd = _build_intermission_overlay_cmd(
+            intermission_path,
+            dest,
+            recorded.segment.duration_seconds,
+            title=title,
+            subtitle=subtitle,
+        )
+        logger.info("Substituting intermission animation for generic segment %d", index)
+        run(cmd)
+        updated.append(replace(recorded, video_path=dest))
+    return updated
+
+
 def _trim_first_for_intro(first_duration: float, intro_dur: float) -> float:
     """Trim the first content segment by the intro bumper, preserving a lead-in.
 
@@ -850,6 +954,36 @@ def _fetch_intro_outro(
     """
     intro = _fetch_blob_cached(storage, INTRO_BLOB_PATH, cache_dir / "intro.mp4", "intro")
     outro = _fetch_blob_cached(storage, OUTRO_BLOB_PATH, cache_dir / "outro.mp4", "outro")
+    return intro, outro
+
+
+def _fetch_intermission(
+    storage: "StorageBackend",
+    cache_dir: Path,
+) -> Path | None:
+    """Download (and cache) the stored intermission animation clip, if present."""
+    return _fetch_blob_cached(
+        storage,
+        INTERMISSION_BLOB_PATH,
+        cache_dir / "intermission.mp4",
+        "intermission",
+    )
+
+
+def _resolve_intro_outro_paths(
+    *,
+    storage: "StorageBackend | None",
+    cache_dir: Path,
+    live_intro_path: Path | None = None,
+    live_outro_path: Path | None = None,
+) -> tuple[Path | None, Path | None]:
+    """Resolve bookend paths with live captures taking precedence over blobs."""
+    intro = Path(live_intro_path) if live_intro_path is not None else None
+    outro = Path(live_outro_path) if live_outro_path is not None else None
+    if storage is not None and (intro is None or outro is None):
+        fallback_intro, fallback_outro = _fetch_intro_outro(storage, cache_dir)
+        intro = intro or fallback_intro
+        outro = outro or fallback_outro
     return intro, outro
 
 
@@ -2311,6 +2445,11 @@ def compose_video(
     boundary_kinds: list[str] | None = None,
     storage: "StorageBackend | None" = None,
     intro_outro_cache_dir: Path | None = None,
+    live_intro_path: Path | None = None,
+    live_outro_path: Path | None = None,
+    intermission_path: Path | None = None,
+    generic_brand_name: str | None = None,
+    generic_brand_subtitle: str | None = None,
     dog_logo: "DogLogoConfig | None" = None,
     dog_logo_cache_dir: Path | None = None,
     audio_duration: float | None = None,
@@ -2344,6 +2483,14 @@ def compose_video(
         intro_outro_cache_dir: Local cache directory for the downloaded
             intro/outro clips.  Defaults to a stable temp-dir location so
             repeated runs on the same host avoid re-downloading.
+        live_intro_path / live_outro_path: Optional freshly recorded Claracle
+            browser-navigation bumpers.  These are primary when supplied; stored
+            static assets are fetched only for the missing side(s).
+        intermission_path: Optional local animated intermission asset.  When not
+            supplied and *storage* is available, ``assets/video/intermission.mp4``
+            is fetched and cached beside the intro/outro clips.
+        generic_brand_name / generic_brand_subtitle: Text drawn over animated
+            intermission substitutes for no-repo generic background segments.
         dog_logo: Optional DOG (Digital On-Screen Graphic) watermark config.
             When provided, the logo at ``dog_logo.url`` is downloaded and
             overlaid on the main content segments in the configured corner at
@@ -2414,9 +2561,22 @@ def compose_video(
     # Resolve reusable intro/outro clips (graceful degradation if unavailable).
     intro_path: Path | None = None
     outro_path: Path | None = None
-    if storage is not None:
+    if storage is not None or live_intro_path is not None or live_outro_path is not None:
         cache_dir = intro_outro_cache_dir or _default_intro_outro_cache_dir()
-        intro_path, outro_path = _fetch_intro_outro(storage, cache_dir)
+        intro_path, outro_path = _resolve_intro_outro_paths(
+            storage=storage,
+            cache_dir=cache_dir,
+            live_intro_path=live_intro_path,
+            live_outro_path=live_outro_path,
+        )
+        if storage is not None and intermission_path is None:
+            intermission_path = _fetch_intermission(storage, cache_dir)
+    if intermission_path is not None and not Path(intermission_path).exists():
+        logger.warning(
+            "intermission animation %s is unavailable; using recorded generic backgrounds",
+            intermission_path,
+        )
+        intermission_path = None
 
     # The content is always composed **video-only**; the podcast MP3 (if any)
     # is overlaid as the sole audio track on the FINAL joined video so it spans
@@ -2432,7 +2592,16 @@ def compose_video(
     # record→normalize→compose→join pipeline and go straight to the final mux,
     # which needs only the composed video plus the podcast audio.
     _intermediates_enabled = intermediates is not None and getattr(intermediates, "enabled", False)
-    if _intermediates_enabled and intermediates.exists(COMPOSED_VIDEO_CHECKPOINT):
+    _live_bookends = live_intro_path is not None or live_outro_path is not None
+    _animated_intermissions = intermission_path is not None and any(
+        _is_generic_background_recording(seg) for seg in segments
+    )
+    if (
+        _intermediates_enabled
+        and not _live_bookends
+        and not _animated_intermissions
+        and intermediates.exists(COMPOSED_VIDEO_CHECKPOINT)
+    ):
         resumed_video = output_path.parent / COMPOSED_VIDEO_CHECKPOINT
         if intermediates.download(COMPOSED_VIDEO_CHECKPOINT, resumed_video):
             _, resumed_duration = _probe_media(resumed_video, run)
@@ -2498,6 +2667,20 @@ def compose_video(
             outro_dur,
         )
 
+    intermission_substitute_indices = {
+        i
+        for i, rec in enumerate(segments)
+        if intermission_path is not None and _is_generic_background_recording(rec)
+    }
+    segments = _substitute_intermission_backgrounds(
+        segments,
+        Path(intermission_path) if intermission_path is not None else None,
+        output_path.parent / "intermissions",
+        run,
+        title=generic_brand_name,
+        subtitle=generic_brand_subtitle,
+    )
+
     # Step 1: Normalize all segments to 1080p/30fps (fitting each to its target
     # duration when fit-to-window is active).  Each segment is an independent
     # ffmpeg process, so normalization is run in parallel across cores — the
@@ -2533,7 +2716,11 @@ def compose_video(
         # Already checkpointed: skip recompute.  In the enabled path we do NOT
         # download it here — the pairwise compose fetches it just-in-time so all
         # normalized clips never coexist on local disk.
-        if _intermediates_enabled and intermediates.exists(name):
+        if (
+            _intermediates_enabled
+            and idx not in intermission_substitute_indices
+            and intermediates.exists(name)
+        ):
             logger.info("Resumed normalized segment %d from blob checkpoint", idx)
             _report_task(
                 task_id,

@@ -77,7 +77,10 @@ def _edl(segments, crossfade_ms=500):
 # --- pure graph construction ---
 
 
-def test_build_plan_basic_argv_and_graph():
+def test_build_plan_basic_argv_and_graph(monkeypatch):
+    monkeypatch.setattr(
+        "podcaster.video.edl_render.resolve_intermission_video_path", lambda _: None
+    )
     edl = _edl(
         [
             _clip_seg(0, 10_000, "clip-a", [(0, 10_000)]),
@@ -93,6 +96,34 @@ def test_build_plan_basic_argv_and_graph():
     assert plan.final_label == "vout"
     assert "-map" in plan.argv and "[vout]" in plan.argv
     assert plan.output_path == "/out/ep.mp4"
+
+
+def test_intermission_uses_animation_asset_with_title_overlay():
+    asset = Path("build/test-edl-render/intermission.mp4")
+    asset.parent.mkdir(parents=True, exist_ok=True)
+    asset.write_bytes(b"not-a-real-video")
+    try:
+        card = TitleCardOverlay(text="Claracle", duration_ms=2_000)
+        edl = _edl([_interm_seg(0, 4_000, card=card)])
+        plan = build_render_plan(
+            edl,
+            {},
+            "build/test-edl-render/out.mp4",
+            config=RenderConfig(intermission_video_path=str(asset)),
+        )
+    finally:
+        asset.unlink(missing_ok=True)
+        try:
+            asset.parent.rmdir()
+        except OSError:
+            pass
+
+    assert plan.inputs == (str(asset),)
+    assert "-stream_loop" in plan.argv
+    assert "color=c=" not in plan.filter_complex
+    assert "[0:v]trim=duration=4.000,setpts=PTS-STARTPTS" in plan.filter_complex
+    assert "drawtext=" in plan.filter_complex
+    assert "Claracle" in plan.filter_complex
 
 
 def test_input_dedup_same_clip_one_input():

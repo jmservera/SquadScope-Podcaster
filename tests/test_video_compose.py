@@ -22,6 +22,7 @@ from podcaster.video.video_compose import (
     ENCODE_CRF,
     ENCODE_PIX_FMT,
     ENCODE_PRESET,
+    INTERMISSION_BLOB_PATH,
     INTRO_BLOB_PATH,
     LOWER_THIRD_DURATION,
     MIN_WEEKLY_LEAD_SECONDS,
@@ -43,17 +44,21 @@ from podcaster.video.video_compose import (
     _build_drawtext_filter,
     _build_fit_segment_cmd,
     _build_h264_metadata_cmd,
+    _build_intermission_overlay_cmd,
     _build_intro_dog_cmd,
     _build_normalize_cmd,
     _build_outro_xfade_cmd,
     _build_xfade_filter,
     _compute_lower_thirds,
     _fetch_blob_cached,
+    _fetch_intermission,
     _fetch_intro_outro,
     _fit_target_durations,
     _join_intro_outro,
     _probe_drawtext_ffmpeg,
+    _resolve_intro_outro_paths,
     _splice_section_cards,
+    _substitute_intermission_backgrounds,
     _trim_first_for_intro,
     apply_sync,
     build_sync_map,
@@ -1240,6 +1245,138 @@ class TestFetchIntroOutro:
         intro, outro = _fetch_intro_outro(storage, tmp_path)
         assert intro is not None
         assert outro is None
+
+    def test_fetches_intermission_animation(self, tmp_path):
+        storage = _FakeStorage({INTERMISSION_BLOB_PATH: b"animation"})
+        intermission = _fetch_intermission(storage, tmp_path)
+        assert intermission is not None
+        assert intermission.name == "intermission.mp4"
+        assert intermission.read_bytes() == b"animation"
+
+    def test_live_bumpers_take_precedence_over_stale_static_cache(self, tmp_path):
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"stale-i", OUTRO_BLOB_PATH: b"stale-o"})
+        live_intro = tmp_path / "live-intro.webm"
+        live_outro = tmp_path / "live-outro.webm"
+        live_intro.write_bytes(b"live-i")
+        live_outro.write_bytes(b"live-o")
+
+        intro, outro = _resolve_intro_outro_paths(
+            storage=storage,
+            cache_dir=tmp_path / "cache",
+            live_intro_path=live_intro,
+            live_outro_path=live_outro,
+        )
+
+        assert intro == live_intro
+        assert outro == live_outro
+        assert storage.calls == []
+
+    def test_static_asset_fallback_only_for_missing_live_bumper(self, tmp_path):
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"fallback-i", OUTRO_BLOB_PATH: b"fallback-o"})
+        live_intro = tmp_path / "live-intro.webm"
+        live_intro.write_bytes(b"live-i")
+
+        intro, outro = _resolve_intro_outro_paths(
+            storage=storage,
+            cache_dir=tmp_path / "cache",
+            live_intro_path=live_intro,
+        )
+
+        assert intro == live_intro
+        assert outro is not None and outro.read_bytes() == b"fallback-o"
+
+
+class TestIntermissionBackgroundSubstitution:
+    def _generic_recording(
+        self,
+        tmp_path: Path,
+        *,
+        source_url: str | None = None,
+    ) -> RecordedSegment:
+        clip = tmp_path / ("source.webm" if source_url else "generic.webm")
+        clip.write_bytes(b"clip")
+        return RecordedSegment(
+            segment=VideoSegment(
+                repo=None,
+                start_seconds=0.0,
+                duration_seconds=12.0,
+                source_url=source_url,
+            ),
+            video_path=clip,
+        )
+
+    def test_intermission_overlay_command_loops_animation_and_draws_title(self, tmp_path):
+        asset = tmp_path / "intermission.mp4"
+        out = tmp_path / "out.mp4"
+        cmd = _build_intermission_overlay_cmd(
+            asset,
+            out,
+            12.0,
+            title="Claracle",
+            subtitle="Open Source Highlights",
+        )
+        joined = " ".join(cmd)
+        assert "-stream_loop" in cmd
+        assert str(asset) in cmd
+        assert cmd[cmd.index("-t") + 1] == "12.000"
+        assert "drawtext=" in joined
+        assert "Claracle" in joined
+        assert str(out) == cmd[-1]
+
+    def test_generic_background_uses_intermission_animation_when_available(self, tmp_path):
+        asset = tmp_path / "intermission.mp4"
+        asset.write_bytes(b"animation")
+        recording = self._generic_recording(tmp_path)
+        commands: list[list[str]] = []
+
+        def runner(cmd):
+            commands.append(cmd)
+            Path(cmd[-1]).write_bytes(b"rendered")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        updated = _substitute_intermission_backgrounds(
+            [recording],
+            asset,
+            tmp_path / "generated",
+            runner,
+            title="Claracle",
+        )
+
+        assert updated[0].video_path != recording.video_path
+        assert updated[0].video_path.read_bytes() == b"rendered"
+        assert "-stream_loop" in commands[0]
+        assert str(asset) in commands[0]
+        assert "drawtext=" in " ".join(commands[0])
+
+    def test_intermission_animation_does_not_replace_live_source_generic(self, tmp_path):
+        asset = tmp_path / "intermission.mp4"
+        asset.write_bytes(b"animation")
+        recording = self._generic_recording(tmp_path, source_url="https://www.claracle.com")
+        runner = _mock_runner()
+
+        updated = _substitute_intermission_backgrounds(
+            [recording],
+            asset,
+            tmp_path / "generated",
+            runner,
+        )
+
+        assert updated[0].video_path == recording.video_path
+        runner.assert_not_called()
+
+    def test_missing_intermission_keeps_existing_gradient_recording(self, tmp_path):
+        recording = self._generic_recording(tmp_path)
+        runner = _mock_runner()
+
+        updated = _substitute_intermission_backgrounds(
+            [recording],
+            None,
+            tmp_path / "generated",
+            runner,
+        )
+
+        assert updated[0].video_path == recording.video_path
+        runner.assert_not_called()
 
 
 class TestBuildCanonicalAvCmd:
