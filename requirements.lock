@@ -42,7 +42,7 @@ docutils==0.22.4
     # via
     #   myst-parser
     #   sphinx
-fastapi==0.139.2
+fastapi==0.140.0
     # via squadscope-podcaster (pyproject.toml)
 greenlet==3.5.4
     # via playwright
@@ -50,11 +50,11 @@ h11==0.16.0
     # via
     #   httpcore2
     #   uvicorn
-httpcore2==2.9.0
+httpcore2==2.9.1
     # via httpx2
 httptools==0.8.0
     # via uvicorn
-httpx2==2.9.0
+httpx2==2.9.1
     # via squadscope-podcaster (pyproject.toml)
 idna==3.18
     # via
