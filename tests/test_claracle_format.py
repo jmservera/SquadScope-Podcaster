@@ -20,6 +20,7 @@ def _payload() -> dict[str, object]:
         "week": "2026-W23",
         "article_url": "https://example.com/article",
         "article_sha256": "a" * 64,
+        "article_title": "Open-source agents reshape delivery",
     }
 
 
@@ -81,6 +82,29 @@ def test_show_notes_disclose_ai_voices_and_link_claracle() -> None:
     assert PODCAST_URL in show_notes
     assert HOST_A_VOICE in show_notes
     assert HOST_B_VOICE in show_notes
+    assert "Open-source agents reshape delivery" in show_notes
+    assert "SquadScope curated articles" not in show_notes
+
+
+def test_show_notes_use_string_historical_context_summary() -> None:
+    payload = {
+        **_payload(),
+        "script_directions": {
+            "historical_context": (
+                "Claracle traces agent workflow launches, eval discipline, and repo momentum."
+            )
+        },
+    }
+    created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
+    artifacts = generate_artifacts("podcast-2026-W23-deadbeef", payload, created_at)
+    show_notes = next(a for a in artifacts if a.path.endswith("show-notes.md")).content.decode(
+        "utf-8"
+    )
+
+    assert (
+        "Claracle traces agent workflow launches, eval discipline, and repo momentum." in show_notes
+    )
+    assert "This Claracle episode explores" not in show_notes
 
 
 def test_format_stays_publication_blocked_and_dry_run_safe() -> None:

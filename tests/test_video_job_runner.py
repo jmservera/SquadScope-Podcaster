@@ -33,6 +33,7 @@ from podcaster.video.job_runner import (
     _record_live_intro_outro,
     _resolve_anchor_id,
     _resolve_dog_logo,
+    _resolve_video_title,
     _section_card_duration_seconds,
     drain,
     manifest_path,
@@ -307,6 +308,39 @@ class TestVideoDescription:
         storage = self._storage("j", notes)
         desc = _build_video_description(storage, "j", "fallback", show_name="", spoken_site="  ")
         assert "Claracle — www.claracle.com" in desc
+
+    def test_generic_show_notes_reuse_audio_publish_description(self):
+        notes = (
+            "# Claracle Podcast — Week 2026-W30\n\n"
+            "**Hosts:** Theo & Vera\n\n"
+            "## Show notes\n\n"
+            "This episode covers key developments from the SquadScope curated articles "
+            "for this week.\n\n"
+            "### Segment 1: [Topic to be added from source article]\n\n"
+            "- **Article:** [Title TBD](https://example.com) — Editorial synopsis pending\n"
+        )
+        storage = self._storage("j", notes)
+        desc = _build_video_description(
+            storage,
+            "j",
+            "generic fallback",
+            preferred_description="<p>Claracle explores the week's agent tooling article.</p>",
+        )
+        assert "Claracle explores the week's agent tooling article." in desc
+        assert "SquadScope curated articles" not in desc
+        assert "Claracle — www.claracle.com" in desc
+
+    def test_video_title_prefers_audio_publish_title(self):
+        title, used_default = _resolve_video_title(
+            {
+                "article_title": "Request Article Title",
+                "spotify_publish": {"title": "Audio Episode Title"},
+            },
+            brand_name="Claracle",
+            job_id="job-1",
+        )
+        assert title == "Audio Episode Title"
+        assert used_default is False
 
 
 # --- Already Processed Tests ---
@@ -838,6 +872,67 @@ class TestRunVideoGeneration:
         assert title == "Configured Episode Title"
         assert not any("article_title absent" in r.getMessage() for r in caplog.records)
         assert not any("podcast_config identity absent" in r.getMessage() for r in caplog.records)
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_video_distribution_reuses_audio_publish_metadata(
+        self, mock_compose, mock_record, mock_distribute, storage, dry_config, caplog
+    ):
+        """Video metadata must follow the audio publish title/summary when present."""
+        job_id = "video-audio-metadata"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Raw Article Title",
+                    "spotify_publish": {
+                        "title": "Audio Episode Title",
+                        "description": (
+                            "<p>Claracle analyzes the week's article about agent workflows.</p>"
+                        ),
+                    },
+                },
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        storage._data[show_notes_path(job_id)] = (
+            "# Claracle Podcast — Week 2026-W30\n\n"
+            "## Show notes\n\n"
+            "This episode covers key developments from the SquadScope curated articles "
+            "for this week.\n"
+        ).encode("utf-8")
+
+        mock_recording = MagicMock()
+        mock_recording.recorded = []
+        mock_record.return_value = mock_recording
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path, duration_seconds=60.0, segment_count=2, has_audio=False
+            )
+
+        mock_compose.side_effect = fake_compose
+        mock_distribute.return_value = DistributionResult(
+            status="completed",
+            youtube_id=None,
+            blob_path=None,
+            spotify_rss_updated=False,
+            spotify_upload_updated=False,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            run_video_generation(job_id, storage, config=dry_config)
+
+        title = mock_distribute.call_args.args[2]
+        description = mock_distribute.call_args.args[3]
+        assert title == "Audio Episode Title"
+        assert "Claracle analyzes the week's article about agent workflows." in description
+        assert "SquadScope curated articles" not in description
+        assert not any("article_title absent" in r.getMessage() for r in caplog.records)
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")

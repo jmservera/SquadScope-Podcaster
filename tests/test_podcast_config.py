@@ -148,6 +148,9 @@ def test_run_generation_job_threads_custom_podcast_config_into_artifacts() -> No
     assert "TTS Provider: OpenAI TTS (Ada nova / Lin shimmer)" in transcript
     assert "These hosts are synthetic voices." in show_notes
     assert "[SignalWire](https://pod.example.com)" in show_notes
+    assert "- **Source:** SignalWire," in show_notes
+    assert "This SignalWire episode explores" in show_notes
+    assert "This Claracle episode explores" not in show_notes
     assert result.manifest["request"]["podcast_config"] == payload["podcast_config"]
 
     shutil.rmtree(artifact_root, ignore_errors=True)
