@@ -212,6 +212,23 @@ def test_generated_show_notes_have_no_canary_leak() -> None:
     assert_no_canary(show_notes, [CANARY])
 
 
+def test_generated_artifacts_normalize_uppercase_claracle_weekly_url() -> None:
+    created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
+    payload = {
+        "week": "2026-W30",
+        "article_url": "https://claracle.com/weekly/2026/W30/",
+        "article_sha256": "a" * 64,
+        "source_artifacts": [],
+    }
+    artifacts = generate_artifacts("podcast-2026-W30-deadbeef", payload, created_at)
+    show_notes = next(a for a in artifacts if a.path.endswith("show-notes.md")).content.decode(
+        "utf-8"
+    )
+    # Weekly links in generated artifacts are lowercased so they do not 404.
+    assert "https://claracle.com/weekly/2026/w30/" in show_notes
+    assert "https://claracle.com/weekly/2026/W30/" not in show_notes
+
+
 def test_packet_metadata_reports_safety_summary() -> None:
     import io
     import json

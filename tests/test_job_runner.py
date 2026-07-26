@@ -386,9 +386,11 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
     monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
     storage = FakeStorage()
     manifest = _base_manifest()
+    # Feed an uppercase Claracle weekly URL to prove the publish description is
+    # normalized (presentation layer) even though the request/identity keeps it verbatim.
     manifest["request"] = {
         "week": "2026-W24",
-        "article_url": "https://claracle.com/weekly/2026/w24/",
+        "article_url": "https://claracle.com/weekly/2026/W24/",
         "article_title": "Skills go vertical",
         "spotify_publish": {"publish_mode": "draft", "upload_format": "wav"},
     }
