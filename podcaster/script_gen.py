@@ -55,8 +55,8 @@ __all__ = [
 ]
 
 # Maximum article content length sent to the LLM (chars). Longer articles are
-# truncated to stay within token limits. 12k chars ≈ 3k tokens.
-MAX_ARTICLE_CHARS = 12000
+# truncated to stay within token limits. 16k chars ≈ 4k tokens.
+MAX_ARTICLE_CHARS = 16000
 
 # Maximum generated script length (chars). Overly long scripts are truncated.
 MAX_SCRIPT_CHARS = 8000

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from html.parser import HTMLParser
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
@@ -13,7 +15,7 @@ from podcaster.artifact_access import artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.config import PodcastConfig, ScriptDirections
 from podcaster.costs import build_cost_ledger
-from podcaster.sanitization import FIELD_LIMITS, sanitize_source_artifact
+from podcaster.sanitization import FIELD_LIMITS, neutralize, sanitize_source_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -374,10 +376,68 @@ def _episode_summary(payload: dict[str, object], article_title: str, *, show_nam
     if directions.historical_context.summary.strip():
         return directions.historical_context.summary.strip()
 
+    source_summary = _source_episode_summary(payload)
+    if source_summary:
+        return source_summary
+
     return (
         f"This {show_name} episode explores {article_title}, highlighting the open-source "
         "developments, repo activity, and practical signals that matter this week."
     )
+
+
+class _SummaryHTMLTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._in_first_paragraph = False
+        self._finished_first_paragraph = False
+        self._seen_paragraph = False
+        self.first_paragraph_parts: list[str] = []
+        self.all_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
+        if tag.lower() == "p" and not self._seen_paragraph:
+            self._seen_paragraph = True
+            self._in_first_paragraph = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "p" and self._in_first_paragraph:
+            self._in_first_paragraph = False
+            self._finished_first_paragraph = True
+
+    def handle_data(self, data: str) -> None:
+        if self._finished_first_paragraph:
+            return
+        self.all_parts.append(data)
+        if self._in_first_paragraph:
+            self.first_paragraph_parts.append(data)
+
+    @property
+    def summary_text(self) -> str:
+        parts = self.first_paragraph_parts or self.all_parts
+        return " ".join(parts)
+
+
+def _plain_text_from_html(value: str) -> str:
+    parser = _SummaryHTMLTextParser()
+    parser.feed(value)
+    parser.close()
+    unescaped = html.unescape(parser.summary_text).replace("<", " ").replace(">", " ")
+    return neutralize(unescaped, limit=600).strip()
+
+
+def _source_episode_summary(payload: dict[str, object]) -> str:
+    article_summary = payload.get("article_summary")
+    if isinstance(article_summary, str) and article_summary.strip():
+        return neutralize(article_summary, limit=600).strip()
+
+    spotify_publish = payload.get("spotify_publish")
+    if isinstance(spotify_publish, dict):
+        description = spotify_publish.get("description")
+        if isinstance(description, str) and description.strip():
+            return _plain_text_from_html(description)
+
+    return ""
 
 
 def _audio_placeholder(job_id: str, payload: dict[str, object]) -> bytes:

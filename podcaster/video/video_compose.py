@@ -752,8 +752,7 @@ def _build_intermission_overlay_cmd(
         f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},fps={OUTPUT_FPS},format={ENCODE_PIX_FMT},setsar=1,"
         f"drawtext=text='{_escape_drawtext_text(title)}':"
         "fontcolor=0xc9d1d9:fontsize=64:"
-        "x=(w-text_w)/2:y=(h-text_h)/2-52:"
-        "box=1:boxcolor=black@0.35:boxborderw=18,"
+        "x=(w-text_w)/2:y=(h-text_h)/2-52,"
         f"drawtext=text='{_escape_drawtext_text(subtitle)}':"
         "fontcolor=0x8b949e:fontsize=28:"
         "x=(w-text_w)/2:y=(h-text_h)/2+38"
@@ -974,17 +973,11 @@ def _resolve_intro_outro_paths(
     *,
     storage: "StorageBackend | None",
     cache_dir: Path,
-    live_intro_path: Path | None = None,
-    live_outro_path: Path | None = None,
 ) -> tuple[Path | None, Path | None]:
-    """Resolve bookend paths with live captures taking precedence over blobs."""
-    intro = Path(live_intro_path) if live_intro_path is not None else None
-    outro = Path(live_outro_path) if live_outro_path is not None else None
-    if storage is not None and (intro is None or outro is None):
-        fallback_intro, fallback_outro = _fetch_intro_outro(storage, cache_dir)
-        intro = intro or fallback_intro
-        outro = outro or fallback_outro
-    return intro, outro
+    """Resolve stored branded intro/outro bookends."""
+    if storage is None:
+        return None, None
+    return _fetch_intro_outro(storage, cache_dir)
 
 
 def _probe_media(path: Path, run: "CommandRunner") -> tuple[bool, float]:
@@ -2445,8 +2438,6 @@ def compose_video(
     boundary_kinds: list[str] | None = None,
     storage: "StorageBackend | None" = None,
     intro_outro_cache_dir: Path | None = None,
-    live_intro_path: Path | None = None,
-    live_outro_path: Path | None = None,
     intermission_path: Path | None = None,
     generic_brand_name: str | None = None,
     generic_brand_subtitle: str | None = None,
@@ -2483,9 +2474,6 @@ def compose_video(
         intro_outro_cache_dir: Local cache directory for the downloaded
             intro/outro clips.  Defaults to a stable temp-dir location so
             repeated runs on the same host avoid re-downloading.
-        live_intro_path / live_outro_path: Optional freshly recorded Claracle
-            browser-navigation bumpers.  These are primary when supplied; stored
-            static assets are fetched only for the missing side(s).
         intermission_path: Optional local animated intermission asset.  When not
             supplied and *storage* is available, ``assets/video/intermission.mp4``
             is fetched and cached beside the intro/outro clips.
@@ -2561,13 +2549,11 @@ def compose_video(
     # Resolve reusable intro/outro clips (graceful degradation if unavailable).
     intro_path: Path | None = None
     outro_path: Path | None = None
-    if storage is not None or live_intro_path is not None or live_outro_path is not None:
+    if storage is not None:
         cache_dir = intro_outro_cache_dir or _default_intro_outro_cache_dir()
         intro_path, outro_path = _resolve_intro_outro_paths(
             storage=storage,
             cache_dir=cache_dir,
-            live_intro_path=live_intro_path,
-            live_outro_path=live_outro_path,
         )
         if storage is not None and intermission_path is None:
             intermission_path = _fetch_intermission(storage, cache_dir)
@@ -2592,13 +2578,11 @@ def compose_video(
     # record→normalize→compose→join pipeline and go straight to the final mux,
     # which needs only the composed video plus the podcast audio.
     _intermediates_enabled = intermediates is not None and getattr(intermediates, "enabled", False)
-    _live_bookends = live_intro_path is not None or live_outro_path is not None
     _animated_intermissions = intermission_path is not None and any(
         _is_generic_background_recording(seg) for seg in segments
     )
     if (
         _intermediates_enabled
-        and not _live_bookends
         and not _animated_intermissions
         and intermediates.exists(COMPOSED_VIDEO_CHECKPOINT)
     ):
