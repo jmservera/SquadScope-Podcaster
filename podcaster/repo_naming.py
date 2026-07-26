@@ -40,6 +40,7 @@ _MAX_README_BYTES = 200_000
 # Cap repos processed per script so a link-stuffed article can't fan out into an
 # unbounded number of network fetches.
 _MAX_REPOS = 16
+MAX_REPOS = _MAX_REPOS
 _FETCH_TIMEOUT = 3.0
 
 # Full ``https://github.com/owner/repo`` URL (mirrors the lenient repo regexes
@@ -305,6 +306,12 @@ def _harvest_repos_from_urls(text: str) -> list[tuple[str, str]]:
         seen.add(key)
         out.append((owner, repo))
     return out
+
+
+def harvest_repos_from_urls(text: str) -> list[tuple[str, str]]:
+    """Unique ``(owner, repo)`` pairs from full GitHub URLs, preserving order."""
+
+    return _harvest_repos_from_urls(text)
 
 
 def build_spoken_name_map(

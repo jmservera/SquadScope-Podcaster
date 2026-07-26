@@ -29,6 +29,24 @@ VALID_ARTICLE_CONTENT = (
 )
 
 
+def _article_with_repos(count: int) -> str:
+    repo_links = " ".join(f"https://github.com/org/tool-{index}" for index in range(1, count + 1))
+    return f"{VALID_ARTICLE_CONTENT} The article links these repositories in order: {repo_links}"
+
+
+def _dialogue_with_repo_markers(count: int) -> str:
+    lines: list[str] = []
+    for index in range(1, count + 1):
+        lines.extend(
+            [
+                f"## Visual: repo https://github.com/org/tool-{index}",
+                f"Theo: org/tool-{index} is important for this week's trend.",
+                f"Vera: The implementation choices in org/tool-{index} make the pattern clear.",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _mock_config(ready: bool = True) -> ScriptGenConfig:
     return ScriptGenConfig(
         endpoint="https://test.openai.azure.com/" if ready else None,
@@ -242,6 +260,137 @@ class TestGenerateScript:
         assert "Theo: Interesting!" in script
         # The output script header declares untrusted data handling
         assert "untrusted data" in script.lower()
+
+    def test_injects_required_repo_checklist_from_article_repos(self):
+        config = _mock_config()
+        captured_requests: list[Request] = []
+
+        def capture_transport(request: Request) -> bytes:
+            captured_requests.append(request)
+            return json.dumps(
+                {"choices": [{"message": {"content": _dialogue_with_repo_markers(6)}}]}
+            ).encode()
+
+        script = generate_script(
+            week="2026-W30",
+            article_title="Repo roundup",
+            article_url="https://example.com/article",
+            article_content=_article_with_repos(12),
+            config=config,
+            token_provider=_fake_token_provider,
+            transport=capture_transport,
+        )
+
+        body = json.loads(captured_requests[0].data)
+        assert body["max_tokens"] == 4000
+        user_msg = body["messages"][1]["content"]
+        assert "REQUIRED REPOSITORY COVERAGE" in user_msg
+        assert "Repos featured:" in user_msg
+        assert "1. org/tool-1 — https://github.com/org/tool-1" in user_msg
+        assert "10. org/tool-10 — https://github.com/org/tool-10" in user_msg
+        checklist_block = user_msg.split("REQUIRED REPOSITORY COVERAGE", 1)[1]
+        assert "org/tool-11" not in checklist_block
+        assert "You MUST feature at least these 10 repositories" in user_msg
+        assert "Repos featured: https://github.com/org/tool-1" in script
+
+    def test_repairs_when_repo_visual_coverage_is_below_floor(self):
+        config = _mock_config()
+        captured_requests: list[Request] = []
+        responses = [
+            (
+                "Theo: Let's start with org/tool-1 for the architecture story.\n"
+                "Vera: org/tool-2 gives the comparison point."
+            ),
+            _dialogue_with_repo_markers(6),
+        ]
+
+        def queue_transport(request: Request) -> bytes:
+            captured_requests.append(request)
+            content = responses.pop(0)
+            return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+        script = generate_script(
+            week="2026-W30",
+            article_title="Repo roundup",
+            article_url="https://example.com/article",
+            article_content=_article_with_repos(8),
+            config=config,
+            token_provider=_fake_token_provider,
+            transport=queue_transport,
+        )
+
+        assert len(captured_requests) == 2
+        repair_body = json.loads(captured_requests[1].data)
+        repair_prompt = repair_body["messages"][-1]["content"]
+        assert "under-covers the required GitHub repository checklist" in repair_prompt
+        assert "WITHOUT removing existing content" in repair_prompt
+        assert "org/tool-3 — https://github.com/org/tool-3" in repair_prompt
+        assert script.count("## Visual: repo https://github.com/org/tool-") >= 6
+
+    def test_repo_feature_header_is_normalized_to_required_checklist(self):
+        checklist = script_gen._build_required_repo_checklist(_article_with_repos(3))
+        dialogue = (
+            "Repos featured: https://github.com/other/missing\n"
+            "Theo: org/tool-1 is the repo we discuss first.\n"
+        )
+
+        normalized = script_gen._ensure_repo_feature_header(dialogue, checklist)
+
+        first_line = normalized.splitlines()[0]
+        assert first_line == (
+            "Repos featured: https://github.com/org/tool-1 "
+            "https://github.com/org/tool-2 https://github.com/org/tool-3"
+        )
+        assert "other/missing" not in first_line
+
+    def test_header_only_repos_do_not_trigger_readme_fetches(self):
+        config = _mock_config()
+        fetched: list[tuple[str, str]] = []
+
+        def fetch_readme(owner: str, name: str) -> None:
+            fetched.append((owner, name))
+            return None
+
+        script = generate_script(
+            week="2026-W30",
+            article_title="Repo roundup",
+            article_url="https://example.com/article",
+            article_content=_article_with_repos(8),
+            config=config,
+            token_provider=_fake_token_provider,
+            transport=_make_transport(_dialogue_with_repo_markers(6)),
+            readme_fetcher=fetch_readme,
+        )
+
+        assert "Repos featured:" in script
+        assert "https://github.com/org/tool-7" in script
+        assert "## Visual: repo https://github.com/org/tool-7" not in script
+        assert fetched == [(("org", f"tool-{index}")) for index in range(1, 7)]
+
+    def test_marker_inference_precedes_spoken_repo_name_rewrite(self):
+        config = _mock_config()
+        dialogue = (
+            "Theo: The key project this week is org/awesome-evals.\n"
+            "Vera: org/awesome-evals makes the evaluation story concrete."
+        )
+
+        script = generate_script(
+            week="2026-W30",
+            article_title="Natural repo names",
+            article_url="https://example.com/article",
+            article_content=(
+                f"{VALID_ARTICLE_CONTENT} The source highlights "
+                "https://github.com/org/awesome-evals for evaluation workflows."
+            ),
+            config=config,
+            token_provider=_fake_token_provider,
+            transport=_make_transport(dialogue),
+            readme_fetcher=lambda owner, name: None,
+        )
+
+        assert "## Visual: repo https://github.com/org/awesome-evals" in script
+        assert "Theo: The key project this week is awesome evals." in script
+        assert "Vera: awesome evals makes the evaluation story concrete." in script
 
     def test_uses_custom_podcast_config(self):
         from podcaster.config import HostConfig
