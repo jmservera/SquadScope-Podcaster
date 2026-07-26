@@ -34,6 +34,17 @@ def test_generate_show_notes_contains_metadata():
     assert "claracle.com" in result
 
 
+def test_generate_show_notes_normalizes_uppercase_claracle_weekly_url():
+    result = generate_show_notes(
+        week="2026-W30",
+        title="Weekly Highlights",
+        article_url="https://claracle.com/weekly/2026/W30/",
+    )
+    # Presentation layer lowercases the week token so show-notes links do not 404.
+    assert "https://claracle.com/weekly/2026/w30/" in result
+    assert "https://claracle.com/weekly/2026/W30/" not in result
+
+
 def test_build_publishing_packet_zip_structure():
     transcript = generate_transcript(
         "---\nTheo: Hi\nVera: Hello", week="2026-W24", duration_seconds=30.0

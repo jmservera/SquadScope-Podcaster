@@ -124,6 +124,29 @@ def neutralize(value: object, *, limit: int = FIELD_LIMITS["text"]) -> str:
     return cap_length(_strip_control_chars(text), limit)
 
 
+# Claracle weekly URLs are canonically lowercase in the week token
+# (``/weekly/2026/w30/``); the uppercase ISO form (``/W30/``) that arrives from
+# upstream article frontmatter 404s. Normalize only the week token of Claracle
+# weekly URLs for user-facing links (show notes, packet, RSS) — other URLs are
+# left untouched, and this is presentation-only so it never alters the request
+# ``article_url`` that feeds the replay identity hash / job_id.
+_WEEKLY_WEEK_TOKEN_RE = re.compile(
+    r"(?i)(https?://(?:[a-z0-9-]+\.)*claracle\.com/weekly/\d{4}/)W(\d{1,2})(?=$|[/?#])"
+)
+
+
+def normalize_weekly_url(url: object) -> str:
+    """Canonicalize a Claracle weekly URL's week token (``/W30/`` -> ``/w30/``).
+
+    Lowercases the ``W`` and zero-pads the week to two digits so a single-digit
+    upstream token like ``/W3/`` becomes the canonical ``/w03/`` (matching
+    :func:`~podcaster.video.sync_plan.weekly_url_from_job_id`). Non-string
+    values are coerced to ``str``; non-weekly URLs pass through unchanged.
+    """
+    text = url if isinstance(url, str) else str(url)
+    return _WEEKLY_WEEK_TOKEN_RE.sub(lambda m: f"{m.group(1)}w{int(m.group(2)):02d}", text)
+
+
 def fence(value: object, *, limit: int = FIELD_LIMITS["text"]) -> str:
     """Neutralize then wrap untrusted text in an explicit data fence.
 

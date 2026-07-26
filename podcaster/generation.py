@@ -15,7 +15,12 @@ from podcaster.artifact_access import artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.config import PodcastConfig, ScriptDirections
 from podcaster.costs import build_cost_ledger
-from podcaster.sanitization import FIELD_LIMITS, neutralize, sanitize_source_artifact
+from podcaster.sanitization import (
+    FIELD_LIMITS,
+    neutralize,
+    normalize_weekly_url,
+    sanitize_source_artifact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +323,7 @@ def _transcript(script: str, config: PodcastConfig) -> str:
 
 def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastConfig) -> str:
     week = str(payload["week"])
-    article_url = str(payload["article_url"])
+    article_url = normalize_weekly_url(str(payload["article_url"]))
     article_title = str(payload.get("article_title") or "the week's featured article")
     published = generated_at.split("T")[0]
     episode_summary = _episode_summary(payload, article_title, show_name=config.name)
@@ -610,7 +615,7 @@ def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
             "",
             f"- Job ID: `{job_id}`",
             f"- Week: `{payload['week']}`",
-            f"- Source article: {payload['article_url']}",
+            f"- Source article: {normalize_weekly_url(payload['article_url'])}",
             "- Review mechanism: GitHub Environment `podcast-review` via "
             "`.github/workflows/podcast-review-gate.yml`",
             "",
@@ -644,7 +649,7 @@ def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
 
 def _operator_readme(metadata: dict[str, object]) -> str:
     week = metadata.get("week", "unknown")
-    article_url = metadata.get("article_url", "")
+    article_url = normalize_weekly_url(metadata.get("article_url", ""))
     review_status = metadata.get("review_status", "unknown")
 
     return "\n".join(

@@ -51,6 +51,7 @@ from podcaster.queue import (
     enqueue_video_job,
     parse_job_id,
 )
+from podcaster.sanitization import normalize_weekly_url
 from podcaster.storage import ManagedIdentityTokenCredential, StorageBackend, create_storage_backend
 from podcaster.tts import PROVIDER, TtsConfig, load_tts_config
 
@@ -472,7 +473,8 @@ def run_synthesis(
                     )
                     pub_description = (
                         f"<p>Claracle week {request.get('week') or job_id}.</p>"
-                        f"<p>Source article: {request.get('article_url') or ''}</p>"
+                        f"<p>Source article: "
+                        f"{normalize_weekly_url(request.get('article_url') or '')}</p>"
                     )
                     pub_result: PublishResult = publish_episode(
                         output_path,

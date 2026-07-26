@@ -8,6 +8,7 @@ from podcaster.costs import build_cost_ledger
 from podcaster.generation import manifest_bytes
 from podcaster.orchestration import (
     _prepare_audio_files,
+    _show_notes_text,
     auto_publish_enabled,
     auto_publish_job,
     manifest_path,
@@ -20,6 +21,20 @@ from podcaster.storage import LocalStorageBackend, StoredArtifact
 
 def _job_id() -> str:
     return "podcast-2026-W24-orchestration"
+
+
+def test_show_notes_text_normalizes_uppercase_claracle_weekly_url() -> None:
+    manifest = {
+        "job_id": "podcast-2026-W30-deadbeef",
+        "request": {
+            "week": "2026-W30",
+            "article_url": "https://claracle.com/weekly/2026/W30/",
+        },
+    }
+    description = _show_notes_text(manifest, Path("episode.mp3"), Path("episode.wav"))
+    # Published episode description must use the lowercase (non-404) weekly link.
+    assert "https://claracle.com/weekly/2026/w30/" in description
+    assert "https://claracle.com/weekly/2026/W30/" not in description
 
 
 def _synthesized_manifest() -> dict:

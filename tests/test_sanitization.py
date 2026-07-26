@@ -14,6 +14,7 @@ from podcaster.sanitization import (
     fence,
     flag_injection,
     neutralize,
+    normalize_weekly_url,
     sanitize_source_artifact,
 )
 
@@ -49,6 +50,60 @@ def test_neutralize_strips_control_chars_and_newlines() -> None:
 
 def test_neutralize_removes_zero_width_smuggling() -> None:
     assert neutralize("ig\u200bnore\u202eprev") == "ignoreprev"
+
+
+def test_normalize_weekly_url_lowercases_week_token() -> None:
+    # The canonical Claracle weekly URL uses a lowercase week token; the
+    # uppercase ISO form that arrives from upstream frontmatter 404s.
+    assert (
+        normalize_weekly_url("https://claracle.com/weekly/2026/W30/")
+        == "https://claracle.com/weekly/2026/w30/"
+    )
+    # No trailing slash and with query/fragment.
+    assert (
+        normalize_weekly_url("https://claracle.com/weekly/2026/W03")
+        == "https://claracle.com/weekly/2026/w03"
+    )
+    # Single-digit upstream week token is lowercased AND zero-padded to the
+    # canonical two-digit form.
+    assert (
+        normalize_weekly_url("https://claracle.com/weekly/2026/W3/")
+        == "https://claracle.com/weekly/2026/w03/"
+    )
+    assert (
+        normalize_weekly_url("https://www.claracle.com/weekly/2026/W30/?ref=x#top")
+        == "https://www.claracle.com/weekly/2026/w30/?ref=x#top"
+    )
+    # Subdomains of claracle.com are matched.
+    assert (
+        normalize_weekly_url("https://staging.claracle.com/weekly/2026/W30/")
+        == "https://staging.claracle.com/weekly/2026/w30/"
+    )
+
+
+def test_normalize_weekly_url_leaves_other_urls_untouched() -> None:
+    # Already-lowercase week token is unchanged.
+    assert (
+        normalize_weekly_url("https://claracle.com/weekly/2026/w30/")
+        == "https://claracle.com/weekly/2026/w30/"
+    )
+    # Non-Claracle / non-weekly URLs pass through, including an uppercase W that
+    # is not a weekly week token.
+    assert normalize_weekly_url("https://example.com/Weekly/2026/W30/") == (
+        "https://example.com/Weekly/2026/W30/"
+    )
+    assert normalize_weekly_url("https://github.com/xai-org/Wow") == (
+        "https://github.com/xai-org/Wow"
+    )
+    # Look-alike host that merely ends in "claracle.com" is NOT matched — the
+    # host must be claracle.com or a subdomain of it, not evilclaracle.com.
+    assert normalize_weekly_url("https://evilclaracle.com/weekly/2026/W30/") == (
+        "https://evilclaracle.com/weekly/2026/W30/"
+    )
+    # A weekly path without a scheme/host boundary is not treated as the host.
+    assert normalize_weekly_url("notclaracle.com/weekly/2026/W30/") == (
+        "notclaracle.com/weekly/2026/W30/"
+    )
 
 
 def test_cap_length_truncates_oversized_input() -> None:
@@ -155,6 +210,23 @@ def test_generated_show_notes_have_no_canary_leak() -> None:
         "utf-8"
     )
     assert_no_canary(show_notes, [CANARY])
+
+
+def test_generated_artifacts_normalize_uppercase_claracle_weekly_url() -> None:
+    created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
+    payload = {
+        "week": "2026-W30",
+        "article_url": "https://claracle.com/weekly/2026/W30/",
+        "article_sha256": "a" * 64,
+        "source_artifacts": [],
+    }
+    artifacts = generate_artifacts("podcast-2026-W30-deadbeef", payload, created_at)
+    show_notes = next(a for a in artifacts if a.path.endswith("show-notes.md")).content.decode(
+        "utf-8"
+    )
+    # Weekly links in generated artifacts are lowercased so they do not 404.
+    assert "https://claracle.com/weekly/2026/w30/" in show_notes
+    assert "https://claracle.com/weekly/2026/W30/" not in show_notes
 
 
 def test_packet_metadata_reports_safety_summary() -> None:
