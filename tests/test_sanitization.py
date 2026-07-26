@@ -68,6 +68,11 @@ def test_normalize_weekly_url_lowercases_week_token() -> None:
         normalize_weekly_url("https://www.claracle.com/weekly/2026/W30/?ref=x#top")
         == "https://www.claracle.com/weekly/2026/w30/?ref=x#top"
     )
+    # Subdomains of claracle.com are matched.
+    assert (
+        normalize_weekly_url("https://staging.claracle.com/weekly/2026/W30/")
+        == "https://staging.claracle.com/weekly/2026/w30/"
+    )
 
 
 def test_normalize_weekly_url_leaves_other_urls_untouched() -> None:
@@ -83,6 +88,15 @@ def test_normalize_weekly_url_leaves_other_urls_untouched() -> None:
     )
     assert normalize_weekly_url("https://github.com/xai-org/Wow") == (
         "https://github.com/xai-org/Wow"
+    )
+    # Look-alike host that merely ends in "claracle.com" is NOT matched — the
+    # host must be claracle.com or a subdomain of it, not evilclaracle.com.
+    assert normalize_weekly_url("https://evilclaracle.com/weekly/2026/W30/") == (
+        "https://evilclaracle.com/weekly/2026/W30/"
+    )
+    # A weekly path without a scheme/host boundary is not treated as the host.
+    assert normalize_weekly_url("notclaracle.com/weekly/2026/W30/") == (
+        "notclaracle.com/weekly/2026/W30/"
     )
 
 

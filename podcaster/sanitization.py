@@ -130,7 +130,9 @@ def neutralize(value: object, *, limit: int = FIELD_LIMITS["text"]) -> str:
 # weekly URLs for user-facing links (show notes, packet, RSS) — other URLs are
 # left untouched, and this is presentation-only so it never alters the request
 # ``article_url`` that feeds the replay identity hash / job_id.
-_WEEKLY_WEEK_TOKEN_RE = re.compile(r"(?i)(claracle\.com/weekly/\d{4}/)W(\d{1,2})(?=$|[/?#])")
+_WEEKLY_WEEK_TOKEN_RE = re.compile(
+    r"(?i)(https?://(?:[a-z0-9-]+\.)*claracle\.com/weekly/\d{4}/)W(\d{1,2})(?=$|[/?#])"
+)
 
 
 def normalize_weekly_url(url: object) -> str:
