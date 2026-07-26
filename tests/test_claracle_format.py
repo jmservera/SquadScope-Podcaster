@@ -107,6 +107,69 @@ def test_show_notes_use_string_historical_context_summary() -> None:
     assert "This Claracle episode explores" not in show_notes
 
 
+def test_show_notes_prefer_article_summary_over_title_template() -> None:
+    payload = {
+        **_payload(),
+        "article_summary": (
+            "Agent tooling kept hardening into products while security and robotics accelerated."
+        ),
+    }
+    created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
+    artifacts = generate_artifacts("podcast-2026-W23-deadbeef", payload, created_at)
+    show_notes = next(a for a in artifacts if a.path.endswith("show-notes.md")).content.decode(
+        "utf-8"
+    )
+
+    assert (
+        "Agent tooling kept hardening into products while security and robotics accelerated."
+        in show_notes
+    )
+    assert "This Claracle episode explores" not in show_notes
+
+
+def test_show_notes_use_spotify_description_lead_when_article_summary_missing() -> None:
+    payload = {
+        **_payload(),
+        "spotify_publish": {
+            "description": (
+                "<p>Agent tooling hardened into products this week.</p>"
+                "<p>Music credits stay below.</p>"
+            )
+        },
+    }
+    created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
+    artifacts = generate_artifacts("podcast-2026-W23-deadbeef", payload, created_at)
+    show_notes = next(a for a in artifacts if a.path.endswith("show-notes.md")).content.decode(
+        "utf-8"
+    )
+
+    assert "Agent tooling hardened into products this week." in show_notes
+    assert "Music credits stay below." not in show_notes
+    assert "This Claracle episode explores" not in show_notes
+
+
+def test_show_notes_strip_residual_angle_brackets_from_spotify_description() -> None:
+    payload = {
+        **_payload(),
+        "spotify_publish": {
+            "description": (
+                "<p>Agent tooling &lt;script&gt;alert('x')&lt;/script&gt; hardened.</p>"
+                "<p>Second paragraph.</p>"
+            )
+        },
+    }
+    created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
+    artifacts = generate_artifacts("podcast-2026-W23-deadbeef", payload, created_at)
+    show_notes = next(a for a in artifacts if a.path.endswith("show-notes.md")).content.decode(
+        "utf-8"
+    )
+
+    assert "Agent tooling script alert('x') /script hardened." in show_notes
+    assert "<script>" not in show_notes
+    assert "&lt;script&gt;" not in show_notes
+    assert "Second paragraph." not in show_notes
+
+
 def test_format_stays_publication_blocked_and_dry_run_safe() -> None:
     script = _artifact("script.txt")
     assert "no audio has been synthesized." in script.lower()

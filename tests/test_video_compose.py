@@ -1253,37 +1253,26 @@ class TestFetchIntroOutro:
         assert intermission.name == "intermission.mp4"
         assert intermission.read_bytes() == b"animation"
 
-    def test_live_bumpers_take_precedence_over_stale_static_cache(self, tmp_path):
-        storage = _FakeStorage({INTRO_BLOB_PATH: b"stale-i", OUTRO_BLOB_PATH: b"stale-o"})
-        live_intro = tmp_path / "live-intro.webm"
-        live_outro = tmp_path / "live-outro.webm"
-        live_intro.write_bytes(b"live-i")
-        live_outro.write_bytes(b"live-o")
+    def test_static_branded_bookends_are_resolved_from_storage(self, tmp_path):
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"brand-i", OUTRO_BLOB_PATH: b"brand-o"})
+        intro, outro = _resolve_intro_outro_paths(
+            storage=storage,
+            cache_dir=tmp_path / "cache",
+        )
+
+        assert intro is not None and intro.read_bytes() == b"brand-i"
+        assert outro is not None and outro.read_bytes() == b"brand-o"
+
+    def test_static_bookends_allow_missing_side(self, tmp_path):
+        storage = _FakeStorage({INTRO_BLOB_PATH: b"brand-i"})
 
         intro, outro = _resolve_intro_outro_paths(
             storage=storage,
             cache_dir=tmp_path / "cache",
-            live_intro_path=live_intro,
-            live_outro_path=live_outro,
         )
 
-        assert intro == live_intro
-        assert outro == live_outro
-        assert storage.calls == []
-
-    def test_static_asset_fallback_only_for_missing_live_bumper(self, tmp_path):
-        storage = _FakeStorage({INTRO_BLOB_PATH: b"fallback-i", OUTRO_BLOB_PATH: b"fallback-o"})
-        live_intro = tmp_path / "live-intro.webm"
-        live_intro.write_bytes(b"live-i")
-
-        intro, outro = _resolve_intro_outro_paths(
-            storage=storage,
-            cache_dir=tmp_path / "cache",
-            live_intro_path=live_intro,
-        )
-
-        assert intro == live_intro
-        assert outro is not None and outro.read_bytes() == b"fallback-o"
+        assert intro is not None and intro.read_bytes() == b"brand-i"
+        assert outro is None
 
 
 class TestIntermissionBackgroundSubstitution:
@@ -1321,6 +1310,11 @@ class TestIntermissionBackgroundSubstitution:
         assert cmd[cmd.index("-t") + 1] == "12.000"
         assert "drawtext=" in joined
         assert "Claracle" in joined
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "-52,drawtext=text=" in vf
+        assert "box=1" not in joined
+        assert "boxcolor=" not in joined
+        assert "boxborderw=" not in joined
         assert str(out) == cmd[-1]
 
     def test_generic_background_uses_intermission_animation_when_available(self, tmp_path):

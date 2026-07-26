@@ -259,6 +259,8 @@ def test_build_visual_marker_guidance_mentions_modes():
     assert "## Visual: repo" in guidance
     assert "## Visual: article" in guidance
     assert "## Visual: intermission" in guidance
+    assert "at least 6-10 distinct repos" in guidance
+    assert "navigate through multiple repo markers" in guidance
     assert "NON-SPOKEN" in guidance
 
 
@@ -268,6 +270,7 @@ def test_generation_system_prompt_includes_guidance():
     prompt = _build_system_prompt(podcast_config=CONFIG)
     assert "VISUAL INTENT" in prompt
     assert "## Visual: repo" in prompt
+    assert "at least 6-10 distinct repos" in prompt
 
 
 def test_infer_repo_visual_markers_injects_from_inline_links():

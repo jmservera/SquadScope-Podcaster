@@ -648,6 +648,7 @@ def _request_metadata(
         "podcast_config",
         "script_directions",
         "spotify_publish",
+        "article_summary",
     ):
         if field in payload:
             request[field] = payload[field]

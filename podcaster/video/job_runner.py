@@ -33,7 +33,7 @@ from typing import Any
 
 from podcaster.config import PodcastConfig, SpotifyPublishConfig
 from podcaster.failure_reporting import report_failure
-from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE, PODCAST_URL
+from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE, _plain_text_from_html
 from podcaster.music import TRACK_ATTRIBUTION
 from podcaster.pipeline_lock import PIPELINE_VIDEO, claim_pipeline
 from podcaster.queue import (
@@ -43,6 +43,7 @@ from podcaster.queue import (
     create_clip_queue_backend,
     parse_job_id,
 )
+from podcaster.sanitization import neutralize
 from podcaster.storage import (
     ManagedIdentityTokenCredential,
     StorageBackend,
@@ -57,8 +58,6 @@ from podcaster.video.distribution import (
 from podcaster.video.intermediates import create_intermediate_store
 from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
-    EpisodePlan,
-    VideoSegment,
     annotate_removed_repos,
     extract_repo_urls,
     extract_source_url,
@@ -110,8 +109,6 @@ _MIN_VALID_MP4_BYTES = 1024
 # request payload does not supply a ``description_template``.
 _DEFAULT_MUSIC_CREDITS = f"Intro and Outro: {TRACK_ATTRIBUTION}"
 
-LIVE_BUMPER_DURATION_SECONDS = 6.0
-
 
 @dataclass(frozen=True)
 class VideoOutcome:
@@ -136,56 +133,6 @@ class PermanentVideoError(RuntimeError):
         super().__init__(message)
         self.reason = reason
         self.details = details or {}
-
-
-def _record_live_intro_outro(
-    output_dir: Path,
-    *,
-    brand_name: str,
-    recorder=None,
-) -> tuple[Path | None, Path | None]:
-    """Record live Claracle root navigation bumpers; return paths or fallbacks."""
-    if recorder is None:
-        from podcaster.video.video_gen import record_episode as recorder
-
-    bumper_dir = output_dir / "live-bumpers"
-    plan = EpisodePlan(
-        total_duration_seconds=LIVE_BUMPER_DURATION_SECONDS * 2,
-        segments=(
-            VideoSegment(0.0, LIVE_BUMPER_DURATION_SECONDS, source_url=PODCAST_URL),
-            VideoSegment(
-                LIVE_BUMPER_DURATION_SECONDS,
-                LIVE_BUMPER_DURATION_SECONDS,
-                source_url=PODCAST_URL,
-            ),
-        ),
-    )
-    try:
-        result = recorder(
-            plan,
-            output_dir=bumper_dir,
-            headless=True,
-            source_url=None,
-            brand_name=brand_name,
-        )
-    except Exception:  # noqa: BLE001 - static assets remain the fallback path
-        logger.warning(
-            "live Claracle bumper recording failed; falling back to stored assets", exc_info=True
-        )
-        return None, None
-
-    paths = [
-        recorded.video_path for recorded in result.recorded[:2] if recorded.video_path.exists()
-    ]
-    if len(paths) < 2:
-        logger.warning(
-            "live Claracle bumper recording produced %d usable clips; "
-            "falling back for missing side(s)",
-            len(paths),
-        )
-    intro = paths[0] if len(paths) >= 1 else None
-    outro = paths[1] if len(paths) >= 2 else None
-    return intro, outro
 
 
 class _StorageUploaderAdapter:
@@ -283,6 +230,13 @@ def _is_generic_episode_summary(summary: str) -> bool:
         or "this episode covers key developments" in normalized
         or "[topic to be added from source article]" in normalized
         or "editorial synopsis pending" in normalized
+        or (
+            normalized.startswith("this ")
+            and " episode explores " in normalized
+            and "highlighting the open-source developments, repo activity, "
+            "and practical signals that matter this week"
+            in normalized
+        )
     )
 
 
@@ -291,6 +245,13 @@ def _resolve_spotify_publish_config(request: dict[str, Any]) -> SpotifyPublishCo
     if not isinstance(spotify_publish, dict):
         return None
     return SpotifyPublishConfig.from_payload({"spotify_publish": spotify_publish})
+
+
+def _sanitize_preferred_description(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    description = _plain_text_from_html(value)
+    return description or None
 
 
 def _resolve_video_title(
@@ -341,7 +302,10 @@ def _build_video_description(
     brand_name = (show_name or "").strip() or PODCAST_NAME
     brand_site = (spoken_site or "").strip() or PODCAST_SPOKEN_SITE
     attribution = (music_credits or _DEFAULT_MUSIC_CREDITS).strip()
-    fallback_text = (preferred_description or "").strip() or fallback.strip()
+    fallback_text = (
+        _sanitize_preferred_description(preferred_description)
+        or neutralize(fallback, limit=600).strip()
+    )
 
     def _with_attribution(base: str) -> str:
         return f"{base}\n\n{attribution}" if attribution else base
@@ -939,11 +903,6 @@ def run_video_generation(
                         intermediates=intermediates,
                         brand_name=brand_name,
                     )
-                live_intro_path, live_outro_path = _record_live_intro_outro(
-                    output_dir,
-                    brand_name=brand_name,
-                )
-
             # Compose final MP4
             output_path = output_dir / f"{job_id}.mp4"
             dog_logo_cfg = _resolve_dog_logo(manifest)
@@ -966,8 +925,6 @@ def run_video_generation(
                     output_path=output_path,
                     runner=compose_runner,
                     storage=storage,
-                    live_intro_path=live_intro_path,
-                    live_outro_path=live_outro_path,
                     generic_brand_name=brand_name,
                     dog_logo=dog_logo_cfg,
                     audio_duration=audio_duration,
@@ -1019,10 +976,13 @@ def run_video_generation(
                 request.get("description", f"Video podcast episode {job_id}")
             )
             preferred_description = (
-                spotify_publish_config.description
+                _sanitize_preferred_description(spotify_publish_config.description)
                 if spotify_publish_config is not None and spotify_publish_config.description.strip()
                 else None
             )
+            if preferred_description is None:
+                article_summary = request.get("article_summary")
+                preferred_description = _sanitize_preferred_description(article_summary)
             template = request.get("description_template")
             music_credits = template if isinstance(template, str) and template.strip() else None
             description = _build_video_description(
