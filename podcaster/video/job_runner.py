@@ -763,7 +763,15 @@ def run_video_generation(
             # whisper. Scripts without GitHub repo URLs produce a generic
             # background plan (issue #335) instead of being skipped.
             realized_metadata = _load_realized_metadata(manifest, job_id, storage)
-            weekly_url = None if pinned_article is not None else weekly_url_from_job_id(job_id)
+            # The weekly claracle.com page is a deterministic public URL derived
+            # from the job_id, shown as the opening visual backdrop (issue #382).
+            # It is navigated for pinned/replay jobs too: the replay
+            # reproducibility guarantee (#612) is about not re-fetching the
+            # article *content* live (``source_url`` stays None below, so
+            # ``fetch_repos_from_article`` is never called) — the weekly page is a
+            # visual only and does not affect the script, repos, or audio. The
+            # recorder degrades to a generic card if the page is unavailable.
+            weekly_url = weekly_url_from_job_id(job_id)
             used_metadata_plan = False
             try:
                 if realized_metadata is not None and realized_metadata.topics:
@@ -832,7 +840,7 @@ def run_video_generation(
                 plan = prepend_weekly_segment(
                     plan,
                     job_id,
-                    use_live_source=pinned_article is None,
+                    use_live_source=True,
                 )
 
             # Pre-flight each repo URL (HEAD) so repos GitHub has removed (e.g. a

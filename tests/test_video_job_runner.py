@@ -485,7 +485,18 @@ class TestRunVideoGeneration:
             segment.repo is not None and segment.repo.url == "https://github.com/microsoft/vscode"
             for segment in plan.segments
         )
-        assert all(segment.source_url is None for segment in plan.segments)
+        # The opening weekly page is a deterministic public URL (derived from the
+        # job_id) and is still shown for pinned/replay jobs — only the live
+        # article-*content* fetch is suppressed for reproducibility (#612). The
+        # weekly segment therefore carries the lowercase weekly URL; repo
+        # segments carry none.
+        weekly_url = "https://claracle.com/weekly/2026/w25/"
+        assert plan.segments[0].source_url == weekly_url
+        assert all(segment.source_url is None for segment in plan.segments[1:])
+        # The ``record_episode(source_url=...)`` kwarg (distinct from the
+        # per-segment ``source_url`` asserted above) is the article-content URL
+        # used for live repo correction; it stays None for pinned jobs, so no
+        # live article-content fetch occurs.
         assert mock_record.call_args.kwargs["source_url"] is None
 
     @patch("podcaster.video.video_gen.record_episode")
