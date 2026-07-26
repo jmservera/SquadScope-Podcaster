@@ -64,6 +64,12 @@ def test_normalize_weekly_url_lowercases_week_token() -> None:
         normalize_weekly_url("https://claracle.com/weekly/2026/W03")
         == "https://claracle.com/weekly/2026/w03"
     )
+    # Single-digit upstream week token is lowercased AND zero-padded to the
+    # canonical two-digit form.
+    assert (
+        normalize_weekly_url("https://claracle.com/weekly/2026/W3/")
+        == "https://claracle.com/weekly/2026/w03/"
+    )
     assert (
         normalize_weekly_url("https://www.claracle.com/weekly/2026/W30/?ref=x#top")
         == "https://www.claracle.com/weekly/2026/w30/?ref=x#top"

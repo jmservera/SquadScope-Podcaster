@@ -136,13 +136,15 @@ _WEEKLY_WEEK_TOKEN_RE = re.compile(
 
 
 def normalize_weekly_url(url: object) -> str:
-    """Lowercase the week token of a Claracle weekly URL (``/W30/`` -> ``/w30/``).
+    """Canonicalize a Claracle weekly URL's week token (``/W30/`` -> ``/w30/``).
 
-    Non-string values are coerced to ``str``; non-weekly URLs pass through
-    unchanged.
+    Lowercases the ``W`` and zero-pads the week to two digits so a single-digit
+    upstream token like ``/W3/`` becomes the canonical ``/w03/`` (matching
+    :func:`~podcaster.video.sync_plan.weekly_url_from_job_id`). Non-string
+    values are coerced to ``str``; non-weekly URLs pass through unchanged.
     """
     text = url if isinstance(url, str) else str(url)
-    return _WEEKLY_WEEK_TOKEN_RE.sub(lambda m: f"{m.group(1)}w{m.group(2)}", text)
+    return _WEEKLY_WEEK_TOKEN_RE.sub(lambda m: f"{m.group(1)}w{int(m.group(2)):02d}", text)
 
 
 def fence(value: object, *, limit: int = FIELD_LIMITS["text"]) -> str:
