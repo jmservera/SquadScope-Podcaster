@@ -14,6 +14,7 @@ from podcaster.sanitization import (
     fence,
     flag_injection,
     neutralize,
+    normalize_weekly_url,
     sanitize_source_artifact,
 )
 
@@ -49,6 +50,40 @@ def test_neutralize_strips_control_chars_and_newlines() -> None:
 
 def test_neutralize_removes_zero_width_smuggling() -> None:
     assert neutralize("ig\u200bnore\u202eprev") == "ignoreprev"
+
+
+def test_normalize_weekly_url_lowercases_week_token() -> None:
+    # The canonical Claracle weekly URL uses a lowercase week token; the
+    # uppercase ISO form that arrives from upstream frontmatter 404s.
+    assert (
+        normalize_weekly_url("https://claracle.com/weekly/2026/W30/")
+        == "https://claracle.com/weekly/2026/w30/"
+    )
+    # No trailing slash and with query/fragment.
+    assert (
+        normalize_weekly_url("https://claracle.com/weekly/2026/W03")
+        == "https://claracle.com/weekly/2026/w03"
+    )
+    assert (
+        normalize_weekly_url("https://www.claracle.com/weekly/2026/W30/?ref=x#top")
+        == "https://www.claracle.com/weekly/2026/w30/?ref=x#top"
+    )
+
+
+def test_normalize_weekly_url_leaves_other_urls_untouched() -> None:
+    # Already-lowercase week token is unchanged.
+    assert (
+        normalize_weekly_url("https://claracle.com/weekly/2026/w30/")
+        == "https://claracle.com/weekly/2026/w30/"
+    )
+    # Non-Claracle / non-weekly URLs pass through, including an uppercase W that
+    # is not a weekly week token.
+    assert normalize_weekly_url("https://example.com/Weekly/2026/W30/") == (
+        "https://example.com/Weekly/2026/W30/"
+    )
+    assert normalize_weekly_url("https://github.com/xai-org/Wow") == (
+        "https://github.com/xai-org/Wow"
+    )
 
 
 def test_cap_length_truncates_oversized_input() -> None:

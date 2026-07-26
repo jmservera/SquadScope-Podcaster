@@ -124,6 +124,25 @@ def neutralize(value: object, *, limit: int = FIELD_LIMITS["text"]) -> str:
     return cap_length(_strip_control_chars(text), limit)
 
 
+# Claracle weekly URLs are canonically lowercase in the week token
+# (``/weekly/2026/w30/``); the uppercase ISO form (``/W30/``) that arrives from
+# upstream article frontmatter 404s. Normalize only the week token of Claracle
+# weekly URLs for user-facing links (show notes, packet, RSS) — other URLs are
+# left untouched, and this is presentation-only so it never alters the request
+# ``article_url`` that feeds the replay identity hash / job_id.
+_WEEKLY_WEEK_TOKEN_RE = re.compile(r"(?i)(claracle\.com/weekly/\d{4}/)W(\d{1,2})(?=$|[/?#])")
+
+
+def normalize_weekly_url(url: object) -> str:
+    """Lowercase the week token of a Claracle weekly URL (``/W30/`` -> ``/w30/``).
+
+    Non-string values are coerced to ``str``; non-weekly URLs pass through
+    unchanged.
+    """
+    text = url if isinstance(url, str) else str(url)
+    return _WEEKLY_WEEK_TOKEN_RE.sub(lambda m: f"{m.group(1)}w{m.group(2)}", text)
+
+
 def fence(value: object, *, limit: int = FIELD_LIMITS["text"]) -> str:
     """Neutralize then wrap untrusted text in an explicit data fence.
 

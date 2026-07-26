@@ -14,6 +14,7 @@ from podcaster.costs import cost_gate_blockers
 from podcaster.generation import manifest_bytes
 from podcaster.publish import PublishResult, publish_episode
 from podcaster.review import APPROVED, apply_review_decision
+from podcaster.sanitization import normalize_weekly_url
 from podcaster.storage import LocalStorageBackend, StorageBackend, create_storage_backend
 
 logger = logging.getLogger("podcaster.orchestration")
@@ -228,7 +229,7 @@ def _publish_from_manifest(
 def _show_notes_text(manifest: dict[str, Any], mp3_path: Path, wav_path: Path | None) -> str:
     request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
     week = request.get("week") or manifest.get("job_id")
-    article_url = request.get("article_url") or ""
+    article_url = normalize_weekly_url(request.get("article_url") or "")
     audio_label = wav_path.name if wav_path is not None else mp3_path.name
     return (
         f"<p>Claracle week {week}.</p>"

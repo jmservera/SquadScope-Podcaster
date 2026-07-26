@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
+from podcaster.sanitization import normalize_weekly_url
+
 ZIP_TIMESTAMP = (2026, 6, 7, 0, 0, 0)
 
 
@@ -132,6 +134,8 @@ def generate_show_notes(
 
     if hosts is None:
         hosts = {"host_a": "Theo (fable)", "host_b": "Vera (alloy)"}
+
+    article_url = normalize_weekly_url(article_url)
 
     return f"""# Claracle — Week {week}
 
