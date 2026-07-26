@@ -615,7 +615,7 @@ def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
             "",
             f"- Job ID: `{job_id}`",
             f"- Week: `{payload['week']}`",
-            f"- Source article: {payload['article_url']}",
+            f"- Source article: {normalize_weekly_url(payload['article_url'])}",
             "- Review mechanism: GitHub Environment `podcast-review` via "
             "`.github/workflows/podcast-review-gate.yml`",
             "",
@@ -649,7 +649,7 @@ def _review_checklist(job_id: str, payload: dict[str, object]) -> str:
 
 def _operator_readme(metadata: dict[str, object]) -> str:
     week = metadata.get("week", "unknown")
-    article_url = metadata.get("article_url", "")
+    article_url = normalize_weekly_url(metadata.get("article_url", ""))
     review_status = metadata.get("review_status", "unknown")
 
     return "\n".join(
