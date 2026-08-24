@@ -345,9 +345,7 @@ class TestVideoDescription:
         assert title == "Audio Episode Title"
         assert used_default is False
 
-
-# --- Already Processed Tests ---
-
+    # --- Already Processed Tests ---
 
     def test_preferred_description_overrides_real_show_notes_content(self):
         """preferred_description takes priority over show-notes summary content
@@ -379,7 +377,7 @@ class TestVideoDescription:
         assert "for every issue, extended write-ups" not in desc.lower()
         assert "two ai hosts share a joyful" not in desc.lower()
         # Host credit is still extracted from show-notes
-        assert "Clarabel" in desc or "Claracle — www.claracle.com" in desc
+        assert "Hosts: Clarabel (nova) & Joracle (alloy)" in desc
         assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_preferred_description_never_yields_empty(self):
@@ -414,15 +412,14 @@ class TestVideoDescription:
         )
         assert "Fallback canonical description used when generic." in desc
         assert "for every issue, extended write-ups" not in desc.lower()
+        assert "two ai hosts share a joyful" not in desc.lower()
 
     def test_audio_video_description_parity_structure(self):
         """Video description built from preferred_description has same canonical
         body as the audio Spotify description (structural parity test)."""
         audio_body = "Agent skills: the week's signal. Claracle is your tech weekly."
         storage = self._storage("j", None)
-        desc = _build_video_description(
-            storage, "j", "fallback", preferred_description=audio_body
-        )
+        desc = _build_video_description(storage, "j", "fallback", preferred_description=audio_body)
         # Body must start with the exact audio description
         assert desc.startswith(audio_body)
         # Credits follow
