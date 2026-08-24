@@ -92,6 +92,11 @@ class TestContains:
         t = _FakeTransport([(404, b"{}")])
         assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
 
+    def test_strict_mode_raises_on_http_error(self):
+        t = _FakeTransport([(503, b"{}")])
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            playlist_contains_video("PL", "vid", "tok", transport=t, raise_on_error=True)
+
     def test_false_on_transport_exception(self):
         t = _FakeTransport([(RuntimeError("boom"), b"")])
         assert playlist_contains_video("PL", "vid", "tok", transport=t) is False

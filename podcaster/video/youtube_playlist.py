@@ -117,12 +117,14 @@ def playlist_contains_video(
     access_token: str,
     *,
     transport: object | None = None,
+    raise_on_error: bool = False,
 ) -> bool:
     """Return ``True`` if ``video_id`` is already an item of ``playlist_id``.
 
     Uses ``playlistItems.list`` filtered by ``playlistId`` + ``videoId``. On any
-    HTTP/transport error returns ``False`` (so a failed check does not block the
-    insert — at worst YouTube de-dupes or a duplicate is tolerated).
+    HTTP/transport error returns ``False`` by default (so a failed check does not
+    block insertion). With ``raise_on_error=True``, failures raise a sanitized
+    ``RuntimeError`` so review gates can distinguish API failure from absence.
     """
     if not playlist_id or not video_id:
         return False
@@ -144,12 +146,18 @@ def playlist_contains_video(
         )
     except Exception as exc:
         logger.warning("playlistItems.list error for %s: %s", video_id, exc)
+        if raise_on_error:
+            raise RuntimeError("playlist membership request failed") from exc
         return False
     if status != 200:
+        if raise_on_error:
+            raise RuntimeError(f"playlist membership request failed: HTTP {status}")
         return False
     try:
         data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
     except (ValueError, AttributeError):
+        if raise_on_error:
+            raise RuntimeError("playlist membership response was invalid") from None
         return False
     return bool(data.get("items"))
 

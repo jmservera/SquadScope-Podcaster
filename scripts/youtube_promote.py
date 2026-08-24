@@ -54,6 +54,7 @@ from podcaster.video.youtube_publish import (  # noqa: E402
     PublishingPacket,
     approve_and_publish,
     build_publishing_packet,
+    get_video_snippet,
     verify_draft_ready,
 )
 
@@ -134,10 +135,19 @@ def main(argv: list[str] | None = None) -> int:
         print("--check-only specified — skipping promotion.")
         return 0
 
+    draft = get_video_snippet(args.video_id, access_token)
+    if draft is None:
+        print("Promotion FAILED: could not read current draft privacy.", file=sys.stderr)
+        return 1
+    draft_privacy = str(draft.get("privacyStatus", ""))
+    if draft_privacy not in {"unlisted", "private"}:
+        print(f"Promotion FAILED: unexpected draft privacy {draft_privacy!r}.", file=sys.stderr)
+        return 1
+
     # --- Phase 2b: promote to public via the established gated entry point ---
     packet: PublishingPacket = build_publishing_packet(
         args.video_id,
-        draft_privacy="unlisted",
+        draft_privacy=draft_privacy,
         review_notes=f"Promoted by {args.approved_by}",
         scheduled_publish_at=args.publish_at or None,
     )

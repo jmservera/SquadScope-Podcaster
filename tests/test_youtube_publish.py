@@ -206,7 +206,7 @@ class _SnippetTransport:
         self.calls: list[dict] = []
 
     def request(self, url, *, method="GET", headers=None, data=None):
-        self.calls.append({"url": url, "method": method})
+        self.calls.append({"url": url, "method": method, "headers": headers})
         if self.status_code != 200:
             return self.status_code, b"{}"
         if not self.found:
@@ -232,7 +232,7 @@ class _PlaylistTransport(_SnippetTransport):
         self.playlist_contains = playlist_contains
 
     def request(self, url, *, method="GET", headers=None, data=None):
-        self.calls.append({"url": url, "method": method})
+        self.calls.append({"url": url, "method": method, "headers": headers})
         if "playlistItems" in url:
             items = [{"id": "pi1"}] if self.playlist_contains else []
             return 200, json.dumps({"items": items}).encode()
@@ -290,6 +290,7 @@ class TestGetVideoSnippet:
         t = _SnippetTransport()
         get_video_snippet("vid1", "secret-token", transport=t)
         assert "secret-token" not in t.calls[0]["url"]
+        assert t.calls[0]["headers"]["Authorization"] == "Bearer secret-token"
 
     def test_missing_video_id_raises(self):
         with pytest.raises(ValueError):
@@ -325,6 +326,17 @@ class TestVerifyDraftReady:
         t = _PlaylistTransport(title="W35", description="Desc", playlist_contains=False)
         problems = verify_draft_ready("vid1", "tok", playlist_id="PL123", transport=t)
         assert any("playlist" in p for p in problems)
+
+    def test_playlist_api_failure_is_distinguished_from_absence(self):
+        class _FailingPlaylistTransport(_PlaylistTransport):
+            def request(self, url, *, method="GET", headers=None, data=None):
+                if "playlistItems" in url:
+                    return 503, b"{}"
+                return super().request(url, method=method, headers=headers, data=data)
+
+        t = _FailingPlaylistTransport(title="W35", description="Desc")
+        problems = verify_draft_ready("vid1", "tok", playlist_id="PL123", transport=t)
+        assert any("could not verify playlist membership" in p for p in problems)
 
     def test_no_playlist_id_skips_playlist_check(self):
         t = _SnippetTransport(title="W35", description="Desc", privacy="unlisted")

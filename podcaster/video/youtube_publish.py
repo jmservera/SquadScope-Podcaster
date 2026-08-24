@@ -338,7 +338,7 @@ def get_video_snippet(
         status, body = http.request(
             url,
             method="GET",
-            headers={"Authorization": "******"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
     except Exception as exc:
         logger.warning("videos.list error for %s: %s", video_id, exc)
@@ -388,7 +388,19 @@ def verify_draft_ready(
     if snippet.get("privacyStatus") == PRIVACY_PUBLIC:
         problems.append("video is already public — promotion would be a no-op")
     if playlist_id:
-        if not playlist_contains_video(playlist_id, video_id, access_token, transport=transport):
+        try:
+            is_member = playlist_contains_video(
+                playlist_id,
+                video_id,
+                access_token,
+                transport=transport,
+                raise_on_error=True,
+            )
+        except RuntimeError:
+            problems.append(f"could not verify playlist membership for {playlist_id!r}")
+        else:
+            if is_member:
+                return problems
             problems.append(
                 f"video {video_id!r} is not yet in playlist {playlist_id!r} "
                 f"— run distribute_video (or add manually) before promoting"

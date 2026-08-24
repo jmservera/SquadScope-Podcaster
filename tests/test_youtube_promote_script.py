@@ -152,3 +152,46 @@ class TestPromoteScriptTransportWiring:
         )
         rc = promote_module.main(["--video-id", "vid123"])
         assert rc == 2
+
+    def test_promotion_packet_uses_current_private_draft_privacy(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(
+            "scripts.youtube_promote.VideoDistributionConfig",
+            type(
+                "_Patched",
+                (),
+                {"from_env": staticmethod(lambda: _minimal_config())},
+            ),
+        )
+        monkeypatch.setattr(
+            "scripts.youtube_promote._get_youtube_access_token",
+            lambda config, transport: "tok",
+        )
+        monkeypatch.setattr(
+            "scripts.youtube_promote.verify_draft_ready",
+            lambda video_id, token, *, playlist_id="": [],
+        )
+        monkeypatch.setattr(
+            "scripts.youtube_promote.get_video_snippet",
+            lambda video_id, token: {"privacyStatus": "private"},
+        )
+
+        def _build_packet(video_id, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr("scripts.youtube_promote.build_publishing_packet", _build_packet)
+        monkeypatch.setattr(
+            "scripts.youtube_promote.approve_and_publish",
+            lambda packet, token, *, approved_by: type(
+                "_Result",
+                (),
+                {"succeeded": True, "scheduled_publish_at": ""},
+            )(),
+        )
+
+        rc = promote_module.main(["--video-id", "vid123", "--approved-by", "operator"])
+
+        assert rc == 0
+        assert captured["draft_privacy"] == "private"
