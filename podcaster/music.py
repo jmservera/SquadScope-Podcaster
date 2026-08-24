@@ -84,7 +84,7 @@ def get_stingers(*, verify: bool = True) -> tuple[MusicAsset, MusicAsset]:
 
 
 def attribution_lines() -> list[str]:
-    """Human-readable attribution lines for the bundled Summer Sport track."""
+    """Human-readable attribution lines for the bundled Claracle Theme track."""
 
     return [
         f"{entry['role']}: {entry['file']} — {entry['attribution']} (license: {entry['license']})"

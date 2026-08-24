@@ -103,3 +103,30 @@ def test_build_publishing_packet_checksums_are_sha256():
         for line in checksums_content.strip().splitlines():
             hash_part, _ = line.split("  ", 1)
             assert len(hash_part) == 64  # SHA-256 hex length
+
+
+def test_default_rights_contains_claracle_attribution():
+    """Rights text must name Claracle Theme and omit AudioCoffee/CC-BY notice."""
+    from podcaster.packaging import _default_rights
+
+    text = _default_rights({})
+    assert "Claracle theme" in text, "rights must name the Claracle Theme track"
+    assert "jmservera" in text, "rights must credit the composer"
+    # AudioCoffee CC-BY-SA notice must not appear in new rights
+    assert "AudioCoffee" not in text
+    assert "CC BY" not in text
+    assert "CC-BY" not in text
+
+
+def test_show_notes_credits_contain_claracle_music():
+    """Show notes Credits section must reference Claracle Theme, not AudioCoffee."""
+    from podcaster.packaging import generate_show_notes
+
+    result = generate_show_notes(
+        week="2026-W30",
+        title="Test Episode",
+        article_url="https://example.com",
+    )
+    assert "Claracle theme" in result, "show notes must credit the Claracle Theme"
+    assert "AudioCoffee" not in result
+    assert "CC BY" not in result

@@ -63,7 +63,7 @@ The ACA synthesis job runs the full episode pipeline in a container with `ffmpeg
 1. A queue message (containing only `job_id`) triggers the job.
 2. The job reads the staged manifest/script from Blob Storage.
 3. Azure OpenAI TTS synthesizes each script segment (two-voice: fable/alloy).
-4. `ffmpeg` stitches segments + the bundled Summer Sport intro/outro music bed into one MP3.
+4. `ffmpeg` stitches segments + the bundled Claracle Theme intro/outro music bed into one MP3.
 5. `ffprobe` validates loudness, duration, and format.
 6. The validated MP3 + updated manifest are staged back to Blob Storage.
 7. Publication remains **human-gated** — the job never marks an episode eligible for public release.

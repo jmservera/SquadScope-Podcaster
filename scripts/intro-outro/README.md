@@ -107,10 +107,10 @@ npx hyperframes lint .         # lint the whole project (pass the directory)
 
 ### Outro beats
 Credits appear section-by-section (not scrolling): CREDITS → Director jmservera →
-Hosts Clarabel & Joracle (AI-generated synthetic voices) → Music "Summer Sport"
-by AudioCoffee, CC-BY-SA-3.0, audiocoffee.net | Promoted by chosic.com → Platform
-Claracle www.claracle.com → "Follow us on Spotify". Credits fade, then a finale
-"Claracle" neon-glow pulse with "This episode uses AI-generated voice narration".
+Hosts Clarabel & Joracle (AI-generated synthetic voices) → Music: Claracle theme
+by jmservera (original composition) → Platform Claracle www.claracle.com →
+"Follow us on Spotify". Credits fade, then a finale "Claracle" neon-glow pulse
+with "This episode uses AI-generated voice narration".
 The background then keeps animating for the remaining seconds (no fade-out).
 
 ### Intermission

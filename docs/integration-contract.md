@@ -51,7 +51,7 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
     "episode_style": { "format": "Two-host conversational podcast, 8-10 minutes, 1200-1700 words." }
   },
   "music_mix": {
-    "track": "Summer Sport",
+    "track": "Claracle Theme",
     "intro": { "full_volume_seconds": 10 },
     "outro": { "start_position": "0:00", "play_to_end": true }
   },
@@ -89,7 +89,7 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
   - `episode_style.tone` (string): Tone guidance for the LLM.
   - `episode_style.segment_order` (array of strings): Ordered segment names.
 - `music_mix` (optional object, also accepted nested under `script_directions`): Controls intro/outro music mixing. When absent, the default bundled music track plays with default timing:
-  - `track` (string): Music track name (e.g., "Summer Sport"). Resolved to `assets/music/<slug>.mp3`.
+  - `track` (string): Music track name. Omitting this field defaults to the bundled Claracle Theme. Specify `"Claracle Theme"` explicitly, or omit the field. The value `"Summer Sport"` is a legacy name that will NOT resolve to the retained historical asset — omit or use `"Claracle Theme"` instead.
   - `intro.full_volume_seconds` (number, default 10): Seconds of full-volume intro music before fading under speech.
   - `intro.fade_down_under` (string): Duration expression for the intro duck-under fade.
   - `outro.start_position` (string): Timestamp or duration expression for the outro start offset.

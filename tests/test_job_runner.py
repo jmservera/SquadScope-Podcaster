@@ -861,3 +861,49 @@ def test_request_backchannels_defaults_disabled_when_absent(manifest):
     config = job_runner._request_backchannels(manifest)
     assert config == BackchannelConfig()
     assert config.enabled is False
+
+
+# ---------------------------------------------------------------------------
+# _resolve_music_paths — backward-compat migration tests (#643)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_music_paths_defaults_to_claracle_theme_when_no_track():
+    """Omitting track must resolve to the bundled Claracle Theme, not silence."""
+    from podcaster.config import MusicMixConfig
+    from podcaster.job_runner import _resolve_music_paths
+
+    intro, outro = _resolve_music_paths(MusicMixConfig())
+    assert intro is not None, "expected Claracle Theme path when track is omitted"
+    assert outro is not None
+    assert intro.name == "claracle-theme.mp3"
+    assert outro.name == "claracle-theme.mp3"
+    assert intro.is_file(), "bundled Claracle Theme asset must exist on disk"
+
+
+def test_resolve_music_paths_claracle_theme_explicit():
+    """Explicitly naming 'Claracle Theme' must resolve to the bundled asset."""
+    from podcaster.config import MusicMixConfig
+    from podcaster.job_runner import _resolve_music_paths
+
+    intro, outro = _resolve_music_paths(MusicMixConfig(track="Claracle Theme"))
+    assert intro is not None
+    assert intro.name == "claracle-theme.mp3"
+    assert intro.is_file()
+
+
+def test_resolve_music_paths_legacy_summer_sport_returns_none(caplog):
+    """Legacy 'Summer Sport' must NOT resolve to the retained historical asset."""
+    import logging
+
+    from podcaster.config import MusicMixConfig
+    from podcaster.job_runner import _resolve_music_paths
+
+    with caplog.at_level(logging.WARNING):
+        intro, outro = _resolve_music_paths(MusicMixConfig(track="Summer Sport"))
+    assert intro is None, "Summer Sport must not resolve to the retained asset"
+    assert outro is None
+    # A warning must be emitted so operators know what happened.
+    assert any(
+        "legacy" in rec.message.lower() or "Summer Sport" in rec.message for rec in caplog.records
+    )
