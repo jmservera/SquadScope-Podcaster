@@ -6,6 +6,7 @@ import pytest
 
 import podcaster.orchestration as orchestration
 from podcaster.config import SpotifyPublishConfig
+from podcaster.music import TRACK_ATTRIBUTION
 from podcaster.publish import PublishResult, publish_episode
 from podcaster.video.distribution import (
     DistributionResult,
@@ -59,6 +60,7 @@ def test_audio_only_publish_flow_calls_publish_episode(
                 "<p>Claracle week 2026-W25.</p>"
                 "<p>Source article: https://example.invalid/post</p>"
                 f"<p>Generated audio artifact: {fake_mp3.name}</p>"
+                f"<p>Intro/outro music: {TRACK_ATTRIBUTION}</p>"
             ),
             "kwargs": {
                 "spotify_publish_config": SpotifyPublishConfig(

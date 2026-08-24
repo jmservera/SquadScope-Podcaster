@@ -37,6 +37,19 @@ def test_show_notes_text_normalizes_uppercase_claracle_weekly_url() -> None:
     assert "https://claracle.com/weekly/2026/W30/" not in description
 
 
+def test_show_notes_text_includes_claracle_music_credit() -> None:
+    manifest = {
+        "job_id": "podcast-2026-W30-deadbeef",
+        "request": {
+            "week": "2026-W30",
+            "article_url": "https://claracle.com/weekly/2026/w30/",
+        },
+    }
+    description = _show_notes_text(manifest, Path("episode.mp3"), Path("episode.wav"))
+    assert "Intro/outro music: Claracle theme" in description
+    assert "AudioCoffee" not in description
+
+
 def _synthesized_manifest() -> dict:
     job_id = _job_id()
     mp3 = f"jobs/{job_id}/audio/{job_id}.mp3"
