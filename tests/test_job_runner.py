@@ -892,8 +892,8 @@ def test_resolve_music_paths_claracle_theme_explicit():
     assert intro.is_file()
 
 
-def test_resolve_music_paths_legacy_summer_sport_returns_none(caplog):
-    """Legacy 'Summer Sport' must NOT resolve to the retained historical asset."""
+def test_resolve_music_paths_legacy_summer_sport_migrates_to_claracle(caplog):
+    """Legacy 'Summer Sport' must migrate without using the historical asset."""
     import logging
 
     from podcaster.config import MusicMixConfig
@@ -901,9 +901,11 @@ def test_resolve_music_paths_legacy_summer_sport_returns_none(caplog):
 
     with caplog.at_level(logging.WARNING):
         intro, outro = _resolve_music_paths(MusicMixConfig(track="Summer Sport"))
-    assert intro is None, "Summer Sport must not resolve to the retained asset"
-    assert outro is None
-    # A warning must be emitted so operators know what happened.
+    assert intro is not None
+    assert outro is not None
+    assert intro.name == "claracle-theme.mp3"
+    assert outro.name == "claracle-theme.mp3"
     assert any(
-        "legacy" in rec.message.lower() or "Summer Sport" in rec.message for rec in caplog.records
+        "legacy" in rec.message.lower() and "migrating" in rec.message.lower()
+        for rec in caplog.records
     )

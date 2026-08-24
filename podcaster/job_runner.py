@@ -670,9 +670,8 @@ _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 # spaces replaced by hyphens.
 _MUSIC_DIR = _ASSETS_DIR / "music"
 
-# Track slugs retained only for historical traceability — never used for active
-# generation.  Requests naming these values are logged as warnings and skip
-# music mixing rather than resolving to the bundled historical asset.
+# Track slugs retained only for backward-compatible request migration. Requests
+# naming these values use the Claracle Theme rather than the historical asset.
 _LEGACY_TRACK_SLUGS: frozenset[str] = frozenset({"summer-sport"})
 
 # Default track filename used when the caller omits music_mix.track.
@@ -685,8 +684,8 @@ def _resolve_music_paths(config: MusicMixConfig) -> tuple[Path | None, Path | No
     Migration semantics:
     - No track configured (omitted field) → default to the bundled Claracle Theme.
     - Track slug matches a legacy entry in ``_LEGACY_TRACK_SLUGS`` → log a warning
-      and return ``(None, None)``; the retained historical asset must NOT be used
-      for active generation.
+      and migrate to the bundled Claracle Theme; the retained historical asset
+      must NOT be used for active generation.
     - Any other track name → resolve by slugification as before.
 
     Returns ``(intro_music, outro_music)`` paths, or ``(None, None)`` when no
@@ -696,12 +695,11 @@ def _resolve_music_paths(config: MusicMixConfig) -> tuple[Path | None, Path | No
 
     if track_slug in _LEGACY_TRACK_SLUGS:
         logger.warning(
-            "music_mix_config track=%r is a legacy value; the retained historical "
-            "asset will NOT be used for generation — omit the track field or use "
-            "'Claracle Theme' to apply the default Claracle Theme.",
+            "music_mix_config track=%r is a legacy value; migrating this request "
+            "to the Claracle Theme instead of using the retained historical asset.",
             config.track,
         )
-        return None, None
+        track_slug = ""
 
     if not track_slug:
         # No track name supplied — default to the bundled Claracle Theme.
