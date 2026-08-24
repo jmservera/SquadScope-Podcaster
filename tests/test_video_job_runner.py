@@ -216,9 +216,12 @@ class TestVideoDescription:
         )
         storage = self._storage("j", notes)
         desc = _build_video_description(storage, "j", "fallback")
-        assert "A dynamic AI conversation." in desc
-        assert "Hosts: Theo (fable) & Vera (alloy)" in desc
-        assert "Claracle — www.claracle.com" in desc
+        expected_credits = (
+            "Credits: Hosts: Theo (fable) & Vera (alloy) · Claracle — www.claracle.com"
+        )
+        assert desc == "\n\n".join(
+            ["A dynamic AI conversation.", expected_credits, _DEFAULT_MUSIC_CREDITS]
+        )
         assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_includes_summary_generation_format(self):
@@ -372,12 +375,21 @@ class TestVideoDescription:
             ),
         )
         # Canonical audio description is used directly
-        assert "Agent skills spread into design, security" in desc
+        expected_credits = (
+            "Credits: Hosts: Clarabel (nova) & Joracle (alloy) · Claracle — www.claracle.com"
+        )
+        assert desc == "\n\n".join(
+            [
+                "Agent skills spread into design, security, and devices while trust, "
+                "provenance, and review boundaries became the real bottleneck. "
+                "Claracle is your tech weekly.",
+                expected_credits,
+                _DEFAULT_MUSIC_CREDITS,
+            ]
+        )
         # Generic show-notes boilerplate must NOT appear in body
         assert "for every issue, extended write-ups" not in desc.lower()
         assert "two ai hosts share a joyful" not in desc.lower()
-        # Host credit is still extracted from show-notes
-        assert "Hosts: Clarabel (nova) & Joracle (alloy)" in desc
         assert _DEFAULT_MUSIC_CREDITS in desc
 
     def test_preferred_description_never_yields_empty(self):
@@ -420,12 +432,8 @@ class TestVideoDescription:
         audio_body = "Agent skills: the week's signal. Claracle is your tech weekly."
         storage = self._storage("j", None)
         desc = _build_video_description(storage, "j", "fallback", preferred_description=audio_body)
-        # Body must start with the exact audio description
-        assert desc.startswith(audio_body)
-        # Credits follow
-        assert "Credits:" in desc
-        # Music attribution always present
-        assert _DEFAULT_MUSIC_CREDITS in desc
+        expected_credits = "Credits: Claracle — www.claracle.com"
+        assert desc == "\n\n".join([audio_body, expected_credits, _DEFAULT_MUSIC_CREDITS])
 
 
 class TestAlreadyProcessed:
