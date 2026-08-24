@@ -909,3 +909,79 @@ def test_resolve_music_paths_legacy_summer_sport_migrates_to_claracle(caplog):
         "legacy" in rec.message.lower() and "migrating" in rec.message.lower()
         for rec in caplog.records
     )
+
+
+def test_resolve_music_paths_rejects_path_traversal_attempts(caplog):
+    """Path traversal attacks (e.g., '../summer-sport') must be rejected."""
+    import logging
+
+    from podcaster.config import MusicMixConfig
+    from podcaster.job_runner import _resolve_music_paths
+
+    # Attempt to escape music directory and access retained historical asset
+    with caplog.at_level(logging.WARNING):
+        intro, outro = _resolve_music_paths(MusicMixConfig(track="../summer-sport"))
+    assert intro is not None
+    assert outro is not None
+    assert intro.name == "claracle-theme.mp3", "path traversal must fallback to Claracle Theme"
+    assert outro.name == "claracle-theme.mp3"
+    assert any(
+        "invalid characters" in rec.message.lower() and "migrating" in rec.message.lower()
+        for rec in caplog.records
+    )
+
+
+def test_resolve_music_paths_rejects_slashes_in_track_name(caplog):
+    """Directory separators in track names must be rejected."""
+    import logging
+
+    from podcaster.config import MusicMixConfig
+    from podcaster.job_runner import _resolve_music_paths
+
+    with caplog.at_level(logging.WARNING):
+        intro, outro = _resolve_music_paths(MusicMixConfig(track="sub/summer-sport"))
+    assert intro is not None
+    assert outro is not None
+    assert intro.name == "claracle-theme.mp3", "slashes must fallback to Claracle Theme"
+    assert outro.name == "claracle-theme.mp3"
+
+
+def test_resolve_music_paths_rejects_dot_dot_in_track_name(caplog):
+    """Double-dot directory traversal must be rejected."""
+    import logging
+
+    from podcaster.config import MusicMixConfig
+    from podcaster.job_runner import _resolve_music_paths
+
+    with caplog.at_level(logging.WARNING):
+        intro, outro = _resolve_music_paths(MusicMixConfig(track="claracle..theme"))
+    assert intro is not None
+    assert outro is not None
+    assert intro.name == "claracle-theme.mp3", "..'s must fallback to Claracle Theme"
+    assert outro.name == "claracle-theme.mp3"
+
+
+def test_resolve_music_paths_rejects_null_bytes(caplog):
+    """Null bytes in track names must be rejected."""
+    import logging
+
+    from podcaster.config import MusicMixConfig
+    from podcaster.job_runner import _resolve_music_paths
+
+    with caplog.at_level(logging.WARNING):
+        intro, outro = _resolve_music_paths(MusicMixConfig(track="claracle\x00theme"))
+    assert intro is not None
+    assert outro is not None
+    assert intro.name == "claracle-theme.mp3", "null bytes must fallback to Claracle Theme"
+    assert outro.name == "claracle-theme.mp3"
+
+
+def test_resolve_music_paths_accepts_valid_alphanumeric_slug(caplog):
+    """Valid alphanumeric slugs should attempt resolution."""
+    from podcaster.config import MusicMixConfig
+    from podcaster.job_runner import _resolve_music_paths
+
+    # This should attempt to resolve a non-existent track and return (None, None)
+    intro, outro = _resolve_music_paths(MusicMixConfig(track="nonexistent-track"))
+    assert intro is None, "nonexistent tracks should return None"
+    assert outro is None

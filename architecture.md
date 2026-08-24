@@ -39,7 +39,7 @@ Config-driven podcast generation engine. Receives article content and editorial 
   - modules/acr.bicep — Container Registry
 - tests/ — pytest suite (comprehensive)
 - scripts/ — Helper/dev scripts
-- assets/music/ — Bundled audio bed (summer-sport.mp3)
+- assets/music/ — Bundled audio bed (claracle-theme.mp3)
 - docs/ — Integration contract, operations docs
 
 ## Pipeline Flow
@@ -69,9 +69,9 @@ Optional: article_content, article_title, article_sha256, source_artifacts, podc
 Returns: job_id, status, manifest_url, mp3_url, transcript_url, show_notes_url, warnings, errors
 
 ## Audio Mixing Architecture
-- Music track: assets/music/summer-sport.mp3 (105s, used for both intro and outro)
+- Music track: assets/music/claracle-theme.mp3 (85.4s, used for both intro and outro)
 - Intro: Full vol 0-8s → fade to 10% → duck under speech → fade to 0% after intros
-- Outro: atrim from 75s, fade in 0%→10% under farewell → ramp to 100% after voices end
+- Outro: atrim from start (default 75s), fade in 0%→10% under farewell → ramp to 100% after voices end
 - CRITICAL: eval=frame on all volume filters with time expressions
 - Voice guardrail: music NEVER exceeds 10% when voice is playing
 - 2-input amix chain (not N-input) to avoid amplitude dilution
