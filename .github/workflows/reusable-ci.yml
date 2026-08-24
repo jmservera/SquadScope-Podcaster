@@ -176,6 +176,31 @@ jobs:
         working-directory: ui
         run: npm run build
 
+  intro-outro:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v6.0.3
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        # actions/setup-node v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: scripts/intro-outro/package-lock.json
+
+      - name: Install dependencies
+        working-directory: scripts/intro-outro
+        run: npm ci --ignore-scripts
+
+      - name: Lint HyperFrames compositions
+        working-directory: scripts/intro-outro
+        run: npx --no-install hyperframes lint .
+
   synthesis-image:
     # Build + scan the ffmpeg synthesis-runner image on PRs (ADR 0001, #77).
     # No registry push happens here; publishing is gated in a separate,
