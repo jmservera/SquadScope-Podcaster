@@ -92,6 +92,11 @@ class TestContains:
         t = _FakeTransport([(404, b"{}")])
         assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
 
+    def test_strict_mode_raises_on_http_error(self):
+        t = _FakeTransport([(503, b"{}")])
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            playlist_contains_video("PL", "vid", "tok", transport=t, raise_on_error=True)
+
     def test_false_on_transport_exception(self):
         t = _FakeTransport([(RuntimeError("boom"), b"")])
         assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
@@ -99,6 +104,27 @@ class TestContains:
     def test_false_on_blank_args(self):
         assert playlist_contains_video("", "vid", "tok", transport=_FakeTransport([])) is False
         assert playlist_contains_video("PL", "", "tok", transport=_FakeTransport([])) is False
+
+    def test_sends_real_bearer_token_not_placeholder(self):
+        """Regression: playlistItems.list must carry ``Bearer <access_token>``,
+        not a literal masked placeholder (the outbound request was sending
+        ``Authorization: ******`` regardless of the token argument)."""
+        t = _FakeTransport([(200, b'{"items": []}')])
+        playlist_contains_video("PL", "vid", "s3cr3t-token", transport=t)
+        assert t.calls[0]["headers"]["Authorization"] == "Bearer s3cr3t-token"
+
+    def test_token_not_leaked_into_url_or_logs(self, caplog):
+        t = _FakeTransport([(200, b'{"items": []}')])
+        with caplog.at_level("INFO"):
+            playlist_contains_video("PL", "vid", "s3cr3t-token", transport=t)
+        assert "s3cr3t-token" not in t.calls[0]["url"]
+        assert "s3cr3t-token" not in caplog.text
+
+    def test_token_not_leaked_in_exception_message(self):
+        t = _FakeTransport([(RuntimeError("boom"), b"")])
+        with pytest.raises(RuntimeError) as exc_info:
+            playlist_contains_video("PL", "vid", "s3cr3t-token", transport=t, raise_on_error=True)
+        assert "s3cr3t-token" not in str(exc_info.value)
 
 
 # --- add_video_to_playlist ---------------------------------------------------
@@ -149,6 +175,23 @@ class TestAddVideo:
             add_video_to_playlist("PL", "vid", "supersecret", transport=t)
         assert "supersecret" not in caplog.text
 
+    def test_sends_real_bearer_token_not_placeholder(self):
+        """Regression: playlistItems.insert must carry ``Bearer <access_token>``,
+        not a literal masked placeholder."""
+        t = _FakeTransport([(200, b'{"id": "item1"}')])
+        add_video_to_playlist("PL", "vid", "s3cr3t-token", transport=t)
+        assert t.calls[0]["headers"]["Authorization"] == "Bearer s3cr3t-token"
+
+    def test_token_not_in_result_artifact(self):
+        t = _FakeTransport([(200, b'{"id": "item1"}')])
+        res = add_video_to_playlist("PL", "vid", "s3cr3t-token", transport=t)
+        assert "s3cr3t-token" not in json.dumps(res.__dict__)
+
+    def test_token_not_leaked_in_exception_message(self):
+        t = _FakeTransport([(RuntimeError("boom"), b"")])
+        res = add_video_to_playlist("PL", "vid", "s3cr3t-token", transport=t)
+        assert "s3cr3t-token" not in res.error
+
 
 # --- add_to_show_playlist (idempotent, locale-routed) ------------------------
 
@@ -194,3 +237,12 @@ class TestAddToShowPlaylist:
     def test_blank_video_raises(self):
         with pytest.raises(ValueError):
             add_to_show_playlist(None, "en", "", "tok", transport=_FakeTransport([]))
+
+    def test_bearer_header_propagates_through_all_calls(self, monkeypatch):
+        """Both the membership check and the insert call must carry the real
+        bearer token end-to-end through the idempotent wrapper."""
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
+        t = _FakeTransport([(200, b'{"items": []}'), (200, b'{"id": "i"}')])
+        add_to_show_playlist(None, "en", "vid", "s3cr3t-token", transport=t)
+        assert len(t.calls) == 2
+        assert all(c["headers"]["Authorization"] == "Bearer s3cr3t-token" for c in t.calls)

@@ -80,6 +80,8 @@ jobs:
           SYNC_SQUADSCOPE: ${{ inputs.sync_squadscope }}
           VIDEO_YOUTUBE_ENABLED_VAR: ${{ vars.VIDEO_YOUTUBE_ENABLED }}
           VIDEO_YOUTUBE_REQUIRED_VAR: ${{ vars.VIDEO_YOUTUBE_REQUIRED }}
+          VIDEO_YOUTUBE_PRIVACY_VAR: ${{ vars.VIDEO_YOUTUBE_PRIVACY }}
+          VIDEO_YOUTUBE_PLAYLIST_ID_VAR: ${{ vars.VIDEO_YOUTUBE_PLAYLIST_ID }}
           VIDEO_YOUTUBE_CLIENT_ID_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_ID }}
           VIDEO_YOUTUBE_CLIENT_SECRET_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_SECRET }}
           VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET: ${{ secrets.VIDEO_YOUTUBE_REFRESH_TOKEN }}
@@ -122,14 +124,27 @@ jobs:
               missing=1
               ;;
           esac
+          youtube_playlist_id="${VIDEO_YOUTUBE_PLAYLIST_ID_VAR:-}"
           if [ "$youtube_required" = "true" ] && [ "$youtube_enabled" != "true" ]; then
             echo "::error::VIDEO_YOUTUBE_REQUIRED=true requires VIDEO_YOUTUBE_ENABLED=true; required delivery cannot be enforced while YouTube upload is disabled"
             missing=1
           fi
-          if [ "$youtube_enabled" = "true" ] && [ "$youtube_required" = "true" ]; then
-            require_config VIDEO_YOUTUBE_CLIENT_ID_SECRET "secrets when required YouTube delivery is enabled"
-            require_config VIDEO_YOUTUBE_CLIENT_SECRET_SECRET "secrets when required YouTube delivery is enabled"
-            require_config VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET "secrets when required YouTube delivery is enabled"
+          if [ "$youtube_enabled" = "true" ]; then
+            youtube_privacy="$(printf '%s' "${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}" | tr '[:upper:]' '[:lower:]')"
+            case "$youtube_privacy" in
+              unlisted|private) ;;
+              *)
+                echo "::error::VIDEO_YOUTUBE_PRIVACY must be unlisted or private when YouTube uploads are enabled"
+                missing=1
+                ;;
+            esac
+            require_config VIDEO_YOUTUBE_CLIENT_ID_SECRET "when YouTube delivery is enabled"
+            require_config VIDEO_YOUTUBE_CLIENT_SECRET_SECRET "when YouTube delivery is enabled"
+            require_config VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET "when YouTube delivery is enabled"
+            if [ -z "$youtube_playlist_id" ]; then
+              echo "::error::VIDEO_YOUTUBE_PLAYLIST_ID must be configured when YouTube uploads are enabled"
+              missing=1
+            fi
           fi
 
           if [ "$missing" -ne 0 ]; then
@@ -151,6 +166,7 @@ jobs:
           VIDEO_YOUTUBE_REQUIRED_VAR: ${{ vars.VIDEO_YOUTUBE_REQUIRED }}
           VIDEO_YOUTUBE_CATEGORY_ID_VAR: ${{ vars.VIDEO_YOUTUBE_CATEGORY_ID }}
           VIDEO_YOUTUBE_PRIVACY_VAR: ${{ vars.VIDEO_YOUTUBE_PRIVACY }}
+          VIDEO_YOUTUBE_PLAYLIST_ID_VAR: ${{ vars.VIDEO_YOUTUBE_PLAYLIST_ID }}
           VIDEO_YOUTUBE_CLIENT_ID_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_ID }}
           VIDEO_YOUTUBE_CLIENT_SECRET_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_SECRET }}
           VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET: ${{ secrets.VIDEO_YOUTUBE_REFRESH_TOKEN }}
@@ -208,7 +224,8 @@ jobs:
             echo "VIDEO_YOUTUBE_ENABLED=${VIDEO_YOUTUBE_ENABLED_VAR:-false}"
             echo "VIDEO_YOUTUBE_REQUIRED=${VIDEO_YOUTUBE_REQUIRED_VAR:-false}"
             echo "VIDEO_YOUTUBE_CATEGORY_ID=${VIDEO_YOUTUBE_CATEGORY_ID_VAR:-28}"
-            echo "VIDEO_YOUTUBE_PRIVACY=${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}"
+            echo "VIDEO_YOUTUBE_PRIVACY=$(printf '%s' "${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}" | tr '[:upper:]' '[:lower:]')"
+            echo "VIDEO_YOUTUBE_PLAYLIST_ID=${VIDEO_YOUTUBE_PLAYLIST_ID_VAR:-}"
             echo "VIDEO_YOUTUBE_CLIENT_ID=${VIDEO_YOUTUBE_CLIENT_ID_SECRET:-}"
             echo "VIDEO_YOUTUBE_CLIENT_SECRET=${VIDEO_YOUTUBE_CLIENT_SECRET_SECRET:-}"
             echo "VIDEO_YOUTUBE_REFRESH_TOKEN=${VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET:-}"
@@ -336,6 +353,7 @@ jobs:
             --parameters videoYoutubeRequired="${VIDEO_YOUTUBE_REQUIRED:-false}" \
             --parameters videoYoutubeCategoryId="${VIDEO_YOUTUBE_CATEGORY_ID:-28}" \
             --parameters videoYoutubePrivacy="${VIDEO_YOUTUBE_PRIVACY:-unlisted}" \
+            --parameters videoYoutubePlaylistId="${VIDEO_YOUTUBE_PLAYLIST_ID:-}" \
             --parameters videoYoutubeClientId="${VIDEO_YOUTUBE_CLIENT_ID:-}" \
             --parameters videoYoutubeClientSecret="${VIDEO_YOUTUBE_CLIENT_SECRET:-}" \
             --parameters videoYoutubeRefreshToken="${VIDEO_YOUTUBE_REFRESH_TOKEN:-}" \

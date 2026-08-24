@@ -107,6 +107,7 @@ class FakeStorage:
 class TestVideoDistributionConfig:
     def test_from_env(self, monkeypatch):
         monkeypatch.setenv("VIDEO_YOUTUBE_ENABLED", "true")
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLplaylist")
         monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_ID", "cid")
         monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_SECRET", "csec")
         monkeypatch.setenv("VIDEO_YOUTUBE_REFRESH_TOKEN", "rtok")
@@ -119,6 +120,7 @@ class TestVideoDistributionConfig:
 
         config = VideoDistributionConfig.from_env()
         assert config.youtube_enabled is True
+        assert config.youtube_playlist_id == "PLplaylist"
         assert config.youtube_client_id == "cid"
         assert config.youtube_client_secret == "csec"
         assert config.youtube_refresh_token == "rtok"
@@ -132,6 +134,7 @@ class TestVideoDistributionConfig:
     def test_from_payload(self):
         payload = {
             "youtube_enabled": True,
+            "youtube_playlist_id": "PLpayload",
             "youtube_category_id": "22",
             "youtube_privacy": "public",
             "spotify_rss_enabled": True,
@@ -141,6 +144,7 @@ class TestVideoDistributionConfig:
         }
         config = VideoDistributionConfig.from_payload(payload)
         assert config.youtube_enabled is True
+        assert config.youtube_playlist_id == "PLpayload"
         assert config.youtube_category_id == "22"
         assert config.youtube_privacy == "public"
         assert config.spotify_rss_enabled is True
@@ -150,9 +154,25 @@ class TestVideoDistributionConfig:
     def test_defaults(self):
         config = VideoDistributionConfig()
         assert config.youtube_enabled is False
+        assert config.youtube_playlist_id == ""
         assert config.spotify_rss_enabled is False
         assert config.blob_archive_enabled is True
         assert config.dry_run is False
+
+    def test_from_payload_uses_safe_defaults_for_null_values(self):
+        config = VideoDistributionConfig.from_payload({})
+        assert config.youtube_privacy == "unlisted"
+
+        config = VideoDistributionConfig.from_payload(
+            {
+                "youtube_playlist_id": None,
+                "youtube_category_id": None,
+                "youtube_privacy": None,
+            }
+        )
+        assert config.youtube_playlist_id == ""
+        assert config.youtube_category_id == "28"
+        assert config.youtube_privacy == "unlisted"
 
 
 # --- YouTube Upload Tests ---
@@ -948,12 +968,14 @@ class TestPlaylistIntegration:
     def test_playlist_add_called_on_youtube_success(self, video_file, youtube_config, monkeypatch):
         """add_to_show_playlist is invoked with correct args after a real upload."""
         calls: list[dict] = []
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID_ES", "PLes")
 
         def fake_add(config, locale, video_id, token, *, transport=None, position=None):
             calls.append({"locale": locale, "video_id": video_id})
+            assert getattr(config, "youtube_playlist_id", "") == "PLes"
             from podcaster.video.youtube_playlist import PlaylistAddResult
 
-            return PlaylistAddResult(video_id=video_id, playlist_id="PLen", succeeded=True)
+            return PlaylistAddResult(video_id=video_id, playlist_id="PLes", succeeded=True)
 
         monkeypatch.setattr("podcaster.video.distribution._add_to_show_playlist", fake_add)
 
@@ -989,6 +1011,7 @@ class TestPlaylistIntegration:
             youtube_client_id="id",
             youtube_client_secret="sec",
             youtube_refresh_token="ref",
+            youtube_playlist_id="PLes",
             blob_archive_enabled=False,
             dry_run=False,
         )
@@ -1005,6 +1028,9 @@ class TestPlaylistIntegration:
         assert len(calls) == 1
         assert calls[0]["video_id"] == "yt-vid-001"
         assert calls[0]["locale"] == "es"
+        # Playlist audit fields must be captured in the distribution result (#649)
+        assert result.youtube_playlist_id == "PLes"
+        assert result.youtube_playlist_succeeded is True
 
     def test_playlist_skipped_on_dry_run(self, video_file, monkeypatch):
         """Playlist add is not called when dry_run=True."""
@@ -1046,3 +1072,54 @@ class TestPlaylistIntegration:
         result = distribute_video(video_file, "job1", "title", "desc", 120.0, config)
         assert result.youtube_id == "yt-vid-002"
         assert result.status == "completed"
+
+    def test_playlist_reconciled_when_youtube_upload_was_already_published(
+        self, video_file, monkeypatch
+    ):
+        """A retry repairs playlist membership without uploading the video again."""
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("YouTube upload should be skipped")
+            ),
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token",
+            lambda config, transport: "playlist-token",
+        )
+
+        def fake_add(config, locale, video_id, token, *, transport=None, position=None):
+            from podcaster.video.youtube_playlist import PlaylistAddResult
+
+            calls.append(video_id)
+            assert token == "playlist-token"
+            return PlaylistAddResult(
+                video_id=video_id,
+                playlist_id="PLshow",
+                succeeded=True,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution._add_to_show_playlist", fake_add)
+
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_playlist_id="PLshow",
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            published={"youtube": {"status": "published", "video_id": "yt-prior"}},
+        )
+
+        assert calls == ["yt-prior"]
+        assert result.youtube_id == "yt-prior"
+        assert result.youtube_playlist_id == "PLshow"
+        assert result.youtube_playlist_succeeded is True

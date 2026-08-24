@@ -75,6 +75,41 @@ The gate is explicit and auditable:
 Automation **may** set `approved=True` programmatically, but only as the
 explicit final step of a documented approval flow — never implicitly on upload.
 
+## Phase 2: Promotion to public (the explicit second phase)
+
+After the human review gate is satisfied, use `scripts/youtube_promote.py` to
+verify the draft and promote it to public. This is the **canonical Phase 2
+command** — it reads back the video's metadata from the YouTube API, checks
+that the title and description are non-empty, optionally verifies playlist
+membership, and only then calls `approve_and_publish()`.
+
+```bash
+# Dry-run: verify readiness without promoting
+python3 scripts/youtube_promote.py \
+  --video-id <YOUTUBE_VIDEO_ID> \
+  --check-only \
+  --playlist-id PLiZvxqBMVr8cwx6p0L8oOe9YydmCEuJuJ
+
+# Promote to public now (approved-by recorded in the audit log)
+python3 scripts/youtube_promote.py \
+  --video-id <YOUTUBE_VIDEO_ID> \
+  --approved-by <github-actor> \
+  --playlist-id PLiZvxqBMVr8cwx6p0L8oOe9YydmCEuJuJ
+
+# Schedule a future publish instead of going public immediately
+python3 scripts/youtube_promote.py \
+  --video-id <YOUTUBE_VIDEO_ID> \
+  --approved-by <github-actor> \
+  --publish-at 2026-09-01T18:00:00Z
+```
+
+Credentials are read from the standard environment variables:
+`VIDEO_YOUTUBE_CLIENT_ID`, `VIDEO_YOUTUBE_CLIENT_SECRET`,
+`VIDEO_YOUTUBE_REFRESH_TOKEN`.
+
+The script exits 0 on success, 1 on verification failure or promotion error,
+and 2 on credential/argument error. It never prints or logs the access token.
+
 ## Scheduled publishing
 
 Provide `scheduled_publish_at` (a `datetime` or RFC-3339 string) when building

@@ -78,6 +78,7 @@ def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
         "VIDEO_YOUTUBE_REQUIRED",
         "VIDEO_YOUTUBE_CATEGORY_ID",
         "VIDEO_YOUTUBE_PRIVACY",
+        "VIDEO_YOUTUBE_PLAYLIST_ID",
         "VIDEO_YOUTUBE_CLIENT_ID",
         "VIDEO_YOUTUBE_CLIENT_SECRET",
         "VIDEO_YOUTUBE_REFRESH_TOKEN",
@@ -88,6 +89,7 @@ def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
     for token in (
         "param videoYoutubeEnabled",
         "param videoYoutubeRequired",
+        "param videoYoutubePlaylistId",
         "param videoYoutubeClientId",
         "param videoYoutubeClientSecret",
         "param videoYoutubeRefreshToken",
@@ -102,12 +104,41 @@ def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
     # application's from_env() runtime default and the spotifyPublishEnabled toggle.
     assert "VIDEO_YOUTUBE_ENABLED_VAR:-false" in workflow
     assert "VIDEO_YOUTUBE_REQUIRED_VAR:-false" in workflow
+    assert "VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted" in workflow
+    assert "VIDEO_YOUTUBE_PLAYLIST_ID_VAR" in workflow
+    assert '--parameters videoYoutubePlaylistId="${VIDEO_YOUTUBE_PLAYLIST_ID:-}"' in workflow
+    # All four PRIVACY defaults in the workflow must use unlisted — never public.
+    # This covers: (1) preflight check, (2) env-export step, (3) Bicep parameter.
+    assert "VIDEO_YOUTUBE_PRIVACY_VAR:-public" not in workflow, (
+        "env-export step must default VIDEO_YOUTUBE_PRIVACY to unlisted, not public"
+    )
+    assert (
+        """echo "VIDEO_YOUTUBE_PRIVACY=$(printf '%s' "${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}" """
+        """| tr '[:upper:]' '[:lower:]')\"""" in workflow
+    ), "env-export step must normalize the validated privacy value"
+    assert 'VIDEO_YOUTUBE_PRIVACY:-public"' not in workflow, (
+        "Bicep parameter must default videoYoutubePrivacy to unlisted, not public"
+    )
+    assert 'VIDEO_YOUTUBE_PRIVACY:-unlisted}"' in workflow, (
+        "Bicep az-deploy parameter must default videoYoutubePrivacy to unlisted"
+    )
     assert "videoYoutubeEnabled string = 'false'" in aca_video_module
     assert "videoYoutubeRequired string = 'false'" in aca_video_module
+    assert "videoYoutubePrivacy string = 'unlisted'" in aca_video_module
+    assert "videoYoutubePlaylistId string = ''" in aca_video_module
     assert "videoYoutubeEnabled string = 'false'" in main_bicep
     assert "videoYoutubeRequired string = 'false'" in main_bicep
+    assert "videoYoutubePrivacy string = 'unlisted'" in main_bicep
+    assert "videoYoutubePlaylistId string = ''" in main_bicep
     # Preflight must fail fast on the inconsistent required=true/enabled!=true config.
     assert "required delivery cannot be enforced while YouTube upload is disabled" in workflow
+    assert (
+        "VIDEO_YOUTUBE_PLAYLIST_ID must be configured when YouTube uploads are enabled" in workflow
+    )
+    assert (
+        "VIDEO_YOUTUBE_PRIVACY must be unlisted or private when YouTube uploads are enabled"
+        in workflow
+    )
 
 
 def test_reusable_deploy_workflow_deploys_bicep_infrastructure() -> None:
@@ -394,3 +425,59 @@ def test_acr_private_endpoint_wired_in_vnet_mode() -> None:
     ), "main.bicep must deploy the ACR private endpoint module only in VNet mode"
     assert "registryId: acr!.outputs.registryId" in main
     assert "acrDnsZoneId: network!.outputs.acrDnsZoneId" in main
+
+
+def test_reusable_deploy_workflow_uses_vars_reference_for_youtube_playlist_id() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert "VIDEO_YOUTUBE_PLAYLIST_ID_VAR: ${{ vars.VIDEO_YOUTUBE_PLAYLIST_ID }}" in workflow
+    assert "VIDEO_YOUTUBE_PLAYLIST_ID_VAR: ${{ secrets.VIDEO_YOUTUBE_PLAYLIST_ID }}" not in workflow
+
+
+def test_reusable_deploy_workflow_masks_youtube_credentials_but_not_playlist_id() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert (
+        '[ -n "${VIDEO_YOUTUBE_CLIENT_ID_SECRET:-}" ] '
+        '&& echo "::add-mask::$VIDEO_YOUTUBE_CLIENT_ID_SECRET"'
+    ) in workflow
+    assert (
+        '[ -n "${VIDEO_YOUTUBE_CLIENT_SECRET_SECRET:-}" ] '
+        '&& echo "::add-mask::$VIDEO_YOUTUBE_CLIENT_SECRET_SECRET"'
+    ) in workflow
+    assert (
+        '[ -n "${VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET:-}" ] '
+        '&& echo "::add-mask::$VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET"'
+    ) in workflow
+    assert "VIDEO_YOUTUBE_PLAYLIST_ID_VAR" in workflow
+    assert "::add-mask::$VIDEO_YOUTUBE_PLAYLIST_ID" not in workflow
+    assert "::add-mask::$VIDEO_YOUTUBE_PLAYLIST_ID_VAR" not in workflow
+
+
+def test_reusable_deploy_workflow_only_requires_youtube_secrets_when_enabled() -> None:
+    workflow = _reusable_workflow_text()
+    client_id_check = (
+        'require_config VIDEO_YOUTUBE_CLIENT_ID_SECRET "when YouTube delivery is enabled"'
+    )
+    client_secret_check = (
+        'require_config VIDEO_YOUTUBE_CLIENT_SECRET_SECRET "when YouTube delivery is enabled"'
+    )
+    refresh_token_check = (
+        'require_config VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET "when YouTube delivery is enabled"'
+    )
+
+    enabled_block = re.search(
+        r'if \[ "\$youtube_enabled" = "true" \]; then(?P<body>.*?)\n          fi',
+        workflow,
+        re.DOTALL,
+    )
+    assert enabled_block, "YouTube preflight checks must be gated behind youtube_enabled=true"
+    body = enabled_block.group("body")
+
+    assert client_id_check in body
+    assert client_secret_check in body
+    assert refresh_token_check in body
+
+    assert workflow.count(client_id_check) == 1
+    assert workflow.count(client_secret_check) == 1
+    assert workflow.count(refresh_token_check) == 1

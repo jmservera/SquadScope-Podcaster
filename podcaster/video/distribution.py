@@ -31,6 +31,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
+from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class VideoDistributionConfig:
     """Configuration for video distribution targets."""
 
     youtube_enabled: bool = False
+    youtube_playlist_id: str = ""
     youtube_client_id: str = ""
     youtube_client_secret: str = ""
     youtube_refresh_token: str = ""
@@ -93,6 +95,7 @@ class VideoDistributionConfig:
         """Load configuration from environment variables."""
         return cls(
             youtube_enabled=os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true",
+            youtube_playlist_id=os.environ.get("VIDEO_YOUTUBE_PLAYLIST_ID", ""),
             youtube_client_id=os.environ.get("VIDEO_YOUTUBE_CLIENT_ID", ""),
             youtube_client_secret=os.environ.get("VIDEO_YOUTUBE_CLIENT_SECRET", ""),
             youtube_refresh_token=_load_youtube_refresh_token(),
@@ -113,10 +116,14 @@ class VideoDistributionConfig:
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "VideoDistributionConfig":
         """Load from a request payload dict (subset of fields)."""
+        youtube_playlist_id = payload.get("youtube_playlist_id")
+        youtube_category_id = payload.get("youtube_category_id")
+        youtube_privacy = payload.get("youtube_privacy")
         return cls(
             youtube_enabled=bool(payload.get("youtube_enabled", False)),
-            youtube_category_id=str(payload.get("youtube_category_id", "28")),
-            youtube_privacy=str(payload.get("youtube_privacy", "unlisted")),
+            youtube_playlist_id="" if youtube_playlist_id is None else str(youtube_playlist_id),
+            youtube_category_id="28" if youtube_category_id is None else str(youtube_category_id),
+            youtube_privacy="unlisted" if youtube_privacy is None else str(youtube_privacy),
             youtube_required=bool(payload.get("youtube_required", False)),
             spotify_rss_enabled=bool(payload.get("spotify_rss_enabled", False)),
             spotify_rss_feed_path=str(payload.get("spotify_rss_feed_path", "")),
@@ -144,6 +151,8 @@ class DistributionResult:
     youtube_failure_http_status: int | None = None
     youtube_oauth_error: str | None = None
     youtube_oauth_error_subtype: str | None = None
+    youtube_playlist_id: str | None = None
+    youtube_playlist_succeeded: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -1001,14 +1010,6 @@ def distribute_video(
                             "at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
-                if not config.dry_run:
-                    # 2a. Add to show playlist — idempotent, failure is non-fatal (#449)
-                    try:
-                        _http = transport or _DefaultTransport()
-                        _token = _get_youtube_access_token(config, _http)
-                        _add_to_show_playlist(config, locale, video_id, _token, transport=transport)
-                    except Exception as exc:
-                        logger.warning("Playlist add skipped for %s: %s", video_id, exc)
         except YouTubeDeliveryError as exc:
             result.errors.append(str(exc))
             if config.youtube_required:
@@ -1029,6 +1030,29 @@ def distribute_video(
                     stage="upload",
                     retryable=False,
                 )
+
+    # Reconcile playlist membership independently from upload state. The playlist
+    # API is idempotent, so a retry can repair an upload that was persisted before
+    # its playlist insertion completed.
+    if (
+        result.youtube_id is not None
+        and not config.dry_run
+        and _resolve_playlist_id(config, locale)
+    ):
+        try:
+            playlist_http = transport or _DefaultTransport()
+            playlist_token = _get_youtube_access_token(config, playlist_http)
+            playlist_result = _add_to_show_playlist(
+                config,
+                locale,
+                result.youtube_id,
+                playlist_token,
+                transport=transport,
+            )
+            result.youtube_playlist_id = playlist_result.playlist_id
+            result.youtube_playlist_succeeded = playlist_result.succeeded
+        except Exception as exc:
+            logger.warning("Playlist add skipped for %s: %s", result.youtube_id, exc)
 
     if config.youtube_required and result.youtube_id is None:
         result.youtube_required_failed = True
