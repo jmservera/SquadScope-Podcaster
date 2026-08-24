@@ -230,6 +230,8 @@ def _is_generic_episode_summary(summary: str) -> bool:
         or "this episode covers key developments" in normalized
         or "[topic to be added from source article]" in normalized
         or "editorial synopsis pending" in normalized
+        or "for every issue, extended write-ups, repo links" in normalized
+        or "two ai hosts share a joyful, dynamic expert conversation" in normalized
         or (
             normalized.startswith("this ")
             and " episode explores " in normalized
@@ -293,23 +295,46 @@ def _build_video_description(
     (``PODCAST_NAME``/``PODCAST_SPOKEN_SITE``) are used.
 
     ``preferred_description`` is the already-resolved audio publish description.
-    It is used when show-notes are absent or contain an old deterministic
-    placeholder, keeping the video episode metadata aligned with the audio
-    episode. ``music_credits`` is appended after the credits line so the video
-    description matches the audio episode structure (summary + credits + music
-    attribution). When omitted, the default music attribution constant is used.
+    When provided and non-empty it is used **directly** as the summary body so
+    the video episode carries the same canonical description as the audio
+    episode (decision 2026-07-25). Show-notes are still consulted for host
+    credit extraction in this case.  When ``preferred_description`` is absent,
+    the function falls back to extracting a summary from show-notes (rejecting
+    stale generic placeholders via :func:`_is_generic_episode_summary`) or
+    ``fallback``.
+
+    ``music_credits`` is appended after the credits line.  When omitted the
+    default music attribution constant is used.
     """
     brand_name = (show_name or "").strip() or PODCAST_NAME
     brand_site = (spoken_site or "").strip() or PODCAST_SPOKEN_SITE
     attribution = (music_credits or _DEFAULT_MUSIC_CREDITS).strip()
-    fallback_text = (
-        _sanitize_preferred_description(preferred_description)
-        or neutralize(fallback, limit=600).strip()
-    )
+    preferred_clean = _sanitize_preferred_description(preferred_description)
+    fallback_text = preferred_clean or neutralize(fallback, limit=600).strip()
 
     def _with_attribution(base: str) -> str:
         return f"{base}\n\n{attribution}" if attribution else base
 
+    # When the canonical audio description is available, use it directly as the
+    # summary body (decision 2026-07-25: video reuses audio/Spotify publish
+    # description). Show-notes are still consulted for host credit extraction so
+    # the credits line stays episode-specific.
+    if preferred_clean:
+        credit_parts: list[str] = []
+        raw_notes = storage.get_bytes(show_notes_path(job_id))
+        if raw_notes:
+            try:
+                hosts = _extract_hosts(raw_notes.decode("utf-8"))
+                if hosts:
+                    credit_parts.append(f"Hosts: {hosts}")
+            except UnicodeDecodeError:
+                pass
+        credit_parts.append(f"{brand_name} — {brand_site}")
+        credits = "Credits: " + " · ".join(credit_parts)
+        return _with_attribution(f"{preferred_clean}\n\n{credits}")
+
+    # Fallback path: build summary from show-notes when no canonical description
+    # is available.
     raw = storage.get_bytes(show_notes_path(job_id))
     if not raw:
         return _with_attribution(fallback_text)
@@ -324,7 +349,7 @@ def _build_video_description(
     if not summary or _is_generic_episode_summary(summary):
         summary = fallback_text
 
-    credit_parts: list[str] = []
+    credit_parts = []
     hosts = _extract_hosts(notes)
     if hosts:
         credit_parts.append(f"Hosts: {hosts}")
