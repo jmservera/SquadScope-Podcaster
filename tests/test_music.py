@@ -30,7 +30,7 @@ def test_get_stingers_returns_same_music_file_for_both_roles():
     assert intro.path.exists()
     assert intro.path.suffix == ".mp3"
     assert intro.license in music.ALLOWED_LICENSES
-    assert intro.duration_seconds >= 80.0
+    assert intro.duration_seconds == 85.4
     assert intro.sha256 == outro.sha256
 
 
