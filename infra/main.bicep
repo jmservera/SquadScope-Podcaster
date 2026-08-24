@@ -165,8 +165,11 @@ param videoYoutubeRequired string = 'false'
 @description('YouTube upload category ID (default 28 = Science & Technology).')
 param videoYoutubeCategoryId string = '28'
 
-@description('YouTube upload privacy status (default unlisted).')
-param videoYoutubePrivacy string = 'unlisted'
+@description('YouTube upload privacy status (default public).')
+param videoYoutubePrivacy string = 'public'
+
+@description('YouTube playlist ID for public video publishing. Empty disables playlist insertion.')
+param videoYoutubePlaylistId string = ''
 
 @secure()
 @description('YouTube OAuth client ID for runtime token exchange.')
@@ -441,6 +444,7 @@ module acaVideo 'modules/aca-video.bicep' = {
     videoYoutubeRequired: videoYoutubeRequired
     videoYoutubeCategoryId: videoYoutubeCategoryId
     videoYoutubePrivacy: videoYoutubePrivacy
+    videoYoutubePlaylistId: videoYoutubePlaylistId
     videoYoutubeClientId: videoYoutubeClientId
     videoYoutubeClientSecret: videoYoutubeClientSecret
     videoYoutubeRefreshToken: videoYoutubeRefreshToken

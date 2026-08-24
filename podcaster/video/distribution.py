@@ -73,6 +73,7 @@ class VideoDistributionConfig:
     """Configuration for video distribution targets."""
 
     youtube_enabled: bool = False
+    youtube_playlist_id: str = ""
     youtube_client_id: str = ""
     youtube_client_secret: str = ""
     youtube_refresh_token: str = ""
@@ -93,6 +94,7 @@ class VideoDistributionConfig:
         """Load configuration from environment variables."""
         return cls(
             youtube_enabled=os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true",
+            youtube_playlist_id=os.environ.get("VIDEO_YOUTUBE_PLAYLIST_ID", ""),
             youtube_client_id=os.environ.get("VIDEO_YOUTUBE_CLIENT_ID", ""),
             youtube_client_secret=os.environ.get("VIDEO_YOUTUBE_CLIENT_SECRET", ""),
             youtube_refresh_token=_load_youtube_refresh_token(),
@@ -115,6 +117,7 @@ class VideoDistributionConfig:
         """Load from a request payload dict (subset of fields)."""
         return cls(
             youtube_enabled=bool(payload.get("youtube_enabled", False)),
+            youtube_playlist_id=str(payload.get("youtube_playlist_id", "")),
             youtube_category_id=str(payload.get("youtube_category_id", "28")),
             youtube_privacy=str(payload.get("youtube_privacy", "unlisted")),
             youtube_required=bool(payload.get("youtube_required", False)),

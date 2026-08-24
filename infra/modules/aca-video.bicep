@@ -110,8 +110,11 @@ param videoYoutubeRequired string = 'false'
 @description('YouTube upload category id (default 28 = Science & Technology).')
 param videoYoutubeCategoryId string = '28'
 
-@description('YouTube upload privacy status (default unlisted draft).')
-param videoYoutubePrivacy string = 'unlisted'
+@description('YouTube upload privacy status (default public).')
+param videoYoutubePrivacy string = 'public'
+
+@description('YouTube playlist ID for public video publishing. Empty disables playlist insertion.')
+param videoYoutubePlaylistId string = ''
 
 @secure()
 @description('YouTube OAuth client ID for runtime token exchange.')
@@ -304,6 +307,10 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'VIDEO_YOUTUBE_PRIVACY'
               value: videoYoutubePrivacy
+            }
+            {
+              name: 'VIDEO_YOUTUBE_PLAYLIST_ID'
+              value: videoYoutubePlaylistId
             }
             {
               name: 'VIDEO_SPOTIFY_UPLOAD_ENABLED'
