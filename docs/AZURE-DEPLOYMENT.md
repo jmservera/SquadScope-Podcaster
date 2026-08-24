@@ -108,7 +108,7 @@ AZURE_SUBSCRIPTION_ID=<Subscription ID from step 3>
 AZURE_RESOURCE_GROUP=squadscope-podcaster
 ```
 
-**Important:** These are **environment variables**, not secrets. They are non-sensitive, but the workflow only checks that they are present and does not print their values. `AZURE_LOCATION` is optional and defaults to `eastus2`, the region required by the deployed TTS model.
+**Important:** These are **environment variables**, not secrets. The workflow validates required values without echoing them; safe deployment metadata such as the region may appear in the job summary. `AZURE_LOCATION` is optional and defaults to `eastus2`, the region required by the deployed TTS model.
 
 Optional override variable:
 
