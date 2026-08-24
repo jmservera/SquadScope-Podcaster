@@ -89,11 +89,11 @@ Required `prod` environment variables:
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
 - `AZURE_SUBSCRIPTION_ID`
-- `AZURE_LOCATION` defaults to `eastus2`; override only when deploying the full stack to another supported region.
 - `AZURE_RESOURCE_GROUP`
 
 Optional `prod` environment variables:
 
+- `AZURE_LOCATION` defaults to `eastus2`; override only when deploying the full stack to another supported region.
 - `AZURE_STORAGE_ACCOUNT_NAME` - override the deterministic default Storage Account name.
 - `SPOTIFY_PUBLISH_ENABLED` - set to `true` to let runtime publish approved episodes.
 - `PODCAST_AUTO_PUBLISH` - set to `true` to auto-approve after synthesis, but publication still requires `SPOTIFY_PUBLISH_ENABLED=true`.

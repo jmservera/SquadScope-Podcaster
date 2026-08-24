@@ -195,9 +195,13 @@ def test_api_app_name_is_derived_inside_its_module() -> None:
 
 def test_reusable_deploy_workflow_defaults_location_to_eastus2() -> None:
     workflow = _reusable_workflow_text()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus2' }}" in workflow
     assert "require_config AZURE_LOCATION" not in workflow
+    required, optional = readme.split("Optional `prod` environment variables:", maxsplit=1)
+    assert "`AZURE_LOCATION`" not in required
+    assert "`AZURE_LOCATION` defaults to `eastus2`" in optional
 
 
 def test_bicep_no_function_app_remnants() -> None:
