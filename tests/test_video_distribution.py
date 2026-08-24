@@ -968,6 +968,7 @@ class TestPlaylistIntegration:
     def test_playlist_add_called_on_youtube_success(self, video_file, youtube_config, monkeypatch):
         """add_to_show_playlist is invoked with correct args after a real upload."""
         calls: list[dict] = []
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID_ES", "PLes")
 
         def fake_add(config, locale, video_id, token, *, transport=None, position=None):
             calls.append({"locale": locale, "video_id": video_id})
@@ -1071,3 +1072,54 @@ class TestPlaylistIntegration:
         result = distribute_video(video_file, "job1", "title", "desc", 120.0, config)
         assert result.youtube_id == "yt-vid-002"
         assert result.status == "completed"
+
+    def test_playlist_reconciled_when_youtube_upload_was_already_published(
+        self, video_file, monkeypatch
+    ):
+        """A retry repairs playlist membership without uploading the video again."""
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("YouTube upload should be skipped")
+            ),
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token",
+            lambda config, transport: "playlist-token",
+        )
+
+        def fake_add(config, locale, video_id, token, *, transport=None, position=None):
+            from podcaster.video.youtube_playlist import PlaylistAddResult
+
+            calls.append(video_id)
+            assert token == "playlist-token"
+            return PlaylistAddResult(
+                video_id=video_id,
+                playlist_id="PLshow",
+                succeeded=True,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution._add_to_show_playlist", fake_add)
+
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_playlist_id="PLshow",
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            published={"youtube": {"status": "published", "video_id": "yt-prior"}},
+        )
+
+        assert calls == ["yt-prior"]
+        assert result.youtube_id == "yt-prior"
+        assert result.youtube_playlist_id == "PLshow"
+        assert result.youtube_playlist_succeeded is True

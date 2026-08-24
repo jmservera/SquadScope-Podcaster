@@ -31,6 +31,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
+from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
 
 logger = logging.getLogger(__name__)
 
@@ -1009,18 +1010,6 @@ def distribute_video(
                             "at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
-                if not config.dry_run:
-                    # 2a. Add to show playlist — idempotent, failure is non-fatal (#449)
-                    try:
-                        _http = transport or _DefaultTransport()
-                        _token = _get_youtube_access_token(config, _http)
-                        _playlist_result = _add_to_show_playlist(
-                            config, locale, video_id, _token, transport=transport
-                        )
-                        result.youtube_playlist_id = _playlist_result.playlist_id
-                        result.youtube_playlist_succeeded = _playlist_result.succeeded
-                    except Exception as exc:
-                        logger.warning("Playlist add skipped for %s: %s", video_id, exc)
         except YouTubeDeliveryError as exc:
             result.errors.append(str(exc))
             if config.youtube_required:
@@ -1041,6 +1030,29 @@ def distribute_video(
                     stage="upload",
                     retryable=False,
                 )
+
+    # Reconcile playlist membership independently from upload state. The playlist
+    # API is idempotent, so a retry can repair an upload that was persisted before
+    # its playlist insertion completed.
+    if (
+        result.youtube_id is not None
+        and not config.dry_run
+        and _resolve_playlist_id(config, locale)
+    ):
+        try:
+            playlist_http = transport or _DefaultTransport()
+            playlist_token = _get_youtube_access_token(config, playlist_http)
+            playlist_result = _add_to_show_playlist(
+                config,
+                locale,
+                result.youtube_id,
+                playlist_token,
+                transport=transport,
+            )
+            result.youtube_playlist_id = playlist_result.playlist_id
+            result.youtube_playlist_succeeded = playlist_result.succeeded
+        except Exception as exc:
+            logger.warning("Playlist add skipped for %s: %s", result.youtube_id, exc)
 
     if config.youtube_required and result.youtube_id is None:
         result.youtube_required_failed = True
