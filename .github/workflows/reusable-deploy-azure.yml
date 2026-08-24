@@ -224,7 +224,7 @@ jobs:
             echo "VIDEO_YOUTUBE_ENABLED=${VIDEO_YOUTUBE_ENABLED_VAR:-false}"
             echo "VIDEO_YOUTUBE_REQUIRED=${VIDEO_YOUTUBE_REQUIRED_VAR:-false}"
             echo "VIDEO_YOUTUBE_CATEGORY_ID=${VIDEO_YOUTUBE_CATEGORY_ID_VAR:-28}"
-            echo "VIDEO_YOUTUBE_PRIVACY=${VIDEO_YOUTUBE_PRIVACY_VAR:-public}"
+            echo "VIDEO_YOUTUBE_PRIVACY=${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}"
             echo "VIDEO_YOUTUBE_PLAYLIST_ID=${VIDEO_YOUTUBE_PLAYLIST_ID_VAR:-}"
             echo "VIDEO_YOUTUBE_CLIENT_ID=${VIDEO_YOUTUBE_CLIENT_ID_SECRET:-}"
             echo "VIDEO_YOUTUBE_CLIENT_SECRET=${VIDEO_YOUTUBE_CLIENT_SECRET_SECRET:-}"
@@ -352,7 +352,7 @@ jobs:
             --parameters videoYoutubeEnabled="${VIDEO_YOUTUBE_ENABLED:-false}" \
             --parameters videoYoutubeRequired="${VIDEO_YOUTUBE_REQUIRED:-false}" \
             --parameters videoYoutubeCategoryId="${VIDEO_YOUTUBE_CATEGORY_ID:-28}" \
-            --parameters videoYoutubePrivacy="${VIDEO_YOUTUBE_PRIVACY:-public}" \
+            --parameters videoYoutubePrivacy="${VIDEO_YOUTUBE_PRIVACY:-unlisted}" \
             --parameters videoYoutubePlaylistId="${VIDEO_YOUTUBE_PLAYLIST_ID:-}" \
             --parameters videoYoutubeClientId="${VIDEO_YOUTUBE_CLIENT_ID:-}" \
             --parameters videoYoutubeClientSecret="${VIDEO_YOUTUBE_CLIENT_SECRET:-}" \

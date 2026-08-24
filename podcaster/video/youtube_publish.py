@@ -310,6 +310,92 @@ def approve_and_publish(
     )
 
 
+#: ``videos.list`` read endpoint — used for pre-promotion metadata verification.
+VIDEOS_LIST_URL = "https://www.googleapis.com/youtube/v3/videos"
+
+
+def get_video_snippet(
+    video_id: str,
+    access_token: str,
+    *,
+    transport: object | None = None,
+) -> dict[str, object] | None:
+    """Return the ``snippet`` + ``status`` fields for ``video_id``, or ``None`` on error.
+
+    Calls ``videos.list?part=snippet,status&id={video_id}``. Returns the first
+    item's combined ``snippet``/``status`` dict, or ``None`` when the video is not
+    found or an HTTP/transport error occurs. The token is only sent in the
+    ``Authorization`` header and never logged.
+    """
+    from urllib.parse import urlencode
+
+    if not video_id:
+        raise ValueError("video_id is required")
+    http = transport if transport is not None else _default_transport()
+    params = urlencode({"part": "snippet,status", "id": video_id})
+    url = f"{VIDEOS_LIST_URL}?{params}"
+    try:
+        status, body = http.request(
+            url,
+            method="GET",
+            headers={"Authorization": "******"},
+        )
+    except Exception as exc:
+        logger.warning("videos.list error for %s: %s", video_id, exc)
+        return None
+    if status != 200:
+        logger.warning("videos.list HTTP %s for %s", status, video_id)
+        return None
+    try:
+        data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
+    except (ValueError, AttributeError):
+        return None
+    items = data.get("items") or []
+    if not items:
+        return None
+    item = items[0]
+    return {**item.get("snippet", {}), **item.get("status", {})}
+
+
+def verify_draft_ready(
+    video_id: str,
+    access_token: str,
+    *,
+    playlist_id: str = "",
+    transport: object | None = None,
+) -> list[str]:
+    """Verify a draft video is ready for promotion; return a list of problems.
+
+    An empty list means the draft passes all checks and is safe to promote.
+    Checks:
+    - Title is non-empty.
+    - Description is non-empty.
+    - Video is not already ``public`` (idempotency guard).
+    - If ``playlist_id`` is given, the video must already be a member of the
+      playlist (delegates to :func:`youtube_playlist.playlist_contains_video`).
+    """
+    from podcaster.video.youtube_playlist import playlist_contains_video
+
+    problems: list[str] = []
+    snippet = get_video_snippet(video_id, access_token, transport=transport)
+    if snippet is None:
+        problems.append(f"could not read metadata for video {video_id!r}")
+        return problems
+    if not (snippet.get("title") or "").strip():
+        problems.append("video title is empty")
+    if not (snippet.get("description") or "").strip():
+        problems.append("video description is empty")
+    if snippet.get("privacyStatus") == PRIVACY_PUBLIC:
+        problems.append("video is already public — promotion would be a no-op")
+    if playlist_id:
+        if not playlist_contains_video(playlist_id, video_id, access_token, transport=transport):
+            problems.append(
+                f"video {video_id!r} is not yet in playlist {playlist_id!r} "
+                f"— run distribute_video (or add manually) before promoting"
+            )
+    return problems
+
+
 def _default_transport() -> object:
     """Lazily build the default urllib transport (reused from distribution)."""
     from podcaster.video.distribution import _DefaultTransport

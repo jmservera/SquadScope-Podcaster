@@ -107,6 +107,17 @@ def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
     assert "VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted" in workflow
     assert "VIDEO_YOUTUBE_PLAYLIST_ID_VAR" in workflow
     assert '--parameters videoYoutubePlaylistId="${VIDEO_YOUTUBE_PLAYLIST_ID:-}"' in workflow
+    # All four PRIVACY defaults in the workflow must use unlisted — never public.
+    # This covers: (1) preflight check, (2) env-export step, (3) Bicep parameter.
+    assert "VIDEO_YOUTUBE_PRIVACY_VAR:-public" not in workflow, (
+        "env-export step must default VIDEO_YOUTUBE_PRIVACY to unlisted, not public"
+    )
+    assert 'VIDEO_YOUTUBE_PRIVACY:-public"' not in workflow, (
+        "Bicep parameter must default videoYoutubePrivacy to unlisted, not public"
+    )
+    assert 'VIDEO_YOUTUBE_PRIVACY:-unlisted}"' in workflow, (
+        "Bicep az-deploy parameter must default videoYoutubePrivacy to unlisted"
+    )
     assert "videoYoutubeEnabled string = 'false'" in aca_video_module
     assert "videoYoutubeRequired string = 'false'" in aca_video_module
     assert "videoYoutubePrivacy string = 'unlisted'" in aca_video_module

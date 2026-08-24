@@ -12,10 +12,13 @@ from podcaster.video.youtube_publish import (
     PRIVACY_PRIVATE,
     PRIVACY_PUBLIC,
     PRIVACY_UNLISTED,
+    VIDEOS_LIST_URL,
     PublishingPacket,
     approve_and_publish,
     build_publishing_packet,
+    get_video_snippet,
     publish_video,
+    verify_draft_ready,
 )
 
 
@@ -178,3 +181,141 @@ class TestApproveAndPublish:
         body = json.loads(t.calls[0]["data"])
         assert body["status"]["privacyStatus"] == "private"
         assert body["status"]["publishAt"] == "2025-06-30T14:00:00Z"
+
+
+# --- get_video_snippet and verify_draft_ready --------------------------------
+
+
+class _SnippetTransport:
+    """Fake transport that returns a videos.list response for a given video_id."""
+
+    def __init__(self, *, title: str = "Episode", description: str = "Desc",
+                 privacy: str = "unlisted", found: bool = True, status_code: int = 200):
+        self.title = title
+        self.description = description
+        self.privacy = privacy
+        self.found = found
+        self.status_code = status_code
+        self.calls: list[dict] = []
+
+    def request(self, url, *, method="GET", headers=None, data=None):
+        self.calls.append({"url": url, "method": method})
+        if self.status_code != 200:
+            return self.status_code, b"{}"
+        if not self.found:
+            return 200, json.dumps({"items": []}).encode()
+        body = json.dumps({
+            "items": [{
+                "snippet": {"title": self.title, "description": self.description},
+                "status": {"privacyStatus": self.privacy},
+            }]
+        }).encode()
+        return 200, body
+
+
+class _PlaylistTransport(_SnippetTransport):
+    """Fake transport that also handles playlistItems.list (for verify_draft_ready)."""
+
+    def __init__(self, *, playlist_contains: bool = True, **kwargs):
+        super().__init__(**kwargs)
+        self.playlist_contains = playlist_contains
+
+    def request(self, url, *, method="GET", headers=None, data=None):
+        self.calls.append({"url": url, "method": method})
+        if "playlistItems" in url:
+            items = [{"id": "pi1"}] if self.playlist_contains else []
+            return 200, json.dumps({"items": items}).encode()
+        # videos.list
+        if self.status_code != 200:
+            return self.status_code, b"{}"
+        if not self.found:
+            return 200, json.dumps({"items": []}).encode()
+        body = json.dumps({
+            "items": [{
+                "snippet": {"title": self.title, "description": self.description},
+                "status": {"privacyStatus": self.privacy},
+            }]
+        }).encode()
+        return 200, body
+
+
+class TestGetVideoSnippet:
+    def test_returns_combined_snippet_and_status(self):
+        t = _SnippetTransport(title="W35", description="Agent skills.", privacy="unlisted")
+        result = get_video_snippet("vid1", "tok", transport=t)
+        assert result is not None
+        assert result["title"] == "W35"
+        assert result["description"] == "Agent skills."
+        assert result["privacyStatus"] == "unlisted"
+
+    def test_returns_none_when_not_found(self):
+        t = _SnippetTransport(found=False)
+        result = get_video_snippet("vid1", "tok", transport=t)
+        assert result is None
+
+    def test_returns_none_on_http_error(self):
+        t = _SnippetTransport(status_code=403)
+        result = get_video_snippet("vid1", "tok", transport=t)
+        assert result is None
+
+    def test_returns_none_on_transport_exception(self):
+        class _Boom:
+            def request(self, *a, **kw):
+                raise RuntimeError("network down")
+
+        result = get_video_snippet("vid1", "tok", transport=_Boom())
+        assert result is None
+
+    def test_uses_videos_list_url(self):
+        t = _SnippetTransport()
+        get_video_snippet("vid1", "tok", transport=t)
+        assert t.calls[0]["url"].startswith(VIDEOS_LIST_URL)
+
+    def test_token_not_in_url(self):
+        t = _SnippetTransport()
+        get_video_snippet("vid1", "secret-token", transport=t)
+        assert "secret-token" not in t.calls[0]["url"]
+
+    def test_missing_video_id_raises(self):
+        with pytest.raises(ValueError):
+            get_video_snippet("", "tok")
+
+
+class TestVerifyDraftReady:
+    def test_passes_on_good_draft(self):
+        t = _PlaylistTransport(title="W35", description="Desc", privacy="unlisted",
+                               playlist_contains=True)
+        problems = verify_draft_ready("vid1", "tok", playlist_id="PL123", transport=t)
+        assert problems == []
+
+    def test_empty_title_is_a_problem(self):
+        t = _PlaylistTransport(title="", description="Desc", playlist_contains=True)
+        problems = verify_draft_ready("vid1", "tok", playlist_id="PL123", transport=t)
+        assert any("title" in p for p in problems)
+
+    def test_empty_description_is_a_problem(self):
+        t = _PlaylistTransport(title="W35", description="", playlist_contains=True)
+        problems = verify_draft_ready("vid1", "tok", playlist_id="PL123", transport=t)
+        assert any("description" in p for p in problems)
+
+    def test_already_public_is_a_problem(self):
+        t = _PlaylistTransport(title="W35", description="Desc", privacy="public",
+                               playlist_contains=True)
+        problems = verify_draft_ready("vid1", "tok", playlist_id="PL123", transport=t)
+        assert any("already public" in p for p in problems)
+
+    def test_missing_playlist_membership_is_a_problem(self):
+        t = _PlaylistTransport(title="W35", description="Desc", playlist_contains=False)
+        problems = verify_draft_ready("vid1", "tok", playlist_id="PL123", transport=t)
+        assert any("playlist" in p for p in problems)
+
+    def test_no_playlist_id_skips_playlist_check(self):
+        t = _SnippetTransport(title="W35", description="Desc", privacy="unlisted")
+        problems = verify_draft_ready("vid1", "tok", transport=t)
+        assert problems == []
+
+    def test_metadata_read_failure_returns_single_problem(self):
+        t = _SnippetTransport(found=False)
+        problems = verify_draft_ready("vid1", "tok", transport=t)
+        assert len(problems) == 1
+        assert "metadata" in problems[0]
