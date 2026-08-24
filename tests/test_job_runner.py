@@ -336,6 +336,34 @@ def test_run_synthesis_persists_realized_audio_metadata(monkeypatch):
     assert "plan_warnings" in runner_state
 
 
+def test_run_synthesis_omitted_track_reaches_renderer_with_claracle_music(monkeypatch):
+    _patch_audio(monkeypatch)
+    storage = FakeStorage()
+    _stage(storage, _base_manifest(), _two_voice_script())
+    rendered: dict[str, object] = {}
+
+    def fake_render(segments, wav_out, out, runner=None, **kwargs):
+        rendered.update(kwargs)
+        Path(wav_out).write_bytes(b"W" * 512)
+        Path(out).write_bytes(b"M" * 512)
+        return Path(wav_out), Path(out)
+
+    monkeypatch.setattr(episode, "render_distribution_audio", fake_render)
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
+    )
+
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    assert rendered["intro_music"].name == "claracle-theme.mp3"
+    assert rendered["outro_music"].name == "claracle-theme.mp3"
+    assert rendered["mix_spec"] is not None
+
+
 def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
     _patch_audio(monkeypatch)
     storage = FakeStorage()
