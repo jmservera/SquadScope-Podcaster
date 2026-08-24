@@ -189,8 +189,15 @@ class TestApproveAndPublish:
 class _SnippetTransport:
     """Fake transport that returns a videos.list response for a given video_id."""
 
-    def __init__(self, *, title: str = "Episode", description: str = "Desc",
-                 privacy: str = "unlisted", found: bool = True, status_code: int = 200):
+    def __init__(
+        self,
+        *,
+        title: str = "Episode",
+        description: str = "Desc",
+        privacy: str = "unlisted",
+        found: bool = True,
+        status_code: int = 200,
+    ):
         self.title = title
         self.description = description
         self.privacy = privacy
@@ -204,12 +211,16 @@ class _SnippetTransport:
             return self.status_code, b"{}"
         if not self.found:
             return 200, json.dumps({"items": []}).encode()
-        body = json.dumps({
-            "items": [{
-                "snippet": {"title": self.title, "description": self.description},
-                "status": {"privacyStatus": self.privacy},
-            }]
-        }).encode()
+        body = json.dumps(
+            {
+                "items": [
+                    {
+                        "snippet": {"title": self.title, "description": self.description},
+                        "status": {"privacyStatus": self.privacy},
+                    }
+                ]
+            }
+        ).encode()
         return 200, body
 
 
@@ -230,12 +241,16 @@ class _PlaylistTransport(_SnippetTransport):
             return self.status_code, b"{}"
         if not self.found:
             return 200, json.dumps({"items": []}).encode()
-        body = json.dumps({
-            "items": [{
-                "snippet": {"title": self.title, "description": self.description},
-                "status": {"privacyStatus": self.privacy},
-            }]
-        }).encode()
+        body = json.dumps(
+            {
+                "items": [
+                    {
+                        "snippet": {"title": self.title, "description": self.description},
+                        "status": {"privacyStatus": self.privacy},
+                    }
+                ]
+            }
+        ).encode()
         return 200, body
 
 
@@ -283,8 +298,9 @@ class TestGetVideoSnippet:
 
 class TestVerifyDraftReady:
     def test_passes_on_good_draft(self):
-        t = _PlaylistTransport(title="W35", description="Desc", privacy="unlisted",
-                               playlist_contains=True)
+        t = _PlaylistTransport(
+            title="W35", description="Desc", privacy="unlisted", playlist_contains=True
+        )
         problems = verify_draft_ready("vid1", "tok", playlist_id="PL123", transport=t)
         assert problems == []
 
@@ -299,8 +315,9 @@ class TestVerifyDraftReady:
         assert any("description" in p for p in problems)
 
     def test_already_public_is_a_problem(self):
-        t = _PlaylistTransport(title="W35", description="Desc", privacy="public",
-                               playlist_contains=True)
+        t = _PlaylistTransport(
+            title="W35", description="Desc", privacy="public", playlist_contains=True
+        )
         problems = verify_draft_ready("vid1", "tok", playlist_id="PL123", transport=t)
         assert any("already public" in p for p in problems)
 
