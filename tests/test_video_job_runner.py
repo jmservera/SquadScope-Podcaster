@@ -349,6 +349,88 @@ class TestVideoDescription:
 # --- Already Processed Tests ---
 
 
+    def test_preferred_description_overrides_real_show_notes_content(self):
+        """preferred_description takes priority over show-notes summary content
+        (decision 2026-07-25: video must reuse audio/Spotify publish description)."""
+        notes = (
+            "# Claracle Podcast — Week 2026-W35\n\n"
+            "**Hosts:** Clarabel (nova) & Joracle (alloy)\n\n"
+            "## Show notes\n\n"
+            "Claracle is a weekly show. For every issue, extended write-ups, repo links, and\n"
+            "commented articles, visit https://www.claracle.com.\n\n"
+            "Agent skills spread into devices while trust became the bottleneck.\n"
+            "Two AI hosts share a joyful, dynamic expert conversation on the most relevant and "
+            "surprising parts of the article — they do not read it verbatim.\n"
+        )
+        storage = self._storage("w35", notes)
+        desc = _build_video_description(
+            storage,
+            "w35",
+            "generic fallback",
+            preferred_description=(
+                "Agent skills spread into design, security, and devices while trust, "
+                "provenance, and review boundaries became the real bottleneck. "
+                "Claracle is your tech weekly."
+            ),
+        )
+        # Canonical audio description is used directly
+        assert "Agent skills spread into design, security" in desc
+        # Generic show-notes boilerplate must NOT appear in body
+        assert "for every issue, extended write-ups" not in desc.lower()
+        assert "two ai hosts share a joyful" not in desc.lower()
+        # Host credit is still extracted from show-notes
+        assert "Clarabel" in desc or "Claracle — www.claracle.com" in desc
+        assert _DEFAULT_MUSIC_CREDITS in desc
+
+    def test_preferred_description_never_yields_empty(self):
+        """When preferred_description is provided the result is always non-empty
+        even when storage returns nothing (regression guard)."""
+        storage = self._storage("j", None)
+        desc = _build_video_description(
+            storage,
+            "j",
+            "",
+            preferred_description="Audio episode description.",
+        )
+        assert desc.strip() != ""
+        assert "Audio episode description." in desc
+
+    def test_generic_show_notes_new_patterns_caught_without_preferred(self):
+        """New generic show-notes phrases are caught by _is_generic_episode_summary
+        when no preferred_description is supplied; falls back to fallback text."""
+        notes = (
+            "## Show notes\n\n"
+            "Claracle is a weekly show. For every issue, extended write-ups, repo links, and\n"
+            "commented articles, visit https://www.claracle.com.\n\n"
+            "Agent skills spread. Two AI hosts share a joyful, dynamic expert "
+            "conversation on the most relevant and surprising parts of the "
+            "article — they do not read it verbatim.\n"
+        )
+        storage = self._storage("j", notes)
+        desc = _build_video_description(
+            storage,
+            "j",
+            "Fallback canonical description used when generic.",
+        )
+        assert "Fallback canonical description used when generic." in desc
+        assert "for every issue, extended write-ups" not in desc.lower()
+
+    def test_audio_video_description_parity_structure(self):
+        """Video description built from preferred_description has same canonical
+        body as the audio Spotify description (structural parity test)."""
+        audio_body = "Agent skills: the week's signal. Claracle is your tech weekly."
+        storage = self._storage("j", None)
+        desc = _build_video_description(
+            storage, "j", "fallback", preferred_description=audio_body
+        )
+        # Body must start with the exact audio description
+        assert desc.startswith(audio_body)
+        # Credits follow
+        assert "Credits:" in desc
+        # Music attribution always present
+        assert _DEFAULT_MUSIC_CREDITS in desc
+
+
 class TestAlreadyProcessed:
     def test_not_processed(self):
         assert _already_processed({}) is False
