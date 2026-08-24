@@ -112,6 +112,10 @@ def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
     assert "VIDEO_YOUTUBE_PRIVACY_VAR:-public" not in workflow, (
         "env-export step must default VIDEO_YOUTUBE_PRIVACY to unlisted, not public"
     )
+    assert (
+        """echo "VIDEO_YOUTUBE_PRIVACY=$(printf '%s' "${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}" """
+        """| tr '[:upper:]' '[:lower:]')\"""" in workflow
+    ), "env-export step must normalize the validated privacy value"
     assert 'VIDEO_YOUTUBE_PRIVACY:-public"' not in workflow, (
         "Bicep parameter must default videoYoutubePrivacy to unlisted, not public"
     )
