@@ -11,8 +11,8 @@ param location string
 @description('Container Apps managed environment resource ID.')
 param containerAppsEnvId string
 
-@description('ACA API App name.')
-param apiAppName string
+@description('Base name used to derive the ACA API App name.')
+param baseName string
 
 @description('User-assigned managed identity resource ID for Storage access.')
 param identityId string
@@ -96,6 +96,7 @@ param maxReplicas int = 2
 
 var storageDnsSuffix = environment().suffixes.storage
 var hasContainerRegistry = !empty(containerRegistryServer)
+var apiAppName = '${baseName}-api'
 
 resource apiApp 'Microsoft.App/containerApps@2025-01-01' = {
   name: apiAppName

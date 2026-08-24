@@ -181,6 +181,25 @@ def test_bicep_references_aca_module() -> None:
     assert "synthesisJobName" in bicep
 
 
+def test_api_app_name_is_derived_inside_its_module() -> None:
+    """The API app name is an internal module detail, not a root deployment parameter."""
+    bicep = BICEP.read_text(encoding="utf-8")
+    api_module = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+
+    assert "param apiAppName" not in bicep
+    assert "apiAppName:" not in bicep
+    assert "baseName: baseName" in bicep
+    assert "param baseName string" in api_module
+    assert "var apiAppName = '${baseName}-api'" in api_module
+
+
+def test_reusable_deploy_workflow_defaults_location_to_eastus2() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert "AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus2' }}" in workflow
+    assert "require_config AZURE_LOCATION" not in workflow
+
+
 def test_bicep_no_function_app_remnants() -> None:
     """ACA-only bicep must not contain Function App settings."""
     bicep = BICEP.read_text(encoding="utf-8")

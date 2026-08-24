@@ -89,7 +89,7 @@ Required `prod` environment variables:
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
 - `AZURE_SUBSCRIPTION_ID`
-- `AZURE_LOCATION` (e.g., `eastus2`)
+- `AZURE_LOCATION` defaults to `eastus2`; override only when deploying the full stack to another supported region.
 - `AZURE_RESOURCE_GROUP`
 
 Optional `prod` environment variables:
