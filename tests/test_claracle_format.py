@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from io import BytesIO
+from zipfile import ZipFile
 
 from podcaster.generation import (
     AI_VOICE_DISCLOSURE,
@@ -84,6 +86,22 @@ def test_show_notes_disclose_ai_voices_and_link_claracle() -> None:
     assert HOST_B_VOICE in show_notes
     assert "Open-source agents reshape delivery" in show_notes
     assert "SquadScope curated articles" not in show_notes
+    assert "Claracle theme" in show_notes
+    assert "jmservera" in show_notes
+    assert "AudioCoffee" not in show_notes
+
+
+def test_production_packet_rights_credit_claracle_theme() -> None:
+    created_at = datetime(2026, 6, 7, 19, 7, 49, tzinfo=timezone.utc)
+    artifacts = generate_artifacts("podcast-2026-W23-deadbeef", _payload(), created_at)
+    packet = next(a for a in artifacts if a.path.endswith(".zip"))
+    with ZipFile(BytesIO(packet.content)) as archive:
+        rights = archive.read("RIGHTS-AND-ATTRIBUTION.txt").decode("utf-8")
+    assert "Claracle theme" in rights
+    assert "jmservera" in rights
+    assert "Proprietary" in rights
+    assert "AudioCoffee" not in rights
+    assert "CC BY-SA" not in rights
 
 
 def test_show_notes_use_string_historical_context_summary() -> None:

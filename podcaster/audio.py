@@ -505,11 +505,12 @@ def _mix_music_with_speech(
         outro_delay_seconds = speech_delay_seconds + segment_starts[outro_start_segment]
         speech_end_seconds = speech_delay_seconds + segment_total_duration
         outro_speech_overlap_seconds = max(0.0, speech_end_seconds - outro_delay_seconds)
-        # Clamp outro_start_offset to avoid trimming past the end of a short file
+        # Preserve enough source for the ducked overlap and post-speech ramp.
         outro_duration = _probe_duration_seconds(outro_music, runner)
+        required_outro_seconds = outro_speech_overlap_seconds + mix_spec.outro_fade_in_seconds
         effective_outro_offset = min(
             mix_spec.outro_start_offset_seconds,
-            max(0.0, outro_duration - 0.5),
+            max(0.0, outro_duration - required_outro_seconds),
         )
         outro_trim = (
             f"atrim=start={_ffmpeg_number(effective_outro_offset)},asetpts=PTS-STARTPTS,"

@@ -15,6 +15,7 @@ from podcaster.artifact_access import artifact_access_metadata
 from podcaster.audio import placeholder_audio_validation
 from podcaster.config import PodcastConfig, ScriptDirections
 from podcaster.costs import build_cost_ledger
+from podcaster.music import TRACK_ATTRIBUTION, TRACK_LICENSE
 from podcaster.sanitization import (
     FIELD_LIMITS,
     neutralize,
@@ -365,6 +366,10 @@ def _show_notes(payload: dict[str, object], generated_at: str, config: PodcastCo
             "## Transcript",
             "",
             "See full transcript below or download from the publishing packet.",
+            "",
+            "## Credits",
+            "",
+            f"Intro/outro music: {TRACK_ATTRIBUTION}",
             "",
             "## License",
             "",
@@ -813,6 +818,14 @@ def _rights_and_attribution() -> str:
             "",
             "Show notes (show-notes.md) may include third-party links.",
             "Respect copyright and linking terms for all referenced sources.",
+            "",
+            "---",
+            "",
+            "MUSIC",
+            "---",
+            "",
+            f"Intro/outro music: {TRACK_ATTRIBUTION}",
+            f"License: {TRACK_LICENSE}",
             "",
             "---",
             "",
