@@ -294,10 +294,8 @@ registered on `window.__timelines["…"]`). Do **not** add external font/CDN lin
 | ---- | ------ |
 | Director | jmservera |
 | Hosts | Clarabel & Joracle (AI-generated synthetic voices) |
-| Music | "Summer Sport" by AudioCoffee |
-| License | CC-BY-SA-3.0 |
-| Music link | https://www.audiocoffee.net/ |
-| Promoted by | https://www.chosic.com/free-music/all/ |
+| Music | Claracle Theme |
+| License | Original composition — Copyright © jmservera |
 | Platform | Claracle — www.claracle.com |
 
 The outro must also disclose AI-generated voice narration (e.g. "This episode

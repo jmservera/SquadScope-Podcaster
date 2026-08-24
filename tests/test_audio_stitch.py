@@ -231,8 +231,9 @@ def test_stitch_segments_builds_music_mix_filtergraph_when_mix_spec_is_provided(
         "[speech][intro]amix=inputs=2:normalize=0:duration=first:weights='1 1'[speech_with_intro]"
         in mix_cmd
     )
-    # Outro offset clamped: min(75, max(0, 1.25-0.5))=0.75
-    assert "atrim=start=0.75" in mix_cmd
+    # The 1.25s test track is shorter than the overlap + post-speech ramp, so
+    # mixing starts at the beginning instead of trimming away the envelope.
+    assert "atrim=start" not in mix_cmd
     assert "volume='if(lt(t,2.8),0.1*t/2.8" in mix_cmd
     assert (
         "[speech_with_intro][outro]amix=inputs=2:normalize=0:duration=longest:weights='1 1'[out]"

@@ -126,7 +126,7 @@ class TestMusicMixConfig:
     def test_top_level_music_mix(self) -> None:
         payload = {
             "music_mix": {
-                "track": "Summer Sport",
+                "track": "Claracle Theme",
                 "intro": {"full_volume_seconds": 8, "fade_down_under": "Host A opening"},
                 "outro": {
                     "start_position": "1:15",
@@ -137,7 +137,7 @@ class TestMusicMixConfig:
         }
         mm = MusicMixConfig.from_payload(payload)
         assert mm.has_track
-        assert mm.track == "Summer Sport"
+        assert mm.track == "Claracle Theme"
         assert mm.intro_full_volume_seconds == 8.0
         assert mm.intro_fade_down_under == "Host A opening"
         assert mm.outro_start_position == "1:15"

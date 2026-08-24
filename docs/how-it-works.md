@@ -272,8 +272,8 @@ Why this design: synthesizing per turn keeps speakers discrete; concatenating af
 
 The bundled music source is:
 
-- `assets/music/summer-sport.mp3`
-- license: **CC BY-SA 3.0**
+- `assets/music/claracle-theme.mp3`
+- license: **Proprietary** (original composition by jmservera)
 
 The engine uses the same track for intro and outro, but not as simple prepend/append audio. In mix mode, it builds a timeline envelope around speech.
 

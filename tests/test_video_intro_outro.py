@@ -690,9 +690,9 @@ class TestCreditsEntry:
         assert "Fable" in hosts.value
         assert "Alloy" in hosts.value
 
-    def test_music_has_license(self):
-        music = next(e for e in DEFAULT_CREDITS_ENTRIES if e.label == "Music")
-        assert "CC-BY-SA" in music.value or "CC BY SA" in music.value.replace("-", " ")
+    def test_music_has_owner_credit(self):
+        music_entry = next(e for e in DEFAULT_CREDITS_ENTRIES if e.label == "Music")
+        assert "jmservera" in music_entry.value
 
     def test_powered_by_claracle(self):
         powered = next(e for e in DEFAULT_CREDITS_ENTRIES if e.label == "Powered by")
@@ -757,7 +757,6 @@ class TestBuildCreditsFfmpegCmd:
         assert "jmservera" in vf
         assert "Fable" in vf
         assert "Alloy" in vf
-        assert "CC-BY-SA" in vf
         assert "Claracle" in vf
 
     def test_duration_matches_config(self):

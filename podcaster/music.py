@@ -1,4 +1,4 @@
-"""Resolve the bundled Summer Sport music bed for intro and outro playback."""
+"""Resolve the bundled Claracle theme music bed for intro and outro playback."""
 
 from __future__ import annotations
 
@@ -8,17 +8,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ASSET_DIR = REPO_ROOT / "assets" / "music"
-TRACK_PATH = ASSET_DIR / "summer-sport.mp3"
+TRACK_PATH = ASSET_DIR / "claracle-theme.mp3"
 ATTRIBUTION_PATH = ASSET_DIR / "ATTRIBUTION.md"
 
-TRACK_LICENSE = "CC-BY-SA-3.0"
+TRACK_LICENSE = "Proprietary"
 TRACK_ATTRIBUTION = (
-    "Summer Sport by AudioCoffee | https://www.audiocoffee.net/ | "
-    "Music promoted by https://www.chosic.com/free-music/all/ | "
-    "Creative Commons CC BY-SA 3.0 | "
-    "https://creativecommons.org/licenses/by-sa/3.0/"
+    "Claracle theme \u2014 original composition by jmservera | "
+    "Copyright \u00a9 jmservera. All rights reserved."
 )
-TRACK_DURATION_SECONDS = 105.0
+TRACK_DURATION_SECONDS = 85.4
 
 ALLOWED_LICENSES = frozenset({TRACK_LICENSE})
 
@@ -48,20 +46,20 @@ def load_registry() -> dict[str, object]:
             "license": TRACK_LICENSE,
             "attribution": TRACK_ATTRIBUTION,
             "duration_seconds": TRACK_DURATION_SECONDS,
-            "third_party_material": True,
+            "third_party_material": False,
         }
         for asset_id in ("intro", "outro")
     ]
     return {
         "schema_version": "squadscope-podcaster-music-assets-v1",
-        "purpose": "Bundled episode music metadata for the Summer Sport intro/outro bed.",
+        "purpose": "Bundled episode music metadata for the Claracle theme intro/outro bed.",
         "attribution_path": str(ATTRIBUTION_PATH.relative_to(REPO_ROOT)),
         "assets": assets,
     }
 
 
 def get_asset(asset_id: str, *, verify: bool = True) -> MusicAsset:
-    """Resolve the Summer Sport music file for the requested intro/outro role."""
+    """Resolve the Claracle theme music file for the requested intro/outro role."""
 
     if asset_id not in {"intro", "outro"}:
         raise KeyError(f"unknown music asset '{asset_id}'")
@@ -86,7 +84,7 @@ def get_stingers(*, verify: bool = True) -> tuple[MusicAsset, MusicAsset]:
 
 
 def attribution_lines() -> list[str]:
-    """Human-readable attribution lines for the bundled Summer Sport track."""
+    """Human-readable attribution lines for the bundled Claracle Theme track."""
 
     return [
         f"{entry['role']}: {entry['file']} — {entry['attribution']} (license: {entry['license']})"

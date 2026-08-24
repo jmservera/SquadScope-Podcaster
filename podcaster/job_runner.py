@@ -652,11 +652,14 @@ def _extract_week(manifest: dict[str, Any]) -> int | None:
         return None
 
 
-def _build_mix_spec(config: MusicMixConfig) -> MusicMixSpec | None:
-    """Convert a :class:`MusicMixConfig` to a :class:`MusicMixSpec`, or None if no track."""
+def _build_mix_spec(config: MusicMixConfig) -> MusicMixSpec:
+    """Convert a :class:`MusicMixConfig` to a :class:`MusicMixSpec`.
 
-    if not config.has_track:
-        return None
+    Always returns a spec so the default Claracle Theme is applied when the
+    request omits ``music_mix``.  :func:`_resolve_music_paths` decides
+    whether a music file is actually available; if no file is found the
+    spec is discarded at the call site.
+    """
     return MusicMixSpec(**config.to_mix_spec_kwargs())
 
 
@@ -667,24 +670,73 @@ _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 # spaces replaced by hyphens.
 _MUSIC_DIR = _ASSETS_DIR / "music"
 
+# Track slugs retained only for backward-compatible request migration. Requests
+# naming these values use the Claracle Theme rather than the historical asset.
+_LEGACY_TRACK_SLUGS: frozenset[str] = frozenset({"summer-sport"})
+
+# Default track filename used when the caller omits music_mix.track.
+_DEFAULT_TRACK_FILENAME = "claracle-theme.mp3"
+
+
+def _is_valid_track_slug(slug: str) -> bool:
+    """Validate that a track slug is safe for filesystem resolution.
+
+    A valid track slug contains only alphanumeric characters and hyphens.
+    This prevents directory traversal attacks (e.g., "../summer-sport")
+    or attempts to escape the music assets directory.
+
+    Args:
+        slug: The track slug to validate.
+
+    Returns:
+        True if the slug is valid, False otherwise.
+    """
+    if not slug:
+        return False
+    return all(c.isalnum() or c == "-" for c in slug)
+
 
 def _resolve_music_paths(config: MusicMixConfig) -> tuple[Path | None, Path | None]:
     """Resolve intro and outro music file paths from bundled assets.
 
-    Returns (intro_music, outro_music) paths if the track file exists,
-    or (None, None) if no track is configured or the bundled file is missing.
-    """
-    if not config.track:
-        return None, None
+    Migration semantics:
+    - No track configured (omitted field) → default to the bundled Claracle Theme.
+    - Track slug matches a legacy entry in ``_LEGACY_TRACK_SLUGS`` → log a warning
+      and migrate to the bundled Claracle Theme; the retained historical asset
+      must NOT be used for active generation.
+    - Track slug fails path validation → ignore and use Claracle Theme (prevents
+      directory traversal attacks and access to retained historical files).
+    - Any other valid track name → resolve by slugification as before.
 
-    # Normalize track name to filename: "Summer Sport" → "summer-sport.mp3"
-    track_filename = config.track.lower().replace(" ", "-") + ".mp3"
-    track_path = _MUSIC_DIR / track_filename
+    Returns ``(intro_music, outro_music)`` paths, or ``(None, None)`` when no
+    suitable file is available.
+    """
+    track_slug = config.track.lower().replace(" ", "-") if config.track else ""
+
+    if track_slug in _LEGACY_TRACK_SLUGS:
+        logger.warning(
+            "music_mix_config track=%r is a legacy value; migrating this request "
+            "to the Claracle Theme instead of using the retained historical asset.",
+            config.track,
+        )
+        track_slug = ""
+    elif track_slug and not _is_valid_track_slug(track_slug):
+        logger.warning(
+            "music_mix_config track=%r contains invalid characters; "
+            "migrating this request to the Claracle Theme instead.",
+            config.track,
+        )
+        track_slug = ""
+
+    if not track_slug:
+        # No track name supplied — default to the bundled Claracle Theme.
+        track_path = _MUSIC_DIR / _DEFAULT_TRACK_FILENAME
+    else:
+        track_path = _MUSIC_DIR / (track_slug + ".mp3")
 
     if not track_path.is_file():
         return None, None
 
-    # Use the full track for both intro and outro (mix_spec controls fading)
     return track_path, track_path
 
 

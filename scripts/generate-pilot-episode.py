@@ -47,7 +47,7 @@ VOICE_HOST_B = "alloy"
 AUTH_MODE = "managed_identity"
 
 OUTPUT_DIR = Path(".podcaster-artifacts/review/pilot-001")
-MUSIC_PATH = Path("assets/music/summer-sport.mp3")
+MUSIC_PATH = Path("assets/music/claracle-theme.mp3")
 
 
 def get_managed_identity_token(scope: str) -> str:
