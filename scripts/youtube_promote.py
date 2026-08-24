@@ -74,7 +74,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--playlist-id",
         default="",
-        help="Playlist ID to verify membership before promoting.",
+        help=(
+            "Playlist ID to verify membership before promoting. "
+            "Defaults to VIDEO_YOUTUBE_PLAYLIST_ID."
+        ),
     )
     parser.add_argument(
         "--publish-at",
@@ -98,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Load credentials from env (same path as the ACA job's from_env()).
     config = VideoDistributionConfig.from_env()
+    playlist_id = args.playlist_id or config.youtube_playlist_id
     has_creds = (
         config.youtube_client_id and config.youtube_client_secret and config.youtube_refresh_token
     )
@@ -122,7 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     problems = verify_draft_ready(
         args.video_id,
         access_token,
-        playlist_id=args.playlist_id,
+        playlist_id=playlist_id,
+        transport=transport,
     )
     if problems:
         print("Verification FAILED — the following problems must be resolved before promoting:")
@@ -135,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         print("--check-only specified — skipping promotion.")
         return 0
 
-    draft = get_video_snippet(args.video_id, access_token)
+    draft = get_video_snippet(args.video_id, access_token, transport=transport)
     if draft is None:
         print("Promotion FAILED: could not read current draft privacy.", file=sys.stderr)
         return 1

@@ -35,9 +35,10 @@ class _FakeTransport:
         raise AssertionError("network should not be reached in unit tests")
 
 
-def _minimal_config():
+def _minimal_config(*, playlist_id=""):
     return VideoDistributionConfig(
         youtube_enabled=True,
+        youtube_playlist_id=playlist_id,
         youtube_client_id="cid",
         youtube_client_secret="csec",
         youtube_refresh_token="rtoken",
@@ -116,6 +117,111 @@ class TestPromoteScriptTransportWiring:
         assert isinstance(config_arg, VideoDistributionConfig)
         assert transport_arg is not None, "transport must not be None"
 
+    def test_reuses_transport_for_verification_and_draft_lookup(self, monkeypatch):
+        transport = _FakeTransport()
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr("scripts.youtube_promote._DefaultTransport", lambda: transport)
+        monkeypatch.setattr(
+            "scripts.youtube_promote.VideoDistributionConfig",
+            type(
+                "_Patched",
+                (),
+                {"from_env": staticmethod(lambda: _minimal_config())},
+            ),
+        )
+
+        def _token(config, received_transport):
+            captured["token"] = received_transport
+            return "tok"
+
+        def _verify(video_id, token, *, playlist_id="", transport=None):
+            captured["verify"] = transport
+            return []
+
+        def _snippet(video_id, token, *, transport=None):
+            captured["snippet"] = transport
+            return {"privacyStatus": "private"}
+
+        monkeypatch.setattr("scripts.youtube_promote._get_youtube_access_token", _token)
+        monkeypatch.setattr("scripts.youtube_promote.verify_draft_ready", _verify)
+        monkeypatch.setattr("scripts.youtube_promote.get_video_snippet", _snippet)
+        monkeypatch.setattr(
+            "scripts.youtube_promote.build_publishing_packet",
+            lambda video_id, **kwargs: object(),
+        )
+        monkeypatch.setattr(
+            "scripts.youtube_promote.approve_and_publish",
+            lambda packet, token, *, approved_by: type(
+                "_Result",
+                (),
+                {"succeeded": True, "scheduled_publish_at": ""},
+            )(),
+        )
+
+        rc = promote_module.main(["--video-id", "vid123", "--approved-by", "operator"])
+
+        assert rc == 0
+        assert captured == {
+            "token": transport,
+            "verify": transport,
+            "snippet": transport,
+        }
+
+    def test_configured_playlist_is_verified_when_flag_is_omitted(self, monkeypatch):
+        captured: list[str] = []
+        monkeypatch.setattr(
+            "scripts.youtube_promote.VideoDistributionConfig",
+            type(
+                "_Patched",
+                (),
+                {"from_env": staticmethod(lambda: _minimal_config(playlist_id="configured-list"))},
+            ),
+        )
+        monkeypatch.setattr(
+            "scripts.youtube_promote._get_youtube_access_token",
+            lambda config, transport: "tok",
+        )
+
+        def _verify(video_id, token, *, playlist_id="", transport=None):
+            captured.append(playlist_id)
+            return []
+
+        monkeypatch.setattr("scripts.youtube_promote.verify_draft_ready", _verify)
+
+        rc = promote_module.main(["--video-id", "vid123", "--check-only"])
+
+        assert rc == 0
+        assert captured == ["configured-list"]
+
+    def test_playlist_flag_overrides_configured_playlist(self, monkeypatch):
+        captured: list[str] = []
+        monkeypatch.setattr(
+            "scripts.youtube_promote.VideoDistributionConfig",
+            type(
+                "_Patched",
+                (),
+                {"from_env": staticmethod(lambda: _minimal_config(playlist_id="configured-list"))},
+            ),
+        )
+        monkeypatch.setattr(
+            "scripts.youtube_promote._get_youtube_access_token",
+            lambda config, transport: "tok",
+        )
+
+        def _verify(video_id, token, *, playlist_id="", transport=None):
+            captured.append(playlist_id)
+            return []
+
+        monkeypatch.setattr("scripts.youtube_promote.verify_draft_ready", _verify)
+
+        rc = promote_module.main(
+            ["--video-id", "vid123", "--check-only", "--playlist-id", "explicit-list"]
+        )
+
+        assert rc == 0
+        assert captured == ["explicit-list"]
+
     def test_missing_credentials_returns_2_without_token_call(self, monkeypatch):
         """Guard: if credentials are absent the CLI exits before the token call."""
         called: list[bool] = []
@@ -170,11 +276,11 @@ class TestPromoteScriptTransportWiring:
         )
         monkeypatch.setattr(
             "scripts.youtube_promote.verify_draft_ready",
-            lambda video_id, token, *, playlist_id="": [],
+            lambda video_id, token, *, playlist_id="", transport=None: [],
         )
         monkeypatch.setattr(
             "scripts.youtube_promote.get_video_snippet",
-            lambda video_id, token: {"privacyStatus": "private"},
+            lambda video_id, token, *, transport=None: {"privacyStatus": "private"},
         )
 
         def _build_packet(video_id, **kwargs):
