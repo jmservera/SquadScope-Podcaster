@@ -407,3 +407,59 @@ def test_acr_private_endpoint_wired_in_vnet_mode() -> None:
     ), "main.bicep must deploy the ACR private endpoint module only in VNet mode"
     assert "registryId: acr!.outputs.registryId" in main
     assert "acrDnsZoneId: network!.outputs.acrDnsZoneId" in main
+
+
+def test_reusable_deploy_workflow_uses_vars_reference_for_youtube_playlist_id() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert "VIDEO_YOUTUBE_PLAYLIST_ID_VAR: ${{ vars.VIDEO_YOUTUBE_PLAYLIST_ID }}" in workflow
+    assert "VIDEO_YOUTUBE_PLAYLIST_ID_VAR: ${{ secrets.VIDEO_YOUTUBE_PLAYLIST_ID }}" not in workflow
+
+
+def test_reusable_deploy_workflow_masks_youtube_credentials_but_not_playlist_id() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert (
+        '[ -n "${VIDEO_YOUTUBE_CLIENT_ID_SECRET:-}" ] '
+        '&& echo "::add-mask::$VIDEO_YOUTUBE_CLIENT_ID_SECRET"'
+    ) in workflow
+    assert (
+        '[ -n "${VIDEO_YOUTUBE_CLIENT_SECRET_SECRET:-}" ] '
+        '&& echo "::add-mask::$VIDEO_YOUTUBE_CLIENT_SECRET_SECRET"'
+    ) in workflow
+    assert (
+        '[ -n "${VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET:-}" ] '
+        '&& echo "::add-mask::$VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET"'
+    ) in workflow
+    assert "VIDEO_YOUTUBE_PLAYLIST_ID_VAR" in workflow
+    assert "::add-mask::$VIDEO_YOUTUBE_PLAYLIST_ID" not in workflow
+    assert "::add-mask::$VIDEO_YOUTUBE_PLAYLIST_ID_VAR" not in workflow
+
+
+def test_reusable_deploy_workflow_only_requires_youtube_secrets_when_enabled() -> None:
+    workflow = _reusable_workflow_text()
+    client_id_check = (
+        'require_config VIDEO_YOUTUBE_CLIENT_ID_SECRET "when YouTube delivery is enabled"'
+    )
+    client_secret_check = (
+        'require_config VIDEO_YOUTUBE_CLIENT_SECRET_SECRET "when YouTube delivery is enabled"'
+    )
+    refresh_token_check = (
+        'require_config VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET "when YouTube delivery is enabled"'
+    )
+
+    enabled_block = re.search(
+        r'if \[ "\$youtube_enabled" = "true" \]; then(?P<body>.*?)\n          fi',
+        workflow,
+        re.DOTALL,
+    )
+    assert enabled_block, "YouTube preflight checks must be gated behind youtube_enabled=true"
+    body = enabled_block.group("body")
+
+    assert client_id_check in body
+    assert client_secret_check in body
+    assert refresh_token_check in body
+
+    assert workflow.count(client_id_check) == 1
+    assert workflow.count(client_secret_check) == 1
+    assert workflow.count(refresh_token_check) == 1

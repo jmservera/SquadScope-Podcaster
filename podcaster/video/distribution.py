@@ -119,7 +119,7 @@ class VideoDistributionConfig:
             youtube_enabled=bool(payload.get("youtube_enabled", False)),
             youtube_playlist_id=str(payload.get("youtube_playlist_id", "")),
             youtube_category_id=str(payload.get("youtube_category_id", "28")),
-            youtube_privacy=str(payload.get("youtube_privacy", "unlisted")),
+            youtube_privacy=str(payload.get("youtube_privacy", "public")),
             youtube_required=bool(payload.get("youtube_required", False)),
             spotify_rss_enabled=bool(payload.get("spotify_rss_enabled", False)),
             spotify_rss_feed_path=str(payload.get("spotify_rss_feed_path", "")),
@@ -147,6 +147,8 @@ class DistributionResult:
     youtube_failure_http_status: int | None = None
     youtube_oauth_error: str | None = None
     youtube_oauth_error_subtype: str | None = None
+    youtube_playlist_id: str | None = None
+    youtube_playlist_succeeded: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -1009,7 +1011,11 @@ def distribute_video(
                     try:
                         _http = transport or _DefaultTransport()
                         _token = _get_youtube_access_token(config, _http)
-                        _add_to_show_playlist(config, locale, video_id, _token, transport=transport)
+                        _playlist_result = _add_to_show_playlist(
+                            config, locale, video_id, _token, transport=transport
+                        )
+                        result.youtube_playlist_id = _playlist_result.playlist_id
+                        result.youtube_playlist_succeeded = _playlist_result.succeeded
                     except Exception as exc:
                         logger.warning("Playlist add skipped for %s: %s", video_id, exc)
         except YouTubeDeliveryError as exc:

@@ -159,6 +159,11 @@ class TestVideoDistributionConfig:
         assert config.blob_archive_enabled is True
         assert config.dry_run is False
 
+    def test_from_payload_privacy_defaults_to_public(self):
+        """from_payload must default youtube_privacy to 'public' matching deploy defaults (#649)."""
+        config = VideoDistributionConfig.from_payload({})
+        assert config.youtube_privacy == "public"
+
 
 # --- YouTube Upload Tests ---
 
@@ -1012,6 +1017,9 @@ class TestPlaylistIntegration:
         assert len(calls) == 1
         assert calls[0]["video_id"] == "yt-vid-001"
         assert calls[0]["locale"] == "es"
+        # Playlist audit fields must be captured in the distribution result (#649)
+        assert result.youtube_playlist_id == "PLes"
+        assert result.youtube_playlist_succeeded is True
 
     def test_playlist_skipped_on_dry_run(self, video_file, monkeypatch):
         """Playlist add is not called when dry_run=True."""
