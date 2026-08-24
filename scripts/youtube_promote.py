@@ -34,6 +34,7 @@ Exit codes:
   1 — verification failed or promotion rejected/failed
   2 — credentials or argument error
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,6 +47,7 @@ if str(ROOT) not in sys.path:
 
 from podcaster.video.distribution import (  # noqa: E402
     VideoDistributionConfig,
+    _DefaultTransport,
     _get_youtube_access_token,
 )
 from podcaster.video.youtube_publish import (  # noqa: E402
@@ -96,9 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     # Load credentials from env (same path as the ACA job's from_env()).
     config = VideoDistributionConfig.from_env()
     has_creds = (
-        config.youtube_client_id
-        and config.youtube_client_secret
-        and config.youtube_refresh_token
+        config.youtube_client_id and config.youtube_client_secret and config.youtube_refresh_token
     )
     if not has_creds:
         print(
@@ -109,8 +109,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print("Obtaining YouTube access token…")
+    transport = _DefaultTransport()
     try:
-        access_token = _get_youtube_access_token(config)
+        access_token = _get_youtube_access_token(config, transport)
     except Exception as exc:
         print(f"error: could not obtain access token: {exc}", file=sys.stderr)
         return 2
