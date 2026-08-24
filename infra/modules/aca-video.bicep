@@ -110,10 +110,10 @@ param videoYoutubeRequired string = 'false'
 @description('YouTube upload category id (default 28 = Science & Technology).')
 param videoYoutubeCategoryId string = '28'
 
-@description('YouTube upload privacy status (default public).')
-param videoYoutubePrivacy string = 'public'
+@description('YouTube draft upload privacy status (unlisted or private; default unlisted).')
+param videoYoutubePrivacy string = 'unlisted'
 
-@description('YouTube playlist ID for public video publishing. Empty disables playlist insertion.')
+@description('YouTube playlist ID. Required when videoYoutubeEnabled is true.')
 param videoYoutubePlaylistId string = ''
 
 @secure()

@@ -104,23 +104,26 @@ def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
     # application's from_env() runtime default and the spotifyPublishEnabled toggle.
     assert "VIDEO_YOUTUBE_ENABLED_VAR:-false" in workflow
     assert "VIDEO_YOUTUBE_REQUIRED_VAR:-false" in workflow
-    assert "VIDEO_YOUTUBE_PRIVACY_VAR:-public" in workflow
+    assert "VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted" in workflow
     assert "VIDEO_YOUTUBE_PLAYLIST_ID_VAR" in workflow
     assert '--parameters videoYoutubePlaylistId="${VIDEO_YOUTUBE_PLAYLIST_ID:-}"' in workflow
     assert "videoYoutubeEnabled string = 'false'" in aca_video_module
     assert "videoYoutubeRequired string = 'false'" in aca_video_module
-    assert "videoYoutubePrivacy string = 'public'" in aca_video_module
+    assert "videoYoutubePrivacy string = 'unlisted'" in aca_video_module
     assert "videoYoutubePlaylistId string = ''" in aca_video_module
     assert "videoYoutubeEnabled string = 'false'" in main_bicep
     assert "videoYoutubeRequired string = 'false'" in main_bicep
-    assert "videoYoutubePrivacy string = 'public'" in main_bicep
+    assert "videoYoutubePrivacy string = 'unlisted'" in main_bicep
     assert "videoYoutubePlaylistId string = ''" in main_bicep
     # Preflight must fail fast on the inconsistent required=true/enabled!=true config.
     assert "required delivery cannot be enforced while YouTube upload is disabled" in workflow
     assert (
         "VIDEO_YOUTUBE_PLAYLIST_ID must be configured when YouTube uploads are enabled" in workflow
     )
-    assert "VIDEO_YOUTUBE_PRIVACY must be public when YouTube uploads are enabled" in workflow
+    assert (
+        "VIDEO_YOUTUBE_PRIVACY must be unlisted or private when YouTube uploads are enabled"
+        in workflow
+    )
 
 
 def test_reusable_deploy_workflow_deploys_bicep_infrastructure() -> None:

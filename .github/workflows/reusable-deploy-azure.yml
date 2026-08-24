@@ -130,11 +130,11 @@ jobs:
             missing=1
           fi
           if [ "$youtube_enabled" = "true" ]; then
-            youtube_privacy="$(printf '%s' "${VIDEO_YOUTUBE_PRIVACY_VAR:-public}" | tr '[:upper:]' '[:lower:]')"
+            youtube_privacy="$(printf '%s' "${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}" | tr '[:upper:]' '[:lower:]')"
             case "$youtube_privacy" in
-              public) ;;
+              unlisted|private) ;;
               *)
-                echo "::error::VIDEO_YOUTUBE_PRIVACY must be public when YouTube uploads are enabled"
+                echo "::error::VIDEO_YOUTUBE_PRIVACY must be unlisted or private when YouTube uploads are enabled"
                 missing=1
                 ;;
             esac

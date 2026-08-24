@@ -115,11 +115,14 @@ class VideoDistributionConfig:
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "VideoDistributionConfig":
         """Load from a request payload dict (subset of fields)."""
+        youtube_playlist_id = payload.get("youtube_playlist_id")
+        youtube_category_id = payload.get("youtube_category_id")
+        youtube_privacy = payload.get("youtube_privacy")
         return cls(
             youtube_enabled=bool(payload.get("youtube_enabled", False)),
-            youtube_playlist_id=str(payload.get("youtube_playlist_id", "")),
-            youtube_category_id=str(payload.get("youtube_category_id", "28")),
-            youtube_privacy=str(payload.get("youtube_privacy", "public")),
+            youtube_playlist_id="" if youtube_playlist_id is None else str(youtube_playlist_id),
+            youtube_category_id="28" if youtube_category_id is None else str(youtube_category_id),
+            youtube_privacy="unlisted" if youtube_privacy is None else str(youtube_privacy),
             youtube_required=bool(payload.get("youtube_required", False)),
             spotify_rss_enabled=bool(payload.get("spotify_rss_enabled", False)),
             spotify_rss_feed_path=str(payload.get("spotify_rss_feed_path", "")),

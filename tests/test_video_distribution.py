@@ -159,10 +159,20 @@ class TestVideoDistributionConfig:
         assert config.blob_archive_enabled is True
         assert config.dry_run is False
 
-    def test_from_payload_privacy_defaults_to_public(self):
-        """from_payload must default youtube_privacy to 'public' matching deploy defaults (#649)."""
+    def test_from_payload_uses_safe_defaults_for_null_values(self):
         config = VideoDistributionConfig.from_payload({})
-        assert config.youtube_privacy == "public"
+        assert config.youtube_privacy == "unlisted"
+
+        config = VideoDistributionConfig.from_payload(
+            {
+                "youtube_playlist_id": None,
+                "youtube_category_id": None,
+                "youtube_privacy": None,
+            }
+        )
+        assert config.youtube_playlist_id == ""
+        assert config.youtube_category_id == "28"
+        assert config.youtube_privacy == "unlisted"
 
 
 # --- YouTube Upload Tests ---
