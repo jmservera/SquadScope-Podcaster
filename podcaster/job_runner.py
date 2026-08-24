@@ -677,7 +677,7 @@ def _resolve_music_paths(config: MusicMixConfig) -> tuple[Path | None, Path | No
     if not config.track:
         return None, None
 
-    # Normalize track name to filename: "Summer Sport" → "summer-sport.mp3"
+    # Normalize track name to filename: "Claracle Theme" → "claracle-theme.mp3"
     track_filename = config.track.lower().replace(" ", "-") + ".mp3"
     track_path = _MUSIC_DIR / track_filename
 

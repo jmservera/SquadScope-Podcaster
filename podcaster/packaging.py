@@ -169,7 +169,7 @@ in these show notes.
 
 - Script generation: Claracle pipeline (SquadScope-Podcaster)
 - TTS: Azure OpenAI gpt-4o-mini-tts (voices: fable + alloy)
-- Music: Summer Sport by AudioCoffee (CC BY-SA 3.0; see assets/music/ATTRIBUTION.md)
+- Music: Claracle theme — original composition by jmservera
 """
 
 
@@ -192,8 +192,9 @@ Commentary and analysis in this podcast constitutes fair use / transformative wo
 
 Music
 -----
-Intro/outro music: Summer Sport by AudioCoffee.
-Attribution details: assets/music/ATTRIBUTION.md
+Intro/outro music: Claracle theme — original composition by jmservera.
+Copyright © jmservera. All rights reserved.
+See assets/music/ATTRIBUTION.md for details.
 
 Distribution
 ------------

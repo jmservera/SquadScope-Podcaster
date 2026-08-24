@@ -924,7 +924,7 @@ _DEFAULT_CREDITS_ENTRIES: list[CreditsEntry] = [
     CreditsEntry("Creator", "Juan Manuel Servera (@jmservera)"),
     CreditsEntry("AI Team", "Squad (Coordinator) \u00b7 Bender (Podcaster)"),
     CreditsEntry("AI Hosts", "Fable & Alloy"),
-    CreditsEntry("Music", "Summer Sport by AudioCoffee (CC-BY-SA-3.0)"),
+    CreditsEntry("Music", "Claracle theme by jmservera"),
     CreditsEntry("Powered by", "Claracle"),
 ]
 
