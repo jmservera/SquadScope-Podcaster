@@ -12,6 +12,7 @@ from typing import Any
 from podcaster.config import SpotifyPublishConfig
 from podcaster.costs import cost_gate_blockers
 from podcaster.generation import manifest_bytes
+from podcaster.music import TRACK_ATTRIBUTION
 from podcaster.publish import PublishResult, publish_episode
 from podcaster.review import APPROVED, apply_review_decision
 from podcaster.sanitization import normalize_weekly_url
@@ -235,6 +236,7 @@ def _show_notes_text(manifest: dict[str, Any], mp3_path: Path, wav_path: Path | 
         f"<p>Claracle week {week}.</p>"
         f"<p>Source article: {article_url}</p>"
         f"<p>Generated audio artifact: {audio_label}</p>"
+        f"<p>Intro/outro music: {TRACK_ATTRIBUTION}</p>"
     )
 
 
