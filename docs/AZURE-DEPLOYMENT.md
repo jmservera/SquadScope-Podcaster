@@ -105,11 +105,10 @@ The deploy workflow uses the GitHub environment named exactly `prod`. Go to **Se
 AZURE_CLIENT_ID=<Application ID from step 1>
 AZURE_TENANT_ID=<Tenant ID from step 3>
 AZURE_SUBSCRIPTION_ID=<Subscription ID from step 3>
-AZURE_LOCATION=eastus2
 AZURE_RESOURCE_GROUP=squadscope-podcaster
 ```
 
-**Important:** These are **environment variables**, not secrets. They are non-sensitive, but the workflow only checks that they are present and does not print their values.
+**Important:** These are **environment variables**, not secrets. The workflow validates required values without echoing them; safe deployment metadata such as the region may appear in the job summary. `AZURE_LOCATION` is optional and defaults to `eastus2`, the region required by the deployed TTS model.
 
 Optional override variable:
 
@@ -179,7 +178,8 @@ az storage account check-name --name podcasterstgprod
 
 # 4. Verify GitHub prod environment variables are set (names only)
 gh variable list --repo jmservera/SquadScope-Podcaster --env prod
-# Should show AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_LOCATION, AZURE_RESOURCE_GROUP
+# Should show AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, and AZURE_RESOURCE_GROUP.
+# AZURE_LOCATION is optional and defaults to eastus2.
 
 # 5. Optionally verify GitHub prod environment secret names are set (values are never shown)
 gh secret list --repo jmservera/SquadScope-Podcaster --env prod | grep PODCASTER_API_KEY
@@ -390,7 +390,7 @@ The workflow will:
 **Error:** Model not available in region.
 
 **Solution:**
-1. `gpt-4o-mini-tts` (GlobalStandard) requires `eastus2`. Verify `AZURE_LOCATION=eastus2`.
+1. `gpt-4o-mini-tts` (GlobalStandard) requires `eastus2`. Remove an incorrect `AZURE_LOCATION` override or set it to `eastus2`.
 2. Check Azure OpenAI model availability: `az cognitiveservices account list-models --name <account> -g <rg>`.
 
 **Error:** Role assignment conflict or insufficient permissions.

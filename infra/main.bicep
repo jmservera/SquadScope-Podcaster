@@ -133,9 +133,6 @@ param deployApiApp bool = true
 @description('HTTP API container image (#131).')
 param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
-@description('API app name.')
-param apiAppName string = '${baseName}-api'
-
 @description('Spotify show ID for auto-publish (#182). Empty disables publishing.')
 param spotifyShowId string = ''
 
@@ -524,7 +521,7 @@ module api 'modules/api.bicep' = if (deployApiApp) {
   params: {
     location: location
     containerAppsEnvId: aca.outputs.environmentId
-    apiAppName: apiAppName
+    baseName: baseName
     identityId: aca.outputs.jobIdentityResourceId
     identityClientId: aca.outputs.jobIdentityClientId
     storageAccountName: storage.name

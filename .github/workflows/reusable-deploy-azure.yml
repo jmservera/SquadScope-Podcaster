@@ -57,7 +57,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus2' }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_STORAGE_ACCOUNT_NAME: ${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
       SYNTHESIS_IMAGE: ${{ inputs.synthesis_image || format('{0}/{1}:latest', vars.SYNTHESIS_IMAGE_REGISTRY, vars.SYNTHESIS_IMAGE_REPOSITORY || 'podcaster-synthesis') }}
@@ -101,7 +101,6 @@ jobs:
           require_config AZURE_CLIENT_ID "variables"
           require_config AZURE_TENANT_ID "variables"
           require_config AZURE_SUBSCRIPTION_ID "variables"
-          require_config AZURE_LOCATION "variables"
           require_config AZURE_RESOURCE_GROUP "variables"
 
           if [ "$SYNC_SQUADSCOPE" = "true" ]; then
