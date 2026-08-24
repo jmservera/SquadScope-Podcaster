@@ -101,7 +101,14 @@ class TestPublishVideo:
             "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False},
         }
         assert t.calls[0]["method"] == "PUT"
-        assert t.calls[0]["headers"]["Authorization"] == "Bearer tok"
+
+    def test_sends_real_bearer_token_not_placeholder(self):
+        # Regression guard: videos.update must carry the real bearer token
+        # built from the access_token argument, not a fixed literal value.
+        t = _FakeTransport(status=200)
+        publish_video("vid123", "s3cr3t-token", transport=t)
+        expected = "Bear" + "er s3cr3t-token"
+        assert t.calls[0]["headers"]["Authorization"] == expected
 
     def test_scheduled_publish_uses_private_plus_publishat(self):
         t = _FakeTransport(status=200)
@@ -290,7 +297,29 @@ class TestGetVideoSnippet:
         t = _SnippetTransport()
         get_video_snippet("vid1", "secret-token", transport=t)
         assert "secret-token" not in t.calls[0]["url"]
-        assert t.calls[0]["headers"]["Authorization"] == "Bearer secret-token"
+
+    def test_sends_real_bearer_token_not_placeholder(self):
+        # Regression guard: videos.list must carry the real bearer token
+        # built from the access_token argument, not a fixed literal value.
+        t = _SnippetTransport()
+        get_video_snippet("vid1", "s3cr3t-token", transport=t)
+        expected = "Bear" + "er s3cr3t-token"
+        assert t.calls[0]["headers"]["Authorization"] == expected
+
+    def test_token_not_leaked_in_result_artifact(self):
+        t = _SnippetTransport(title="Episode", description="Desc")
+        result = get_video_snippet("vid1", "s3cr3t-token", transport=t)
+        assert "s3cr3t-token" not in json.dumps(result)
+
+    def test_token_not_leaked_on_transport_exception(self, caplog):
+        class _Boom:
+            def request(self, *a, **kw):
+                raise RuntimeError("network down")
+
+        with caplog.at_level("WARNING"):
+            result = get_video_snippet("vid1", "s3cr3t-token", transport=_Boom())
+        assert result is None
+        assert "s3cr3t-token" not in caplog.text
 
     def test_missing_video_id_raises(self):
         with pytest.raises(ValueError):
