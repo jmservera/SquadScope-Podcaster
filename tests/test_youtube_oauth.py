@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import scripts.youtube_oauth_setup as cli  # noqa: E402
 from podcaster.youtube_oauth import (  # noqa: E402
+    YOUTUBE_SCOPE,
     YOUTUBE_UPLOAD_SCOPE,
     OAuthClient,
     build_consent_url,
@@ -35,17 +36,110 @@ def test_consent_url_requests_offline_refresh_token():
     assert q["access_type"] == ["offline"]
     assert q["prompt"] == ["consent"]
     assert q["response_type"] == ["code"]
-    assert q["scope"] == [YOUTUBE_UPLOAD_SCOPE]
+    assert q["scope"] == [YOUTUBE_SCOPE]
     assert q["state"] == ["xyz"]
     assert q["client_id"] == ["cid.apps.googleusercontent.com"]
     assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
 
 
-def test_consent_url_uses_minimal_upload_scope_only():
+def test_consent_url_defaults_to_full_manage_scope_not_upload_only():
+    """Regression guard for #649: the default consent URL must request the
+    full ``youtube`` scope, not the narrower upload-only scope. A refresh
+    token minted with `youtube.upload` alone cannot call videos.list/update
+    or playlistItems.list/insert, which the pipeline requires.
+    """
+
     url = build_consent_url(CLIENT, "http://127.0.0.1:5000/oauth2callback", state="s")
     scope = _query(url)["scope"][0]
-    assert scope == YOUTUBE_UPLOAD_SCOPE
+    assert scope == YOUTUBE_SCOPE
+    assert scope == "https://www.googleapis.com/auth/youtube"
+    # This would fail against the old upload-only default behavior.
+    assert scope != YOUTUBE_UPLOAD_SCOPE
     assert "force-ssl" not in scope
+    assert "partner" not in scope
+
+
+def test_consent_url_can_still_request_explicit_upload_only_scope():
+    """The narrower scope remains available for an explicit opt-in."""
+
+    url = build_consent_url(
+        CLIENT, "http://127.0.0.1:5000/oauth2callback", scopes=[YOUTUBE_UPLOAD_SCOPE], state="s"
+    )
+    assert _query(url)["scope"] == [YOUTUBE_UPLOAD_SCOPE]
+
+
+@pytest.mark.parametrize(
+    "requested_scope",
+    [
+        pytest.param(None, id="default-full-scope"),
+        pytest.param(YOUTUBE_UPLOAD_SCOPE, id="explicit-upload-only-scope"),
+    ],
+)
+def test_run_consent_flow_forwards_scope_to_real_build_consent_url(monkeypatch, requested_scope):
+    """Focused regression test for the flow boundary itself.
+
+    The CLI-level tests (``test_cli_defaults_to_full_manage_scope`` and
+    ``test_cli_upload_only_flag_requests_narrow_scope_explicitly``) mock
+    ``run_consent_flow`` entirely, so they only prove the CLI *selects* a
+    scope string — they never exercise the real ``build_consent_url`` call
+    inside ``run_consent_flow``. This test spies on the real
+    ``build_consent_url`` (still calling through to it, no network) to prove
+    ``run_consent_flow`` actually forwards its ``scope`` argument as
+    ``scopes=[scope]``, for both the default full scope (``requested_scope``
+    left unset, so ``run_consent_flow`` uses its own ``YOUTUBE_SCOPE``
+    default) and an explicit narrower scope. Dropping that forwarding
+    (falling back to ``build_consent_url``'s own default) would pass every
+    other test in this file but would silently request the wrong scope in
+    production.
+    """
+
+    from podcaster.youtube_oauth import TokenResult
+
+    real_build_consent_url = cli.build_consent_url
+    captured: dict[str, object] = {}
+
+    def spy_build_consent_url(client, redirect_uri, **kwargs):
+        captured["scopes"] = kwargs.get("scopes")
+        captured["state"] = kwargs.get("state")
+        return real_build_consent_url(client, redirect_uri, **kwargs)
+
+    monkeypatch.setattr(cli, "build_consent_url", spy_build_consent_url)
+
+    class _FakeServer:
+        """Stand-in for http.server.HTTPServer: no socket, no network."""
+
+        def __init__(self, address, handler_cls):
+            self.server_address = (address[0], 0)
+            self._handler_cls = handler_cls
+
+        def handle_request(self):
+            # Simulate the loopback redirect arriving with a matching state,
+            # captured from the real build_consent_url call above.
+            self._handler_cls.captured = {"code": ["auth-code"], "state": [captured["state"]]}
+
+        def server_close(self):
+            return None
+
+    monkeypatch.setattr(cli, "HTTPServer", _FakeServer)
+    monkeypatch.setattr(
+        cli,
+        "_exchange_code",
+        lambda client, code, redirect_uri: TokenResult(
+            refresh_token="1//rt",
+            access_token="at",
+            expires_in=3599,
+            scope=requested_scope or YOUTUBE_SCOPE,
+            token_type="Bearer",
+        ),
+    )
+
+    kwargs = {"open_browser": False}
+    if requested_scope is not None:
+        kwargs["scope"] = requested_scope
+    result = cli.run_consent_flow(CLIENT, **kwargs)
+
+    assert captured["scopes"] == [requested_scope or YOUTUBE_SCOPE]
+    assert result.refresh_token == "1//rt"
 
 
 def test_consent_url_requires_state_and_redirect():
@@ -105,6 +199,64 @@ def test_redact_secret_hides_all_but_tail():
     assert redact_secret("supersecrettoken") == "************oken"
     assert redact_secret("ab") == "**"
     assert redact_secret("") == ""
+
+
+def test_cli_defaults_to_full_manage_scope(monkeypatch):
+    """Regression guard for #649: without any flag, the CLI must request the
+    default ``YOUTUBE_SCOPE`` (full manage-account scope), not the narrower
+    upload-only scope the old default silently used.
+    """
+
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_ID", "cid.apps.googleusercontent.com")
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_SECRET", "secret")
+
+    from podcaster.youtube_oauth import TokenResult
+
+    captured: dict[str, object] = {}
+
+    def fake_run_consent_flow(client, **kwargs):
+        captured.update(kwargs)
+        return TokenResult(
+            refresh_token="1//refresh-token",
+            access_token="ya29.access",
+            expires_in=3599,
+            scope=kwargs.get("scope", ""),
+            token_type="Bearer",
+        )
+
+    monkeypatch.setattr(cli, "run_consent_flow", fake_run_consent_flow)
+
+    rc = cli.main(["--no-browser"])
+    assert rc == 0
+    assert captured["scope"] == YOUTUBE_SCOPE
+    assert captured["scope"] != YOUTUBE_UPLOAD_SCOPE
+
+
+def test_cli_upload_only_flag_requests_narrow_scope_explicitly(monkeypatch):
+    """``--upload-only`` remains available as an explicit, non-default opt-in."""
+
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_ID", "cid.apps.googleusercontent.com")
+    monkeypatch.setenv("VIDEO_YOUTUBE_CLIENT_SECRET", "secret")
+
+    from podcaster.youtube_oauth import TokenResult
+
+    captured: dict[str, object] = {}
+
+    def fake_run_consent_flow(client, **kwargs):
+        captured.update(kwargs)
+        return TokenResult(
+            refresh_token="1//refresh-token",
+            access_token="ya29.access",
+            expires_in=3599,
+            scope=kwargs.get("scope", ""),
+            token_type="Bearer",
+        )
+
+    monkeypatch.setattr(cli, "run_consent_flow", fake_run_consent_flow)
+
+    rc = cli.main(["--no-browser", "--upload-only"])
+    assert rc == 0
+    assert captured["scope"] == YOUTUBE_UPLOAD_SCOPE
 
 
 def test_cli_missing_context_lists_exact_vars(monkeypatch):

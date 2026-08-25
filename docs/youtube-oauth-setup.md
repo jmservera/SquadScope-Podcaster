@@ -30,10 +30,30 @@ distribution pipeline uses.
 1. APIs & Services → **OAuth consent screen**.
 2. User type: **External** (unless all uploaders are in a Google Workspace org).
 3. App name, support email, developer contact — use a team-owned address.
-4. **Scopes:** add only `https://www.googleapis.com/auth/youtube.upload`.
-   Narrow scope eases app verification (#448) and limits blast radius if the
-   token leaks. Do **not** add `youtube` or `youtube.force-ssl` unless a feature
-   requires them.
+4. **Scopes:** add `https://www.googleapis.com/auth/youtube` (label: *"Manage
+   your YouTube account"*). If this project's consent screen previously listed
+   `https://www.googleapis.com/auth/youtube.upload` from an earlier setup,
+   **remove that entry** — the verification runbook
+   (`docs/youtube-oauth-verification.md`) requires the **verified production**
+   consent screen to list the `youtube` scope only, and leaving both
+   configured is redundant since `youtube` is a superset. `--upload-only`
+   (see below) is for a **separate, non-production OAuth client or a
+   testing-mode consent screen that has not gone through Google
+   verification** — do not add `youtube.upload` to the verified production
+   consent screen to support it: Google's sensitive-scope verification covers
+   the specific scope set an app was reviewed with, and adding another
+   sensitive scope to an already-verified app can require re-verification.
+   `https://www.googleapis.com/auth/youtube` is the narrowest single scope
+   that covers
+   every call this app makes: `videos.insert` (upload), `videos.list`
+   (read-back verification of the uploaded video's status/metadata),
+   `videos.update` (`part=status` — promoting an approved draft to public or
+   scheduling a future publish), and `playlistItems.list`/`playlistItems.insert`
+   (show playlist management). `youtube.upload` alone only authorizes
+   `videos.insert` — every other call above 403s with `insufficientPermissions`
+   (#649). Google also accepts `youtube.force-ssl` for the same operations, but
+   this app standardizes on the `youtube` scope. Do **not** add `youtubepartner`;
+   it is for content-partner asset management the app does not do.
 5. **Test users:** while the app is in *Testing* mode, add the Google account
    that owns the target YouTube channel as a test user. Testing-mode refresh
    tokens expire after 7 days — fine for a spike, but **production needs the app
@@ -62,6 +82,58 @@ export VIDEO_YOUTUBE_CLIENT_SECRET="<client secret from step 4>"
 python scripts/youtube_oauth_setup.py
 ```
 
+> **Replacing an upload-only token (#649):** OAuth scopes cannot be widened in
+> place — a refresh token minted with `youtube.upload` stays upload-only
+> forever, even if you later change the consent screen's configured scopes.
+> If production is running on such a token (visible as
+> `"scope": "https://www.googleapis.com/auth/youtube.upload"` in the token
+> response, and as 403 `insufficientPermissions` on playlist/read-back calls),
+> you must:
+> 1. Re-run this script to mint a **new** refresh token with the `youtube`
+>    scope (the default — `access_type=offline` + `prompt=consent` force a
+>    fresh grant even if the account previously consented).
+> 2. Update the `VIDEO_YOUTUBE_REFRESH_TOKEN` secret in the `prod` GitHub
+>    environment (repo **Settings → Environments → prod → Secrets**) with the
+>    new value, then re-run the deploy workflow
+>    (`.github/workflows/reusable-deploy-azure.yml`). This repo's production
+>    deployment does **not** read the token live from Azure Key Vault at
+>    runtime — the workflow captures the GitHub secret at deploy time and
+>    injects it as an Azure Container Apps secret (see
+>    `infra/modules/aca-video.bicep`). Updating a Key Vault secret directly
+>    has no effect on the running app: `load_youtube_refresh_token()` checks
+>    the injected `VIDEO_YOUTUBE_REFRESH_TOKEN` env var **first** and returns
+>    it immediately if set, only falling back to a live Key Vault read when
+>    that env var is empty
+>    (`podcaster/youtube_credentials.py:load_youtube_refresh_token`). Since
+>    this deployment always injects that env var, switching to direct Key
+>    Vault resolution would additionally require removing the injected secret
+>    (or repointing its Container Apps secret to a Key Vault reference) as
+>    well as setting `VIDEO_YOUTUBE_KEYVAULT_URL` — not just the latter.
+>    Confirm the pipeline works with the new token before revoking the old
+>    one.
+> 3. Revoke **only the old token value** via Google's revocation endpoint,
+>    passing the token through stdin so it never appears in shell history or
+>    a process listing:
+>    ```bash
+>    read -rs -p "Old refresh token to revoke: " OLD_REFRESH_TOKEN; echo
+>    printf '%s' "$OLD_REFRESH_TOKEN" | curl -s --fail-with-body -X POST \
+>      https://oauth2.googleapis.com/revoke --data-urlencode token@-
+>    ```
+>    `--fail-with-body` makes curl exit non-zero on a 4xx/5xx response (while
+>    still printing Google's error body) instead of silently reporting success
+>    for a rejected revocation — plain `-s` alone suppresses the progress
+>    meter but not error visibility, and curl exits `0` on HTTP errors without
+>    it, which could leave the old token active while looking revoked.
+>    Use `printf`, not a `<<<` here-string — a here-string appends a trailing
+>    newline to stdin, and `--data-urlencode token@-` would send that newline
+>    as part of the token, silently sending the wrong value and failing to
+>    revoke the old credential.
+>    Do **not** use <https://myaccount.google.com/permissions> for this — that
+>    page revokes the app's *entire* grant for the account, which would also
+>    invalidate the new token you just stored, since both share the same
+>    OAuth client. Only use the account permissions page if you are fully
+>    decommissioning the integration.
+
 The script:
 
 1. Starts a loopback HTTP server on an ephemeral `127.0.0.1` port.
@@ -69,6 +141,15 @@ The script:
    refresh token is always returned) — sign in as the channel owner and approve.
 3. Captures the authorization code on the loopback redirect (validates `state`
    for CSRF), exchanges it for tokens, and prints the **refresh token**.
+
+By default the script requests `https://www.googleapis.com/auth/youtube`. Pass
+`--upload-only` to explicitly request the narrower `youtube.upload` scope
+instead — only do this against a **separate, non-production OAuth client or a
+testing-mode consent screen** (see step 4 above for why), and only if you are
+certain the pipeline will never call `videos.list` (read-back verification),
+`videos.update` (public-promotion status changes), or any `playlistItems`
+endpoint, since that token cannot be upgraded later without repeating this
+whole flow.
 
 For piping into a secret store:
 
@@ -78,12 +159,23 @@ python scripts/youtube_oauth_setup.py --json | jq -r .refresh_token
 
 ## 7. Store the refresh token securely (→ #443)
 
-The refresh token is a durable credential. Store it in **Azure Key Vault** and
-expose it to the pipeline as `VIDEO_YOUTUBE_REFRESH_TOKEN` (see #443). Never
-commit, log, or paste it into chat/issues.
+The refresh token is a durable credential; never commit, log, or paste it into
+chat/issues. Store it as `VIDEO_YOUTUBE_REFRESH_TOKEN` so the pipeline can read
+it (see #443 and `docs/youtube-token-storage.md` for the full picture):
 
-The distribution path then exchanges it for short-lived access tokens at upload
-time — see `podcaster/video/distribution.py` (`_get_youtube_access_token`).
+- **This repo's production deployment:** set it as the `prod` GitHub
+  environment secret and redeploy — the deploy workflow injects it as an
+  Azure Container Apps secret (see steps 1–2 above).
+- **A deployment using direct Key Vault resolution instead:** store it in
+  Azure Key Vault and set `VIDEO_YOUTUBE_KEYVAULT_URL` (see
+  `docs/youtube-token-storage.md`); do not also inject the env var directly,
+  since that takes precedence and would bypass the Key Vault read.
+
+The distribution path exchanges it for short-lived access tokens at upload,
+read-back verification, and playlist-management time — see
+`podcaster/video/distribution.py` (`_get_youtube_access_token`). The same
+refresh token is also used by the promotion step
+(`scripts/youtube_promote.py`) to verify and promote a draft to public.
 
 ---
 
@@ -92,18 +184,25 @@ time — see `podcaster/video/distribution.py` (`_get_youtube_access_token`).
 | Setting | Value |
 | --- | --- |
 | API | YouTube Data API v3 |
-| Scope | `https://www.googleapis.com/auth/youtube.upload` |
+| Scope | `https://www.googleapis.com/auth/youtube` (`--upload-only` opts into `https://www.googleapis.com/auth/youtube.upload`, not recommended) |
 | Auth endpoint | `https://accounts.google.com/o/oauth2/v2/auth` |
 | Token endpoint | `https://oauth2.googleapis.com/token` |
 | Client type | Desktop app (loopback redirect) |
 | `VIDEO_YOUTUBE_CLIENT_ID` | OAuth2 desktop client id |
 | `VIDEO_YOUTUBE_CLIENT_SECRET` | OAuth2 desktop client secret |
-| `VIDEO_YOUTUBE_REFRESH_TOKEN` | Minted via step 6; stored in Key Vault (#443) |
+| `VIDEO_YOUTUBE_REFRESH_TOKEN` | Minted via step 6; stored as the `prod` GitHub environment secret for this repo's production deployment, or in Key Vault for a direct-Key-Vault deployment (see `docs/youtube-token-storage.md`) |
 
 ## Security notes (Hermes)
 
-- Refresh token = long-lived secret → Key Vault only (#443), never env-committed.
-- Minimal `youtube.upload` scope; no broader grants.
+- Refresh token = long-lived secret → held as an encrypted deployment secret
+  (GitHub environment secret + ACA for this repo's production deployment, or
+  Key Vault for a direct-Key-Vault deployment — see #443 and
+  `docs/youtube-token-storage.md`), never env-committed.
+- Scope is `youtube` (not `youtubepartner`) — the narrowest single scope that
+  still covers upload, read-back/update, and playlist management; no broader
+  grants. Google classifies `youtube` the same as `youtube.upload` — a
+  *sensitive*, not *restricted*, scope (re-confirm current classification in
+  the Google verification flow — see docs/youtube-oauth-verification.md).
 - `state` parameter validated on the redirect to prevent CSRF code injection.
 - Secrets are read from the environment only; the setup script prints the
   refresh token solely to the operator's terminal and redacts the access token.

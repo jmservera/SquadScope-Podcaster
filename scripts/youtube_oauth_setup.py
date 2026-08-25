@@ -4,7 +4,28 @@
 Service accounts cannot upload to YouTube, so an operator must grant user
 consent once. This script runs the installed-app (loopback) authorization-code
 flow against the OAuth2 *Desktop* client created in Google Cloud, then prints
-the resulting refresh token for secure storage (Azure Key Vault, #443).
+the resulting refresh token for secure storage (see
+``docs/youtube-token-storage.md`` — the `prod` GitHub environment secret for
+this repo's production deployment, or Azure Key Vault for a direct-Key-Vault
+deployment; #443).
+
+By default this requests ``https://www.googleapis.com/auth/youtube`` (see
+``podcaster.youtube_oauth.YOUTUBE_SCOPE``), because the distribution pipeline
+needs more than upload: it reads videos back (``videos.list``) to verify
+status/metadata, updates their publish status (``videos.update``,
+``part=status``) to promote an approved draft to public or schedule a future
+publish, and manages the show playlist (``playlistItems.list``/``insert``). A
+refresh token minted with the narrower ``youtube.upload`` scope will upload
+fine but every one of those other calls returns HTTP 403
+``insufficientPermissions`` (#649). Scopes cannot be widened in place — re-run
+this script to mint a new token, then revoke only the *old* token value via
+Google's revocation endpoint (``POST https://oauth2.googleapis.com/revoke``),
+passing the token through stdin rather than as a command-line argument so it
+never lands in shell history or a process listing — see
+``docs/youtube-oauth-setup.md`` for the exact command. Do not revoke via
+https://myaccount.google.com/permissions unless decommissioning entirely —
+that page revokes the whole app grant, including the new token, since both
+share the same OAuth client.
 
 It depends only on the Python standard library and ``podcaster.youtube_oauth``
 so it can run anywhere without extra packages.
@@ -39,6 +60,7 @@ if REPO_ROOT not in sys.path:
 from podcaster.youtube_oauth import (  # noqa: E402
     DEFAULT_REDIRECT_URI,
     TOKEN_ENDPOINT,
+    YOUTUBE_SCOPE,
     YOUTUBE_UPLOAD_SCOPE,
     OAuthClient,
     build_consent_url,
@@ -93,7 +115,13 @@ def _exchange_code(client: OAuthClient, code: str, redirect_uri: str):
     return parse_token_response(body)
 
 
-def run_consent_flow(client: OAuthClient, *, host: str = "127.0.0.1", open_browser: bool = True):
+def run_consent_flow(
+    client: OAuthClient,
+    *,
+    host: str = "127.0.0.1",
+    open_browser: bool = True,
+    scope: str = YOUTUBE_SCOPE,
+):
     """Run the loopback consent flow and return a TokenResult."""
 
     client.require()
@@ -103,10 +131,9 @@ def run_consent_flow(client: OAuthClient, *, host: str = "127.0.0.1", open_brows
     port = server.server_address[1]
     redirect_uri = DEFAULT_REDIRECT_URI.format(port=port)
 
-    consent_url = build_consent_url(
-        client, redirect_uri, scopes=[YOUTUBE_UPLOAD_SCOPE], state=state
-    )
-    print("\nOpen this URL in a browser signed in to the YouTube channel owner:\n", file=sys.stderr)
+    consent_url = build_consent_url(client, redirect_uri, scopes=[scope], state=state)
+    print(f"\nRequesting scope: {scope}\n", file=sys.stderr)
+    print("Open this URL in a browser signed in to the YouTube channel owner:\n", file=sys.stderr)
     print(consent_url + "\n", file=sys.stderr)
     if open_browser:
         try:
@@ -134,6 +161,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit the refresh token as JSON to stdout (for piping into a secret store).",
     )
+    parser.add_argument(
+        "--upload-only",
+        action="store_true",
+        help=(
+            "Request the narrower youtube.upload scope instead of the default "
+            f"({YOUTUBE_SCOPE}). Only use this against a separate, "
+            "non-production OAuth client or a testing-mode consent screen "
+            "(see docs/youtube-oauth-setup.md) -- the verified production "
+            "consent screen must list the youtube scope only. Videos can be "
+            "uploaded, but playlist management, read-back verification "
+            "(videos.list), and status updates (videos.update) that promote "
+            "a draft to public will fail with 403 insufficientPermissions."
+        ),
+    )
     args = parser.parse_args(argv)
 
     missing = missing_client_context()
@@ -150,19 +191,24 @@ def main(argv: list[str] | None = None) -> int:
         client_secret=os.environ[_ENV_CLIENT_SECRET],
     )
 
-    token = run_consent_flow(client, open_browser=not args.no_browser)
+    scope = YOUTUBE_UPLOAD_SCOPE if args.upload_only else YOUTUBE_SCOPE
+    token = run_consent_flow(client, open_browser=not args.no_browser, scope=scope)
 
     if args.json:
-        # Only the refresh token is emitted for piping into Key Vault (#443).
+        # Only the refresh token is emitted for piping into a secret store (#443).
         print(json.dumps({"refresh_token": token.refresh_token, "scope": token.scope}))
     else:
-        print("\n✅ Refresh token obtained (store this as a secret — Key Vault #443):\n")
+        print("\n✅ Refresh token obtained (store this in a secret manager):\n")
         print(token.refresh_token)
         print(f"\nScope granted: {token.scope}")
         print(f"Access token (short-lived, redacted): {redact_secret(token.access_token)}")
         print(
-            "\nNext: store the refresh token as VIDEO_YOUTUBE_REFRESH_TOKEN in Azure "
-            "Key Vault. Never commit or log it."
+            "\nNext: store the refresh token as VIDEO_YOUTUBE_REFRESH_TOKEN — for "
+            "this repo's production deployment, set it as the `prod` GitHub "
+            "environment secret and redeploy (see docs/youtube-oauth-setup.md); "
+            "for a deployment that resolves it directly from Azure Key Vault at "
+            "runtime instead, store it there (see docs/youtube-token-storage.md). "
+            "Never commit or log it."
         )
     return 0
 
