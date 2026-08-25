@@ -57,8 +57,22 @@ required"* (label `credentials-expired`, de-duplicated against any open issue),
 via `podcaster.credential_expiry.notify_youtube_credential_expiry`. Set
 `CREDENTIAL_EXPIRY_NOTIFY_DISABLED=true` to suppress in non-prod.
 
-After re-authenticating, update the Key Vault secret — no app restart needed
-(the token is read at runtime).
+After re-authenticating, the update path depends on how the token reaches this
+deployment (see "Runtime resolution" above):
+
+- **This repo's production deployment** injects `VIDEO_YOUTUBE_REFRESH_TOKEN`
+  directly from the `prod` GitHub environment secret at deploy time (see
+  `.github/workflows/reusable-deploy-azure.yml`,
+  `infra/modules/aca-video.bicep`), and `load_youtube_refresh_token()` returns
+  that env var immediately without ever consulting Key Vault when it is set
+  (`podcaster/youtube_credentials.py`). For this path, update the **GitHub
+  environment secret** and redeploy — updating only a Key Vault secret has
+  **no effect** on the running app and leaves the old token active. See
+  `docs/youtube-oauth-setup.md` for the exact steps.
+- If a deployment instead relies on the direct Key Vault runtime resolution
+  (`VIDEO_YOUTUBE_KEYVAULT_URL` set and no `VIDEO_YOUTUBE_REFRESH_TOKEN` env
+  var injected), update the Key Vault secret — no app restart needed, since
+  the token is read at runtime.
 
 ## Acceptance mapping
 
