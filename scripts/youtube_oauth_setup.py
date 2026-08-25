@@ -16,8 +16,10 @@ refresh token minted with the narrower ``youtube.upload`` scope will upload
 fine but every one of those other calls returns HTTP 403
 ``insufficientPermissions`` (#649). Scopes cannot be widened in place — re-run
 this script to mint a new token, then revoke only the *old* token value via
-Google's revocation endpoint (``POST https://oauth2.googleapis.com/revoke``
-with ``token=<old-refresh-token>``). Do not revoke via
+Google's revocation endpoint (``POST https://oauth2.googleapis.com/revoke``),
+passing the token through stdin rather than as a command-line argument so it
+never lands in shell history or a process listing — see
+``docs/youtube-oauth-setup.md`` for the exact command. Do not revoke via
 https://myaccount.google.com/permissions unless decommissioning entirely —
 that page revokes the whole app grant, including the new token, since both
 share the same OAuth client.

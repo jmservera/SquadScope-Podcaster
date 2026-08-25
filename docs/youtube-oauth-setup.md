@@ -81,14 +81,19 @@ python scripts/youtube_oauth_setup.py
 >    fresh grant even if the account previously consented).
 > 2. Replace `VIDEO_YOUTUBE_REFRESH_TOKEN` in Key Vault (#443) with the new
 >    value and confirm the pipeline works with it.
-> 3. Revoke **only the old token value** by POSTing it to Google's revocation
->    endpoint: `curl -X POST https://oauth2.googleapis.com/revoke -d
->    "token=<old-refresh-token>"`. Do **not** use
->    <https://myaccount.google.com/permissions> for this — that page revokes
->    the app's *entire* grant for the account, which would also invalidate the
->    new token you just stored, since both share the same OAuth client. Only
->    use the account permissions page if you are fully decommissioning the
->    integration.
+> 3. Revoke **only the old token value** via Google's revocation endpoint,
+>    passing the token through stdin so it never appears in shell history or
+>    a process listing:
+>    ```bash
+>    read -rs -p "Old refresh token to revoke: " OLD_REFRESH_TOKEN; echo
+>    curl -s -X POST https://oauth2.googleapis.com/revoke \
+>      --data-urlencode token@- <<< "$OLD_REFRESH_TOKEN"
+>    ```
+>    Do **not** use <https://myaccount.google.com/permissions> for this — that
+>    page revokes the app's *entire* grant for the account, which would also
+>    invalidate the new token you just stored, since both share the same
+>    OAuth client. Only use the account permissions page if you are fully
+>    decommissioning the integration.
 
 The script:
 
@@ -117,8 +122,11 @@ The refresh token is a durable credential. Store it in **Azure Key Vault** and
 expose it to the pipeline as `VIDEO_YOUTUBE_REFRESH_TOKEN` (see #443). Never
 commit, log, or paste it into chat/issues.
 
-The distribution path then exchanges it for short-lived access tokens at upload
-time — see `podcaster/video/distribution.py` (`_get_youtube_access_token`).
+The distribution path exchanges it for short-lived access tokens at upload,
+read-back verification, and playlist-management time — see
+`podcaster/video/distribution.py` (`_get_youtube_access_token`). The same
+refresh token is also used by the promotion step
+(`scripts/youtube_promote.py`) to verify and promote a draft to public.
 
 ---
 
