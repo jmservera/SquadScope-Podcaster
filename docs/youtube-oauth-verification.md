@@ -123,10 +123,12 @@ text (Hermes owns the wording; keep it truthful and specific):
 > Key Vault** and is never logged, committed, or shared. It is exchanged for
 > short-lived access tokens at upload, read-back/update, and
 > playlist-management time. The app stores no YouTube user data beyond the
-> credentials needed for those calls. The read-back, status-update, and
-> playlist operations act on a video ID supplied by the operator at promotion
-> time (`scripts/youtube_promote.py --video-id`); the API scope itself does
-> not restrict which video IDs can be targeted, so operators are expected to
+> credentials needed for those calls. Playlist membership is reconciled
+> automatically during `distribute_video()` against the video ID the pipeline
+> just uploaded, with no operator input. The read-back and status-update calls,
+> by contrast, act on a video ID supplied by the operator at promotion time
+> (`scripts/youtube_promote.py --video-id`); the API scope itself does not
+> restrict which video IDs can be targeted, so operators are expected to
 > supply only IDs this pipeline uploaded, as a workflow-level control rather
 > than an API-enforced one.
 >
@@ -153,7 +155,9 @@ Keep it **under 5 minutes**, screen-recorded, narrated. The reviewer must see th
 3. **What we do with the grant (60s):** Show the pipeline performing an upload
    (`distribute_video()` / `podcaster/video/distribution.py`), the resulting
    **unlisted video** appearing in YouTube Studio, and the video being added to
-   the show playlist (which the owner can later make public manually).
+   the show playlist. Note that visibility later changes to public via the
+   app's own approved promotion step (`scripts/youtube_promote.py`, see
+   section 3 above), not a manual change in YouTube Studio.
 4. **Data handling (30s):** State on-camera that the refresh token is stored in
    Azure Key Vault, never logged, and used only to mint short-lived access
    tokens for upload, read-back/update, and playlist calls. Show the privacy

@@ -31,7 +31,13 @@ distribution pipeline uses.
 2. User type: **External** (unless all uploaders are in a Google Workspace org).
 3. App name, support email, developer contact — use a team-owned address.
 4. **Scopes:** add `https://www.googleapis.com/auth/youtube` (label: *"Manage
-   your YouTube account"*). This is the narrowest single scope that covers
+   your YouTube account"*). If this project's consent screen previously listed
+   `https://www.googleapis.com/auth/youtube.upload` from an earlier setup,
+   **remove that entry** — the verification runbook
+   (`docs/youtube-oauth-verification.md`) requires the consent screen to list
+   the `youtube` scope only, and leaving both configured is redundant since
+   `youtube` is a superset. `https://www.googleapis.com/auth/youtube` is the
+   narrowest single scope that covers
    every call this app makes: `videos.insert` (upload), `videos.list`
    (read-back verification of the uploaded video's status/metadata),
    `videos.update` (`part=status` — promoting an approved draft to public or
@@ -86,9 +92,13 @@ python scripts/youtube_oauth_setup.py
 >    a process listing:
 >    ```bash
 >    read -rs -p "Old refresh token to revoke: " OLD_REFRESH_TOKEN; echo
->    curl -s -X POST https://oauth2.googleapis.com/revoke \
->      --data-urlencode token@- <<< "$OLD_REFRESH_TOKEN"
+>    printf '%s' "$OLD_REFRESH_TOKEN" | curl -s -X POST \
+>      https://oauth2.googleapis.com/revoke --data-urlencode token@-
 >    ```
+>    Use `printf`, not a `<<<` here-string — a here-string appends a trailing
+>    newline to stdin, and `--data-urlencode token@-` would send that newline
+>    as part of the token, silently sending the wrong value and failing to
+>    revoke the old credential.
 >    Do **not** use <https://myaccount.google.com/permissions> for this — that
 >    page revokes the app's *entire* grant for the account, which would also
 >    invalidate the new token you just stored, since both share the same
