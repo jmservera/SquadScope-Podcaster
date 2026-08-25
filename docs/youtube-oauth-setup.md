@@ -32,14 +32,15 @@ distribution pipeline uses.
 3. App name, support email, developer contact — use a team-owned address.
 4. **Scopes:** add `https://www.googleapis.com/auth/youtube` (label: *"Manage
    your YouTube account"*). This is the narrowest single scope that covers
-   every call this app makes: `videos.insert` (upload), `videos.list`/
-   `videos.update` (read-back and metadata verification before public
-   promotion), and `playlistItems.list`/`playlistItems.insert` (show playlist
-   management). `youtube.upload` alone only authorizes `videos.insert` — every
-   other call above 403s with `insufficientPermissions` (#649). Google also
-   accepts `youtube.force-ssl` for the same operations, but this app
-   standardizes on the `youtube` scope. Do **not** add `youtubepartner`; it is
-   for content-partner asset management the app does not do.
+   every call this app makes: `videos.insert` (upload), `videos.list`
+   (read-back verification of the uploaded video's status/metadata),
+   `videos.update` (`part=status` — promoting an approved draft to public or
+   scheduling a future publish), and `playlistItems.list`/`playlistItems.insert`
+   (show playlist management). `youtube.upload` alone only authorizes
+   `videos.insert` — every other call above 403s with `insufficientPermissions`
+   (#649). Google also accepts `youtube.force-ssl` for the same operations, but
+   this app standardizes on the `youtube` scope. Do **not** add `youtubepartner`;
+   it is for content-partner asset management the app does not do.
 5. **Test users:** while the app is in *Testing* mode, add the Google account
    that owns the target YouTube channel as a test user. Testing-mode refresh
    tokens expire after 7 days — fine for a spike, but **production needs the app
@@ -79,9 +80,15 @@ python scripts/youtube_oauth_setup.py
 >    scope (the default — `access_type=offline` + `prompt=consent` force a
 >    fresh grant even if the account previously consented).
 > 2. Replace `VIDEO_YOUTUBE_REFRESH_TOKEN` in Key Vault (#443) with the new
->    value.
-> 3. Revoke the old upload-only token at
->    <https://myaccount.google.com/permissions> so it can no longer be used.
+>    value and confirm the pipeline works with it.
+> 3. Revoke **only the old token value** by POSTing it to Google's revocation
+>    endpoint: `curl -X POST https://oauth2.googleapis.com/revoke -d
+>    "token=<old-refresh-token>"`. Do **not** use
+>    <https://myaccount.google.com/permissions> for this — that page revokes
+>    the app's *entire* grant for the account, which would also invalidate the
+>    new token you just stored, since both share the same OAuth client. Only
+>    use the account permissions page if you are fully decommissioning the
+>    integration.
 
 The script:
 
@@ -94,8 +101,9 @@ The script:
 By default the script requests `https://www.googleapis.com/auth/youtube`. Pass
 `--upload-only` to explicitly request the narrower `youtube.upload` scope
 instead — only do this if you are certain the pipeline will never call
-`videos.list`, `videos.update`, or any `playlistItems` endpoint, since that
-token cannot be upgraded later without repeating this whole flow.
+`videos.list` (read-back verification), `videos.update` (public-promotion
+status changes), or any `playlistItems` endpoint, since that token cannot be
+upgraded later without repeating this whole flow.
 
 For piping into a secret store:
 

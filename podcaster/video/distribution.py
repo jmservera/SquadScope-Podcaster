@@ -41,12 +41,11 @@ VIDEO_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-video-queue-v1"
 
 _YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 _YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3/videos"
-# Documentary only — the refresh_token grant carries whatever scope was
-# consented to at mint time (see scripts/youtube_oauth_setup.py); this module
-# does not pass a scope. Canonical scope constant lives in
-# podcaster.youtube_oauth.YOUTUBE_SCOPE (#649): the refresh token backing this
-# pipeline must include playlist + read-back access, not just youtube.upload.
-_YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube"]
+# This module does not pass a scope: the refresh_token grant carries whatever
+# scope was consented to at mint time (see scripts/youtube_oauth_setup.py).
+# Canonical scope constant lives in podcaster.youtube_oauth.YOUTUBE_SCOPE
+# (#649): the refresh token backing this pipeline must include playlist +
+# read-back access, not just youtube.upload.
 _TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
 _OAUTH_IDENTIFIER_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 _TRANSIENT_TRANSPORT_ERRORS = (ConnectionError, TimeoutError, URLError)

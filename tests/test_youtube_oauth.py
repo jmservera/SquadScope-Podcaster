@@ -68,7 +68,14 @@ def test_consent_url_can_still_request_explicit_upload_only_scope():
     assert _query(url)["scope"] == [YOUTUBE_UPLOAD_SCOPE]
 
 
-def test_run_consent_flow_forwards_scope_to_real_build_consent_url(monkeypatch):
+@pytest.mark.parametrize(
+    "requested_scope",
+    [
+        pytest.param(None, id="default-full-scope"),
+        pytest.param(YOUTUBE_UPLOAD_SCOPE, id="explicit-upload-only-scope"),
+    ],
+)
+def test_run_consent_flow_forwards_scope_to_real_build_consent_url(monkeypatch, requested_scope):
     """Focused regression test for the flow boundary itself.
 
     The CLI-level tests (``test_cli_defaults_to_full_manage_scope`` and
@@ -78,9 +85,12 @@ def test_run_consent_flow_forwards_scope_to_real_build_consent_url(monkeypatch):
     inside ``run_consent_flow``. This test spies on the real
     ``build_consent_url`` (still calling through to it, no network) to prove
     ``run_consent_flow`` actually forwards its ``scope`` argument as
-    ``scopes=[scope]``. Dropping that forwarding (falling back to
-    ``build_consent_url``'s own default) would pass every other test in this
-    file but would silently request the wrong scope in production.
+    ``scopes=[scope]``, for both the default full scope (``requested_scope``
+    left unset, so ``run_consent_flow`` uses its own ``YOUTUBE_SCOPE``
+    default) and an explicit narrower scope. Dropping that forwarding
+    (falling back to ``build_consent_url``'s own default) would pass every
+    other test in this file but would silently request the wrong scope in
+    production.
     """
 
     from podcaster.youtube_oauth import TokenResult
@@ -118,14 +128,17 @@ def test_run_consent_flow_forwards_scope_to_real_build_consent_url(monkeypatch):
             refresh_token="1//rt",
             access_token="at",
             expires_in=3599,
-            scope=YOUTUBE_UPLOAD_SCOPE,
+            scope=requested_scope or YOUTUBE_SCOPE,
             token_type="Bearer",
         ),
     )
 
-    result = cli.run_consent_flow(CLIENT, open_browser=False, scope=YOUTUBE_UPLOAD_SCOPE)
+    kwargs = {"open_browser": False}
+    if requested_scope is not None:
+        kwargs["scope"] = requested_scope
+    result = cli.run_consent_flow(CLIENT, **kwargs)
 
-    assert captured["scopes"] == [YOUTUBE_UPLOAD_SCOPE]
+    assert captured["scopes"] == [requested_scope or YOUTUBE_SCOPE]
     assert result.refresh_token == "1//rt"
 
 

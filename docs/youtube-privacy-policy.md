@@ -26,8 +26,9 @@ The app generates a weekly, AI-voiced technology-news podcast and an accompanyin
 video, and — after an editorial review gate — uploads the finished video to the
 authorizing user's own YouTube channel as an **unlisted video**. After upload,
 the app reads the video back to verify it processed correctly, adds it to the
-show's YouTube playlist, and can change its privacy status or schedule it for
-public release after approval.
+show's YouTube playlist, and — once a human approves — can change its
+privacy status to public or schedule it for public release, leaving unapproved
+videos for the owner to review and promote manually.
 
 ## Google user data we access
 
@@ -38,9 +39,13 @@ public release after approval.
 - **What that allows and what we use it for:**
   - **Upload** (`videos.insert`): publish the generated video to the
     authorizing user's channel as unlisted.
-  - **Read-back and visibility update** (`videos.list`, `videos.update`):
-    confirm the upload processed successfully and, after approval, change its
-    privacy status to public or schedule it for public release.
+  - **Read-back verification** (`videos.list`): confirm the upload processed
+    successfully and check its current status/metadata before the user
+    promotes it to public.
+  - **Publish-status update** (`videos.update`, status only): after approval,
+    change the video's privacy status to public or schedule a future public
+    release. This does not edit the video's title, description, or file
+    content.
   - **Playlist membership** (`playlistItems.list`, `playlistItems.insert`):
     check and add the uploaded video to the show's existing playlist so it
     appears alongside prior episodes.

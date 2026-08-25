@@ -19,14 +19,16 @@ import json
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
-# The app uploads videos AND reads/updates them back (videos.list,
-# videos.update) AND manages the show playlist (playlistItems.list/insert) for
-# read-back verification and playlist promotion (#649). `youtube.upload` only
-# authorizes videos.insert — every other call gets a 403 insufficientPermissions
-# even though the token looks valid. `https://www.googleapis.com/auth/youtube`
-# ("Manage your YouTube account") is the single scope that covers all of
-# videos.insert/list/update and playlistItems.list/insert, so it replaces
-# (rather than adds to) youtube.upload — requesting both would be redundant.
+# The app uploads videos (videos.insert), reads them back to verify
+# status/metadata (videos.list), updates their publish status to promote an
+# approved draft to public or schedule a future publish (videos.update,
+# part=status), and manages the show playlist (playlistItems.list/insert)
+# (#649). `youtube.upload` only authorizes videos.insert — every other call
+# gets a 403 insufficientPermissions even though the token looks valid.
+# `https://www.googleapis.com/auth/youtube` ("Manage your YouTube account") is
+# the single scope that covers all of videos.insert/list/update and
+# playlistItems.list/insert, so it replaces (rather than adds to)
+# youtube.upload — requesting both would be redundant.
 # `youtube.force-ssl` grants the same operations and is an equally valid
 # choice per Google's docs; we standardize on `youtube` to match the scope
 # documented on this app's OAuth consent screen and verification runbook

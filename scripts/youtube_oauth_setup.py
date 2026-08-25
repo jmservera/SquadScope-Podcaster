@@ -8,13 +8,19 @@ the resulting refresh token for secure storage (Azure Key Vault, #443).
 
 By default this requests ``https://www.googleapis.com/auth/youtube`` (see
 ``podcaster.youtube_oauth.YOUTUBE_SCOPE``), because the distribution pipeline
-needs more than upload: it reads videos back (videos.list), updates them
-(videos.update), and manages the show playlist (playlistItems.list/insert)
-for playlist promotion and public-release verification. A refresh token
-minted with the narrower ``youtube.upload`` scope will upload fine but every
-one of those other calls returns HTTP 403 ``insufficientPermissions`` (#649).
-Scopes cannot be widened in place — re-run this script and revoke any old
-upload-only refresh token (https://myaccount.google.com/permissions).
+needs more than upload: it reads videos back (``videos.list``) to verify
+status/metadata, updates their publish status (``videos.update``,
+``part=status``) to promote an approved draft to public or schedule a future
+publish, and manages the show playlist (``playlistItems.list``/``insert``). A
+refresh token minted with the narrower ``youtube.upload`` scope will upload
+fine but every one of those other calls returns HTTP 403
+``insufficientPermissions`` (#649). Scopes cannot be widened in place — re-run
+this script to mint a new token, then revoke only the *old* token value via
+Google's revocation endpoint (``POST https://oauth2.googleapis.com/revoke``
+with ``token=<old-refresh-token>``). Do not revoke via
+https://myaccount.google.com/permissions unless decommissioning entirely —
+that page revokes the whole app grant, including the new token, since both
+share the same OAuth client.
 
 It depends only on the Python standard library and ``podcaster.youtube_oauth``
 so it can run anywhere without extra packages.
@@ -156,9 +162,10 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Request the narrower youtube.upload scope instead of the default "
             f"({YOUTUBE_SCOPE}). Videos can be uploaded, but playlist "
-            "management and read-back/update calls (videos.list, videos.update, "
-            "playlistItems.list/insert) will fail with 403 insufficientPermissions. "
-            "Only use this if the pipeline genuinely does not need those calls."
+            "management, read-back verification (videos.list), and status "
+            "updates (videos.update) that promote a draft to public will fail "
+            "with 403 insufficientPermissions. Only use this if the pipeline "
+            "genuinely does not need those calls."
         ),
     )
     args = parser.parse_args(argv)

@@ -31,8 +31,9 @@ request a quota increase.
 > concluding that an audit is not needed.
 
 The app was originally scoped to `youtube.upload` only, but that was
-insufficient: it also needs `videos.list`/`videos.update` (read-back and
-metadata verification before public promotion) and
+insufficient: it also needs `videos.list` (read-back verification of the
+uploaded video before public promotion), `videos.update` (`part=status` —
+promoting an approved draft to public or scheduling a future publish), and
 `playlistItems.list`/`playlistItems.insert` (show playlist management), which
 `youtube.upload` does not grant (#649). `https://www.googleapis.com/auth/youtube`
 is the **single narrowest scope that covers all of these operations** —
@@ -103,8 +104,9 @@ text (Hermes owns the wording; keep it truthful and specific):
 > the owner to review and publish (change visibility to public) manually.
 >
 > **Why this scope:** `youtube` is the narrowest single scope that covers every
-> operation the app performs: uploading (`videos.insert`), verifying/updating
-> the uploaded video (`videos.list`, `videos.update`), and managing the show
+> operation the app performs: uploading (`videos.insert`), verifying the
+> upload (`videos.list`), promoting an approved draft to public or scheduling
+> a future publish (`videos.update`), and managing the show
 > playlist (`playlistItems.list`, `playlistItems.insert`). `youtube.upload`
 > alone only covers uploads. The app does not manage subscriptions, comments,
 > ratings, or any other channel data, and does not need `youtubepartner`.
