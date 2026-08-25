@@ -2,10 +2,30 @@
 
 The YouTube uploader authenticates with a long-lived OAuth2 **refresh token**
 that it exchanges for short-lived access tokens on every run. This token is
-security-critical and is stored in **Azure Key Vault** — the same posture as the
-Spotify `SP_DC`/`SP_KEY` cookies — retrieved at runtime, and never logged.
+security-critical, is held as an **encrypted deployment secret** — the same
+posture as the Spotify `SP_DC`/`SP_KEY` cookies — and is never logged.
 
-## Storage
+Two storage/resolution paths are supported (see "Runtime resolution" below):
+
+- **This repo's production deployment (current default):** the token is
+  stored as the `prod` GitHub Actions environment secret
+  `VIDEO_YOUTUBE_REFRESH_TOKEN` and injected into the running Azure Container
+  App as a Container Apps secret at deploy time (see
+  `.github/workflows/reusable-deploy-azure.yml`,
+  `infra/modules/aca-video.bicep`, `docs/youtube-oauth-setup.md`). No Azure
+  Key Vault call happens at runtime for this path.
+- **Direct Key Vault resolution (alternate, not currently wired in this
+  repo's deploy workflow):** an operator configures
+  `VIDEO_YOUTUBE_KEYVAULT_URL` and omits the direct env var injection, and the
+  app fetches the secret from Key Vault at runtime via managed identity.
+
+## Storage (direct Key Vault deployments only)
+
+The command below applies to a deployment using the direct Key Vault
+resolution path above. It has no effect on this repo's current production
+deployment, which reads the token from the injected
+`VIDEO_YOUTUBE_REFRESH_TOKEN` env var first and never reaches this Key Vault
+lookup while that env var is set (see "Runtime resolution").
 
 ```bash
 az keyvault secret set \
@@ -76,6 +96,9 @@ deployment (see "Runtime resolution" above):
 
 ## Acceptance mapping
 
-- ✅ Refresh token retrieved from Key Vault at runtime; never logged.
+- ✅ Refresh token held as an encrypted deployment secret (GitHub environment
+  secret injected into ACA for this repo's production deployment, or Key
+  Vault for deployments that opt into direct runtime resolution); never
+  logged.
 - ✅ Access token auto-refreshes without manual steps.
 - ✅ Revoked/expired token triggers a clear re-auth alert.

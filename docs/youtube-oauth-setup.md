@@ -150,9 +150,17 @@ python scripts/youtube_oauth_setup.py --json | jq -r .refresh_token
 
 ## 7. Store the refresh token securely (→ #443)
 
-The refresh token is a durable credential. Store it in **Azure Key Vault** and
-expose it to the pipeline as `VIDEO_YOUTUBE_REFRESH_TOKEN` (see #443). Never
-commit, log, or paste it into chat/issues.
+The refresh token is a durable credential; never commit, log, or paste it into
+chat/issues. Store it as `VIDEO_YOUTUBE_REFRESH_TOKEN` so the pipeline can read
+it (see #443 and `docs/youtube-token-storage.md` for the full picture):
+
+- **This repo's production deployment:** set it as the `prod` GitHub
+  environment secret and redeploy — the deploy workflow injects it as an
+  Azure Container Apps secret (see steps 1–2 above).
+- **A deployment using direct Key Vault resolution instead:** store it in
+  Azure Key Vault and set `VIDEO_YOUTUBE_KEYVAULT_URL` (see
+  `docs/youtube-token-storage.md`); do not also inject the env var directly,
+  since that takes precedence and would bypass the Key Vault read.
 
 The distribution path exchanges it for short-lived access tokens at upload,
 read-back verification, and playlist-management time — see
@@ -173,11 +181,14 @@ refresh token is also used by the promotion step
 | Client type | Desktop app (loopback redirect) |
 | `VIDEO_YOUTUBE_CLIENT_ID` | OAuth2 desktop client id |
 | `VIDEO_YOUTUBE_CLIENT_SECRET` | OAuth2 desktop client secret |
-| `VIDEO_YOUTUBE_REFRESH_TOKEN` | Minted via step 6; stored in Key Vault (#443) |
+| `VIDEO_YOUTUBE_REFRESH_TOKEN` | Minted via step 6; stored as the `prod` GitHub environment secret for this repo's production deployment, or in Key Vault for a direct-Key-Vault deployment (see `docs/youtube-token-storage.md`) |
 
 ## Security notes (Hermes)
 
-- Refresh token = long-lived secret → Key Vault only (#443), never env-committed.
+- Refresh token = long-lived secret → held as an encrypted deployment secret
+  (GitHub environment secret + ACA for this repo's production deployment, or
+  Key Vault for a direct-Key-Vault deployment — see #443 and
+  `docs/youtube-token-storage.md`), never env-committed.
 - Scope is `youtube` (not `youtubepartner`) — the narrowest single scope that
   still covers upload, read-back/update, and playlist management; no broader
   grants. Google classifies `youtube` the same as `youtube.upload` — a

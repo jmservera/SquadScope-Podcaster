@@ -164,10 +164,12 @@ Keep it **under 5 minutes**, screen-recorded, narrated. The reviewer must see th
    the show playlist. Note that visibility later changes to public via the
    app's own approved promotion step (`scripts/youtube_promote.py`, see
    section 3 above), not a manual change in YouTube Studio.
-4. **Data handling (30s):** State on-camera that the refresh token is stored in
-   Azure Key Vault, never logged, and used only to mint short-lived access
-   tokens for upload, read-back/update, and playlist calls. Show the privacy
-   policy page briefly.
+4. **Data handling (30s):** State on-camera that the refresh token is held as
+   an encrypted deployment secret (this deployment's `prod` GitHub
+   environment secret, injected into the running Azure Container App — see
+   `docs/youtube-token-storage.md`), never logged, and used only to mint
+   short-lived access tokens for upload, read-back/update, and playlist
+   calls. Show the privacy policy page briefly.
 5. **Close (15s):** Reiterate single scope, single channel, no third-party
    data.
 
@@ -217,7 +219,10 @@ Track the request to closure. Update this table (or the linked issue) as it move
 ## 7. After verification
 
 - **Re-test consent** in an incognito session: the unverified-app warning must be
-  gone. If you re-mint the refresh token, store it in Key Vault (#443).
+  gone. If you re-mint the refresh token, store it per
+  `docs/youtube-token-storage.md` (the `prod` GitHub environment secret for
+  this repo's production deployment, or Key Vault for a direct-Key-Vault
+  deployment).
 - **Quota increase:** verification unblocks the path to request more than the
   default 10,000 units/day. The default allows ~6 resumable uploads/day; the
   multi-language fan-out (#439) and quota monitoring (#447) determine whether to
@@ -244,7 +249,8 @@ Track the request to closure. Update this table (or the linked issue) as it move
   read-back/update, and playlist management (#649); keeps us out of
   restricted-scope security assessment and limits blast radius versus
   requesting multiple/broader scopes.
-- Refresh token: Key Vault only (#443); never logged, committed, or pasted.
+- Refresh token: held as an encrypted deployment secret only (#443; see
+  `docs/youtube-token-storage.md`); never logged, committed, or pasted.
 - Privacy policy and Limited-Use compliance reviewed before submission.
 - Demo video must not expose secrets — never show the refresh/access token or
   client secret on screen.

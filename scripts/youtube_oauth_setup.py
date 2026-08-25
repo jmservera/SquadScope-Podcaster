@@ -4,7 +4,10 @@
 Service accounts cannot upload to YouTube, so an operator must grant user
 consent once. This script runs the installed-app (loopback) authorization-code
 flow against the OAuth2 *Desktop* client created in Google Cloud, then prints
-the resulting refresh token for secure storage (Azure Key Vault, #443).
+the resulting refresh token for secure storage (see
+``docs/youtube-token-storage.md`` — the `prod` GitHub environment secret for
+this repo's production deployment, or Azure Key Vault for a direct-Key-Vault
+deployment; #443).
 
 By default this requests ``https://www.googleapis.com/auth/youtube`` (see
 ``podcaster.youtube_oauth.YOUTUBE_SCOPE``), because the distribution pipeline
