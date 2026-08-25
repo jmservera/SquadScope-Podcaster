@@ -99,9 +99,13 @@ text (Hermes owns the wording; keep it truthful and specific):
 > **What the app does:** SquadScope/Claracle automatically generates a weekly,
 > AI-voiced tech news podcast and an accompanying video. After the episode is
 > produced and passes an editorial review gate, the app uploads the finished
-> video to the channel owner's own YouTube channel as an **unlisted video**,
-> verifies the upload and adds it to the show's playlist, and leaves it for
-> the owner to review and publish (change visibility to public) manually.
+> video to the channel owner's own YouTube channel as an **unlisted video**
+> and adds it to the show's playlist. A human reviewer then verifies the
+> draft and, only after their explicit approval, runs the promotion step
+> (`scripts/youtube_promote.py --approved-by <reviewer>`) that calls the
+> YouTube API to change the video's visibility to public or schedule a future
+> publish — the API call itself is made by the app, gated on that human
+> approval, not a manual visibility change in YouTube Studio.
 >
 > **Why this scope:** `youtube` is the narrowest single scope that covers every
 > operation the app performs: uploading (`videos.insert`), verifying the
@@ -119,8 +123,12 @@ text (Hermes owns the wording; keep it truthful and specific):
 > Key Vault** and is never logged, committed, or shared. It is exchanged for
 > short-lived access tokens at upload, read-back/update, and
 > playlist-management time. The app stores no YouTube user data beyond the
-> credentials needed for those calls, and uploads/reads/updates only content
-> the app itself generated.
+> credentials needed for those calls. The read-back, status-update, and
+> playlist operations act on a video ID supplied by the operator at promotion
+> time (`scripts/youtube_promote.py --video-id`); the API scope itself does
+> not restrict which video IDs can be targeted, so operators are expected to
+> supply only IDs this pipeline uploaded, as a workflow-level control rather
+> than an API-enforced one.
 >
 > **Compliance:** Use complies with the YouTube API Services Terms of Service and
 > the Google API Services User Data Policy, including Limited Use.

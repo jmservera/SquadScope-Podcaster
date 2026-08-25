@@ -33,9 +33,13 @@ videos for the owner to review and promote manually.
 ## Google user data we access
 
 - **Scope:** `https://www.googleapis.com/auth/youtube` (labeled "Manage your
-  YouTube account" on Google's consent screen). This is the narrowest single
-  scope covering every operation below; the app does not request
-  `youtubepartner` or any other YouTube/Google scope.
+  YouTube account" on Google's consent screen) is the default, production
+  scope and covers every operation below. Operators may instead run the setup
+  script in an explicit narrower mode that requests only
+  `https://www.googleapis.com/auth/youtube.upload` for deployments that never
+  need read-back, status-update, or playlist calls (see
+  `docs/youtube-oauth-setup.md`). Neither mode requests `youtubepartner` or
+  any other YouTube/Google scope.
 - **What that allows and what we use it for:**
   - **Upload** (`videos.insert`): publish the generated video to the
     authorizing user's channel as unlisted.
