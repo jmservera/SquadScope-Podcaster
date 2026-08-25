@@ -166,11 +166,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Request the narrower youtube.upload scope instead of the default "
-            f"({YOUTUBE_SCOPE}). Videos can be uploaded, but playlist "
-            "management, read-back verification (videos.list), and status "
-            "updates (videos.update) that promote a draft to public will fail "
-            "with 403 insufficientPermissions. Only use this if the pipeline "
-            "genuinely does not need those calls."
+            f"({YOUTUBE_SCOPE}). Only use this against a separate, "
+            "non-production OAuth client or a testing-mode consent screen "
+            "(see docs/youtube-oauth-setup.md) -- the verified production "
+            "consent screen must list the youtube scope only. Videos can be "
+            "uploaded, but playlist management, read-back verification "
+            "(videos.list), and status updates (videos.update) that promote "
+            "a draft to public will fail with 403 insufficientPermissions."
         ),
     )
     args = parser.parse_args(argv)

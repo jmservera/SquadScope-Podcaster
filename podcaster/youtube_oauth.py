@@ -9,8 +9,12 @@ loopback consent flow lives in ``scripts/youtube_oauth_setup.py``.
 
 The minted refresh token is long-lived and is the credential the distribution
 path (``podcaster/video/distribution.py``) exchanges for short-lived access
-tokens. It MUST be stored as a secret (Azure Key Vault, #443) — never committed,
-logged, or printed beyond the operator's one-time setup run.
+tokens. It MUST be stored as an encrypted secret — see
+``docs/youtube-token-storage.md`` for the two supported paths (this repo's
+production deployment injects it from a GitHub environment secret; a
+deployment can instead opt into resolving it directly from Azure Key Vault at
+runtime) — never committed, logged, or printed beyond the operator's one-time
+setup run.
 """
 
 from __future__ import annotations

@@ -32,15 +32,17 @@ distribution pipeline uses.
 3. App name, support email, developer contact — use a team-owned address.
 4. **Scopes:** add `https://www.googleapis.com/auth/youtube` (label: *"Manage
    your YouTube account"*). If this project's consent screen previously listed
-   `https://www.googleapis.com/auth/youtube.upload` from an earlier setup and
-   you are running the default (non-`--upload-only`) flow, **remove that
-   entry** — the verification runbook (`docs/youtube-oauth-verification.md`)
-   requires the consent screen to list the `youtube` scope only for that flow,
-   and leaving both configured is redundant since `youtube` is a superset. If
-   you instead need the `--upload-only` mode (see below), **keep**
-   `youtube.upload` configured on the consent screen too — Google rejects an
-   authorization request for a scope that isn't listed there, so removing it
-   would break that mode. Do not request both scopes in the same consent flow.
+   `https://www.googleapis.com/auth/youtube.upload` from an earlier setup,
+   **remove that entry** — the verification runbook
+   (`docs/youtube-oauth-verification.md`) requires the **verified production**
+   consent screen to list the `youtube` scope only, and leaving both
+   configured is redundant since `youtube` is a superset. `--upload-only`
+   (see below) is for a **separate, non-production OAuth client or a
+   testing-mode consent screen that has not gone through Google
+   verification** — do not add `youtube.upload` to the verified production
+   consent screen to support it: Google's sensitive-scope verification covers
+   the specific scope set an app was reviewed with, and adding another
+   sensitive scope to an already-verified app can require re-verification.
    `https://www.googleapis.com/auth/youtube` is the narrowest single scope
    that covers
    every call this app makes: `videos.insert` (upload), `videos.list`
@@ -114,9 +116,14 @@ python scripts/youtube_oauth_setup.py
 >    a process listing:
 >    ```bash
 >    read -rs -p "Old refresh token to revoke: " OLD_REFRESH_TOKEN; echo
->    printf '%s' "$OLD_REFRESH_TOKEN" | curl -s -X POST \
+>    printf '%s' "$OLD_REFRESH_TOKEN" | curl -s --fail-with-body -X POST \
 >      https://oauth2.googleapis.com/revoke --data-urlencode token@-
 >    ```
+>    `--fail-with-body` makes curl exit non-zero on a 4xx/5xx response (while
+>    still printing Google's error body) instead of silently reporting success
+>    for a rejected revocation — plain `-s` alone suppresses the progress
+>    meter but not error visibility, and curl exits `0` on HTTP errors without
+>    it, which could leave the old token active while looking revoked.
 >    Use `printf`, not a `<<<` here-string — a here-string appends a trailing
 >    newline to stdin, and `--data-urlencode token@-` would send that newline
 >    as part of the token, silently sending the wrong value and failing to
@@ -137,10 +144,12 @@ The script:
 
 By default the script requests `https://www.googleapis.com/auth/youtube`. Pass
 `--upload-only` to explicitly request the narrower `youtube.upload` scope
-instead — only do this if you are certain the pipeline will never call
-`videos.list` (read-back verification), `videos.update` (public-promotion
-status changes), or any `playlistItems` endpoint, since that token cannot be
-upgraded later without repeating this whole flow.
+instead — only do this against a **separate, non-production OAuth client or a
+testing-mode consent screen** (see step 4 above for why), and only if you are
+certain the pipeline will never call `videos.list` (read-back verification),
+`videos.update` (public-promotion status changes), or any `playlistItems`
+endpoint, since that token cannot be upgraded later without repeating this
+whole flow.
 
 For piping into a secret store:
 

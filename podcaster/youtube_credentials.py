@@ -2,10 +2,15 @@
 
 The YouTube uploader (#442) authenticates with a long-lived OAuth2 **refresh
 token** that it exchanges for short-lived access tokens on every run. That
-refresh token is security-critical: it must be stored in Azure Key Vault (the
-same posture as the Spotify cookies), retrieved at runtime, never logged, and —
-if Google revokes it (password change, consent withdrawal, 6-month inactivity) —
-must raise a clear *re-authenticate* alert instead of silently failing forever.
+refresh token is security-critical: it must be held as an encrypted secret
+(the same posture as the Spotify cookies) — see ``docs/youtube-token-storage.md``
+for the two supported paths (this repo's production deployment injects it from
+a GitHub environment secret; a deployment can instead opt into resolving it
+directly from Azure Key Vault at runtime, which is what this module's
+:class:`KeyVaultSecretLoader` supports) — retrieved at runtime, never logged,
+and — if Google revokes it (password change, consent withdrawal, 6-month
+inactivity) — must raise a clear *re-authenticate* alert instead of silently
+failing forever.
 
 This module provides:
 
