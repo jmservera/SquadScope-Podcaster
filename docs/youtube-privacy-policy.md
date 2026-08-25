@@ -55,17 +55,18 @@ videos for the owner to review and promote manually.
     appears alongside prior episodes.
   - The app does **not** manage subscriptions, comments, ratings, channel
     settings, or any other account data. The YouTube API scope technically
-    permits access to other channel videos, but this app's workflow is limited
-    to generated video IDs from this pipeline and the show's configured
+    permits access to other channel videos, but as a workflow-level control
+    (not an API-enforced restriction) the app is only operated against
+    generated video IDs from this pipeline and the show's configured
     playlist; it does not enumerate unrelated videos.
 - **Whose data:** only the channel owned by the single consenting Google account.
   The app does not collect or process data about any other end users.
 
 ## How we use and store data
 
-- The OAuth **refresh token** issued at consent is stored **encrypted in Azure
-  Key Vault**. It is never written to logs, source control, analytics, or shared
-  with third parties.
+- The OAuth **refresh token** issued at consent is held as an **encrypted
+  deployment secret** and injected into the running application. It is never
+  written to logs, source control, analytics, or shared with third parties.
 - The refresh token is exchanged for **short-lived access tokens** at upload,
   read-back/update, and playlist-management time. Access tokens are held in
   memory for the duration of each call and are not persisted.
@@ -94,7 +95,8 @@ videos for the owner to review and promote manually.
 ## Data retention and revocation
 
 - The refresh token is retained only as long as needed to operate the uploader
-  and is deleted from Key Vault when the integration is decommissioned.
+  and is deleted from the deployment's secret store when the integration is
+  decommissioned.
 - You can revoke the app's access at any time at
   <https://myaccount.google.com/permissions>; revocation invalidates the stored
   refresh token and stops all uploads, read-back/update calls, and playlist
@@ -107,7 +109,7 @@ videos for the owner to review and promote manually.
   read-back/update, and playlist management. The app does not request
   `youtubepartner` or manage subscriptions, comments, ratings, or other
   channel/account settings.
-- Secrets stored in Azure Key Vault; never logged or committed.
+- Secrets held as encrypted deployment secrets; never logged or committed.
 - OAuth `state` parameter validated to prevent CSRF during the consent flow.
 - Access limited to the operating team.
 

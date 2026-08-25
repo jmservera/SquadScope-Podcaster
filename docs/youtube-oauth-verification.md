@@ -120,8 +120,13 @@ text (Hermes owns the wording; keep it truthful and specific):
 > consenting Google account. No third-party end-user data is accessed. There is
 > exactly one consenting account (the show's own channel owner).
 >
-> **Data handling:** The OAuth **refresh token** is stored encrypted in **Azure
-> Key Vault** and is never logged, committed, or shared. It is exchanged for
+> **Data handling:** The OAuth **refresh token** is held as an encrypted
+> deployment secret and injected into the running application; it is never
+> logged, committed, or shared. For this repository's current production
+> deployment that secret is a GitHub Actions environment secret consumed at
+> deploy time (see `docs/youtube-oauth-setup.md`); some deployments may
+> instead resolve it directly from Azure Key Vault at runtime
+> (`docs/youtube-token-storage.md`). Either way it is exchanged for
 > short-lived access tokens at upload, read-back/update, and
 > playlist-management time. The app stores no YouTube user data beyond the
 > credentials needed for those calls. Playlist membership is reconciled

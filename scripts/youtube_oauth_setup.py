@@ -190,16 +190,20 @@ def main(argv: list[str] | None = None) -> int:
     token = run_consent_flow(client, open_browser=not args.no_browser, scope=scope)
 
     if args.json:
-        # Only the refresh token is emitted for piping into Key Vault (#443).
+        # Only the refresh token is emitted for piping into a secret store (#443).
         print(json.dumps({"refresh_token": token.refresh_token, "scope": token.scope}))
     else:
-        print("\n✅ Refresh token obtained (store this as a secret — Key Vault #443):\n")
+        print("\n✅ Refresh token obtained (store this in a secret manager):\n")
         print(token.refresh_token)
         print(f"\nScope granted: {token.scope}")
         print(f"Access token (short-lived, redacted): {redact_secret(token.access_token)}")
         print(
-            "\nNext: store the refresh token as VIDEO_YOUTUBE_REFRESH_TOKEN in Azure "
-            "Key Vault. Never commit or log it."
+            "\nNext: store the refresh token as VIDEO_YOUTUBE_REFRESH_TOKEN — for "
+            "this repo's production deployment, set it as the `prod` GitHub "
+            "environment secret and redeploy (see docs/youtube-oauth-setup.md); "
+            "for a deployment that resolves it directly from Azure Key Vault at "
+            "runtime instead, store it there (see docs/youtube-token-storage.md). "
+            "Never commit or log it."
         )
     return 0
 
