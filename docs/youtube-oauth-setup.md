@@ -32,12 +32,17 @@ distribution pipeline uses.
 3. App name, support email, developer contact — use a team-owned address.
 4. **Scopes:** add `https://www.googleapis.com/auth/youtube` (label: *"Manage
    your YouTube account"*). If this project's consent screen previously listed
-   `https://www.googleapis.com/auth/youtube.upload` from an earlier setup,
-   **remove that entry** — the verification runbook
-   (`docs/youtube-oauth-verification.md`) requires the consent screen to list
-   the `youtube` scope only, and leaving both configured is redundant since
-   `youtube` is a superset. `https://www.googleapis.com/auth/youtube` is the
-   narrowest single scope that covers
+   `https://www.googleapis.com/auth/youtube.upload` from an earlier setup and
+   you are running the default (non-`--upload-only`) flow, **remove that
+   entry** — the verification runbook (`docs/youtube-oauth-verification.md`)
+   requires the consent screen to list the `youtube` scope only for that flow,
+   and leaving both configured is redundant since `youtube` is a superset. If
+   you instead need the `--upload-only` mode (see below), **keep**
+   `youtube.upload` configured on the consent screen too — Google rejects an
+   authorization request for a scope that isn't listed there, so removing it
+   would break that mode. Do not request both scopes in the same consent flow.
+   `https://www.googleapis.com/auth/youtube` is the narrowest single scope
+   that covers
    every call this app makes: `videos.insert` (upload), `videos.list`
    (read-back verification of the uploaded video's status/metadata),
    `videos.update` (`part=status` — promoting an approved draft to public or
@@ -93,9 +98,15 @@ python scripts/youtube_oauth_setup.py
 >    runtime — the workflow captures the GitHub secret at deploy time and
 >    injects it as an Azure Container Apps secret (see
 >    `infra/modules/aca-video.bicep`). Updating a Key Vault secret directly
->    has no effect on the running app unless `VIDEO_YOUTUBE_KEYVAULT_URL` is
->    also configured for it (not currently wired in this repo's deploy
->    workflow), so it alone will not replace the token production uses.
+>    has no effect on the running app: `load_youtube_refresh_token()` checks
+>    the injected `VIDEO_YOUTUBE_REFRESH_TOKEN` env var **first** and returns
+>    it immediately if set, only falling back to a live Key Vault read when
+>    that env var is empty
+>    (`podcaster/youtube_credentials.py:load_youtube_refresh_token`). Since
+>    this deployment always injects that env var, switching to direct Key
+>    Vault resolution would additionally require removing the injected secret
+>    (or repointing its Container Apps secret to a Key Vault reference) as
+>    well as setting `VIDEO_YOUTUBE_KEYVAULT_URL` — not just the latter.
 >    Confirm the pipeline works with the new token before revoking the old
 >    one.
 > 3. Revoke **only the old token value** via Google's revocation endpoint,
