@@ -68,6 +68,67 @@ def test_consent_url_can_still_request_explicit_upload_only_scope():
     assert _query(url)["scope"] == [YOUTUBE_UPLOAD_SCOPE]
 
 
+def test_run_consent_flow_forwards_scope_to_real_build_consent_url(monkeypatch):
+    """Focused regression test for the flow boundary itself.
+
+    The CLI-level tests (``test_cli_defaults_to_full_manage_scope`` and
+    ``test_cli_upload_only_flag_requests_narrow_scope_explicitly``) mock
+    ``run_consent_flow`` entirely, so they only prove the CLI *selects* a
+    scope string — they never exercise the real ``build_consent_url`` call
+    inside ``run_consent_flow``. This test spies on the real
+    ``build_consent_url`` (still calling through to it, no network) to prove
+    ``run_consent_flow`` actually forwards its ``scope`` argument as
+    ``scopes=[scope]``. Dropping that forwarding (falling back to
+    ``build_consent_url``'s own default) would pass every other test in this
+    file but would silently request the wrong scope in production.
+    """
+
+    from podcaster.youtube_oauth import TokenResult
+
+    real_build_consent_url = cli.build_consent_url
+    captured: dict[str, object] = {}
+
+    def spy_build_consent_url(client, redirect_uri, **kwargs):
+        captured["scopes"] = kwargs.get("scopes")
+        captured["state"] = kwargs.get("state")
+        return real_build_consent_url(client, redirect_uri, **kwargs)
+
+    monkeypatch.setattr(cli, "build_consent_url", spy_build_consent_url)
+
+    class _FakeServer:
+        """Stand-in for http.server.HTTPServer: no socket, no network."""
+
+        def __init__(self, address, handler_cls):
+            self.server_address = (address[0], 0)
+            self._handler_cls = handler_cls
+
+        def handle_request(self):
+            # Simulate the loopback redirect arriving with a matching state,
+            # captured from the real build_consent_url call above.
+            self._handler_cls.captured = {"code": ["auth-code"], "state": [captured["state"]]}
+
+        def server_close(self):
+            return None
+
+    monkeypatch.setattr(cli, "HTTPServer", _FakeServer)
+    monkeypatch.setattr(
+        cli,
+        "_exchange_code",
+        lambda client, code, redirect_uri: TokenResult(
+            refresh_token="1//rt",
+            access_token="at",
+            expires_in=3599,
+            scope=YOUTUBE_UPLOAD_SCOPE,
+            token_type="Bearer",
+        ),
+    )
+
+    result = cli.run_consent_flow(CLIENT, open_browser=False, scope=YOUTUBE_UPLOAD_SCOPE)
+
+    assert captured["scopes"] == [YOUTUBE_UPLOAD_SCOPE]
+    assert result.refresh_token == "1//rt"
+
+
 def test_consent_url_requires_state_and_redirect():
     with pytest.raises(ValueError):
         build_consent_url(CLIENT, "http://127.0.0.1:5000/oauth2callback", state="")

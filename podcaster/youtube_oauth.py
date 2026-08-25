@@ -28,8 +28,11 @@ from urllib.parse import urlencode
 # videos.insert/list/update and playlistItems.list/insert, so it replaces
 # (rather than adds to) youtube.upload — requesting both would be redundant.
 # `youtube.force-ssl` grants the same operations and is an equally valid
-# choice per Google's docs; we standardize on `youtube` since it is the scope
-# this app has documented and requested consent for historically (#441).
+# choice per Google's docs; we standardize on `youtube` to match the scope
+# documented on this app's OAuth consent screen and verification runbook
+# going forward (#649) — the app's original scope (#441) was `youtube.upload`
+# only, which this change replaces because it could not cover read-back or
+# playlist calls.
 # Google classifies both `youtube` and `youtube.upload` as *sensitive* (not
 # *restricted*) scopes, so this does not change OAuth app verification tier —
 # see docs/youtube-oauth-verification.md. Do not request `youtubepartner`;

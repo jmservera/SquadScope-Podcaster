@@ -115,9 +115,10 @@ text (Hermes owns the wording; keep it truthful and specific):
 >
 > **Data handling:** The OAuth **refresh token** is stored encrypted in **Azure
 > Key Vault** and is never logged, committed, or shared. It is exchanged for
-> short-lived access tokens at upload time only. The app stores no YouTube user
-> data beyond the credentials needed to upload, and uploads only content the app
-> itself generated.
+> short-lived access tokens at upload, read-back/update, and
+> playlist-management time. The app stores no YouTube user data beyond the
+> credentials needed for those calls, and uploads/reads/updates only content
+> the app itself generated.
 >
 > **Compliance:** Use complies with the YouTube API Services Terms of Service and
 > the Google API Services User Data Policy, including Limited Use.
@@ -144,8 +145,9 @@ Keep it **under 5 minutes**, screen-recorded, narrated. The reviewer must see th
    **unlisted video** appearing in YouTube Studio, and the video being added to
    the show playlist (which the owner can later make public manually).
 4. **Data handling (30s):** State on-camera that the refresh token is stored in
-   Azure Key Vault, never logged, and used only to mint short-lived upload
-   tokens. Show the privacy policy page briefly.
+   Azure Key Vault, never logged, and used only to mint short-lived access
+   tokens for upload, read-back/update, and playlist calls. Show the privacy
+   policy page briefly.
 5. **Close (15s):** Reiterate single scope, single channel, no third-party
    data.
 
