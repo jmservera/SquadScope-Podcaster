@@ -102,7 +102,8 @@ text (Hermes owns the wording; keep it truthful and specific):
 > video to the channel owner's own YouTube channel as an **unlisted video**
 > and adds it to the show's playlist. A human reviewer then verifies the
 > draft and, only after their explicit approval, runs the promotion step
-> (`scripts/youtube_promote.py --approved-by <reviewer>`) that calls the
+> (`scripts/youtube_promote.py --video-id <id> --approved-by <reviewer>`) that
+> calls the
 > YouTube API to change the video's visibility to public or schedule a future
 > publish — the API call itself is made by the app, gated on that human
 > approval, not a manual visibility change in YouTube Studio.

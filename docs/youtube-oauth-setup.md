@@ -85,8 +85,19 @@ python scripts/youtube_oauth_setup.py
 > 1. Re-run this script to mint a **new** refresh token with the `youtube`
 >    scope (the default — `access_type=offline` + `prompt=consent` force a
 >    fresh grant even if the account previously consented).
-> 2. Replace `VIDEO_YOUTUBE_REFRESH_TOKEN` in Key Vault (#443) with the new
->    value and confirm the pipeline works with it.
+> 2. Update the `VIDEO_YOUTUBE_REFRESH_TOKEN` secret in the `prod` GitHub
+>    environment (repo **Settings → Environments → prod → Secrets**) with the
+>    new value, then re-run the deploy workflow
+>    (`.github/workflows/reusable-deploy-azure.yml`). This repo's production
+>    deployment does **not** read the token live from Azure Key Vault at
+>    runtime — the workflow captures the GitHub secret at deploy time and
+>    injects it as an Azure Container Apps secret (see
+>    `infra/modules/aca-video.bicep`). Updating a Key Vault secret directly
+>    has no effect on the running app unless `VIDEO_YOUTUBE_KEYVAULT_URL` is
+>    also configured for it (not currently wired in this repo's deploy
+>    workflow), so it alone will not replace the token production uses.
+>    Confirm the pipeline works with the new token before revoking the old
+>    one.
 > 3. Revoke **only the old token value** via Google's revocation endpoint,
 >    passing the token through stdin so it never appears in shell history or
 >    a process listing:
