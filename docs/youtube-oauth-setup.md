@@ -30,10 +30,16 @@ distribution pipeline uses.
 1. APIs & Services → **OAuth consent screen**.
 2. User type: **External** (unless all uploaders are in a Google Workspace org).
 3. App name, support email, developer contact — use a team-owned address.
-4. **Scopes:** add only `https://www.googleapis.com/auth/youtube.upload`.
-   Narrow scope eases app verification (#448) and limits blast radius if the
-   token leaks. Do **not** add `youtube` or `youtube.force-ssl` unless a feature
-   requires them.
+4. **Scopes:** add `https://www.googleapis.com/auth/youtube` (label: *"Manage
+   your YouTube account"*). This is the narrowest single scope that covers
+   every call this app makes: `videos.insert` (upload), `videos.list`/
+   `videos.update` (read-back and metadata verification before public
+   promotion), and `playlistItems.list`/`playlistItems.insert` (show playlist
+   management). `youtube.upload` alone only authorizes `videos.insert` — every
+   other call above 403s with `insufficientPermissions` (#649). Google also
+   accepts `youtube.force-ssl` for the same operations, but this app
+   standardizes on the `youtube` scope. Do **not** add `youtubepartner`; it is
+   for content-partner asset management the app does not do.
 5. **Test users:** while the app is in *Testing* mode, add the Google account
    that owns the target YouTube channel as a test user. Testing-mode refresh
    tokens expire after 7 days — fine for a spike, but **production needs the app
@@ -62,6 +68,21 @@ export VIDEO_YOUTUBE_CLIENT_SECRET="<client secret from step 4>"
 python scripts/youtube_oauth_setup.py
 ```
 
+> **Replacing an upload-only token (#649):** OAuth scopes cannot be widened in
+> place — a refresh token minted with `youtube.upload` stays upload-only
+> forever, even if you later change the consent screen's configured scopes.
+> If production is running on such a token (visible as
+> `"scope": "https://www.googleapis.com/auth/youtube.upload"` in the token
+> response, and as 403 `insufficientPermissions` on playlist/read-back calls),
+> you must:
+> 1. Re-run this script to mint a **new** refresh token with the `youtube`
+>    scope (the default — `access_type=offline` + `prompt=consent` force a
+>    fresh grant even if the account previously consented).
+> 2. Replace `VIDEO_YOUTUBE_REFRESH_TOKEN` in Key Vault (#443) with the new
+>    value.
+> 3. Revoke the old upload-only token at
+>    <https://myaccount.google.com/permissions> so it can no longer be used.
+
 The script:
 
 1. Starts a loopback HTTP server on an ephemeral `127.0.0.1` port.
@@ -69,6 +90,12 @@ The script:
    refresh token is always returned) — sign in as the channel owner and approve.
 3. Captures the authorization code on the loopback redirect (validates `state`
    for CSRF), exchanges it for tokens, and prints the **refresh token**.
+
+By default the script requests `https://www.googleapis.com/auth/youtube`. Pass
+`--upload-only` to explicitly request the narrower `youtube.upload` scope
+instead — only do this if you are certain the pipeline will never call
+`videos.list`, `videos.update`, or any `playlistItems` endpoint, since that
+token cannot be upgraded later without repeating this whole flow.
 
 For piping into a secret store:
 
@@ -92,7 +119,7 @@ time — see `podcaster/video/distribution.py` (`_get_youtube_access_token`).
 | Setting | Value |
 | --- | --- |
 | API | YouTube Data API v3 |
-| Scope | `https://www.googleapis.com/auth/youtube.upload` |
+| Scope | `https://www.googleapis.com/auth/youtube` (`--upload-only` opts into `https://www.googleapis.com/auth/youtube.upload`, not recommended) |
 | Auth endpoint | `https://accounts.google.com/o/oauth2/v2/auth` |
 | Token endpoint | `https://oauth2.googleapis.com/token` |
 | Client type | Desktop app (loopback redirect) |
@@ -103,7 +130,11 @@ time — see `podcaster/video/distribution.py` (`_get_youtube_access_token`).
 ## Security notes (Hermes)
 
 - Refresh token = long-lived secret → Key Vault only (#443), never env-committed.
-- Minimal `youtube.upload` scope; no broader grants.
+- Scope is `youtube` (not `youtubepartner`) — the narrowest single scope that
+  still covers upload, read-back/update, and playlist management; no broader
+  grants. Google classifies `youtube` the same as `youtube.upload` — a
+  *sensitive*, not *restricted*, scope (re-confirm current classification in
+  the Google verification flow — see docs/youtube-oauth-verification.md).
 - `state` parameter validated on the redirect to prevent CSRF code injection.
 - Secrets are read from the environment only; the setup script prints the
   refresh token solely to the operator's terminal and redacts the access token.

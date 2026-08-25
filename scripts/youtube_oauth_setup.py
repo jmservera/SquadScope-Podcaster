@@ -6,6 +6,16 @@ consent once. This script runs the installed-app (loopback) authorization-code
 flow against the OAuth2 *Desktop* client created in Google Cloud, then prints
 the resulting refresh token for secure storage (Azure Key Vault, #443).
 
+By default this requests ``https://www.googleapis.com/auth/youtube`` (see
+``podcaster.youtube_oauth.YOUTUBE_SCOPE``), because the distribution pipeline
+needs more than upload: it reads videos back (videos.list), updates them
+(videos.update), and manages the show playlist (playlistItems.list/insert)
+for playlist promotion and public-release verification. A refresh token
+minted with the narrower ``youtube.upload`` scope will upload fine but every
+one of those other calls returns HTTP 403 ``insufficientPermissions`` (#649).
+Scopes cannot be widened in place — re-run this script and revoke any old
+upload-only refresh token (https://myaccount.google.com/permissions).
+
 It depends only on the Python standard library and ``podcaster.youtube_oauth``
 so it can run anywhere without extra packages.
 
@@ -39,6 +49,7 @@ if REPO_ROOT not in sys.path:
 from podcaster.youtube_oauth import (  # noqa: E402
     DEFAULT_REDIRECT_URI,
     TOKEN_ENDPOINT,
+    YOUTUBE_SCOPE,
     YOUTUBE_UPLOAD_SCOPE,
     OAuthClient,
     build_consent_url,
@@ -93,7 +104,13 @@ def _exchange_code(client: OAuthClient, code: str, redirect_uri: str):
     return parse_token_response(body)
 
 
-def run_consent_flow(client: OAuthClient, *, host: str = "127.0.0.1", open_browser: bool = True):
+def run_consent_flow(
+    client: OAuthClient,
+    *,
+    host: str = "127.0.0.1",
+    open_browser: bool = True,
+    scope: str = YOUTUBE_SCOPE,
+):
     """Run the loopback consent flow and return a TokenResult."""
 
     client.require()
@@ -103,10 +120,9 @@ def run_consent_flow(client: OAuthClient, *, host: str = "127.0.0.1", open_brows
     port = server.server_address[1]
     redirect_uri = DEFAULT_REDIRECT_URI.format(port=port)
 
-    consent_url = build_consent_url(
-        client, redirect_uri, scopes=[YOUTUBE_UPLOAD_SCOPE], state=state
-    )
-    print("\nOpen this URL in a browser signed in to the YouTube channel owner:\n", file=sys.stderr)
+    consent_url = build_consent_url(client, redirect_uri, scopes=[scope], state=state)
+    print(f"\nRequesting scope: {scope}\n", file=sys.stderr)
+    print("Open this URL in a browser signed in to the YouTube channel owner:\n", file=sys.stderr)
     print(consent_url + "\n", file=sys.stderr)
     if open_browser:
         try:
@@ -134,6 +150,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit the refresh token as JSON to stdout (for piping into a secret store).",
     )
+    parser.add_argument(
+        "--upload-only",
+        action="store_true",
+        help=(
+            "Request the narrower youtube.upload scope instead of the default "
+            f"({YOUTUBE_SCOPE}). Videos can be uploaded, but playlist "
+            "management and read-back/update calls (videos.list, videos.update, "
+            "playlistItems.list/insert) will fail with 403 insufficientPermissions. "
+            "Only use this if the pipeline genuinely does not need those calls."
+        ),
+    )
     args = parser.parse_args(argv)
 
     missing = missing_client_context()
@@ -150,7 +177,8 @@ def main(argv: list[str] | None = None) -> int:
         client_secret=os.environ[_ENV_CLIENT_SECRET],
     )
 
-    token = run_consent_flow(client, open_browser=not args.no_browser)
+    scope = YOUTUBE_UPLOAD_SCOPE if args.upload_only else YOUTUBE_SCOPE
+    token = run_consent_flow(client, open_browser=not args.no_browser, scope=scope)
 
     if args.json:
         # Only the refresh token is emitted for piping into Key Vault (#443).

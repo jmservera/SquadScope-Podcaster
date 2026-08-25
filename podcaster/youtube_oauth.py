@@ -19,9 +19,28 @@ import json
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
-# Minimal scope: upload only. Do not request broader youtube/youtube.force-ssl
-# scopes unless a feature needs them — narrower scopes ease OAuth app
-# verification (#448) and reduce blast radius if the token leaks.
+# The app uploads videos AND reads/updates them back (videos.list,
+# videos.update) AND manages the show playlist (playlistItems.list/insert) for
+# read-back verification and playlist promotion (#649). `youtube.upload` only
+# authorizes videos.insert — every other call gets a 403 insufficientPermissions
+# even though the token looks valid. `https://www.googleapis.com/auth/youtube`
+# ("Manage your YouTube account") is the single scope that covers all of
+# videos.insert/list/update and playlistItems.list/insert, so it replaces
+# (rather than adds to) youtube.upload — requesting both would be redundant.
+# `youtube.force-ssl` grants the same operations and is an equally valid
+# choice per Google's docs; we standardize on `youtube` since it is the scope
+# this app has documented and requested consent for historically (#441).
+# Google classifies both `youtube` and `youtube.upload` as *sensitive* (not
+# *restricted*) scopes, so this does not change OAuth app verification tier —
+# see docs/youtube-oauth-verification.md. Do not request `youtubepartner`;
+# it is for content-partner asset management, not this app's use case.
+YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube"
+
+# Upload-only scope, kept for an explicit opt-in (e.g. `--upload-only` on the
+# setup script) for operators who genuinely only need uploads and want the
+# narrowest possible grant. This is NOT the default: the app requires
+# playlist and read-back access, so `YOUTUBE_SCOPE` above is what
+# `build_consent_url` requests unless the caller overrides `scopes=`.
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 
 AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -68,7 +87,7 @@ def build_consent_url(
         "client_id": client.client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(scopes or [YOUTUBE_UPLOAD_SCOPE]),
+        "scope": " ".join(scopes or [YOUTUBE_SCOPE]),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
