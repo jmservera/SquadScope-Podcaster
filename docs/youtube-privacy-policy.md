@@ -14,8 +14,8 @@ _Last updated: [DATE]_
 
 This policy describes how the **SquadScope/Claracle YouTube Uploader**
 ("the app") handles data when it uploads automatically generated podcast videos
-to YouTube, verifies and updates their metadata, and manages the show's
-playlist, on behalf of the channel owner who authorizes it.
+to YouTube, verifies their metadata, promotes or schedules their visibility,
+and manages the show's playlist, on behalf of the channel owner who authorizes it.
 
 Operator / data controller: **[ORGANIZATION NAME]**
 Contact: **[SUPPORT EMAIL]**
@@ -25,10 +25,9 @@ Contact: **[SUPPORT EMAIL]**
 The app generates a weekly, AI-voiced technology-news podcast and an accompanying
 video, and — after an editorial review gate — uploads the finished video to the
 authorizing user's own YouTube channel as an **unlisted video**. After upload,
-the app reads the video back to verify it processed correctly, updates its
-metadata as needed, and adds it to the show's YouTube playlist, leaving it for
-that user to review and then change its visibility to public (publish)
-manually.
+the app reads the video back to verify it processed correctly, adds it to the
+show's YouTube playlist, and can change its privacy status or schedule it for
+public release after approval.
 
 ## Google user data we access
 
@@ -39,15 +38,16 @@ manually.
 - **What that allows and what we use it for:**
   - **Upload** (`videos.insert`): publish the generated video to the
     authorizing user's channel as unlisted.
-  - **Read-back and metadata update** (`videos.list`, `videos.update`):
-    confirm the upload processed successfully and correct its title,
-    description, or other metadata before the user promotes it to public.
+  - **Read-back and visibility update** (`videos.list`, `videos.update`):
+    confirm the upload processed successfully and, after approval, change its
+    privacy status to public or schedule it for public release.
   - **Playlist membership** (`playlistItems.list`, `playlistItems.insert`):
     check and add the uploaded video to the show's existing playlist so it
     appears alongside prior episodes.
   - The app does **not** manage subscriptions, comments, ratings, channel
-    settings, or any other account data, and does not use this scope to read,
-    list, or modify videos it did not itself upload.
+    settings, or any other account data. It is operated for generated videos
+    uploaded by this pipeline and the show's configured playlist; it does not
+    intentionally enumerate or manage unrelated videos.
 - **Whose data:** only the channel owned by the single consenting Google account.
   The app does not collect or process data about any other end users.
 
@@ -59,10 +59,11 @@ manually.
 - The refresh token is exchanged for **short-lived access tokens** at upload,
   read-back/update, and playlist-management time. Access tokens are held in
   memory for the duration of each call and are not persisted.
-- The app reads back and updates only the videos it uploaded itself, and reads
-  or modifies playlist membership only for the show's own playlist. It does not
-  read or store any other existing YouTube videos, comments, subscribers, or
-  analytics belonging to the authorizing account.
+- The app is configured and intended to read back and update visibility only for
+  videos uploaded by this pipeline, and to read or modify playlist membership
+  only for the show's own playlist. It does not intentionally read or store any
+  other existing YouTube videos, comments, subscribers, or analytics belonging
+  to the authorizing account.
 
 ## Sharing and disclosure
 
