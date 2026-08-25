@@ -263,10 +263,16 @@ def build_youtube_issue_body(error_message: str, *, timestamp: str | None = None
             "",
             "1. Run the one-time consent flow to mint a fresh refresh token "
             "(see `docs/youtube-oauth-setup.md` / `scripts/youtube_oauth_setup.py`).",
-            "2. Store the new refresh token in Azure Key Vault, updating the "
-            "secret referenced by `VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET` (default "
-            "`youtube-oauth-refresh-token`) in the vault at "
-            "`VIDEO_YOUTUBE_KEYVAULT_URL`:",
+            "2. Store the new refresh token per `docs/youtube-token-storage.md`. "
+            "For this repo's production deployment, update the `prod` GitHub "
+            "environment secret `VIDEO_YOUTUBE_REFRESH_TOKEN` and redeploy — "
+            "this app injects that secret directly and returns it before ever "
+            "consulting Key Vault, so updating Key Vault alone would **not** "
+            "take effect and would leave the revoked token in place. Only "
+            "update Key Vault directly if this deployment is instead "
+            "configured for the direct Key Vault runtime-resolution path "
+            "(`VIDEO_YOUTUBE_KEYVAULT_URL` set, no `VIDEO_YOUTUBE_REFRESH_TOKEN` "
+            "env var injected):",
             "",
             "```bash",
             "az keyvault secret set \\",
@@ -276,8 +282,9 @@ def build_youtube_issue_body(error_message: str, *, timestamp: str | None = None
             "```",
             "",
             "3. Re-run the failed video distribution, or wait for the next run. "
-            "No code or app restart is required — the token is read from Key "
-            "Vault at runtime.",
+            "For the GitHub-secret path, a redeploy is required to pick up the "
+            "new value. For the direct Key Vault path, no code or app restart "
+            "is required — the token is read from Key Vault at runtime.",
             "",
             "---",
             "_Automatically reported by the YouTube credential-expiry detector (#443)._",
