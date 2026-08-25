@@ -45,9 +45,10 @@ public release after approval.
     check and add the uploaded video to the show's existing playlist so it
     appears alongside prior episodes.
   - The app does **not** manage subscriptions, comments, ratings, channel
-    settings, or any other account data. It is operated for generated videos
-    uploaded by this pipeline and the show's configured playlist; it does not
-    intentionally enumerate or manage unrelated videos.
+    settings, or any other account data. The YouTube API scope technically
+    permits access to other channel videos, but this app's workflow is limited
+    to generated video IDs from this pipeline and the show's configured
+    playlist; it does not enumerate unrelated videos.
 - **Whose data:** only the channel owned by the single consenting Google account.
   The app does not collect or process data about any other end users.
 
@@ -59,11 +60,13 @@ public release after approval.
 - The refresh token is exchanged for **short-lived access tokens** at upload,
   read-back/update, and playlist-management time. Access tokens are held in
   memory for the duration of each call and are not persisted.
-- The app is configured and intended to read back and update visibility only for
-  videos uploaded by this pipeline, and to read or modify playlist membership
-  only for the show's own playlist. It does not intentionally read or store any
-  other existing YouTube videos, comments, subscribers, or analytics belonging
-  to the authorizing account.
+- The app workflow reads back and updates visibility for generated videos from
+  this pipeline, and reads or modifies playlist membership only for the show's
+  own playlist. Because the YouTube API scope cannot be technically restricted
+  to only those video IDs, operators use approved pipeline video IDs and the
+  configured playlist as compensating controls. The app does not enumerate or
+  store any other existing YouTube videos, comments, subscribers, or analytics
+  belonging to the authorizing account.
 
 ## Sharing and disclosure
 
