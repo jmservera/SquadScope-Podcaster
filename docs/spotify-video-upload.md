@@ -198,6 +198,190 @@ The flow has these steps:
 Chunk size is `_VIDEO_CHUNK_SIZE = 30 * 1024 * 1024` (30 MB) in
 `podcaster/publish.py`.
 
+### Reconcile before create (step 1)
+
+Before creating the video draft, `_reconcile_or_create_draft` lists the station's
+episodes and reuses an exact-title draft if one already exists, so a retry after
+a mid-flight crash does not leave duplicate drafts behind (#564). The audio
+episode (`anchor_id`) is always excluded from the match.
+
+> **Invariant.** With reconcile enabled, a video publish sends at most one
+> *effective* draft create per (station, title): the create POST is never
+> retried blindly, and an ambiguous create is resolved against the listing
+> before any further POST. Every subsequent attempt reuses the draft. The
+> invariant holds against listing schemas this code understands; anything it
+> cannot read fails the publish closed instead of guessing.
+
+The listing endpoint **requires `userId` as a query parameter**:
+
+```text
+GET /v3/stations/{stationId}/episodes?userId={userId}&isMumsCompatible=true
+```
+
+Omitting it returns `HTTP 400 {"property":"query.userId","message":"is required"}`.
+`userId` comes from `_resolve_legacy_ids` together with `stationId`.
+
+A lookup that fails (HTTP error, transport error, malformed JSON, missing
+identity) raises `SpotifyDraftReconcileError` and fails the publish. So does a
+listing whose *schema* this code cannot read — an unknown container, an error
+body, a non-array episode field, a renamed title/id/state field, or a non-object
+entry. `None` ("no draft exists") is only sound when every entry of a recognised
+container was understood **and** the listing carried no pagination hint (see
+[Pagination](#pagination-unimplemented-unverified) — by default a hint only
+warns, so `None` then means "no match on the page that was read"); a recognised
+**empty** array is still a legitimate no-match. An entry whose title is present
+but null is understood as an untitled draft (no match). Entries whose id is the
+excluded audio anchor are skipped *before* any state or title classification, so
+a scheduled or processing audio episode can never fail the video lookup.
+Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
+
+Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
+inspected — a malformed `episodeId` never hides a usable `id` — but the entry
+only yields an id when the readable keys agree on one value. A malformed id or
+two keys naming different episodes is a contradictory identity: the entry is
+treated as having no usable id (logged, never silent), which every caller
+already handles fail-closed.
+
+##### Draft state is read from evidence, never from truthiness
+
+For the entry that *matches the target title*, the draft/published state must be
+established explicitly, because both possible guesses are damaging: guessing
+"draft" reuses (and overwrites) a live episode, guessing "not a draft" creates a
+duplicate.
+
+| Field | Accepted | Rejected |
+|-------|----------|----------|
+| `isDraft` | JSON `true`/`false` (`true` ⇒ draft) | any non-boolean: `"false"`, `"true"`, `0`, `1`, `1.0`, `{}`, `[]` |
+| `isPublished` | JSON `true`/`false`. `true` ⇒ **not** a draft; `false` alone is **not** evidence of a draft and needs a corroborating `isDraft`/status signal | any non-boolean |
+| `status` / `state` / `publishStatus` / `publishState` | `"draft"`, `"published"` (trimmed, case-insensitive) | any other token, and any non-string |
+
+`isPublished` is asymmetric on purpose: it is the field this integration itself
+writes, so `true` reliably means "not a draft", but `false` only means "not
+published" — a scheduled, processing or errored episode is unpublished without
+being a draft, and reusing one as the video draft would overwrite it. An entry
+whose *only* state signal is `isPublished: false` therefore fails closed.
+
+`bool("false")` is `True`, so a string is *never* truth-tested — it is schema
+drift. An **unknown** status token (`"scheduled"`, `"processing"`, anything a
+future API version invents) is an error, not an implied "not a draft"; the
+allow-list is deliberately minimal and is only extended from observed evidence.
+An explicit `null` carries no state and is skipped, exactly like an absent
+field; if nothing is left, or if two fields disagree, the entry fails closed.
+Entries whose title does **not** match are never state-checked.
+
+> No successful response from this endpoint has ever been observed (every call
+> 400'd on the missing `userId`), so the container shape is **unverified**. The
+> first deploy may therefore fail closed until the real schema is confirmed from
+> the `SpotifyDraftReconcileError` message, which reports the top-level key
+> *names* (never values), and — for an unrecognised state — the offending token
+> when it is identifier-shaped.
+
+#### Titling the new draft immediately (idempotency)
+
+`_create_episode` posts `{"hourOffset": 0}` and Spotify returns an **untitled**
+draft; the title is only applied by the final `_set_metadata` call, minutes later
+(signed URLs → multipart upload → processing poll). A crash anywhere in that
+window left a draft that reconcile — which matches on title — could never find,
+so the next attempt created another one. That was the dominant duplicate window.
+
+`_claim_draft_title` now titles the new draft with the *same*
+`/v3/episodes/{id}/update` request the final metadata step already uses (no new
+or guessed fields) before any upload begins, narrowing the window to a single
+request. It sends the **real** title, description and numbering that the final
+metadata call would apply anyway — not an empty description — because that
+endpoint always sends a `description`, so claiming with `""` would clear
+metadata rather than only add a title. If the claim fails the publish aborts
+before uploading and names the orphan draft id so an operator can delete it.
+
+Only drafts known to be *untitled* are claimed: `_reconcile_or_create_draft`
+returns `(anchor_id, needs_title)` and `needs_title` is `False` for a
+reconciled draft **and** for a draft adopted during ambiguous-create recovery
+because it already carried the target title. The claim is skipped entirely when
+`PODCASTER_SPOTIFY_RECONCILE=0`.
+
+#### The create POST is never retried blindly
+
+`POST /v3/stations/{id}/episodes` is state-mutating and the Anchor v5 API
+exposes no idempotency key, so a 408/429/5xx/timeout is indistinguishable from
+"the draft was created and the response was lost". The generic
+retry-with-backoff must therefore not be applied to it: three attempts could
+leave two extra *untitled* drafts, which title-based reconcile can never find or
+clean up. `_create_episode` sends **exactly one** POST (`max_attempts=1`) and
+raises `SpotifyDraftCreateAmbiguousError` when the outcome is unknown — either a
+transient failure, or a `2xx` whose body does not yield an episode id (the draft
+exists; only its identifier was lost). A deterministic `4xx` is *not* ambiguous:
+nothing was created.
+
+When reconcile is enabled, `_reconcile_or_create_draft` resolves that ambiguity
+with evidence rather than a retry. The listing read that looked for an existing
+draft doubles as a **pre-create snapshot** of episode ids (no extra request), and
+after an ambiguous create the listing is re-read:
+
+| Evidence in the re-listing | Action | Create POSTs sent |
+|---|---|---|
+| A draft now carries the target title | reuse it as-is (already titled, so it is *not* re-claimed) | 1 |
+| Exactly one *new* untitled draft, no unclassifiable entries | adopt it (the caller then titles it) | 1 |
+| No new entry, from a snapshot that yielded an id for every entry | not yet proof — wait `_AMBIGUOUS_CREATE_SETTLE_SECONDS` and re-read; only if the settled read is *still* unchanged, send it once more | 2 |
+| Several new untitled drafts, any unclassifiable entry, or an incomplete snapshot | raise, naming the candidate ids for operator cleanup | 1 |
+| The re-listing itself is unreadable | raise (fail closed) | 1 |
+
+An *immediately* unchanged listing is deliberately not treated as proof. A
+client-side timeout or a reset connection says nothing about whether the server
+is still committing the create, and this API offers no read-your-writes
+guarantee, so a single sample taken microseconds after the failure can be stale.
+The listing is therefore read `_AMBIGUOUS_CREATE_READS` (2) times, spaced by a
+bounded settling delay, before a second POST is even considered; if the settled
+read surfaces a draft it is adopted instead. Evidence that is *already*
+ambiguous (several candidates, unclassifiable entries, an unusable snapshot)
+skips the settling read and fails closed immediately, because waiting cannot
+make it provable.
+
+At most **two** create POSTs are ever sent for one publish attempt, and the
+second only after a settled, twice-observed listing that still shows nothing the
+first create could have produced. A second ambiguous create is not recovered
+again. With `PODCASTER_SPOTIFY_RECONCILE=0` (and on the audio path in
+`publish_episode`, which never reconciles) there is no listing to reason from,
+so the single POST simply fails — a failed publish, not an orphaned duplicate.
+
+Residual, irreducible windows — stated precisely, because neither one loses the
+draft server-side:
+
+1. **Client dies between the POST and the recovery listing** (SIGKILL, node
+   loss). The server may well hold a created draft and its id; it is only the
+   *client* that never observed the id, so this process can no longer act on it.
+   The draft is untitled, so a later attempt cannot match it by title. It is
+   still visible in the listing, so the next attempt sees it as a pre-existing
+   untitled entry: it is in that run's pre-create snapshot, so it is never
+   adopted as evidence of that run's own create, and it stays as an orphan for
+   an operator to delete from the creator UI.
+2. **Create succeeds after the recovery gave up.** If the settled re-reads never
+   showed the draft and a second POST was sent, a late-committing first create
+   can still land, leaving two untitled drafts. Both are then untitled orphans
+   — the next attempt's snapshot contains both, so neither is mistaken for its
+   own create, and the run either adopts nothing or fails closed naming them.
+
+Neither window silently corrupts a *published* episode, and neither is closable
+client-side: the Anchor v5 API exposes no idempotency key. What is closed is the
+common case — a crash during the multi-minute upload — because the draft is
+titled before the upload starts and reconcile finds it on the next run.
+
+#### Pagination (unimplemented, unverified)
+
+The listing is fetched with a single unpaginated GET. Whether the endpoint pages
+at all — and under which key — is unknown. When the response carries a truthy
+`hasMore`/`hasNextPage`/`nextPageToken`/`nextPage` key **and** no match was
+found, a warning is logged naming the key; the publish is *not* blocked, because
+hard-failing on a guessed key name could block every new video publish. Operators
+who have confirmed the contract for their show can opt into fail-closed
+behaviour with `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1`.
+
+#### Credential expiry
+
+A 401/403 anywhere in the video path raises `SpotifyCredentialExpiredError`,
+which `upload_video_to_episode` converts into an operator credential-expiry
+notification (`notify_credential_expiry`, #364) and a result carrying
+`details.credentials_expired` — the same handling the audio publish path has.
+
 ### Upload API reference (detailed)
 
 > The subsections below are the low-level Spotify/Anchor API reference (the
@@ -706,6 +890,8 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` skips the existing-draft lookup *and* the immediate title claim, restoring blind create (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults off. `1`/`true`/`yes`/`on` makes an explicitly paginated listing with no first-page match fail closed instead of warning (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,
