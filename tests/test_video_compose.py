@@ -2688,6 +2688,37 @@ class TestRemoteLogoFailureClassification:
         assert exc.details["canonical"] is True
         assert exc.details["bundled_asset_missing"] is True
 
+    def test_cache_filename_never_carries_url_content(self, tmp_path, monkeypatch):
+        """The cache path is a hash plus an allowlisted suffix — nothing else.
+
+        The suffix used to be taken verbatim from the URL, so a caller-controlled
+        value reached both the filesystem and the log line that names the cached
+        file.  Now every character of the filename is owned by this module.
+        """
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
+        hostile = "https://user:s3cret@example.com/evil.py?token=abc123"
+        cached = vc._fetch_dog_logo_remote(hostile, tmp_path)
+        assert cached.suffix == ".img"
+        assert "s3cret" not in cached.name
+        assert "abc123" not in cached.name
+        assert "evil" not in cached.name
+
+    @pytest.mark.parametrize(
+        "path,expected",
+        [
+            ("/logo.PNG", ".png"),
+            ("/logo.jpeg", ".jpeg"),
+            ("/logo.webp", ".webp"),
+            ("/logo", ".img"),
+            ("/logo.exe", ".img"),
+            ("/logo.png?v=2#frag", ".png"),
+        ],
+    )
+    def test_cache_suffix_comes_from_the_allowlist(self, path, expected, tmp_path, monkeypatch):
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
+        cached = vc._fetch_dog_logo_remote(f"https://example.com{path}", tmp_path)
+        assert cached.suffix == expected
+
     def test_transient_failure_redacts_url_and_omits_body(self, tmp_path, monkeypatch):
         """Untrusted endpoint data never reaches the failure report."""
         secret = "https://user:s3cret@example.com/logo.png?sig=abc123#frag"

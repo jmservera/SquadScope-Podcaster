@@ -403,6 +403,19 @@ DOG_MAX_LOGO_BYTES = 16 * 1024 * 1024
 # legitimately serve images as ``application/octet-stream``, and any server can
 # freely claim ``image/png`` for an HTML error page.
 DOG_ADVISORY_CONTENT_TYPES = ("image/", "application/octet-stream", "binary/octet-stream")
+#: Cache-filename suffixes a remote logo may be stored under, keyed by the
+#: extension seen in the URL.  Every value is a literal owned by this module, so
+#: the caller-controlled URL contributes nothing but a hash to the cache path —
+#: an attacker cannot steer the download into ``dog_<digest>.py`` (or leak
+#: credentials embedded in the URL into a log line via the filename).
+DOG_CACHE_SUFFIXES = {
+    ".jpg": ".jpg",
+    ".jpeg": ".jpeg",
+    ".png": ".png",
+    ".gif": ".gif",
+    ".webp": ".webp",
+    ".bmp": ".bmp",
+}
 DOG_DEFAULT_POSITION = "top-right"
 DOG_DEFAULT_SIZE = 80
 DOG_DEFAULT_OPACITY = 0.5
@@ -696,7 +709,14 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
         raise _permanent(f"DOG logo URL {redacted} is blocked by the SSRF guard", "ssrf_blocked")
 
     digest = sha256(url.encode("utf-8")).hexdigest()[:16]
-    suffix = Path(url.split("?", 1)[0]).suffix or ".img"
+    # The cached filename is built only from a hash of the URL and a suffix
+    # picked out of a fixed allowlist, so no character of the caller-controlled
+    # URL (which may embed ``user:pass@`` credentials, or a hostile path such as
+    # ``/logo.py``) ever reaches the filesystem or the logs.  ``.img`` is the
+    # fallback; the extension is cosmetic either way, because acceptance is
+    # decided by the image magic bytes below and ffmpeg probes the content.
+    raw_suffix = Path(urllib.parse.urlparse(url).path).suffix.lower()
+    suffix = DOG_CACHE_SUFFIXES.get(raw_suffix, ".img")
     cache_path = cache_dir / f"dog_{digest}{suffix}"
 
     if cache_path.exists() and cache_path.stat().st_size > 0:
