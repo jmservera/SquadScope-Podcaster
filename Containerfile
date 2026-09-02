@@ -55,8 +55,15 @@ RUN python -m playwright install chromium --with-deps \
 # Drop build toolchain — not needed at runtime.
 RUN python -m pip uninstall -y pip setuptools wheel
 
-# Bundle music assets for intro/outro mixing.
+# Bundle music and image assets: the intro/outro music bed and the Claracle DOG
+# watermark are resolved from ``<repo root>/assets`` at runtime.
 COPY assets ./assets
+
+# Build-time packaging assertion (W36): a missing watermark asset previously
+# produced a successful-looking but unbranded episode. Fail the image build
+# instead of discovering it in production.
+RUN test -s /app/assets/images/claracle.jpeg \
+    && test -s /app/assets/music/claracle-theme.mp3
 
 USER synth
 

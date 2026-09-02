@@ -9,9 +9,11 @@ import importlib
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
 import pytest
 
+from podcaster import watermark
 from podcaster.video import video_compose as vc
 from podcaster.video.sync_plan import EpisodePlan, RepoReference, VideoSegment
 from podcaster.video.video_compose import (
@@ -1883,6 +1885,23 @@ class TestComposeVideoFitToWindow:
 # --- Tests for DOG (Digital On-Screen Graphic) watermark ---
 
 
+class _ImageResponse:
+    """Minimal ``urlopen`` response stub for DOG logo fetch tests."""
+
+    def __init__(self, body: bytes, content_type: str = "image/png"):
+        self._body = body
+        self.headers = {"Content-Type": content_type} if content_type else {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def read(self, amount: int | None = None):
+        return self._body if amount is None else self._body[:amount]
+
+
 class TestDogLogoConfig:
     def test_defaults_from_empty_dict(self):
         cfg = DogLogoConfig.from_dict({})
@@ -2042,7 +2061,14 @@ class TestComposeVideoDogLogo:
         for c in runner.call_args_list:
             assert "overlay=" not in " ".join(c.args[0])
 
-    def test_failed_download_graceful(self, tmp_path, monkeypatch):
+    def test_unresolvable_logo_fails_explicitly(self, tmp_path, monkeypatch):
+        """W36: a configured watermark must never silently yield unbranded video.
+
+        Resolution only returns ``None`` when the bundled Claracle asset is
+        missing from the image too, which is a packaging defect — composition
+        must fail loudly instead of producing a successful-looking, unbranded
+        episode.
+        """
         monkeypatch.setattr(
             "podcaster.video.video_compose._fetch_dog_logo",
             lambda url, cache_dir: None,
@@ -2050,14 +2076,121 @@ class TestComposeVideoDogLogo:
         runner = _mock_runner()
         seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
         (tmp_path / "s.webm").touch()
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            compose_video(
+                segments=[seg],
+                output_dir=tmp_path / "out",
+                runner=runner,
+                dog_logo=DogLogoConfig(),
+            )
+        message = str(excinfo.value)
+        assert "assets/images/claracle.jpeg" in message
+        assert "dog_logo" in message
+
+
+class TestDogLogoW36Regression:
+    """W36: the configured Claracle logo URL 404'd and the video shipped unbranded.
+
+    ``https://www.claracle.com/images/claracle.jpeg`` 301s to the apex host and
+    then returns 404 — the Claracle Hugo site never publishes that path. The
+    watermark must now come from the bundled, versioned asset instead.
+    """
+
+    W36_URL = "https://www.claracle.com/images/claracle.jpeg"
+
+    def test_canonical_url_resolves_locally_without_network(self, tmp_path, monkeypatch):
+        opened = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", opened)
+        result = vc._fetch_dog_logo(self.W36_URL, tmp_path)
+        assert result == watermark.LOGO_PATH
+        opened.assert_not_called()
+
+    def test_squadscope_raw_default_resolves_locally_without_network(self, tmp_path, monkeypatch):
+        opened = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", opened)
+        result = vc._fetch_dog_logo(DEFAULT_DOG_LOGO_URL, tmp_path)
+        assert result == watermark.LOGO_PATH
+        opened.assert_not_called()
+
+    def test_remote_404_falls_back_to_bundled_asset(self, tmp_path, monkeypatch):
+        """A genuinely external logo that 404s degrades to the bundled logo."""
+
+        def _raise_404(url, timeout):
+            raise HTTPError(url, 404, "Not Found", {}, None)
+
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(vc, "safe_urlopen", _raise_404)
+        result = vc._fetch_dog_logo("https://example.com/images/claracle.jpeg", tmp_path)
+        assert result == watermark.LOGO_PATH
+
+    def test_compose_still_watermarks_when_configured_url_404s(self, tmp_path, monkeypatch):
+        """End-to-end: the exact W36 URL still yields an overlay in the ffmpeg cmd."""
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(side_effect=AssertionError("no network")))
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
         compose_video(
             segments=[seg],
             output_dir=tmp_path / "out",
             runner=runner,
-            dog_logo=DogLogoConfig(),
+            dog_logo=DogLogoConfig(url=self.W36_URL),
+            dog_logo_cache_dir=tmp_path / "dogcache",
         )
-        for c in runner.call_args_list:
-            assert "overlay=" not in " ".join(c.args[0])
+        compose_cmd = next(
+            c.args[0] for c in runner.call_args_list if "-filter_complex" in c.args[0]
+        )
+        assert "overlay=" in " ".join(compose_cmd)
+        assert str(watermark.LOGO_PATH) in compose_cmd
+
+    def test_canonical_url_fetched_remotely_when_bundle_absent(self, tmp_path, monkeypatch):
+        """Without the packaged asset the canonical URL still tries the network."""
+        monkeypatch.setattr(watermark, "LOGO_PATH", tmp_path / "absent.jpeg")
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        opened = MagicMock(return_value=_ImageResponse(b"pngbytes"))
+        monkeypatch.setattr(vc, "safe_urlopen", opened)
+        result = vc._fetch_dog_logo(self.W36_URL, tmp_path / "cache")
+        assert result is not None
+        assert result.read_bytes() == b"pngbytes"
+        opened.assert_called_once()
+
+    def test_returns_none_only_when_remote_and_bundle_both_fail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(watermark, "LOGO_PATH", tmp_path / "absent.jpeg")
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+
+        def _raise_404(url, timeout):
+            raise HTTPError(url, 404, "Not Found", {}, None)
+
+        monkeypatch.setattr(vc, "safe_urlopen", _raise_404)
+        assert vc._fetch_dog_logo(self.W36_URL, tmp_path / "cache") is None
+
+
+class TestFetchDogLogoValidation:
+    """Remote logo bodies must be bounded and actually be images."""
+
+    def test_soft_404_html_body_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(
+            vc,
+            "safe_urlopen",
+            MagicMock(return_value=_ImageResponse(b"<html>404</html>", "text/html")),
+        )
+        assert vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path) is None
+
+    def test_oversized_body_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        oversized = b"x" * (vc.DOG_MAX_LOGO_BYTES + 1)
+        monkeypatch.setattr(
+            vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(oversized))
+        )
+        assert vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path) is None
+
+    def test_missing_content_type_still_accepted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(
+            vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(b"pngbytes", ""))
+        )
+        result = vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path)
+        assert result is not None and result.read_bytes() == b"pngbytes"
 
 
 class TestFetchDogLogoSSRF:
@@ -2066,45 +2199,40 @@ class TestFetchDogLogoSSRF:
     def test_blocked_host_not_fetched(self, tmp_path, monkeypatch):
         called = MagicMock()
         monkeypatch.setattr(vc, "safe_urlopen", called)
-        result = vc._fetch_dog_logo("http://169.254.169.254/latest/meta-data/", tmp_path)
+        result = vc._fetch_dog_logo_remote("http://169.254.169.254/latest/meta-data/", tmp_path)
         assert result is None
+        called.assert_not_called()
+        # The full resolver still refuses the fetch, then falls back to the
+        # bundled asset rather than dropping the watermark.
+        assert vc._fetch_dog_logo("http://169.254.169.254/latest/meta-data/", tmp_path) == (
+            watermark.LOGO_PATH
+        )
         called.assert_not_called()
 
     def test_loopback_host_not_fetched(self, tmp_path, monkeypatch):
         called = MagicMock()
         monkeypatch.setattr(vc, "safe_urlopen", called)
-        result = vc._fetch_dog_logo("http://127.0.0.1:8080/logo.png", tmp_path)
+        result = vc._fetch_dog_logo_remote("http://127.0.0.1:8080/logo.png", tmp_path)
         assert result is None
         called.assert_not_called()
 
     def test_unsupported_scheme_not_fetched(self, tmp_path, monkeypatch):
         called = MagicMock()
         monkeypatch.setattr(vc, "safe_urlopen", called)
-        result = vc._fetch_dog_logo("file:///etc/passwd", tmp_path)
+        result = vc._fetch_dog_logo_remote("file:///etc/passwd", tmp_path)
         assert result is None
         called.assert_not_called()
 
     def test_missing_host_not_fetched(self, tmp_path, monkeypatch):
         called = MagicMock()
         monkeypatch.setattr(vc, "safe_urlopen", called)
-        result = vc._fetch_dog_logo("https:///logo.png", tmp_path)
+        result = vc._fetch_dog_logo_remote("https:///logo.png", tmp_path)
         assert result is None
         called.assert_not_called()
 
     def test_safe_urlopen_used_for_public_url(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
-
-        class _Resp:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_a):
-                return False
-
-            def read(self):
-                return b"pngbytes"
-
-        opened = MagicMock(return_value=_Resp())
+        opened = MagicMock(return_value=_ImageResponse(b"pngbytes"))
         monkeypatch.setattr(vc, "safe_urlopen", opened)
         result = vc._fetch_dog_logo("https://example.com/logo.png", tmp_path)
         assert result is not None

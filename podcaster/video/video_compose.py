@@ -32,6 +32,8 @@ from podcaster.video.video_gen import (
     RecordedSegment,
     _recording_blob_name,
 )
+from podcaster.watermark import LOGO_PATH as WATERMARK_LOGO_PATH
+from podcaster.watermark import canonical_logo_path, is_canonical_logo_url
 
 if TYPE_CHECKING:
     from podcaster.storage import StorageBackend
@@ -375,10 +377,23 @@ def _default_intro_outro_cache_dir() -> Path:
 # --- DOG (Digital On-Screen Graphic) watermark (#config-driven) ---
 # A small, semi-transparent logo overlaid on the MAIN content segments only
 # (intro/outro carry their own branding and are joined afterwards).
+#
+# The Claracle logo is *bundled* (``assets/images/claracle.jpeg``) and any
+# canonical Claracle URL resolves to it locally, with no network access.  A
+# remote-only watermark previously degraded silently: the configured
+# ``https://www.claracle.com/images/claracle.jpeg`` returned 404 and the episode
+# rendered as a successful-looking but unbranded video (W36).  See
+# :mod:`podcaster.watermark`.
 
 DEFAULT_DOG_LOGO_URL = (
     "https://raw.githubusercontent.com/jmservera/SquadScope/main/assets/images/claracle.jpeg"
 )
+# Cap on a remote logo download.  A logo is a small corner graphic; anything
+# larger is a misconfiguration (or a hostile endpoint) rather than a watermark.
+DOG_MAX_LOGO_BYTES = 16 * 1024 * 1024
+# Content types accepted for a remote logo.  Guards against caching a soft-404
+# HTML error page as the "logo", which would fail opaquely inside ffmpeg.
+DOG_ALLOWED_CONTENT_TYPES = ("image/",)
 DOG_DEFAULT_POSITION = "top-right"
 DOG_DEFAULT_SIZE = 80
 DOG_DEFAULT_OPACITY = 0.5
@@ -462,17 +477,26 @@ def _redact_url(url: str) -> str:
     return redact_url(url)
 
 
-def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
-    """Download (and cache) the DOG logo image from *url*.
+class WatermarkUnavailableError(RuntimeError):
+    """Raised when a configured DOG watermark cannot be resolved at all.
+
+    Only reachable when the bundled Claracle asset is missing from the running
+    image *and* the remote logo could not be fetched.  Composition fails loudly
+    rather than shipping an unbranded episode that looks successful (W36).
+    """
+
+
+def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path | None:
+    """Download (and cache) a remote DOG logo image from *url*.
 
     Caches by a hash of the URL so different logos coexist and re-runs reuse a
     prior download.  Returns the local path, or ``None`` on any failure so the
-    caller composes without a watermark (graceful degradation).
+    caller can fall back to the bundled asset.
     """
     scheme = urllib.parse.urlparse(url).scheme.lower()
     if scheme not in ("http", "https"):
         logger.warning(
-            "Skipping DOG logo fetch: unsupported URL scheme %r in %s; composing without watermark",
+            "Skipping DOG logo fetch: unsupported URL scheme %r in %s",
             scheme,
             _redact_url(url),
         )
@@ -482,15 +506,12 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
     # that resolve to loopback / private / link-local / cloud-metadata hosts.
     hostname = urllib.parse.urlparse(url).hostname
     if hostname is None:
-        logger.warning(
-            "Skipping DOG logo fetch: URL has no host in %s; composing without watermark",
-            _redact_url(url),
-        )
+        logger.warning("Skipping DOG logo fetch: URL has no host in %s", _redact_url(url))
         return None
     if host_is_blocked(hostname):
         logger.warning(
             "Skipping DOG logo fetch: URL host is not publicly routable / is "
-            "blocked by the SSRF guard in %s; composing without watermark",
+            "blocked by the SSRF guard in %s",
             _redact_url(url),
         )
         return None
@@ -506,17 +527,26 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
         with safe_urlopen(url, timeout=15) as resp:
-            data = resp.read()
-    except Exception as exc:  # noqa: BLE001 — never fail composition on fetch error
-        logger.warning(
-            "Failed to download DOG logo from %s: %s; composing without watermark",
-            _redact_url(url),
-            exc,
-        )
+            content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            # Read one byte past the cap so an oversized body is detectable
+            # without buffering the whole response.
+            data = resp.read(DOG_MAX_LOGO_BYTES + 1)
+    except Exception as exc:  # noqa: BLE001 — never fail the fetch step itself
+        logger.warning("Failed to download DOG logo from %s: %s", _redact_url(url), exc)
         return None
 
     if not data:
-        logger.warning("DOG logo at %s was empty; composing without watermark", _redact_url(url))
+        logger.warning("DOG logo at %s was empty", _redact_url(url))
+        return None
+    if len(data) > DOG_MAX_LOGO_BYTES:
+        logger.warning(
+            "DOG logo at %s exceeds the %d byte limit", _redact_url(url), DOG_MAX_LOGO_BYTES
+        )
+        return None
+    if content_type and not content_type.startswith(DOG_ALLOWED_CONTENT_TYPES):
+        logger.warning(
+            "DOG logo at %s has non-image content type %r", _redact_url(url), content_type
+        )
         return None
 
     cache_path.write_bytes(data)
@@ -524,6 +554,62 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
         "Downloaded DOG logo (%d bytes) from %s to %s", len(data), _redact_url(url), cache_path
     )
     return cache_path
+
+
+def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
+    """Resolve the DOG logo image for *url* to a local path.
+
+    Resolution order:
+
+    1. **Bundled canonical asset** — when *url* names the project-owned Claracle
+       logo (:func:`podcaster.watermark.is_canonical_logo_url`) the packaged file
+       is used directly.  No network request is made, so the watermark cannot be
+       lost to a moved/unpublished URL, DNS failure or rate limit.
+    2. **Remote download** — genuinely external logos are fetched (and cached)
+       through the SSRF-guarded opener, with size and content-type validation.
+    3. **Bundled fallback** — a failed remote fetch degrades to the bundled
+       Claracle logo so the episode still ships branded.
+
+    Returns ``None`` only when every option is exhausted, i.e. the bundled asset
+    is missing from the image.  Callers must treat that as an explicit failure,
+    not as silent graceful degradation.
+    """
+    bundled = canonical_logo_path()
+
+    if is_canonical_logo_url(url):
+        if bundled is not None:
+            logger.info(
+                "Using bundled Claracle DOG logo %s for canonical URL %s (no network fetch)",
+                bundled,
+                _redact_url(url),
+            )
+            return bundled
+        logger.warning(
+            "Bundled Claracle DOG logo is missing from this image; falling back to "
+            "fetching the canonical URL %s over the network",
+            _redact_url(url),
+        )
+
+    remote = _fetch_dog_logo_remote(url, cache_dir)
+    if remote is not None:
+        return remote
+
+    if bundled is not None:
+        logger.warning(
+            "DOG logo %s could not be fetched; falling back to the bundled Claracle "
+            "logo %s so the episode stays branded",
+            _redact_url(url),
+            bundled,
+        )
+        return bundled
+
+    logger.error(
+        "DOG logo %s could not be fetched and no bundled Claracle logo is packaged "
+        "in this image (expected %s)",
+        _redact_url(url),
+        WATERMARK_LOGO_PATH,
+    )
+    return None
 
 
 def _build_dog_overlay_filter(
@@ -2485,7 +2571,11 @@ def compose_video(
             the configured size/opacity.  It additionally appears over the final
             :data:`DOG_INTRO_LEAD_SECONDS` seconds of the intro bumper so it is
             on screen before the intro ends (#361); the outro stays unbranded.
-            A failed download is skipped silently (graceful degradation).
+            Canonical Claracle URLs resolve to the bundled
+            ``assets/images/claracle.jpeg`` without any network access, and a
+            failed remote download falls back to that same bundled asset.  When
+            even the bundled asset is absent, :class:`WatermarkUnavailableError`
+            is raised rather than silently shipping an unbranded episode.
         dog_logo_cache_dir: Local cache directory for the downloaded DOG logo.
             Defaults to a stable temp-dir location.
         audio_duration: Total podcast audio length in seconds.  When provided
@@ -2513,6 +2603,8 @@ def compose_video(
 
     Raises:
         ValueError: If segments is empty.
+        WatermarkUnavailableError: If *dog_logo* is configured but no logo
+            (remote or bundled) could be resolved.
         subprocess.CalledProcessError: If ffmpeg fails.
     """
     if not segments:
@@ -2842,6 +2934,18 @@ def compose_video(
     if dog_logo is not None:
         dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
         dog_logo_path = _fetch_dog_logo(dog_logo.url, dog_cache)
+        if dog_logo_path is None:
+            # A watermark was explicitly configured but neither the remote logo
+            # nor the bundled Claracle asset could be resolved.  Failing here is
+            # deliberate: silently composing an unbranded episode produced a
+            # "successful" but unusable W36 video.
+            raise WatermarkUnavailableError(
+                "DOG watermark was configured but could not be resolved: remote fetch "
+                f"of {_redact_url(dog_logo.url)} failed and the bundled Claracle logo is "
+                f"not packaged in this image (expected {WATERMARK_LOGO_PATH}). Rebuild the "
+                "synthesis image so assets/images/claracle.jpeg is present, or remove "
+                "podcast_config.dog_logo to render intentionally unbranded video."
+            )
 
     # Step 3.6: Splice section title cards into the content stream (#377).  Cards
     # are normalized to the canonical layout (so the xfade copy path stays valid)

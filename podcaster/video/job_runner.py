@@ -1222,7 +1222,11 @@ def _resolve_dog_logo(manifest: dict[str, Any]):
     """Build a DogLogoConfig from ``request.podcast_config.dog_logo`` if present.
 
     Returns ``None`` when the manifest carries no ``dog_logo`` config so the
-    composition skips the watermark (graceful degradation).
+    composition skips the watermark (an intentionally unbranded episode).  When
+    a config *is* present the watermark is guaranteed: canonical Claracle URLs
+    resolve to the bundled ``assets/images/claracle.jpeg`` and any remote fetch
+    failure falls back to it, so composition can no longer silently drop
+    branding (W36).
     """
     from podcaster.video.video_compose import DogLogoConfig
 
