@@ -57,7 +57,26 @@ FORMAT_HEADER_MIN_BYTES: dict[str, int] = {
     "jpeg": 11,  # SOI(2) + SOF marker(2) + length(2) + precision(1) + 16-bit h/w
     "png": 24,  # signature(8) + length(4) + "IHDR"(4) + 32-bit width + height
     "webp": 25,  # RIFF(12) + "VP8L"(4) + signature byte + packed 14-bit w/h
-    "bmp": 26,  # "BM"(2) + file header(12) + DIB size(4) + 32-bit width + height
+    "bmp": 22,  # "BM"(2) + file header(12) + DIB size(4) + 16-bit width + height
+}
+
+#: DIB (device-independent bitmap) header sizes a BMP may legally declare at
+#: offset 14, mapped to the width/height encoding that variant uses.  ``"16"``
+#: is ``BITMAPCOREHEADER``'s pair of 16-bit unsigned values; every later variant
+#: uses 32-bit signed values (a negative height means top-down rows).  Reading
+#: 32-bit dimensions unconditionally silently mis-parsed a legitimate
+#: ``BITMAPCOREHEADER`` file, and accepting *any* declared size let two ASCII
+#: bytes (``"BM"``) carry arbitrary non-image content past the "bytes decide"
+#: boundary.
+BMP_DIB_HEADER_DIMENSIONS: dict[int, str] = {
+    12: "16",  # BITMAPCOREHEADER
+    16: "32",  # OS22XBITMAPHEADER (short form)
+    40: "32",  # BITMAPINFOHEADER
+    52: "32",  # BITMAPV2INFOHEADER
+    56: "32",  # BITMAPV3INFOHEADER
+    64: "32",  # OS22XBITMAPHEADER
+    108: "32",  # BITMAPV4HEADER
+    124: "32",  # BITMAPV5HEADER
 }
 
 #: Cheap length floor applied *before* signature matching.  It is **not** the
@@ -127,10 +146,46 @@ def _sniff_gif(data: bytes) -> ImageInfo:
 
 
 def _sniff_bmp(data: bytes) -> ImageInfo:
-    # BITMAPINFOHEADER width/height are signed; a negative height just means a
-    # top-down bitmap, so compare on the absolute value.
-    if len(data) < FORMAT_HEADER_MIN_BYTES["bmp"]:
+    """Validate a BMP from its file header *and* its DIB header variant.
+
+    ``"BM"`` is only two ASCII bytes — the weakest signature of any supported
+    format — so accepting anything that starts with it and reading 32-bit
+    dimensions at a fixed offset let ordinary text (``"BM report 2026..."``) be
+    misclassified as an image, and mis-parsed a legitimate
+    ``BITMAPCOREHEADER`` file, whose dimensions are 16-bit and sit in the bytes
+    a ``BITMAPINFOHEADER`` uses for the *low half* of its width.
+
+    Three structural facts are checked instead, all from the fixed-size header:
+    the reserved words are zero (the format requires it of any created file),
+    the declared DIB header size is one of the defined variants
+    (:data:`BMP_DIB_HEADER_DIMENSIONS`), and the pixel-array offset is at least
+    past the end of that header.  Dimensions are then read with the encoding the
+    declared variant actually uses.
+    """
+    # Enough for "BM"(2) + file header(12) + DIB size(4); the dimension read is
+    # bounds-checked again below against the variant's own requirement.
+    if len(data) < 18:
         raise InvalidImageError("malformed_image", "bmp header truncated")
+    reserved1, reserved2 = struct.unpack("<HH", data[6:10])
+    if reserved1 or reserved2:
+        raise InvalidImageError("malformed_image", "bmp reserved fields not zero")
+    pixel_offset, dib_size = struct.unpack("<II", data[10:18])
+    encoding = BMP_DIB_HEADER_DIMENSIONS.get(dib_size)
+    if encoding is None:
+        raise InvalidImageError("malformed_image", f"bmp unknown dib header size {dib_size}")
+    if pixel_offset < 14 + dib_size:
+        raise InvalidImageError("malformed_image", "bmp pixel offset inside header")
+
+    if encoding == "16":
+        # BITMAPCOREHEADER: two 16-bit *unsigned* values, no top-down variant.
+        if len(data) < 22:
+            raise InvalidImageError("malformed_image", "bmp core header truncated")
+        width, height = struct.unpack("<HH", data[18:22])
+        return _check_geometry("bmp", width, height)
+    # BITMAPINFOHEADER and later: 32-bit signed; a negative height just means a
+    # top-down bitmap, so compare on the absolute value.
+    if len(data) < 26:
+        raise InvalidImageError("malformed_image", "bmp info header truncated")
     width, height = struct.unpack("<ii", data[18:26])
     return _check_geometry("bmp", abs(width), abs(height))
 
