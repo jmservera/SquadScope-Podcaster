@@ -214,11 +214,58 @@ GET /v3/stations/{stationId}/episodes?userId={userId}&isMumsCompatible=true
 Omitting it returns `HTTP 400 {"property":"query.userId","message":"is required"}`.
 `userId` comes from `_resolve_legacy_ids` together with `stationId`.
 
-A lookup that fails (HTTP error, malformed JSON, missing identity, or a
-truncated/paginated listing) raises `SpotifyDraftReconcileError` and fails the
-publish. It is never reported as "no draft exists", because that would create a
-duplicate draft on every retry. Operators who need a blind create can set
+A lookup that fails (HTTP error, transport error, malformed JSON, missing
+identity) raises `SpotifyDraftReconcileError` and fails the publish. So does a
+listing whose *schema* this code cannot read — an unknown container, an error
+body, a non-array episode field, a renamed title/id/state field, or a non-object
+entry. `None` ("no draft exists") is a proof of absence and is only sound when
+every entry of a recognised container was understood; a recognised **empty**
+array is still a legitimate no-match. An entry whose title is present but null
+is understood as an untitled draft (no match). Operators who need a blind create
+can set `PODCASTER_SPOTIFY_RECONCILE=0`.
+
+> No successful response from this endpoint has ever been observed (every call
+> 400'd on the missing `userId`), so the container shape is **unverified**. The
+> first deploy may therefore fail closed until the real schema is confirmed from
+> the `SpotifyDraftReconcileError` message, which reports the top-level key
+> *names* (never values).
+
+#### Titling the new draft immediately (idempotency)
+
+`_create_episode` posts `{"hourOffset": 0}` and Spotify returns an **untitled**
+draft; the title is only applied by the final `_set_metadata` call, minutes later
+(signed URLs → multipart upload → processing poll). A crash anywhere in that
+window left a draft that reconcile — which matches on title — could never find,
+so the next attempt created another one. That was the dominant duplicate window.
+
+`_claim_draft_title` now titles the new draft with the *same*
+`/v3/episodes/{id}/update` request the final metadata step already uses (no new
+or guessed fields) before any upload begins, narrowing the window to a single
+request. If the claim fails the publish aborts before uploading and names the
+orphan draft id so an operator can delete it. A *reconciled* draft is already
+titled and is not re-titled. The claim is skipped entirely when
 `PODCASTER_SPOTIFY_RECONCILE=0`.
+
+Residual, irreducible window: if the process dies after the create request is
+sent but before its response is read, the id is lost. The Anchor v5 API exposes
+no idempotency key, so this cannot be closed client-side.
+
+#### Pagination (unimplemented, unverified)
+
+The listing is fetched with a single unpaginated GET. Whether the endpoint pages
+at all — and under which key — is unknown. When the response carries a truthy
+`hasMore`/`hasNextPage`/`nextPageToken`/`nextPage` key **and** no match was
+found, a warning is logged naming the key; the publish is *not* blocked, because
+hard-failing on a guessed key name could block every new video publish. Operators
+who have confirmed the contract for their show can opt into fail-closed
+behaviour with `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1`.
+
+#### Credential expiry
+
+A 401/403 anywhere in the video path raises `SpotifyCredentialExpiredError`,
+which `upload_video_to_episode` converts into an operator credential-expiry
+notification (`notify_credential_expiry`, #364) and a result carrying
+`details.credentials_expired` — the same handling the audio publish path has.
 
 ### Upload API reference (detailed)
 
@@ -728,7 +775,8 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` skips the existing-draft lookup and always creates a new video draft (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` skips the existing-draft lookup *and* the immediate title claim, restoring blind create (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults off. `1`/`true`/`yes`/`on` makes an explicitly paginated listing with no first-page match fail closed instead of warning (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,
