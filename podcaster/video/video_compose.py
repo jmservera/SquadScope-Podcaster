@@ -28,7 +28,13 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar, Protocol, Sequence
 from podcaster.image_validation import InvalidImageError, sniff_image
 from podcaster.progress import TaskStatus
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
-from podcaster.ssrf import host_is_blocked, redact_url, safe_urlopen
+from podcaster.ssrf import (
+    HostVerdict,
+    UnresolvableHostError,
+    classify_host,
+    redact_url,
+    safe_urlopen,
+)
 from podcaster.video.intermediates import ensure_disk_budget
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 from podcaster.video.video_gen import (
@@ -616,7 +622,14 @@ def _classify_logo_fetch_error(
     if isinstance(exc, urllib.error.HTTPError):
         return _http_status_is_transient(exc.code), f"http_{exc.code}"
 
-    # ``safe_urlopen`` raises ValueError for a target the SSRF guard refuses.
+    # ``safe_urlopen`` raises a ``ValueError`` subclass for a target the SSRF
+    # guard refuses.  The two refusals are *not* the same failure: a host that
+    # resolved to a private/blocked address is a stable verdict on the URL, while
+    # a host the resolver could not answer for at all is a DNS condition that may
+    # clear on its own.  Collapsing them (as a bare ``ValueError`` check did) made
+    # one DNS outage delete the queue message on the first attempt.
+    if isinstance(exc, UnresolvableHostError):
+        return True, "dns"
     if isinstance(exc, ValueError):
         return False, "ssrf_blocked"
 
@@ -636,6 +649,13 @@ def _classify_logo_fetch_error(
         return True, "connection"
     if isinstance(probe, ssl.SSLError):
         return True, "tls"
+    if isinstance(probe, http.client.InvalidURL):
+        # ``http.client`` rejects a request line containing spaces or control
+        # characters *before* any bytes leave the process.  That is a property of
+        # the configured URL, not of the network, so the generic
+        # ``HTTPException`` branch below (transient) would burn five full
+        # record+compose reruns on a URL that can never be requested.
+        return False, "invalid_url"
     if isinstance(probe, http.client.HTTPException):
         # Truncated/oversized/invalid HTTP framing: the transfer broke, so the
         # configuration has not been shown to be wrong.
@@ -725,10 +745,13 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
 
     Raises:
         WatermarkUnavailableError: Permanent — a malformed URL, unsupported
-            scheme, no host, SSRF-blocked target, definitive ``4xx``,
-            empty/oversized body, or bytes that are not a usable image.
-        WatermarkTransientError: Transient — timeout, DNS/connection failure,
-            ``408``/``425``/``429``/``5xx``, or a local cache-write error.
+            scheme, no host, a host that *resolved* to an SSRF-blocked address,
+            definitive ``4xx``, empty/oversized body, or bytes that are not a
+            usable image.
+        WatermarkTransientError: Transient — timeout, DNS resolution failure
+            (including a host the SSRF guard could not resolve, which is refused
+            but not condemned), connection failure, ``408``/``425``/``429``/
+            ``5xx``, or a local cache-write error.
 
     The body is bounded (:data:`DOG_MAX_LOGO_BYTES`) and validated from its own
     magic bytes rather than from the ``Content-Type`` header, so a valid image
@@ -794,7 +817,22 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
     if hostname is None:
         logger.warning("Refusing DOG logo fetch: URL has no host in %s", redacted)
         raise _permanent(f"DOG logo URL {redacted} has no host", "missing_host")
-    if host_is_blocked(hostname):
+    # ``classify_host`` reports *why* a host is refused.  The previous boolean
+    # ``host_is_blocked`` folded "resolved to 10.0.0.1" and "the resolver did not
+    # answer" into one ``True``, and both became a permanent ``ssrf_blocked``
+    # verdict — so a five-minute DNS outage deleted the queue message on the
+    # first attempt instead of retrying.  Both verdicts still refuse the fetch
+    # (nothing is connected to that was not proven safe); only the retry
+    # classification differs.
+    verdict = classify_host(hostname)
+    if verdict is HostVerdict.UNRESOLVABLE:
+        logger.warning(
+            "Refusing DOG logo fetch for now: host could not be resolved in %s "
+            "(no connection attempted); this is retryable",
+            redacted,
+        )
+        raise _transient(f"DOG logo URL {redacted} could not be resolved on this attempt", "dns")
+    if verdict is not HostVerdict.ALLOWED:
         logger.warning(
             "Refusing DOG logo fetch: URL host is not publicly routable / is "
             "blocked by the SSRF guard in %s",
@@ -931,10 +969,12 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path:
       fix), while a *transient* one raises :class:`WatermarkTransientError` so
       the retry can still recover the image.
     * **Any other (third-party) URL** — fetched through the SSRF-guarded opener
-      with size and image-bytes validation.  A blocked, gone or invalid fetch
-      raises :class:`WatermarkUnavailableError` with
-      :data:`WATERMARK_REASON_FETCH_FAILED`; a timeout, DNS/connection error or
-      ``408``/``425``/``429``/``5xx`` raises :class:`WatermarkTransientError`
+      with size and image-bytes validation.  A fetch that is *definitively*
+      rejected (malformed URL, a host that resolves to a blocked address, gone,
+      too large, not an image) raises :class:`WatermarkUnavailableError` with
+      :data:`WATERMARK_REASON_FETCH_FAILED`; a timeout, DNS resolution failure,
+      connection error or ``408``/``425``/``429``/``5xx`` raises
+      :class:`WatermarkTransientError`
       with :data:`WATERMARK_REASON_FETCH_TRANSIENT`.  Neither **ever** falls back
       to the bundled Claracle logo: stamping Claracle branding onto an episode
       that was configured to carry someone else's mark is a worse outcome than
@@ -2994,10 +3034,16 @@ def compose_video(
             on screen before the intro ends (#361); the outro stays unbranded.
             Canonical Claracle URLs resolve to the bundled
             ``assets/images/claracle.jpeg`` without any network access.  A
-            configured watermark that cannot be resolved raises
-            :class:`WatermarkUnavailableError` rather than silently shipping an
-            unbranded episode; a third-party URL that fails is **never**
-            substituted with the bundled Claracle logo.
+            configured watermark that cannot be resolved raises — an unbranded
+            episode is never shipped silently — and the *type* carries the retry
+            classification: :class:`WatermarkUnavailableError` when the failure
+            is permanent (missing bundled asset, malformed URL, a host that
+            resolves to an SSRF-blocked address, a definitive ``4xx``, or bytes
+            that are not a usable image) and :class:`WatermarkTransientError`
+            when it is not (timeout, DNS resolution failure, connection error,
+            ``408``/``425``/``429``/``5xx``).  A third-party URL that fails is
+            **never** substituted with the bundled Claracle logo, in either
+            classification.
         dog_logo_cache_dir: Local cache directory for the downloaded DOG logo.
             Defaults to a stable temp-dir location.
         audio_duration: Total podcast audio length in seconds.  When provided
@@ -3025,9 +3071,17 @@ def compose_video(
 
     Raises:
         ValueError: If segments is empty.
-        WatermarkUnavailableError: If *dog_logo* is configured but the logo
-            could not be resolved (missing bundled asset, or an unreachable /
-            invalid third-party URL).
+        WatermarkUnavailableError: If *dog_logo* is configured and the logo is
+            *permanently* unresolvable — a missing bundled asset, a malformed or
+            unsupported URL, a host that resolves to an SSRF-blocked address, a
+            definitive ``4xx``, or a body that is not a usable image.  Retrying
+            the identical job cannot succeed.
+        WatermarkTransientError: If *dog_logo* is configured and the logo could
+            not be fetched *this time* — timeout, DNS resolution failure,
+            connection error, or ``408``/``425``/``429``/``5xx``.  Nothing about
+            the configuration has been shown to be wrong, so a bounded retry of
+            the same job may succeed; ``job_runner`` maps this onto
+            ``TransientVideoError`` rather than deleting the queue message.
         subprocess.CalledProcessError: If ffmpeg fails.
     """
     if not segments:

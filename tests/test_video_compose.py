@@ -20,7 +20,7 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from podcaster import watermark
+from podcaster import ssrf, watermark
 from podcaster.image_validation import sniff_image
 from podcaster.video import video_compose as vc
 from podcaster.video.sync_plan import EpisodePlan, RepoReference, VideoSegment
@@ -88,6 +88,47 @@ def _stub_drawtext_probe(monkeypatch):
 
 
 # --- Helpers ---
+
+
+#: A public, non-blocked address used to stand in for a successful DNS answer.
+_PUBLIC_IP = "93.184.216.34"
+
+
+def _stub_dns(monkeypatch, *addresses: str) -> None:
+    """Stub the *resolver*, not the SSRF guard, for tests that need a live host.
+
+    Patching ``video_compose.host_is_blocked``/``classify_host`` to a constant
+    disabled the very code under test, which is how the DNS-failure regression in
+    #658 stayed invisible: the guard's own fail-closed behaviour was patched out
+    of every watermark test.  Replacing ``socket.getaddrinfo`` instead keeps the
+    real deny-list, the real literal-IP range checks and the real verdict logic
+    running, and only removes the dependency on the network.
+    """
+    answers = addresses or (_PUBLIC_IP,)
+
+    def _fake_getaddrinfo(host, port, *_a, **_k):  # noqa: ARG001 — parity with socket
+        return [
+            (
+                socket.AF_INET6 if ":" in addr else socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                (addr, port or 0),
+            )
+            for addr in answers
+        ]
+
+    monkeypatch.setattr(ssrf.socket, "getaddrinfo", _fake_getaddrinfo)
+
+
+def _fail_dns(monkeypatch, exc: BaseException | None = None) -> None:
+    """Make every resolution attempt fail the way a DNS outage does."""
+    failure = exc or socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+
+    def _boom(*_a, **_k):
+        raise failure
+
+    monkeypatch.setattr(ssrf.socket, "getaddrinfo", _boom)
 
 
 def _make_recorded_segment(
@@ -2155,7 +2196,7 @@ class TestDogLogoW36Regression:
         def _raise_404(url, timeout):
             raise HTTPError(url, 404, "Not Found", {}, None)
 
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(vc, "safe_urlopen", _raise_404)
         assert vc._fetch_dog_logo(self.W36_URL, tmp_path) == watermark.LOGO_PATH
 
@@ -2195,7 +2236,7 @@ class TestDogLogoW36Regression:
     def test_canonical_url_fetched_remotely_when_bundle_absent(self, tmp_path, monkeypatch):
         """Without the packaged asset the canonical URL still tries the network."""
         monkeypatch.setattr(watermark, "LOGO_PATH", tmp_path / "absent.jpeg")
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         opened = MagicMock(return_value=_ImageResponse(_PNG_1X1))
         monkeypatch.setattr(vc, "safe_urlopen", opened)
         result = vc._fetch_dog_logo(self.W36_URL, tmp_path / "cache")
@@ -2205,7 +2246,7 @@ class TestDogLogoW36Regression:
 
     def test_asset_missing_and_remote_fail_raises_permanent_reason(self, tmp_path, monkeypatch):
         monkeypatch.setattr(watermark, "LOGO_PATH", tmp_path / "absent.jpeg")
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
 
         def _raise_404(url, timeout):
             raise HTTPError(url, 404, "Not Found", {}, None)
@@ -2234,7 +2275,7 @@ class TestThirdPartyLogoNeverSubstituted:
         def _raise_404(url, timeout):
             raise HTTPError(url, 404, "Not Found", {}, None)
 
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(vc, "safe_urlopen", _raise_404)
         with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
             vc._fetch_dog_logo(self.THIRD_PARTY, tmp_path)
@@ -2255,7 +2296,7 @@ class TestThirdPartyLogoNeverSubstituted:
         opened.assert_not_called()
 
     def test_third_party_invalid_bytes_raises_and_does_not_substitute(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(
             vc,
             "safe_urlopen",
@@ -2271,7 +2312,7 @@ class TestThirdPartyLogoNeverSubstituted:
         def _raise_404(url, timeout):
             raise HTTPError(url, 404, "Not Found", {}, None)
 
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(vc, "safe_urlopen", _raise_404)
         runner = _mock_runner()
         seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
@@ -2289,7 +2330,7 @@ class TestThirdPartyLogoNeverSubstituted:
 
     def test_valid_third_party_logo_still_used(self, tmp_path, monkeypatch):
         """The optional third-party path is preserved when it actually works."""
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
         result = vc._fetch_dog_logo(self.THIRD_PARTY, tmp_path)
         assert result is not None
@@ -2301,7 +2342,7 @@ class TestFetchDogLogoValidation:
     """Remote logo bodies are validated on their bytes, not their headers."""
 
     def test_soft_404_html_body_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(
             vc,
             "safe_urlopen",
@@ -2312,7 +2353,7 @@ class TestFetchDogLogoValidation:
         assert excinfo.value.transient is False
 
     def test_oversized_body_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         oversized = _PNG_1X1 + b"x" * vc.DOG_MAX_LOGO_BYTES
         monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(oversized)))
         with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
@@ -2321,7 +2362,7 @@ class TestFetchDogLogoValidation:
 
     def test_octet_stream_valid_image_accepted(self, tmp_path, monkeypatch):
         """Object stores routinely serve real images as application/octet-stream."""
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(
             vc,
             "safe_urlopen",
@@ -2332,7 +2373,7 @@ class TestFetchDogLogoValidation:
         assert result.read_bytes() == _PNG_1X1
 
     def test_missing_content_type_valid_image_accepted(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(
             vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1, ""))
         )
@@ -2342,7 +2383,7 @@ class TestFetchDogLogoValidation:
 
     def test_missing_content_type_invalid_bytes_rejected(self, tmp_path, monkeypatch):
         """No Content-Type used to mean 'accept anything' — the bytes now decide."""
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(
             vc,
             "safe_urlopen",
@@ -2354,7 +2395,7 @@ class TestFetchDogLogoValidation:
 
     def test_forged_image_content_type_with_invalid_bytes_rejected(self, tmp_path, monkeypatch):
         """A server claiming image/png for an HTML body must not be believed."""
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(
             vc,
             "safe_urlopen",
@@ -2369,7 +2410,7 @@ class TestFetchDogLogoValidation:
 
     def test_decompression_bomb_header_rejected(self, tmp_path, monkeypatch):
         """A tiny PNG declaring a gigapixel canvas is rejected from its header."""
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(
             vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_png_header(60000, 60000)))
         )
@@ -2378,7 +2419,7 @@ class TestFetchDogLogoValidation:
         assert excinfo.value.transient is False
 
     def test_truncated_image_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(
             vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1[:12]))
         )
@@ -2440,7 +2481,7 @@ class TestFetchDogLogoSSRF:
         HTTPError from the guarded opener, which must fail the fetch (and, for a
         third-party URL, must not fall back to bundled branding).
         """
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
 
         def _redirect_blocked(url, timeout):
             raise HTTPError(url, 403, "redirect to blocked host", {}, None)
@@ -2453,7 +2494,7 @@ class TestFetchDogLogoSSRF:
             vc._fetch_dog_logo("https://example.com/logo.png", tmp_path)
 
     def test_safe_urlopen_used_for_public_url(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         opened = MagicMock(return_value=_ImageResponse(_PNG_1X1))
         monkeypatch.setattr(vc, "safe_urlopen", opened)
         result = vc._fetch_dog_logo("https://example.com/logo.png", tmp_path)
@@ -2518,7 +2559,7 @@ class TestRemoteLogoFailureClassification:
 
     @pytest.fixture(autouse=True)
     def _allow_host(self, monkeypatch):
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
 
     # --- transient: retrying the identical request can succeed ---
 
@@ -2755,7 +2796,7 @@ class TestMalformedLogoUrl:
     def test_remote_fetch_raises_permanent_invalid_url(self, url, tmp_path, monkeypatch):
         opener = MagicMock()
         monkeypatch.setattr(vc, "safe_urlopen", opener)
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
 
         with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
             vc._fetch_dog_logo_remote(url, tmp_path)
@@ -2804,7 +2845,7 @@ class TestMalformedLogoUrl:
 
     def test_a_valid_url_is_still_fetched(self, tmp_path, monkeypatch):
         """Guard against over-eager rejection: normal URLs keep working."""
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
         monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
         result = vc._fetch_dog_logo_remote("https://example.com:8443/logo.png", tmp_path)
         assert result.read_bytes() == _PNG_1X1
@@ -2823,7 +2864,7 @@ class TestCachedLogoRevalidation:
 
     @pytest.fixture(autouse=True)
     def _allow_host(self, monkeypatch):
-        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        _stub_dns(monkeypatch)
 
     def _cache_path(self, cache_dir: Path) -> Path:
         digest = hashlib.sha256(self.URL.encode("utf-8")).hexdigest()[:16]
@@ -4366,3 +4407,231 @@ class TestNormalizeTaskReporter:
             task_reporter=_bad_reporter,
         )
         assert result.segment_count == 1
+
+
+class TestWatermarkDnsVerdictClassification:
+    """#658 review: a DNS outage must not be reported as a permanent SSRF block.
+
+    ``_fetch_dog_logo_remote`` asked ``host_is_blocked(hostname)``, and the SSRF
+    guard fails **closed** on an unresolvable host — so ``getaddrinfo`` raising
+    for five minutes produced ``watermark_fetch_failed``/``ssrf_blocked``
+    (permanent), and ``job_runner`` deleted the queue message on the very first
+    attempt.  The earlier DNS test hid this by patching ``host_is_blocked`` to a
+    constant ``False``, which disabled the interaction under test entirely.
+
+    These tests therefore drive the **real** guard and stub only the resolver,
+    the way a real DNS outage does.
+    """
+
+    URL = "https://logo.example.com/images/partner-logo.png"
+
+    def test_resolver_failure_is_transient_and_never_connects(self, tmp_path, monkeypatch):
+        _fail_dns(monkeypatch)
+        opener = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", opener)
+
+        with pytest.raises(vc.WatermarkTransientError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+
+        exc = excinfo.value
+        assert exc.transient is True
+        assert exc.reason == vc.WATERMARK_REASON_FETCH_TRANSIENT
+        assert exc.details["failure_kind"] == "dns"
+        assert not isinstance(exc, vc.WatermarkUnavailableError)
+        # Fail closed is preserved: the fetch is refused, not attempted.
+        opener.assert_not_called()
+        assert not list(tmp_path.glob("dog_*"))
+
+    def test_resolver_failure_survives_the_full_resolver_without_misbranding(
+        self, tmp_path, monkeypatch
+    ):
+        _fail_dns(monkeypatch)
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(side_effect=AssertionError("no network")))
+
+        with pytest.raises(vc.WatermarkTransientError) as excinfo:
+            vc._fetch_dog_logo(self.URL, tmp_path)
+
+        exc = excinfo.value
+        assert exc.details["canonical"] is False
+        assert exc.details["failure_kind"] == "dns"
+        assert str(watermark.LOGO_PATH) not in str(exc)
+        assert str(watermark.LOGO_PATH) not in str(exc.details)
+
+    def test_resolver_recovers_on_retry_and_the_logo_is_used(self, tmp_path, monkeypatch):
+        """The point of calling it transient: the next attempt actually works."""
+        _fail_dns(monkeypatch)
+        with pytest.raises(vc.WatermarkTransientError):
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+
+        # DNS comes back; the identical request now succeeds.
+        _stub_dns(monkeypatch)
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
+        cached = vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        assert cached.read_bytes() == _PNG_1X1
+
+    def test_resolved_private_address_is_permanent(self, tmp_path, monkeypatch):
+        """A host that *resolves* to 10.x is a stable verdict on the config."""
+        _stub_dns(monkeypatch, "10.1.2.3")
+        opener = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", opener)
+
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+
+        exc = excinfo.value
+        assert exc.transient is False
+        assert exc.details["failure_kind"] == "ssrf_blocked"
+        opener.assert_not_called()
+
+    def test_mixed_public_and_private_answer_is_permanently_blocked(self, tmp_path, monkeypatch):
+        """A public A record must not launder a private one hiding behind it."""
+        _stub_dns(monkeypatch, _PUBLIC_IP, "169.254.169.254")
+        opener = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", opener)
+
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+
+        assert excinfo.value.details["failure_kind"] == "ssrf_blocked"
+        opener.assert_not_called()
+
+    def test_opener_level_unresolvable_refusal_is_transient(self, tmp_path, monkeypatch):
+        """``safe_urlopen`` refusing mid-flight (e.g. a redirect hop) is transient.
+
+        ``UnresolvableHostError`` is a ``ValueError``, and the bare
+        ``isinstance(exc, ValueError)`` branch used to label every ``ValueError``
+        from the opener ``ssrf_blocked``/permanent.
+        """
+        _stub_dns(monkeypatch)
+        monkeypatch.setattr(
+            vc, "safe_urlopen", _raiser(ssrf.UnresolvableHostError("could not resolve host"))
+        )
+        with pytest.raises(vc.WatermarkTransientError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        assert excinfo.value.details["failure_kind"] == "dns"
+
+    def test_opener_level_blocked_refusal_is_still_permanent(self, tmp_path, monkeypatch):
+        _stub_dns(monkeypatch)
+        monkeypatch.setattr(vc, "safe_urlopen", _raiser(ssrf.BlockedHostError("refusing to fetch")))
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        assert excinfo.value.details["failure_kind"] == "ssrf_blocked"
+
+    def test_dns_failure_report_is_redacted(self, tmp_path, monkeypatch):
+        """The untrusted URL is never echoed back with its secrets attached."""
+        userinfo = "s3cretuser:s3cretpass"
+        secret = f"https://{userinfo}@logo.example.com/logo.png?sig=abc123#frag"
+        _fail_dns(monkeypatch)
+        with pytest.raises(vc.WatermarkTransientError) as excinfo:
+            vc._fetch_dog_logo(secret, tmp_path)
+        rendered = f"{excinfo.value} {excinfo.value.details}"
+        assert "s3cretpass" not in rendered
+        assert "sig=abc123" not in rendered
+        assert "logo.example.com/logo.png" in rendered
+
+    def test_canonical_url_is_unaffected_by_a_dns_outage(self, tmp_path, monkeypatch):
+        """The bundled asset needs no resolver at all."""
+        _fail_dns(monkeypatch)
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(side_effect=AssertionError("no network")))
+        assert vc._fetch_dog_logo(DEFAULT_DOG_LOGO_URL, tmp_path) == watermark.LOGO_PATH
+
+    def test_canonical_dns_outage_with_missing_bundle_is_transient(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(watermark, "LOGO_PATH", tmp_path / "absent.jpeg")
+        _fail_dns(monkeypatch)
+        with pytest.raises(vc.WatermarkTransientError) as excinfo:
+            vc._fetch_dog_logo("https://www.claracle.com/images/claracle.jpeg", tmp_path / "cache")
+        exc = excinfo.value
+        assert exc.details["canonical"] is True
+        assert exc.details["bundled_asset_missing"] is True
+        assert exc.details["failure_kind"] == "dns"
+
+    def test_compose_raises_transient_and_never_overlays_claracle(self, tmp_path, monkeypatch):
+        _fail_dns(monkeypatch)
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(side_effect=AssertionError("no network")))
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        with pytest.raises(vc.WatermarkTransientError):
+            compose_video(
+                segments=[seg],
+                output_dir=tmp_path / "out",
+                runner=runner,
+                dog_logo=DogLogoConfig(url=self.URL),
+                dog_logo_cache_dir=tmp_path / "dogcache",
+            )
+        for call in runner.call_args_list:
+            assert str(watermark.LOGO_PATH) not in call.args[0]
+
+    def test_literal_blocked_ip_needs_no_resolver(self, tmp_path, monkeypatch):
+        """Deny-listed literals are still refused while DNS is down."""
+        _fail_dns(monkeypatch)
+        opener = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", opener)
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo_remote("http://169.254.169.254/latest/meta-data/", tmp_path)
+        assert excinfo.value.details["failure_kind"] == "ssrf_blocked"
+        opener.assert_not_called()
+
+
+class TestInvalidUrlIsPermanent:
+    """``http.client.InvalidURL`` is a config fault, not a protocol blip.
+
+    ``InvalidURL`` subclasses ``HTTPException``, so it fell into the generic
+    "the transfer broke" branch and was retried five times for a URL containing a
+    space or a control character — bytes that ``http.client`` refuses to put on
+    the wire at all, on every attempt.
+    """
+
+    URL = "https://logo.example.com/images/partner-logo.png"
+
+    @pytest.fixture(autouse=True)
+    def _dns(self, monkeypatch):
+        _stub_dns(monkeypatch)
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "URL can't contain control characters. '/logo .png' (found at least ' ')",
+            "nonnumeric port: 'x'",
+        ],
+    )
+    def test_invalid_url_is_permanent(self, message, tmp_path, monkeypatch):
+        monkeypatch.setattr(vc, "safe_urlopen", _raiser(http.client.InvalidURL(message)))
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        exc = excinfo.value
+        assert exc.transient is False
+        assert not isinstance(exc, vc.WatermarkTransientError)
+        assert exc.reason == vc.WATERMARK_REASON_FETCH_FAILED
+        assert exc.details["failure_kind"] == "invalid_url"
+        # Explicitly *not* the old generic protocol classification.
+        assert exc.details["failure_kind"] != "protocol_invalidurl"
+
+    def test_other_http_exceptions_stay_transient(self, tmp_path, monkeypatch):
+        """Only InvalidURL is reclassified; a broken transfer is still retryable."""
+        monkeypatch.setattr(vc, "safe_urlopen", _raiser(http.client.IncompleteRead(b"", 10)))
+        with pytest.raises(vc.WatermarkTransientError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        assert excinfo.value.details["failure_kind"].startswith("protocol_")
+
+    def test_invalid_url_message_is_not_echoed_back(self, tmp_path, monkeypatch):
+        """``InvalidURL`` carries the offending URL — it must not leak."""
+        userinfo = "s3cretuser:s3cretpass"
+        secret = f"https://{userinfo}@logo.example.com/logo .png?sig=abc123"
+        monkeypatch.setattr(
+            vc, "safe_urlopen", _raiser(http.client.InvalidURL(f"URL can't contain: {secret}"))
+        )
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo(self.URL, tmp_path)
+        rendered = f"{excinfo.value} {excinfo.value.details}"
+        assert "s3cretpass" not in rendered
+        assert "abc123" not in rendered
+
+    def test_resolver_preserves_the_permanent_class(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            vc, "safe_urlopen", _raiser(http.client.InvalidURL("URL can't contain spaces"))
+        )
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo(self.URL, tmp_path)
+        assert excinfo.value.details["failure_kind"] == "invalid_url"
+        assert str(watermark.LOGO_PATH) not in str(excinfo.value)
