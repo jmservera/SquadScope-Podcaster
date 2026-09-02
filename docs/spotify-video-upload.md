@@ -225,11 +225,22 @@ A lookup that fails (HTTP error, transport error, malformed JSON, missing
 identity) raises `SpotifyDraftReconcileError` and fails the publish. So does a
 listing whose *schema* this code cannot read — an unknown container, an error
 body, a non-array episode field, a renamed title/id/state field, or a non-object
-entry. `None` ("no draft exists") is a proof of absence and is only sound when
-every entry of a recognised container was understood; a recognised **empty**
-array is still a legitimate no-match. An entry whose title is present but null
-is understood as an untitled draft (no match). Operators who need a blind create
-can set `PODCASTER_SPOTIFY_RECONCILE=0`.
+entry. `None` ("no draft exists") is only sound when every entry of a recognised
+container was understood **and** the listing carried no pagination hint (see
+[Pagination](#pagination-unimplemented-unverified) — by default a hint only
+warns, so `None` then means "no match on the page that was read"); a recognised
+**empty** array is still a legitimate no-match. An entry whose title is present
+but null is understood as an untitled draft (no match). Entries whose id is the
+excluded audio anchor are skipped *before* any state or title classification, so
+a scheduled or processing audio episode can never fail the video lookup.
+Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
+
+Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
+inspected — a malformed `episodeId` never hides a usable `id` — but the entry
+only yields an id when the readable keys agree on one value. A malformed id or
+two keys naming different episodes is a contradictory identity: the entry is
+treated as having no usable id (logged, never silent), which every caller
+already handles fail-closed.
 
 ##### Draft state is read from evidence, never from truthiness
 
@@ -241,8 +252,14 @@ duplicate.
 | Field | Accepted | Rejected |
 |-------|----------|----------|
 | `isDraft` | JSON `true`/`false` (`true` ⇒ draft) | any non-boolean: `"false"`, `"true"`, `0`, `1`, `1.0`, `{}`, `[]` |
-| `isPublished` | JSON `true`/`false` (`true` ⇒ **not** a draft) | any non-boolean |
+| `isPublished` | JSON `true`/`false`. `true` ⇒ **not** a draft; `false` alone is **not** evidence of a draft and needs a corroborating `isDraft`/status signal | any non-boolean |
 | `status` / `state` / `publishStatus` / `publishState` | `"draft"`, `"published"` (trimmed, case-insensitive) | any other token, and any non-string |
+
+`isPublished` is asymmetric on purpose: it is the field this integration itself
+writes, so `true` reliably means "not a draft", but `false` only means "not
+published" — a scheduled, processing or errored episode is unpublished without
+being a draft, and reusing one as the video draft would overwrite it. An entry
+whose *only* state signal is `isPublished: false` therefore fails closed.
 
 `bool("false")` is `True`, so a string is *never* truth-tested — it is schema
 drift. An **unknown** status token (`"scheduled"`, `"processing"`, anything a
@@ -270,9 +287,16 @@ so the next attempt created another one. That was the dominant duplicate window.
 `_claim_draft_title` now titles the new draft with the *same*
 `/v3/episodes/{id}/update` request the final metadata step already uses (no new
 or guessed fields) before any upload begins, narrowing the window to a single
-request. If the claim fails the publish aborts before uploading and names the
-orphan draft id so an operator can delete it. A *reconciled* draft is already
-titled and is not re-titled. The claim is skipped entirely when
+request. It sends the **real** title, description and numbering that the final
+metadata call would apply anyway — not an empty description — because that
+endpoint always sends a `description`, so claiming with `""` would clear
+metadata rather than only add a title. If the claim fails the publish aborts
+before uploading and names the orphan draft id so an operator can delete it.
+
+Only drafts known to be *untitled* are claimed: `_reconcile_or_create_draft`
+returns `(anchor_id, needs_title)` and `needs_title` is `False` for a
+reconciled draft **and** for a draft adopted during ambiguous-create recovery
+because it already carried the target title. The claim is skipped entirely when
 `PODCASTER_SPOTIFY_RECONCILE=0`.
 
 #### The create POST is never retried blindly
@@ -295,26 +319,51 @@ after an ambiguous create the listing is re-read:
 
 | Evidence in the re-listing | Action | Create POSTs sent |
 |---|---|---|
-| A draft now carries the target title | reuse it | 1 |
+| A draft now carries the target title | reuse it as-is (already titled, so it is *not* re-claimed) | 1 |
 | Exactly one *new* untitled draft, no unclassifiable entries | adopt it (the caller then titles it) | 1 |
-| No new entry, from a snapshot that yielded an id for every entry | the create provably did nothing → send it once more | 2 |
+| No new entry, from a snapshot that yielded an id for every entry | not yet proof — wait `_AMBIGUOUS_CREATE_SETTLE_SECONDS` and re-read; only if the settled read is *still* unchanged, send it once more | 2 |
 | Several new untitled drafts, any unclassifiable entry, or an incomplete snapshot | raise, naming the candidate ids for operator cleanup | 1 |
 | The re-listing itself is unreadable | raise (fail closed) | 1 |
 
-At most **two** create POSTs are ever sent for one publish attempt, and the
-second only with positive evidence that the first created nothing. A second
-ambiguous create is not recovered again. With `PODCASTER_SPOTIFY_RECONCILE=0`
-(and on the audio path in `publish_episode`, which never reconciles) there is no
-listing to reason from, so the single POST simply fails — a failed publish, not
-an orphaned duplicate.
+An *immediately* unchanged listing is deliberately not treated as proof. A
+client-side timeout or a reset connection says nothing about whether the server
+is still committing the create, and this API offers no read-your-writes
+guarantee, so a single sample taken microseconds after the failure can be stale.
+The listing is therefore read `_AMBIGUOUS_CREATE_READS` (2) times, spaced by a
+bounded settling delay, before a second POST is even considered; if the settled
+read surfaces a draft it is adopted instead. Evidence that is *already*
+ambiguous (several candidates, unclassifiable entries, an unusable snapshot)
+skips the settling read and fails closed immediately, because waiting cannot
+make it provable.
 
-Residual, irreducible window: if the process itself dies (SIGKILL, node loss)
-after the create request leaves the client but before any recovery runs, the id
-is lost on both sides and the next attempt cannot tell that draft apart from any
-other untitled one — it will be one of the "several candidates" that fail closed,
-or, if it is alone, it is adopted. Only a hard crash *between* the POST and the
-recovery listing escapes the reconciliation entirely; the Anchor v5 API exposes
-no idempotency key, so that cannot be closed client-side.
+At most **two** create POSTs are ever sent for one publish attempt, and the
+second only after a settled, twice-observed listing that still shows nothing the
+first create could have produced. A second ambiguous create is not recovered
+again. With `PODCASTER_SPOTIFY_RECONCILE=0` (and on the audio path in
+`publish_episode`, which never reconciles) there is no listing to reason from,
+so the single POST simply fails — a failed publish, not an orphaned duplicate.
+
+Residual, irreducible windows — stated precisely, because neither one loses the
+draft server-side:
+
+1. **Client dies between the POST and the recovery listing** (SIGKILL, node
+   loss). The server may well hold a created draft and its id; it is only the
+   *client* that never observed the id, so this process can no longer act on it.
+   The draft is untitled, so a later attempt cannot match it by title. It is
+   still visible in the listing, so the next attempt sees it as a pre-existing
+   untitled entry: it is in that run's pre-create snapshot, so it is never
+   adopted as evidence of that run's own create, and it stays as an orphan for
+   an operator to delete from the creator UI.
+2. **Create succeeds after the recovery gave up.** If the settled re-reads never
+   showed the draft and a second POST was sent, a late-committing first create
+   can still land, leaving two untitled drafts. Both are then untitled orphans
+   — the next attempt's snapshot contains both, so neither is mistaken for its
+   own create, and the run either adopts nothing or fails closed naming them.
+
+Neither window silently corrupts a *published* episode, and neither is closable
+client-side: the Anchor v5 API exposes no idempotency key. What is closed is the
+common case — a crash during the multi-minute upload — because the draft is
+titled before the upload starts and reconcile finds it on the next run.
 
 #### Pagination (unimplemented, unverified)
 

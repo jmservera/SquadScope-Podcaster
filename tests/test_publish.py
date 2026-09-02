@@ -1823,7 +1823,14 @@ class TestEpisodeDraftState:
         [
             ("status draft", {"episodeId": 1, "title": "My Show", "status": "draft"}),
             ("isDraft true", {"episodeId": 1, "title": "My Show", "isDraft": True}),
-            ("isPublished false", {"episodeId": 1, "title": "My Show", "isPublished": False}),
+            (
+                "isPublished false corroborated by isDraft",
+                {"episodeId": 1, "title": "My Show", "isPublished": False, "isDraft": True},
+            ),
+            (
+                "isPublished false corroborated by status",
+                {"episodeId": 1, "title": "My Show", "isPublished": False, "status": "draft"},
+            ),
             (
                 "agreeing fields",
                 {"episodeId": 1, "title": "My Show", "isDraft": True, "status": "draft"},
@@ -1868,6 +1875,166 @@ class TestEpisodeDraftState:
             }
         )
         assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 2
+
+
+class TestIsPublishedIsAsymmetricEvidence:
+    """#657 review: ``isPublished: false`` alone does not prove a draft.
+
+    ``isPublished`` is the field this integration *writes*, so ``true``
+    reliably means "not a draft". ``false`` only means "not published": a
+    scheduled, processing or errored episode is unpublished without being a
+    draft, and reusing one of those as the video draft would overwrite it.
+    """
+
+    def _lookup(self, episode, **kwargs):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp({"episodes": [episode]})
+        return pub._find_existing_draft(session, "99", "My Show", user_id="7", **kwargs)
+
+    def test_is_published_false_alone_is_not_a_draft_signal(self):
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._lookup({"episodeId": 1, "title": "My Show", "isPublished": False})
+        message = str(exc.value)
+        assert "no recognised draft/published state" in message
+        assert "isPublished" in message
+        assert "duplicate draft" in message
+
+    @pytest.mark.parametrize(
+        "corroboration",
+        [{"isDraft": True}, {"status": "draft"}, {"publishState": "draft"}],
+    )
+    def test_is_published_false_with_a_draft_signal_matches(self, corroboration):
+        episode = {"episodeId": 1, "title": "My Show", "isPublished": False, **corroboration}
+        assert self._lookup(episode) == 1
+
+    def test_is_published_true_alone_establishes_non_draft(self):
+        """``true`` needs no corroboration and is a clean match-free answer."""
+        assert self._lookup({"episodeId": 1, "title": "My Show", "isPublished": True}) is None
+
+    def test_is_published_true_contradicting_is_draft_fails_closed(self):
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._lookup({"episodeId": 1, "title": "My Show", "isPublished": True, "isDraft": True})
+        assert "contradictory" in str(exc.value)
+
+    def test_is_published_false_never_contradicts_a_published_status(self):
+        """``false`` contributes nothing, so it cannot manufacture a conflict."""
+        assert (
+            self._lookup(
+                {"episodeId": 1, "title": "My Show", "isPublished": False, "status": "published"}
+            )
+            is None
+        )
+
+
+class TestExcludedEntriesAreSkippedBeforeClassification:
+    """#657 review: the audio anchor's own state must never fail the lookup."""
+
+    def _lookup(self, payload, **kwargs):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(payload)
+        return pub._find_existing_draft(session, "99", "My Show", user_id="7", **kwargs)
+
+    @pytest.mark.parametrize(
+        ("label", "excluded"),
+        [
+            (
+                "scheduled audio anchor",
+                {"episodeId": 555, "title": "My Show", "status": "scheduled"},
+            ),
+            ("published audio anchor", {"episodeId": 555, "title": "My Show", "isPublished": True}),
+            ("state-less audio anchor", {"episodeId": 555, "title": "My Show"}),
+            (
+                "unpublished-only audio anchor",
+                {"id": 555, "title": "My Show", "isPublished": False},
+            ),
+        ],
+    )
+    def test_excluded_entry_state_is_never_classified(self, label, excluded):
+        payload = {"episodes": [excluded, {"episodeId": 888, "title": "My Show", "isDraft": True}]}
+        assert self._lookup(payload, exclude_id=555) == 888, label
+
+    def test_excluded_entry_alone_is_a_clean_no_match(self):
+        payload = {"episodes": [{"episodeId": 555, "title": "My Show", "status": "scheduled"}]}
+        assert self._lookup(payload, exclude_id=555) is None
+
+    def test_a_non_excluded_unknown_state_still_fails_closed(self):
+        """Skipping is scoped to ``exclude_id``; everything else is classified."""
+        from podcaster import publish as pub
+
+        payload = {"episodes": [{"episodeId": 777, "title": "My Show", "status": "scheduled"}]}
+        with pytest.raises(pub.SpotifyDraftReconcileError):
+            self._lookup(payload, exclude_id=555)
+
+
+class TestEpisodeAnchorId:
+    """#657 review: id parsing considers every key and fails closed on conflict."""
+
+    def _id(self, episode):
+        from podcaster import publish as pub
+
+        return pub._episode_anchor_id(episode)
+
+    def test_no_id_keys_yields_none(self):
+        assert self._id({"title": "My Show"}) is None
+
+    @pytest.mark.parametrize(
+        ("label", "episode"),
+        [
+            ("episodeId int", {"episodeId": 42}),
+            ("episodeId numeric string", {"episodeId": "42"}),
+            ("id fallback", {"id": 42}),
+            ("anchorId fallback", {"anchorId": "42"}),
+            ("null episodeId falls through", {"episodeId": None, "id": 42}),
+            ("bool episodeId falls through", {"episodeId": True, "anchorId": 42}),
+            ("agreeing keys", {"episodeId": 42, "id": "42", "anchorId": 42.0}),
+        ],
+    )
+    def test_single_agreed_id_is_returned(self, label, episode):
+        assert self._id(episode) == 42, label
+
+    @pytest.mark.parametrize(
+        ("label", "episode"),
+        [
+            ("malformed episodeId hides valid id", {"episodeId": "abc", "id": 42}),
+            ("malformed later key", {"episodeId": 42, "anchorId": "not-a-number"}),
+            ("object id", {"id": {"value": 42}}),
+            ("list id", {"id": [42]}),
+            ("fractional float id", {"id": 42.5}),
+        ],
+    )
+    def test_malformed_id_fields_fail_closed(self, label, episode):
+        """A partial identity is never trusted — but every key is still read."""
+        assert self._id(episode) is None, label
+
+    def test_disagreeing_ids_fail_closed(self):
+        assert self._id({"episodeId": 42, "id": 43}) is None
+
+    def test_malformed_id_is_logged_not_silent(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="podcaster.publish"):
+            assert self._id({"episodeId": "abc", "id": 42}) is None
+        assert any("unreadable id field" in r.message for r in caplog.records)
+
+    def test_title_match_with_unusable_id_fails_closed(self):
+        """The fail-closed contract the callers rely on is unchanged."""
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {"episodes": [{"episodeId": "abc", "id": 42, "title": "My Show", "isDraft": True}]}
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+        assert "no usable episode id" in str(exc.value)
 
 
 def _scripted_session(steps):
@@ -2000,6 +2167,13 @@ class TestCreateEpisodeIsNeverRetriedBlindly:
 class TestAmbiguousCreateRecovery:
     """#657 review: after an ambiguous create, act on evidence, never on a guess."""
 
+    @pytest.fixture(autouse=True)
+    def _no_settle_delay(self, monkeypatch):
+        """The bounded settling delay is real behaviour; the wall clock is not."""
+        from podcaster import publish as pub
+
+        monkeypatch.setattr(pub, "_AMBIGUOUS_CREATE_SETTLE_SECONDS", 0.0)
+
     def _listing(self, *episodes, **extra):
         return _mock_json_resp({"episodes": list(episodes), **extra})
 
@@ -2051,28 +2225,90 @@ class TestAmbiguousCreateRecovery:
         assert len(_create_posts(calls)) == 1
 
     def test_titled_draft_appearing_after_the_failure_is_reused(self):
-        (anchor_id, created), calls = self._reconcile(
+        """An already-titled draft is reused as-is and must not be re-titled."""
+        (anchor_id, needs_title), calls = self._reconcile(
             [
                 self._listing(),
                 _mock_error_resp(504, "gateway timeout"),
                 self._listing({"episodeId": 901, "title": "My Show", "status": "draft"}),
             ]
         )
-        assert (anchor_id, created) == (901, True)
+        assert (anchor_id, needs_title) == (901, False)
         assert len(_create_posts(calls)) == 1
 
     def test_proven_non_creation_retries_exactly_once(self):
-        """No new entry against a complete snapshot ⇒ the create did nothing."""
+        """No new entry across two settled reads ⇒ the create did nothing."""
         (anchor_id, created), calls = self._reconcile(
             [
                 self._listing(),
                 _mock_error_resp(503, "unavailable"),
+                self._listing(),
                 self._listing(),
                 _mock_json_resp({"episodeId": 902}),
             ]
         )
         assert (anchor_id, created) == (902, True)
         assert len(_create_posts(calls)) == 2
+
+    def test_immediately_unchanged_listing_is_not_proof_on_its_own(self):
+        """A draft that only shows up on the settled re-read is adopted, not duplicated."""
+        (anchor_id, created), calls = self._reconcile(
+            [
+                self._listing(),
+                requests.Timeout("timed out"),
+                self._listing(),
+                self._listing({"episodeId": 901, "title": None, "status": "draft"}),
+            ]
+        )
+        assert (anchor_id, created) == (901, True)
+        assert len(_create_posts(calls)) == 1
+
+    def test_settling_re_read_can_surface_a_titled_draft(self):
+        (anchor_id, needs_title), calls = self._reconcile(
+            [
+                self._listing(),
+                requests.Timeout("timed out"),
+                self._listing(),
+                self._listing({"episodeId": 901, "title": "My Show", "isDraft": True}),
+            ]
+        )
+        assert (anchor_id, needs_title) == (901, False)
+        assert len(_create_posts(calls)) == 1
+
+    def test_settling_read_is_bounded_to_one_extra_listing(self):
+        """Exactly two listing reads before the second create — never a loop."""
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session(
+            [
+                self._listing(),
+                _mock_error_resp(503, "unavailable"),
+                self._listing(),
+                self._listing(),
+                _mock_json_resp({"episodeId": 902}),
+            ]
+        )
+        pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+        listings = [m for m, _ in calls if m == "GET"]
+        assert len(listings) == pub._AMBIGUOUS_CREATE_READS + 1
+
+    def test_ambiguous_evidence_skips_the_settling_read(self):
+        """Settling cannot disambiguate two candidates — fail closed immediately."""
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session(
+            [
+                self._listing(),
+                _mock_error_resp(504, "gateway timeout"),
+                self._listing(
+                    {"episodeId": 901, "title": None, "status": "draft"},
+                    {"episodeId": 902, "title": None, "status": "draft"},
+                ),
+            ]
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError):
+            pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+        assert len([m for m, _ in calls if m == "GET"]) == 2
 
     def test_second_create_is_never_retried_either(self):
         """Two ambiguous creates in a row stop at two POSTs, not four."""
@@ -2083,6 +2319,7 @@ class TestAmbiguousCreateRecovery:
                 [
                     self._listing(),
                     _mock_error_resp(503, "unavailable"),
+                    self._listing(),
                     self._listing(),
                     _mock_error_resp(503, "unavailable"),
                 ]
@@ -2095,6 +2332,7 @@ class TestAmbiguousCreateRecovery:
             [
                 self._listing(),
                 _mock_error_resp(503, "unavailable"),
+                self._listing(),
                 self._listing(),
                 _mock_error_resp(503, "unavailable"),
             ]
@@ -2191,6 +2429,7 @@ class TestAmbiguousCreateRecovery:
             [
                 self._listing(),
                 _mock_error_resp(504, "gateway timeout"),
+                self._listing({"episodeId": 555, "title": None, "status": "draft"}),
                 self._listing({"episodeId": 555, "title": None, "status": "draft"}),
                 _mock_json_resp({"episodeId": 902}),
             ],
@@ -2346,6 +2585,198 @@ class TestResolveLegacyIds:
         with pytest.raises(pub.SpotifyPublishError) as exc:
             pub._resolve_legacy_ids(session, "show1")
         assert "not valid JSON" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        ("label", "raw"),
+        [
+            ("dict", {"id": 7}),
+            ("list", [7]),
+            ("tuple-ish nested", {"nested": {"id": 7}}),
+            ("bool true", True),
+            ("bool false", False),
+            ("float", 7.0),
+        ],
+    )
+    def test_non_scalar_identity_is_rejected(self, label, raw):
+        """#657 review: only str/int may be interpolated into URLs and params."""
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp({"stationId": "99", "userId": raw})
+        with pytest.raises(pub.SpotifyPublishError) as exc:
+            pub._resolve_legacy_ids(session, "show1")
+        assert "userId" in str(exc.value), label
+
+    def test_non_scalar_identity_error_names_the_type_not_the_value(self):
+        """The error must be type-safe: legacyIds payloads can carry account data."""
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyPublishError) as exc:
+            pub._require_identity({"secretHandle": "sekret"}, "userId", "show1")
+        message = str(exc.value)
+        assert "dict" in message
+        assert "sekret" not in message
+        assert "secretHandle" not in message
+        assert "non-scalar" in message
+
+    def test_none_and_blank_stay_missing_not_non_scalar(self):
+        from podcaster import publish as pub
+
+        for raw in (None, "", "   "):
+            with pytest.raises(pub.SpotifyPublishError) as exc:
+                pub._require_identity(raw, "userId", "show1")
+            assert "is missing userId" in str(exc.value)
+
+    @pytest.mark.parametrize(("raw", "expected"), [(7, "7"), ("7", "7"), (" 7 ", "7")])
+    def test_scalar_identities_are_accepted(self, raw, expected):
+        from podcaster import publish as pub
+
+        assert pub._require_identity(raw, "userId", "show1") == expected
+
+
+class TestRetryRequestLogging:
+    """#657 review: failure logs carry metadata only, never response bodies."""
+
+    def test_final_failure_log_never_echoes_the_response_body(self, caplog):
+        """Spotify error bodies can carry account data or tokens."""
+        import logging
+
+        from podcaster import publish as pub
+
+        session, _calls = _scripted_session([_mock_error_resp(400, "token=sekret bad request")])
+        with caplog.at_level(logging.ERROR, logger="podcaster.publish"):
+            with pytest.raises(pub.SpotifyPublishError):
+                pub._retry_request(session, "GET", "https://api-v5.anchor.fm/v3/x", max_attempts=1)
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert "sekret" not in logged
+        assert "bad request" not in logged
+        assert "HTTP 400" in logged
+
+
+class TestClaimDraftTitleIsNonDestructive:
+    """#657 review: the early title claim must never clear metadata."""
+
+    def test_claim_sends_the_real_metadata_not_an_empty_description(self, monkeypatch):
+        from podcaster import publish as pub
+
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            pub,
+            "_set_metadata",
+            lambda s, anchor_id, user_id, **kw: seen.update(kw),
+        )
+        pub._claim_draft_title(
+            MagicMock(),
+            901,
+            user_id="7",
+            title="My Show",
+            description="real description",
+            season_number=2,
+            episode_number=5,
+        )
+        assert seen["title"] == "My Show"
+        assert seen["description"] == "real description"
+        assert seen["season_number"] == 2
+        assert seen["episode_number"] == 5
+        assert seen["publish_behavior"] == "draft"
+
+    def test_video_path_claims_with_the_description_it_will_publish(self, tmp_path, monkeypatch):
+        """End-to-end: the claim carries the caller's description, never ``""``."""
+        from podcaster import publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        session, _calls = _scripted_session(
+            [
+                _mock_json_resp({"episodes": []}),
+                _mock_json_resp({"episodeId": 901}),
+            ]
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        metadata_calls: list[dict] = []
+        monkeypatch.setattr(
+            pub,
+            "_set_metadata",
+            lambda s, anchor_id, user_id, **kw: metadata_calls.append(kw),
+        )
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            lambda s, anchor_id, **kw: ([{"partNumber": 1, "url": "https://gcs/p"}], "up1"),
+        )
+        monkeypatch.setattr(
+            pub,
+            "_upload_video_multipart",
+            lambda s, parts, data: [{"partNumber": 1, "etag": "e1"}],
+        )
+        monkeypatch.setattr(pub, "_process_upload", lambda s, upload_id, **kw: None)
+
+        video = tmp_path / "ep.mp4"
+        video.write_bytes(b"video-bytes")
+        result = pub.upload_video_to_episode(
+            video,
+            555,
+            title="My Show",
+            description="real description",
+            season_number=1,
+            episode_number=4,
+        )
+
+        assert result.status == "draft"
+        assert len(metadata_calls) == 2
+        assert all(call["description"] == "real description" for call in metadata_calls)
+        assert all(call["episode_number"] == 4 for call in metadata_calls)
+
+    def test_already_titled_adopted_draft_is_never_re_claimed(self, tmp_path, monkeypatch):
+        """A recovered draft that already carries the title keeps its metadata."""
+        from podcaster import publish as pub
+
+        monkeypatch.setattr(pub, "_AMBIGUOUS_CREATE_SETTLE_SECONDS", 0.0)
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        session, calls = _scripted_session(
+            [
+                _mock_json_resp({"episodes": []}),
+                requests.Timeout("timed out"),
+                _mock_json_resp(
+                    {"episodes": [{"episodeId": 901, "title": "My Show", "isDraft": True}]}
+                ),
+            ]
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        metadata_calls: list[dict] = []
+        monkeypatch.setattr(
+            pub,
+            "_set_metadata",
+            lambda s, anchor_id, user_id, **kw: metadata_calls.append(kw),
+        )
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            lambda s, anchor_id, **kw: ([{"partNumber": 1, "url": "https://gcs/p"}], "up1"),
+        )
+        monkeypatch.setattr(
+            pub,
+            "_upload_video_multipart",
+            lambda s, parts, data: [{"partNumber": 1, "etag": "e1"}],
+        )
+        monkeypatch.setattr(pub, "_process_upload", lambda s, upload_id, **kw: None)
+
+        video = tmp_path / "ep.mp4"
+        video.write_bytes(b"video-bytes")
+        result = pub.upload_video_to_episode(video, 555, title="My Show", description="desc")
+
+        assert result.anchor_episode_id == 901
+        # Only the final metadata call — the adopted draft is already titled.
+        assert len(metadata_calls) == 1
+        assert metadata_calls[0]["description"] == "desc"
+        assert len(_create_posts(calls)) == 1
 
 
 class TestPollUploadErrorExtraction:
