@@ -16,7 +16,7 @@ azure-core==1.41.0
     #   azure-storage-queue
 azure-identity==1.25.3
     # via squadscope-podcaster (pyproject.toml)
-azure-storage-blob==12.30.0
+azure-storage-blob==12.30.1
     # via squadscope-podcaster (pyproject.toml)
 azure-storage-queue==12.17.0
     # via squadscope-podcaster (pyproject.toml)
@@ -28,9 +28,9 @@ cffi==2.1.1
     # via cryptography
 charset-normalizer==3.5.1
     # via requests
-click==8.4.2
+click==8.5.0
     # via uvicorn
-cryptography==50.0.0
+cryptography==50.0.1
     # via
     #   squadscope-podcaster (pyproject.toml)
     #   azure-identity
@@ -103,11 +103,11 @@ pluggy==1.6.0
     # via pytest
 pycparser==3.0
     # via cffi
-pydantic==2.13.4
+pydantic==2.13.5
     # via
     #   squadscope-podcaster (pyproject.toml)
     #   fastapi
-pydantic-core==2.46.4
+pydantic-core==2.46.5
     # via pydantic
 pyee==13.0.1
     # via playwright
@@ -192,5 +192,5 @@ uvloop==0.22.1
     # via uvicorn
 watchfiles==1.2.0
     # via uvicorn
-websockets==17.0.1
+websockets==17.1
     # via uvicorn

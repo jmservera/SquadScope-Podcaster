@@ -15,9 +15,14 @@ COPY . .
 RUN npm run build
 
 # --- runtime stage ---
-FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:a718212f9cf21e241f14067333000a3f0930292f5354fe0db269e9a2a2596b9e
+FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:d9083fe47768377ef55dedafd67d4da7c2f2bc2bece7554954f29359deb0dce9
 
 USER root
+
+# Apply available Alpine security upgrades to the pinned base so OS packages
+# (openssl, expat, ...) pick up fixes published after the base image was built.
+# Mirrors the `apt-get upgrade` step in Containerfile / Containerfile.api.
+RUN apk upgrade --no-cache
 
 # Remove default site.
 RUN rm -rf /usr/share/nginx/html/*
