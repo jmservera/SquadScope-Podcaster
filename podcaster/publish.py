@@ -715,16 +715,19 @@ def _episode_is_draft(episode: dict[Any, Any]) -> bool:
 def _episode_anchor_id(episode: dict[Any, Any]) -> int | None:
     """Anchor id of *episode*, or ``None`` when no *unambiguous* id is present.
 
-    Every key in :data:`_ID_KEYS` is inspected — the previous revision returned
-    on the first present-but-unparseable one and so could miss a perfectly good
-    ``id``/``anchorId`` alongside a malformed ``episodeId``. Absent and ``null``
-    keys carry nothing and are skipped.
+    Every key in :data:`_ID_KEYS` is inspected — instead of stopping at the
+    first present-but-unparseable one, malformed keys are collected across the
+    whole entry so the warning below names all of them, not just one. Absent
+    and ``null`` keys carry nothing and are skipped.
 
-    The answer is only an id when the keys that *are* readable agree on a single
-    value. A malformed id, or two keys naming different episodes, is a
-    contradictory identity: acting on either reading could adopt or overwrite
-    the wrong episode, so ``None`` is returned — which every caller treats as
-    fail-closed (an incomplete snapshot, an unclassifiable entry, or a
+    A single malformed key forecloses the id outright: it never falls back to
+    a good ``id``/``anchorId`` found elsewhere in the same entry, because a
+    malformed value gives no way to confirm it would have agreed with the
+    others. Only when every present key parsed cleanly does the id get
+    accepted, and only if those values all agree on one number — two keys
+    naming different episodes is the same contradictory-identity case as a
+    malformed key. Either way ``None`` is returned — which every caller treats
+    as fail-closed (an incomplete snapshot, an unclassifiable entry, or a
     :class:`SpotifyDraftReconcileError` when the entry matched the target
     title). The condition is logged (key *names* only) so it is never silent.
     """

@@ -1615,7 +1615,7 @@ class TestFindExistingDraft:
 
 
 class TestEpisodeListingSchema:
-    """#657 review: an unreadable listing must fail closed, never blind-create.
+    """#656 review: an unreadable listing must fail closed, never blind-create.
 
     ``_find_existing_draft`` returning ``None`` is a *proof of absence*. It is
     only sound when every entry of a recognised container was understood.
@@ -1711,7 +1711,7 @@ class TestEpisodeListingSchema:
 
 
 class TestEpisodeDraftState:
-    """#657 review: draft/published state must come from evidence, never truthiness.
+    """#656 review: draft/published state must come from evidence, never truthiness.
 
     ``bool("false")`` is ``True``: truth-testing a JSON string would have made a
     *published* episode look like a draft and got it overwritten, and an
@@ -1878,7 +1878,7 @@ class TestEpisodeDraftState:
 
 
 class TestIsPublishedIsAsymmetricEvidence:
-    """#657 review: ``isPublished: false`` alone does not prove a draft.
+    """#656 review: ``isPublished: false`` alone does not prove a draft.
 
     ``isPublished`` is the field this integration *writes*, so ``true``
     reliably means "not a draft". ``false`` only means "not published": a
@@ -1933,7 +1933,7 @@ class TestIsPublishedIsAsymmetricEvidence:
 
 
 class TestExcludedEntriesAreSkippedBeforeClassification:
-    """#657 review: the audio anchor's own state must never fail the lookup."""
+    """#656 review: the audio anchor's own state must never fail the lookup."""
 
     def _lookup(self, payload, **kwargs):
         from podcaster import publish as pub
@@ -1975,7 +1975,7 @@ class TestExcludedEntriesAreSkippedBeforeClassification:
 
 
 class TestEpisodeAnchorId:
-    """#657 review: id parsing considers every key and fails closed on conflict."""
+    """#656 review: id parsing considers every key and fails closed on conflict."""
 
     def _id(self, episode):
         from podcaster import publish as pub
@@ -2066,7 +2066,7 @@ def _create_posts(calls):
 
 
 class TestCreateEpisodeIsNeverRetriedBlindly:
-    """#657 review: the create POST is state-mutating and has no idempotency key.
+    """#656 review: the create POST is state-mutating and has no idempotency key.
 
     A 408/429/5xx/timeout is indistinguishable from "the draft was created and
     the response was lost", so the generic retry (up to three POSTs) could
@@ -2165,7 +2165,7 @@ class TestCreateEpisodeIsNeverRetriedBlindly:
 
 
 class TestAmbiguousCreateRecovery:
-    """#657 review: after an ambiguous create, act on evidence, never on a guess."""
+    """#656 review: after an ambiguous create, act on evidence, never on a guess."""
 
     @pytest.fixture(autouse=True)
     def _no_settle_delay(self, monkeypatch):
@@ -2598,7 +2598,7 @@ class TestResolveLegacyIds:
         ],
     )
     def test_non_scalar_identity_is_rejected(self, label, raw):
-        """#657 review: only str/int may be interpolated into URLs and params."""
+        """#656 review: only str/int may be interpolated into URLs and params."""
         from podcaster import publish as pub
 
         session = MagicMock()
@@ -2635,7 +2635,7 @@ class TestResolveLegacyIds:
 
 
 class TestRetryRequestLogging:
-    """#657 review: failure logs carry metadata only, never response bodies."""
+    """#656 review: failure logs carry metadata only, never response bodies."""
 
     def test_final_failure_log_never_echoes_the_response_body(self, caplog):
         """Spotify error bodies can carry account data or tokens."""
@@ -2654,7 +2654,7 @@ class TestRetryRequestLogging:
 
 
 class TestClaimDraftTitleIsNonDestructive:
-    """#657 review: the early title claim must never clear metadata."""
+    """#656 review: the early title claim must never clear metadata."""
 
     def test_claim_sends_the_real_metadata_not_an_empty_description(self, monkeypatch):
         from podcaster import publish as pub
