@@ -643,20 +643,90 @@ def _classify_logo_fetch_error(
     return True, f"network_{type(probe).__name__.lower()}"
 
 
+def _discard_cached_logo(cache_path: Path, redacted: str, why: str) -> None:
+    """Delete an unusable cached logo so the next read cannot pick it up again.
+
+    Best effort: if the unlink fails the caller still re-downloads and replaces
+    the file atomically, so a stale entry can never be *used* either way.
+    """
+    logger.warning(
+        "Discarding unusable cached DOG logo %s for %s (%s); re-downloading",
+        cache_path,
+        redacted,
+        why,
+    )
+    try:
+        cache_path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "Could not delete unusable cached DOG logo %s: %s", cache_path, type(exc).__name__
+        )
+
+
+def _cached_logo_is_usable(cache_path: Path, redacted: str) -> bool:
+    """Return ``True`` only when the cached file still validates as an image.
+
+    A non-empty cache entry used to be trusted on sight, which let a *previously
+    written* bad file bypass the byte validation applied to fresh downloads: an
+    interrupted write (full disk, OOM-killed worker, container eviction) leaves a
+    non-empty but truncated file, and that corrupt input reached ffmpeg, which
+    failed opaquely and much later.  Re-sniffing the cached bytes keeps the
+    invariant that *nothing* reaches ffmpeg without passing
+    :func:`~podcaster.image_validation.sniff_image` — and the check is bounded:
+    at most :data:`DOG_MAX_LOGO_BYTES` + 1 bytes are read and only the container
+    header is parsed.
+
+    An unusable entry is deleted and reported as a miss, so the caller
+    re-downloads and the fresh attempt's own typed classification applies.
+    """
+    try:
+        with cache_path.open("rb") as handle:
+            data = handle.read(DOG_MAX_LOGO_BYTES + 1)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        # Unreadable/directory/permission: treat as a miss rather than failing
+        # the job here; the download path will surface a real error if there is
+        # one, and writing the cache is already best-effort.
+        logger.warning(
+            "Could not read cached DOG logo %s: %s; re-downloading",
+            cache_path,
+            type(exc).__name__,
+        )
+        return False
+
+    if not data:
+        _discard_cached_logo(cache_path, redacted, "empty file")
+        return False
+    if len(data) > DOG_MAX_LOGO_BYTES:
+        _discard_cached_logo(cache_path, redacted, "exceeds the size cap")
+        return False
+    try:
+        sniff_image(data)
+    except InvalidImageError as exc:
+        _discard_cached_logo(cache_path, redacted, f"invalid image ({exc.reason})")
+        return False
+    return True
+
+
 def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
     """Download (and cache) a remote DOG logo image from *url*.
 
     Caches by a hash of the URL so different logos coexist and re-runs reuse a
-    prior download.  Returns the local path.
+    prior download.  A cache hit is **re-validated** with
+    :func:`~podcaster.image_validation.sniff_image` before it is used and
+    discarded/re-downloaded if it no longer parses, and a fresh download is
+    renamed into place atomically, so a truncated or poisoned cache entry can
+    never reach ffmpeg.  Returns the local path.
 
     Raises the *typed* failure rather than a bare ``None`` so the caller cannot
     flatten "this URL is wrong" and "the network is having a moment" into one
     outcome:
 
     Raises:
-        WatermarkUnavailableError: Permanent — unsupported scheme, no host,
-            SSRF-blocked target, definitive ``4xx``, empty/oversized body, or
-            bytes that are not a usable image.
+        WatermarkUnavailableError: Permanent — a malformed URL, unsupported
+            scheme, no host, SSRF-blocked target, definitive ``4xx``,
+            empty/oversized body, or bytes that are not a usable image.
         WatermarkTransientError: Transient — timeout, DNS/connection failure,
             ``408``/``425``/``429``/``5xx``, or a local cache-write error.
 
@@ -683,7 +753,32 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
             details={"logo_url": redacted, "failure_kind": kind},
         )
 
-    scheme = urllib.parse.urlparse(url).scheme.lower()
+    # Parse once, under guard.  ``urlparse`` raises a *bare* ``ValueError`` for a
+    # malformed netloc (``https://[bad]:80/logo.png`` → "does not appear to be an
+    # IPv4 or IPv6 address"), and ``.port`` raises for a non-numeric/out-of-range
+    # port.  Both happen before any network call, so parsing outside this guard
+    # let an untyped exception escape into job_runner's generic handler, lose the
+    # watermark classification entirely and burn five full record+compose reruns
+    # on a URL that can never parse.  A URL that cannot be parsed is a stable
+    # property of the configuration: permanent.
+    try:
+        parsed = urllib.parse.urlparse(url)
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname
+        # ``.port`` is a validating property: reading it is what rejects a
+        # non-numeric or out-of-range port before ``urlopen`` ever sees it.
+        _port = parsed.port
+        url_path = parsed.path
+    except ValueError as exc:
+        logger.warning(
+            "Refusing DOG logo fetch: URL is malformed (%s) in %s",
+            type(exc).__name__,
+            redacted,
+        )
+        raise _permanent(
+            f"DOG logo URL {redacted} is malformed and cannot be parsed", "invalid_url"
+        ) from exc
+
     if scheme not in ("http", "https"):
         logger.warning(
             "Refusing DOG logo fetch: unsupported URL scheme %r in %s",
@@ -696,7 +791,6 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
 
     # SSRF guard (#601): the URL is caller-controlled config, so refuse targets
     # that resolve to loopback / private / link-local / cloud-metadata hosts.
-    hostname = urllib.parse.urlparse(url).hostname
     if hostname is None:
         logger.warning("Refusing DOG logo fetch: URL has no host in %s", redacted)
         raise _permanent(f"DOG logo URL {redacted} has no host", "missing_host")
@@ -715,11 +809,11 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
     # ``/logo.py``) ever reaches the filesystem or the logs.  ``.img`` is the
     # fallback; the extension is cosmetic either way, because acceptance is
     # decided by the image magic bytes below and ffmpeg probes the content.
-    raw_suffix = Path(urllib.parse.urlparse(url).path).suffix.lower()
+    raw_suffix = Path(url_path).suffix.lower()
     suffix = DOG_CACHE_SUFFIXES.get(raw_suffix, ".img")
     cache_path = cache_dir / f"dog_{digest}{suffix}"
 
-    if cache_path.exists() and cache_path.stat().st_size > 0:
+    if _cached_logo_is_usable(cache_path, redacted):
         logger.info("Using cached DOG logo: %s", cache_path)
         return cache_path
 
@@ -788,12 +882,22 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
             info.format,
         )
 
+    # Write to a unique temporary file in the same directory and rename it into
+    # place: ``os.replace`` is atomic within a filesystem, so a worker killed
+    # (or a volume filled) mid-write can only leave a stray ``.tmp`` file behind,
+    # never a truncated ``dog_<digest>`` that a later run would pick up.
+    tmp_path = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
     try:
-        cache_path.write_bytes(data)
+        tmp_path.write_bytes(data)
+        os.replace(tmp_path, cache_path)
     except OSError as exc:
         # A full or unwritable cache volume is an environment condition, not a
         # verdict on the configured URL: let the retry find a healthier worker.
         logger.warning("Failed to cache DOG logo from %s: %s", redacted, type(exc).__name__)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Could not remove partial DOG logo cache file %s", tmp_path)
         raise _transient(
             f"DOG logo from {redacted} could not be written to the cache", "cache_write_failed"
         ) from exc
@@ -915,9 +1019,11 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path:
             details={**exc.details, "logo_url": redacted, "canonical": False},
         ) from exc
     except WatermarkUnavailableError as exc:
+        kind = exc.details.get("failure_kind", "unknown")
         raise WatermarkUnavailableError(
             "DOG watermark was configured but could not be resolved: the third-party logo "
-            f"{redacted} was blocked by the SSRF guard, is gone, or was not a valid image. "
+            f"{redacted} is malformed, was blocked by the SSRF guard, is gone, or was not a "
+            f"valid image ({kind}). "
             "The bundled Claracle logo is deliberately NOT substituted "
             "for a third-party watermark, because that would misbrand the episode. Fix "
             "podcast_config.dog_logo.url, point it at the canonical Claracle logo, or remove "

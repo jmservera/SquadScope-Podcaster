@@ -11,19 +11,32 @@ All fixtures are synthesised in-process — no third-party artwork is vendored.
 
 from __future__ import annotations
 
+import base64
 import struct
 import zlib
 
 import pytest
 
 from podcaster.image_validation import (
+    FORMAT_HEADER_MIN_BYTES,
     MAX_IMAGE_DIMENSION,
     MAX_IMAGE_PIXELS,
+    MIN_IMAGE_BYTES,
+    SUPPORTED_FORMATS,
     ImageInfo,
     InvalidImageError,
+    _sniff_bmp,
+    _sniff_gif,
+    _sniff_jpeg,
+    _sniff_png,
+    _sniff_webp,
     is_valid_image,
     sniff_image,
 )
+
+#: A real, complete 1x1 transparent GIF — the smallest valid image any of the
+#: supported parsers will ever legitimately see. Project-generated fixture.
+_GIF_1X1 = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
 
 
 def _png(width: int, height: int) -> bytes:
@@ -61,6 +74,13 @@ def _webp_vp8x(width: int, height: int) -> bytes:
     body = b"WEBP" + b"VP8X" + struct.pack("<I", 10) + b"\x00\x00\x00\x00"
     body += (width - 1).to_bytes(3, "little") + (height - 1).to_bytes(3, "little")
     return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+def _webp_vp8l(width: int, height: int) -> bytes:
+    """RIFF/WEBP container holding a lossless VP8L header (the shortest variant)."""
+    bits = (width - 1) | ((height - 1) << 14)
+    body = b"WEBPVP8L" + struct.pack("<I", 5) + b"\x2f" + struct.pack("<I", bits)
+    return b"RIFF" + struct.pack("<I", len(body) + 4) + body
 
 
 class TestValidFormats:
@@ -210,3 +230,53 @@ class TestContentTypeIndependence:
         # an image/png body are literally the same call.
         assert sniff_image(data).format == "png"
         assert is_valid_image(data) is True
+
+
+class TestDocumentedMinima:
+    """The published constants must describe what the parsers actually do.
+
+    ``MIN_IMAGE_BYTES`` used to be documented as the point at which "any
+    container signature can be identified", which is false — PNG's signature is
+    8 bytes and JPEG's is 3. It is a cheap floor applied before signature
+    matching; the real per-format requirements are
+    :data:`FORMAT_HEADER_MIN_BYTES`. These tests pin both claims so the comment
+    cannot drift back out of step with the code.
+    """
+
+    def test_format_minima_cover_exactly_the_supported_formats(self):
+        assert set(FORMAT_HEADER_MIN_BYTES) == set(SUPPORTED_FORMATS)
+
+    @pytest.mark.parametrize(
+        ("fmt", "sniffer", "sample"),
+        [
+            ("png", _sniff_png, _png(4, 4)),
+            ("gif", _sniff_gif, _gif(4, 4)),
+            ("bmp", _sniff_bmp, _bmp(4, 4)),
+            ("webp", _sniff_webp, _webp_vp8l(4, 4)),
+            ("jpeg", _sniff_jpeg, _jpeg(4, 4, extra_segment=False)),
+        ],
+    )
+    def test_parser_accepts_its_documented_minimum_and_rejects_one_byte_less(
+        self, fmt, sniffer, sample
+    ):
+        minimum = FORMAT_HEADER_MIN_BYTES[fmt]
+        assert len(sample) >= minimum
+        assert sniffer(sample[:minimum]).format == fmt
+        with pytest.raises(InvalidImageError) as excinfo:
+            sniffer(sample[: minimum - 1])
+        assert excinfo.value.reason == "malformed_image"
+
+    def test_signatures_are_identifiable_well_below_the_floor(self):
+        """The floor is not a signature threshold — the comment used to say it was."""
+        assert MIN_IMAGE_BYTES > len(b"\x89PNG\r\n\x1a\n")  # png signature: 8 bytes
+        assert MIN_IMAGE_BYTES > len(b"\xff\xd8\xff")  # jpeg signature: 3 bytes
+
+    def test_floor_is_below_the_smallest_complete_supported_image(self):
+        """Even the smallest real image is far above the floor, so nothing valid is lost."""
+        assert MIN_IMAGE_BYTES < len(_GIF_1X1)
+        assert sniff_image(_GIF_1X1).format == "gif"
+
+    def test_body_shorter_than_the_floor_is_rejected_before_any_parsing(self):
+        with pytest.raises(InvalidImageError) as excinfo:
+            sniff_image(_png(4, 4)[: MIN_IMAGE_BYTES - 1])
+        assert excinfo.value.reason == "not_an_image"

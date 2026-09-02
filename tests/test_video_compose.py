@@ -6,6 +6,7 @@ Unit tests mock ffmpeg via the CommandRunner protocol.
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.client
 import importlib
 import socket
@@ -2729,6 +2730,236 @@ class TestRemoteLogoFailureClassification:
         assert "s3cret" not in rendered
         assert "sig=abc123" not in rendered
         assert "example.com/logo.png" in rendered
+
+
+class TestMalformedLogoUrl:
+    """A URL that cannot even be parsed is a permanent configuration failure.
+
+    ``urllib.parse.urlparse`` raises a *bare* ``ValueError`` for a malformed
+    netloc (``https://[bad]:80/logo.png``) and for a non-numeric/out-of-range
+    port.  That happened before the typed classification, so the exception
+    escaped as an untyped error, fell into ``job_runner``'s generic handler, was
+    relabelled transient and burned five full record+compose reruns on a URL that
+    can never parse.  It must be ``WatermarkUnavailableError`` with a stable
+    ``invalid_url`` kind, and no network call may be attempted.
+    """
+
+    MALFORMED = [
+        "https://[bad]:80/logo.png",  # bracketed netloc that is not an IPv6 address
+        "http://[::1/logo.png",  # unterminated IPv6 literal
+        "https://example.com:port/logo.png",  # non-numeric port
+        "https://example.com:99999/logo.png",  # port out of range
+    ]
+
+    @pytest.mark.parametrize("url", MALFORMED)
+    def test_remote_fetch_raises_permanent_invalid_url(self, url, tmp_path, monkeypatch):
+        opener = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", opener)
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo_remote(url, tmp_path)
+
+        exc = excinfo.value
+        assert not isinstance(exc, vc.WatermarkTransientError)
+        assert exc.transient is False
+        assert exc.reason == vc.WATERMARK_REASON_FETCH_FAILED
+        assert exc.details["failure_kind"] == "invalid_url"
+        opener.assert_not_called()
+        assert not list(tmp_path.glob("dog_*"))
+
+    @pytest.mark.parametrize("url", MALFORMED)
+    def test_resolver_preserves_the_permanent_class(self, url, tmp_path, monkeypatch):
+        """The full resolver classifies it too, and never substitutes Claracle."""
+        monkeypatch.setattr(vc, "safe_urlopen", _raiser(AssertionError("must not be called")))
+
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo(url, tmp_path)
+
+        exc = excinfo.value
+        assert exc.reason == vc.WATERMARK_REASON_FETCH_FAILED
+        assert exc.details["failure_kind"] == "invalid_url"
+        assert exc.details["canonical"] is False
+        assert "claracle.jpeg" not in f"{exc} {exc.details}".lower()
+
+    def test_details_are_redacted_and_carry_no_url_text(self, tmp_path, monkeypatch):
+        """A malformed URL is unparseable, so it must not be echoed back verbatim."""
+        monkeypatch.setattr(vc, "safe_urlopen", _raiser(AssertionError("must not be called")))
+        url = "https://user:s3cret@[bad]:80/logo.png?token=abc123"
+
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo_remote(url, tmp_path)
+
+        rendered = f"{excinfo.value} {excinfo.value.details}"
+        assert "s3cret" not in rendered
+        assert "abc123" not in rendered
+        assert excinfo.value.details["logo_url"] == "<unparseable-url>"
+
+    def test_compose_video_surfaces_the_permanent_failure(self, tmp_path, monkeypatch):
+        """The malformed URL must reach the caller typed, not as a bare ValueError."""
+        monkeypatch.setattr(vc, "safe_urlopen", _raiser(AssertionError("must not be called")))
+        with pytest.raises(vc.WatermarkResolutionError) as excinfo:
+            vc._fetch_dog_logo("https://[bad]:80/logo.png", tmp_path)
+        assert isinstance(excinfo.value, vc.WatermarkUnavailableError)
+
+    def test_a_valid_url_is_still_fetched(self, tmp_path, monkeypatch):
+        """Guard against over-eager rejection: normal URLs keep working."""
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
+        result = vc._fetch_dog_logo_remote("https://example.com:8443/logo.png", tmp_path)
+        assert result.read_bytes() == _PNG_1X1
+
+
+class TestCachedLogoRevalidation:
+    """A cache hit is re-validated; corrupt cached bytes never reach ffmpeg.
+
+    A non-empty cache entry used to be returned on sight, so a write interrupted
+    by a full disk or an evicted container left a truncated file that bypassed
+    the byte validation applied to fresh downloads and failed opaquely inside
+    ffmpeg much later.
+    """
+
+    URL = "https://example.com/images/partner-logo.png"
+
+    @pytest.fixture(autouse=True)
+    def _allow_host(self, monkeypatch):
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+
+    def _cache_path(self, cache_dir: Path) -> Path:
+        digest = hashlib.sha256(self.URL.encode("utf-8")).hexdigest()[:16]
+        return cache_dir / f"dog_{digest}.png"
+
+    def test_valid_cache_is_a_fast_path_with_no_network_call(self, tmp_path, monkeypatch):
+        cache_path = self._cache_path(tmp_path)
+        cache_path.write_bytes(_PNG_1X1)
+        opener = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", opener)
+
+        result = vc._fetch_dog_logo_remote(self.URL, tmp_path)
+
+        assert result == cache_path
+        assert result.read_bytes() == _PNG_1X1
+        opener.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("label", "poison"),
+        [
+            ("html_soft_404", b"<html><body>404 Not Found</body></html>"),
+            ("truncated_png", _PNG_1X1[:20]),
+            ("shorter_than_floor", _PNG_1X1[:8]),
+            ("bomb_header", _png_header(60000, 60000)),
+        ],
+    )
+    def test_invalid_cache_is_discarded_and_refetched(self, label, poison, tmp_path, monkeypatch):
+        cache_path = self._cache_path(tmp_path)
+        cache_path.write_bytes(poison)
+        opener = MagicMock(return_value=_ImageResponse(_PNG_1X1))
+        monkeypatch.setattr(vc, "safe_urlopen", opener)
+
+        result = vc._fetch_dog_logo_remote(self.URL, tmp_path)
+
+        assert opener.call_count == 1, f"{label} must trigger a refetch"
+        assert result.read_bytes() == _PNG_1X1
+        assert sniff_image(result.read_bytes()).format == "png"
+
+    def test_invalid_cache_that_cannot_be_refetched_fails_typed(self, tmp_path, monkeypatch):
+        """Never return the corrupt bytes: fail with the fresh attempt's class."""
+        cache_path = self._cache_path(tmp_path)
+        cache_path.write_bytes(b"<html>not an image</html>")
+        monkeypatch.setattr(vc, "safe_urlopen", _raiser(HTTPError(self.URL, 404, "gone", {}, None)))
+
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+
+        assert excinfo.value.details["failure_kind"] == "http_404"
+        assert not cache_path.exists()
+
+    def test_invalid_cache_with_transient_refetch_stays_transient(self, tmp_path, monkeypatch):
+        cache_path = self._cache_path(tmp_path)
+        cache_path.write_bytes(b"<html>not an image</html>")
+        monkeypatch.setattr(vc, "safe_urlopen", _raiser(TimeoutError("timed out")))
+
+        with pytest.raises(vc.WatermarkTransientError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+
+        assert excinfo.value.details["failure_kind"] == "timeout"
+        assert not cache_path.exists()
+
+    def test_empty_cache_file_is_replaced(self, tmp_path, monkeypatch):
+        cache_path = self._cache_path(tmp_path)
+        cache_path.write_bytes(b"")
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
+
+        result = vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        assert result.read_bytes() == _PNG_1X1
+
+    def test_oversized_cache_file_is_discarded(self, tmp_path, monkeypatch):
+        cache_path = self._cache_path(tmp_path)
+        cache_path.write_bytes(_PNG_1X1 + b"x" * vc.DOG_MAX_LOGO_BYTES)
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
+
+        result = vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        assert result.read_bytes() == _PNG_1X1
+
+    def test_undeletable_invalid_cache_is_still_never_returned(self, tmp_path, monkeypatch):
+        """Even if the unlink fails, the corrupt bytes must be overwritten, not used."""
+        cache_path = self._cache_path(tmp_path)
+        cache_path.write_bytes(b"<html>not an image</html>")
+        monkeypatch.setattr(
+            vc.Path, "unlink", lambda *_a, **_k: (_ for _ in ()).throw(OSError("read-only"))
+        )
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
+
+        result = vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        assert result.read_bytes() == _PNG_1X1
+
+    def test_cache_read_is_bounded(self, tmp_path, monkeypatch):
+        """Revalidation must not slurp an arbitrarily large cache file."""
+        cache_path = self._cache_path(tmp_path)
+        reads: list[int | None] = []
+        real_open = vc.Path.open
+
+        def _tracking_open(self_path, *args, **kwargs):
+            handle = real_open(self_path, *args, **kwargs)
+            if self_path == cache_path:
+                inner_read = handle.read
+
+                def _read(amount=None):
+                    reads.append(amount)
+                    return inner_read(amount)
+
+                handle.read = _read  # type: ignore[method-assign]
+            return handle
+
+        cache_path.write_bytes(_PNG_1X1)
+        monkeypatch.setattr(vc.Path, "open", _tracking_open)
+        vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        assert reads == [vc.DOG_MAX_LOGO_BYTES + 1]
+
+    def test_download_is_written_atomically(self, tmp_path, monkeypatch):
+        """An interrupted write must not leave a truncated file at the cache path."""
+        cache_path = self._cache_path(tmp_path)
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
+
+        real_write = vc.Path.write_bytes
+
+        def _fail_midway(self_path, data):
+            real_write(self_path, data[:6])  # partial write, then the volume dies
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(vc.Path, "write_bytes", _fail_midway)
+        with pytest.raises(vc.WatermarkTransientError) as excinfo:
+            vc._fetch_dog_logo_remote(self.URL, tmp_path)
+        assert excinfo.value.details["failure_kind"] == "cache_write_failed"
+        # The partial bytes never landed on (or survived at) the cache path.
+        assert not cache_path.exists()
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_canonical_url_never_consults_the_remote_cache(self, tmp_path, monkeypatch):
+        """The bundled asset path is unchanged by any of this."""
+        monkeypatch.setattr(vc, "safe_urlopen", _raiser(AssertionError("must not be called")))
+        resolved = vc._fetch_dog_logo("https://www.claracle.com/images/claracle.jpeg", tmp_path)
+        assert resolved == watermark.LOGO_PATH
 
 
 # --- Hardware-accelerated encoding (NVENC) — issue #396 ---

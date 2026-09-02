@@ -47,9 +47,27 @@ MAX_IMAGE_PIXELS = 40_000_000
 #: under the total-pixel cap but still break downstream scaling.
 MAX_IMAGE_DIMENSION = 20_000
 
-#: Bytes needed before any container signature can be identified.  Anything
-#: shorter is a truncated / non-image body.  Per-format parsers apply their own
-#: (stricter) length checks before reading a header field.
+#: Bytes each supported container needs before its dimension fields can be read.
+#: These are the *real* per-format minima the parsers below enforce, and each is
+#: the offset just past the last dimension byte of the smallest header for that
+#: format (WebP lists its smallest variant, lossless ``VP8L``; the ``VP8`` and
+#: ``VP8X`` variants need 30 and enforce that themselves).
+FORMAT_HEADER_MIN_BYTES: dict[str, int] = {
+    "gif": 10,  # "GIF8?a"(6) + 16-bit width + 16-bit height
+    "jpeg": 11,  # SOI(2) + SOF marker(2) + length(2) + precision(1) + 16-bit h/w
+    "png": 24,  # signature(8) + length(4) + "IHDR"(4) + 32-bit width + height
+    "webp": 25,  # RIFF(12) + "VP8L"(4) + signature byte + packed 14-bit w/h
+    "bmp": 26,  # "BM"(2) + file header(12) + DIB size(4) + 32-bit width + height
+}
+
+#: Cheap length floor applied *before* signature matching.  It is **not** the
+#: point at which a container signature becomes identifiable (PNG's is 8 bytes,
+#: GIF's 6, JPEG's 3), and it is not a per-format header minimum either — those
+#: are :data:`FORMAT_HEADER_MIN_BYTES` and are enforced individually once the
+#: signature is known.  It only discards bodies far too short to be a *complete*
+#: image in any supported format (even a 1x1 GIF — the smallest renderable file
+#: any of them can produce — is several times this size), so an obviously
+#: truncated or non-image response is rejected without any further parsing.
 MIN_IMAGE_BYTES = 16
 
 #: Formats we are willing to hand to ffmpeg as an overlay input.
@@ -95,14 +113,14 @@ def _check_geometry(fmt: str, width: int, height: int) -> ImageInfo:
 
 def _sniff_png(data: bytes) -> ImageInfo:
     # Signature(8) + length(4) + "IHDR"(4) + width(4) + height(4)
-    if len(data) < 24 or data[12:16] != b"IHDR":
+    if len(data) < FORMAT_HEADER_MIN_BYTES["png"] or data[12:16] != b"IHDR":
         raise InvalidImageError("malformed_image", "png without IHDR")
     width, height = struct.unpack(">II", data[16:24])
     return _check_geometry("png", width, height)
 
 
 def _sniff_gif(data: bytes) -> ImageInfo:
-    if len(data) < 10:
+    if len(data) < FORMAT_HEADER_MIN_BYTES["gif"]:
         raise InvalidImageError("malformed_image", "gif header truncated")
     width, height = struct.unpack("<HH", data[6:10])
     return _check_geometry("gif", width, height)
@@ -111,7 +129,7 @@ def _sniff_gif(data: bytes) -> ImageInfo:
 def _sniff_bmp(data: bytes) -> ImageInfo:
     # BITMAPINFOHEADER width/height are signed; a negative height just means a
     # top-down bitmap, so compare on the absolute value.
-    if len(data) < 26:
+    if len(data) < FORMAT_HEADER_MIN_BYTES["bmp"]:
         raise InvalidImageError("malformed_image", "bmp header truncated")
     width, height = struct.unpack("<ii", data[18:26])
     return _check_geometry("bmp", abs(width), abs(height))
@@ -127,7 +145,7 @@ def _sniff_webp(data: bytes) -> ImageInfo:
         height = struct.unpack("<H", data[28:30])[0] & 0x3FFF
     elif chunk == b"VP8L":
         # Lossless: signature byte 0x2f then 14 bits width-1, 14 bits height-1.
-        if len(data) < 25 or data[20] != 0x2F:
+        if len(data) < FORMAT_HEADER_MIN_BYTES["webp"] or data[20] != 0x2F:
             raise InvalidImageError("malformed_image", "webp vp8l header")
         bits = struct.unpack("<I", data[21:25])[0]
         width = (bits & 0x3FFF) + 1

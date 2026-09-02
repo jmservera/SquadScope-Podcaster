@@ -15,9 +15,23 @@ instead — so the URL 301'd to the apex host and then returned ``404``.
 recoverable download error and composed *without* a watermark, which produced a
 successful-looking but unbranded production video (W36).
 
-The durable fix is to treat the bundled file as the canonical asset: known
-Claracle logo URLs resolve to it locally with no network access at all, and any
-remote fetch failure falls back to it rather than silently dropping branding.
+The durable fix is to treat the bundled file as the canonical asset for *our own*
+branding only:
+
+* A **canonical Claracle URL** (:func:`is_canonical_logo_url`) resolves to the
+  bundled file locally, with no network access at all, so a moved/unpublished
+  URL, a DNS failure or a rate limit can no longer drop branding.  Only when the
+  bundled asset is absent from the running image (a packaging defect) is the
+  canonical URL attempted over the network as a best effort.
+* **Any other (third-party) URL** is fetched remotely and is **never** served
+  from the bundled asset.  A failed fetch raises a typed
+  ``WatermarkUnavailableError`` (permanent) or ``WatermarkTransientError``
+  (retryable) from :mod:`podcaster.video.video_compose` instead of falling back:
+  stamping Claracle artwork onto an episode configured to carry someone else's
+  mark would misbrand it, which is worse than failing loudly.
+
+So a remote fetch failure never silently drops branding, and it never silently
+substitutes it either — the bundled file stands in only for Claracle's own URLs.
 """
 
 from __future__ import annotations

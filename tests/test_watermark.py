@@ -99,3 +99,31 @@ class TestIsCanonicalLogoUrl:
         assert not watermark.is_canonical_logo_url("")
         assert not watermark.is_canonical_logo_url("   ")
         assert not watermark.is_canonical_logo_url(None)  # type: ignore[arg-type]
+
+
+class TestModuleDocstringAccuracy:
+    """The module docstring is the contract a future maintainer reads first.
+
+    It used to state that "any remote fetch failure falls back" to the bundled
+    logo, which is the opposite of what the resolver does for a third-party URL:
+    substituting Claracle artwork there would misbrand the episode, so the fetch
+    failure is raised instead. A docstring that contradicts the code is how the
+    misbranding fallback gets reintroduced.
+    """
+
+    @staticmethod
+    def _doc() -> str:
+        return " ".join((watermark.__doc__ or "").split())
+
+    def test_does_not_claim_a_blanket_fetch_failure_fallback(self):
+        assert "any remote fetch failure falls back" not in self._doc()
+
+    def test_documents_the_no_substitution_rule_for_third_party_urls(self):
+        doc = self._doc().lower()
+        assert "third-party" in doc
+        assert "never" in doc
+
+    def test_documented_canonical_only_behaviour_matches_the_code(self):
+        """Pin the claim itself: only canonical URLs map to the bundled asset."""
+        assert watermark.is_canonical_logo_url("https://www.claracle.com/images/claracle.jpeg")
+        assert not watermark.is_canonical_logo_url("https://example.com/images/claracle.jpeg")
