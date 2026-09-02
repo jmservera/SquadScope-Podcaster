@@ -86,6 +86,13 @@ REASON_RETRY_EXHAUSTED = "retry_exhausted"
 REASON_PIPELINE_CONFLICT = "pipeline_locked_by_audio"
 REASON_EDITOR_LEASE_HELD = "editor_lease_held"
 REASON_REQUIRED_YOUTUBE_FAILURE = "required_youtube_delivery_failed"
+#: A configured DOG watermark could not be resolved.  Terminal by construction:
+#: a retry re-reads the same config and re-fetches the same URL, so the queue
+#: message is deleted after one attempt instead of burning MAX_DEQUEUE_COUNT
+#: full video reruns and then reporting a misleading ``RetryExhausted``.  The
+#: concrete sub-reason from ``WatermarkUnavailableError.reason`` is what is
+#: actually recorded/reported; this constant is the family prefix.
+REASON_WATERMARK_UNAVAILABLE = "watermark_unavailable"
 
 MAX_DEQUEUE_COUNT = 5
 
@@ -658,6 +665,11 @@ def run_video_generation(
     barrier instead of recording inline (RFC §3). The compose/distribute path is
     unchanged. ``fanout_scratch`` / ``clip_producer`` are injectable for tests.
     """
+    # Imported here (not at module scope) to match the existing lazy
+    # ``video_compose`` import policy in this module, while still binding the
+    # name before the ``try`` block whose ``except`` clause needs it.
+    from podcaster.video.video_compose import WatermarkUnavailableError
+
     current = now or datetime.now(timezone.utc)
     dist_config = config or VideoDistributionConfig.from_env()
 
@@ -1155,6 +1167,42 @@ def run_video_generation(
     except PermanentVideoError:
         _release_editor_lease(scratch, job_id, run_id)
         raise
+    except WatermarkUnavailableError as exc:
+        # A configured watermark that cannot be resolved is a *permanent*
+        # failure: the manifest config and the logo URL are identical on every
+        # redelivery, so retrying re-runs the entire (expensive) recording +
+        # composition pipeline only to fail at the same point.  Previously this
+        # fell through to the generic handler below, was re-raised as
+        # TransientVideoError, and produced five full reruns followed by a
+        # ``RetryExhausted`` report that named neither the watermark nor the
+        # action an operator had to take.  Classify it once, with the concrete
+        # reason, and let process_message delete the message immediately.
+        logger.error(
+            "video watermark unavailable job_id=%s reason=%s details=%s",
+            job_id,
+            exc.reason,
+            exc.details,
+        )
+        _record_video_state(
+            storage,
+            job_id,
+            {
+                "status": STATUS_FAILED,
+                "reason": exc.reason,
+                "error": str(exc),
+                "at": _iso(current),
+            },
+        )
+        _release_editor_lease(scratch, job_id, run_id)
+        raise PermanentVideoError(
+            str(exc),
+            reason=exc.reason,
+            details={
+                "job_id": job_id,
+                "failure_family": REASON_WATERMARK_UNAVAILABLE,
+                **exc.details,
+            },
+        ) from exc
     except Exception as exc:
         # ffmpeg/ffprobe failures surface as CalledProcessError whose stderr
         # carries the real cause (e.g. "No space left on device").  The default
@@ -1223,10 +1271,10 @@ def _resolve_dog_logo(manifest: dict[str, Any]):
 
     Returns ``None`` when the manifest carries no ``dog_logo`` config so the
     composition skips the watermark (an intentionally unbranded episode).  When
-    a config *is* present the watermark is guaranteed: canonical Claracle URLs
-    resolve to the bundled ``assets/images/claracle.jpeg`` and any remote fetch
-    failure falls back to it, so composition can no longer silently drop
-    branding (W36).
+    a config *is* present the watermark is no longer optional: canonical
+    Claracle URLs resolve to the bundled ``assets/images/claracle.jpeg`` with no
+    network access, and any watermark that cannot be resolved fails the job
+    permanently instead of silently dropping branding (W36).
     """
     from podcaster.video.video_compose import DogLogoConfig
 

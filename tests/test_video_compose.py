@@ -5,8 +5,11 @@ Unit tests mock ffmpeg via the CommandRunner protocol.
 
 from __future__ import annotations
 
+import base64
 import importlib
+import struct
 import subprocess
+import zlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
@@ -14,6 +17,7 @@ from urllib.error import HTTPError
 import pytest
 
 from podcaster import watermark
+from podcaster.image_validation import sniff_image
 from podcaster.video import video_compose as vc
 from podcaster.video.sync_plan import EpisodePlan, RepoReference, VideoSegment
 from podcaster.video.video_compose import (
@@ -1902,6 +1906,29 @@ class _ImageResponse:
         return self._body if amount is None else self._body[:amount]
 
 
+def _png_header(width: int, height: int) -> bytes:
+    """Craft a PNG signature + IHDR declaring *width* x *height*.
+
+    Used for the decompression-bomb case: a few dozen bytes on the wire that
+    would expand to gigapixels if ever decoded.  Validation must reject it from
+    the header alone, without allocating anything.
+    """
+    ihdr = b"IHDR" + struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + struct.pack(">I", 13)
+        + ihdr
+        + struct.pack(">I", zlib.crc32(ihdr) & 0xFFFFFFFF)
+    )
+
+
+#: A real, minimal 1x1 PNG — project-generated test fixture, no third-party art.
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
 class TestDogLogoConfig:
     def test_defaults_from_empty_dict(self):
         cfg = DogLogoConfig.from_dict({})
@@ -2064,15 +2091,18 @@ class TestComposeVideoDogLogo:
     def test_unresolvable_logo_fails_explicitly(self, tmp_path, monkeypatch):
         """W36: a configured watermark must never silently yield unbranded video.
 
-        Resolution only returns ``None`` when the bundled Claracle asset is
-        missing from the image too, which is a packaging defect — composition
-        must fail loudly instead of producing a successful-looking, unbranded
-        episode.
+        Resolution raises rather than returning ``None``, so composition fails
+        loudly instead of producing a successful-looking, unbranded episode.
         """
-        monkeypatch.setattr(
-            "podcaster.video.video_compose._fetch_dog_logo",
-            lambda url, cache_dir: None,
-        )
+
+        def _unavailable(url, cache_dir):
+            raise vc.WatermarkUnavailableError(
+                f"no logo for {url} (expected {watermark.LOGO_PATH})",
+                reason=vc.WATERMARK_REASON_ASSET_MISSING,
+                details={"logo_url": url},
+            )
+
+        monkeypatch.setattr("podcaster.video.video_compose._fetch_dog_logo", _unavailable)
         runner = _mock_runner()
         seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
         (tmp_path / "s.webm").touch()
@@ -2083,9 +2113,8 @@ class TestComposeVideoDogLogo:
                 runner=runner,
                 dog_logo=DogLogoConfig(),
             )
-        message = str(excinfo.value)
-        assert "assets/images/claracle.jpeg" in message
-        assert "dog_logo" in message
+        assert excinfo.value.reason == vc.WATERMARK_REASON_ASSET_MISSING
+        assert "assets/images/claracle.jpeg" in str(excinfo.value)
 
 
 class TestDogLogoW36Regression:
@@ -2112,16 +2141,33 @@ class TestDogLogoW36Regression:
         assert result == watermark.LOGO_PATH
         opened.assert_not_called()
 
-    def test_remote_404_falls_back_to_bundled_asset(self, tmp_path, monkeypatch):
-        """A genuinely external logo that 404s degrades to the bundled logo."""
+    def test_canonical_404_falls_back_to_bundled_asset(self, tmp_path, monkeypatch):
+        """The canonical Claracle URL 404ing must still yield the bundled logo.
+
+        This is the exact W36 failure: the asset is *ours*, so serving it from
+        the package is a faithful substitution, not a misbranding.
+        """
 
         def _raise_404(url, timeout):
             raise HTTPError(url, 404, "Not Found", {}, None)
 
         monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
         monkeypatch.setattr(vc, "safe_urlopen", _raise_404)
-        result = vc._fetch_dog_logo("https://example.com/images/claracle.jpeg", tmp_path)
-        assert result == watermark.LOGO_PATH
+        assert vc._fetch_dog_logo(self.W36_URL, tmp_path) == watermark.LOGO_PATH
+
+    def test_canonical_resolution_needs_no_network_or_cwd(self, tmp_path, monkeypatch):
+        """Packaging: resolution is absolute and independent of the process cwd.
+
+        The container runs ``python -m podcaster.video.job_runner`` from ``/app``
+        but nothing guarantees that; resolution is anchored to the package
+        directory, so a different cwd must not lose the asset.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(side_effect=AssertionError("no network")))
+        resolved = vc._fetch_dog_logo(self.W36_URL, tmp_path / "cache")
+        assert resolved is not None
+        assert resolved.is_absolute()
+        assert resolved.read_bytes()[:3] == b"\xff\xd8\xff"
 
     def test_compose_still_watermarks_when_configured_url_404s(self, tmp_path, monkeypatch):
         """End-to-end: the exact W36 URL still yields an overlay in the ffmpeg cmd."""
@@ -2146,14 +2192,14 @@ class TestDogLogoW36Regression:
         """Without the packaged asset the canonical URL still tries the network."""
         monkeypatch.setattr(watermark, "LOGO_PATH", tmp_path / "absent.jpeg")
         monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
-        opened = MagicMock(return_value=_ImageResponse(b"pngbytes"))
+        opened = MagicMock(return_value=_ImageResponse(_PNG_1X1))
         monkeypatch.setattr(vc, "safe_urlopen", opened)
         result = vc._fetch_dog_logo(self.W36_URL, tmp_path / "cache")
         assert result is not None
-        assert result.read_bytes() == b"pngbytes"
+        assert result.read_bytes() == _PNG_1X1
         opened.assert_called_once()
 
-    def test_returns_none_only_when_remote_and_bundle_both_fail(self, tmp_path, monkeypatch):
+    def test_asset_missing_and_remote_fail_raises_permanent_reason(self, tmp_path, monkeypatch):
         monkeypatch.setattr(watermark, "LOGO_PATH", tmp_path / "absent.jpeg")
         monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
 
@@ -2161,40 +2207,179 @@ class TestDogLogoW36Regression:
             raise HTTPError(url, 404, "Not Found", {}, None)
 
         monkeypatch.setattr(vc, "safe_urlopen", _raise_404)
-        assert vc._fetch_dog_logo(self.W36_URL, tmp_path / "cache") is None
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo(self.W36_URL, tmp_path / "cache")
+        exc = excinfo.value
+        assert exc.reason == vc.WATERMARK_REASON_ASSET_MISSING
+        assert exc.details["canonical"] is True
+        # Operator-visible and actionable: names the packaging remedy.
+        assert "Rebuild and redeploy" in str(exc)
+
+
+class TestThirdPartyLogoNeverSubstituted:
+    """A failed third-party logo must NOT be replaced with Claracle branding.
+
+    Substituting the show's own mark for an unreachable third-party watermark
+    silently misbrands the episode — it looks successful and correctly branded
+    while carrying the wrong logo.  Fail loudly instead.
+    """
+
+    THIRD_PARTY = "https://example.com/images/partner-logo.png"
+
+    def test_third_party_404_raises_and_does_not_substitute(self, tmp_path, monkeypatch):
+        def _raise_404(url, timeout):
+            raise HTTPError(url, 404, "Not Found", {}, None)
+
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(vc, "safe_urlopen", _raise_404)
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo(self.THIRD_PARTY, tmp_path)
+        exc = excinfo.value
+        assert exc.reason == vc.WATERMARK_REASON_FETCH_FAILED
+        assert exc.details["canonical"] is False
+        assert "misbrand" in str(exc)
+        # The bundled Claracle path must not appear anywhere in the outcome.
+        assert str(watermark.LOGO_PATH) not in str(exc)
+
+    def test_third_party_ssrf_blocked_raises_and_does_not_substitute(self, tmp_path, monkeypatch):
+        """An SSRF-blocked third-party URL must not silently become Claracle."""
+        opened = MagicMock()
+        monkeypatch.setattr(vc, "safe_urlopen", opened)
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo("http://169.254.169.254/latest/meta-data/", tmp_path)
+        assert excinfo.value.reason == vc.WATERMARK_REASON_FETCH_FAILED
+        opened.assert_not_called()
+
+    def test_third_party_invalid_bytes_raises_and_does_not_substitute(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(
+            vc,
+            "safe_urlopen",
+            MagicMock(return_value=_ImageResponse(b"<html>not an image at all</html>")),
+        )
+        with pytest.raises(vc.WatermarkUnavailableError) as excinfo:
+            vc._fetch_dog_logo(self.THIRD_PARTY, tmp_path)
+        assert excinfo.value.reason == vc.WATERMARK_REASON_FETCH_FAILED
+
+    def test_compose_fails_rather_than_misbranding(self, tmp_path, monkeypatch):
+        """End-to-end: composition raises instead of overlaying the wrong logo."""
+
+        def _raise_404(url, timeout):
+            raise HTTPError(url, 404, "Not Found", {}, None)
+
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(vc, "safe_urlopen", _raise_404)
+        runner = _mock_runner()
+        seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
+        (tmp_path / "s.webm").touch()
+        with pytest.raises(vc.WatermarkUnavailableError):
+            compose_video(
+                segments=[seg],
+                output_dir=tmp_path / "out",
+                runner=runner,
+                dog_logo=DogLogoConfig(url=self.THIRD_PARTY),
+                dog_logo_cache_dir=tmp_path / "dogcache",
+            )
+        for call in runner.call_args_list:
+            assert str(watermark.LOGO_PATH) not in call.args[0]
+
+    def test_valid_third_party_logo_still_used(self, tmp_path, monkeypatch):
+        """The optional third-party path is preserved when it actually works."""
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1)))
+        result = vc._fetch_dog_logo(self.THIRD_PARTY, tmp_path)
+        assert result is not None
+        assert result != watermark.LOGO_PATH
+        assert result.read_bytes() == _PNG_1X1
 
 
 class TestFetchDogLogoValidation:
-    """Remote logo bodies must be bounded and actually be images."""
+    """Remote logo bodies are validated on their bytes, not their headers."""
 
     def test_soft_404_html_body_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
         monkeypatch.setattr(
             vc,
             "safe_urlopen",
-            MagicMock(return_value=_ImageResponse(b"<html>404</html>", "text/html")),
+            MagicMock(return_value=_ImageResponse(b"<html><body>404 Not Found</body></html>")),
         )
         assert vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path) is None
 
     def test_oversized_body_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
-        oversized = b"x" * (vc.DOG_MAX_LOGO_BYTES + 1)
+        oversized = _PNG_1X1 + b"x" * vc.DOG_MAX_LOGO_BYTES
+        monkeypatch.setattr(vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(oversized)))
+        assert vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path) is None
+
+    def test_octet_stream_valid_image_accepted(self, tmp_path, monkeypatch):
+        """Object stores routinely serve real images as application/octet-stream."""
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
         monkeypatch.setattr(
-            vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(oversized))
+            vc,
+            "safe_urlopen",
+            MagicMock(return_value=_ImageResponse(_PNG_1X1, "application/octet-stream")),
+        )
+        result = vc._fetch_dog_logo_remote("https://example.com/logo", tmp_path)
+        assert result is not None
+        assert result.read_bytes() == _PNG_1X1
+
+    def test_missing_content_type_valid_image_accepted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(
+            vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1, ""))
+        )
+        result = vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path)
+        assert result is not None
+        assert result.read_bytes() == _PNG_1X1
+
+    def test_missing_content_type_invalid_bytes_rejected(self, tmp_path, monkeypatch):
+        """No Content-Type used to mean 'accept anything' — the bytes now decide."""
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(
+            vc,
+            "safe_urlopen",
+            MagicMock(return_value=_ImageResponse(b"<!DOCTYPE html><html>nope</html>", "")),
         )
         assert vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path) is None
 
-    def test_missing_content_type_still_accepted(self, tmp_path, monkeypatch):
+    def test_forged_image_content_type_with_invalid_bytes_rejected(self, tmp_path, monkeypatch):
+        """A server claiming image/png for an HTML body must not be believed."""
         monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
         monkeypatch.setattr(
-            vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(b"pngbytes", ""))
+            vc,
+            "safe_urlopen",
+            MagicMock(
+                return_value=_ImageResponse(b"<html>totally a png, honest</html>", "image/png")
+            ),
         )
-        result = vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path)
-        assert result is not None and result.read_bytes() == b"pngbytes"
+        assert vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path) is None
+        # Nothing was cached, so a later run cannot pick up the poisoned body.
+        assert not list(tmp_path.glob("dog_*"))
+
+    def test_decompression_bomb_header_rejected(self, tmp_path, monkeypatch):
+        """A tiny PNG declaring a gigapixel canvas is rejected from its header."""
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(
+            vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_png_header(60000, 60000)))
+        )
+        assert vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path) is None
+
+    def test_truncated_image_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+        monkeypatch.setattr(
+            vc, "safe_urlopen", MagicMock(return_value=_ImageResponse(_PNG_1X1[:12]))
+        )
+        assert vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path) is None
+
+    def test_bundled_asset_passes_the_same_validation(self):
+        """The owned asset we ship must satisfy the validator we enforce."""
+        info = sniff_image(watermark.LOGO_PATH.read_bytes())
+        assert info.format == "jpeg"
+        assert info.width > 0 and info.height > 0
 
 
 class TestFetchDogLogoSSRF:
-    """#601: _fetch_dog_logo must refuse SSRF targets and degrade gracefully."""
+    """#601: _fetch_dog_logo must refuse SSRF targets and degrade safely."""
 
     def test_blocked_host_not_fetched(self, tmp_path, monkeypatch):
         called = MagicMock()
@@ -2202,11 +2387,10 @@ class TestFetchDogLogoSSRF:
         result = vc._fetch_dog_logo_remote("http://169.254.169.254/latest/meta-data/", tmp_path)
         assert result is None
         called.assert_not_called()
-        # The full resolver still refuses the fetch, then falls back to the
-        # bundled asset rather than dropping the watermark.
-        assert vc._fetch_dog_logo("http://169.254.169.254/latest/meta-data/", tmp_path) == (
-            watermark.LOGO_PATH
-        )
+        # The full resolver refuses the fetch and raises rather than quietly
+        # stamping Claracle branding on a job that asked for another logo.
+        with pytest.raises(vc.WatermarkUnavailableError):
+            vc._fetch_dog_logo("http://169.254.169.254/latest/meta-data/", tmp_path)
         called.assert_not_called()
 
     def test_loopback_host_not_fetched(self, tmp_path, monkeypatch):
@@ -2230,13 +2414,30 @@ class TestFetchDogLogoSSRF:
         assert result is None
         called.assert_not_called()
 
+    def test_redirect_to_blocked_host_rejected(self, tmp_path, monkeypatch):
+        """The SSRF guard lives inside safe_urlopen and covers 30x hops.
+
+        A permitted host redirecting to the metadata endpoint surfaces as an
+        HTTPError from the guarded opener, which must fail the fetch (and, for a
+        third-party URL, must not fall back to bundled branding).
+        """
+        monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
+
+        def _redirect_blocked(url, timeout):
+            raise HTTPError(url, 403, "redirect to blocked host", {}, None)
+
+        monkeypatch.setattr(vc, "safe_urlopen", _redirect_blocked)
+        assert vc._fetch_dog_logo_remote("https://example.com/logo.png", tmp_path) is None
+        with pytest.raises(vc.WatermarkUnavailableError):
+            vc._fetch_dog_logo("https://example.com/logo.png", tmp_path)
+
     def test_safe_urlopen_used_for_public_url(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vc, "host_is_blocked", lambda _host: False)
-        opened = MagicMock(return_value=_ImageResponse(b"pngbytes"))
+        opened = MagicMock(return_value=_ImageResponse(_PNG_1X1))
         monkeypatch.setattr(vc, "safe_urlopen", opened)
         result = vc._fetch_dog_logo("https://example.com/logo.png", tmp_path)
         assert result is not None
-        assert result.read_bytes() == b"pngbytes"
+        assert result.read_bytes() == _PNG_1X1
         opened.assert_called_once()
 
     def test_redact_url_strips_credentials(self):

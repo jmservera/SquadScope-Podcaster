@@ -20,6 +20,7 @@ from podcaster.video.job_runner import (
     REASON_NO_REPOS,
     REASON_REQUIRED_YOUTUBE_FAILURE,
     REASON_RETRY_EXHAUSTED,
+    REASON_WATERMARK_UNAVAILABLE,
     STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_SKIPPED,
@@ -1484,6 +1485,197 @@ class TestProcessMessage:
         assert (
             mock_report.call_args.kwargs["details"]["youtube_oauth_error_subtype"] == "invalid_rapt"
         )
+
+
+# --- Watermark failure classification (W36 review follow-up) ---
+
+
+class TestWatermarkFailureClassification:
+    """A configured watermark that cannot be resolved is PERMANENT, not transient.
+
+    ``WatermarkUnavailableError`` was a plain ``RuntimeError``, so it fell into
+    the generic handler, was re-raised as ``TransientVideoError``, and cost five
+    full record+compose reruns before ``process_message`` reported a
+    ``RetryExhausted`` that named neither the watermark nor the fix.  Every
+    redelivery re-reads the same manifest config and re-fetches the same URL, so
+    a retry can never succeed — classify once, delete the message once, and
+    report the actionable reason.
+    """
+
+    def _stage(self, storage, job_id: str) -> None:
+        storage.set_manifest(job_id, {"generation": {}})
+        storage.set_script(job_id, "Just a plain script with no GitHub URLs")
+
+    def _watermark_error(self, reason: str):
+        from podcaster.video.video_compose import WatermarkUnavailableError
+
+        return WatermarkUnavailableError(
+            "DOG watermark was configured but could not be resolved: "
+            "the bundled Claracle logo is not packaged in this image "
+            "(expected /app/assets/images/claracle.jpeg). Rebuild and redeploy "
+            "the synthesis image, or remove podcast_config.dog_logo.",
+            reason=reason,
+            details={"logo_url": "https://www.claracle.com/images/claracle.jpeg"},
+        )
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_asset_missing_raises_permanent_not_transient(
+        self, mock_compose, mock_record, storage, dry_config
+    ):
+        from podcaster.video.video_compose import WATERMARK_REASON_ASSET_MISSING
+
+        job_id = "watermark-asset-missing"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = self._watermark_error(WATERMARK_REASON_ASSET_MISSING)
+
+        with pytest.raises(PermanentVideoError) as excinfo:
+            run_video_generation(job_id, storage, config=dry_config)
+
+        exc = excinfo.value
+        assert not isinstance(exc, TransientVideoError)
+        assert exc.reason == WATERMARK_REASON_ASSET_MISSING
+        assert exc.details["failure_family"] == REASON_WATERMARK_UNAVAILABLE
+        assert exc.details["job_id"] == job_id
+        # Operator-visible remedy survives the re-raise.
+        assert "Rebuild and redeploy" in str(exc)
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_third_party_fetch_failure_raises_permanent(
+        self, mock_compose, mock_record, storage, dry_config
+    ):
+        from podcaster.video.video_compose import WATERMARK_REASON_FETCH_FAILED
+
+        job_id = "watermark-third-party"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = self._watermark_error(WATERMARK_REASON_FETCH_FAILED)
+
+        with pytest.raises(PermanentVideoError) as excinfo:
+            run_video_generation(job_id, storage, config=dry_config)
+        assert excinfo.value.reason == WATERMARK_REASON_FETCH_FAILED
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_failed_state_records_the_watermark_reason(
+        self, mock_compose, mock_record, storage, dry_config
+    ):
+        """The manifest must name the watermark, not a bare exception type."""
+        from podcaster.video.video_compose import WATERMARK_REASON_ASSET_MISSING
+
+        job_id = "watermark-state"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = self._watermark_error(WATERMARK_REASON_ASSET_MISSING)
+
+        with pytest.raises(PermanentVideoError):
+            run_video_generation(job_id, storage, config=dry_config)
+
+        manifest = json.loads(storage._data[manifest_path(job_id)])
+        state = manifest["generation"]["video_runner"]
+        assert state["status"] == STATUS_FAILED
+        assert state["reason"] == WATERMARK_REASON_ASSET_MISSING
+        assert state["reason"] != "WatermarkUnavailableError"
+        assert "claracle" in state["error"].lower()
+
+
+class TestProcessMessageWatermarkFailure:
+    """End-to-end queue lifecycle: one attempt, message deleted, real reason."""
+
+    def _watermark_error(self, reason: str):
+        from podcaster.video.video_compose import WatermarkUnavailableError
+
+        return WatermarkUnavailableError(
+            "third-party logo could not be downloaded; the bundled Claracle logo "
+            "is deliberately NOT substituted because that would misbrand the episode",
+            reason=reason,
+            details={"logo_url": "https://example.com/partner.png", "canonical": False},
+        )
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_deletes_message_on_first_attempt(
+        self, mock_compose, mock_record, storage, queue, dry_config
+    ):
+        from podcaster.video.video_compose import WATERMARK_REASON_FETCH_FAILED
+
+        job_id = "watermark-queue"
+        storage.set_manifest(job_id, {"generation": {}})
+        storage.set_script(job_id, "Just a plain script with no GitHub URLs")
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = self._watermark_error(WATERMARK_REASON_FETCH_FAILED)
+
+        msg = _make_message(job_id, dequeue_count=1)
+        with patch("podcaster.video.job_runner.report_failure") as mock_report:
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+
+        assert outcome.status == STATUS_FAILED
+        assert outcome.reason == WATERMARK_REASON_FETCH_FAILED
+        assert outcome.reason != REASON_RETRY_EXHAUSTED
+        # Deleted on the FIRST attempt — no redelivery, no four more reruns.
+        assert len(queue.deleted) == 1
+        assert msg.dequeue_count == 1
+
+        kwargs = mock_report.call_args.kwargs
+        assert kwargs["error_type"] == "PermanentVideoFailure"
+        assert kwargs["error_type"] != "RetryExhausted"
+        assert kwargs["details"]["reason"] == WATERMARK_REASON_FETCH_FAILED
+        assert kwargs["details"]["failure_family"] == REASON_WATERMARK_UNAVAILABLE
+        assert kwargs["details"]["logo_url"] == "https://example.com/partner.png"
+        assert "misbrand" in kwargs["error_message"]
+
+    def test_generation_runs_only_once(self, storage, queue, dry_config):
+        """The expensive pipeline must not be re-entered for this failure."""
+        from podcaster.video.video_compose import WATERMARK_REASON_ASSET_MISSING
+
+        job_id = "watermark-no-retry"
+        msg = _make_message(job_id, dequeue_count=1)
+        with (
+            patch("podcaster.video.job_runner.report_failure"),
+            patch(
+                "podcaster.video.job_runner.run_video_generation",
+                side_effect=PermanentVideoError(
+                    "watermark unavailable",
+                    reason=WATERMARK_REASON_ASSET_MISSING,
+                    details={"failure_family": REASON_WATERMARK_UNAVAILABLE},
+                ),
+            ) as mock_run,
+        ):
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+
+        assert mock_run.call_count == 1
+        assert outcome.reason == WATERMARK_REASON_ASSET_MISSING
+        assert len(queue.deleted) == 1
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_absent_dog_logo_config_is_still_optional(
+        self, mock_compose, mock_record, storage, queue, dry_config
+    ):
+        """Optional-absence semantics are untouched: no dog_logo, no failure."""
+        job_id = "no-watermark-configured"
+        storage.set_manifest(job_id, {"generation": {}})
+        storage.set_script(job_id, "Just a plain script with no GitHub URLs")
+        mock_record.return_value = MagicMock(recorded=[])
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            assert kwargs.get("dog_logo") is None
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path,
+                duration_seconds=300.0,
+                segment_count=1,
+                has_audio=False,
+            )
+
+        mock_compose.side_effect = fake_compose
+        msg = _make_message(job_id)
+        outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+        assert outcome.status == STATUS_COMPLETED
+        assert len(queue.deleted) == 1
 
 
 # --- Drain Tests ---

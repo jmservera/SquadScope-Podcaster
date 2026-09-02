@@ -21,6 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 
+from podcaster.image_validation import InvalidImageError, sniff_image
 from podcaster.progress import TaskStatus
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
 from podcaster.ssrf import host_is_blocked, redact_url, safe_urlopen
@@ -391,9 +392,13 @@ DEFAULT_DOG_LOGO_URL = (
 # Cap on a remote logo download.  A logo is a small corner graphic; anything
 # larger is a misconfiguration (or a hostile endpoint) rather than a watermark.
 DOG_MAX_LOGO_BYTES = 16 * 1024 * 1024
-# Content types accepted for a remote logo.  Guards against caching a soft-404
-# HTML error page as the "logo", which would fail opaquely inside ffmpeg.
-DOG_ALLOWED_CONTENT_TYPES = ("image/",)
+# Content types accepted for a remote logo.  Advisory only: the *bytes* decide
+# (see :func:`podcaster.image_validation.sniff_image`).  A mismatch against this
+# prefix list is logged, because a server that mislabels its own image is worth
+# noticing, but it never on its own accepts or rejects a body — object stores
+# legitimately serve images as ``application/octet-stream``, and any server can
+# freely claim ``image/png`` for an HTML error page.
+DOG_ADVISORY_CONTENT_TYPES = ("image/", "application/octet-stream", "binary/octet-stream")
 DOG_DEFAULT_POSITION = "top-right"
 DOG_DEFAULT_SIZE = 80
 DOG_DEFAULT_OPACITY = 0.5
@@ -478,12 +483,37 @@ def _redact_url(url: str) -> str:
 
 
 class WatermarkUnavailableError(RuntimeError):
-    """Raised when a configured DOG watermark cannot be resolved at all.
+    """Raised when a configured DOG watermark cannot be resolved.
 
-    Only reachable when the bundled Claracle asset is missing from the running
-    image *and* the remote logo could not be fetched.  Composition fails loudly
-    rather than shipping an unbranded episode that looks successful (W36).
+    This is a *permanent*, operator-actionable failure, never a transient one:
+    retrying the identical job re-reads the identical config and re-fetches the
+    identical URL, so a retry cannot succeed.  :mod:`podcaster.video.job_runner`
+    maps it onto ``PermanentVideoError`` so the queue message is deleted after a
+    single attempt and the reported reason names the real problem instead of a
+    misleading ``RetryExhausted`` after five full reruns.
+
+    Attributes:
+        reason: Stable machine-readable token — one of
+            :data:`WATERMARK_REASON_ASSET_MISSING` or
+            :data:`WATERMARK_REASON_FETCH_FAILED`.
+        details: Structured, log-safe context for the failure report (the URL is
+            always redacted).
     """
+
+    def __init__(self, message: str, *, reason: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.details = details or {}
+
+
+#: The URL is the project-owned Claracle logo, but the bundled asset is absent
+#: from this image *and* the canonical URL could not be fetched.  Packaging bug:
+#: rebuild/redeploy the synthesis image.
+WATERMARK_REASON_ASSET_MISSING = "watermark_asset_missing"
+#: A configured third-party logo URL could not be fetched or was not a valid
+#: image.  Config/endpoint bug: fix the URL, or drop ``podcast_config.dog_logo``
+#: to render an intentionally unbranded episode.
+WATERMARK_REASON_FETCH_FAILED = "watermark_fetch_failed"
 
 
 def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path | None:
@@ -491,7 +521,13 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path | None:
 
     Caches by a hash of the URL so different logos coexist and re-runs reuse a
     prior download.  Returns the local path, or ``None`` on any failure so the
-    caller can fall back to the bundled asset.
+    caller can decide how to surface it.
+
+    The body is bounded (:data:`DOG_MAX_LOGO_BYTES`) and validated from its own
+    magic bytes rather than from the ``Content-Type`` header, so a valid image
+    served as ``application/octet-stream`` is accepted while HTML soft-404s,
+    forged ``image/*`` labels and decompression bombs are rejected *before*
+    anything is written to the cache.
     """
     scheme = urllib.parse.urlparse(url).scheme.lower()
     if scheme not in ("http", "https"):
@@ -526,10 +562,13 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path | None:
 
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
+        # ``safe_urlopen`` keeps the SSRF guard active across 30x redirects, so a
+        # permitted host cannot bounce the worker onto an internal address.
         with safe_urlopen(url, timeout=15) as resp:
             content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             # Read one byte past the cap so an oversized body is detectable
-            # without buffering the whole response.
+            # without ever buffering more than the cap plus one byte, however
+            # large the response (or its Content-Length claim) actually is.
             data = resp.read(DOG_MAX_LOGO_BYTES + 1)
     except Exception as exc:  # noqa: BLE001 — never fail the fetch step itself
         logger.warning("Failed to download DOG logo from %s: %s", _redact_url(url), exc)
@@ -543,36 +582,69 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path | None:
             "DOG logo at %s exceeds the %d byte limit", _redact_url(url), DOG_MAX_LOGO_BYTES
         )
         return None
-    if content_type and not content_type.startswith(DOG_ALLOWED_CONTENT_TYPES):
+
+    # Decide on the bytes, not the header.  Only the container header is parsed
+    # (no pixel decode), so this stays O(1) even for a declared-gigapixel image.
+    try:
+        info = sniff_image(data)
+    except InvalidImageError as exc:
         logger.warning(
-            "DOG logo at %s has non-image content type %r", _redact_url(url), content_type
+            "DOG logo at %s is not a usable image (%s); declared content type was %r",
+            _redact_url(url),
+            exc.reason,
+            content_type or "<none>",
         )
         return None
 
+    if content_type and not content_type.startswith(DOG_ADVISORY_CONTENT_TYPES):
+        # Bytes win, but a mislabelled endpoint is worth flagging to operators.
+        logger.warning(
+            "DOG logo at %s declared content type %r but its bytes are a valid %s; "
+            "accepting the image and ignoring the header",
+            _redact_url(url),
+            content_type,
+            info.format,
+        )
+
     cache_path.write_bytes(data)
     logger.info(
-        "Downloaded DOG logo (%d bytes) from %s to %s", len(data), _redact_url(url), cache_path
+        "Downloaded DOG logo (%d bytes, %s %dx%d) from %s to %s",
+        len(data),
+        info.format,
+        info.width,
+        info.height,
+        _redact_url(url),
+        cache_path,
     )
     return cache_path
 
 
-def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
+def _fetch_dog_logo(url: str, cache_dir: Path) -> Path:
     """Resolve the DOG logo image for *url* to a local path.
 
-    Resolution order:
+    Resolution depends on **whose logo it is**, because substituting one brand's
+    artwork for another is a misbranding incident, not a graceful degradation:
 
-    1. **Bundled canonical asset** — when *url* names the project-owned Claracle
-       logo (:func:`podcaster.watermark.is_canonical_logo_url`) the packaged file
-       is used directly.  No network request is made, so the watermark cannot be
-       lost to a moved/unpublished URL, DNS failure or rate limit.
-    2. **Remote download** — genuinely external logos are fetched (and cached)
-       through the SSRF-guarded opener, with size and content-type validation.
-    3. **Bundled fallback** — a failed remote fetch degrades to the bundled
-       Claracle logo so the episode still ships branded.
+    * **Canonical Claracle URL** (:func:`podcaster.watermark.is_canonical_logo_url`)
+      — served from the bundled ``assets/images/claracle.jpeg`` with *no network
+      access at all*, so the watermark cannot be lost to a moved/unpublished URL,
+      DNS failure or rate limit (W36).  If the asset is missing from the running
+      image the canonical URL is still attempted over the network as a
+      best-effort; failing that, :class:`WatermarkUnavailableError` is raised
+      with :data:`WATERMARK_REASON_ASSET_MISSING`.
+    * **Any other (third-party) URL** — fetched through the SSRF-guarded opener
+      with size and image-bytes validation.  A failed, blocked or invalid fetch
+      raises :class:`WatermarkUnavailableError` with
+      :data:`WATERMARK_REASON_FETCH_FAILED`.  It **never** falls back to the
+      bundled Claracle logo: stamping Claracle branding onto an episode that was
+      configured to carry someone else's mark is a worse outcome than failing.
 
-    Returns ``None`` only when every option is exhausted, i.e. the bundled asset
-    is missing from the image.  Callers must treat that as an explicit failure,
-    not as silent graceful degradation.
+    Configuring no watermark at all (``dog_logo=None``) remains fully supported
+    and is unaffected — this function is only reached when one *is* configured.
+
+    Raises:
+        WatermarkUnavailableError: If the configured watermark cannot be
+            resolved.  Always terminal; retrying is futile.
     """
     bundled = canonical_logo_path()
 
@@ -585,31 +657,42 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path | None:
             )
             return bundled
         logger.warning(
-            "Bundled Claracle DOG logo is missing from this image; falling back to "
-            "fetching the canonical URL %s over the network",
+            "Bundled Claracle DOG logo is missing from this image (expected %s); falling "
+            "back to fetching the canonical URL %s over the network",
+            WATERMARK_LOGO_PATH,
             _redact_url(url),
         )
+        remote = _fetch_dog_logo_remote(url, cache_dir)
+        if remote is not None:
+            return remote
+        raise WatermarkUnavailableError(
+            "DOG watermark was configured but could not be resolved: the bundled Claracle "
+            f"logo is not packaged in this image (expected {WATERMARK_LOGO_PATH}) and the "
+            f"canonical URL {_redact_url(url)} could not be fetched. Rebuild and redeploy "
+            "the synthesis image so assets/images/claracle.jpeg is present, or remove "
+            "podcast_config.dog_logo to render an intentionally unbranded video.",
+            reason=WATERMARK_REASON_ASSET_MISSING,
+            details={
+                "logo_url": _redact_url(url),
+                "expected_asset_path": str(WATERMARK_LOGO_PATH),
+                "canonical": True,
+            },
+        )
 
+    # Third-party logo: fetch it or fail. Never substitute Claracle branding.
     remote = _fetch_dog_logo_remote(url, cache_dir)
     if remote is not None:
         return remote
-
-    if bundled is not None:
-        logger.warning(
-            "DOG logo %s could not be fetched; falling back to the bundled Claracle "
-            "logo %s so the episode stays branded",
-            _redact_url(url),
-            bundled,
-        )
-        return bundled
-
-    logger.error(
-        "DOG logo %s could not be fetched and no bundled Claracle logo is packaged "
-        "in this image (expected %s)",
-        _redact_url(url),
-        WATERMARK_LOGO_PATH,
+    raise WatermarkUnavailableError(
+        "DOG watermark was configured but could not be resolved: the third-party logo "
+        f"{_redact_url(url)} could not be downloaded, was blocked by the SSRF guard, or "
+        "was not a valid image. The bundled Claracle logo is deliberately NOT substituted "
+        "for a third-party watermark, because that would misbrand the episode. Fix "
+        "podcast_config.dog_logo.url, point it at the canonical Claracle logo, or remove "
+        "podcast_config.dog_logo to render an intentionally unbranded video.",
+        reason=WATERMARK_REASON_FETCH_FAILED,
+        details={"logo_url": _redact_url(url), "canonical": False},
     )
-    return None
 
 
 def _build_dog_overlay_filter(
@@ -2572,10 +2655,11 @@ def compose_video(
             :data:`DOG_INTRO_LEAD_SECONDS` seconds of the intro bumper so it is
             on screen before the intro ends (#361); the outro stays unbranded.
             Canonical Claracle URLs resolve to the bundled
-            ``assets/images/claracle.jpeg`` without any network access, and a
-            failed remote download falls back to that same bundled asset.  When
-            even the bundled asset is absent, :class:`WatermarkUnavailableError`
-            is raised rather than silently shipping an unbranded episode.
+            ``assets/images/claracle.jpeg`` without any network access.  A
+            configured watermark that cannot be resolved raises
+            :class:`WatermarkUnavailableError` rather than silently shipping an
+            unbranded episode; a third-party URL that fails is **never**
+            substituted with the bundled Claracle logo.
         dog_logo_cache_dir: Local cache directory for the downloaded DOG logo.
             Defaults to a stable temp-dir location.
         audio_duration: Total podcast audio length in seconds.  When provided
@@ -2603,8 +2687,9 @@ def compose_video(
 
     Raises:
         ValueError: If segments is empty.
-        WatermarkUnavailableError: If *dog_logo* is configured but no logo
-            (remote or bundled) could be resolved.
+        WatermarkUnavailableError: If *dog_logo* is configured but the logo
+            could not be resolved (missing bundled asset, or an unreachable /
+            invalid third-party URL).
         subprocess.CalledProcessError: If ffmpeg fails.
     """
     if not segments:
@@ -2933,18 +3018,18 @@ def compose_video(
     dog_logo_path: Path | None = None
     if dog_logo is not None:
         dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
+        # Raises WatermarkUnavailableError when a configured watermark cannot be
+        # resolved.  Failing here is deliberate: silently composing an unbranded
+        # episode produced a "successful" but unusable W36 video, and silently
+        # substituting Claracle branding for an unreachable third-party logo
+        # would misbrand the episode instead.
         dog_logo_path = _fetch_dog_logo(dog_logo.url, dog_cache)
-        if dog_logo_path is None:
-            # A watermark was explicitly configured but neither the remote logo
-            # nor the bundled Claracle asset could be resolved.  Failing here is
-            # deliberate: silently composing an unbranded episode produced a
-            # "successful" but unusable W36 video.
+        if dog_logo_path is None:  # pragma: no cover — defensive
             raise WatermarkUnavailableError(
-                "DOG watermark was configured but could not be resolved: remote fetch "
-                f"of {_redact_url(dog_logo.url)} failed and the bundled Claracle logo is "
-                f"not packaged in this image (expected {WATERMARK_LOGO_PATH}). Rebuild the "
-                "synthesis image so assets/images/claracle.jpeg is present, or remove "
-                "podcast_config.dog_logo to render intentionally unbranded video."
+                "DOG watermark was configured but could not be resolved: "
+                f"{_redact_url(dog_logo.url)}",
+                reason=WATERMARK_REASON_FETCH_FAILED,
+                details={"logo_url": _redact_url(dog_logo.url)},
             )
 
     # Step 3.6: Splice section title cards into the content stream (#377).  Cards
