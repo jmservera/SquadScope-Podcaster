@@ -7,19 +7,23 @@ YouTube/Spotify-ready MP4 with crossfade transitions and lower-third overlays.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
 import shutil
+import socket
+import ssl
 import subprocess
 import tempfile
+import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Protocol, Sequence
 
 from podcaster.image_validation import InvalidImageError, sniff_image
 from podcaster.progress import TaskStatus
@@ -482,23 +486,32 @@ def _redact_url(url: str) -> str:
     return redact_url(url)
 
 
-class WatermarkUnavailableError(RuntimeError):
-    """Raised when a configured DOG watermark cannot be resolved.
+class WatermarkResolutionError(RuntimeError):
+    """Base class for a configured DOG watermark that could not be resolved.
 
-    This is a *permanent*, operator-actionable failure, never a transient one:
-    retrying the identical job re-reads the identical config and re-fetches the
-    identical URL, so a retry cannot succeed.  :mod:`podcaster.video.job_runner`
-    maps it onto ``PermanentVideoError`` so the queue message is deleted after a
-    single attempt and the reported reason names the real problem instead of a
-    misleading ``RetryExhausted`` after five full reruns.
+    Never raised directly — the concrete subclass *is* the classification, so a
+    caller cannot accidentally collapse a retryable network blip and a terminal
+    misconfiguration into the same handling:
+
+    * :class:`WatermarkUnavailableError` — **permanent**. Retrying the identical
+      job re-reads the identical config and re-fetches the identical URL, so a
+      retry cannot succeed.
+    * :class:`WatermarkTransientError` — **transient**. The same job, retried
+      later, can plausibly succeed (the endpoint timed out, DNS failed, the host
+      was unreachable, or it answered ``408``/``429``/``5xx``).
 
     Attributes:
         reason: Stable machine-readable token — one of
-            :data:`WATERMARK_REASON_ASSET_MISSING` or
-            :data:`WATERMARK_REASON_FETCH_FAILED`.
+            :data:`WATERMARK_REASON_ASSET_MISSING`,
+            :data:`WATERMARK_REASON_FETCH_FAILED` or
+            :data:`WATERMARK_REASON_FETCH_TRANSIENT`.
         details: Structured, log-safe context for the failure report (the URL is
-            always redacted).
+            always redacted, and no response body is ever included).
+        transient: Class-level classification flag, mirrored onto instances so
+            callers can branch without importing both subclasses.
     """
+
+    transient: ClassVar[bool] = False
 
     def __init__(self, message: str, *, reason: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
@@ -506,51 +519,181 @@ class WatermarkUnavailableError(RuntimeError):
         self.details = details or {}
 
 
+class WatermarkUnavailableError(WatermarkResolutionError):
+    """A configured DOG watermark is *permanently* unresolvable.
+
+    Operator-actionable and terminal: bad scheme, an SSRF-blocked target, a
+    definitive ``4xx`` (e.g. ``404``), an oversized body, bytes that are not a
+    usable image, or a missing bundled asset.
+    :mod:`podcaster.video.job_runner` maps it onto ``PermanentVideoError`` so the
+    queue message is deleted after a single attempt and the reported reason names
+    the real problem instead of a misleading ``RetryExhausted`` after five full
+    reruns.
+    """
+
+    transient: ClassVar[bool] = False
+
+
+class WatermarkTransientError(WatermarkResolutionError):
+    """A configured DOG watermark could not be fetched *right now*.
+
+    The remote endpoint timed out, could not be resolved/connected to, or
+    answered with a retryable status (``408``, ``425``, ``429``, ``5xx``).  None
+    of those say anything about the configuration, so deleting the queue message
+    on the first attempt would throw away a job that the very next attempt could
+    complete.  :mod:`podcaster.video.job_runner` maps it onto
+    ``TransientVideoError`` so the normal bounded retry (``MAX_DEQUEUE_COUNT``)
+    applies and only a persistent outage ends as ``RetryExhausted``.
+    """
+
+    transient: ClassVar[bool] = True
+
+
 #: The URL is the project-owned Claracle logo, but the bundled asset is absent
 #: from this image *and* the canonical URL could not be fetched.  Packaging bug:
 #: rebuild/redeploy the synthesis image.
 WATERMARK_REASON_ASSET_MISSING = "watermark_asset_missing"
-#: A configured third-party logo URL could not be fetched or was not a valid
-#: image.  Config/endpoint bug: fix the URL, or drop ``podcast_config.dog_logo``
-#: to render an intentionally unbranded episode.
+#: A configured third-party logo URL was definitively rejected — blocked, gone,
+#: too large, or not an image.  Config/endpoint bug: fix the URL, or drop
+#: ``podcast_config.dog_logo`` to render an intentionally unbranded episode.
 WATERMARK_REASON_FETCH_FAILED = "watermark_fetch_failed"
+#: A configured logo URL could not be reached *this time* (timeout, DNS or
+#: connection error, ``408``/``425``/``429``/``5xx``).  Infrastructure blip:
+#: retry the job; no operator action is required unless it persists.
+WATERMARK_REASON_FETCH_TRANSIENT = "watermark_fetch_transient"
+
+#: Seconds allowed for the whole remote logo request.  A timeout here is a
+#: transient condition, not a verdict on the configuration.
+DOG_FETCH_TIMEOUT_SECONDS = 15
+
+#: HTTP statuses that explicitly invite a later retry of the same request.
+#: ``408`` request timeout, ``425`` too early, ``429`` rate limited.  Everything
+#: else below ``500`` is a definitive answer about *this* URL.
+DOG_TRANSIENT_HTTP_STATUSES = frozenset({408, 425, 429})
 
 
-def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path | None:
+def _http_status_is_transient(status: int) -> bool:
+    """Return ``True`` when *status* is worth retrying the identical request for.
+
+    ``5xx`` is the server admitting its own fault; the explicit
+    :data:`DOG_TRANSIENT_HTTP_STATUSES` are protocol-level "come back later".
+    Every other status (``404`` gone, ``403`` forbidden, ``401`` unauthorized,
+    ``400`` malformed, and the ``30x`` a blocked redirect surfaces as) is a
+    stable verdict on the configured URL that a retry cannot change.
+    """
+    return status in DOG_TRANSIENT_HTTP_STATUSES or 500 <= status <= 599
+
+
+def _classify_logo_fetch_error(
+    exc: OSError | ValueError | http.client.HTTPException,
+) -> tuple[bool, str]:
+    """Classify a remote-logo failure as ``(transient, kind)``.
+
+    *kind* is a short, log-safe token (never derived from the response body) that
+    is carried in the failure details so operators can see *why* an attempt was
+    classified the way it was.
+
+    The mapping is deliberately explicit rather than "anything unexpected is
+    transient": misclassifying a permanent failure as transient burns five full
+    recording+composition reruns, and misclassifying a transient one as permanent
+    drops the job on a single network blip.
+    """
+    # HTTPError first: it is a subclass of both URLError and OSError, and its
+    # status code is the most specific signal available.
+    if isinstance(exc, urllib.error.HTTPError):
+        return _http_status_is_transient(exc.code), f"http_{exc.code}"
+
+    # ``safe_urlopen`` raises ValueError for a target the SSRF guard refuses.
+    if isinstance(exc, ValueError):
+        return False, "ssrf_blocked"
+
+    # A TLS trust failure is a stable property of the endpoint's certificate, not
+    # a blip; retrying the same URL five times will fail the same way.
+    inner = exc.reason if isinstance(exc, urllib.error.URLError) else None
+    for candidate in (exc, inner):
+        if isinstance(candidate, ssl.SSLCertVerificationError):
+            return False, "tls_certificate_invalid"
+
+    probe = inner if isinstance(inner, BaseException) else exc
+    if isinstance(probe, TimeoutError):  # socket.timeout is an alias since 3.10
+        return True, "timeout"
+    if isinstance(probe, socket.gaierror):
+        return True, "dns"
+    if isinstance(probe, ConnectionError):
+        return True, "connection"
+    if isinstance(probe, ssl.SSLError):
+        return True, "tls"
+    if isinstance(probe, http.client.HTTPException):
+        # Truncated/oversized/invalid HTTP framing: the transfer broke, so the
+        # configuration has not been shown to be wrong.
+        return True, f"protocol_{type(probe).__name__.lower()}"
+    return True, f"network_{type(probe).__name__.lower()}"
+
+
+def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
     """Download (and cache) a remote DOG logo image from *url*.
 
     Caches by a hash of the URL so different logos coexist and re-runs reuse a
-    prior download.  Returns the local path, or ``None`` on any failure so the
-    caller can decide how to surface it.
+    prior download.  Returns the local path.
+
+    Raises the *typed* failure rather than a bare ``None`` so the caller cannot
+    flatten "this URL is wrong" and "the network is having a moment" into one
+    outcome:
+
+    Raises:
+        WatermarkUnavailableError: Permanent — unsupported scheme, no host,
+            SSRF-blocked target, definitive ``4xx``, empty/oversized body, or
+            bytes that are not a usable image.
+        WatermarkTransientError: Transient — timeout, DNS/connection failure,
+            ``408``/``425``/``429``/``5xx``, or a local cache-write error.
 
     The body is bounded (:data:`DOG_MAX_LOGO_BYTES`) and validated from its own
     magic bytes rather than from the ``Content-Type`` header, so a valid image
     served as ``application/octet-stream`` is accepted while HTML soft-404s,
     forged ``image/*`` labels and decompression bombs are rejected *before*
-    anything is written to the cache.
+    anything is written to the cache.  Response bodies are never logged: the
+    endpoint is untrusted input.
     """
+    redacted = _redact_url(url)
+
+    def _permanent(message: str, kind: str) -> WatermarkUnavailableError:
+        return WatermarkUnavailableError(
+            message,
+            reason=WATERMARK_REASON_FETCH_FAILED,
+            details={"logo_url": redacted, "failure_kind": kind},
+        )
+
+    def _transient(message: str, kind: str) -> WatermarkTransientError:
+        return WatermarkTransientError(
+            message,
+            reason=WATERMARK_REASON_FETCH_TRANSIENT,
+            details={"logo_url": redacted, "failure_kind": kind},
+        )
+
     scheme = urllib.parse.urlparse(url).scheme.lower()
     if scheme not in ("http", "https"):
         logger.warning(
-            "Skipping DOG logo fetch: unsupported URL scheme %r in %s",
+            "Refusing DOG logo fetch: unsupported URL scheme %r in %s",
             scheme,
-            _redact_url(url),
+            redacted,
         )
-        return None
+        raise _permanent(
+            f"DOG logo URL {redacted} uses unsupported scheme {scheme!r}", "unsupported_scheme"
+        )
 
     # SSRF guard (#601): the URL is caller-controlled config, so refuse targets
     # that resolve to loopback / private / link-local / cloud-metadata hosts.
     hostname = urllib.parse.urlparse(url).hostname
     if hostname is None:
-        logger.warning("Skipping DOG logo fetch: URL has no host in %s", _redact_url(url))
-        return None
+        logger.warning("Refusing DOG logo fetch: URL has no host in %s", redacted)
+        raise _permanent(f"DOG logo URL {redacted} has no host", "missing_host")
     if host_is_blocked(hostname):
         logger.warning(
-            "Skipping DOG logo fetch: URL host is not publicly routable / is "
+            "Refusing DOG logo fetch: URL host is not publicly routable / is "
             "blocked by the SSRF guard in %s",
-            _redact_url(url),
+            redacted,
         )
-        return None
+        raise _permanent(f"DOG logo URL {redacted} is blocked by the SSRF guard", "ssrf_blocked")
 
     digest = sha256(url.encode("utf-8")).hexdigest()[:16]
     suffix = Path(url.split("?", 1)[0]).suffix or ".img"
@@ -560,28 +703,44 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path | None:
         logger.info("Using cached DOG logo: %s", cache_path)
         return cache_path
 
+    # Only the exception families urllib/http can raise are caught, and each is
+    # classified: a genuine programming error still propagates untouched instead
+    # of being silently relabelled as a watermark problem.
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
         # ``safe_urlopen`` keeps the SSRF guard active across 30x redirects, so a
         # permitted host cannot bounce the worker onto an internal address.
-        with safe_urlopen(url, timeout=15) as resp:
+        with safe_urlopen(url, timeout=DOG_FETCH_TIMEOUT_SECONDS) as resp:
             content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             # Read one byte past the cap so an oversized body is detectable
             # without ever buffering more than the cap plus one byte, however
             # large the response (or its Content-Length claim) actually is.
             data = resp.read(DOG_MAX_LOGO_BYTES + 1)
-    except Exception as exc:  # noqa: BLE001 — never fail the fetch step itself
-        logger.warning("Failed to download DOG logo from %s: %s", _redact_url(url), exc)
-        return None
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        transient, kind = _classify_logo_fetch_error(exc)
+        logger.warning(
+            "Failed to download DOG logo from %s: %s (kind=%s, transient=%s)",
+            redacted,
+            type(exc).__name__,
+            kind,
+            transient,
+        )
+        message = (
+            f"DOG logo at {redacted} could not be downloaded ({kind})"
+            if transient
+            else f"DOG logo at {redacted} could not be downloaded and will not "
+            f"succeed on retry ({kind})"
+        )
+        raise (_transient(message, kind) if transient else _permanent(message, kind)) from exc
 
     if not data:
-        logger.warning("DOG logo at %s was empty", _redact_url(url))
-        return None
+        logger.warning("DOG logo at %s was empty", redacted)
+        raise _permanent(f"DOG logo at {redacted} was an empty body", "empty_body")
     if len(data) > DOG_MAX_LOGO_BYTES:
-        logger.warning(
-            "DOG logo at %s exceeds the %d byte limit", _redact_url(url), DOG_MAX_LOGO_BYTES
+        logger.warning("DOG logo at %s exceeds the %d byte limit", redacted, DOG_MAX_LOGO_BYTES)
+        raise _permanent(
+            f"DOG logo at {redacted} exceeds the {DOG_MAX_LOGO_BYTES} byte limit", "oversized"
         )
-        return None
 
     # Decide on the bytes, not the header.  Only the container header is parsed
     # (no pixel decode), so this stays O(1) even for a declared-gigapixel image.
@@ -590,30 +749,42 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path | None:
     except InvalidImageError as exc:
         logger.warning(
             "DOG logo at %s is not a usable image (%s); declared content type was %r",
-            _redact_url(url),
+            redacted,
             exc.reason,
             content_type or "<none>",
         )
-        return None
+        raise _permanent(
+            f"DOG logo at {redacted} is not a usable image ({exc.reason})",
+            f"invalid_image_{exc.reason}",
+        ) from exc
 
     if content_type and not content_type.startswith(DOG_ADVISORY_CONTENT_TYPES):
         # Bytes win, but a mislabelled endpoint is worth flagging to operators.
         logger.warning(
             "DOG logo at %s declared content type %r but its bytes are a valid %s; "
             "accepting the image and ignoring the header",
-            _redact_url(url),
+            redacted,
             content_type,
             info.format,
         )
 
-    cache_path.write_bytes(data)
+    try:
+        cache_path.write_bytes(data)
+    except OSError as exc:
+        # A full or unwritable cache volume is an environment condition, not a
+        # verdict on the configured URL: let the retry find a healthier worker.
+        logger.warning("Failed to cache DOG logo from %s: %s", redacted, type(exc).__name__)
+        raise _transient(
+            f"DOG logo from {redacted} could not be written to the cache", "cache_write_failed"
+        ) from exc
+
     logger.info(
         "Downloaded DOG logo (%d bytes, %s %dx%d) from %s to %s",
         len(data),
         info.format,
         info.width,
         info.height,
-        _redact_url(url),
+        redacted,
         cache_path,
     )
     return cache_path
@@ -630,69 +801,110 @@ def _fetch_dog_logo(url: str, cache_dir: Path) -> Path:
       access at all*, so the watermark cannot be lost to a moved/unpublished URL,
       DNS failure or rate limit (W36).  If the asset is missing from the running
       image the canonical URL is still attempted over the network as a
-      best-effort; failing that, :class:`WatermarkUnavailableError` is raised
-      with :data:`WATERMARK_REASON_ASSET_MISSING`.
+      best-effort; a *definitive* failure there raises
+      :class:`WatermarkUnavailableError` with
+      :data:`WATERMARK_REASON_ASSET_MISSING` (a packaging defect an operator must
+      fix), while a *transient* one raises :class:`WatermarkTransientError` so
+      the retry can still recover the image.
     * **Any other (third-party) URL** — fetched through the SSRF-guarded opener
-      with size and image-bytes validation.  A failed, blocked or invalid fetch
+      with size and image-bytes validation.  A blocked, gone or invalid fetch
       raises :class:`WatermarkUnavailableError` with
-      :data:`WATERMARK_REASON_FETCH_FAILED`.  It **never** falls back to the
-      bundled Claracle logo: stamping Claracle branding onto an episode that was
-      configured to carry someone else's mark is a worse outcome than failing.
+      :data:`WATERMARK_REASON_FETCH_FAILED`; a timeout, DNS/connection error or
+      ``408``/``425``/``429``/``5xx`` raises :class:`WatermarkTransientError`
+      with :data:`WATERMARK_REASON_FETCH_TRANSIENT`.  Neither **ever** falls back
+      to the bundled Claracle logo: stamping Claracle branding onto an episode
+      that was configured to carry someone else's mark is a worse outcome than
+      failing.
 
     Configuring no watermark at all (``dog_logo=None``) remains fully supported
     and is unaffected — this function is only reached when one *is* configured.
 
     Raises:
-        WatermarkUnavailableError: If the configured watermark cannot be
-            resolved.  Always terminal; retrying is futile.
+        WatermarkUnavailableError: The configured watermark is permanently
+            unresolvable; retrying is futile.
+        WatermarkTransientError: The configured watermark could not be fetched
+            this time; a bounded retry may succeed.
     """
     bundled = canonical_logo_path()
+    redacted = _redact_url(url)
 
     if is_canonical_logo_url(url):
         if bundled is not None:
             logger.info(
                 "Using bundled Claracle DOG logo %s for canonical URL %s (no network fetch)",
                 bundled,
-                _redact_url(url),
+                redacted,
             )
             return bundled
         logger.warning(
             "Bundled Claracle DOG logo is missing from this image (expected %s); falling "
             "back to fetching the canonical URL %s over the network",
             WATERMARK_LOGO_PATH,
-            _redact_url(url),
+            redacted,
         )
-        remote = _fetch_dog_logo_remote(url, cache_dir)
-        if remote is not None:
-            return remote
-        raise WatermarkUnavailableError(
-            "DOG watermark was configured but could not be resolved: the bundled Claracle "
-            f"logo is not packaged in this image (expected {WATERMARK_LOGO_PATH}) and the "
-            f"canonical URL {_redact_url(url)} could not be fetched. Rebuild and redeploy "
-            "the synthesis image so assets/images/claracle.jpeg is present, or remove "
-            "podcast_config.dog_logo to render an intentionally unbranded video.",
-            reason=WATERMARK_REASON_ASSET_MISSING,
-            details={
-                "logo_url": _redact_url(url),
-                "expected_asset_path": str(WATERMARK_LOGO_PATH),
-                "canonical": True,
-            },
-        )
+        try:
+            return _fetch_dog_logo_remote(url, cache_dir)
+        except WatermarkTransientError as exc:
+            # The packaging defect is real, but the network attempt failed for a
+            # reason that says nothing about it.  Keep the transient
+            # classification so the bounded retry gets its chance, and carry the
+            # missing-asset context for the operator report.
+            raise WatermarkTransientError(
+                "DOG watermark was configured but could not be resolved *this attempt*: the "
+                f"bundled Claracle logo is not packaged in this image (expected "
+                f"{WATERMARK_LOGO_PATH}) and fetching the canonical URL {redacted} failed "
+                "transiently. The job will be retried; if it keeps failing, rebuild and "
+                "redeploy the synthesis image so assets/images/claracle.jpeg is present.",
+                reason=WATERMARK_REASON_FETCH_TRANSIENT,
+                details={
+                    **exc.details,
+                    "logo_url": redacted,
+                    "expected_asset_path": str(WATERMARK_LOGO_PATH),
+                    "canonical": True,
+                    "bundled_asset_missing": True,
+                },
+            ) from exc
+        except WatermarkUnavailableError as exc:
+            raise WatermarkUnavailableError(
+                "DOG watermark was configured but could not be resolved: the bundled Claracle "
+                f"logo is not packaged in this image (expected {WATERMARK_LOGO_PATH}) and the "
+                f"canonical URL {redacted} could not be fetched. Rebuild and redeploy "
+                "the synthesis image so assets/images/claracle.jpeg is present, or remove "
+                "podcast_config.dog_logo to render an intentionally unbranded video.",
+                reason=WATERMARK_REASON_ASSET_MISSING,
+                details={
+                    **exc.details,
+                    "logo_url": redacted,
+                    "expected_asset_path": str(WATERMARK_LOGO_PATH),
+                    "canonical": True,
+                },
+            ) from exc
 
-    # Third-party logo: fetch it or fail. Never substitute Claracle branding.
-    remote = _fetch_dog_logo_remote(url, cache_dir)
-    if remote is not None:
-        return remote
-    raise WatermarkUnavailableError(
-        "DOG watermark was configured but could not be resolved: the third-party logo "
-        f"{_redact_url(url)} could not be downloaded, was blocked by the SSRF guard, or "
-        "was not a valid image. The bundled Claracle logo is deliberately NOT substituted "
-        "for a third-party watermark, because that would misbrand the episode. Fix "
-        "podcast_config.dog_logo.url, point it at the canonical Claracle logo, or remove "
-        "podcast_config.dog_logo to render an intentionally unbranded video.",
-        reason=WATERMARK_REASON_FETCH_FAILED,
-        details={"logo_url": _redact_url(url), "canonical": False},
-    )
+    # Third-party logo: fetch it or fail. Never substitute Claracle branding —
+    # in either classification.
+    try:
+        return _fetch_dog_logo_remote(url, cache_dir)
+    except WatermarkTransientError as exc:
+        raise WatermarkTransientError(
+            f"DOG watermark was configured but the third-party logo {redacted} could not be "
+            "reached on this attempt (timeout, DNS/connection error, or a retryable HTTP "
+            "status). The job will be retried rather than published unbranded, and the "
+            "bundled Claracle logo is deliberately NOT substituted, because that would "
+            "misbrand the episode.",
+            reason=WATERMARK_REASON_FETCH_TRANSIENT,
+            details={**exc.details, "logo_url": redacted, "canonical": False},
+        ) from exc
+    except WatermarkUnavailableError as exc:
+        raise WatermarkUnavailableError(
+            "DOG watermark was configured but could not be resolved: the third-party logo "
+            f"{redacted} was blocked by the SSRF guard, is gone, or was not a valid image. "
+            "The bundled Claracle logo is deliberately NOT substituted "
+            "for a third-party watermark, because that would misbrand the episode. Fix "
+            "podcast_config.dog_logo.url, point it at the canonical Claracle logo, or remove "
+            "podcast_config.dog_logo to render an intentionally unbranded video.",
+            reason=WATERMARK_REASON_FETCH_FAILED,
+            details={**exc.details, "logo_url": redacted, "canonical": False},
+        ) from exc
 
 
 def _build_dog_overlay_filter(
@@ -3018,19 +3230,13 @@ def compose_video(
     dog_logo_path: Path | None = None
     if dog_logo is not None:
         dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
-        # Raises WatermarkUnavailableError when a configured watermark cannot be
-        # resolved.  Failing here is deliberate: silently composing an unbranded
-        # episode produced a "successful" but unusable W36 video, and silently
-        # substituting Claracle branding for an unreachable third-party logo
-        # would misbrand the episode instead.
+        # Raises WatermarkUnavailableError (permanent) or WatermarkTransientError
+        # (retryable) when a configured watermark cannot be resolved.  Failing
+        # here is deliberate: silently composing an unbranded episode produced a
+        # "successful" but unusable W36 video, and silently substituting Claracle
+        # branding for an unreachable third-party logo would misbrand the episode
+        # instead.
         dog_logo_path = _fetch_dog_logo(dog_logo.url, dog_cache)
-        if dog_logo_path is None:  # pragma: no cover — defensive
-            raise WatermarkUnavailableError(
-                "DOG watermark was configured but could not be resolved: "
-                f"{_redact_url(dog_logo.url)}",
-                reason=WATERMARK_REASON_FETCH_FAILED,
-                details={"logo_url": _redact_url(dog_logo.url)},
-            )
 
     # Step 3.6: Splice section title cards into the content stream (#377).  Cards
     # are normalized to the canonical layout (so the xfade copy path stays valid)

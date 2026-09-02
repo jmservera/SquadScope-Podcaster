@@ -20,6 +20,7 @@ from podcaster.video.job_runner import (
     REASON_NO_REPOS,
     REASON_REQUIRED_YOUTUBE_FAILURE,
     REASON_RETRY_EXHAUSTED,
+    REASON_WATERMARK_TRANSIENT,
     REASON_WATERMARK_UNAVAILABLE,
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -1676,6 +1677,203 @@ class TestProcessMessageWatermarkFailure:
         outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
         assert outcome.status == STATUS_COMPLETED
         assert len(queue.deleted) == 1
+
+
+class TestWatermarkTransientLifecycle:
+    """A watermark host that is merely *unreachable* must be retried, not dropped.
+
+    ``_fetch_dog_logo_remote`` used to collapse a timeout, a DNS failure and a
+    ``503`` into the same ``None`` as a ``404`` or an HTML soft-404, so every
+    third-party logo hiccup became a ``PermanentVideoError`` and the queue
+    message was deleted on the first attempt.  The resolver now raises
+    ``WatermarkTransientError`` for those, and the runner must carry that
+    classification all the way to the queue decision.
+    """
+
+    def _stage(self, storage, job_id: str) -> None:
+        storage.set_manifest(job_id, {"generation": {}})
+        storage.set_script(job_id, "Just a plain script with no GitHub URLs")
+
+    def _transient_error(self, kind: str = "timeout"):
+        from podcaster.video.video_compose import (
+            WATERMARK_REASON_FETCH_TRANSIENT,
+            WatermarkTransientError,
+        )
+
+        return WatermarkTransientError(
+            "third-party logo could not be reached on this attempt; the bundled "
+            "Claracle logo is deliberately NOT substituted because that would "
+            "misbrand the episode",
+            reason=WATERMARK_REASON_FETCH_TRANSIENT,
+            details={
+                "logo_url": "https://example.com/partner.png",
+                "canonical": False,
+                "failure_kind": kind,
+            },
+        )
+
+    @pytest.mark.parametrize("kind", ["timeout", "dns", "connection", "http_408", "http_503"])
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_transient_watermark_raises_transient_video_error(
+        self, mock_compose, mock_record, kind, storage, dry_config
+    ):
+        job_id = f"watermark-transient-{kind}"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = self._transient_error(kind)
+
+        with pytest.raises(TransientVideoError) as excinfo:
+            run_video_generation(job_id, storage, config=dry_config)
+        assert not isinstance(excinfo.value, PermanentVideoError)
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_recorded_state_marks_the_failure_retryable(
+        self, mock_compose, mock_record, storage, dry_config
+    ):
+        from podcaster.video.video_compose import WATERMARK_REASON_FETCH_TRANSIENT
+
+        job_id = "watermark-transient-state"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = self._transient_error()
+
+        with pytest.raises(TransientVideoError):
+            run_video_generation(job_id, storage, config=dry_config)
+
+        state = json.loads(storage._data[manifest_path(job_id)])["generation"]["video_runner"]
+        assert state["reason"] == WATERMARK_REASON_FETCH_TRANSIENT
+        assert state["transient"] is True
+        assert state["failure_family"] == REASON_WATERMARK_TRANSIENT
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_message_is_left_for_retry_not_deleted(
+        self, mock_compose, mock_record, storage, queue, dry_config
+    ):
+        """The whole point: a network blip must not consume the job."""
+        job_id = "watermark-transient-queue"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = self._transient_error()
+
+        msg = _make_message(job_id, dequeue_count=1)
+        with patch("podcaster.video.job_runner.report_failure") as mock_report:
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+
+        assert outcome.status == STATUS_FAILED
+        assert outcome.reason == "transient"
+        assert queue.deleted == []
+        mock_report.assert_not_called()
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_retry_that_succeeds_publishes_a_branded_episode(
+        self, mock_compose, mock_record, storage, queue, dry_config
+    ):
+        """First delivery blips, redelivery succeeds — the job is not lost."""
+        job_id = "watermark-transient-recovers"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            if output_path:
+                output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path,
+                duration_seconds=300.0,
+                segment_count=1,
+                has_audio=False,
+            )
+
+        mock_compose.side_effect = [self._transient_error(), fake_compose]
+
+        first = process_message(
+            _make_message(job_id, dequeue_count=1),
+            storage=storage,
+            queue=queue,
+            config=dry_config,
+        )
+        assert first.status == STATUS_FAILED
+        assert queue.deleted == []
+
+        # Redelivery: compose_video now works, and the job completes normally.
+        mock_compose.side_effect = fake_compose
+        second = process_message(
+            _make_message(job_id, dequeue_count=2),
+            storage=storage,
+            queue=queue,
+            config=dry_config,
+        )
+        assert second.status == STATUS_COMPLETED
+        assert len(queue.deleted) == 1
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_persistent_transient_failure_is_bounded(
+        self, mock_compose, mock_record, storage, queue, dry_config
+    ):
+        """Retries stay bounded: a lasting outage ends as RetryExhausted, once."""
+        job_id = "watermark-transient-exhausted"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = self._transient_error()
+
+        msg = _make_message(job_id, dequeue_count=MAX_DEQUEUE_COUNT)
+        with patch("podcaster.video.job_runner.report_failure") as mock_report:
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+
+        assert outcome.reason == REASON_RETRY_EXHAUSTED
+        assert len(queue.deleted) == 1
+        assert mock_report.call_args.kwargs["error_type"] == "RetryExhausted"
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_permanent_failure_still_deletes_once(
+        self, mock_compose, mock_record, storage, queue, dry_config
+    ):
+        """The permanent path is unchanged: 404/invalid bytes still delete once."""
+        from podcaster.video.video_compose import (
+            WATERMARK_REASON_FETCH_FAILED,
+            WatermarkUnavailableError,
+        )
+
+        job_id = "watermark-permanent-still"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = WatermarkUnavailableError(
+            "third-party logo is gone; substituting Claracle would misbrand the episode",
+            reason=WATERMARK_REASON_FETCH_FAILED,
+            details={"logo_url": "https://example.com/partner.png", "failure_kind": "http_404"},
+        )
+
+        msg = _make_message(job_id, dequeue_count=1)
+        with patch("podcaster.video.job_runner.report_failure") as mock_report:
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+
+        assert outcome.reason == WATERMARK_REASON_FETCH_FAILED
+        assert len(queue.deleted) == 1
+        assert mock_report.call_args.kwargs["error_type"] == "PermanentVideoFailure"
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_transient_failure_never_publishes_misbranded_video(
+        self, mock_compose, mock_record, storage, queue, dry_config
+    ):
+        """Retrying must not be a back door to shipping the wrong logo."""
+        job_id = "watermark-transient-no-misbrand"
+        self._stage(storage, job_id)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = self._transient_error()
+
+        msg = _make_message(job_id, dequeue_count=1)
+        with patch("podcaster.video.job_runner.report_failure"):
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+
+        assert outcome.status != STATUS_COMPLETED
+        assert outcome.video_blob_path is None
+        assert outcome.distribution is None
 
 
 # --- Drain Tests ---

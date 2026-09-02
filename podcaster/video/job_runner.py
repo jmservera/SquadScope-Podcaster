@@ -93,6 +93,12 @@ REASON_REQUIRED_YOUTUBE_FAILURE = "required_youtube_delivery_failed"
 #: concrete sub-reason from ``WatermarkUnavailableError.reason`` is what is
 #: actually recorded/reported; this constant is the family prefix.
 REASON_WATERMARK_UNAVAILABLE = "watermark_unavailable"
+#: A configured DOG watermark could not be *fetched this time* — timeout,
+#: DNS/connection failure or a retryable HTTP status (408/425/429/5xx).  Unlike
+#: the family above this is **not** terminal: the message is left for the normal
+#: bounded retry, because the very next attempt can plausibly succeed and
+#: deleting it would drop a valid job on a network blip.
+REASON_WATERMARK_TRANSIENT = "watermark_transient"
 
 MAX_DEQUEUE_COUNT = 5
 
@@ -668,7 +674,7 @@ def run_video_generation(
     # Imported here (not at module scope) to match the existing lazy
     # ``video_compose`` import policy in this module, while still binding the
     # name before the ``try`` block whose ``except`` clause needs it.
-    from podcaster.video.video_compose import WatermarkUnavailableError
+    from podcaster.video.video_compose import WatermarkTransientError, WatermarkUnavailableError
 
     current = now or datetime.now(timezone.utc)
     dist_config = config or VideoDistributionConfig.from_env()
@@ -1167,6 +1173,34 @@ def run_video_generation(
     except PermanentVideoError:
         _release_editor_lease(scratch, job_id, run_id)
         raise
+    except WatermarkTransientError as exc:
+        # The watermark endpoint timed out, could not be resolved/connected to,
+        # or answered 408/425/429/5xx.  None of those are statements about the
+        # job's configuration, so deleting the message on the first attempt
+        # (as a PermanentVideoError would) throws away a job the next attempt
+        # can complete.  Keep the classification the resolver made and let the
+        # normal bounded retry run; only a persistent outage ends as
+        # RetryExhausted.  The branding is still never substituted or dropped.
+        logger.warning(
+            "video watermark fetch failed transiently job_id=%s reason=%s details=%s",
+            job_id,
+            exc.reason,
+            exc.details,
+        )
+        _record_video_state(
+            storage,
+            job_id,
+            {
+                "status": STATUS_FAILED,
+                "reason": exc.reason,
+                "error": str(exc),
+                "transient": True,
+                "failure_family": REASON_WATERMARK_TRANSIENT,
+                "at": _iso(current),
+            },
+        )
+        _release_editor_lease(scratch, job_id, run_id)
+        raise TransientVideoError(str(exc)) from exc
     except WatermarkUnavailableError as exc:
         # A configured watermark that cannot be resolved is a *permanent*
         # failure: the manifest config and the logo URL are identical on every
@@ -1274,7 +1308,9 @@ def _resolve_dog_logo(manifest: dict[str, Any]):
     a config *is* present the watermark is no longer optional: canonical
     Claracle URLs resolve to the bundled ``assets/images/claracle.jpeg`` with no
     network access, and any watermark that cannot be resolved fails the job
-    permanently instead of silently dropping branding (W36).
+    instead of silently dropping branding (W36) — permanently when the failure
+    is definitive, or for the normal bounded retry when the fetch merely failed
+    transiently.
     """
     from podcaster.video.video_compose import DogLogoConfig
 
