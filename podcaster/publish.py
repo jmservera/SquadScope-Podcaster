@@ -93,6 +93,19 @@ class SpotifyDraftReconcileError(SpotifyPublishError):
     """
 
 
+class SpotifyDraftCreateAmbiguousError(SpotifyPublishError):
+    """Raised when a draft-create POST may or may not have taken effect.
+
+    ``POST /v3/stations/{id}/episodes`` is state-mutating and the Anchor v5 API
+    exposes no idempotency key. A timeout, a dropped connection, a 408/429 or a
+    5xx therefore leaves the *server* state unknown: the draft may already
+    exist. Re-sending the request blindly would create a second, untitled draft
+    that title-based reconcile can never find, so the create is never retried
+    on its own. It is raised for the caller to resolve with evidence (a
+    re-list, see :func:`_recover_ambiguous_create`) or to surface as a failure.
+    """
+
+
 class SpotifyCredentialExpiredError(SpotifyPublishError):
     """Raised when Spotify rejects the request due to expired credentials.
 
@@ -251,10 +264,19 @@ def _is_retryable(exc: requests.RequestException) -> bool:
     return False
 
 
+def _http_suffix(exc: BaseException) -> str:
+    """`` (HTTP 503)`` when the exception carries a response, else ``""``."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return f" (HTTP {status})" if isinstance(status, int) else ""
+
+
 def _retry_request(
     session: requests.Session,
     method: str,
     url: str,
+    *,
+    max_attempts: int = _MAX_RETRIES,
     **kwargs: Any,
 ) -> requests.Response:
     """Execute an HTTP request with exponential backoff retry.
@@ -262,10 +284,17 @@ def _retry_request(
     Only retries on transient errors (5xx, 408, 429, timeouts, connection
     errors). Client errors (4xx) are raised immediately to avoid duplicating
     state-mutating requests.
+
+    ``max_attempts=1`` disables retries entirely. Requests whose *server-side*
+    effect cannot be observed from a transport failure — notably the draft
+    create — use it, because a transient error there is indistinguishable from
+    "the draft was created and the response was lost" (see
+    :class:`SpotifyDraftCreateAmbiguousError`).
     """
     last_exc: Exception | None = None
     log_url = _safe_url(url)
-    for attempt in range(_MAX_RETRIES):
+    attempts = max(1, int(max_attempts))
+    for attempt in range(attempts):
         try:
             resp = session.request(method, url, **kwargs)
             resp.raise_for_status()
@@ -288,7 +317,7 @@ def _retry_request(
                     f"{exc.response.status_code}) — SP_DC/SP_KEY credentials "
                     "expired. Operator must refresh them."
                 ) from exc
-            if not _is_retryable(exc) or attempt >= _MAX_RETRIES - 1:
+            if not _is_retryable(exc) or attempt >= attempts - 1:
                 if exc.response is not None:
                     body_snippet = exc.response.text[:500] if exc.response.text else "(empty)"
                     logger.error(
@@ -307,7 +336,7 @@ def _retry_request(
                 method,
                 log_url,
                 attempt + 1,
-                _MAX_RETRIES,
+                attempts,
                 safe_reason,
                 wait,
             )
@@ -396,19 +425,57 @@ def _resolve_legacy_ids(session: requests.Session, show_id: str) -> tuple[str, s
 
 
 def _create_episode(session: requests.Session, station_id: str) -> int:
-    """Step 2: Create a draft episode, returns anchorId."""
+    """Step 2: Create a draft episode, returns anchorId.
+
+    The POST is sent **exactly once**. It is state-mutating and the API offers
+    no idempotency key, so the generic 408/429/5xx/timeout retry must not be
+    applied here: each retried attempt could create another *untitled* draft,
+    and an untitled draft is invisible to title-based reconcile — an orphan no
+    later run can ever clean up. A transient failure (or a success whose body
+    cannot be read) therefore raises
+    :class:`SpotifyDraftCreateAmbiguousError`, which the video path resolves
+    with evidence in :func:`_recover_ambiguous_create`. Deterministic failures
+    (4xx other than 408/429) raise :class:`SpotifyPublishError`: no draft was
+    created.
+    """
     url = f"{_BASE_URL}/v3/stations/{station_id}/episodes"
-    resp = _retry_request(
-        session,
-        "POST",
-        url,
-        headers=_MUTATION_HEADERS,
-        params=_mums_params(),
-        json={"hourOffset": 0},
-        timeout=15,
-    )
-    data = resp.json()
-    anchor_id = int(data.get("episodeId") or data["id"])
+    try:
+        resp = _retry_request(
+            session,
+            "POST",
+            url,
+            max_attempts=1,
+            headers=_MUTATION_HEADERS,
+            params=_mums_params(),
+            json={"hourOffset": 0},
+            timeout=15,
+        )
+    except SpotifyCredentialExpiredError:
+        raise
+    except SpotifyPublishError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, requests.RequestException) and _is_retryable(cause):
+            raise SpotifyDraftCreateAmbiguousError(
+                f"Spotify draft create for station {station_id} "
+                f"({_safe_url(url)}) failed transiently ({type(cause).__name__}"
+                f"{_http_suffix(cause)}); the draft may or may not exist "
+                "server-side. Not retrying blindly."
+            ) from exc
+        raise
+
+    try:
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("episode create response is not an object")
+        anchor_id = int(data.get("episodeId") or data["id"])
+    except (ValueError, TypeError, KeyError) as exc:
+        # The server accepted the create; only its *identifier* was lost.
+        raise SpotifyDraftCreateAmbiguousError(
+            f"Spotify draft create for station {station_id} "
+            f"({_safe_url(url)}) returned HTTP {resp.status_code} with a body "
+            f"this code cannot read ({type(exc).__name__}); a draft was very "
+            "likely created but its id is unknown. Not retrying blindly."
+        ) from exc
     logger.info("Created draft episode anchorId=%d", anchor_id)
     return anchor_id
 
@@ -436,6 +503,23 @@ _EPISODE_LIST_KEYS = ("episodes", "items", "data", "results")
 _TITLE_KEYS = ("title", "name")
 _ID_KEYS = ("episodeId", "id", "anchorId")
 _STATUS_KEYS = ("status", "state", "publishStatus", "publishState")
+
+# Boolean state fields. ``isDraft`` is the flag this listing has been seen to
+# use; ``isPublished`` is the field name this code itself sends on
+# ``/v3/episodes/{id}/update`` (:func:`_set_metadata`), so its polarity is
+# known. Both must be a real JSON boolean — a string ``"false"`` is *not* a
+# boolean and is treated as schema drift, never as truthiness.
+_BOOL_STATE_KEYS: dict[str, bool] = {"isDraft": True, "isPublished": False}
+
+# String state tokens with evidence, deliberately minimal. ``draft`` is the
+# value this integration itself drives episodes into (``publish_behavior``) and
+# the only token the previous revision recognised; ``published`` is its
+# observed opposite. Every other token — ``scheduled``, ``processing``,
+# ``error``, anything new — is *unknown*, and unknown is an error rather than a
+# guessed "not a draft", because guessing wrong either reuses a published
+# episode or creates a duplicate draft. Extend only with observed evidence.
+_DRAFT_STATE_TOKENS = frozenset({"draft"})
+_NON_DRAFT_STATE_TOKENS = frozenset({"published"})
 
 # Unverified: no successful listing response has ever been observed (every call
 # 400'd on the missing userId), so these key names are informed guesses only.
@@ -494,6 +578,104 @@ def _episode_items(data: Any) -> list[Any]:
     )
 
 
+def _safe_token(value: str) -> str:
+    """A state token, only when it passes the conservative allow-list.
+
+    Diagnosing schema drift needs the *token* ("scheduled", "processing"), but
+    response values may carry personal data, so anything that is not a short
+    identifier-shaped string is reported as ``<unprintable>`` instead.
+    """
+    return value if _SAFE_KEY_RE.match(value) else "<unprintable>"
+
+
+def _episode_is_draft(episode: dict[Any, Any]) -> bool:
+    """Whether *episode* is a draft, decided from explicit evidence only.
+
+    Every recognised state field is read and must be *understood*:
+
+    - a boolean field (:data:`_BOOL_STATE_KEYS`) must be an actual JSON
+      ``bool``. A string (``"false"``), a number (``0``) or an object is schema
+      drift, not truthiness — ``bool("false")`` is ``True``, which would have
+      made a published episode look like a draft and got it overwritten.
+    - a string state field (:data:`_STATUS_KEYS`) must carry a token this code
+      has evidence for. An unknown token (``"scheduled"``, ``"processing"``, a
+      value invented by a future API version) is **not** silently treated as
+      "not a draft": that answer would create a duplicate draft, or, if wrong
+      in the other direction, reuse an episode that is already live.
+    - fields that disagree with each other are drift as well.
+
+    An explicit ``null`` carries no state and is skipped, exactly like an
+    absent field. Raises :class:`SpotifyDraftReconcileError` when the state
+    cannot be established.
+    """
+    evidence: dict[str, bool] = {}
+
+    for key, draft_when_true in _BOOL_STATE_KEYS.items():
+        if key not in episode:
+            continue
+        raw = episode[key]
+        if raw is None:
+            continue
+        if not isinstance(raw, bool):
+            raise SpotifyDraftReconcileError(
+                f"Spotify episode listing entry has a non-boolean '{key}' "
+                f"({type(raw).__name__} where a JSON boolean is required); it is "
+                f"not truth-tested, because e.g. the string 'false' is truthy; "
+                f"{_FAIL_CLOSED_SUFFIX}."
+            )
+        evidence[key] = raw is draft_when_true
+
+    for key in _STATUS_KEYS:
+        if key not in episode:
+            continue
+        raw = episode[key]
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            raise SpotifyDraftReconcileError(
+                f"Spotify episode listing entry has a {type(raw).__name__} '{key}' "
+                f"where a state string was expected; {_FAIL_CLOSED_SUFFIX}."
+            )
+        token = raw.strip().lower()
+        if token in _DRAFT_STATE_TOKENS:
+            evidence[key] = True
+        elif token in _NON_DRAFT_STATE_TOKENS:
+            evidence[key] = False
+        else:
+            raise SpotifyDraftReconcileError(
+                f"Spotify episode listing entry has an unrecognised '{key}' value "
+                f"'{_safe_token(token)}' (known: "
+                f"{sorted(_DRAFT_STATE_TOKENS | _NON_DRAFT_STATE_TOKENS)}); an "
+                f"unknown state is never assumed to be 'not a draft'; "
+                f"{_FAIL_CLOSED_SUFFIX}."
+            )
+
+    if not evidence:
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing entry exposes no recognised draft/published "
+            f"state (keys: {_safe_keys(episode)}); {_FAIL_CLOSED_SUFFIX}."
+        )
+    if len(set(evidence.values())) > 1:
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing entry carries contradictory draft/published "
+            f"state across {sorted(evidence)}; {_FAIL_CLOSED_SUFFIX}."
+        )
+    return next(iter(evidence.values()))
+
+
+def _episode_anchor_id(episode: dict[Any, Any]) -> int | None:
+    """Anchor id of *episode*, or ``None`` when no usable id is present."""
+    for key in _ID_KEYS:
+        raw = episode.get(key)
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _draft_episode_id(episode: Any, title: str) -> int | None:
     """Anchor id of *episode* when it is a draft whose title matches.
 
@@ -532,31 +714,16 @@ def _draft_episode_id(episode: Any, title: str) -> int | None:
     if raw_title.strip() != title.strip():
         return None
 
-    status_values = [episode.get(key) for key in _STATUS_KEYS]
-    if "isDraft" not in episode and all(value is None for value in status_values):
-        raise SpotifyDraftReconcileError(
-            "Spotify episode listing entry matching the target title exposes no "
-            f"recognised draft/published state (keys: {_safe_keys(episode)}); "
-            f"{_FAIL_CLOSED_SUFFIX}."
-        )
-    is_draft = bool(episode.get("isDraft")) or any(
-        isinstance(value, str) and value.strip().lower() == "draft" for value in status_values
-    )
-    if not is_draft:
+    if not _episode_is_draft(episode):
         return None
 
-    raw_id: Any = None
-    for key in _ID_KEYS:
-        if episode.get(key) is not None:
-            raw_id = episode[key]
-            break
-    try:
-        return int(raw_id)  # type: ignore[arg-type]
-    except (TypeError, ValueError) as exc:
+    anchor_id = _episode_anchor_id(episode)
+    if anchor_id is None:
         raise SpotifyDraftReconcileError(
             "Spotify episode listing entry matching the target title exposes no "
             f"usable episode id (keys: {_safe_keys(episode)}); {_FAIL_CLOSED_SUFFIX}."
-        ) from exc
+        )
+    return anchor_id
 
 
 def _pagination_hint(data: Any) -> str | None:
@@ -569,28 +736,17 @@ def _pagination_hint(data: Any) -> str | None:
     return None
 
 
-def _find_existing_draft(
+def _fetch_episode_listing(
     session: requests.Session,
     station_id: str,
-    title: str,
     *,
     user_id: str,
-    exclude_id: int | None = None,
-) -> int | None:
-    """Look up an existing draft episode with an exact title match.
+) -> Any:
+    """GET the station episode listing, failing **closed** on any problem.
 
     The Anchor v5 episode listing requires ``userId`` as a query parameter;
     omitting it returns HTTP 400 ``query.userId is required``. ``user_id`` comes
     from :func:`_resolve_legacy_ids` alongside ``station_id``.
-
-    ``exclude_id`` (the audio anchor episode) is never returned, so a same-titled
-    audio draft can never be mistaken for the separate video draft (#564).
-
-    Returns the anchor id of the matching draft, or ``None`` only when the
-    listing was read **and understood** and contained no match. Any failure —
-    transport, HTTP, non-JSON body, or a listing schema this code cannot read —
-    raises :class:`SpotifyDraftReconcileError` so a broken lookup can never be
-    mistaken for "no draft exists" and duplicate a draft.
     """
     resolved_user_id = str(user_id).strip()
     if not resolved_user_id:
@@ -608,7 +764,7 @@ def _find_existing_draft(
             params=_mums_params(userId=resolved_user_id),
             timeout=15,
         )
-        data = resp.json()
+        return resp.json()
     except SpotifyCredentialExpiredError:
         raise
     except (SpotifyPublishError, requests.RequestException, ValueError) as exc:
@@ -620,6 +776,19 @@ def _find_existing_draft(
             "draft because an existing one may already exist."
         ) from exc
 
+
+def _match_existing_draft(
+    data: Any,
+    station_id: str,
+    title: str,
+    *,
+    exclude_id: int | None = None,
+) -> int | None:
+    """Anchor id of the draft in *data* matching *title*, or ``None``.
+
+    ``None`` is a *proof of absence*: it is returned only when a recognised
+    container was read and every entry in it was understood.
+    """
     for episode in _episode_items(data):
         episode_id = _draft_episode_id(episode, title)
         if episode_id is not None and episode_id != exclude_id:
@@ -652,6 +821,202 @@ def _find_existing_draft(
 
     logger.info("No existing Spotify draft matched title=%r; a new draft is needed.", title)
     return None
+
+
+def _find_existing_draft(
+    session: requests.Session,
+    station_id: str,
+    title: str,
+    *,
+    user_id: str,
+    exclude_id: int | None = None,
+) -> int | None:
+    """Look up an existing draft episode with an exact title match.
+
+    ``exclude_id`` (the audio anchor episode) is never returned, so a same-titled
+    audio draft can never be mistaken for the separate video draft (#564).
+
+    Returns the anchor id of the matching draft, or ``None`` only when the
+    listing was read **and understood** and contained no match. Any failure —
+    transport, HTTP, non-JSON body, or a listing schema this code cannot read —
+    raises :class:`SpotifyDraftReconcileError` so a broken lookup can never be
+    mistaken for "no draft exists" and duplicate a draft.
+    """
+    data = _fetch_episode_listing(session, station_id, user_id=user_id)
+    return _match_existing_draft(data, station_id, title, exclude_id=exclude_id)
+
+
+def _snapshot_episode_ids(data: Any) -> tuple[set[int], bool]:
+    """Ids present in a listing, plus whether *every* entry yielded one.
+
+    The second element is the honesty flag for
+    :func:`_recover_ambiguous_create`: identifying a draft created by a request
+    whose response was lost relies on "this id was not here a moment ago", and
+    that inference is only sound when the earlier read produced an id for every
+    entry. If it did not, the diff is not evidence and must not be used.
+    """
+    ids: set[int] = set()
+    complete = True
+    for episode in _episode_items(data):
+        anchor_id = _episode_anchor_id(episode) if isinstance(episode, dict) else None
+        if anchor_id is None:
+            complete = False
+            continue
+        ids.add(anchor_id)
+    return ids, complete
+
+
+def _new_untitled_draft_ids(data: Any, known_ids: set[int]) -> tuple[list[int], int]:
+    """Untitled drafts in *data* whose id is new, and a count of opaque entries.
+
+    A freshly created draft is *untitled* (:func:`_create_episode` posts only
+    ``{"hourOffset": 0}``), so it cannot be found by title — the only handle on
+    it is that its id was not in the pre-create listing. Entries that cannot be
+    classified (no readable id, unreadable title, unknown state) are counted
+    separately: one of them might *be* the created draft, so their presence
+    means the recovery has no proof either way.
+    """
+    candidates: list[int] = []
+    opaque = 0
+    for episode in _episode_items(data):
+        if not isinstance(episode, dict):
+            opaque += 1
+            continue
+        anchor_id = _episode_anchor_id(episode)
+        if anchor_id is None or anchor_id in known_ids:
+            if anchor_id is None:
+                opaque += 1
+            continue
+        raw_title = next(
+            (episode[key] for key in _TITLE_KEYS if episode.get(key) is not None),
+            None,
+        )
+        if raw_title is not None and not isinstance(raw_title, str):
+            opaque += 1
+            continue
+        try:
+            is_draft = _episode_is_draft(episode)
+        except SpotifyDraftReconcileError:
+            opaque += 1
+            continue
+        if is_draft and (raw_title is None or not raw_title.strip()):
+            candidates.append(anchor_id)
+    return sorted(candidates), opaque
+
+
+def _recover_ambiguous_create(
+    session: requests.Session,
+    station_id: str,
+    *,
+    user_id: str,
+    title: str,
+    exclude_id: int | None,
+    known_ids: set[int],
+    snapshot_complete: bool,
+    cause: SpotifyDraftCreateAmbiguousError,
+) -> int:
+    """Resolve a create whose server-side effect is unknown, using evidence.
+
+    Called only after :func:`_create_episode` has sent **one** POST that failed
+    ambiguously. It re-reads the listing (fail-closed) and decides:
+
+    * the target title now matches a draft → adopt it (a concurrent attempt, or
+      a server that titles on create);
+    * exactly one *new* untitled draft → that is the draft this create made →
+      adopt it, and the caller titles it;
+    * no new entry at all, from a snapshot known to be complete → the create
+      provably did not take effect → send exactly one more POST;
+    * anything else (several candidates, opaque entries, an unusable snapshot)
+      → raise, naming the candidate ids for the operator. Guessing here is what
+      produces orphan untitled drafts.
+
+    At most two create POSTs are ever sent per publish attempt, and the second
+    only with positive evidence that the first created nothing.
+    """
+    logger.warning(
+        "Spotify draft create for station %s was ambiguous; re-listing episodes "
+        "to identify any draft it may have created before deciding to retry.",
+        station_id,
+    )
+    data = _fetch_episode_listing(session, station_id, user_id=user_id)
+
+    titled_match = _match_existing_draft(data, station_id, title, exclude_id=exclude_id)
+    if titled_match is not None:
+        logger.info(
+            "Ambiguous Spotify draft create resolved to titled draft anchorId=%d.",
+            titled_match,
+        )
+        return titled_match
+
+    candidates, opaque = _new_untitled_draft_ids(data, known_ids)
+
+    if len(candidates) == 1 and not opaque:
+        adopted = candidates[0]
+        logger.info(
+            "Ambiguous Spotify draft create resolved to new untitled draft "
+            "anchorId=%d; adopting it instead of creating another.",
+            adopted,
+        )
+        return adopted
+
+    if not candidates and not opaque and snapshot_complete:
+        logger.warning(
+            "Spotify draft create for station %s left no new draft in the "
+            "listing; it provably did not take effect, retrying it once.",
+            station_id,
+        )
+        return _create_episode(session, station_id)
+
+    raise SpotifyDraftReconcileError(
+        f"Spotify draft create for station {station_id} failed ambiguously "
+        f"({type(cause).__name__}) and the follow-up listing cannot identify "
+        f"whether it created a draft (new untitled draft candidates: "
+        f"{candidates or 'none'}, unclassifiable entries: {opaque}, pre-create "
+        f"snapshot complete: {snapshot_complete}). Refusing to send a second "
+        "create that could orphan an untitled duplicate; inspect the drafts for "
+        "this show in the Spotify creator UI and retry, or set "
+        "PODCASTER_SPOTIFY_RECONCILE=0 to fall back to blind create."
+    ) from cause
+
+
+def _reconcile_or_create_draft(
+    session: requests.Session,
+    station_id: str,
+    *,
+    user_id: str,
+    title: str,
+    exclude_id: int | None = None,
+) -> tuple[int, bool]:
+    """Return ``(anchor_id, created)`` for the video draft carrying *title*.
+
+    One listing read serves both purposes: it reconciles an existing draft, and
+    — when there is none — it is the pre-create snapshot that makes an
+    ambiguous create recoverable without a blind retry.
+    """
+    data = _fetch_episode_listing(session, station_id, user_id=user_id)
+    match = _match_existing_draft(data, station_id, title, exclude_id=exclude_id)
+    if match is not None:
+        return match, False
+
+    known_ids, snapshot_complete = _snapshot_episode_ids(data)
+    if exclude_id is not None:
+        known_ids.add(exclude_id)
+    try:
+        return _create_episode(session, station_id), True
+    except SpotifyDraftCreateAmbiguousError as exc:
+        return (
+            _recover_ambiguous_create(
+                session,
+                station_id,
+                user_id=user_id,
+                title=title,
+                exclude_id=exclude_id,
+                known_ids=known_ids,
+                snapshot_complete=snapshot_complete,
+                cause=exc,
+            ),
+            True,
+        )
 
 
 def _claim_draft_title(
@@ -1077,31 +1442,31 @@ def upload_video_to_episode(
 
         # Create or reconcile a separate video draft — never touch the audio one.
         reconcile_enabled = bool(title) and _spotify_reconcile_enabled()
-        video_anchor_id = None
         if reconcile_enabled:
             try:
                 exclude_audio_id = int(anchor_id) if anchor_id is not None else None
             except (TypeError, ValueError):
                 exclude_audio_id = None
-            video_anchor_id = _find_existing_draft(
+            video_anchor_id, draft_created = _reconcile_or_create_draft(
                 session,
                 station_id,
-                video_title,
                 user_id=user_id,
+                title=video_title,
                 exclude_id=exclude_audio_id,
             )
-        if video_anchor_id is None:
-            video_anchor_id = _create_episode(session, station_id)
-            if reconcile_enabled:
-                # A new draft is created untitled; title it now so a crash during
-                # the upload below leaves a draft reconcile can find on retry.
-                _claim_draft_title(
-                    session,
-                    video_anchor_id,
-                    user_id=user_id,
-                    title=video_title,
-                )
         else:
+            video_anchor_id, draft_created = _create_episode(session, station_id), True
+
+        if draft_created and reconcile_enabled:
+            # A new draft is created untitled; title it now so a crash during
+            # the upload below leaves a draft reconcile can find on retry.
+            _claim_draft_title(
+                session,
+                video_anchor_id,
+                user_id=user_id,
+                title=video_title,
+            )
+        elif not draft_created:
             logger.info(
                 "Reusing reconciled Spotify video draft anchorId=%d for title=%r",
                 video_anchor_id,

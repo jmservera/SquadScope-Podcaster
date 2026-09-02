@@ -200,10 +200,17 @@ Chunk size is `_VIDEO_CHUNK_SIZE = 30 * 1024 * 1024` (30 MB) in
 
 ### Reconcile before create (step 1)
 
-Before creating the video draft, `_find_existing_draft` lists the station's
+Before creating the video draft, `_reconcile_or_create_draft` lists the station's
 episodes and reuses an exact-title draft if one already exists, so a retry after
 a mid-flight crash does not leave duplicate drafts behind (#564). The audio
 episode (`anchor_id`) is always excluded from the match.
+
+> **Invariant.** With reconcile enabled, a video publish sends at most one
+> *effective* draft create per (station, title): the create POST is never
+> retried blindly, and an ambiguous create is resolved against the listing
+> before any further POST. Every subsequent attempt reuses the draft. The
+> invariant holds against listing schemas this code understands; anything it
+> cannot read fails the publish closed instead of guessing.
 
 The listing endpoint **requires `userId` as a query parameter**:
 
@@ -224,11 +231,33 @@ array is still a legitimate no-match. An entry whose title is present but null
 is understood as an untitled draft (no match). Operators who need a blind create
 can set `PODCASTER_SPOTIFY_RECONCILE=0`.
 
+##### Draft state is read from evidence, never from truthiness
+
+For the entry that *matches the target title*, the draft/published state must be
+established explicitly, because both possible guesses are damaging: guessing
+"draft" reuses (and overwrites) a live episode, guessing "not a draft" creates a
+duplicate.
+
+| Field | Accepted | Rejected |
+|-------|----------|----------|
+| `isDraft` | JSON `true`/`false` (`true` ⇒ draft) | any non-boolean: `"false"`, `"true"`, `0`, `1`, `1.0`, `{}`, `[]` |
+| `isPublished` | JSON `true`/`false` (`true` ⇒ **not** a draft) | any non-boolean |
+| `status` / `state` / `publishStatus` / `publishState` | `"draft"`, `"published"` (trimmed, case-insensitive) | any other token, and any non-string |
+
+`bool("false")` is `True`, so a string is *never* truth-tested — it is schema
+drift. An **unknown** status token (`"scheduled"`, `"processing"`, anything a
+future API version invents) is an error, not an implied "not a draft"; the
+allow-list is deliberately minimal and is only extended from observed evidence.
+An explicit `null` carries no state and is skipped, exactly like an absent
+field; if nothing is left, or if two fields disagree, the entry fails closed.
+Entries whose title does **not** match are never state-checked.
+
 > No successful response from this endpoint has ever been observed (every call
 > 400'd on the missing `userId`), so the container shape is **unverified**. The
 > first deploy may therefore fail closed until the real schema is confirmed from
 > the `SpotifyDraftReconcileError` message, which reports the top-level key
-> *names* (never values).
+> *names* (never values), and — for an unrecognised state — the offending token
+> when it is identifier-shaped.
 
 #### Titling the new draft immediately (idempotency)
 
@@ -246,9 +275,46 @@ orphan draft id so an operator can delete it. A *reconciled* draft is already
 titled and is not re-titled. The claim is skipped entirely when
 `PODCASTER_SPOTIFY_RECONCILE=0`.
 
-Residual, irreducible window: if the process dies after the create request is
-sent but before its response is read, the id is lost. The Anchor v5 API exposes
-no idempotency key, so this cannot be closed client-side.
+#### The create POST is never retried blindly
+
+`POST /v3/stations/{id}/episodes` is state-mutating and the Anchor v5 API
+exposes no idempotency key, so a 408/429/5xx/timeout is indistinguishable from
+"the draft was created and the response was lost". The generic
+retry-with-backoff must therefore not be applied to it: three attempts could
+leave two extra *untitled* drafts, which title-based reconcile can never find or
+clean up. `_create_episode` sends **exactly one** POST (`max_attempts=1`) and
+raises `SpotifyDraftCreateAmbiguousError` when the outcome is unknown — either a
+transient failure, or a `2xx` whose body does not yield an episode id (the draft
+exists; only its identifier was lost). A deterministic `4xx` is *not* ambiguous:
+nothing was created.
+
+When reconcile is enabled, `_reconcile_or_create_draft` resolves that ambiguity
+with evidence rather than a retry. The listing read that looked for an existing
+draft doubles as a **pre-create snapshot** of episode ids (no extra request), and
+after an ambiguous create the listing is re-read:
+
+| Evidence in the re-listing | Action | Create POSTs sent |
+|---|---|---|
+| A draft now carries the target title | reuse it | 1 |
+| Exactly one *new* untitled draft, no unclassifiable entries | adopt it (the caller then titles it) | 1 |
+| No new entry, from a snapshot that yielded an id for every entry | the create provably did nothing → send it once more | 2 |
+| Several new untitled drafts, any unclassifiable entry, or an incomplete snapshot | raise, naming the candidate ids for operator cleanup | 1 |
+| The re-listing itself is unreadable | raise (fail closed) | 1 |
+
+At most **two** create POSTs are ever sent for one publish attempt, and the
+second only with positive evidence that the first created nothing. A second
+ambiguous create is not recovered again. With `PODCASTER_SPOTIFY_RECONCILE=0`
+(and on the audio path in `publish_episode`, which never reconciles) there is no
+listing to reason from, so the single POST simply fails — a failed publish, not
+an orphaned duplicate.
+
+Residual, irreducible window: if the process itself dies (SIGKILL, node loss)
+after the create request leaves the client but before any recovery runs, the id
+is lost on both sides and the next attempt cannot tell that draft apart from any
+other untitled one — it will be one of the "several candidates" that fail closed,
+or, if it is alone, it is adopted. Only a hard crash *between* the POST and the
+recovery listing escapes the reconciliation entirely; the Anchor v5 API exposes
+no idempotency key, so that cannot be closed client-side.
 
 #### Pagination (unimplemented, unverified)
 

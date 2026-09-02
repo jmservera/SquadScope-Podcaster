@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig, truncate_html
 from podcaster.publish import (
@@ -1707,6 +1708,603 @@ class TestEpisodeListingSchema:
     def test_alternate_recognised_field_names_still_match(self):
         payload = {"items": [{"anchorId": "888", "name": "My Show", "isDraft": True}]}
         assert self._lookup(payload) == 888
+
+
+class TestEpisodeDraftState:
+    """#657 review: draft/published state must come from evidence, never truthiness.
+
+    ``bool("false")`` is ``True``: truth-testing a JSON string would have made a
+    *published* episode look like a draft and got it overwritten, and an
+    unknown status token silently meant "not a draft", which creates a
+    duplicate. Both are now schema drift and fail closed.
+    """
+
+    def _lookup(self, episode, **kwargs):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp({"episodes": [episode]})
+        return pub._find_existing_draft(session, "99", "My Show", user_id="7", **kwargs)
+
+    @pytest.mark.parametrize(
+        ("label", "episode"),
+        [
+            ("isDraft string false", {"episodeId": 1, "title": "My Show", "isDraft": "false"}),
+            ("isDraft string true", {"episodeId": 1, "title": "My Show", "isDraft": "true"}),
+            ("isDraft empty string", {"episodeId": 1, "title": "My Show", "isDraft": ""}),
+            ("isDraft numeric 1", {"episodeId": 1, "title": "My Show", "isDraft": 1}),
+            ("isDraft numeric 0", {"episodeId": 1, "title": "My Show", "isDraft": 0}),
+            ("isDraft float", {"episodeId": 1, "title": "My Show", "isDraft": 1.0}),
+            ("isDraft object", {"episodeId": 1, "title": "My Show", "isDraft": {"v": True}}),
+            ("isDraft list", {"episodeId": 1, "title": "My Show", "isDraft": []}),
+            ("isPublished string", {"episodeId": 1, "title": "My Show", "isPublished": "false"}),
+        ],
+    )
+    def test_non_boolean_boolean_state_fails_closed(self, label, episode):
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._lookup(episode)
+        message = str(exc.value)
+        assert "boolean" in message, label
+        assert "duplicate draft" in message, label
+
+    @pytest.mark.parametrize(
+        "token",
+        ["scheduled", "processing", "publishing", "archived", "error", "DRAFTED", "unpublished"],
+    )
+    def test_unknown_status_token_fails_closed(self, token):
+        """An unrecognised state is an error, not an implied 'not a draft'."""
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._lookup({"episodeId": 1, "title": "My Show", "status": token})
+        message = str(exc.value)
+        assert "unrecognised" in message
+        assert "duplicate draft" in message
+
+    def test_unknown_status_token_is_reported_for_diagnosis(self):
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._lookup({"episodeId": 1, "title": "My Show", "state": "scheduled"})
+        assert "scheduled" in str(exc.value)
+        assert "'state'" in str(exc.value)
+
+    def test_unprintable_status_token_is_not_echoed(self):
+        """A token that is not identifier-shaped may carry data — never echo it."""
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._lookup({"episodeId": 1, "title": "My Show", "status": "user@example.com wins"})
+        message = str(exc.value)
+        assert "user@example.com" not in message
+        assert "<unprintable>" in message
+
+    @pytest.mark.parametrize(
+        ("label", "episode"),
+        [
+            ("numeric status", {"episodeId": 1, "title": "My Show", "status": 3}),
+            ("boolean status", {"episodeId": 1, "title": "My Show", "status": True}),
+            ("object state", {"episodeId": 1, "title": "My Show", "state": {"name": "draft"}}),
+            (
+                "list publishStatus",
+                {"episodeId": 1, "title": "My Show", "publishStatus": ["draft"]},
+            ),
+        ],
+    )
+    def test_non_string_status_fails_closed(self, label, episode):
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._lookup(episode)
+        assert "duplicate draft" in str(exc.value), label
+
+    @pytest.mark.parametrize(
+        ("label", "episode"),
+        [
+            ("status published", {"episodeId": 1, "title": "My Show", "status": "published"}),
+            ("state published", {"episodeId": 1, "title": "My Show", "state": "PUBLISHED"}),
+            (
+                "publishState padded",
+                {"episodeId": 1, "title": "My Show", "publishState": " draft "},
+            ),
+            ("isDraft false", {"episodeId": 1, "title": "My Show", "isDraft": False}),
+            ("isPublished true", {"episodeId": 1, "title": "My Show", "isPublished": True}),
+        ],
+    )
+    def test_known_non_draft_states_are_understood(self, label, episode):
+        """A known non-draft is a *match-free* answer, not an error."""
+        expected = 1 if "draft" in str(episode.get("publishState", "")) else None
+        assert self._lookup(episode) == expected, label
+
+    @pytest.mark.parametrize(
+        ("label", "episode"),
+        [
+            ("status draft", {"episodeId": 1, "title": "My Show", "status": "draft"}),
+            ("isDraft true", {"episodeId": 1, "title": "My Show", "isDraft": True}),
+            ("isPublished false", {"episodeId": 1, "title": "My Show", "isPublished": False}),
+            (
+                "agreeing fields",
+                {"episodeId": 1, "title": "My Show", "isDraft": True, "status": "draft"},
+            ),
+            (
+                "null isDraft with draft status",
+                {"episodeId": 1, "title": "My Show", "isDraft": None, "status": "draft"},
+            ),
+        ],
+    )
+    def test_known_draft_states_match(self, label, episode):
+        assert self._lookup(episode) == 1, label
+
+    def test_contradictory_state_fails_closed(self):
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._lookup(
+                {"episodeId": 1, "title": "My Show", "isDraft": True, "status": "published"}
+            )
+        assert "contradictory" in str(exc.value)
+
+    def test_null_only_state_fails_closed(self):
+        """An explicit null carries no state, so the entry is not understood."""
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._lookup({"episodeId": 1, "title": "My Show", "isDraft": None, "status": None})
+        assert "no recognised draft/published state" in str(exc.value)
+
+    def test_non_matching_titles_never_need_state(self):
+        """Only the title-matching entry has to be classified."""
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [
+                    {"episodeId": 1, "title": "Another Show", "status": "unheard-of"},
+                    {"episodeId": 2, "title": "My Show", "status": "draft"},
+                ]
+            }
+        )
+        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 2
+
+
+def _scripted_session(steps):
+    """A session whose successive ``request()`` calls follow *steps*.
+
+    Each step is a response mock, or an exception instance to raise. Returns
+    the session and the live list of ``(method, url)`` calls, so tests can
+    assert the *exact* number of state-mutating create POSTs.
+    """
+    calls: list[tuple[str, str]] = []
+    remaining = list(steps)
+
+    def _request(method, url, **kwargs):
+        calls.append((method, url))
+        if not remaining:
+            raise AssertionError(f"unexpected extra request: {method} {url}")
+        step = remaining.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    session = MagicMock()
+    session.request.side_effect = _request
+    return session, calls
+
+
+def _create_posts(calls):
+    return [url for method, url in calls if method == "POST" and url.endswith("/episodes")]
+
+
+class TestCreateEpisodeIsNeverRetriedBlindly:
+    """#657 review: the create POST is state-mutating and has no idempotency key.
+
+    A 408/429/5xx/timeout is indistinguishable from "the draft was created and
+    the response was lost", so the generic retry (up to three POSTs) could
+    orphan two extra *untitled* drafts that title-based reconcile can never
+    find. Exactly one POST may leave this function.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "step"),
+        [
+            ("timeout", requests.Timeout("timed out")),
+            ("connection reset", requests.ConnectionError("reset")),
+            ("http 408", _mock_error_resp(408, "request timeout")),
+            ("http 429", _mock_error_resp(429, "slow down")),
+            ("http 500", _mock_error_resp(500, "boom")),
+            ("http 502", _mock_error_resp(502, "bad gateway")),
+            ("http 503", _mock_error_resp(503, "unavailable")),
+            ("http 504", _mock_error_resp(504, "gateway timeout")),
+        ],
+    )
+    def test_transient_failure_sends_one_post_and_is_ambiguous(self, label, step):
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session([step])
+        with pytest.raises(pub.SpotifyDraftCreateAmbiguousError) as exc:
+            pub._create_episode(session, "99")
+
+        assert len(_create_posts(calls)) == 1, label
+        assert "may or may not exist" in str(exc.value)
+        assert "Not retrying blindly" in str(exc.value)
+
+    def test_transient_failure_does_not_sleep(self, monkeypatch):
+        """No backoff is spent on a request that will not be repeated."""
+        from podcaster import publish as pub
+
+        monkeypatch.setattr(
+            pub.time, "sleep", lambda _s: pytest.fail("create must not back off and retry")
+        )
+        session, calls = _scripted_session([_mock_error_resp(503, "unavailable")])
+        with pytest.raises(pub.SpotifyDraftCreateAmbiguousError):
+            pub._create_episode(session, "99")
+        assert len(_create_posts(calls)) == 1
+
+    def test_deterministic_client_error_is_not_ambiguous(self):
+        """A 400 provably created nothing — the caller may fail plainly."""
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session([_mock_error_resp(400, "bad request")])
+        with pytest.raises(pub.SpotifyPublishError) as exc:
+            pub._create_episode(session, "99")
+
+        assert not isinstance(exc.value, pub.SpotifyDraftCreateAmbiguousError)
+        assert len(_create_posts(calls)) == 1
+
+    def test_credential_expiry_still_propagates(self):
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session([_mock_error_resp(401, "unauthorized")])
+        with pytest.raises(pub.SpotifyCredentialExpiredError):
+            pub._create_episode(session, "99")
+        assert len(_create_posts(calls)) == 1
+
+    @pytest.mark.parametrize(
+        ("label", "payload"),
+        [
+            ("no id field", {"created": True}),
+            ("null id", {"episodeId": None, "id": None}),
+            ("non-numeric id", {"episodeId": "not-a-number"}),
+            ("non-object body", ["ok"]),
+        ],
+    )
+    def test_accepted_create_with_unreadable_body_is_ambiguous(self, label, payload):
+        """The draft exists; only its id was lost. Retrying would duplicate it."""
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session([_mock_json_resp(payload)])
+        with pytest.raises(pub.SpotifyDraftCreateAmbiguousError) as exc:
+            pub._create_episode(session, "99")
+        assert "id is unknown" in str(exc.value)
+        assert len(_create_posts(calls)) == 1
+
+    def test_successful_create_is_unchanged(self):
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session([_mock_json_resp({"episodeId": 777})])
+        assert pub._create_episode(session, "99") == 777
+        assert len(_create_posts(calls)) == 1
+
+    def test_error_message_never_echoes_the_response_body(self):
+        from podcaster import publish as pub
+
+        session, _ = _scripted_session([_mock_error_resp(503, "token=sekret backend down")])
+        with pytest.raises(pub.SpotifyDraftCreateAmbiguousError) as exc:
+            pub._create_episode(session, "99")
+        assert "sekret" not in str(exc.value)
+
+
+class TestAmbiguousCreateRecovery:
+    """#657 review: after an ambiguous create, act on evidence, never on a guess."""
+
+    def _listing(self, *episodes, **extra):
+        return _mock_json_resp({"episodes": list(episodes), **extra})
+
+    def _reconcile(self, steps, **kwargs):
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session(steps)
+        kwargs.setdefault("user_id", "7")
+        kwargs.setdefault("title", "My Show")
+        return pub._reconcile_or_create_draft(session, "99", **kwargs), calls
+
+    def test_new_untitled_draft_is_adopted_without_a_second_create(self):
+        """The created draft is identified by the id that was not there before."""
+        (anchor_id, created), calls = self._reconcile(
+            [
+                self._listing(),
+                _mock_error_resp(504, "gateway timeout"),
+                self._listing({"episodeId": 901, "title": None, "status": "draft"}),
+            ]
+        )
+        assert (anchor_id, created) == (901, True)
+        assert len(_create_posts(calls)) == 1
+
+    def test_timeout_after_creation_is_recovered(self):
+        """A lost response, not an error response — same evidence, same answer."""
+        (anchor_id, created), calls = self._reconcile(
+            [
+                self._listing(),
+                requests.Timeout("timed out"),
+                self._listing({"episodeId": 901, "title": "", "isDraft": True}),
+            ]
+        )
+        assert (anchor_id, created) == (901, True)
+        assert len(_create_posts(calls)) == 1
+
+    def test_pre_existing_untitled_orphans_are_not_adopted(self):
+        """Only an id absent from the pre-create snapshot proves *this* create."""
+        (anchor_id, _created), calls = self._reconcile(
+            [
+                self._listing({"episodeId": 800, "title": None, "status": "draft"}),
+                _mock_error_resp(504, "gateway timeout"),
+                self._listing(
+                    {"episodeId": 800, "title": None, "status": "draft"},
+                    {"episodeId": 901, "title": None, "status": "draft"},
+                ),
+            ]
+        )
+        assert anchor_id == 901
+        assert len(_create_posts(calls)) == 1
+
+    def test_titled_draft_appearing_after_the_failure_is_reused(self):
+        (anchor_id, created), calls = self._reconcile(
+            [
+                self._listing(),
+                _mock_error_resp(504, "gateway timeout"),
+                self._listing({"episodeId": 901, "title": "My Show", "status": "draft"}),
+            ]
+        )
+        assert (anchor_id, created) == (901, True)
+        assert len(_create_posts(calls)) == 1
+
+    def test_proven_non_creation_retries_exactly_once(self):
+        """No new entry against a complete snapshot ⇒ the create did nothing."""
+        (anchor_id, created), calls = self._reconcile(
+            [
+                self._listing(),
+                _mock_error_resp(503, "unavailable"),
+                self._listing(),
+                _mock_json_resp({"episodeId": 902}),
+            ]
+        )
+        assert (anchor_id, created) == (902, True)
+        assert len(_create_posts(calls)) == 2
+
+    def test_second_create_is_never_retried_either(self):
+        """Two ambiguous creates in a row stop at two POSTs, not four."""
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftCreateAmbiguousError):
+            self._reconcile(
+                [
+                    self._listing(),
+                    _mock_error_resp(503, "unavailable"),
+                    self._listing(),
+                    _mock_error_resp(503, "unavailable"),
+                ]
+            )
+
+    def test_second_create_post_count_is_capped_at_two(self):
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session(
+            [
+                self._listing(),
+                _mock_error_resp(503, "unavailable"),
+                self._listing(),
+                _mock_error_resp(503, "unavailable"),
+            ]
+        )
+        with pytest.raises(pub.SpotifyPublishError):
+            pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+        assert len(_create_posts(calls)) == 2
+
+    def test_several_candidate_drafts_fail_closed(self):
+        """A concurrent publisher makes the diff ambiguous — do not guess."""
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._reconcile(
+                [
+                    self._listing(),
+                    _mock_error_resp(504, "gateway timeout"),
+                    self._listing(
+                        {"episodeId": 901, "title": None, "status": "draft"},
+                        {"episodeId": 902, "title": None, "status": "draft"},
+                    ),
+                ]
+            )
+        message = str(exc.value)
+        assert "901" in message and "902" in message
+        assert "creator UI" in message
+
+    def test_unclassifiable_new_entry_fails_closed(self):
+        """An entry that might *be* the created draft is not evidence of absence."""
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._reconcile(
+                [
+                    self._listing(),
+                    _mock_error_resp(504, "gateway timeout"),
+                    self._listing({"episodeId": 901, "title": None, "status": "who-knows"}),
+                ]
+            )
+        assert "unclassifiable entries: 1" in str(exc.value)
+
+    def test_incomplete_snapshot_blocks_the_retry(self):
+        """Without an id for every pre-create entry, 'new' cannot be established."""
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            self._reconcile(
+                [
+                    self._listing({"title": "Some other show", "status": "draft"}),
+                    _mock_error_resp(504, "gateway timeout"),
+                    self._listing({"title": "Some other show", "status": "draft"}),
+                ]
+            )
+        assert "snapshot complete: False" in str(exc.value)
+
+    def test_unreadable_recovery_listing_fails_closed(self):
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session(
+            [
+                self._listing(),
+                _mock_error_resp(504, "gateway timeout"),
+                _mock_error_resp(400, "still broken"),
+            ]
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError):
+            pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+        assert len(_create_posts(calls)) == 1
+
+    def test_deterministic_create_failure_is_not_recovered(self):
+        """A 400 created nothing, so no re-list and no second POST."""
+        from podcaster import publish as pub
+
+        session, calls = _scripted_session([self._listing(), _mock_error_resp(400, "bad request")])
+        with pytest.raises(pub.SpotifyPublishError):
+            pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+        assert len(_create_posts(calls)) == 1
+
+    def test_reconciled_draft_skips_the_create_entirely(self):
+        (anchor_id, created), calls = self._reconcile(
+            [self._listing({"episodeId": 888, "title": "My Show", "status": "draft"})]
+        )
+        assert (anchor_id, created) == (888, False)
+        assert _create_posts(calls) == []
+
+    def test_audio_anchor_is_never_adopted_as_the_new_draft(self):
+        """``exclude_id`` holds even when it is absent from the listing (#564).
+
+        The audio anchor pre-dates this create, so it is not evidence that the
+        create took effect: it must not be adopted, and the second POST is only
+        sent because nothing else appeared.
+        """
+        (anchor_id, created), calls = self._reconcile(
+            [
+                self._listing(),
+                _mock_error_resp(504, "gateway timeout"),
+                self._listing({"episodeId": 555, "title": None, "status": "draft"}),
+                _mock_json_resp({"episodeId": 902}),
+            ],
+            exclude_id=555,
+        )
+        assert (anchor_id, created) == (902, True)
+        assert len(_create_posts(calls)) == 2
+
+
+class TestAmbiguousCreateAtCallerLevel:
+    """The video publish path must surface, not multiply, an ambiguous create."""
+
+    def _video(self, tmp_path):
+        video = tmp_path / "ep.mp4"
+        video.write_bytes(b"video-bytes")
+        return video
+
+    def _env(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+    def test_unrecoverable_ambiguous_create_fails_after_one_post(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        self._env(monkeypatch)
+        session, calls = _scripted_session(
+            [
+                _mock_json_resp({"episodes": []}),
+                _mock_error_resp(504, "gateway timeout"),
+                _mock_json_resp(
+                    {
+                        "episodes": [
+                            {"episodeId": 901, "title": None, "status": "draft"},
+                            {"episodeId": 902, "title": None, "status": "draft"},
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        monkeypatch.setattr(pub, "_get_upload_url", lambda *a, **k: pytest.fail("must not upload"))
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.status == "failed"
+        assert len(_create_posts(calls)) == 1
+
+    def test_recovered_draft_is_titled_before_upload(self, tmp_path, monkeypatch):
+        """An adopted draft is untitled — it must be claimed like a created one."""
+        import podcaster.publish as pub
+
+        self._env(monkeypatch)
+        session, calls = _scripted_session(
+            [
+                _mock_json_resp({"episodes": []}),
+                requests.Timeout("timed out"),
+                _mock_json_resp({"episodes": [{"episodeId": 901, "title": None, "isDraft": True}]}),
+            ]
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        order: list[str] = []
+        monkeypatch.setattr(
+            pub,
+            "_set_metadata",
+            lambda s, anchor_id, user_id, **kw: order.append(f"metadata:{anchor_id}"),
+        )
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            lambda s, anchor_id, **kw: (
+                order.append(f"upload_url:{anchor_id}"),
+                ([{"partNumber": 1, "url": "https://gcs/part"}], "up1"),
+            )[1],
+        )
+        monkeypatch.setattr(
+            pub,
+            "_upload_video_multipart",
+            lambda s, parts, data: [{"partNumber": 1, "etag": "e1"}],
+        )
+        monkeypatch.setattr(pub, "_process_upload", lambda s, upload_id, **kw: None)
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 901
+        assert order == ["metadata:901", "upload_url:901", "metadata:901"]
+        assert len(_create_posts(calls)) == 1
+
+    def test_audio_path_create_is_also_single_shot(self, tmp_path, monkeypatch):
+        """``publish_episode`` never reconciles, so it must not retry the create."""
+        import podcaster.publish as pub
+
+        self._env(monkeypatch)
+        monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
+        session, calls = _scripted_session([_mock_error_resp(503, "unavailable")])
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        mp3 = tmp_path / "ep.mp3"
+        mp3.write_bytes(b"audio")
+        config = SpotifyPublishConfig.from_payload({"spotify_publish": {"upload_format": "mp3"}})
+        result = pub.publish_episode(
+            mp3_path=mp3,
+            title="My Show",
+            description="d",
+            spotify_publish_config=config,
+        )
+
+        assert result.status == "failed"
+        assert len(_create_posts(calls)) == 1
 
 
 class TestResolveLegacyIds:
