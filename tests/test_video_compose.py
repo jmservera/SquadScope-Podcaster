@@ -4527,7 +4527,8 @@ class TestWatermarkDnsVerdictClassification:
         rendered = f"{excinfo.value} {excinfo.value.details}"
         assert "s3cretpass" not in rendered
         assert "sig=abc123" not in rendered
-        assert "logo.example.com/logo.png" in rendered
+        # Exact match, not a substring check: only scheme/host/path survives.
+        assert excinfo.value.details["logo_url"] == "https://logo.example.com/logo.png"
 
     def test_canonical_url_is_unaffected_by_a_dns_outage(self, tmp_path, monkeypatch):
         """The bundled asset needs no resolver at all."""

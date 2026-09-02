@@ -253,8 +253,11 @@ class TestSafeUrlopenResolutionErrors:
         # Back-compatible: existing ``except ValueError`` call sites still catch.
         assert isinstance(exc, ValueError)
         assert not isinstance(exc, ssrf.BlockedHostError)
-        # Fail closed: nothing was connected to.
-        assert "logo.example.com" in str(exc)
+        # Exact match, not a substring check: the message must be the redacted
+        # URL and nothing else.
+        assert str(exc) == (
+            "could not resolve host for URL, refusing to fetch: https://logo.example.com/x.png"
+        )
 
     def test_blocked_host_raises_permanent_error(self):
         with pytest.raises(ssrf.BlockedHostError) as excinfo:
