@@ -1188,6 +1188,229 @@ class TestUploadVideoToEpisode:
         create.assert_called_once_with(session, "99")
         assert session.request.call_count == 0
 
+    def test_reconcile_sends_resolved_user_id(self, tmp_path, monkeypatch):
+        """The episode listing must carry the resolved userId (#656)."""
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp({"episodes": []})
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        monkeypatch.setattr(pub, "_create_episode", lambda s, station_id: 777)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.anchor_episode_id == 777
+        _, kwargs = session.request.call_args
+        assert kwargs["params"]["userId"] == "7"
+
+    def test_reconcile_lookup_failure_does_not_create_duplicate(self, tmp_path, monkeypatch):
+        """A failed lookup must fail the publish, never blind-create a duplicate."""
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+        session = MagicMock()
+        session.request.return_value = _mock_error_resp(
+            400, '{"property":"query.userId","message":"is required"}'
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.status == "failed"
+        assert result.anchor_episode_id is None
+        create.assert_not_called()
+        assert "reconcile" in result.error.lower()
+
+
+def _mock_error_resp(status_code: int, body: str) -> MagicMock:
+    """A response whose raise_for_status raises an HTTPError, like requests does."""
+    import requests
+
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = body
+    resp.headers = {}
+    resp.raise_for_status.side_effect = requests.HTTPError(
+        f"{status_code} Client Error", response=resp
+    )
+    return resp
+
+
+class TestFindExistingDraft:
+    """#656: reconcile-before-create must send userId and never mask failures."""
+
+    def _session(self, payload):
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(payload)
+        return session
+
+    def test_sends_user_id_in_query(self):
+        from podcaster import publish as pub
+
+        session = self._session({"episodes": []})
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", exclude_id=None) is None
+        )
+
+        args, kwargs = session.request.call_args
+        assert args[0] == "GET"
+        assert args[1].endswith("/v3/stations/99/episodes")
+        assert kwargs["params"] == {"userId": "7", "isMumsCompatible": "true"}
+
+    def test_returns_matching_draft(self):
+        from podcaster import publish as pub
+
+        session = self._session(
+            {
+                "episodes": [
+                    {"episodeId": 111, "title": "Other", "status": "draft"},
+                    {"episodeId": 888, "title": "  My Show  ", "status": "draft"},
+                ]
+            }
+        )
+        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
+
+    def test_exclude_id_is_never_returned(self):
+        from podcaster import publish as pub
+
+        session = self._session(
+            {"episodes": [{"episodeId": 555, "title": "My Show", "status": "draft"}]}
+        )
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", exclude_id=555) is None
+        )
+
+    def test_published_episode_is_not_reused(self):
+        from podcaster import publish as pub
+
+        session = self._session(
+            {"episodes": [{"episodeId": 888, "title": "My Show", "status": "published"}]}
+        )
+        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
+
+    def test_empty_listing_returns_none(self):
+        from podcaster import publish as pub
+
+        session = self._session({"episodes": []})
+        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
+
+    def test_missing_user_id_is_explicit_and_makes_no_request(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._find_existing_draft(session, "99", "My Show", user_id="  ")
+        assert "userId" in str(exc.value)
+        session.request.assert_not_called()
+
+    def test_http_error_raises_instead_of_reporting_no_draft(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_error_resp(
+            400, '{"property":"query.userId","message":"is required"}'
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+        message = str(exc.value)
+        assert "Refusing to create a new draft" in message
+        # Sanitized: no response body, cookies or tokens echoed into the message.
+        assert "query.userId" not in message
+
+    def test_malformed_json_raises(self):
+        from podcaster import publish as pub
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.side_effect = ValueError("not json")
+        session = MagicMock()
+        session.request.return_value = resp
+
+        with pytest.raises(pub.SpotifyDraftReconcileError):
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+
+    def test_truncated_listing_raises(self):
+        from podcaster import publish as pub
+
+        session = self._session({"episodes": [], "hasMore": True})
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+        assert "truncated" in str(exc.value)
+
+    def test_truncated_listing_still_returns_match_on_first_page(self):
+        from podcaster import publish as pub
+
+        session = self._session(
+            {
+                "episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}],
+                "nextPageToken": "abc",
+            }
+        )
+        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
+
+    def test_credential_expiry_propagates(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_error_resp(401, "unauthorized")
+        with pytest.raises(pub.SpotifyCredentialExpiredError):
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+
+
+class TestResolveLegacyIds:
+    """#656: identity resolution must fail loudly instead of yielding blank ids."""
+
+    def test_returns_string_ids(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp({"stationId": 99, "userId": 7})
+        assert pub._resolve_legacy_ids(session, "show1") == ("99", "7")
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"stationId": "99"},
+            {"stationId": "99", "userId": None},
+            {"stationId": "99", "userId": "   "},
+        ],
+    )
+    def test_missing_user_id_raises(self, payload):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(payload)
+        with pytest.raises(pub.SpotifyPublishError) as exc:
+            pub._resolve_legacy_ids(session, "show1")
+        assert "userId" in str(exc.value)
+
+    def test_malformed_json_raises(self):
+        from podcaster import publish as pub
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.side_effect = ValueError("not json")
+        session = MagicMock()
+        session.request.return_value = resp
+
+        with pytest.raises(pub.SpotifyPublishError) as exc:
+            pub._resolve_legacy_ids(session, "show1")
+        assert "not valid JSON" in str(exc.value)
+
 
 class TestPollUploadErrorExtraction:
     """#351: extract Spotify mediaValidation.failureInfo.errorCode on failure."""

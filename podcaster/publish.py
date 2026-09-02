@@ -81,6 +81,18 @@ class SpotifyPublishError(Exception):
     """Raised when a Spotify API call fails."""
 
 
+class SpotifyDraftReconcileError(SpotifyPublishError):
+    """Raised when the existing-draft lookup cannot be completed.
+
+    Reconcile-before-create only prevents duplicate Spotify drafts when the
+    lookup is known to be complete. A failed or truncated lookup must never be
+    reported as "no draft exists", because the caller would then create a
+    second draft for an episode that already has one. Callers that genuinely
+    prefer a blind create can disable reconcile with
+    ``PODCASTER_SPOTIFY_RECONCILE=0``.
+    """
+
+
 class SpotifyCredentialExpiredError(SpotifyPublishError):
     """Raised when Spotify rejects the request due to expired credentials.
 
@@ -349,13 +361,36 @@ def verify_spotify_auth(
         return False, f"Spotify connectivity error: {exc}"
 
 
+def _require_identity(raw: Any, field_name: str, show_id: str) -> str:
+    """Coerce a legacyIds identity field to a non-empty string, or fail loudly."""
+    if raw is None or isinstance(raw, bool):
+        raise SpotifyPublishError(
+            f"Spotify legacyIds response for show {show_id} is missing {field_name}."
+        )
+    value = str(raw).strip()
+    if not value:
+        raise SpotifyPublishError(
+            f"Spotify legacyIds response for show {show_id} is missing {field_name}."
+        )
+    return value
+
+
 def _resolve_legacy_ids(session: requests.Session, show_id: str) -> tuple[str, str]:
     """Step 1: Resolve show_id to stationId + userId."""
     url = f"{_BASE_URL}/v3/shows/{show_id}/legacyIds"
     resp = _retry_request(session, "GET", url, params=_mums_params(), timeout=15)
-    data = resp.json()
-    station_id = str(data["stationId"])
-    user_id = str(data["userId"])
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise SpotifyPublishError(
+            f"Spotify legacyIds response for show {show_id} is not valid JSON."
+        ) from exc
+    if not isinstance(data, dict):
+        raise SpotifyPublishError(
+            f"Spotify legacyIds response for show {show_id} has an unexpected shape."
+        )
+    station_id = _require_identity(data.get("stationId"), "stationId", show_id)
+    user_id = _require_identity(data.get("userId"), "userId", show_id)
     logger.info("Resolved show %s → station=%s user=%s", show_id, station_id, user_id)
     return station_id, user_id
 
@@ -423,32 +458,83 @@ def _draft_episode_id(episode: Any, title: str) -> int | None:
         return None
 
 
+_PAGINATION_HINT_KEYS = ("hasMore", "hasNextPage", "nextPageToken", "nextPage")
+
+
+def _has_more_pages(data: Any) -> bool:
+    """Whether the episode listing explicitly signals further unread pages."""
+    if not isinstance(data, dict):
+        return False
+    return any(bool(data.get(key)) for key in _PAGINATION_HINT_KEYS)
+
+
 def _find_existing_draft(
     session: requests.Session,
     station_id: str,
     title: str,
     *,
+    user_id: str,
     exclude_id: int | None = None,
 ) -> int | None:
-    """Best-effort lookup for an existing draft episode with an exact title match.
+    """Look up an existing draft episode with an exact title match.
+
+    The Anchor v5 episode listing requires ``userId`` as a query parameter;
+    omitting it returns HTTP 400 ``query.userId is required``. ``user_id`` comes
+    from :func:`_resolve_legacy_ids` alongside ``station_id``.
 
     ``exclude_id`` (the audio anchor episode) is never returned, so a same-titled
     audio draft can never be mistaken for the separate video draft (#564).
+
+    Returns the anchor id of the matching draft, or ``None`` only when the
+    listing was read successfully and contained no match. Any failure raises
+    :class:`SpotifyDraftReconcileError` so a broken lookup can never be
+    mistaken for "no draft exists" and duplicate a draft.
     """
+    resolved_user_id = str(user_id).strip()
+    if not resolved_user_id:
+        raise SpotifyDraftReconcileError(
+            "Spotify draft reconcile requires a userId, but none was resolved "
+            f"for station {station_id}."
+        )
+
+    url = f"{_BASE_URL}/v3/stations/{station_id}/episodes"
     try:
-        url = f"{_BASE_URL}/v3/stations/{station_id}/episodes"
-        resp = _retry_request(session, "GET", url, params=_mums_params(), timeout=15)
-        for episode in _episode_items(resp.json()):
-            episode_id = _draft_episode_id(episode, title)
-            if episode_id is not None and episode_id != exclude_id:
-                logger.info(
-                    "Reconciled existing Spotify draft anchorId=%d for title=%r",
-                    episode_id,
-                    title,
-                )
-                return episode_id
-    except Exception:
-        logger.warning("Spotify draft reconcile failed for title=%r", title, exc_info=True)
+        resp = _retry_request(
+            session,
+            "GET",
+            url,
+            params=_mums_params(userId=resolved_user_id),
+            timeout=15,
+        )
+        data = resp.json()
+    except SpotifyCredentialExpiredError:
+        raise
+    except (SpotifyPublishError, requests.RequestException, ValueError) as exc:
+        # Never echo the response body or session cookies — only the request
+        # shape and the failure type.
+        raise SpotifyDraftReconcileError(
+            f"Spotify draft reconcile lookup failed for station {station_id} "
+            f"({_safe_url(url)}): {type(exc).__name__}. Refusing to create a new "
+            "draft because an existing one may already exist."
+        ) from exc
+
+    for episode in _episode_items(data):
+        episode_id = _draft_episode_id(episode, title)
+        if episode_id is not None and episode_id != exclude_id:
+            logger.info(
+                "Reconciled existing Spotify draft anchorId=%d for title=%r",
+                episode_id,
+                title,
+            )
+            return episode_id
+
+    if _has_more_pages(data):
+        raise SpotifyDraftReconcileError(
+            f"Spotify draft reconcile lookup for station {station_id} returned a "
+            "truncated episode listing; refusing to create a possible duplicate draft."
+        )
+
+    logger.info("No existing Spotify draft matched title=%r; a new draft is needed.", title)
     return None
 
 
@@ -835,7 +921,11 @@ def upload_video_to_episode(
             except (TypeError, ValueError):
                 exclude_audio_id = None
             video_anchor_id = _find_existing_draft(
-                session, station_id, video_title, exclude_id=exclude_audio_id
+                session,
+                station_id,
+                video_title,
+                user_id=user_id,
+                exclude_id=exclude_audio_id,
             )
         if video_anchor_id is None:
             video_anchor_id = _create_episode(session, station_id)

@@ -198,6 +198,28 @@ The flow has these steps:
 Chunk size is `_VIDEO_CHUNK_SIZE = 30 * 1024 * 1024` (30 MB) in
 `podcaster/publish.py`.
 
+### Reconcile before create (step 1)
+
+Before creating the video draft, `_find_existing_draft` lists the station's
+episodes and reuses an exact-title draft if one already exists, so a retry after
+a mid-flight crash does not leave duplicate drafts behind (#564). The audio
+episode (`anchor_id`) is always excluded from the match.
+
+The listing endpoint **requires `userId` as a query parameter**:
+
+```text
+GET /v3/stations/{stationId}/episodes?userId={userId}&isMumsCompatible=true
+```
+
+Omitting it returns `HTTP 400 {"property":"query.userId","message":"is required"}`.
+`userId` comes from `_resolve_legacy_ids` together with `stationId`.
+
+A lookup that fails (HTTP error, malformed JSON, missing identity, or a
+truncated/paginated listing) raises `SpotifyDraftReconcileError` and fails the
+publish. It is never reported as "no draft exists", because that would create a
+duplicate draft on every retry. Operators who need a blind create can set
+`PODCASTER_SPOTIFY_RECONCILE=0`.
+
 ### Upload API reference (detailed)
 
 > The subsections below are the low-level Spotify/Anchor API reference (the
@@ -706,6 +728,7 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` skips the existing-draft lookup and always creates a new video draft (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,
