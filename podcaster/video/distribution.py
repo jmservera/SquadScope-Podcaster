@@ -155,6 +155,8 @@ class DistributionResult:
     youtube_url: str | None = None
     spotify_rss_updated: bool = False
     spotify_upload_updated: bool = False
+    spotify_video_promote_terminal_state: str | None = None
+    spotify_video_is_published: bool | None = None
     blob_path: str | None = None
     errors: list[str] = field(default_factory=list)
     youtube_required_failed: bool = False
@@ -747,7 +749,7 @@ def upload_to_spotify_episode(
     season_number: int | None = None,
     episode_number: int | None = None,
     return_episode_id: bool = False,
-) -> bool | tuple[bool, int | None]:
+) -> bool | tuple[bool, int | None, str | None]:
     """Publish the MP4 as a NEW separate Spotify episode draft (#340).
 
     Spotify rejects attaching a video to an episode that already holds audio, so
@@ -760,11 +762,12 @@ def upload_to_spotify_episode(
 
     if config.dry_run:
         logger.info("Spotify video upload dry-run: audio_anchor=%s", anchor_id)
-        return (True, None) if return_episode_id else True
+        return (True, None, None) if return_episode_id else True
 
     try:
         from podcaster.publish import promote_spotify_video_draft, upload_video_to_episode
 
+        promote_terminal_state: str | None = None
         result = upload_video_to_episode(
             video_path,
             anchor_id,
@@ -776,7 +779,7 @@ def upload_to_spotify_episode(
         )
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)
-            return (False, None) if return_episode_id else False
+            return (False, None, None) if return_episode_id else False
         if result.anchor_episode_id is not None:
             try:
                 promote_result = promote_spotify_video_draft(
@@ -787,15 +790,17 @@ def upload_to_spotify_episode(
                     ),
                     job_id=None,
                 )
+                promote_terminal_state = promote_result.terminal_state
                 logger.info(
                     "Spotify video promote terminal_state=%s is_published=%s",
                     promote_result.terminal_state,
                     promote_result.is_published,
                 )
             except Exception as promote_exc:  # noqa: BLE001
+                promote_terminal_state = "failed"
                 logger.warning(
-                    "Spotify video promote raised unexpectedly (upload already succeeded); "
-                    "anchorId=%s error=%s",
+                    "Spotify video promote raised unexpectedly (upload already succeeded, "
+                    "publication not confirmed); anchorId=%s error=%s",
                     result.anchor_episode_id,
                     promote_exc,
                 )
@@ -806,11 +811,11 @@ def upload_to_spotify_episode(
             anchor_id,
         )
         if return_episode_id:
-            return True, result.anchor_episode_id
+            return True, result.anchor_episode_id, promote_terminal_state
         return True
     except Exception as exc:
         logger.error("Spotify video upload error: %s", exc)
-        return (False, None) if return_episode_id else False
+        return (False, None, None) if return_episode_id else False
 
 
 # --- Orchestrator ---
@@ -1183,23 +1188,47 @@ def distribute_video(
                 episode_number=episode_number,
                 return_episode_id=True,
             )
-            if isinstance(upload_result, tuple):
+            if isinstance(upload_result, tuple) and len(upload_result) == 3:
+                upload_ok, spotify_episode_id, promote_state = upload_result
+            elif isinstance(upload_result, tuple):
                 upload_ok, spotify_episode_id = upload_result
+                promote_state = None
             else:
                 upload_ok = upload_result
                 spotify_episode_id = None
+                promote_state = None
             result.spotify_upload_updated = upload_ok
+            result.spotify_video_promote_terminal_state = promote_state
+            result.spotify_video_is_published = (
+                promote_state in ("published", "already_published")
+                if promote_state is not None
+                else None
+            )
             if upload_ok and on_published is not None and not config.dry_run:
                 on_published(
                     "spotify_upload",
                     {
                         "status": "published",
                         "episode_id": spotify_episode_id,
+                        "promote_terminal_state": promote_state,
+                        "is_published": result.spotify_video_is_published,
                         "at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
             if not upload_ok:
                 result.errors.append("Spotify video upload failed")
+            elif promote_state is not None and promote_state not in (
+                "published",
+                "already_published",
+                "draft_gate_denied",
+            ):
+                result.errors.append(f"Spotify video promote: {promote_state}")
+                logger.warning(
+                    "Spotify video upload succeeded but promotion to live failed "
+                    "(job_id=%s promote_state=%s); operator action required",
+                    job_id,
+                    promote_state,
+                )
 
     # Determine overall status
     targets_attempted = sum(
@@ -1218,12 +1247,18 @@ def distribute_video(
             result.blob_path is not None if config.blob_archive_enabled else False,
         ]
     )
+    spotify_promote_failed = (
+        config.spotify_upload_enabled
+        and result.spotify_video_promote_terminal_state is not None
+        and result.spotify_video_promote_terminal_state
+        not in ("published", "already_published", "draft_gate_denied")
+    )
 
     if result.youtube_required_failed:
         result.status = "failed"
     elif targets_succeeded == 0 and targets_attempted > 0:
         result.status = "failed"
-    elif targets_succeeded < targets_attempted:
+    elif targets_succeeded < targets_attempted or spotify_promote_failed:
         result.status = "partial"
     else:
         result.status = "completed"

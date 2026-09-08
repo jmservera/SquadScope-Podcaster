@@ -155,6 +155,8 @@ param podcastAutoPublish string = 'false'
 
 @description('Allow Spotify publish to go live (public) immediately (#602). When false episodes land as drafts. Set to true only when an operator accepts the risk of unofficial Spotify cookie credentials.')
 param spotifyAllowLivePublish string = 'false'
+param spotifyVideoAllowLivePublish string = 'false'
+param spotifyVideoPublishMode string = 'draft'
 
 @description('Whether YouTube uploads are enabled for the video runner.')
 param videoYoutubeEnabled string = 'false'
@@ -410,6 +412,8 @@ module aca 'modules/aca.bicep' = {
     spotifySessionCookieKey: spotifySessionCookieKey
     podcastAutoPublish: podcastAutoPublish
     spotifyAllowLivePublish: spotifyAllowLivePublish
+    spotifyVideoAllowLivePublish: spotifyVideoAllowLivePublish
+    spotifyVideoPublishMode: spotifyVideoPublishMode
     deployVnet: deployVnet
     infrastructureSubnetId: deployVnet ? network.outputs.acaSubnetId : ''
   }
