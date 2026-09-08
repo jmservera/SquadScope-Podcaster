@@ -1750,13 +1750,41 @@ class TestGetEpisodePublicationState:
 
         assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is True
 
-    def test_extract_state_handles_episodes_list_no_id_match_unknown(self):
+    def test_extract_state_matches_episodeId_field(self):
         from podcaster import publish as pub
 
         session = MagicMock()
         session.request.return_value = _mock_json_resp(
             {
-                "episodes": [{"id": 999, "isPublished": True}],
+                "episodes": [{"episodeId": self.ANCHOR_ID, "isPublished": False}],
+                "audios": [],
+                "users": [],
+            }
+        )
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is False
+
+    def test_extract_state_episodeId_match_already_published(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [{"episodeId": self.ANCHOR_ID, "isPublished": True}],
+                "audios": [],
+                "users": [],
+            }
+        )
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is True
+
+    def test_extract_state_no_episodeId_match_unknown(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [{"episodeId": 999999, "isPublished": False}],
                 "audios": [],
                 "users": [],
             }

@@ -1592,7 +1592,10 @@ def _get_episode_publication_state(
                         and str(
                             episode.get(
                                 "id",
-                                episode.get("anchor_id", episode.get("anchorId", "")),
+                                episode.get(
+                                    "anchor_id",
+                                    episode.get("anchorId", episode.get("episodeId", "")),
+                                ),
                             )
                         )
                         == str(anchor_id)
@@ -1603,6 +1606,8 @@ def _get_episode_publication_state(
                     try:
                         return not _episode_is_draft(match)
                     except SpotifyDraftReconcileError:
+                        if "isPublished" in match:
+                            return match["isPublished"] is True
                         continue
         if isinstance(payload, dict):
             logger.warning(
