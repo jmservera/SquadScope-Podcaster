@@ -56,6 +56,7 @@ def test_reusable_deploy_workflow_threads_spotify_publish_settings() -> None:
     workflow = _reusable_workflow_text()
     aca_module = (ROOT / "infra/modules/aca.bicep").read_text(encoding="utf-8")
     api_module = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+    main_bicep = BICEP.read_text(encoding="utf-8")
 
     for token in (
         "SPOTIFY_PUBLISH_ENABLED",
@@ -66,6 +67,34 @@ def test_reusable_deploy_workflow_threads_spotify_publish_settings() -> None:
     ):
         assert token in workflow
         assert token in aca_module or token in api_module
+
+    # SPOTIFY_ALLOW_LIVE_PUBLISH live-publish gate must be threaded end-to-end so
+    # it survives redeployments (root cause: operationally set on 2026-08-24, silently
+    # stripped by Bicep redeploys on 2026-09-02 because it was never in the template).
+    assert "SPOTIFY_ALLOW_LIVE_PUBLISH" in workflow, (
+        "workflow must pass SPOTIFY_ALLOW_LIVE_PUBLISH to the deployment"
+    )
+    assert "SPOTIFY_ALLOW_LIVE_PUBLISH" in aca_module, (
+        "aca.bicep synthesis container must expose SPOTIFY_ALLOW_LIVE_PUBLISH env var"
+    )
+    assert "spotifyAllowLivePublish" in main_bicep, (
+        "main.bicep must declare spotifyAllowLivePublish parameter"
+    )
+    # Default must be false — the fail-safe in publish.py is the second line of defence;
+    # the infra default must never silently enable live publishing.
+    assert "spotifyAllowLivePublish string = 'false'" in aca_module, (
+        "aca.bicep must default spotifyAllowLivePublish to 'false'"
+    )
+    assert "spotifyAllowLivePublish string = 'false'" in main_bicep, (
+        "main.bicep must default spotifyAllowLivePublish to 'false'"
+    )
+    # Workflow must export the value with a false default, never defaulting to true.
+    assert "SPOTIFY_ALLOW_LIVE_PUBLISH_VAR:-true" not in workflow, (
+        "workflow must not default SPOTIFY_ALLOW_LIVE_PUBLISH to true"
+    )
+    assert "SPOTIFY_ALLOW_LIVE_PUBLISH_VAR:-false" in workflow, (
+        "workflow must export SPOTIFY_ALLOW_LIVE_PUBLISH with a false default"
+    )
 
 
 def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
