@@ -230,8 +230,9 @@ class TestGenerateScript:
         # The request body should contain content that's been length-limited
         body = json.loads(captured_requests[0].data)
         user_msg = body["messages"][1]["content"]
-        # Content is sanitized via neutralize (capped at MAX_ARTICLE_CHARS) so
-        # the full 17000 chars never reach the LLM
+        # Content is capped at MAX_ARTICLE_CHARS before prompting, and the
+        # remaining overhead comes from the fenced untrusted-data wrapper plus
+        # its trusted-policy reminder.
         assert len(user_msg) < MAX_ARTICLE_CHARS + 1200  # header/formatting overhead
 
     def test_sanitizes_article_content(self):
