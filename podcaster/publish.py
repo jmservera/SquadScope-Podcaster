@@ -1607,7 +1607,11 @@ def _get_episode_publication_state(
                         return not _episode_is_draft(match)
                     except SpotifyDraftReconcileError:
                         if "isPublished" in match:
-                            return match["isPublished"] is True
+                            pub_val = match["isPublished"]
+                            if pub_val is True:
+                                return True
+                            if pub_val is False:
+                                return False
                         continue
         if isinstance(payload, dict):
             logger.warning(
