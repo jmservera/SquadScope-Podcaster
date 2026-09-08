@@ -174,6 +174,20 @@ class TestVideoDistributionConfig:
         assert config.youtube_category_id == "28"
         assert config.youtube_privacy == "unlisted"
 
+    def test_spotify_video_publish_mode_defaults_to_draft(self, monkeypatch):
+        monkeypatch.delenv("SPOTIFY_VIDEO_PUBLISH_MODE", raising=False)
+
+        config = VideoDistributionConfig.from_env()
+
+        assert config.spotify_video_publish_mode == "draft"
+
+    def test_spotify_video_publish_mode_from_env(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", "live")
+
+        config = VideoDistributionConfig.from_env()
+
+        assert config.spotify_video_publish_mode == "live"
+
 
 # --- YouTube Upload Tests ---
 
