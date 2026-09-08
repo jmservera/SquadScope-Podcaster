@@ -1580,6 +1580,33 @@ def _get_episode_publication_state(
             except SpotifyDraftReconcileError:
                 continue
         if isinstance(payload, dict):
+            for list_key in ("episodes", "items", "data"):
+                list_val = payload.get(list_key)
+                if not isinstance(list_val, list):
+                    continue
+                match = next(
+                    (
+                        episode
+                        for episode in list_val
+                        if isinstance(episode, dict)
+                        and str(
+                            episode.get(
+                                "id",
+                                episode.get("anchor_id", episode.get("anchorId", "")),
+                            )
+                        )
+                        == str(anchor_id)
+                    ),
+                    None,
+                )
+                if match is None and len(list_val) == 1 and isinstance(list_val[0], dict):
+                    match = list_val[0]
+                if match is not None:
+                    try:
+                        return not _episode_is_draft(match)
+                    except SpotifyDraftReconcileError:
+                        continue
+        if isinstance(payload, dict):
             logger.warning(
                 "Spotify episode %s publication state unknown; response keys=%s",
                 anchor_id,

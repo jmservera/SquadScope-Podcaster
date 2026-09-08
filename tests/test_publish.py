@@ -1731,6 +1731,40 @@ class TestPromoteSpotifyVideoDraft:
         assert "w35_check=blocked" in terminal_logs[0]
 
 
+class TestGetEpisodePublicationState:
+    ANCHOR_ID = 125401976
+
+    def test_extract_state_handles_episodes_list_response_published(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [
+                    {"id": self.ANCHOR_ID, "isPublished": True, "isDraft": False},
+                ],
+                "audios": [],
+                "users": [],
+            }
+        )
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is True
+
+    def test_extract_state_handles_singleton_episodes_list_without_id_match(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [{"id": 999, "isPublished": True}],
+                "audios": [],
+                "users": [],
+            }
+        )
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is True
+
+
 def _mock_error_resp(status_code: int, body: str) -> MagicMock:
     """A response whose raise_for_status raises an HTTPError, like requests does."""
     import requests
