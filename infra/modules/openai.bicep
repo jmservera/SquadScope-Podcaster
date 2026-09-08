@@ -78,10 +78,7 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
     restore: restoreAccount
     // ACA job authenticates with its managed identity only; account keys are disabled.
     disableLocalAuth: true
-    // Private-by-default in VNet mode (#598): the ACA synthesis job runs inside the VNet
-    // and reaches this account over the private endpoint (see
-    // modules/openai-private-endpoint.bicep; network.bicep owns the VNet + DNS zone).
-    // Public access stays enabled only for local dev/test (deployVnet=false).
+    // #598: VNet mode is private-by-default; local dev/test keeps the public endpoint.
     publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
     networkAcls: {
       bypass: 'AzureServices'

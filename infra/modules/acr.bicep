@@ -30,8 +30,7 @@ param skuName string = 'Basic'
 @description('When true (VNet mode), disable the ACR public endpoint and force the Premium SKU so a private endpoint can be attached (#598).')
 param deployVnet bool = false
 
-// Private endpoints + Disabled public network access require the Premium SKU, so
-// VNet mode overrides the requested SKU. Non-VNet deployments keep skuName.
+// Private endpoints require the Premium SKU in VNet mode; local dev/test keeps the requested SKU.
 var effectiveSkuName = deployVnet ? 'Premium' : skuName
 
 @description('Principal ID of the synthesis job managed identity (granted AcrPull).')
