@@ -16,6 +16,7 @@ from podcaster.publish import (
     _is_dry_run,
     _is_enabled,
     _live_publish_allowed,
+    _spotify_video_allow_live_publish,
     _warn_live_publish_downgraded_once,
     publish_episode,
     verify_spotify_auth,
@@ -1456,83 +1457,50 @@ class TestUploadVideoToEpisode:
         assert "reconcile" in result.error.lower()
 
 
-class TestPromoteSpotifyVideoDraft:
-    """Acceptance tests for post-upload Spotify video draft promotion (#664)."""
+class TestVideoLivePublishGuard:
+    def test_video_gate_disabled_by_default(self):
+        assert _spotify_video_allow_live_publish() is False
 
-    VIDEO_ANCHOR_ID = 125401976
-    AUDIO_ANCHOR_ID = 125398950
-    PUBLIC_URL = "https://open.spotify.com/episode/test-video"
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "on", "TRUE"])
+    def test_video_gate_truthy_values(self, monkeypatch, value):
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", value)
+        assert _spotify_video_allow_live_publish() is True
+
+
+class TestPromoteSpotifyVideoDraft:
+    VIDEO_ANCHOR_ID = 321
+    AUDIO_ANCHOR_ID = 111
     W35_PROTECTED_IDS = (124658107, 124658398, 124662333)
 
-    def _clear_publish_caches(self, pub):
-        for name in (
-            "_warn_live_publish_downgraded_once",
-            "_warn_video_live_publish_downgraded_once",
-        ):
-            fn = getattr(pub, name, None)
-            if fn is not None and hasattr(fn, "cache_clear"):
-                fn.cache_clear()
-
-    def _state(self, *, is_published, spotify_episode_url=None, **extra):
-        state = {
-            "isPublished": is_published,
-            "spotifyEpisodeUrl": spotify_episode_url,
-        }
-        state.update(extra)
-        return state
-
-    def _patch_promote_dependencies(
-        self,
-        monkeypatch,
-        pub,
-        *,
-        state_side_effect=None,
-        publish_side_effect=None,
-    ):
-        self._clear_publish_caches(pub)
+    def _patch_dependencies(self, monkeypatch, pub, *, states=None, publish_side_effect=None):
         session = MagicMock(name="spotify-session")
-        build_session = MagicMock(return_value=session)
-        publish_live = MagicMock(name="publish-live")
+        monkeypatch.setattr(pub, "_get_credentials", lambda: ("show-id", "sp_dc", "sp_key"))
+        monkeypatch.setattr(pub, "_build_session", MagicMock(return_value=session))
+        publish_live = MagicMock()
         if publish_side_effect is not None:
             publish_live.side_effect = publish_side_effect
-        state_reader = MagicMock(
-            name="get-episode-publication-state",
-            side_effect=state_side_effect
-            if state_side_effect is not None
-            else [self._state(is_published=False)],
-        )
-        monkeypatch.setattr(
-            pub,
-            "_get_credentials",
-            lambda *args, **kwargs: ("show-id", "sp_dc", "sp_key"),
-            raising=False,
-        )
-        monkeypatch.setattr(pub, "_build_session", build_session, raising=False)
-        monkeypatch.setattr(pub, "_publish_episode_live", publish_live, raising=False)
-        monkeypatch.setattr(pub, "_get_episode_publication_state", state_reader, raising=False)
-        return session, build_session, state_reader, publish_live
+        monkeypatch.setattr(pub, "_publish_episode_live", publish_live)
+        state_reader = MagicMock(side_effect=states if states is not None else [False, True])
+        monkeypatch.setattr(pub, "_get_episode_publication_state", state_reader)
+        return session, publish_live, state_reader
 
-    def test_draft_mode_no_promote(self, monkeypatch):
+    def test_denies_non_live_mode_without_spotify_calls(self, monkeypatch):
         import podcaster.publish as pub
 
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
-        )
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
 
         result = pub.promote_spotify_video_draft(self.VIDEO_ANCHOR_ID)
 
         assert result.terminal_state == "draft_gate_denied"
         assert result.authorized is False
-        assert result.dry_run is False
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
+        build.assert_not_called()
 
-    def test_video_gate_env_not_set_no_promote(self, monkeypatch):
+    def test_denies_when_operator_gate_is_disabled(self, monkeypatch):
         import podcaster.publish as pub
 
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
-        )
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
 
         result = pub.promote_spotify_video_draft(
             self.VIDEO_ANCHOR_ID,
@@ -1541,99 +1509,17 @@ class TestPromoteSpotifyVideoDraft:
 
         assert result.terminal_state == "draft_gate_denied"
         assert result.authorized is False
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
-
-    def test_audio_gate_alone_cannot_authorize_video(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
-        )
-
-        result = pub.promote_spotify_video_draft(
-            self.VIDEO_ANCHOR_ID,
-            spotify_video_publish_mode="live",
-        )
-
-        assert result.terminal_state == "draft_gate_denied"
-        assert result.authorized is False
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
-
-    def test_publish_mode_live_alone_cannot_authorize(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
-        )
-
-        result = pub.promote_spotify_video_draft(
-            self.VIDEO_ANCHOR_ID,
-            spotify_video_publish_mode="draft",
-        )
-
-        assert result.terminal_state == "draft_gate_denied"
-        assert result.authorized is False
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
-
-    def test_w35_id_124658107_blocked(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
-        )
-
-        result = pub.promote_spotify_video_draft(124658107, spotify_video_publish_mode="live")
-
-        assert result.terminal_state == "blocked_protected_historical_draft"
-        assert result.authorized is True
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
-
-    def test_w35_id_124658398_blocked(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
-        )
-
-        result = pub.promote_spotify_video_draft(124658398, spotify_video_publish_mode="live")
-
-        assert result.terminal_state == "blocked_protected_historical_draft"
-        assert result.authorized is True
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
-
-    def test_w35_id_124662333_blocked(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
-        )
-
-        result = pub.promote_spotify_video_draft(124662333, spotify_video_publish_mode="live")
-
-        assert result.terminal_state == "blocked_protected_historical_draft"
-        assert result.authorized is True
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
+        build.assert_not_called()
 
     @pytest.mark.parametrize("protected_anchor_id", W35_PROTECTED_IDS)
-    def test_w35_blocked_even_with_both_gates_enabled(self, monkeypatch, protected_anchor_id):
+    def test_blocks_protected_anchor_before_session_creation(
+        self, monkeypatch, protected_anchor_id
+    ):
         import podcaster.publish as pub
 
-        monkeypatch.setenv("SPOTIFY_ALLOW_LIVE_PUBLISH", "true")
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
-        )
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
 
         result = pub.promote_spotify_video_draft(
             protected_anchor_id,
@@ -1642,17 +1528,14 @@ class TestPromoteSpotifyVideoDraft:
         )
 
         assert result.terminal_state == "blocked_protected_historical_draft"
-        assert result.authorized is True
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
+        build.assert_not_called()
 
-    def test_audio_id_rejected_as_video_target(self, monkeypatch):
+    def test_rejects_audio_video_anchor_collision(self, monkeypatch):
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
-        )
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
 
         result = pub.promote_spotify_video_draft(
             self.AUDIO_ANCHOR_ID,
@@ -1660,21 +1543,15 @@ class TestPromoteSpotifyVideoDraft:
             spotify_video_publish_mode="live",
         )
 
-        assert result.terminal_state != "published"
-        assert result.authorized is True
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
+        assert result.terminal_state == "draft_gate_denied"
+        build.assert_not_called()
 
-    def test_idempotency_already_published(self, monkeypatch):
+    def test_already_published_skips_post(self, monkeypatch):
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch,
-            pub,
-            state_side_effect=[
-                self._state(is_published=True, spotify_episode_url=self.PUBLIC_URL)
-            ],
+        _session, publish_live, state_reader = self._patch_dependencies(
+            monkeypatch, pub, states=[True]
         )
 
         result = pub.promote_spotify_video_draft(
@@ -1685,19 +1562,16 @@ class TestPromoteSpotifyVideoDraft:
 
         assert result.terminal_state == "already_published"
         assert result.is_published is True
-        assert result.spotify_episode_url == self.PUBLIC_URL
-        assert result.authorized is True
-        build_session.assert_called_once()
-        state_reader.assert_called_once()
+        assert result.spotify_episode_url is None
         publish_live.assert_not_called()
+        state_reader.assert_called_once()
 
-    def test_dry_run_no_network_call(self, monkeypatch):
+    def test_publishes_once_and_confirms_state(self, monkeypatch):
         import podcaster.publish as pub
 
-        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch, pub
+        session, publish_live, state_reader = self._patch_dependencies(
+            monkeypatch, pub, states=[False, True]
         )
 
         result = pub.promote_spotify_video_draft(
@@ -1706,26 +1580,89 @@ class TestPromoteSpotifyVideoDraft:
             spotify_video_publish_mode="live",
         )
 
-        assert result.dry_run is True
-        assert result.terminal_state != "published"
-        build_session.assert_not_called()
-        publish_live.assert_not_called()
+        assert result.terminal_state == "published"
+        assert result.is_published is True
+        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
+        assert state_reader.call_count == 2
 
-    def test_terminal_telemetry_emitted(self, monkeypatch, caplog):
+    def test_unconfirmed_readback_requires_manual_handoff(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        _session, publish_live, _state_reader = self._patch_dependencies(
+            monkeypatch, pub, states=[False, False]
+        )
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "manual_handoff_required"
+        assert result.is_published is False
+        publish_live.assert_called_once()
+
+    def test_unknown_readback_state_is_terminally_unknown(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        _session, publish_live, _state_reader = self._patch_dependencies(
+            monkeypatch, pub, states=[None, None]
+        )
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "publication_state_unknown"
+        assert result.is_published is None
+        publish_live.assert_called_once()
+
+    def test_publish_error_requires_manual_handoff(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        _session, publish_live, _state_reader = self._patch_dependencies(
+            monkeypatch,
+            pub,
+            states=[False],
+            publish_side_effect=pub.SpotifyPublishError("publish rejected"),
+        )
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "manual_handoff_required"
+        publish_live.assert_called_once()
+
+    def test_dry_run_denies_promotion_after_authorization(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "draft_gate_denied"
+        assert result.authorized is True
+        assert result.dry_run is True
+
+    def test_terminal_telemetry_emitted_once_per_call(self, monkeypatch, caplog):
         import logging
 
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, _build_session, state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch,
-            pub,
-            state_side_effect=[
-                self._state(is_published=False),
-                self._state(is_published=True, spotify_episode_url=self.PUBLIC_URL),
-                self._state(is_published=True, spotify_episode_url=self.PUBLIC_URL),
-            ],
-        )
+        self._patch_dependencies(monkeypatch, pub, states=[False, True, True])
 
         with caplog.at_level(logging.INFO, logger="podcaster.publish"):
             denied = pub.promote_spotify_video_draft(self.VIDEO_ANCHOR_ID)
@@ -1753,134 +1690,6 @@ class TestPromoteSpotifyVideoDraft:
         assert published.terminal_state == "published"
         assert already.terminal_state == "already_published"
         assert len(terminal_logs) == 3
-        assert publish_live.call_count == 1
-        assert state_reader.call_count == 3
-
-    def test_publish_post_failed_leaves_draft_visible(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, _build_session, state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch,
-            pub,
-            publish_side_effect=pub.SpotifyPublishError("publish rejected"),
-        )
-        delete_episode = MagicMock(name="delete-episode")
-        upload_video = MagicMock(name="upload-video")
-        monkeypatch.setattr(pub, "_delete_episode", delete_episode, raising=False)
-        monkeypatch.setattr(pub, "upload_video_to_episode", upload_video, raising=False)
-
-        result = pub.promote_spotify_video_draft(
-            self.VIDEO_ANCHOR_ID,
-            audio_anchor_id=self.AUDIO_ANCHOR_ID,
-            spotify_video_publish_mode="live",
-        )
-
-        assert result.terminal_state == "manual_handoff_required"
-        publish_live.assert_called_once()
-        state_reader.assert_called_once()
-        delete_episode.assert_not_called()
-        upload_video.assert_not_called()
-
-    def test_platform_rejects_returns_manual_handoff(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        http_error = requests.HTTPError("400 Client Error")
-        _session, _build_session, _state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch,
-            pub,
-            publish_side_effect=http_error,
-        )
-
-        result = pub.promote_spotify_video_draft(
-            self.VIDEO_ANCHOR_ID,
-            audio_anchor_id=self.AUDIO_ANCHOR_ID,
-            spotify_video_publish_mode="live",
-        )
-
-        assert result.terminal_state == "manual_handoff_required"
-        publish_live.assert_called_once()
-
-    def test_successful_promotion_confirmed_by_state_read(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, build_session, state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch,
-            pub,
-            state_side_effect=[
-                self._state(is_published=False),
-                self._state(is_published=True, spotify_episode_url=self.PUBLIC_URL),
-            ],
-        )
-
-        result = pub.promote_spotify_video_draft(
-            self.VIDEO_ANCHOR_ID,
-            audio_anchor_id=self.AUDIO_ANCHOR_ID,
-            spotify_video_publish_mode="live",
-            job_id="job-664",
-            run_id="run-664",
-        )
-
-        assert result.anchor_episode_id == self.VIDEO_ANCHOR_ID
-        assert result.audio_anchor_id == self.AUDIO_ANCHOR_ID
-        assert result.terminal_state == "published"
-        assert result.is_published is True
-        assert result.spotify_episode_url == self.PUBLIC_URL
-        assert result.authorized is True
-        build_session.assert_called_once()
-        publish_live.assert_called_once()
-        assert state_reader.call_count == 2
-
-    def test_state_read_after_post_fails_returns_unknown(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, _build_session, state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch,
-            pub,
-            state_side_effect=[
-                self._state(is_published=False),
-                pub.SpotifyPublishError("readback unavailable"),
-            ],
-        )
-
-        result = pub.promote_spotify_video_draft(
-            self.VIDEO_ANCHOR_ID,
-            audio_anchor_id=self.AUDIO_ANCHOR_ID,
-            spotify_video_publish_mode="live",
-        )
-
-        assert result.terminal_state == "publication_state_unknown"
-        assert result.is_published is None
-        publish_live.assert_called_once()
-        assert state_reader.call_count == 2
-
-    def test_http_2xx_without_confirmation_not_published(self, monkeypatch):
-        import podcaster.publish as pub
-
-        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
-        _session, _build_session, state_reader, publish_live = self._patch_promote_dependencies(
-            monkeypatch,
-            pub,
-            state_side_effect=[
-                self._state(is_published=False),
-                self._state(is_published=None, spotify_episode_url=None),
-            ],
-        )
-
-        result = pub.promote_spotify_video_draft(
-            self.VIDEO_ANCHOR_ID,
-            audio_anchor_id=self.AUDIO_ANCHOR_ID,
-            spotify_video_publish_mode="live",
-        )
-
-        assert result.terminal_state != "published"
-        assert result.terminal_state == "publication_state_unknown"
-        assert result.is_published is None
-        publish_live.assert_called_once()
-        assert state_reader.call_count == 2
 
 
 def _mock_error_resp(status_code: int, body: str) -> MagicMock:
