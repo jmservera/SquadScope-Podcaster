@@ -22,6 +22,12 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
+      storage_public_network_access:
+        description: 'Storage public network access. Disabled (default) preserves the current production posture; set to Enabled only for fresh installs without private endpoint infrastructure (#675).'
+        required: false
+        default: 'Disabled'
+        type: choice
+        options: ['Disabled', 'Enabled']
 
 permissions:
   contents: read
@@ -34,6 +40,7 @@ jobs:
       sync_squadscope: ${{ inputs.sync_squadscope }}
       deploy_openai: ${{ inputs.deploy_openai }}
       deploy_vnet: ${{ inputs.deploy_vnet }}
+      storage_public_network_access: ${{ inputs.storage_public_network_access }}
     secrets: inherit
     permissions:
       contents: read

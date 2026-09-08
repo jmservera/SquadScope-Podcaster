@@ -215,6 +215,13 @@ param uiAuthSecret string = ''
 @description('Deploy VNet + private endpoints for ACA ↔ Storage connectivity. Requires environment recreation if enabling on an existing deployment (VNet integration is a create-time-only setting).')
 param deployVnet bool = false
 
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+@description('Storage account public network access. Set to Disabled when private endpoints are active (#675). Defaults to Disabled (safe for environments with existing private endpoints). Set to Enabled only for fresh deployments without private endpoint infrastructure.')
+param storagePublicNetworkAccess string = 'Disabled'
+
 @description('Deploy an Azure Container Registry for synthesis/API images (#129).')
 param deployAcr bool = true
 
@@ -227,6 +234,9 @@ var hasDeploymentPrincipalObjectId = !empty(deploymentPrincipalObjectId)
 var openAiCustomSubDomain = toLower(openAiAccountName)
 var openAiEndpoint = 'https://${openAiCustomSubDomain}.openai.azure.com/'
 var acrLoginServer = deployAcr ? '${toLower(acrName)}.azurecr.io' : containerRegistryServer
+// Guard: deployVnet=true requires private-only Storage access (#675).
+// Keep this relationship explicit until Bicep assertions are stable enough to enforce it.
+var _storageVnetContractSatisfied = !(deployVnet && storagePublicNetworkAccess == 'Enabled')
 
 // VNet + private endpoints for ACA ↔ Storage connectivity (#225).
 // NOTE: VNet integration is a create-time-only setting for Container Apps environments.
@@ -257,7 +267,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
       bypass: 'AzureServices'
       defaultAction: deployVnet ? 'Deny' : 'Allow'
     }
-    publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
+    publicNetworkAccess: storagePublicNetworkAccess
     supportsHttpsTrafficOnly: true
   }
 }
@@ -617,6 +627,7 @@ output videoJobName string = acaVideo.outputs.jobName
 output videoRecorderJobName string = acaRecorder.outputs.jobName
 output videoClipQueueName string = aca.outputs.videoClipQueueName
 output synthesisJobIdentityClientId string = aca.outputs.jobIdentityClientId
+output storageNetworkContract string = _storageVnetContractSatisfied ? 'ok' : 'ERROR: storagePublicNetworkAccess must be Disabled when deployVnet=true (#675)'
 output apiAppFqdn string = deployApiApp ? api!.outputs.apiAppFqdn : ''
 output uiAppFqdn string = deployUiApp ? ui!.outputs.uiAppFqdn : ''
 output acrLoginServer string = deployAcr ? acr!.outputs.loginServer : ''

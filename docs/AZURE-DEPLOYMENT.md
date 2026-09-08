@@ -207,7 +207,21 @@ gh workflow run deploy-azure.yml \
 3. **Inputs:**
    - `sync_squadscope`: Use `true` only when `SQUADSCOPE_SYNC_TOKEN` is configured and you want the API key pushed to SquadScope.
    - `deploy_openai`: `true` (default) — provisions the Azure OpenAI TTS + chat infrastructure.
+   - `storage_public_network_access`: `Disabled` (default) preserves the current production posture. Use `Enabled` only for a fresh install that intentionally stays on public Storage and does **not** deploy private endpoint infrastructure.
 4. Click **Run workflow**.
+
+For a fresh non-private install that intentionally keeps Storage public, pass the explicit opt-in input:
+
+```bash
+gh workflow run deploy-azure.yml \
+  -R jmservera/SquadScope-Podcaster \
+  -f sync_squadscope=false \
+  -f deploy_openai=true \
+  -f deploy_vnet=false \
+  -f storage_public_network_access=Enabled
+```
+
+The same `deploy_vnet` and `storage_public_network_access` inputs are also exposed on `release.yml` so image-promotion releases do not silently revert the selected Storage network posture.
 
 #### Step 2: Monitor the Workflow Run
 

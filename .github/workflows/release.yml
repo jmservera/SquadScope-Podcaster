@@ -8,6 +8,18 @@ on:
         description: 'Image tag (defaults to first 12 chars of commit SHA)'
         required: false
         type: string
+      deploy_vnet:
+        description: 'Deploy VNet + private endpoints. ⚠️ Create-time only — enabling on existing ACA requires env recreation (downtime).'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      storage_public_network_access:
+        description: 'Storage public network access. Disabled (default) preserves the current production posture; set to Enabled only for fresh installs without private endpoint infrastructure (#675).'
+        required: false
+        default: 'Disabled'
+        type: choice
+        options: ['Disabled', 'Enabled']
 
 permissions:
   contents: read
@@ -45,6 +57,9 @@ jobs:
   infra:
     needs: [ci]
     uses: ./.github/workflows/reusable-deploy-azure.yml
+    with:
+      deploy_vnet: ${{ inputs.deploy_vnet }}
+      storage_public_network_access: ${{ inputs.storage_public_network_access }}
     permissions:
       contents: read
       id-token: write
@@ -83,6 +98,8 @@ jobs:
     with:
       synthesis_image: ${{ needs.publish-synthesis.outputs.image_ref }}
       api_image: ${{ needs.publish-api.outputs.image_ref }}
+      deploy_vnet: ${{ inputs.deploy_vnet }}
+      storage_public_network_access: ${{ inputs.storage_public_network_access }}
     permissions:
       contents: read
       id-token: write
