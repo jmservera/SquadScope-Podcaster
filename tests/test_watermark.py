@@ -9,10 +9,42 @@ watermark independent of that mutable URL.
 
 from __future__ import annotations
 
+import socket
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+
 import podcaster.watermark as watermark
+from podcaster import ssrf
+from podcaster.video import video_compose as vc
 
 # The exact URL SquadScope's config/podcast.json hands off, and which 404'd.
 W36_HANDOFF_URL = "https://www.claracle.com/images/claracle.jpeg"
+
+
+def _start_truncated_image_server(
+    body: bytes, *, declared_length: int
+) -> tuple[ThreadingHTTPServer, threading.Thread]:
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(declared_length))
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+            self.close_connection = True
+            self.connection.shutdown(socket.SHUT_RDWR)
+
+        def log_message(self, format, *args):  # noqa: A003
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
 
 
 class TestBundledAssetPackaging:
@@ -127,3 +159,44 @@ class TestModuleDocstringAccuracy:
         """Pin the claim itself: only canonical URLs map to the bundled asset."""
         assert watermark.is_canonical_logo_url("https://www.claracle.com/images/claracle.jpeg")
         assert not watermark.is_canonical_logo_url("https://example.com/images/claracle.jpeg")
+
+
+class TestRemoteWatermarkFetchIntegrity:
+    def test_truncated_remote_body_is_transient_redacted_and_not_cached(
+        self, tmp_path, monkeypatch
+    ):
+        cache_dir = tmp_path / "dogcache"
+        partial_jpeg = b"\xff\xd8\xff\xe0" + (b"\x00" * 96)
+        server, thread = _start_truncated_image_server(partial_jpeg, declared_length=10000)
+        url = f"http://127.0.0.1:{server.server_port}/logo.jpeg?sig=abc123#frag"
+        monkeypatch.setattr(vc, "classify_host", lambda _host: ssrf.HostVerdict.ALLOWED)
+        monkeypatch.setattr(
+            vc,
+            "safe_urlopen",
+            lambda remote_url, *, timeout: urllib.request.urlopen(remote_url, timeout=timeout),
+        )
+
+        try:
+            with pytest.raises(vc.WatermarkTransientError) as excinfo:
+                vc._fetch_dog_logo_remote(url, cache_dir)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+        exc = excinfo.value
+        rendered = f"{exc} {exc.details}"
+        assert exc.reason == vc.WATERMARK_REASON_FETCH_TRANSIENT
+        assert exc.details["failure_kind"] == "truncated_response"
+        assert exc.details["logo_url"] == f"http://127.0.0.1:{server.server_port}/logo.jpeg"
+        assert "abc123" not in rendered
+        assert url not in rendered
+        assert not list(cache_dir.glob("*"))
+
+    def test_canonical_claracle_url_still_uses_bundled_asset(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            vc,
+            "safe_urlopen",
+            lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("network must not be used")),
+        )
+        assert vc._fetch_dog_logo(W36_HANDOFF_URL, tmp_path / "dogcache") == watermark.LOGO_PATH
