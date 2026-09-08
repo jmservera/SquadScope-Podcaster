@@ -112,7 +112,9 @@ class VideoDistributionConfig:
             spotify_upload_enabled=(
                 os.environ.get("VIDEO_SPOTIFY_UPLOAD_ENABLED", "").lower() == "true"
             ),
-            spotify_video_publish_mode=os.environ.get("SPOTIFY_VIDEO_PUBLISH_MODE", "draft"),
+            spotify_video_publish_mode=os.environ.get(
+                "SPOTIFY_VIDEO_PUBLISH_MODE", "draft"
+            ).strip().lower(),
             blob_archive_enabled=(
                 os.environ.get("VIDEO_BLOB_ARCHIVE_ENABLED", "true").lower() == "true"
             ),
@@ -137,7 +139,7 @@ class VideoDistributionConfig:
             spotify_video_publish_mode=(
                 "draft"
                 if payload.get("spotify_video_publish_mode") is None
-                else str(payload.get("spotify_video_publish_mode"))
+                else str(payload.get("spotify_video_publish_mode")).strip().lower()
             ),
             blob_archive_enabled=bool(payload.get("blob_archive_enabled", True)),
             dry_run=bool(payload.get("dry_run", False)),
@@ -788,7 +790,7 @@ def upload_to_spotify_episode(
                 promote_result.is_published,
             )
         logger.info(
-            "Spotify video published as new episode draft anchorId=%s "
+            "Spotify video uploaded as new episode anchorId=%s "
             "(audio episode anchorId=%s untouched)",
             result.anchor_episode_id,
             anchor_id,

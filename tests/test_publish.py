@@ -1690,6 +1690,40 @@ class TestPromoteSpotifyVideoDraft:
         assert published.terminal_state == "published"
         assert already.terminal_state == "already_published"
         assert len(terminal_logs) == 3
+        denied_message, published_message, already_message = [
+            record.getMessage() for record in terminal_logs
+        ]
+        assert "video_auth_granted=False" in denied_message
+        assert "w35_check=not_run" in denied_message
+        assert "video_auth_granted=True" in published_message
+        assert "w35_check=pass" in published_message
+        assert "video_auth_granted=True" in already_message
+        assert "w35_check=pass" in already_message
+
+    def test_terminal_telemetry_marks_blocked_w35_check(self, monkeypatch, caplog):
+        import logging
+
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+
+        with caplog.at_level(logging.INFO, logger="podcaster.publish"):
+            result = pub.promote_spotify_video_draft(
+                self.W35_PROTECTED_IDS[0],
+                audio_anchor_id=self.AUDIO_ANCHOR_ID,
+                spotify_video_publish_mode="live",
+                job_id="job-665",
+            )
+
+        terminal_logs = [
+            record.getMessage()
+            for record in caplog.records
+            if "spotify_video_publication_terminal" in record.getMessage()
+        ]
+        assert result.terminal_state == "blocked_protected_historical_draft"
+        assert len(terminal_logs) == 1
+        assert "video_auth_granted=True" in terminal_logs[0]
+        assert "w35_check=blocked" in terminal_logs[0]
 
 
 def _mock_error_resp(status_code: int, body: str) -> MagicMock:

@@ -194,6 +194,22 @@ class TestVideoDistributionConfig:
 
         assert config.spotify_video_publish_mode == "live"
 
+    def test_spotify_video_publish_mode_from_env_normalizes_whitespace_and_case(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", " Live ")
+
+        config = VideoDistributionConfig.from_env()
+
+        assert config.spotify_video_publish_mode == "live"
+
+    def test_from_payload_normalizes_spotify_video_publish_mode(self):
+        config = VideoDistributionConfig.from_payload(
+            {"spotify_video_publish_mode": " Live "}
+        )
+
+        assert config.spotify_video_publish_mode == "live"
+
 
 # --- YouTube Upload Tests ---
 

@@ -1629,18 +1629,26 @@ def promote_spotify_video_draft(
     """Promote the current job's Spotify video draft to live behind two gates."""
 
     publish_attempted = False
+    video_auth_granted = False
+    w35_check = "not_run"
 
-    def _finalize(result: VideoPromoteResult) -> VideoPromoteResult:
+    def _finalize(
+        result: VideoPromoteResult,
+        *,
+        video_auth_granted: bool = False,
+        w35_check: str = "not_run",
+    ) -> VideoPromoteResult:
         logger.info(
             "spotify_video_publication_terminal job_id=%s run_id=%s video_anchor_id=%s "
-            "audio_anchor_id=%s requested_mode=%s video_auth_granted=%s w35_check=pass "
+            "audio_anchor_id=%s requested_mode=%s video_auth_granted=%s w35_check=%s "
             "publish_attempted=%s final_state=%s is_published=%s",
             job_id,
             run_id,
             video_anchor_id,
             audio_anchor_id,
             spotify_video_publish_mode,
-            _spotify_video_allow_live_publish(),
+            video_auth_granted,
+            w35_check,
             publish_attempted,
             result.terminal_state,
             result.is_published,
@@ -1676,6 +1684,8 @@ def promote_spotify_video_draft(
             )
         )
 
+    video_auth_granted = True
+
     if _is_dry_run():
         logger.info(
             "Spotify video promotion dry-run: leaving video episode %s as draft",
@@ -1688,7 +1698,8 @@ def promote_spotify_video_draft(
                 audio_anchor_id=audio_anchor_id,
                 dry_run=True,
                 authorized=True,
-            )
+            ),
+            video_auth_granted=video_auth_granted,
         )
 
     if (
@@ -1711,7 +1722,8 @@ def promote_spotify_video_draft(
                 audio_anchor_id=audio_anchor_id,
                 authorized=True,
                 details={"reason": "invalid_video_anchor_id"},
-            )
+            ),
+            video_auth_granted=video_auth_granted,
         )
 
     if audio_anchor_id is not None and video_anchor_id == audio_anchor_id:
@@ -1726,10 +1738,12 @@ def promote_spotify_video_draft(
                 audio_anchor_id=audio_anchor_id,
                 authorized=True,
                 details={"reason": "video_audio_anchor_collision"},
-            )
+            ),
+            video_auth_granted=video_auth_granted,
         )
 
     if video_anchor_id in _PROTECTED_ANCHOR_IDS:
+        w35_check = "blocked"
         logger.warning(
             "Spotify video promotion blocked for protected historical draft anchor_id=%s job_id=%s",
             video_anchor_id,
@@ -1741,8 +1755,12 @@ def promote_spotify_video_draft(
                 anchor_episode_id=video_anchor_id,
                 audio_anchor_id=audio_anchor_id,
                 authorized=True,
-            )
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
         )
+
+    w35_check = "pass"
 
     try:
         if not show_id or not sp_dc or not sp_key:
@@ -1762,7 +1780,9 @@ def promote_spotify_video_draft(
                 audio_anchor_id=audio_anchor_id,
                 authorized=True,
                 details={"error": str(exc)},
-            )
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
         )
 
     try:
@@ -1780,7 +1800,9 @@ def promote_spotify_video_draft(
                     audio_anchor_id=audio_anchor_id,
                     is_published=True,
                     authorized=True,
-                )
+                ),
+                video_auth_granted=video_auth_granted,
+                w35_check=w35_check,
             )
         if current_state is None:
             logger.warning(
@@ -1800,7 +1822,9 @@ def promote_spotify_video_draft(
                     audio_anchor_id=audio_anchor_id,
                     is_published=True,
                     authorized=True,
-                )
+                ),
+                video_auth_granted=video_auth_granted,
+                w35_check=w35_check,
             )
         if final_state is None:
             return _finalize(
@@ -1810,7 +1834,9 @@ def promote_spotify_video_draft(
                     audio_anchor_id=audio_anchor_id,
                     is_published=None,
                     authorized=True,
-                )
+                ),
+                video_auth_granted=video_auth_granted,
+                w35_check=w35_check,
             )
         return _finalize(
             VideoPromoteResult(
@@ -1819,7 +1845,9 @@ def promote_spotify_video_draft(
                 audio_anchor_id=audio_anchor_id,
                 is_published=False,
                 authorized=True,
-            )
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
         )
     except SpotifyCredentialExpiredError as exc:
         logger.warning(
@@ -1833,7 +1861,9 @@ def promote_spotify_video_draft(
                 audio_anchor_id=audio_anchor_id,
                 authorized=True,
                 details={"error": str(exc), "credentials_expired": True},
-            )
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
         )
     except SpotifyPublishError as exc:
         logger.warning(
@@ -1848,7 +1878,9 @@ def promote_spotify_video_draft(
                 audio_anchor_id=audio_anchor_id,
                 authorized=True,
                 details={"error": str(exc)},
-            )
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
         )
 
 
