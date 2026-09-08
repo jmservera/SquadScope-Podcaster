@@ -101,6 +101,12 @@ param spotifySessionCookieKey string = ''
 @description('Spotify show ID for video upload target.')
 param spotifyShowId string = ''
 
+@description('Whether Spotify video draft promotion to live is authorized. Defaults to false (disabled).')
+param spotifyVideoAllowLivePublish string = 'false'
+
+@description('Spotify video publish mode. "live" triggers promotion when SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH is also true. Defaults to "draft".')
+param spotifyVideoPublishMode string = 'draft'
+
 @description('Whether YouTube uploads are enabled for video distribution.')
 param videoYoutubeEnabled string = 'false'
 
@@ -319,6 +325,14 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'SPOTIFY_SHOW_ID'
               value: spotifyShowId
+            }
+            {
+              name: 'SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH'
+              value: spotifyVideoAllowLivePublish
+            }
+            {
+              name: 'SPOTIFY_VIDEO_PUBLISH_MODE'
+              value: spotifyVideoPublishMode
             }
             {
               name: 'SP_DC'

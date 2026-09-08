@@ -445,6 +445,8 @@ module acaVideo 'modules/aca-video.bicep' = {
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     spotifyShowId: spotifyShowId
+    spotifyVideoAllowLivePublish: spotifyVideoAllowLivePublish
+    spotifyVideoPublishMode: spotifyVideoPublishMode
     videoYoutubeEnabled: videoYoutubeEnabled
     videoYoutubeRequired: videoYoutubeRequired
     videoYoutubeCategoryId: videoYoutubeCategoryId
