@@ -31,6 +31,11 @@ on:
         required: false
         default: 'false'
         type: string
+      storage_public_network_access:
+        description: 'Storage public network access. Disabled (default) for environments with private endpoints; set to Enabled only for fresh installs without private endpoint infrastructure (#675).'
+        required: false
+        default: 'Disabled'
+        type: string
     outputs:
       api_app_fqdn:
         description: 'FQDN of the deployed API container app'
@@ -64,6 +69,7 @@ jobs:
       API_IMAGE: ${{ inputs.api_image || format('{0}/{1}:latest', vars.SYNTHESIS_IMAGE_REGISTRY, vars.API_IMAGE_REPOSITORY || 'podcaster-api') }}
       UI_IMAGE: ${{ inputs.ui_image || format('{0}/{1}:latest', vars.SYNTHESIS_IMAGE_REGISTRY, vars.UI_IMAGE_REPOSITORY || 'podcaster-ui') }}
       DEPLOY_VNET: ${{ inputs.deploy_vnet || 'false' }}
+      STORAGE_PUBLIC_NETWORK_ACCESS: ${{ inputs.storage_public_network_access || 'Disabled' }}
     steps:
       - name: Checkout
         # actions/checkout v6.0.3
@@ -341,6 +347,15 @@ jobs:
             exit 1
           fi
 
+          # Validate storagePublicNetworkAccess before ARM deploy (#675)
+          case "$STORAGE_PUBLIC_NETWORK_ACCESS" in
+            Enabled|Disabled) ;;
+            *) echo "INVALID storagePublicNetworkAccess='$STORAGE_PUBLIC_NETWORK_ACCESS'; must be Enabled or Disabled"; exit 1 ;;
+          esac
+          # Hard-fail contradiction: VNet mode requires private Storage (#675)
+          if [ "$DEPLOY_VNET" = "true" ] && [ "$STORAGE_PUBLIC_NETWORK_ACCESS" = "Enabled" ]; then
+            echo "ERROR: storagePublicNetworkAccess=Enabled is incompatible with deployVnet=true — Storage must be private when VNet is deployed (#675)"; exit 1
+          fi
           az deployment group create \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name main \
@@ -369,6 +384,7 @@ jobs:
             --parameters videoYoutubeClientSecret="${VIDEO_YOUTUBE_CLIENT_SECRET:-}" \
             --parameters videoYoutubeRefreshToken="${VIDEO_YOUTUBE_REFRESH_TOKEN:-}" \
             --parameters deployVnet="${DEPLOY_VNET}" \
+            --parameters storagePublicNetworkAccess="${STORAGE_PUBLIC_NETWORK_ACCESS}" \
             --parameters deployUiApp=true \
             --parameters uiImage="${UI_IMAGE}" \
             --parameters msalClientId="${MSAL_CLIENT_ID:-}" \

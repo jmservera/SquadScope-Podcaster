@@ -20,6 +20,19 @@ jobs:
       - name: Build Bicep templates
         run: az bicep build --file infra/main.bicep --stdout >/dev/null
 
+      - name: Verify storage network access contract (#675)
+        run: |
+          arm_json=$(az bicep build --file infra/main.bicep --stdout 2>/dev/null)
+          default_val=$(echo "$arm_json" | python3 -c "import sys,json; t=json.load(sys.stdin); print(t['parameters']['storagePublicNetworkAccess']['defaultValue'])")
+          [ "$default_val" = "Disabled" ] || { echo "FAIL: storagePublicNetworkAccess default is '$default_val', expected 'Disabled' (#675)"; exit 1; }
+          av=$(echo "$arm_json" | python3 -c "import sys,json; t=json.load(sys.stdin); av=t['parameters']['storagePublicNetworkAccess'].get('allowedValues',[]); assert set(av)=={'Enabled','Disabled'} and len(av)==2, f'FAIL: {av!r}'; print(','.join(sorted(av)))")
+          echo "OK: allowedValues exact set $av"
+          grep -qF 'storagePublicNetworkAccess="${STORAGE_PUBLIC_NETWORK_ACCESS}"' .github/workflows/reusable-deploy-azure.yml || \
+            { echo 'FAIL: reusable-deploy-azure.yml --parameters line not found for storagePublicNetworkAccess'; exit 1; }
+          grep -qE '^      storage_public_network_access:' .github/workflows/reusable-deploy-azure.yml || \
+            { echo 'FAIL: reusable-deploy-azure.yml does not expose storage_public_network_access input'; exit 1; }
+          echo "OK: storagePublicNetworkAccess param default=Disabled, allowedValues=$av, workflow wired"
+
       - name: Set up Python
         # actions/setup-python v6.2.0
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
