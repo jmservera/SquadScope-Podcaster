@@ -136,7 +136,7 @@ def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
         "VIDEO_YOUTUBE_PLAYLIST_ID must be configured when YouTube uploads are enabled" in workflow
     )
     assert (
-        "VIDEO_YOUTUBE_PRIVACY must be unlisted or private when YouTube uploads are enabled"
+        "VIDEO_YOUTUBE_PRIVACY must be unlisted, private, or public when YouTube uploads are enabled"
         in workflow
     )
 
