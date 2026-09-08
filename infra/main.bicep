@@ -215,7 +215,7 @@ param uiAuthSecret string = ''
 @description('Deploy VNet + private endpoints for ACA ↔ Storage connectivity. Requires environment recreation if enabling on an existing deployment (VNet integration is a create-time-only setting).')
 param deployVnet bool = false
 
-@description('Enable public network access for Storage, OpenAI, and ACR when deployVnet=false. Leave false for the production private-by-default posture; set true only for local dev/test or transitional deployments that still need public endpoints.')
+@description('Enable public network access for Storage when deployVnet=false. OpenAI and ACR are public in local dev/test and private only in VNet mode (#598).')
 param allowPublicNetworkAccess bool = false
 
 @description('Deploy an Azure Container Registry for synthesis/API images (#129).')
@@ -512,7 +512,6 @@ module openAi 'modules/openai.bicep' = {
     synthesisJobPrincipalId: aca.outputs.jobIdentityPrincipalId
     audioJobPrincipalId: ''
     deployVnet: deployVnet
-    allowPublicNetworkAccess: allowPublicNetworkAccess
   }
 }
 
@@ -589,7 +588,6 @@ module acr 'modules/acr.bicep' = if (deployAcr) {
     synthesisPullPrincipalId: aca.outputs.jobIdentityPrincipalId
     pushPrincipalId: deploymentPrincipalObjectId
     deployVnet: deployVnet
-    allowPublicNetworkAccess: allowPublicNetworkAccess
   }
 }
 
