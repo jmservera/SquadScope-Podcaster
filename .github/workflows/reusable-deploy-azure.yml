@@ -85,6 +85,7 @@ jobs:
           VIDEO_YOUTUBE_CLIENT_ID_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_ID }}
           VIDEO_YOUTUBE_CLIENT_SECRET_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_SECRET }}
           VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET: ${{ secrets.VIDEO_YOUTUBE_REFRESH_TOKEN }}
+          SPOTIFY_ALLOW_LIVE_PUBLISH_VAR: ${{ vars.SPOTIFY_ALLOW_LIVE_PUBLISH }}
         run: |
           set -euo pipefail
 
@@ -131,9 +132,9 @@ jobs:
           if [ "$youtube_enabled" = "true" ]; then
             youtube_privacy="$(printf '%s' "${VIDEO_YOUTUBE_PRIVACY_VAR:-unlisted}" | tr '[:upper:]' '[:lower:]')"
             case "$youtube_privacy" in
-              unlisted|private) ;;
+              unlisted|private|public) ;;
               *)
-                echo "::error::VIDEO_YOUTUBE_PRIVACY must be unlisted or private when YouTube uploads are enabled"
+                echo "::error::VIDEO_YOUTUBE_PRIVACY must be unlisted, private, or public when YouTube uploads are enabled"
                 missing=1
                 ;;
             esac
@@ -169,6 +170,7 @@ jobs:
           VIDEO_YOUTUBE_CLIENT_ID_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_ID }}
           VIDEO_YOUTUBE_CLIENT_SECRET_SECRET: ${{ secrets.VIDEO_YOUTUBE_CLIENT_SECRET }}
           VIDEO_YOUTUBE_REFRESH_TOKEN_SECRET: ${{ secrets.VIDEO_YOUTUBE_REFRESH_TOKEN }}
+          SPOTIFY_ALLOW_LIVE_PUBLISH_VAR: ${{ vars.SPOTIFY_ALLOW_LIVE_PUBLISH }}
           MSAL_CLIENT_ID_VAR: ${{ vars.MSAL_CLIENT_ID }}
           MSAL_AUTHORITY_VAR: ${{ vars.MSAL_AUTHORITY }}
           UI_AUTH_USERNAME_SECRET: ${{ secrets.UI_AUTH_USERNAME }}
@@ -220,6 +222,7 @@ jobs:
             echo "SP_DC=${SP_DC_SECRET:-}"
             echo "SP_KEY=${SP_KEY_SECRET:-}"
             echo "PODCAST_AUTO_PUBLISH=${PODCAST_AUTO_PUBLISH_VAR:-false}"
+            echo "SPOTIFY_ALLOW_LIVE_PUBLISH=${SPOTIFY_ALLOW_LIVE_PUBLISH_VAR:-false}"
             echo "VIDEO_YOUTUBE_ENABLED=${VIDEO_YOUTUBE_ENABLED_VAR:-false}"
             echo "VIDEO_YOUTUBE_REQUIRED=${VIDEO_YOUTUBE_REQUIRED_VAR:-false}"
             echo "VIDEO_YOUTUBE_CATEGORY_ID=${VIDEO_YOUTUBE_CATEGORY_ID_VAR:-28}"
@@ -348,6 +351,7 @@ jobs:
             --parameters spotifySessionCookieDc="${SP_DC:-}" \
             --parameters spotifySessionCookieKey="${SP_KEY:-}" \
             --parameters podcastAutoPublish="${PODCAST_AUTO_PUBLISH:-false}" \
+            --parameters spotifyAllowLivePublish="${SPOTIFY_ALLOW_LIVE_PUBLISH:-false}" \
             --parameters videoYoutubeEnabled="${VIDEO_YOUTUBE_ENABLED:-false}" \
             --parameters videoYoutubeRequired="${VIDEO_YOUTUBE_REQUIRED:-false}" \
             --parameters videoYoutubeCategoryId="${VIDEO_YOUTUBE_CATEGORY_ID:-28}" \
