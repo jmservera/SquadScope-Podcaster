@@ -1557,7 +1557,14 @@ def _get_episode_publication_state(
     anchor_id: int,
     user_id: str | None = None,
 ) -> bool | None:
-    """Return True when published, False when draft, or None when unknown."""
+    """Return True when published, False when draft, or None when unknown.
+
+    Args:
+        session: Authenticated Spotify session.
+        anchor_id: Anchor episode ID to query.
+        user_id: Anchor userId for the query parameter required by Anchor v5.
+            When None the request omits userId and may return HTTP 400.
+    """
 
     def _extract_state(payload: Any) -> bool | None:
         candidates: list[dict[Any, Any]] = []

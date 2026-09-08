@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import requests
@@ -1585,6 +1585,10 @@ class TestPromoteSpotifyVideoDraft:
         assert result.is_published is True
         publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
         assert state_reader.call_count == 2
+        assert state_reader.call_args_list == [
+            call(session, self.VIDEO_ANCHOR_ID, user_id="7"),
+            call(session, self.VIDEO_ANCHOR_ID, user_id="7"),
+        ]
 
     def test_unconfirmed_readback_requires_manual_handoff(self, monkeypatch):
         import podcaster.publish as pub
