@@ -112,9 +112,9 @@ class VideoDistributionConfig:
             spotify_upload_enabled=(
                 os.environ.get("VIDEO_SPOTIFY_UPLOAD_ENABLED", "").lower() == "true"
             ),
-            spotify_video_publish_mode=os.environ.get(
-                "SPOTIFY_VIDEO_PUBLISH_MODE", "draft"
-            ).strip().lower(),
+            spotify_video_publish_mode=os.environ.get("SPOTIFY_VIDEO_PUBLISH_MODE", "draft")
+            .strip()
+            .lower(),
             blob_archive_enabled=(
                 os.environ.get("VIDEO_BLOB_ARCHIVE_ENABLED", "true").lower() == "true"
             ),
