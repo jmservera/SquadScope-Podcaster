@@ -30,9 +30,13 @@ param skuName string = 'Basic'
 @description('When true (VNet mode), disable the ACR public endpoint and force the Premium SKU so a private endpoint can be attached (#598).')
 param deployVnet bool = false
 
+@description('Enable the public registry endpoint for local dev/test or transitional deployments when deployVnet=false. VNet mode remains private-only. Leave false for the default hardened posture (#598).')
+param allowPublicNetworkAccess bool = false
+
 // Private endpoints + Disabled public network access require the Premium SKU, so
-// VNet mode overrides the requested SKU. Non-VNet deployments keep skuName.
-var effectiveSkuName = deployVnet ? 'Premium' : skuName
+// either VNet mode or the private-by-default posture overrides the requested SKU.
+var effectiveSkuName = (!allowPublicNetworkAccess || deployVnet) ? 'Premium' : skuName
+var enablePublicNetworkAccess = !deployVnet && allowPublicNetworkAccess
 
 @description('Principal ID of the synthesis job managed identity (granted AcrPull).')
 param synthesisPullPrincipalId string = ''
@@ -56,7 +60,7 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   }
   properties: {
     adminUserEnabled: false
-    publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
+    publicNetworkAccess: enablePublicNetworkAccess ? 'Enabled' : 'Disabled'
     policies: {
       retentionPolicy: {
         status: 'disabled'

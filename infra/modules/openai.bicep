@@ -60,7 +60,11 @@ param restoreAccount bool = false
 @description('When true (VNet mode), the account is private-by-default: public network access is disabled and reached only via the private endpoint created in modules/openai-private-endpoint.bicep. When false (local dev/test), the public endpoint stays enabled for convenience. See #598.')
 param deployVnet bool = false
 
+@description('Enable the public network endpoint for local dev/test or transitional deployments when deployVnet=false. VNet mode remains private-only. Leave false for the default hardened posture (#598).')
+param allowPublicNetworkAccess bool = false
+
 var hasAudioJobPrincipal = !empty(audioJobPrincipalId)
+var enablePublicNetworkAccess = !deployVnet && allowPublicNetworkAccess
 
 resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   name: openAiAccountName
@@ -78,14 +82,13 @@ resource openAiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
     restore: restoreAccount
     // ACA job authenticates with its managed identity only; account keys are disabled.
     disableLocalAuth: true
-    // Private-by-default in VNet mode (#598): the ACA synthesis job runs inside the VNet
-    // and reaches this account over the private endpoint (see
-    // modules/openai-private-endpoint.bicep; network.bicep owns the VNet + DNS zone).
-    // Public access stays enabled only for local dev/test (deployVnet=false).
-    publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
+    // Private-by-default (#598): production keeps the public endpoint off unless an
+    // operator explicitly opts into public access for local dev/test or a transitional
+    // deployment. deployVnet still controls whether the private endpoint exists.
+    publicNetworkAccess: enablePublicNetworkAccess ? 'Enabled' : 'Disabled'
     networkAcls: {
       bypass: 'AzureServices'
-      defaultAction: deployVnet ? 'Deny' : 'Allow'
+      defaultAction: enablePublicNetworkAccess ? 'Allow' : 'Deny'
     }
   }
 }
