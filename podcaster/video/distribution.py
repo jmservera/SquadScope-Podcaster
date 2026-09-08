@@ -90,6 +90,7 @@ class VideoDistributionConfig:
     spotify_rss_feed_path: str = ""
 
     spotify_upload_enabled: bool = False
+    spotify_video_publish_mode: str = "draft"
 
     blob_archive_enabled: bool = True
     dry_run: bool = False
@@ -111,6 +112,9 @@ class VideoDistributionConfig:
             spotify_upload_enabled=(
                 os.environ.get("VIDEO_SPOTIFY_UPLOAD_ENABLED", "").lower() == "true"
             ),
+            spotify_video_publish_mode=os.environ.get("SPOTIFY_VIDEO_PUBLISH_MODE", "draft")
+            .strip()
+            .lower(),
             blob_archive_enabled=(
                 os.environ.get("VIDEO_BLOB_ARCHIVE_ENABLED", "true").lower() == "true"
             ),
@@ -132,6 +136,11 @@ class VideoDistributionConfig:
             spotify_rss_enabled=bool(payload.get("spotify_rss_enabled", False)),
             spotify_rss_feed_path=str(payload.get("spotify_rss_feed_path", "")),
             spotify_upload_enabled=bool(payload.get("spotify_upload_enabled", False)),
+            spotify_video_publish_mode=(
+                "draft"
+                if payload.get("spotify_video_publish_mode") is None
+                else str(payload.get("spotify_video_publish_mode")).strip().lower()
+            ),
             blob_archive_enabled=bool(payload.get("blob_archive_enabled", True)),
             dry_run=bool(payload.get("dry_run", False)),
         )
@@ -754,7 +763,7 @@ def upload_to_spotify_episode(
         return (True, None) if return_episode_id else True
 
     try:
-        from podcaster.publish import upload_video_to_episode
+        from podcaster.publish import promote_spotify_video_draft, upload_video_to_episode
 
         result = upload_video_to_episode(
             video_path,
@@ -768,8 +777,30 @@ def upload_to_spotify_episode(
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)
             return (False, None) if return_episode_id else False
+        if result.anchor_episode_id is not None:
+            try:
+                promote_result = promote_spotify_video_draft(
+                    result.anchor_episode_id,
+                    audio_anchor_id=anchor_id,
+                    spotify_video_publish_mode=getattr(
+                        config, "spotify_video_publish_mode", "draft"
+                    ),
+                    job_id=None,
+                )
+                logger.info(
+                    "Spotify video promote terminal_state=%s is_published=%s",
+                    promote_result.terminal_state,
+                    promote_result.is_published,
+                )
+            except Exception as promote_exc:  # noqa: BLE001
+                logger.warning(
+                    "Spotify video promote raised unexpectedly (upload already succeeded); "
+                    "anchorId=%s error=%s",
+                    result.anchor_episode_id,
+                    promote_exc,
+                )
         logger.info(
-            "Spotify video published as new episode draft anchorId=%s "
+            "Spotify video uploaded as new episode anchorId=%s "
             "(audio episode anchorId=%s untouched)",
             result.anchor_episode_id,
             anchor_id,

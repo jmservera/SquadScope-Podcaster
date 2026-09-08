@@ -115,6 +115,7 @@ class TestVideoDistributionConfig:
         monkeypatch.setenv("VIDEO_YOUTUBE_PRIVACY", "private")
         monkeypatch.setenv("VIDEO_SPOTIFY_RSS_ENABLED", "true")
         monkeypatch.setenv("VIDEO_SPOTIFY_RSS_FEED_PATH", "feeds/video.xml")
+        monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", "live")
         monkeypatch.setenv("VIDEO_BLOB_ARCHIVE_ENABLED", "false")
         monkeypatch.setenv("VIDEO_DISTRIBUTE_DRY_RUN", "true")
 
@@ -128,6 +129,7 @@ class TestVideoDistributionConfig:
         assert config.youtube_privacy == "private"
         assert config.spotify_rss_enabled is True
         assert config.spotify_rss_feed_path == "feeds/video.xml"
+        assert config.spotify_video_publish_mode == "live"
         assert config.blob_archive_enabled is False
         assert config.dry_run is True
 
@@ -139,6 +141,7 @@ class TestVideoDistributionConfig:
             "youtube_privacy": "public",
             "spotify_rss_enabled": True,
             "spotify_rss_feed_path": "feeds/test.xml",
+            "spotify_video_publish_mode": "live",
             "blob_archive_enabled": False,
             "dry_run": True,
         }
@@ -148,6 +151,7 @@ class TestVideoDistributionConfig:
         assert config.youtube_category_id == "22"
         assert config.youtube_privacy == "public"
         assert config.spotify_rss_enabled is True
+        assert config.spotify_video_publish_mode == "live"
         assert config.blob_archive_enabled is False
         assert config.dry_run is True
 
@@ -156,6 +160,7 @@ class TestVideoDistributionConfig:
         assert config.youtube_enabled is False
         assert config.youtube_playlist_id == ""
         assert config.spotify_rss_enabled is False
+        assert config.spotify_video_publish_mode == "draft"
         assert config.blob_archive_enabled is True
         assert config.dry_run is False
 
@@ -173,6 +178,33 @@ class TestVideoDistributionConfig:
         assert config.youtube_playlist_id == ""
         assert config.youtube_category_id == "28"
         assert config.youtube_privacy == "unlisted"
+        assert config.spotify_video_publish_mode == "draft"
+
+    def test_spotify_video_publish_mode_defaults_to_draft(self, monkeypatch):
+        monkeypatch.delenv("SPOTIFY_VIDEO_PUBLISH_MODE", raising=False)
+
+        config = VideoDistributionConfig.from_env()
+
+        assert config.spotify_video_publish_mode == "draft"
+
+    def test_spotify_video_publish_mode_from_env(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", "live")
+
+        config = VideoDistributionConfig.from_env()
+
+        assert config.spotify_video_publish_mode == "live"
+
+    def test_spotify_video_publish_mode_from_env_normalizes_whitespace_and_case(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", " Live ")
+
+        config = VideoDistributionConfig.from_env()
+
+        assert config.spotify_video_publish_mode == "live"
+
+    def test_from_payload_normalizes_spotify_video_publish_mode(self):
+        config = VideoDistributionConfig.from_payload({"spotify_video_publish_mode": " Live "})
+
+        assert config.spotify_video_publish_mode == "live"
 
 
 # --- YouTube Upload Tests ---
@@ -882,6 +914,7 @@ class TestSpotifyEpisodeUpload:
 
     def test_delegates_to_publish(self, video_file, monkeypatch):
         captured = {}
+        promote_calls = {}
 
         def fake_upload(
             path,
@@ -904,8 +937,25 @@ class TestSpotifyEpisodeUpload:
 
             return PublishResult(anchor_episode_id=12345, status="draft")
 
+        def fake_promote(video_anchor_id, audio_anchor_id=None, **kwargs):
+            promote_calls["video_anchor_id"] = video_anchor_id
+            promote_calls["audio_anchor_id"] = audio_anchor_id
+            promote_calls.update(kwargs)
+            from podcaster.publish import VideoPromoteResult
+
+            return VideoPromoteResult(
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                terminal_state="draft_gate_denied",
+                authorized=False,
+            )
+
         monkeypatch.setattr("podcaster.publish.upload_video_to_episode", fake_upload)
-        config = VideoDistributionConfig(spotify_upload_enabled=True)
+        monkeypatch.setattr("podcaster.publish.promote_spotify_video_draft", fake_promote)
+        config = VideoDistributionConfig(
+            spotify_upload_enabled=True,
+            spotify_video_publish_mode="live",
+        )
         assert (
             upload_to_spotify_episode(
                 video_file,
@@ -923,6 +973,9 @@ class TestSpotifyEpisodeUpload:
         assert captured["title"] == "My Show"
         assert captured["season_number"] == 2026
         assert captured["episode_number"] == 24
+        assert promote_calls["video_anchor_id"] == 12345
+        assert promote_calls["audio_anchor_id"] == 99
+        assert promote_calls["spotify_video_publish_mode"] == "live"
 
     def test_publish_failure_returns_false(self, video_file, monkeypatch):
         def fake_upload(
