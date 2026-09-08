@@ -153,6 +153,11 @@ param spotifySessionCookieKey string = ''
 @description('Whether reviewed jobs should auto-publish after synthesis.')
 param podcastAutoPublish string = 'false'
 
+@description('Allow Spotify publish to go live (public) immediately (#602). When false episodes land as drafts. Set to true only when an operator accepts the risk of unofficial Spotify cookie credentials.')
+param spotifyAllowLivePublish string = 'false'
+param spotifyVideoAllowLivePublish string = 'false'
+param spotifyVideoPublishMode string = 'draft'
+
 @description('Whether YouTube uploads are enabled for the video runner.')
 param videoYoutubeEnabled string = 'false'
 
@@ -162,7 +167,7 @@ param videoYoutubeRequired string = 'false'
 @description('YouTube upload category ID (default 28 = Science & Technology).')
 param videoYoutubeCategoryId string = '28'
 
-@description('YouTube draft upload privacy status (unlisted or private; default unlisted).')
+@description('YouTube upload privacy status (unlisted, private, or public; default unlisted). Use unlisted or private to hold for human review before public release.')
 param videoYoutubePrivacy string = 'unlisted'
 
 @description('YouTube playlist ID. Required when videoYoutubeEnabled is true.')
@@ -406,6 +411,9 @@ module aca 'modules/aca.bicep' = {
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     podcastAutoPublish: podcastAutoPublish
+    spotifyAllowLivePublish: spotifyAllowLivePublish
+    spotifyVideoAllowLivePublish: spotifyVideoAllowLivePublish
+    spotifyVideoPublishMode: spotifyVideoPublishMode
     deployVnet: deployVnet
     infrastructureSubnetId: deployVnet ? network.outputs.acaSubnetId : ''
   }
@@ -437,6 +445,8 @@ module acaVideo 'modules/aca-video.bicep' = {
     spotifySessionCookieDc: spotifySessionCookieDc
     spotifySessionCookieKey: spotifySessionCookieKey
     spotifyShowId: spotifyShowId
+    spotifyVideoAllowLivePublish: spotifyVideoAllowLivePublish
+    spotifyVideoPublishMode: spotifyVideoPublishMode
     videoYoutubeEnabled: videoYoutubeEnabled
     videoYoutubeRequired: videoYoutubeRequired
     videoYoutubeCategoryId: videoYoutubeCategoryId

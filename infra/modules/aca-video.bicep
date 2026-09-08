@@ -101,6 +101,12 @@ param spotifySessionCookieKey string = ''
 @description('Spotify show ID for video upload target.')
 param spotifyShowId string = ''
 
+@description('Whether Spotify video draft promotion to live is authorized. Defaults to false (disabled).')
+param spotifyVideoAllowLivePublish string = 'false'
+
+@description('Spotify video publish mode. "live" triggers promotion when SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH is also true. Defaults to "draft".')
+param spotifyVideoPublishMode string = 'draft'
+
 @description('Whether YouTube uploads are enabled for video distribution.')
 param videoYoutubeEnabled string = 'false'
 
@@ -110,7 +116,7 @@ param videoYoutubeRequired string = 'false'
 @description('YouTube upload category id (default 28 = Science & Technology).')
 param videoYoutubeCategoryId string = '28'
 
-@description('YouTube draft upload privacy status (unlisted or private; default unlisted).')
+@description('YouTube upload privacy status (unlisted, private, or public; default unlisted). Use unlisted or private to hold for review before public release.')
 param videoYoutubePrivacy string = 'unlisted'
 
 @description('YouTube playlist ID. Required when videoYoutubeEnabled is true.')
@@ -319,6 +325,14 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'SPOTIFY_SHOW_ID'
               value: spotifyShowId
+            }
+            {
+              name: 'SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH'
+              value: spotifyVideoAllowLivePublish
+            }
+            {
+              name: 'SPOTIFY_VIDEO_PUBLISH_MODE'
+              value: spotifyVideoPublishMode
             }
             {
               name: 'SP_DC'

@@ -65,6 +65,9 @@ _RETRY_BACKOFF_BASE = 2.0
 _POLL_INTERVAL = 5
 _POLL_MAX_ATTEMPTS = 60
 
+# Permanent automation exclusions — W35 historical drafts. NEVER promote these.
+_PROTECTED_ANCHOR_IDS: frozenset[int] = frozenset({124658107, 124658398, 124662333})
+
 
 @dataclass
 class PublishResult:
@@ -74,6 +77,22 @@ class PublishResult:
     status: str = "failed"  # "published" | "scheduled" | "draft" | "failed"
     error: str | None = None
     dry_run: bool = False
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class VideoPromoteResult:
+    """Terminal result of a Spotify video draft promotion attempt."""
+
+    anchor_episode_id: int | None = None
+    audio_anchor_id: int | None = None
+    terminal_state: str = "failed"
+    # Values: draft_gate_denied | blocked_protected_historical_draft | published |
+    #         already_published | manual_handoff_required | publication_state_unknown | failed
+    is_published: bool | None = None
+    spotify_episode_url: str | None = None
+    dry_run: bool = False
+    authorized: bool = False
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -146,6 +165,11 @@ def _live_publish_allowed() -> bool:
     this separate flag gates whether it may make an episode *public*.
     """
     return os.environ.get("SPOTIFY_ALLOW_LIVE_PUBLISH", "").strip().lower() in _TRUTHY
+
+
+def _spotify_video_allow_live_publish() -> bool:
+    """Whether video-specific live promotion is operator-authorized."""
+    return os.environ.get("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "").strip().lower() in _TRUTHY
 
 
 @functools.lru_cache(maxsize=1)
@@ -440,7 +464,7 @@ def _resolve_legacy_ids(session: requests.Session, show_id: str) -> tuple[str, s
         )
     station_id = _require_identity(data.get("stationId"), "stationId", show_id)
     user_id = _require_identity(data.get("userId"), "userId", show_id)
-    logger.info("Resolved show %s → station=%s user=%s", show_id, station_id, user_id)
+    logger.info("Resolved show %s → station=%s user=%s", show_id, station_id, "***")
     return station_id, user_id
 
 
@@ -1504,6 +1528,8 @@ def _publish_episode_live(
     session: requests.Session,
     anchor_id: int,
     publish_on: datetime | None = None,
+    *,
+    max_attempts: int = _MAX_RETRIES,
 ) -> None:
     """Step 7: Publish or schedule an episode."""
     url = f"{_BASE_URL}/v3/episodes/{anchor_id}/publish?isMumsCompatible=true"
@@ -1514,6 +1540,7 @@ def _publish_episode_live(
         session,
         "POST",
         url,
+        max_attempts=max_attempts,
         headers=_MUTATION_HEADERS,
         json=payload,
         timeout=15,
@@ -1523,6 +1550,399 @@ def _publish_episode_live(
         anchor_id,
         publish_on or "immediate",
     )
+
+
+def _get_episode_publication_state(
+    session: requests.Session,
+    anchor_id: int,
+    user_id: str | None = None,
+) -> bool | None:
+    """Return True when published, False when draft, or None when unknown.
+
+    Args:
+        session: Authenticated Spotify session.
+        anchor_id: Anchor episode ID to query.
+        user_id: Anchor userId for the query parameter required by Anchor v5.
+            When None the request omits userId and may return HTTP 400.
+    """
+
+    def _extract_state(payload: Any) -> bool | None:
+        candidates: list[dict[Any, Any]] = []
+        if isinstance(payload, dict):
+            candidates.append(payload)
+            for key in ("episode", "data", "item", "result"):
+                value = payload.get(key)
+                if isinstance(value, dict):
+                    candidates.append(value)
+        for candidate in candidates:
+            try:
+                return not _episode_is_draft(candidate)
+            except SpotifyDraftReconcileError:
+                continue
+        if isinstance(payload, dict):
+            for list_key in ("episodes", "items", "data"):
+                list_val = payload.get(list_key)
+                if not isinstance(list_val, list):
+                    continue
+                match = next(
+                    (
+                        episode
+                        for episode in list_val
+                        if isinstance(episode, dict)
+                        and str(
+                            episode.get(
+                                "id",
+                                episode.get(
+                                    "anchor_id",
+                                    episode.get("anchorId", episode.get("episodeId", "")),
+                                ),
+                            )
+                        )
+                        == str(anchor_id)
+                    ),
+                    None,
+                )
+                if match is not None:
+                    try:
+                        return not _episode_is_draft(match)
+                    except SpotifyDraftReconcileError:
+                        if "isPublished" in match:
+                            pub_val = match["isPublished"]
+                            if pub_val is True:
+                                return True
+                            if pub_val is False:
+                                return False
+                        continue
+        if isinstance(payload, dict):
+            logger.warning(
+                "Spotify episode %s publication state unknown; response keys=%s",
+                anchor_id,
+                _safe_keys(payload),
+            )
+        else:
+            logger.warning(
+                "Spotify episode %s publication state unknown; payload type=%s",
+                anchor_id,
+                type(payload).__name__,
+            )
+        return None
+
+    url = f"{_BASE_URL}/v3/episodes/{anchor_id}"
+    try:
+        resp = _retry_request(
+            session,
+            "GET",
+            url,
+            params=_mums_params(**{"userId": user_id} if user_id else {}),
+            timeout=15,
+        )
+    except SpotifyCredentialExpiredError:
+        raise
+    except SpotifyPublishError as exc:
+        logger.warning(
+            "Spotify episode %s publication state request failed: %s",
+            anchor_id,
+            type(exc).__name__,
+        )
+        return None
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        logger.warning(
+            "Spotify episode %s publication state response was not valid JSON",
+            anchor_id,
+        )
+        return None
+    return _extract_state(payload)
+
+
+def promote_spotify_video_draft(
+    video_anchor_id: int,
+    audio_anchor_id: int | None = None,
+    *,
+    spotify_video_publish_mode: str = "draft",
+    job_id: str | None = None,
+    run_id: str | None = None,
+    sp_dc: str | None = None,
+    sp_key: str | None = None,
+    show_id: str | None = None,
+) -> VideoPromoteResult:
+    """Promote the current job's Spotify video draft to live behind two gates."""
+
+    publish_attempted = False
+    video_auth_granted = False
+    w35_check = "not_run"
+
+    def _finalize(
+        result: VideoPromoteResult,
+        *,
+        video_auth_granted: bool = False,
+        w35_check: str = "not_run",
+    ) -> VideoPromoteResult:
+        logger.info(
+            "spotify_video_publication_terminal job_id=%s run_id=%s video_anchor_id=%s "
+            "audio_anchor_id=%s requested_mode=%s video_auth_granted=%s w35_check=%s "
+            "publish_attempted=%s final_state=%s is_published=%s",
+            job_id,
+            run_id,
+            video_anchor_id,
+            audio_anchor_id,
+            spotify_video_publish_mode,
+            video_auth_granted,
+            w35_check,
+            publish_attempted,
+            result.terminal_state,
+            result.is_published,
+        )
+        return result
+
+    if spotify_video_publish_mode != "live":
+        logger.info(
+            "Spotify video promotion skipped: requested_mode=%s video_anchor_id=%s",
+            spotify_video_publish_mode,
+            video_anchor_id,
+        )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="draft_gate_denied",
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                authorized=False,
+            )
+        )
+
+    if not _spotify_video_allow_live_publish():
+        logger.info(
+            "Spotify video promotion skipped: operator gate denied video_anchor_id=%s",
+            video_anchor_id,
+        )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="draft_gate_denied",
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                authorized=False,
+            )
+        )
+
+    video_auth_granted = True
+
+    if _is_dry_run():
+        logger.info(
+            "Spotify video promotion dry-run: leaving video episode %s as draft",
+            video_anchor_id,
+        )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="draft_gate_denied",
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                dry_run=True,
+                authorized=True,
+            ),
+            video_auth_granted=video_auth_granted,
+        )
+
+    if (
+        not isinstance(video_anchor_id, int)
+        or isinstance(video_anchor_id, bool)
+        or video_anchor_id <= 0
+    ):
+        logger.warning(
+            "Spotify video promotion denied: invalid video_anchor_id=%r",
+            video_anchor_id,
+        )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="draft_gate_denied",
+                anchor_episode_id=(
+                    video_anchor_id
+                    if isinstance(video_anchor_id, int) and not isinstance(video_anchor_id, bool)
+                    else None
+                ),
+                audio_anchor_id=audio_anchor_id,
+                authorized=True,
+                details={"reason": "invalid_video_anchor_id"},
+            ),
+            video_auth_granted=video_auth_granted,
+        )
+
+    if audio_anchor_id is not None and video_anchor_id == audio_anchor_id:
+        logger.warning(
+            "Spotify video promotion denied: video/audio anchor collision anchor_id=%s",
+            video_anchor_id,
+        )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="draft_gate_denied",
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                authorized=True,
+                details={"reason": "video_audio_anchor_collision"},
+            ),
+            video_auth_granted=video_auth_granted,
+        )
+
+    if video_anchor_id in _PROTECTED_ANCHOR_IDS:
+        w35_check = "blocked"
+        logger.warning(
+            "Spotify video promotion blocked for protected historical draft anchor_id=%s job_id=%s",
+            video_anchor_id,
+            job_id,
+        )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="blocked_protected_historical_draft",
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                authorized=True,
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
+        )
+
+    w35_check = "pass"
+
+    try:
+        if not show_id or not sp_dc or not sp_key:
+            env_show_id, env_sp_dc, env_sp_key = _get_credentials()
+            show_id = show_id or env_show_id
+            sp_dc = sp_dc or env_sp_dc
+            sp_key = sp_key or env_sp_key
+    except ValueError as exc:
+        logger.warning(
+            "Spotify video promotion requires manual handoff: credentials unavailable for %s",
+            video_anchor_id,
+        )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="manual_handoff_required",
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                authorized=True,
+                details={"error": str(exc)},
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
+        )
+
+    try:
+        session = _build_session(sp_dc, sp_key, show_id)
+        _station_id, user_id = _resolve_legacy_ids(session, show_id)
+        current_state = _get_episode_publication_state(
+            session,
+            video_anchor_id,
+            user_id=user_id,
+        )
+        if current_state is True:
+            logger.info(
+                "Spotify video episode %s already published; skipping promote POST",
+                video_anchor_id,
+            )
+            return _finalize(
+                VideoPromoteResult(
+                    terminal_state="already_published",
+                    anchor_episode_id=video_anchor_id,
+                    audio_anchor_id=audio_anchor_id,
+                    is_published=True,
+                    authorized=True,
+                ),
+                video_auth_granted=video_auth_granted,
+                w35_check=w35_check,
+            )
+        if current_state is None:
+            logger.warning(
+                "Spotify video episode %s publication state unknown before promote;"
+                " aborting to avoid blind mutation",
+                video_anchor_id,
+            )
+            return _finalize(
+                VideoPromoteResult(
+                    terminal_state="publication_state_unknown",
+                    anchor_episode_id=video_anchor_id,
+                    audio_anchor_id=audio_anchor_id,
+                    authorized=True,
+                ),
+                video_auth_granted=video_auth_granted,
+                w35_check=w35_check,
+            )
+
+        publish_attempted = True
+        _publish_episode_live(session, video_anchor_id, max_attempts=1)
+        final_state = _get_episode_publication_state(
+            session,
+            video_anchor_id,
+            user_id=user_id,
+        )
+        if final_state is True:
+            return _finalize(
+                VideoPromoteResult(
+                    terminal_state="published",
+                    anchor_episode_id=video_anchor_id,
+                    audio_anchor_id=audio_anchor_id,
+                    is_published=True,
+                    authorized=True,
+                ),
+                video_auth_granted=video_auth_granted,
+                w35_check=w35_check,
+            )
+        if final_state is None:
+            return _finalize(
+                VideoPromoteResult(
+                    terminal_state="publication_state_unknown",
+                    anchor_episode_id=video_anchor_id,
+                    audio_anchor_id=audio_anchor_id,
+                    is_published=None,
+                    authorized=True,
+                ),
+                video_auth_granted=video_auth_granted,
+                w35_check=w35_check,
+            )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="manual_handoff_required",
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                is_published=False,
+                authorized=True,
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
+        )
+    except SpotifyCredentialExpiredError as exc:
+        logger.warning(
+            "Spotify video promotion requires manual handoff: credentials expired for %s",
+            video_anchor_id,
+        )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="manual_handoff_required",
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                authorized=True,
+                details={"error": str(exc), "credentials_expired": True},
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
+        )
+    except SpotifyPublishError as exc:
+        logger.warning(
+            "Spotify video promotion requires manual handoff for %s: %s",
+            video_anchor_id,
+            type(exc).__name__,
+        )
+        return _finalize(
+            VideoPromoteResult(
+                terminal_state="manual_handoff_required",
+                anchor_episode_id=video_anchor_id,
+                audio_anchor_id=audio_anchor_id,
+                authorized=True,
+                details={"error": str(exc)},
+            ),
+            video_auth_granted=video_auth_granted,
+            w35_check=w35_check,
+        )
 
 
 def upload_video_to_episode(

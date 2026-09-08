@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import requests
@@ -16,6 +16,7 @@ from podcaster.publish import (
     _is_dry_run,
     _is_enabled,
     _live_publish_allowed,
+    _spotify_video_allow_live_publish,
     _warn_live_publish_downgraded_once,
     publish_episode,
     verify_spotify_auth,
@@ -29,6 +30,8 @@ def _clean_env(monkeypatch):
         "SPOTIFY_PUBLISH_ENABLED",
         "SPOTIFY_PUBLISH_DRY_RUN",
         "SPOTIFY_ALLOW_LIVE_PUBLISH",
+        "SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH",
+        "SPOTIFY_VIDEO_PUBLISH_MODE",
         "SPOTIFY_SHOW_ID",
         "SPOTIFY_CLIENT_ID",
         "SP_DC",
@@ -1452,6 +1455,356 @@ class TestUploadVideoToEpisode:
         assert result.anchor_episode_id is None
         create.assert_not_called()
         assert "reconcile" in result.error.lower()
+
+
+class TestVideoLivePublishGuard:
+    def test_video_gate_disabled_by_default(self):
+        assert _spotify_video_allow_live_publish() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "on", "TRUE"])
+    def test_video_gate_truthy_values(self, monkeypatch, value):
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", value)
+        assert _spotify_video_allow_live_publish() is True
+
+
+class TestPromoteSpotifyVideoDraft:
+    VIDEO_ANCHOR_ID = 321
+    AUDIO_ANCHOR_ID = 111
+    W35_PROTECTED_IDS = (124658107, 124658398, 124662333)
+
+    def _patch_dependencies(self, monkeypatch, pub, *, states=None, publish_side_effect=None):
+        session = MagicMock(name="spotify-session")
+        monkeypatch.setattr(pub, "_get_credentials", lambda: ("show-id", "sp_dc", "sp_key"))
+        monkeypatch.setattr(pub, "_build_session", MagicMock(return_value=session))
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        publish_live = MagicMock()
+        if publish_side_effect is not None:
+            publish_live.side_effect = publish_side_effect
+        monkeypatch.setattr(pub, "_publish_episode_live", publish_live)
+        state_reader = MagicMock(side_effect=states if states is not None else [False, True])
+        monkeypatch.setattr(pub, "_get_episode_publication_state", state_reader)
+        return session, publish_live, state_reader
+
+    def test_denies_non_live_mode_without_spotify_calls(self, monkeypatch):
+        import podcaster.publish as pub
+
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
+
+        result = pub.promote_spotify_video_draft(self.VIDEO_ANCHOR_ID)
+
+        assert result.terminal_state == "draft_gate_denied"
+        assert result.authorized is False
+        build.assert_not_called()
+
+    def test_denies_when_operator_gate_is_disabled(self, monkeypatch):
+        import podcaster.publish as pub
+
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "draft_gate_denied"
+        assert result.authorized is False
+        build.assert_not_called()
+
+    @pytest.mark.parametrize("protected_anchor_id", W35_PROTECTED_IDS)
+    def test_blocks_protected_anchor_before_session_creation(
+        self, monkeypatch, protected_anchor_id
+    ):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
+
+        result = pub.promote_spotify_video_draft(
+            protected_anchor_id,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "blocked_protected_historical_draft"
+        build.assert_not_called()
+
+    def test_rejects_audio_video_anchor_collision(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
+
+        result = pub.promote_spotify_video_draft(
+            self.AUDIO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "draft_gate_denied"
+        build.assert_not_called()
+
+    def test_already_published_skips_post(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        _session, publish_live, state_reader = self._patch_dependencies(
+            monkeypatch, pub, states=[True]
+        )
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "already_published"
+        assert result.is_published is True
+        assert result.spotify_episode_url is None
+        publish_live.assert_not_called()
+        state_reader.assert_called_once()
+
+    def test_publishes_once_and_confirms_state(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        session, publish_live, state_reader = self._patch_dependencies(
+            monkeypatch, pub, states=[False, True]
+        )
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "published"
+        assert result.is_published is True
+        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
+        assert state_reader.call_count == 2
+        assert state_reader.call_args_list == [
+            call(session, self.VIDEO_ANCHOR_ID, user_id="7"),
+            call(session, self.VIDEO_ANCHOR_ID, user_id="7"),
+        ]
+
+    def test_unconfirmed_readback_requires_manual_handoff(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        _session, publish_live, _state_reader = self._patch_dependencies(
+            monkeypatch, pub, states=[False, False]
+        )
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "manual_handoff_required"
+        assert result.is_published is False
+        publish_live.assert_called_once()
+
+    def test_unknown_readback_state_is_terminally_unknown(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        _session, publish_live, _state_reader = self._patch_dependencies(
+            monkeypatch, pub, states=[None]
+        )
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "publication_state_unknown"
+        assert result.is_published is None
+        publish_live.assert_not_called()
+
+    def test_publish_error_requires_manual_handoff(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        _session, publish_live, _state_reader = self._patch_dependencies(
+            monkeypatch,
+            pub,
+            states=[False],
+            publish_side_effect=pub.SpotifyPublishError("publish rejected"),
+        )
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "manual_handoff_required"
+        publish_live.assert_called_once()
+
+    def test_dry_run_denies_promotion_after_authorization(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "draft_gate_denied"
+        assert result.authorized is True
+        assert result.dry_run is True
+
+    def test_terminal_telemetry_emitted_once_per_call(self, monkeypatch, caplog):
+        import logging
+
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        self._patch_dependencies(monkeypatch, pub, states=[False, True, True])
+
+        with caplog.at_level(logging.INFO, logger="podcaster.publish"):
+            denied = pub.promote_spotify_video_draft(self.VIDEO_ANCHOR_ID)
+            published = pub.promote_spotify_video_draft(
+                self.VIDEO_ANCHOR_ID,
+                audio_anchor_id=self.AUDIO_ANCHOR_ID,
+                spotify_video_publish_mode="live",
+                job_id="job-664",
+                run_id="run-664",
+            )
+            already = pub.promote_spotify_video_draft(
+                self.VIDEO_ANCHOR_ID,
+                audio_anchor_id=self.AUDIO_ANCHOR_ID,
+                spotify_video_publish_mode="live",
+                job_id="job-664",
+                run_id="run-664-retry",
+            )
+
+        terminal_logs = [
+            record
+            for record in caplog.records
+            if "spotify_video_publication_terminal" in record.getMessage()
+        ]
+        assert denied.terminal_state == "draft_gate_denied"
+        assert published.terminal_state == "published"
+        assert already.terminal_state == "already_published"
+        assert len(terminal_logs) == 3
+        denied_message, published_message, already_message = [
+            record.getMessage() for record in terminal_logs
+        ]
+        assert "video_auth_granted=False" in denied_message
+        assert "w35_check=not_run" in denied_message
+        assert "video_auth_granted=True" in published_message
+        assert "w35_check=pass" in published_message
+        assert "video_auth_granted=True" in already_message
+        assert "w35_check=pass" in already_message
+
+    def test_terminal_telemetry_marks_blocked_w35_check(self, monkeypatch, caplog):
+        import logging
+
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+
+        with caplog.at_level(logging.INFO, logger="podcaster.publish"):
+            result = pub.promote_spotify_video_draft(
+                self.W35_PROTECTED_IDS[0],
+                audio_anchor_id=self.AUDIO_ANCHOR_ID,
+                spotify_video_publish_mode="live",
+                job_id="job-665",
+            )
+
+        terminal_logs = [
+            record.getMessage()
+            for record in caplog.records
+            if "spotify_video_publication_terminal" in record.getMessage()
+        ]
+        assert result.terminal_state == "blocked_protected_historical_draft"
+        assert len(terminal_logs) == 1
+        assert "video_auth_granted=True" in terminal_logs[0]
+        assert "w35_check=blocked" in terminal_logs[0]
+
+
+class TestGetEpisodePublicationState:
+    ANCHOR_ID = 125401976
+
+    def test_extract_state_handles_episodes_list_response_published(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [
+                    {"id": self.ANCHOR_ID, "isPublished": True, "isDraft": False},
+                ],
+                "audios": [],
+                "users": [],
+            }
+        )
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is True
+
+    def test_extract_state_matches_episodeId_field(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [{"episodeId": self.ANCHOR_ID, "isPublished": False}],
+                "audios": [],
+                "users": [],
+            }
+        )
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is False
+
+    def test_extract_state_null_isPublished_unknown(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [{"episodeId": self.ANCHOR_ID, "isPublished": None}],
+                "audios": [],
+                "users": [],
+            }
+        )
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is None
+
+    def test_extract_state_episodeId_match_already_published(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [{"episodeId": self.ANCHOR_ID, "isPublished": True}],
+                "audios": [],
+                "users": [],
+            }
+        )
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is True
+
+    def test_extract_state_no_episodeId_match_unknown(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "episodes": [{"episodeId": 999999, "isPublished": False}],
+                "audios": [],
+                "users": [],
+            }
+        )
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is None
 
 
 def _mock_error_resp(status_code: int, body: str) -> MagicMock:

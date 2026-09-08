@@ -106,6 +106,11 @@ param spotifySessionCookieKey string = ''
 @description('Whether jobs should auto-publish after synthesis.')
 param podcastAutoPublish string = 'false'
 
+@description('Allow Spotify publish to go live (public) immediately. When false (default) episodes land as drafts. Set to true only when an operator accepts the risk of unofficial Spotify cookie credentials (#602).')
+param spotifyAllowLivePublish string = 'false'
+param spotifyVideoAllowLivePublish string = 'false'
+param spotifyVideoPublishMode string = 'draft'
+
 @description('Whether VNet integration is enabled. Requires environment recreation if enabling on an existing deployment.')
 param deployVnet bool = false
 
@@ -321,6 +326,18 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'PODCAST_AUTO_PUBLISH'
               value: podcastAutoPublish
+            }
+            {
+              name: 'SPOTIFY_ALLOW_LIVE_PUBLISH'
+              value: spotifyAllowLivePublish
+            }
+            {
+              name: 'SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH'
+              value: spotifyVideoAllowLivePublish
+            }
+            {
+              name: 'SPOTIFY_VIDEO_PUBLISH_MODE'
+              value: spotifyVideoPublishMode
             }
             {
               name: 'SPOTIFY_PUBLISH_ENABLED'
