@@ -88,7 +88,7 @@ class VideoPromoteResult:
     audio_anchor_id: int | None = None
     terminal_state: str = "failed"
     # Values: draft_gate_denied | blocked_protected_historical_draft | published |
-    #         already_published | manual_handoff_required | publication_state_unknown
+    #         already_published | manual_handoff_required | publication_state_unknown | failed
     is_published: bool | None = None
     spotify_episode_url: str | None = None
     dry_run: bool = False

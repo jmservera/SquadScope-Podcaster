@@ -778,17 +778,27 @@ def upload_to_spotify_episode(
             logger.error("Spotify video upload failed: %s", result.error)
             return (False, None) if return_episode_id else False
         if result.anchor_episode_id is not None:
-            promote_result = promote_spotify_video_draft(
-                result.anchor_episode_id,
-                audio_anchor_id=anchor_id,
-                spotify_video_publish_mode=getattr(config, "spotify_video_publish_mode", "draft"),
-                job_id=None,
-            )
-            logger.info(
-                "Spotify video promote terminal_state=%s is_published=%s",
-                promote_result.terminal_state,
-                promote_result.is_published,
-            )
+            try:
+                promote_result = promote_spotify_video_draft(
+                    result.anchor_episode_id,
+                    audio_anchor_id=anchor_id,
+                    spotify_video_publish_mode=getattr(
+                        config, "spotify_video_publish_mode", "draft"
+                    ),
+                    job_id=None,
+                )
+                logger.info(
+                    "Spotify video promote terminal_state=%s is_published=%s",
+                    promote_result.terminal_state,
+                    promote_result.is_published,
+                )
+            except Exception as promote_exc:  # noqa: BLE001
+                logger.warning(
+                    "Spotify video promote raised unexpectedly (upload already succeeded); "
+                    "anchorId=%s error=%s",
+                    result.anchor_episode_id,
+                    promote_exc,
+                )
         logger.info(
             "Spotify video uploaded as new episode anchorId=%s "
             "(audio episode anchorId=%s untouched)",
