@@ -166,8 +166,7 @@ def test_reusable_deploy_workflow_threads_required_youtube_settings() -> None:
     )
     assert (
         "VIDEO_YOUTUBE_PRIVACY must be unlisted, private, or public"
-        " when YouTube uploads are enabled"
-        in workflow
+        " when YouTube uploads are enabled" in workflow
     )
 
 
