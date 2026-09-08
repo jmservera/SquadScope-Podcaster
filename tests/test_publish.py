@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import requests
@@ -1476,6 +1476,7 @@ class TestPromoteSpotifyVideoDraft:
         session = MagicMock(name="spotify-session")
         monkeypatch.setattr(pub, "_get_credentials", lambda: ("show-id", "sp_dc", "sp_key"))
         monkeypatch.setattr(pub, "_build_session", MagicMock(return_value=session))
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
         publish_live = MagicMock()
         if publish_side_effect is not None:
             publish_live.side_effect = publish_side_effect
@@ -1584,6 +1585,10 @@ class TestPromoteSpotifyVideoDraft:
         assert result.is_published is True
         publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
         assert state_reader.call_count == 2
+        assert state_reader.call_args_list == [
+            call(session, self.VIDEO_ANCHOR_ID, user_id="7"),
+            call(session, self.VIDEO_ANCHOR_ID, user_id="7"),
+        ]
 
     def test_unconfirmed_readback_requires_manual_handoff(self, monkeypatch):
         import podcaster.publish as pub
@@ -1608,7 +1613,7 @@ class TestPromoteSpotifyVideoDraft:
 
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
         _session, publish_live, _state_reader = self._patch_dependencies(
-            monkeypatch, pub, states=[None, None]
+            monkeypatch, pub, states=[None]
         )
 
         result = pub.promote_spotify_video_draft(
@@ -1619,7 +1624,7 @@ class TestPromoteSpotifyVideoDraft:
 
         assert result.terminal_state == "publication_state_unknown"
         assert result.is_published is None
-        publish_live.assert_called_once()
+        publish_live.assert_not_called()
 
     def test_publish_error_requires_manual_handoff(self, monkeypatch):
         import podcaster.publish as pub
