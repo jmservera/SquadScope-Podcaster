@@ -1555,6 +1555,7 @@ def _publish_episode_live(
 def _get_episode_publication_state(
     session: requests.Session,
     anchor_id: int,
+    user_id: str | None = None,
 ) -> bool | None:
     """Return True when published, False when draft, or None when unknown."""
 
@@ -1591,7 +1592,7 @@ def _get_episode_publication_state(
             session,
             "GET",
             url,
-            params=_mums_params(),
+            params=_mums_params(**{"userId": user_id} if user_id else {}),
             timeout=15,
         )
     except SpotifyCredentialExpiredError:
@@ -1787,7 +1788,12 @@ def promote_spotify_video_draft(
 
     try:
         session = _build_session(sp_dc, sp_key, show_id)
-        current_state = _get_episode_publication_state(session, video_anchor_id)
+        _station_id, user_id = _resolve_legacy_ids(session, show_id)
+        current_state = _get_episode_publication_state(
+            session,
+            video_anchor_id,
+            user_id=user_id,
+        )
         if current_state is True:
             logger.info(
                 "Spotify video episode %s already published; skipping promote POST",
@@ -1807,13 +1813,27 @@ def promote_spotify_video_draft(
         if current_state is None:
             logger.warning(
                 "Spotify video episode %s publication state unknown before promote;"
-                " proceeding cautiously",
+                " aborting to avoid blind mutation",
                 video_anchor_id,
+            )
+            return _finalize(
+                VideoPromoteResult(
+                    terminal_state="publication_state_unknown",
+                    anchor_episode_id=video_anchor_id,
+                    audio_anchor_id=audio_anchor_id,
+                    authorized=True,
+                ),
+                video_auth_granted=video_auth_granted,
+                w35_check=w35_check,
             )
 
         publish_attempted = True
         _publish_episode_live(session, video_anchor_id, max_attempts=1)
-        final_state = _get_episode_publication_state(session, video_anchor_id)
+        final_state = _get_episode_publication_state(
+            session,
+            video_anchor_id,
+            user_id=user_id,
+        )
         if final_state is True:
             return _finalize(
                 VideoPromoteResult(
