@@ -215,9 +215,6 @@ param uiAuthSecret string = ''
 @description('Deploy VNet + private endpoints for ACA ↔ Storage connectivity. Requires environment recreation if enabling on an existing deployment (VNet integration is a create-time-only setting).')
 param deployVnet bool = false
 
-@description('Enable public network access for Storage when deployVnet=false. OpenAI and ACR are public in local dev/test and private only in VNet mode (#598).')
-param allowPublicNetworkAccess bool = false
-
 @description('Deploy an Azure Container Registry for synthesis/API images (#129).')
 param deployAcr bool = true
 
@@ -230,7 +227,6 @@ var hasDeploymentPrincipalObjectId = !empty(deploymentPrincipalObjectId)
 var openAiCustomSubDomain = toLower(openAiAccountName)
 var openAiEndpoint = 'https://${openAiCustomSubDomain}.openai.azure.com/'
 var acrLoginServer = deployAcr ? '${toLower(acrName)}.azurecr.io' : containerRegistryServer
-var enablePublicNetworkAccess = !deployVnet && allowPublicNetworkAccess
 
 // VNet + private endpoints for ACA ↔ Storage connectivity (#225).
 // NOTE: VNet integration is a create-time-only setting for Container Apps environments.
@@ -259,9 +255,9 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     minimumTlsVersion: 'TLS1_2'
     networkAcls: {
       bypass: 'AzureServices'
-      defaultAction: enablePublicNetworkAccess ? 'Allow' : 'Deny'
+      defaultAction: deployVnet ? 'Deny' : 'Allow'
     }
-    publicNetworkAccess: enablePublicNetworkAccess ? 'Enabled' : 'Disabled'
+    publicNetworkAccess: deployVnet ? 'Disabled' : 'Enabled'
     supportsHttpsTrafficOnly: true
   }
 }
