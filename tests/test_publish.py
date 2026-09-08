@@ -1750,7 +1750,7 @@ class TestGetEpisodePublicationState:
 
         assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is True
 
-    def test_extract_state_handles_singleton_episodes_list_without_id_match(self):
+    def test_extract_state_handles_episodes_list_no_id_match_unknown(self):
         from podcaster import publish as pub
 
         session = MagicMock()
@@ -1762,7 +1762,7 @@ class TestGetEpisodePublicationState:
             }
         )
 
-        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is True
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is None
 
 
 def _mock_error_resp(status_code: int, body: str) -> MagicMock:

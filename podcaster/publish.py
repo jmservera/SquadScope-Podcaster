@@ -1599,8 +1599,6 @@ def _get_episode_publication_state(
                     ),
                     None,
                 )
-                if match is None and len(list_val) == 1 and isinstance(list_val[0], dict):
-                    match = list_val[0]
                 if match is not None:
                     try:
                         return not _episode_is_draft(match)
