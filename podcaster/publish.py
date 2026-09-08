@@ -464,7 +464,7 @@ def _resolve_legacy_ids(session: requests.Session, show_id: str) -> tuple[str, s
         )
     station_id = _require_identity(data.get("stationId"), "stationId", show_id)
     user_id = _require_identity(data.get("userId"), "userId", show_id)
-    logger.info("Resolved show %s → station=%s user=%s", show_id, station_id, user_id)
+    logger.info("Resolved show %s → station=%s user=%s", show_id, station_id, "***")
     return station_id, user_id
 
 
