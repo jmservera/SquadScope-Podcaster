@@ -864,6 +864,18 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
         # permitted host cannot bounce the worker onto an internal address.
         with safe_urlopen(url, timeout=DOG_FETCH_TIMEOUT_SECONDS) as resp:
             content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            transfer_encoding = (resp.headers.get("Transfer-Encoding") or "").lower()
+            content_encoding = (resp.headers.get("Content-Encoding") or "").strip()
+            content_length: int | None = None
+            if not content_encoding and "chunked" not in transfer_encoding:
+                raw_content_length = resp.headers.get("Content-Length")
+                if raw_content_length is not None:
+                    try:
+                        parsed_content_length = int(raw_content_length)
+                    except (TypeError, ValueError):
+                        parsed_content_length = None
+                    if parsed_content_length is not None and parsed_content_length >= 0:
+                        content_length = parsed_content_length
             # Read one byte past the cap so an oversized body is detectable
             # without ever buffering more than the cap plus one byte, however
             # large the response (or its Content-Length claim) actually is.
@@ -885,14 +897,25 @@ def _fetch_dog_logo_remote(url: str, cache_dir: Path) -> Path:
         )
         raise (_transient(message, kind) if transient else _permanent(message, kind)) from exc
 
-    if not data:
-        logger.warning("DOG logo at %s was empty", redacted)
-        raise _permanent(f"DOG logo at {redacted} was an empty body", "empty_body")
     if len(data) > DOG_MAX_LOGO_BYTES:
         logger.warning("DOG logo at %s exceeds the %d byte limit", redacted, DOG_MAX_LOGO_BYTES)
         raise _permanent(
             f"DOG logo at {redacted} exceeds the {DOG_MAX_LOGO_BYTES} byte limit", "oversized"
         )
+    if content_length is not None and len(data) < content_length:
+        logger.warning(
+            "DOG logo at %s ended early: read %d bytes with trustworthy Content-Length %d",
+            redacted,
+            len(data),
+            content_length,
+        )
+        raise _transient(
+            f"DOG logo at {redacted} ended before the declared Content-Length was fully read",
+            "truncated_response",
+        )
+    if not data:
+        logger.warning("DOG logo at %s was empty", redacted)
+        raise _permanent(f"DOG logo at {redacted} was an empty body", "empty_body")
 
     # Decide on the bytes, not the header.  Only the container header is parsed
     # (no pixel decode), so this stays O(1) even for a declared-gigapixel image.
