@@ -84,6 +84,8 @@ The smoke check sends the shared SquadScope object-shaped fixture and verifies H
 
 The deployment workflow is `.github/workflows/deploy-azure.yml`. It uses the GitHub environment named exactly `prod`, authenticates with GitHub OIDC via `azure/login`, deploys Bicep from `infra/main.bicep` (ACA + Storage + OpenAI), and prints only non-secret integration values.
 
+`deploy-azure.yml` and `release.yml` both expose `storage_public_network_access`. Leave it at the default `Disabled` to preserve the current production Storage posture; set it to `Enabled` only for a fresh install that intentionally keeps Storage public and does not enable VNet/private endpoints.
+
 Required `prod` environment variables:
 
 - `AZURE_CLIENT_ID`

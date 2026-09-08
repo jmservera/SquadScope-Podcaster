@@ -347,6 +347,11 @@ jobs:
             exit 1
           fi
 
+          deploy_vnet_normalized="$(printf '%s' "$DEPLOY_VNET" | tr '[:upper:]' '[:lower:]')"
+          case "$deploy_vnet_normalized" in
+            true|false) DEPLOY_VNET="$deploy_vnet_normalized" ;;
+            *) echo "INVALID deployVnet='$DEPLOY_VNET'; must be true or false"; exit 1 ;;
+          esac
           # Validate storagePublicNetworkAccess before ARM deploy (#675)
           case "$STORAGE_PUBLIC_NETWORK_ACCESS" in
             Enabled|Disabled) ;;

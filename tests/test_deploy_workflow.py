@@ -5,12 +5,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/deploy-azure.yml"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 REUSABLE_WORKFLOW = ROOT / ".github/workflows/reusable-deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
 
 
 def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
+
+
+def _release_workflow_text() -> str:
+    return RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
 
 def _reusable_workflow_text() -> str:
@@ -305,6 +310,46 @@ def test_deploy_workflow_threads_opt_in_openai_flag() -> None:
     workflow = _workflow_text() + "\n" + _reusable_workflow_text()
 
     assert "deploy_openai:" in workflow
+
+
+def test_reusable_deploy_workflow_normalizes_and_validates_deploy_vnet() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert 'deploy_vnet_normalized="$(printf \'%s\' "$DEPLOY_VNET" | tr \'[:upper:]\' \'[:lower:]\')"' in workflow
+    assert 'case "$deploy_vnet_normalized" in' in workflow
+    assert """*) echo "INVALID deployVnet='$DEPLOY_VNET'; must be true or false"; exit 1 ;;""" in workflow
+    assert 'if [ "$DEPLOY_VNET" = "true" ] && [ "$STORAGE_PUBLIC_NETWORK_ACCESS" = "Enabled" ]; then' in workflow
+
+
+def test_reusable_deploy_workflow_keeps_exact_storage_public_network_access_validation() -> None:
+    workflow = _reusable_workflow_text()
+
+    assert 'case "$STORAGE_PUBLIC_NETWORK_ACCESS" in' in workflow
+    assert "Enabled|Disabled" in workflow
+    assert (
+        """*) echo "INVALID storagePublicNetworkAccess='$STORAGE_PUBLIC_NETWORK_ACCESS'; """
+        """must be Enabled or Disabled"; exit 1 ;;"""
+    ) in workflow
+
+
+def test_deploy_workflow_threads_storage_network_inputs() -> None:
+    workflow = _workflow_text()
+
+    assert "storage_public_network_access:" in workflow
+    assert "options: ['Disabled', 'Enabled']" in workflow
+    assert "deploy_vnet: ${{ inputs.deploy_vnet }}" in workflow
+    assert "storage_public_network_access: ${{ inputs.storage_public_network_access }}" in workflow
+
+
+def test_release_workflow_threads_storage_network_inputs_through_both_deploy_calls() -> None:
+    workflow = _release_workflow_text()
+
+    assert "deploy_vnet:" in workflow
+    assert "storage_public_network_access:" in workflow
+    assert workflow.count("deploy_vnet: ${{ inputs.deploy_vnet }}") == 2
+    assert workflow.count(
+        "storage_public_network_access: ${{ inputs.storage_public_network_access }}"
+    ) == 2
 
 
 def test_reusable_deploy_workflow_has_prod_environment_concurrency_and_output() -> None:
