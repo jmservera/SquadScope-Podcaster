@@ -1784,7 +1784,8 @@ def promote_spotify_video_draft(
             )
         if current_state is None:
             logger.warning(
-                "Spotify video episode %s publication state unknown before promote; proceeding cautiously",
+                "Spotify video episode %s publication state unknown before promote;"
+                " proceeding cautiously",
                 video_anchor_id,
             )
 
