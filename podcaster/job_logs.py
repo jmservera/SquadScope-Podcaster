@@ -106,6 +106,7 @@ class LogRecord:
     task_id: str | None = None
     stage: str | None = None
     context: dict[str, Any] | None = None
+    dedupe_key: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -214,6 +215,7 @@ def emit_log(
     stage: str | None = None,
     context: dict[str, Any] | None = None,
     at: datetime | None = None,
+    dedupe_key: str | None = None,
 ) -> LogRecord | None:
     """Append a structured log record to the job's durable store.
 
@@ -230,6 +232,11 @@ def emit_log(
     def _apply(content: bytes | None) -> bytes:
         document = _load_document(content, job_id)
         records = document["records"]
+        if dedupe_key is not None and any(
+            isinstance(existing, dict) and existing.get("dedupe_key") == dedupe_key
+            for existing in records
+        ):
+            return content or b""
         next_seq = _next_seq(records)
         record = LogRecord(
             seq=next_seq,
@@ -239,6 +246,7 @@ def emit_log(
             task_id=task_id,
             stage=stage,
             context=context,
+            dedupe_key=dedupe_key,
         ).to_dict()
         records.append(record)
         if len(records) > MAX_RECORDS:

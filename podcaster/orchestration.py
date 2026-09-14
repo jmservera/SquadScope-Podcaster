@@ -13,6 +13,14 @@ from podcaster.config import SpotifyPublishConfig
 from podcaster.costs import cost_gate_blockers
 from podcaster.generation import manifest_bytes
 from podcaster.music import TRACK_ATTRIBUTION
+from podcaster.publication_state import (
+    DRAFT_CREATED,
+    MANUAL_HANDOFF_REQUIRED,
+    PUBLICATION_UNKNOWN,
+    PUBLISHED,
+    new_publish_run_id,
+    publication_identity,
+)
 from podcaster.publish import PublishResult, publish_episode
 from podcaster.review import APPROVED, apply_review_decision
 from podcaster.sanitization import normalize_weekly_url
@@ -114,7 +122,7 @@ def publish_staged_job(
     try:
         audio_paths, cleanup_dir = _prepare_audio_files(backend, manifest, job_id)
         try:
-            publish_result = _publish_from_manifest(audio_paths, manifest)
+            publish_result = _publish_from_manifest(audio_paths, manifest, backend, job_id)
         finally:
             if cleanup_dir is not None:
                 shutil.rmtree(cleanup_dir, ignore_errors=True)
@@ -197,6 +205,8 @@ def _prepare_audio_files(
 def _publish_from_manifest(
     audio_paths: tuple[Path, Path | None],
     manifest: dict[str, Any],
+    storage: StorageBackend | None = None,
+    job_id: str | None = None,
 ) -> PublishResult:
     mp3_path, wav_path = audio_paths
     request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
@@ -212,19 +222,30 @@ def _publish_from_manifest(
     )
     description = _show_notes_text(manifest, mp3_path, wav_path)
     year, week = _parse_week(str(request.get("week") or ""))
-    return publish_episode(
-        mp3_path,
-        title,
-        description,
-        spotify_publish_config=spotify_publish_config,
-        year=year,
-        week=week,
-        article_title=(
+    publishing = manifest.get("publishing")
+    publish_run_id = publishing.get("publish_run_id") if isinstance(publishing, dict) else None
+    has_identity_inputs = bool(
+        isinstance(request.get("article_sha256"), str) and request.get("article_sha256")
+    )
+    identity = (
+        publication_identity(manifest, job_id, str(publish_run_id or ""))
+        if storage is not None and job_id is not None and has_identity_inputs
+        else None
+    )
+    kwargs: dict[str, Any] = {
+        "spotify_publish_config": spotify_publish_config,
+        "year": year,
+        "week": week,
+        "article_title": (
             request.get("article_title") if isinstance(request.get("article_title"), str) else None
         ),
-        wav_path=wav_path,
-        language=_request_language(manifest),
-    )
+        "wav_path": wav_path,
+        "language": _request_language(manifest),
+    }
+    if storage is not None and identity is not None:
+        kwargs["publication_storage"] = storage
+        kwargs["publication_identity_context"] = identity
+    return publish_episode(mp3_path, title, description, **kwargs)
 
 
 def _show_notes_text(manifest: dict[str, Any], mp3_path: Path, wav_path: Path | None) -> str:
@@ -292,6 +313,13 @@ def _mark_publish_requested(
     publishing["packet_ready"] = not _audio_pending(updated)
     publishing["mode"] = "auto" if actor == AUTO_REVIEWER else "review_gate"
     publishing["auto_publish_enabled"] = auto_publish_enabled()
+    request = updated.get("request")
+    request_run_id = request.get("publish_run_id") if isinstance(request, dict) else None
+    publishing["publish_run_id"] = (
+        request_run_id
+        if isinstance(request_run_id, str) and request_run_id.isdecimal()
+        else new_publish_run_id()
+    )
     publishing["result"] = {
         "status": "requested" if not blocked_by else "blocked",
         "requested_at": requested_at,
@@ -300,6 +328,8 @@ def _mark_publish_requested(
         "anchor_episode_id": None,
         "dry_run": False,
         "error": None,
+        "outcome": None,
+        "publish_run_id": publishing["publish_run_id"],
     }
     readiness_checks["editorial_review_complete"] = _review_approved(updated)
     readiness_checks["real_audio_available"] = not _audio_pending(updated)
@@ -329,7 +359,12 @@ def _apply_publish_result(
     publishing = updated.setdefault("publishing", {})
     blocked_by = list(_publish_blockers(updated))
     publishing["blocked_by"] = blocked_by
-    publishing["eligible"] = publish_result.status == "failed" and not blocked_by
+    publishing["eligible"] = (
+        publish_result.status == "failed"
+        and publish_result.outcome
+        not in (PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED, DRAFT_CREATED, PUBLISHED)
+        and not blocked_by
+    )
     publishing["packet_ready"] = not _audio_pending(updated)
     publishing["mode"] = "auto" if actor == AUTO_REVIEWER else "review_gate"
     publishing["auto_publish_enabled"] = auto_publish_enabled()
@@ -342,6 +377,8 @@ def _apply_publish_result(
         "dry_run": publish_result.dry_run,
         "error": publish_result.error,
         "details": publish_result.details,
+        "outcome": publish_result.outcome,
+        "publish_run_id": publish_result.publish_run_id,
     }
 
     lifecycle = updated.setdefault("lifecycle", {})

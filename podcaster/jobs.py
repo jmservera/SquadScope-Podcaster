@@ -639,6 +639,9 @@ def _request_metadata(
         },
         "replay": replay_metadata,
     }
+    for field in ("publish_run_id", "manifest_sha256"):
+        if field in payload:
+            request[field] = payload[field]
     for field in (
         "backchannels",
         "description",

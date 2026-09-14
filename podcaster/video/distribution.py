@@ -30,6 +30,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from podcaster.publication_state import (
+    DRAFT_CREATED,
+    MANUAL_HANDOFF_REQUIRED,
+    PUBLICATION_UNKNOWN,
+    PUBLISHED,
+    outcome_from_spotify_terminal_state,
+)
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
 from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
 
@@ -168,6 +175,8 @@ class DistributionResult:
     youtube_oauth_error_subtype: str | None = None
     youtube_playlist_id: str | None = None
     youtube_playlist_succeeded: bool = False
+    publish_run_id: str | None = None
+    provider_outcomes: dict[str, str] = field(default_factory=dict)
 
     @property
     def succeeded(self) -> bool:
@@ -749,6 +758,8 @@ def upload_to_spotify_episode(
     season_number: int | None = None,
     episode_number: int | None = None,
     return_episode_id: bool = False,
+    job_id: str | None = None,
+    publish_run_id: str | None = None,
 ) -> bool | tuple[bool, int | None, str | None]:
     """Publish the MP4 as a NEW separate Spotify episode draft (#340).
 
@@ -788,7 +799,8 @@ def upload_to_spotify_episode(
                     spotify_video_publish_mode=getattr(
                         config, "spotify_video_publish_mode", "draft"
                     ),
-                    job_id=None,
+                    job_id=job_id,
+                    run_id=publish_run_id,
                 )
                 promote_terminal_state = promote_result.terminal_state
                 logger.info(
@@ -936,6 +948,7 @@ def distribute_video(
     language: str = "en",
     published: Mapping[str, Any] | None = None,
     on_published: Callable[[str, dict[str, Any]], None] | None = None,
+    publish_run_id: str | None = None,
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
@@ -964,7 +977,7 @@ def distribute_video(
     reconcile key); Spotify closes that window by reconciling drafts by title
     before creating one.
     """
-    result = DistributionResult()
+    result = DistributionResult(publish_run_id=publish_run_id)
     prior_published = published or {}
     youtube_required_failure: YouTubeDeliveryError | None = None
 
@@ -1011,13 +1024,18 @@ def distribute_video(
     if (
         youtube_active
         and isinstance(youtube_record, Mapping)
-        and youtube_record.get("status") == "published"
+        and (
+            youtube_record.get("status") == "published"
+            or youtube_record.get("outcome")
+            in (DRAFT_CREATED, PUBLISHED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
+        )
     ):
         video_id = youtube_record.get("video_id")
         if video_id is not None:
             result.youtube_id = str(video_id)
             result.youtube_url = f"https://www.youtube.com/watch?v={result.youtube_id}"
         logger.info("YouTube upload skipped for job_id=%s: already published", job_id)
+        result.provider_outcomes["youtube"] = str(youtube_record.get("outcome") or DRAFT_CREATED)
     elif youtube_active:
         try:
             video_id, video_url = upload_to_youtube(
@@ -1041,12 +1059,15 @@ def distribute_video(
                         retryable=False,
                     )
             else:
+                result.provider_outcomes["youtube"] = DRAFT_CREATED
                 if on_published is not None and not config.dry_run:
                     on_published(
                         "youtube",
                         {
                             "status": "published",
+                            "outcome": DRAFT_CREATED,
                             "video_id": video_id,
+                            "publish_run_id": publish_run_id,
                             "at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
@@ -1162,6 +1183,8 @@ def distribute_video(
                         "spotify_rss",
                         {
                             "status": "published",
+                            "outcome": PUBLISHED,
+                            "publish_run_id": publish_run_id,
                             "at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
@@ -1171,12 +1194,18 @@ def distribute_video(
     # 4. Publish MP4 as a NEW separate Spotify episode draft (#340)
     if config.spotify_upload_enabled:
         spotify_upload_record = prior_published.get("spotify_upload")
-        if (
-            isinstance(spotify_upload_record, Mapping)
-            and spotify_upload_record.get("status") == "published"
+        if isinstance(spotify_upload_record, Mapping) and (
+            spotify_upload_record.get("status") == "published"
+            or spotify_upload_record.get("outcome")
+            in (DRAFT_CREATED, PUBLISHED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
         ):
-            result.spotify_upload_updated = True
+            spotify_upload_outcome = str(spotify_upload_record.get("outcome") or DRAFT_CREATED)
+            result.spotify_upload_updated = spotify_upload_outcome not in (
+                PUBLICATION_UNKNOWN,
+                MANUAL_HANDOFF_REQUIRED,
+            )
             logger.info("Spotify video upload skipped for job_id=%s: already published", job_id)
+            result.provider_outcomes["spotify_upload"] = spotify_upload_outcome
         else:
             upload_result = upload_to_spotify_episode(
                 video_path,
@@ -1187,6 +1216,8 @@ def distribute_video(
                 season_number=season_number,
                 episode_number=episode_number,
                 return_episode_id=True,
+                job_id=job_id,
+                publish_run_id=publish_run_id,
             )
             if isinstance(upload_result, tuple) and len(upload_result) == 3:
                 upload_ok, spotify_episode_id, promote_state = upload_result
@@ -1204,12 +1235,23 @@ def distribute_video(
                 if promote_state is not None
                 else None
             )
+            if not upload_ok:
+                spotify_outcome = PUBLICATION_UNKNOWN
+            elif promote_state is not None:
+                spotify_outcome = (
+                    outcome_from_spotify_terminal_state(promote_state) or PUBLICATION_UNKNOWN
+                )
+            else:
+                spotify_outcome = DRAFT_CREATED
+            result.provider_outcomes["spotify_upload"] = spotify_outcome
             if upload_ok and on_published is not None and not config.dry_run:
                 on_published(
                     "spotify_upload",
                     {
                         "status": "published",
+                        "outcome": spotify_outcome,
                         "episode_id": spotify_episode_id,
+                        "publish_run_id": publish_run_id,
                         "promote_terminal_state": promote_state,
                         "is_published": result.spotify_video_is_published,
                         "at": datetime.now(timezone.utc).isoformat(),
@@ -1241,7 +1283,13 @@ def distribute_video(
     )
     targets_succeeded = sum(
         [
-            result.youtube_id is not None if youtube_active else False,
+            (
+                result.youtube_id is not None
+                and result.provider_outcomes.get("youtube")
+                not in (PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
+            )
+            if youtube_active
+            else False,
             result.spotify_rss_updated if config.spotify_rss_enabled else False,
             result.spotify_upload_updated if config.spotify_upload_enabled else False,
             result.blob_path is not None if config.blob_archive_enabled else False,

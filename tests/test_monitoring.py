@@ -265,6 +265,63 @@ class TestGetJob:
         resp = client.get("/api/jobs/bad-job")
         assert resp.status_code == 500
 
+    def test_job_detail_exposes_canonical_publication_outcome(self, client, storage):
+        job_id = "podcast-2026-W24-evidence"
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json",
+            json.dumps(_make_manifest(job_id)).encode(),
+            "application/json",
+        )
+        storage.put_bytes(
+            f"jobs/{job_id}/publication-evidence.json",
+            json.dumps(
+                {
+                    "schema_version": "squadscope-podcaster-publication-evidence-v1",
+                    "job_id": job_id,
+                    "records": [
+                        {
+                            "seq": 1,
+                            "platform": "spotify",
+                            "media_kind": "audio",
+                            "outcome": "publication_unknown",
+                        }
+                    ],
+                }
+            ).encode(),
+            "application/json",
+        )
+        data = client.get(f"/api/jobs/{job_id}").json()
+        assert data["publication_outcome"] == "publication_unknown"
+        assert data["publication_outcomes"]["spotify:audio"]["outcome"] == ("publication_unknown")
+        assert len(data["publication_evidence"]) == 1
+
+    def test_job_detail_legacy_manifest_remains_compatible(self, client, storage):
+        job_id = "podcast-2026-W24-legacy"
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json",
+            json.dumps(_make_manifest(job_id)).encode(),
+            "application/json",
+        )
+        data = client.get(f"/api/jobs/{job_id}").json()
+        assert data["publication_outcome"] is None
+        assert data["publication_evidence"] is None
+
+    def test_corrupt_or_absent_evidence_does_not_500(self, client, storage):
+        job_id = "podcast-2026-W24-corrupt-evidence"
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json",
+            json.dumps(_make_manifest(job_id)).encode(),
+            "application/json",
+        )
+        storage.put_bytes(
+            f"jobs/{job_id}/publication-evidence.json",
+            b"{broken",
+            "application/json",
+        )
+        response = client.get(f"/api/jobs/{job_id}")
+        assert response.status_code == 200
+        assert response.json()["publication_outcome"] is None
+
 
 # ---------------------------------------------------------------------------
 # Tests: GET /api/jobs/{id}/logs

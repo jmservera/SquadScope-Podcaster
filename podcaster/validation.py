@@ -125,6 +125,17 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
         if not isinstance(article_sha256, str) or not SHA256_RE.match(article_sha256):
             errors.append("article_sha256 must be a lowercase hex SHA-256 digest")
 
+    manifest_sha256 = payload.get("manifest_sha256")
+    if manifest_sha256 is not None:
+        if not isinstance(manifest_sha256, str) or not SHA256_RE.match(manifest_sha256):
+            errors.append("manifest_sha256 must be a lowercase hex SHA-256 digest")
+
+    publish_run_id = payload.get("publish_run_id")
+    if publish_run_id is not None and (
+        not isinstance(publish_run_id, str) or not publish_run_id or not publish_run_id.isdecimal()
+    ):
+        errors.append("publish_run_id must be a non-empty decimal string")
+
     source_artifacts = payload.get("source_artifacts")
     if source_artifacts is not None:
         if not isinstance(source_artifacts, list):

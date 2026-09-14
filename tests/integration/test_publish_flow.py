@@ -7,7 +7,7 @@ import pytest
 import podcaster.orchestration as orchestration
 from podcaster.config import SpotifyPublishConfig
 from podcaster.music import TRACK_ATTRIBUTION
-from podcaster.publish import PublishResult, publish_episode
+from podcaster.publish import publish_episode
 from podcaster.video.distribution import (
     DistributionResult,
     VideoDistributionConfig,
@@ -32,7 +32,7 @@ def test_audio_only_publish_flow_calls_publish_episode(
                 "kwargs": kwargs,
             }
         )
-        return PublishResult(status="published", dry_run=True)
+        return orchestration.PublishResult(status="published", dry_run=True)
 
     monkeypatch.setattr(orchestration, "publish_episode", fake_publish_episode)
 
@@ -145,7 +145,7 @@ def test_audio_and_video_publish_paths_are_independent(
         ),
     )
 
-    assert isinstance(publish_result, PublishResult)
+    assert publish_result.status == "published"
     assert publish_result.dry_run is True
     assert publish_result.status == "published"
     # MP4 is preferred when present alongside audio

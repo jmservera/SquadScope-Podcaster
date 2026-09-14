@@ -463,6 +463,10 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
             "article_title": "Skills go vertical",
         }
     ]
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    assert persisted["generation"]["publish_result"]["status"] == "draft"
+    assert persisted["generation"]["publish_result"]["outcome"] == "draft_created"
+    assert persisted["generation"]["publish_result"]["publish_run_id"]
 
 
 def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(monkeypatch):

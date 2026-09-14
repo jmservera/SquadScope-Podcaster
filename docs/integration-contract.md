@@ -22,8 +22,10 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 ```json
 {
   "week": "2026-W23",
+  "publish_run_id": "12345",
   "article_url": "https://squadscope.example/articles/2026-w23",
   "article_sha256": "optional-lowercase-hex-sha256",
+  "manifest_sha256": "optional-lowercase-hex-sha256",
   "article_title": "This Week in Tech: AI and Open Source",
   "article_content": "Full article text here (optional — enables LLM script generation)",
   "source_artifacts": [
@@ -65,8 +67,10 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 ### Fields
 
 - `week` (required string): Issue or ISO week identifier.
+- `publish_run_id` (optional decimal string): Exact SquadScope crawl-and-publish run identifier. When supplied with `manifest_sha256`, it is persisted unchanged as part of the cross-repository publication identity.
 - `article_url` (required string): Published article URL from SquadScope.
 - `article_sha256` (optional string): SHA-256 digest of article artifact/content.
+- `manifest_sha256` (optional string): SHA-256 digest of the exact SquadScope publish manifest bytes. It is additive for legacy callers and required for canonical reconciliation evidence.
 - `article_title` (optional string): Article title for script generation context.
 - `article_content` (optional string): Full article text. When provided and the Azure OpenAI chat endpoint is configured, the system generates a dynamic LLM-based script and extracts real claims from the article instead of producing deterministic placeholders.
 - `source_artifacts` (optional array): Supporting artifact references. For backward compatibility, each item may be either a string reference or an object reference emitted by SquadScope publish manifests.
@@ -214,3 +218,22 @@ The top-level response keys remain stable for SquadScope compatibility. Addition
 - `artifact_access.model=private_operator_path`, retention/cleanup timestamps, and audit correlation metadata
 - artifact `content_type`, `size_bytes`, and `sha256`
 - `observability.correlation_id` and safe log field names only
+
+## Provider delivery outcomes
+
+Provider delivery state is additive and does not change the stable top-level
+response keys or legacy status values. Current manifests and authenticated job
+detail responses may expose `outcome`/`publication_outcome` using exactly:
+`uploaded`, `draft_created`, `manual_handoff_required`, `published`, or
+`publication_unknown`.
+
+`published` requires independent provider read-back. A successful upload that
+remains non-public is `draft_created`; an ambiguous mutation is
+`publication_unknown` and blocks automatic repetition. Accepted jobs may also
+have `jobs/{job_id}/publication-evidence.json`, an atomic immutable transition
+log retaining the newest 100 records. Legacy manifests without this document
+remain readable.
+
+Rollback does not delete provider artifacts. Disable consumption of the
+additive fields or revert the implementation while continuing to treat legacy
+fields as authoritative.

@@ -36,6 +36,19 @@ from podcaster.failure_reporting import report_failure
 from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE, _plain_text_from_html
 from podcaster.music import TRACK_ATTRIBUTION
 from podcaster.pipeline_lock import PIPELINE_VIDEO, claim_pipeline
+from podcaster.publication_state import (
+    MANUAL_HANDOFF_REQUIRED,
+    PUBLICATION_UNKNOWN,
+    PublicationIdentity,
+    PublicationStateError,
+    append_evidence,
+    emit_publication_signal,
+    latest_outcomes,
+    new_publish_run_id,
+    publication_identity,
+    read_evidence,
+    retry_is_blocked,
+)
 from podcaster.queue import (
     QueueBackend,
     QueueMessage,
@@ -514,6 +527,94 @@ def _record_video_publish(
             "failed to record video publish state for job_id=%s platform=%s",
             job_id,
             platform,
+            exc_info=True,
+        )
+
+
+def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
+    from podcaster.generation import manifest_bytes
+
+    captured: dict[str, str] = {}
+
+    def _apply(content: bytes | None) -> bytes:
+        if content is None:
+            raise TransientVideoError(f"no staged manifest for job_id={job_id}")
+        document = json.loads(content.decode("utf-8"))
+        generation = document.setdefault("generation", {})
+        existing = generation.get("video_publish_run_id")
+        request = document.get("request")
+        request_run_id = request.get("publish_run_id") if isinstance(request, dict) else None
+        run_id = (
+            str(existing)
+            if isinstance(existing, str) and existing
+            else request_run_id
+            if isinstance(request_run_id, str) and request_run_id.isdecimal()
+            else new_publish_run_id()
+        )
+        generation["video_publish_run_id"] = run_id
+        captured["run_id"] = run_id
+        return manifest_bytes(document)
+
+    storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+    return captured["run_id"]
+
+
+def _record_video_publication(
+    storage: StorageBackend,
+    job_id: str,
+    identity: PublicationIdentity | None,
+    platform: str,
+    record: dict[str, Any],
+) -> None:
+    _record_video_publish(storage, job_id, platform, record)
+    outcome = record.get("outcome")
+    if identity is None or not isinstance(outcome, str):
+        return
+    provider_artifact_id = record.get("video_id") or record.get("episode_id")
+    evidence_platform = "spotify" if platform.startswith("spotify") else platform
+    try:
+        append_evidence(
+            storage,
+            identity,
+            platform=evidence_platform,
+            media_kind="video",
+            operation="distribution",
+            outcome=outcome,
+            provider_artifact_id=provider_artifact_id,
+            mutation_attempted=True,
+            confirmation_source="provider_readback" if outcome == "published" else None,
+            retry_blocked=True,
+        )
+    except Exception:
+        unknown_record = {
+            **record,
+            "outcome": PUBLICATION_UNKNOWN,
+            "retry_blocked": True,
+        }
+        _record_video_publish(storage, job_id, platform, unknown_record)
+        logger.error(
+            "publication evidence failed after video provider mutation; "
+            "retry blocked for job_id=%s platform=%s",
+            job_id,
+            platform,
+            exc_info=True,
+        )
+        return
+    try:
+        emit_publication_signal(
+            storage,
+            identity,
+            platform=evidence_platform,
+            media_kind="video",
+            outcome=outcome,
+            provider_artifact_id=provider_artifact_id,
+        )
+    except Exception:
+        logger.warning(
+            "publication signal failed for job_id=%s platform=%s outcome=%s",
+            job_id,
+            platform,
+            outcome,
             exc_info=True,
         )
 
@@ -1053,6 +1154,52 @@ def run_video_generation(
             published = None
             if isinstance(generation, dict) and isinstance(generation.get("video_publish"), dict):
                 published = generation["video_publish"]
+            publish_run_id = _ensure_video_publish_run(storage, job_id)
+            try:
+                publication_context = publication_identity(manifest, job_id, publish_run_id)
+            except PublicationStateError:
+                publication_context = None
+            published_for_attempt = dict(published or {})
+            if publication_context is not None:
+                evidence = read_evidence(storage, job_id)
+                latest = latest_outcomes(evidence)
+                for platform, enabled in (
+                    ("youtube", dist_config.youtube_enabled),
+                    ("spotify", dist_config.spotify_upload_enabled),
+                ):
+                    record_key = "spotify_upload" if platform == "spotify" else platform
+                    if retry_is_blocked(evidence, platform=platform, media_kind="video"):
+                        prior = latest.get(f"{platform}:video", {})
+                        published_for_attempt[record_key] = {
+                            "status": "published",
+                            "outcome": prior.get("outcome", "publication_unknown"),
+                            "publish_run_id": prior.get("publish_run_id"),
+                            "video_id": prior.get("provider_artifact_id")
+                            if platform == "youtube"
+                            else None,
+                            "episode_id": prior.get("provider_artifact_id")
+                            if platform == "spotify"
+                            else None,
+                        }
+                    elif enabled and not dist_config.dry_run:
+                        try:
+                            append_evidence(
+                                storage,
+                                publication_context,
+                                platform=platform,
+                                media_kind="video",
+                                operation="upload_intent",
+                                outcome="publication_unknown",
+                                mutation_attempted=False,
+                                retry_blocked=True,
+                                code="mutation_intent",
+                            )
+                        except Exception:
+                            published_for_attempt[record_key] = {
+                                "status": "published",
+                                "outcome": "publication_unknown",
+                                "publish_run_id": publish_run_id,
+                            }
 
             with timings.phase("distribution"):
                 dist_result = distribute_video(
@@ -1067,14 +1214,26 @@ def run_video_generation(
                     season_number=season_number,
                     episode_number=episode_number,
                     language=job_language,
-                    published=published,
-                    on_published=lambda platform, record: _record_video_publish(
+                    published=published_for_attempt,
+                    publish_run_id=publish_run_id,
+                    on_published=lambda platform, record: _record_video_publication(
                         storage,
                         job_id,
+                        publication_context,
                         platform,
                         record,
                     ),
                 )
+            result_publish_run_id = getattr(dist_result, "publish_run_id", None)
+            if not isinstance(result_publish_run_id, str):
+                result_publish_run_id = publish_run_id
+            result_provider_outcomes = getattr(dist_result, "provider_outcomes", None)
+            if not isinstance(result_provider_outcomes, dict):
+                result_provider_outcomes = {}
+            delivery_unconfirmed = any(
+                outcome in (PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
+                for outcome in result_provider_outcomes.values()
+            )
 
             if dist_result.youtube_required_failed:
                 distribution_state = {
@@ -1083,6 +1242,8 @@ def run_video_generation(
                     "blob_path": dist_result.blob_path,
                     "spotify_rss_updated": dist_result.spotify_rss_updated,
                     "spotify_upload_updated": dist_result.spotify_upload_updated,
+                    "publish_run_id": result_publish_run_id,
+                    "provider_outcomes": result_provider_outcomes,
                     "youtube_required_failed": dist_result.youtube_required_failed,
                     "youtube_failure_retryable": dist_result.youtube_failure_retryable,
                     "youtube_failure_code": dist_result.youtube_failure_code,
@@ -1126,12 +1287,12 @@ def run_video_generation(
             # Emit the per-phase timing/resource breakdown (issue #396).
             timings.log_summary(logger)
 
-            # Record success in manifest
+            # Record the aggregate terminal state in the manifest.
             _record_video_state(
                 storage,
                 job_id,
                 {
-                    "status": STATUS_COMPLETED,
+                    "status": STATUS_FAILED if delivery_unconfirmed else STATUS_COMPLETED,
                     "at": _iso(current),
                     "segment_count": compose_result.segment_count,
                     "duration_seconds": compose_result.duration_seconds,
@@ -1142,6 +1303,8 @@ def run_video_generation(
                         "blob_path": dist_result.blob_path,
                         "spotify_rss_updated": dist_result.spotify_rss_updated,
                         "spotify_upload_updated": dist_result.spotify_upload_updated,
+                        "publish_run_id": result_publish_run_id,
+                        "provider_outcomes": result_provider_outcomes,
                     },
                 },
             )
@@ -1161,7 +1324,7 @@ def run_video_generation(
 
             return VideoOutcome(
                 job_id=job_id,
-                status=STATUS_COMPLETED,
+                status=STATUS_FAILED if delivery_unconfirmed else STATUS_COMPLETED,
                 video_blob_path=dist_result.blob_path,
                 segment_count=compose_result.segment_count,
                 distribution=dist_result,

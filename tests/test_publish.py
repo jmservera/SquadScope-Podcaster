@@ -10,6 +10,7 @@ import pytest
 import requests
 
 from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig, truncate_html
+from podcaster.publication_state import PublicationIdentity
 from podcaster.publish import (
     SpotifyPublishError,
     _build_session,
@@ -220,6 +221,163 @@ class TestBuildSession:
 
 
 class TestPublishEpisode:
+    def test_spotify_unknown_evidence_blocks_redelivery_mutation(
+        self, monkeypatch, mp3_file, wav_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
+        monkeypatch.setattr(
+            pub,
+            "read_evidence",
+            lambda *args: {
+                "records": [
+                    {
+                        "platform": "spotify",
+                        "media_kind": "audio",
+                        "outcome": "publication_unknown",
+                        "retry_blocked": True,
+                    }
+                ]
+            },
+        )
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            wav_path=wav_file,
+            publication_storage=object(),
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+        assert result.outcome == "publication_unknown"
+        assert result.details["retry_blocked"] is True
+        build.assert_not_called()
+
+    def test_spotify_evidence_failure_before_mutation_prevents_provider_call(
+        self, monkeypatch, mp3_file, wav_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
+        monkeypatch.setattr(pub, "read_evidence", lambda *args: None)
+        monkeypatch.setattr(
+            pub,
+            "append_evidence",
+            MagicMock(side_effect=RuntimeError("storage unavailable")),
+        )
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            wav_path=wav_file,
+            publication_storage=object(),
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+        assert result.outcome == "publication_unknown"
+        build.assert_not_called()
+
+    def test_spotify_evidence_read_failure_blocks_even_when_write_would_succeed(
+        self, monkeypatch, mp3_file, wav_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        build = MagicMock()
+        append = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
+        monkeypatch.setattr(
+            pub,
+            "read_evidence",
+            MagicMock(side_effect=RuntimeError("storage read unavailable")),
+        )
+        monkeypatch.setattr(pub, "append_evidence", append)
+
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            wav_path=wav_file,
+            publication_storage=object(),
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.outcome == "publication_unknown"
+        assert result.details["retry_blocked"] is True
+        append.assert_not_called()
+        build.assert_not_called()
+
+    def test_spotify_dry_run_writes_no_evidence_or_signal(
+        self, monkeypatch, mp3_file, wav_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "true")
+        append = MagicMock()
+        signal = MagicMock()
+        monkeypatch.setattr(pub, "append_evidence", append)
+        monkeypatch.setattr(pub, "emit_publication_signal", signal)
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            wav_path=wav_file,
+            publication_storage=object(),
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+        assert result.dry_run is True
+        append.assert_not_called()
+        signal.assert_not_called()
+
+    def test_spotify_signal_failure_preserves_persisted_provider_outcome(
+        self, monkeypatch, mp3_file, spotify_env, caplog
+    ):
+        import podcaster.publish as pub
+
+        monkeypatch.setattr(pub, "read_evidence", lambda *args: None)
+        append = MagicMock()
+        monkeypatch.setattr(pub, "append_evidence", append)
+        monkeypatch.setattr(
+            pub,
+            "emit_publication_signal",
+            MagicMock(side_effect=RuntimeError("signal unavailable")),
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("station", "user"))
+        monkeypatch.setattr(pub, "_create_episode", lambda *args: 123)
+        monkeypatch.setattr(pub, "_get_upload_url", lambda *args, **kwargs: ("signed", "up-1"))
+        monkeypatch.setattr(pub, "_upload_audio", lambda *args, **kwargs: "etag")
+        monkeypatch.setattr(pub, "_process_upload", lambda *args, **kwargs: None)
+        monkeypatch.setattr(pub, "_set_metadata", lambda *args, **kwargs: None)
+
+        with caplog.at_level("WARNING"):
+            result = publish_episode(
+                mp3_file,
+                "Title",
+                "Description",
+                spotify_publish_config=SpotifyPublishConfig(
+                    publish_mode="draft", upload_format="mp3"
+                ),
+                publication_storage=object(),
+                publication_identity_context=PublicationIdentity(
+                    "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+                ),
+            )
+
+        assert result.status == "draft"
+        assert result.outcome == "draft_created"
+        assert result.error is None
+        assert append.call_count == 2
+        assert "publication signal failed" in caplog.text
+
     def test_spotify_publish_config_resolution(self):
         config = SpotifyPublishConfig.from_payload(
             {
@@ -356,6 +514,7 @@ class TestPublishEpisode:
             poll_resp,
             meta_resp,
             publish_resp,
+            _mock_json_resp({"isPublished": True}),
         ]
 
         result = publish_episode(
@@ -376,11 +535,11 @@ class TestPublishEpisode:
         assert process_call.kwargs["json"]["episodeId"] == 12345
         assert process_call.kwargs["json"]["stationId"] == 1
         assert process_call.kwargs["json"]["userId"] == 2
-        metadata_call = mock_session.request.call_args_list[-2]
+        metadata_call = mock_session.request.call_args_list[-3]
         assert metadata_call.kwargs["json"]["userId"] == 2
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert metadata_call.kwargs["json"]["podcastEpisodeIsExplicit"] is False
-        publish_call = mock_session.request.call_args_list[-1]
+        publish_call = mock_session.request.call_args_list[-2]
         assert publish_call.args[1].endswith("/publish?isMumsCompatible=true")
 
     @patch("podcaster.publish._build_session")
@@ -397,6 +556,7 @@ class TestPublishEpisode:
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
             _mock_json_resp({}),
+            _mock_json_resp({"isPublished": False}),
         ]
         mock_session.request.side_effect = responses
 
@@ -419,7 +579,7 @@ class TestPublishEpisode:
         )
         assert result.status == "scheduled"
         assert result.anchor_episode_id == 999
-        metadata_call = mock_session.request.call_args_list[-2]
+        metadata_call = mock_session.request.call_args_list[-3]
         assert metadata_call.kwargs["json"]["title"] == "2026-W25: Scheduled Ep"
         assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
         assert metadata_call.kwargs["json"]["episodeNumber"] == 25
@@ -428,7 +588,7 @@ class TestPublishEpisode:
         assert (
             metadata_call.kwargs["json"]["wizardDraftedToPublishOn"] == "2026-06-20T09:00:00.000Z"
         )
-        publish_call = mock_session.request.call_args_list[-1]
+        publish_call = mock_session.request.call_args_list[-2]
         assert publish_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00Z"
 
     @patch("podcaster.publish._build_session")
@@ -444,6 +604,7 @@ class TestPublishEpisode:
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
             _mock_json_resp({}),
+            _mock_json_resp({"isPublished": True}),
         ]
 
         result = publish_episode(
@@ -600,6 +761,7 @@ class TestPublishEpisode:
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
             _mock_json_resp({}),
+            _mock_json_resp({"isPublished": True}),
         ]
 
         result = publish_episode(
@@ -607,7 +769,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-2]
+        metadata_call = mock_session.request.call_args_list[-3]
         assert metadata_call.kwargs["json"]["title"] == "Original Title"
         assert "seasonNumber" not in metadata_call.kwargs["json"]
         assert metadata_call.kwargs["json"]["isPublished"] is True
@@ -625,6 +787,7 @@ class TestPublishEpisode:
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
             _mock_json_resp({}),
+            _mock_json_resp({"isPublished": True}),
         ]
 
         result = publish_episode(
@@ -636,7 +799,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-2]
+        metadata_call = mock_session.request.call_args_list[-3]
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert "publishOn" not in metadata_call.kwargs["json"]
         assert "wizardDraftedToPublishOn" not in metadata_call.kwargs["json"]
@@ -656,6 +819,7 @@ class TestPublishEpisode:
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
             _mock_json_resp({}),
+            _mock_json_resp({"isPublished": True}),
         ]
 
         description = "<p>Episode notes</p>"
@@ -670,7 +834,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-2]
+        metadata_call = mock_session.request.call_args_list[-3]
         assert metadata_call.kwargs["json"]["description"] == description + timestamps_html
 
     @patch("podcaster.publish._build_session")
@@ -700,6 +864,7 @@ class TestPublishEpisode:
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
             _mock_json_resp({}),
+            _mock_json_resp({"isPublished": True}),
         ]
 
         result = publish_episode(
@@ -1494,6 +1659,7 @@ class TestPromoteSpotifyVideoDraft:
         result = pub.promote_spotify_video_draft(self.VIDEO_ANCHOR_ID)
 
         assert result.terminal_state == "draft_gate_denied"
+        assert result.outcome == "draft_created"
         assert result.authorized is False
         build.assert_not_called()
 
@@ -1567,7 +1733,7 @@ class TestPromoteSpotifyVideoDraft:
         publish_live.assert_not_called()
         state_reader.assert_called_once()
 
-    def test_publishes_once_and_confirms_state(self, monkeypatch):
+    def test_spotify_confirmed_publish_reports_published(self, monkeypatch):
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
@@ -1582,6 +1748,7 @@ class TestPromoteSpotifyVideoDraft:
         )
 
         assert result.terminal_state == "published"
+        assert result.outcome == "published"
         assert result.is_published is True
         publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
         assert state_reader.call_count == 2
@@ -1590,7 +1757,7 @@ class TestPromoteSpotifyVideoDraft:
             call(session, self.VIDEO_ANCHOR_ID, user_id="7"),
         ]
 
-    def test_unconfirmed_readback_requires_manual_handoff(self, monkeypatch):
+    def test_spotify_deterministic_publish_rejection_requires_manual_handoff(self, monkeypatch):
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
@@ -1605,6 +1772,7 @@ class TestPromoteSpotifyVideoDraft:
         )
 
         assert result.terminal_state == "manual_handoff_required"
+        assert result.outcome == "manual_handoff_required"
         assert result.is_published is False
         publish_live.assert_called_once()
 
@@ -1623,8 +1791,29 @@ class TestPromoteSpotifyVideoDraft:
         )
 
         assert result.terminal_state == "publication_state_unknown"
+        assert result.outcome == "publication_unknown"
         assert result.is_published is None
         publish_live.assert_not_called()
+
+    def test_spotify_ambiguous_publish_reports_publication_unknown_without_retry(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        session, publish_live, state_reader = self._patch_dependencies(
+            monkeypatch, pub, states=[False, None]
+        )
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+            job_id="job-1",
+            run_id="run-1",
+        )
+        assert result.terminal_state == "publication_state_unknown"
+        assert result.outcome == "publication_unknown"
+        assert result.publish_run_id == "run-1"
+        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
+        assert state_reader.call_count == 2
 
     def test_publish_error_requires_manual_handoff(self, monkeypatch):
         import podcaster.publish as pub

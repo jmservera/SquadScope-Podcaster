@@ -43,6 +43,11 @@ from podcaster.notifications import notify_failure
 from podcaster.orchestration import auto_publish_enabled, auto_publish_job
 from podcaster.pipeline_lock import PIPELINE_AUDIO, claim_pipeline
 from podcaster.progress import PipelineStage, emit_progress
+from podcaster.publication_state import (
+    PublicationStateError,
+    new_publish_run_id,
+    publication_identity,
+)
 from podcaster.publish import PublishResult, publish_episode
 from podcaster.queue import (
     QueueBackend,
@@ -476,6 +481,16 @@ def run_synthesis(
                         f"<p>Source article: "
                         f"{normalize_weekly_url(request.get('article_url') or '')}</p>"
                     )
+                    request_run_id = request.get("publish_run_id")
+                    publish_run_id = (
+                        request_run_id
+                        if isinstance(request_run_id, str) and request_run_id.isdecimal()
+                        else new_publish_run_id()
+                    )
+                    try:
+                        identity = publication_identity(manifest, job_id, publish_run_id)
+                    except PublicationStateError:
+                        identity = None
                     pub_result: PublishResult = publish_episode(
                         output_path,
                         pub_title,
@@ -488,7 +503,16 @@ def run_synthesis(
                         else None,
                         wav_path=episode_audio.wav_output_path,
                         language=_request_language(manifest),
+                        **(
+                            {
+                                "publication_storage": storage,
+                                "publication_identity_context": identity,
+                            }
+                            if identity is not None
+                            else {}
+                        ),
                     )
+                    _record_direct_publish_result(storage, job_id, pub_result, publish_run_id)
                     logger.info(
                         "draft publish attempted job_id=%s status=%s error=%s",
                         job_id,
@@ -1120,6 +1144,31 @@ def _record_runner_state(storage: StorageBackend, job_id: str, state: dict[str, 
         storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
     except Exception:  # noqa: BLE001 - recording a marker must never mask the real outcome
         logger.warning("could not record synthesis runner state job_id=%s", job_id)
+
+
+def _record_direct_publish_result(
+    storage: StorageBackend,
+    job_id: str,
+    result: PublishResult,
+    publish_run_id: str,
+) -> None:
+    def _apply(content: bytes | None) -> bytes:
+        if content is None:
+            raise TransientSynthesisError(f"no staged manifest for job_id={job_id}")
+        document = json.loads(content.decode("utf-8"))
+        generation = document.setdefault("generation", {})
+        generation["publish_result"] = {
+            "anchor_id": result.anchor_episode_id,
+            "status": result.status,
+            "outcome": result.outcome,
+            "publish_run_id": result.publish_run_id or publish_run_id,
+            "dry_run": result.dry_run,
+            "error": result.error,
+            "details": result.details,
+        }
+        return manifest_bytes(document)
+
+    storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
 
 
 def _iso(moment: datetime) -> str:

@@ -22,6 +22,22 @@ def test_valid_minimal_payload_has_no_errors() -> None:
     assert errors == []
 
 
+def test_publication_identity_fields_are_optional_and_validated() -> None:
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "publish_run_id": "12345",
+        "manifest_sha256": "b" * 64,
+    }
+    assert validate_payload(payload) == []
+    assert "publish_run_id must be a non-empty decimal string" in validate_payload(
+        {**payload, "publish_run_id": "run-1"}
+    )
+    assert "manifest_sha256 must be a lowercase hex SHA-256 digest" in validate_payload(
+        {**payload, "manifest_sha256": "invalid"}
+    )
+
+
 def test_legacy_string_source_artifacts_fixture_has_no_errors() -> None:
     payload = json.loads(
         (FIXTURE_ROOT / "podcaster_request_legacy_strings.json").read_text(encoding="utf-8")

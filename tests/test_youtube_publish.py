@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from podcaster.publication_state import DRAFT_CREATED, PUBLICATION_UNKNOWN, PUBLISHED
 from podcaster.video.youtube_publish import (
     DEFAULT_DRAFT_PRIVACY,
     PRIVACY_PRIVATE,
@@ -132,6 +133,54 @@ class TestPublishVideo:
         res = publish_video("vid123", "tok", transport=t)
         assert res.succeeded is False
         assert res.error
+
+    def test_youtube_publish_200_without_confirmed_readback_is_publication_unknown(self):
+        result = publish_video("vid123", "tok", transport=_FakeTransport(status=200))
+        assert result.succeeded is True
+        assert result.outcome == PUBLICATION_UNKNOWN
+
+    def test_youtube_publish_transport_loss_is_publication_unknown_and_not_retried(self):
+        transport = _FakeTransport(raises=True)
+        result = publish_video("vid123", "tok", transport=transport)
+        assert result.outcome == PUBLICATION_UNKNOWN
+        assert len(transport.calls) == 1
+
+    def test_youtube_publish_readback_confirms_published(self):
+        class ConfirmingTransport:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, url, *, method="GET", headers=None, data=None):
+                self.calls.append(method)
+                if method == "PUT":
+                    return 200, b"{}"
+                return (
+                    200,
+                    json.dumps(
+                        {
+                            "items": [
+                                {
+                                    "snippet": {"title": "Episode", "description": "Description"},
+                                    "status": {"privacyStatus": "public"},
+                                }
+                            ]
+                        }
+                    ).encode(),
+                )
+
+        transport = ConfirmingTransport()
+        result = publish_video("vid123", "tok", transport=transport)
+        assert result.outcome == PUBLISHED
+        assert transport.calls == ["PUT", "GET"]
+
+    def test_youtube_scheduled_publish_remains_draft_created_until_confirmed_public(self):
+        result = publish_video(
+            "vid123",
+            "tok",
+            publish_at="2026-09-15T12:00:00Z",
+            transport=_FakeTransport(status=200),
+        )
+        assert result.outcome == DRAFT_CREATED
 
     def test_invalid_privacy_rejected(self):
         with pytest.raises(ValueError):
