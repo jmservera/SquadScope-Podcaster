@@ -7,16 +7,25 @@ checkpoint/resume helper.
 
 from __future__ import annotations
 
+import json
+import multiprocessing
+import time
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from podcaster.storage import (
     LocalStorageBackend,
     create_scratch_storage_backend,
 )
+from podcaster.video.budget import VideoStageBudget
 from podcaster.video.intermediates import (
     IntermediateStore,
+    StorageOperationTimeout,
     create_intermediate_store,
+    run_storage_operation,
 )
+from podcaster.video.process import MediaValidationError, ProbeEvidence
 
 
 @pytest.fixture
@@ -119,6 +128,15 @@ class TestIntermediateStoreDisabled:
         store = create_intermediate_store("job-x")
         assert store.enabled is False
         assert store.job_id == "job-x"
+
+
+def _shutdown_budget(elapsed: float) -> VideoStageBudget:
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    return VideoStageBudget.start(
+        now_utc=started,
+        monotonic=lambda: elapsed,
+        utcnow=lambda: started + timedelta(seconds=elapsed),
+    )
 
 
 class TestIntermediateStoreEnabled:
@@ -232,6 +250,229 @@ class TestVerifiedUpload:
         src.write_bytes(b"x")
         # No blob_size method → best-effort: the upload is trusted.
         assert store.upload("x.mp4", src, "video/mp4") is True
+
+
+class TestValidatedCheckpoint:
+    @staticmethod
+    def _probe(path, timeout):
+        assert timeout > 0
+        assert path.stat().st_size > 0
+        return ProbeEvidence(format_name="mov,mp4,m4a,3gp,3g2,mj2", duration_seconds=5.0)
+
+    @pytest.mark.parametrize(
+        ("name", "artifact_kind"),
+        [
+            ("audio_input.mp3", "audio_input"),
+            ("recording_000.mp4", "recorded_segment"),
+            ("normalized_000.mp4", "normalized_segment"),
+            ("composed_video.mp4", "composed_video"),
+        ],
+    )
+    def test_valid_replay_and_equal_size_alteration_is_cache_miss(
+        self, backend, tmp_path, name, artifact_kind
+    ):
+        store = IntermediateStore(backend, "job-v")
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"a" * 2048)
+        identity = {"job_id": "job-v", "source_sha256": "a" * 64}
+        assert (
+            store.upload_validated(
+                name,
+                source,
+                artifact_kind=artifact_kind,
+                identity=identity,
+                probe=self._probe,
+            )
+            is not None
+        )
+
+        replay = tmp_path / "replay.mp4"
+        assert (
+            store.download_validated(
+                name,
+                replay,
+                artifact_kind=artifact_kind,
+                identity=identity,
+                probe=self._probe,
+            )
+            is not None
+        )
+        assert replay.read_bytes() == source.read_bytes()
+
+        backend.put_bytes(
+            store.blob_path(name),
+            b"b" * 2048,
+            "video/mp4",
+        )
+        assert (
+            store.download_validated(
+                name,
+                replay,
+                artifact_kind=artifact_kind,
+                identity=identity,
+                probe=self._probe,
+            )
+            is None
+        )
+        assert not replay.exists()
+
+    def test_budgeted_validated_upload_writes_sidecar_and_replays(self, backend, tmp_path):
+        store = IntermediateStore(backend, "job-v")
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"a" * 2048)
+        identity = {"job_id": "job-v", "source_sha256": "a" * 64}
+        budget = VideoStageBudget.start()
+
+        assert (
+            store.upload_validated(
+                "normalized_000.mp4",
+                source,
+                artifact_kind="normalized_segment",
+                identity=identity,
+                budget=budget,
+                probe=self._probe,
+            )
+            is not None
+        )
+        assert store.read_text(
+            store.validation_name("normalized_000.mp4"),
+            budget=budget,
+        )
+
+        replay = tmp_path / "replay.mp4"
+        assert (
+            store.download_validated(
+                "normalized_000.mp4",
+                replay,
+                artifact_kind="normalized_segment",
+                identity=identity,
+                budget=budget,
+                probe=self._probe,
+            )
+            is not None
+        )
+        assert replay.read_bytes() == source.read_bytes()
+
+    @pytest.mark.parametrize(
+        "sidecar",
+        [
+            None,
+            "{not-json",
+            json.dumps({"schema_version": 999}),
+        ],
+    )
+    def test_legacy_malformed_unknown_sidecar_is_cache_miss(self, backend, tmp_path, sidecar):
+        store = IntermediateStore(backend, "job-v")
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"a" * 2048)
+        store.upload("normalized_000.mp4", source, "video/mp4")
+        if sidecar is not None:
+            store.write_text(store.validation_name("normalized_000.mp4"), sidecar)
+        dest = tmp_path / "dest.mp4"
+        assert (
+            store.download_validated(
+                "normalized_000.mp4",
+                dest,
+                artifact_kind="normalized_segment",
+                identity={"job_id": "job-v"},
+                probe=self._probe,
+            )
+            is None
+        )
+        assert not dest.exists()
+
+    def test_zero_byte_output_is_rejected(self, backend, tmp_path):
+        store = IntermediateStore(backend, "job-v")
+        source = tmp_path / "empty.mp4"
+        source.touch()
+        with pytest.raises(MediaValidationError):
+            store.upload_validated(
+                "normalized_000.mp4",
+                source,
+                artifact_kind="normalized_segment",
+                identity={"job_id": "job-v"},
+                probe=self._probe,
+            )
+        assert not store.exists("normalized_000.mp4")
+
+    def test_budgeted_storage_timeout_fails_closed(self, backend):
+        def timeout_runner(call, timeout):
+            raise StorageOperationTimeout("blocked")
+
+        store = IntermediateStore(backend, "job-v", operation_runner=timeout_runner)
+        budget = VideoStageBudget.start()
+        assert store.exists("normalized_000.mp4", budget=budget) is False
+
+    def test_cleanup_skips_when_shutdown_budget_is_exhausted(self, backend, tmp_path):
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"scratch")
+        store = IntermediateStore(backend, "job-v")
+        backend.upload_file(store.blob_path("segment.mp4"), source, "video/mp4")
+        calls: list[float] = []
+
+        assert (
+            store.cleanup(
+                budget=_shutdown_budget(5100),
+                operation_runner=lambda call, timeout: calls.append(timeout),
+            )
+            == 0
+        )
+
+        assert calls == []
+        assert backend.blob_exists(store.blob_path("segment.mp4"))
+
+    def test_cleanup_timeout_is_best_effort(self, backend):
+        store = IntermediateStore(backend, "job-v")
+
+        assert (
+            store.cleanup(
+                budget=_shutdown_budget(5099),
+                operation_runner=lambda call, timeout: (_ for _ in ()).throw(
+                    StorageOperationTimeout("blocked")
+                ),
+            )
+            == 0
+        )
+
+    def test_started_blocking_cleanup_is_killed_before_late_side_effect(self, tmp_path):
+        started = tmp_path / "cleanup-started"
+        committed = tmp_path / "cleanup-committed"
+
+        class BlockingStorage:
+            def delete_prefix(self, prefix: str) -> int:
+                started.write_text(prefix, encoding="utf-8")
+                time.sleep(0.5)
+                committed.write_text("late", encoding="utf-8")
+                return 1
+
+        store = IntermediateStore(BlockingStorage(), "job-v")
+
+        assert store.cleanup(budget=_shutdown_budget(5099.9)) == 0
+        assert started.exists()
+        time.sleep(0.5)
+        assert not committed.exists()
+        assert not any(
+            child.name == "video-storage-operation" for child in multiprocessing.active_children()
+        )
+
+    def test_timed_out_operation_is_killed_before_delayed_side_effect(self, tmp_path):
+        started = tmp_path / "started"
+        committed = tmp_path / "committed"
+
+        def delayed_commit():
+            started.write_text("started", encoding="utf-8")
+            time.sleep(0.5)
+            committed.write_text("committed", encoding="utf-8")
+
+        with pytest.raises(StorageOperationTimeout):
+            run_storage_operation(delayed_commit, 0.1)
+
+        assert started.exists()
+        time.sleep(0.5)
+        assert not committed.exists()
+        assert not any(
+            child.name == "video-storage-operation" for child in multiprocessing.active_children()
+        )
 
 
 class TestDiskBudget:

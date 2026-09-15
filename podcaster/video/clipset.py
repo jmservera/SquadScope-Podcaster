@@ -19,6 +19,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from podcaster.video.budget import BudgetProjection
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 
 #: Schema marker for the serialised fan-out plan. Bump the minor for
@@ -61,6 +62,24 @@ def clip_manifest_blob_path(job_id: str, clip_index: int) -> str:
     presence.
     """
     return f"{clips_prefix(job_id)}{_index(clip_index):03d}.manifest.json"
+
+
+def clip_admission_blob_path(job_id: str, clip_index: int) -> str:
+    """Durable first-admission timing facts for one clip."""
+    return f"{clips_prefix(job_id)}{_index(clip_index):03d}.admission.json"
+
+
+def clip_attempts_blob_path(job_id: str, clip_index: int) -> str:
+    """Durable dequeued-execution history for one clip."""
+    return f"{clips_prefix(job_id)}{_index(clip_index):03d}.attempts.json"
+
+
+def clip_content_blob_path(job_id: str, clip_index: int, sha256: str) -> str:
+    """Immutable content-addressed media path for one terminal clip."""
+    digest = str(sha256).strip().lower()
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("sha256 must be a lowercase 64-character hex digest")
+    return f"{clips_prefix(job_id)}{_index(clip_index):03d}/{digest}.webm"
 
 
 def _clean_job_id(job_id: str) -> str:
@@ -157,6 +176,7 @@ class Clipset:
 
     job_id: str
     clips: tuple[ClipPlanEntry, ...]
+    budget: BudgetProjection | None = None
     schema_version: str = CLIPSET_SCHEMA_VERSION
 
     @property
@@ -179,11 +199,17 @@ class Clipset:
         raise KeyError(f"clip_index {clip_index} is not in clipset for job {self.job_id}")
 
     @classmethod
-    def from_segments(cls, job_id: str, segments: Sequence[VideoSegment]) -> "Clipset":
+    def from_segments(
+        cls,
+        job_id: str,
+        segments: Sequence[VideoSegment],
+        *,
+        budget: BudgetProjection | None = None,
+    ) -> "Clipset":
         clips = tuple(
             ClipPlanEntry.from_segment(index, segment) for index, segment in enumerate(segments)
         )
-        return cls(job_id=_clean_job_id(job_id), clips=clips)
+        return cls(job_id=_clean_job_id(job_id), clips=clips, budget=budget)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -191,20 +217,27 @@ class Clipset:
             "job_id": self.job_id,
             "count": self.count,
             "clips": [c.to_dict() for c in self.clips],
+            "video_budget": self.budget.to_dict() if self.budget is not None else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Clipset":
         if not isinstance(data, dict):
             raise ValueError("clipset payload must be a JSON object")
+        if data.get("schema_version") != CLIPSET_SCHEMA_VERSION:
+            raise ValueError("unknown or legacy clipset schema version")
         clips = tuple(ClipPlanEntry.from_dict(c) for c in data.get("clips", []))
         declared = data.get("count")
         if declared is not None and int(declared) != len(clips):
             raise ValueError(f"clipset count {declared} does not match {len(clips)} clip entries")
+        raw_budget = data.get("video_budget")
         return cls(
             job_id=_clean_job_id(str(data["job_id"])),
             clips=clips,
-            schema_version=str(data.get("schema_version", CLIPSET_SCHEMA_VERSION)),
+            budget=(
+                BudgetProjection.from_dict(raw_budget) if isinstance(raw_budget, dict) else None
+            ),
+            schema_version=str(data["schema_version"]),
         )
 
     def to_json_bytes(self) -> bytes:

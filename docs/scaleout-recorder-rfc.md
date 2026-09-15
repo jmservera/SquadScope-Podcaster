@@ -1,6 +1,6 @@
-# RFC: Scale-out video recording (recorder/editor split) — epic #552
+# RFC: Scale-out video recording and bounded editor lifecycle — epic #552
 
-- **Status:** Design (DESIGN-ONLY pass — no video-pipeline code in this change)
+- **Status:** Implemented; stage-budget hardening added 2026-09-15
 - **Date:** 2026-06-28
 - **Epic:** [jmservera/SquadScope-Podcaster#552](https://github.com/jmservera/SquadScope-Podcaster/issues/552)
 - **Owner (design):** Podcaster subsquad (Coordinator-driven)
@@ -229,6 +229,54 @@ clip. Wall-clock recording time drops from ~`N/3 × per_clip` (single box, 3 thr
   bicep/entrypoints.
 - **Operability:** every artifact lives under `video-jobs/{job_id}/` for easy triage; the editor logs
   the fan-in barrier state (present/expected) each poll.
+
+### Partitioned stage budget
+
+The editor owns one application lifetime and does not use the ACA hard kill as normal
+control flow. The durable job projection survives redelivery; each process enforces
+the earlier of its local monotonic remaining time and the durable UTC projection.
+
+| Deadline | Required terminal state |
+|---|---|
+| T+5m (300s) | Claim, immutable clipset/checkpoint discovery, and provider preflight complete. |
+| T+20m (1200s) | Recorder fan-out/fan-in stopped. |
+| T+25m (1500s) | Missing clips are terminal browser-free fallback cards, or the job is `recording_insufficient`. |
+| T+55m (3300s) | Normalize, compose, and audio mux complete. This is also the effective latest provider admission because 1800 seconds must remain. |
+| T+60m (3600s) | Archive upload, SHA-256, media probe, and readback complete. A render completed after T+55 remains `rendered_pending_distribution` without provider intent. |
+| T+75m (4500s) | Independent absolute guard: no new provider mutation may start. |
+| T+82m (4920s) | Provider readback and durable evidence operations have finished or been cancelled. |
+| T+85m (5100s) | Process cancellation, checkpoint/evidence, heartbeat, lease, and queue disposition complete. |
+| T+90m (5400s) | ACA hard kill; retained only as a five-minute platform safety reserve. |
+
+A recorder clip becomes terminal at the earliest of 12 minutes from its first
+durable admission, two failed dequeued executions, its browser deadline, or the
+T+20 fan-in cutoff. Recorder ACA timeout/visibility defaults are 840/780 seconds,
+so a child cannot consume the full parent fan-in window.
+
+After fan-in cutoff the editor never starts network or Chromium capture. It renders
+a deterministic card from repository-owned local assets, writes media to a
+content-addressed blob, validates size/SHA-256/decodability, and CAS-creates the
+terminal manifest. A late recorder cannot replace the winning manifest or the bytes
+identified by it. If the renderer or required asset is unavailable, the editor
+persists `recording_insufficient` and stops before composition or provider work.
+
+All reusable audio, clip, normalized, composed, and archived artifacts are treated as
+caches, not authority: identity, size, SHA-256, and a bounded media probe must pass.
+Legacy or malformed validation records are cache misses. Provider work begins only
+after a verified `rendered_pending_distribution` record is durable; ambiguous
+provider mutations remain `publication_unknown` and are never blindly repeated.
+
+### Operational triage
+
+1. Inspect the manifest's `generation.video_budget`, `generation.video_runner`,
+   `generation.video_timing_evidence`, and per-platform publication evidence.
+2. A pre-mutation `rendered_pending_distribution` state is safe for redelivery after
+   its media validates. A post-mutation `publication_unknown` state is verification
+   only and must not repeat create/insert.
+3. Confirm terminal clip manifests reference the expected content-addressed blob and
+   matching media evidence before manual recovery.
+4. Do not extend the ACA timeout to recover a slow run. Fix the failed stage or replay
+   the validated checkpoint path.
 
 ## 9. Local test plan — Azurite + docker-compose (fan-out/fan-in)
 

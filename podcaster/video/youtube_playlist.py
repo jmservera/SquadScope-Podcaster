@@ -28,6 +28,8 @@ import os
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
+from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
+
 logger = logging.getLogger(__name__)
 
 # --- Constants ---------------------------------------------------------------
@@ -144,6 +146,8 @@ def playlist_contains_video(
             method="GET",
             headers={"Authorization": f"Bearer {access_token}"},
         )
+    except ProviderMutationAdmissionError:
+        raise
     except Exception as exc:
         logger.warning("playlistItems.list error for %s: %s", video_id, exc)
         if raise_on_error:
@@ -169,6 +173,7 @@ def add_video_to_playlist(
     *,
     position: int | None = None,
     transport: object | None = None,
+    budget: VideoStageBudget | None = None,
 ) -> PlaylistAddResult:
     """Insert ``video_id`` into ``playlist_id`` via ``playlistItems.insert``.
 
@@ -192,6 +197,13 @@ def add_video_to_playlist(
     http = transport if transport is not None else _default_transport()
 
     try:
+        if budget is not None:
+            try:
+                budget.require_provider_mutation()
+            except ProviderMutationAdmissionError as exc:
+                exc.provider = "youtube_playlist"
+                exc.mutation_started = False
+                raise
         status, body = http.request(
             PLAYLIST_ITEMS_INSERT_URL,
             method="POST",
@@ -244,6 +256,7 @@ def add_to_show_playlist(
     *,
     transport: object | None = None,
     position: int | None = None,
+    budget: VideoStageBudget | None = None,
 ) -> PlaylistAddResult:
     """Resolve the locale's playlist and add ``video_id`` idempotently.
 
@@ -282,6 +295,7 @@ def add_to_show_playlist(
         access_token,
         position=position,
         transport=transport,
+        budget=budget,
     )
 
 

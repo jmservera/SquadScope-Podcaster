@@ -23,7 +23,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Mapping, Protocol, Sequence
 
 from podcaster.image_validation import InvalidImageError, sniff_image
 from podcaster.progress import TaskStatus
@@ -35,7 +35,15 @@ from podcaster.ssrf import (
     redact_url,
     safe_urlopen,
 )
+from podcaster.video.budget import TimeoutReason, VideoStage, VideoStageBudget
 from podcaster.video.intermediates import ensure_disk_budget
+from podcaster.video.process import (
+    MediaEvidence,
+    OwnedProcessTimeout,
+    ProbeEvidence,
+    collect_media_evidence,
+    run_owned_process,
+)
 from podcaster.video.sync_plan import EpisodePlan, VideoSegment
 from podcaster.video.video_gen import (
     GENERIC_BACKGROUND_SUBTITLE,
@@ -1163,6 +1171,76 @@ def _default_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
         text=True,
         check=True,
     )
+
+
+def _command_output(command: Sequence[str]) -> Path | None:
+    if not command or Path(command[0]).name != "ffmpeg":
+        return None
+    candidate = command[-1]
+    if not candidate or candidate == "-" or candidate.startswith("-"):
+        return None
+    return Path(candidate)
+
+
+def _budgeted_runner(
+    runner: CommandRunner | None,
+    budget: VideoStageBudget,
+) -> CommandRunner:
+    """Wrap every media command in the render admission and cleanup boundary."""
+
+    def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        output = _command_output(command)
+        if not budget.admit(VideoStage.RENDER).allowed:
+            if output is not None:
+                output.unlink(missing_ok=True)
+            raise OwnedProcessTimeout(
+                command,
+                0.0,
+                reason=TimeoutReason.STAGE_DEADLINE,
+            )
+        try:
+            if runner is None:
+                result = run_owned_process(
+                    command,
+                    budget=budget,
+                    stage=VideoStage.RENDER,
+                    output_paths=(output,) if output is not None else (),
+                    check=True,
+                )
+            else:
+                result = runner(command)
+        except BaseException:
+            if output is not None:
+                output.unlink(missing_ok=True)
+            raise
+        if result.returncode != 0:
+            if output is not None:
+                output.unlink(missing_ok=True)
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                command,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+        if output is not None and output.exists() and output.stat().st_size <= 0:
+            output.unlink(missing_ok=True)
+            raise RuntimeError(f"media command produced empty output: {output}")
+        if budget.remaining_seconds(VideoStage.RENDER) <= 0:
+            if output is not None:
+                output.unlink(missing_ok=True)
+            raise OwnedProcessTimeout(
+                command,
+                0.0,
+                reason=TimeoutReason.STAGE_DEADLINE,
+            )
+        return result
+
+    return _run
+
+
+def _identity_digest(values: Mapping[str, object]) -> str:
+    payload = json.dumps(values, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return sha256(payload).hexdigest()
 
 
 def _free_compose_intermediates(content_clip: Path, norm_dir: Path) -> None:
@@ -3017,6 +3095,8 @@ def compose_video(
     section_cards: "list[SectionCardInsert] | None" = None,
     intermediates=None,
     task_reporter: "Callable[..., None] | None" = None,
+    budget: VideoStageBudget | None = None,
+    media_probe: Callable[[Path, float], ProbeEvidence] | None = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -3120,7 +3200,13 @@ def compose_video(
             f"the shortest segment duration ({min_seg}s)"
         )
 
-    run = runner or _default_runner
+    if budget is not None and not budget.admit(VideoStage.RENDER).allowed:
+        raise OwnedProcessTimeout(
+            ["ffmpeg"],
+            0.0,
+            reason=TimeoutReason.STAGE_DEADLINE,
+        )
+    run = _budgeted_runner(runner, budget) if budget is not None else (runner or _default_runner)
 
     # Per-worker task progress (issue #482): no-op when no reporter is supplied
     # so the composition path stays unchanged for callers that don't observe it.
@@ -3165,6 +3251,52 @@ def compose_video(
     has_bookends = intro_path is not None or outro_path is not None
     compose_target = output_path.parent / "content.mp4"
 
+    def _evidence(path: Path, expected: MediaEvidence | None = None) -> MediaEvidence:
+        kwargs: dict[str, Any] = {
+            "timeout_seconds": 30.0,
+            "budget": budget,
+            "stage": VideoStage.RENDER,
+            "expected": expected,
+        }
+        if media_probe is not None:
+            kwargs["probe"] = media_probe
+        return collect_media_evidence(path, **kwargs)
+
+    source_evidence: list[MediaEvidence | None] = []
+    for recorded in segments:
+        evidence = recorded.media_evidence
+        if evidence is None and budget is not None and recorded.video_path.exists():
+            evidence = _evidence(recorded.video_path)
+            recorded.media_evidence = evidence
+        source_evidence.append(evidence)
+
+    composition_identity: dict[str, str] | None = None
+    if budget is not None and all(item is not None for item in source_evidence):
+        identity_values: dict[str, object] = {
+            "segment_sha256": [item.sha256 for item in source_evidence if item is not None],
+            "segment_plan": [
+                {
+                    "start": item.segment.start_seconds,
+                    "duration": item.segment.duration_seconds,
+                    "repo": item.segment.repo.url if item.segment.repo is not None else None,
+                }
+                for item in segments
+            ],
+            "audio_duration": audio_duration,
+            "transition_duration": transition_duration,
+            "section_cards": [
+                (card.before_index, card.duration_seconds, str(card.clip_path))
+                for card in (section_cards or [])
+            ],
+        }
+        for label, path in (("intro", intro_path), ("outro", outro_path)):
+            if path is not None:
+                identity_values[f"{label}_sha256"] = _evidence(path).sha256
+        composition_identity = {
+            "job_id": str(getattr(intermediates, "job_id", "local")),
+            "inputs_sha256": _identity_digest(identity_values),
+        }
+
     # Checkpoint/resume (issue #410): when the finished video-only composed clip
     # already survived in blob from a previous (interrupted) run, skip the whole
     # record→normalize→compose→join pipeline and go straight to the final mux,
@@ -3176,11 +3308,29 @@ def compose_video(
     if (
         _intermediates_enabled
         and not _animated_intermissions
-        and intermediates.exists(COMPOSED_VIDEO_CHECKPOINT)
+        and (budget is None or composition_identity is not None)
     ):
         resumed_video = output_path.parent / COMPOSED_VIDEO_CHECKPOINT
-        if intermediates.download(COMPOSED_VIDEO_CHECKPOINT, resumed_video):
-            _, resumed_duration = _probe_media(resumed_video, run)
+        if budget is None:
+            validation = None
+            downloaded = intermediates.exists(COMPOSED_VIDEO_CHECKPOINT) and intermediates.download(
+                COMPOSED_VIDEO_CHECKPOINT, resumed_video
+            )
+        else:
+            validation = intermediates.download_validated(
+                COMPOSED_VIDEO_CHECKPOINT,
+                resumed_video,
+                artifact_kind="composed_video",
+                identity=composition_identity,
+                budget=budget,
+                stage=VideoStage.RENDER,
+                probe=media_probe,
+            )
+            downloaded = validation is not None
+        if downloaded:
+            resumed_duration = (
+                validation.media.probe.duration_seconds if validation is not None else None
+            ) or _probe_media(resumed_video, run)[1]
             logger.info(
                 "Resumed composed video from blob checkpoint (%.1fs); skipping to final mux",
                 resumed_duration,
@@ -3289,24 +3439,6 @@ def compose_video(
         name = f"normalized_{idx:03d}.mp4"
         task_id = f"norm_{idx:03d}"
         total = len(norm_tasks)
-        # Already checkpointed: skip recompute.  In the enabled path we do NOT
-        # download it here — the pairwise compose fetches it just-in-time so all
-        # normalized clips never coexist on local disk.
-        if (
-            _intermediates_enabled
-            and idx not in intermission_substitute_indices
-            and intermediates.exists(name)
-        ):
-            logger.info("Resumed normalized segment %d from blob checkpoint", idx)
-            _report_task(
-                task_id,
-                TaskStatus.DONE,
-                segment_index=idx + 1,
-                segment_total=total,
-                message=f"resumed normalized segment {idx} from checkpoint",
-            )
-            return
-
         _report_task(
             task_id,
             TaskStatus.RUNNING,
@@ -3321,8 +3453,97 @@ def compose_video(
             # back transiently to normalize it.
             suffix = rec.video_path.suffix or ".webm"
             raw_dest = norm_dir / f"_raw_{idx:03d}{suffix}"
-            if intermediates.download(_recording_blob_name(idx, suffix), raw_dest):
+            if budget is not None:
+                record = intermediates.download_validated(
+                    _recording_blob_name(idx, suffix),
+                    raw_dest,
+                    artifact_kind="recorded_segment",
+                    identity={
+                        "segment_index": str(idx),
+                        "plan_sha256": _identity_digest(
+                            {
+                                "index": idx,
+                                "start_seconds": rec.segment.start_seconds,
+                                "duration_seconds": rec.segment.duration_seconds,
+                                "repo_url": (
+                                    rec.segment.repo.url if rec.segment.repo is not None else None
+                                ),
+                                "source_url": rec.segment.source_url,
+                                "removed_reason": rec.segment.removed_reason,
+                            }
+                        ),
+                    },
+                    budget=budget,
+                    stage=VideoStage.RENDER,
+                    probe=media_probe,
+                )
+                if record is not None:
+                    input_path = raw_dest
+                    rec.media_evidence = record.media
+                    source_evidence[idx] = record.media
+            elif intermediates.download(_recording_blob_name(idx, suffix), raw_dest):
                 input_path = raw_dest
+
+        input_evidence = source_evidence[idx]
+        if budget is not None and input_evidence is None and input_path.exists():
+            input_evidence = _evidence(input_path)
+            source_evidence[idx] = input_evidence
+            rec.media_evidence = input_evidence
+        normalized_identity = (
+            {
+                "segment_index": str(idx),
+                "source_sha256": input_evidence.sha256,
+                "target_duration": (
+                    f"{fit_durations[idx]:.6f}" if fit_durations is not None else "source"
+                ),
+                "normalizer": "ffmpeg-1080p30-v1",
+            }
+            if input_evidence is not None
+            else None
+        )
+        if (
+            _intermediates_enabled
+            and budget is not None
+            and normalized_identity is not None
+            and idx not in intermission_substitute_indices
+        ):
+            validation = intermediates.download_validated(
+                name,
+                dest,
+                artifact_kind="normalized_segment",
+                identity=normalized_identity,
+                budget=budget,
+                stage=VideoStage.RENDER,
+                probe=media_probe,
+            )
+            if validation is not None:
+                logger.info("Resumed normalized segment %d from validated checkpoint", idx)
+                dest.unlink(missing_ok=True)
+                if input_path != rec.video_path:
+                    input_path.unlink(missing_ok=True)
+                _report_task(
+                    task_id,
+                    TaskStatus.DONE,
+                    segment_index=idx + 1,
+                    segment_total=total,
+                    message=f"resumed normalized segment {idx} from checkpoint",
+                )
+                return
+        elif (
+            _intermediates_enabled
+            and budget is None
+            and idx not in intermission_substitute_indices
+            and intermediates.exists(name)
+        ):
+            logger.info("Resumed normalized segment %d from blob checkpoint", idx)
+            _report_task(
+                task_id,
+                TaskStatus.DONE,
+                segment_index=idx + 1,
+                segment_total=total,
+                message=f"resumed normalized segment {idx} from checkpoint",
+            )
+            return
 
         if fit_durations is not None:
             cmd = _build_fit_segment_cmd(input_path, dest, fit_durations[idx])
@@ -3343,7 +3564,20 @@ def compose_video(
                 # the checkpoint is confirmed (otherwise keep it on disk so the
                 # pairwise compose can still consume it directly — a failed
                 # checkpoint must not become a hard compose failure).
-                if intermediates.upload(name, dest, "video/mp4"):
+                if budget is not None and normalized_identity is not None:
+                    uploaded = intermediates.upload_validated(
+                        name,
+                        dest,
+                        artifact_kind="normalized_segment",
+                        identity=normalized_identity,
+                        content_type="video/mp4",
+                        budget=budget,
+                        stage=VideoStage.RENDER,
+                        probe=media_probe,
+                    )
+                else:
+                    uploaded = intermediates.upload(name, dest, "video/mp4")
+                if uploaded:
                     try:
                         dest.unlink(missing_ok=True)
                     except OSError:
@@ -3419,7 +3653,7 @@ def compose_video(
     )
     drawtext_bin: str | None = None
     if lower_thirds_by_index:
-        drawtext_bin = _find_drawtext_capable_ffmpeg()
+        drawtext_bin = "ffmpeg" if budget is not None else _find_drawtext_capable_ffmpeg()
         if drawtext_bin is None:
             logger.warning(
                 "No ffmpeg binary with drawtext filter (libfreetype) found; "
@@ -3484,7 +3718,33 @@ def compose_video(
         if path.exists():
             return
         if _intermediates_enabled and path in blob_name_by_path:
-            if not intermediates.download(blob_name_by_path[path], path):
+            idx = normalized_paths.index(path)
+            source = source_evidence[idx]
+            identity = (
+                {
+                    "segment_index": str(idx),
+                    "source_sha256": source.sha256,
+                    "target_duration": (
+                        f"{fit_durations[idx]:.6f}" if fit_durations is not None else "source"
+                    ),
+                    "normalizer": "ffmpeg-1080p30-v1",
+                }
+                if source is not None
+                else None
+            )
+            if budget is not None and identity is not None:
+                downloaded = intermediates.download_validated(
+                    blob_name_by_path[path],
+                    path,
+                    artifact_kind="normalized_segment",
+                    identity=identity,
+                    budget=budget,
+                    stage=VideoStage.RENDER,
+                    probe=media_probe,
+                )
+            else:
+                downloaded = intermediates.download(blob_name_by_path[path], path)
+            if not downloaded:
                 raise RuntimeError(f"could not fetch normalized clip checkpoint for {path.name}")
 
     def _release_clip(path: Path) -> None:
@@ -3545,13 +3805,26 @@ def compose_video(
     # Checkpoint the finished video-only composed clip (issue #410) so a crash
     # during the final audio mux can resume straight from here next time.
     if _intermediates_enabled:
-        intermediates.upload(COMPOSED_VIDEO_CHECKPOINT, video_only_path, "video/mp4")
-        intermediates.mark("composed_video", duration_seconds=round(video_duration, 3))
+        if budget is not None and composition_identity is not None:
+            uploaded = intermediates.upload_validated(
+                COMPOSED_VIDEO_CHECKPOINT,
+                video_only_path,
+                artifact_kind="composed_video",
+                identity=composition_identity,
+                content_type="video/mp4",
+                budget=budget,
+                stage=VideoStage.RENDER,
+                probe=media_probe,
+            )
+        else:
+            uploaded = intermediates.upload(COMPOSED_VIDEO_CHECKPOINT, video_only_path, "video/mp4")
+        if uploaded:
+            intermediates.mark("composed_video", duration_seconds=round(video_duration, 3))
 
     # Overlay the podcast MP3 as the sole audio track on the full video, then
     # always run a final h264_metadata BSF pass into output_path so the colour
     # VUI is consistent for Spotify (issue #353).
-    return _finalize_output(
+    result = _finalize_output(
         video_only_path=video_only_path,
         video_duration=video_duration,
         audio_path=audio_path,
@@ -3559,6 +3832,9 @@ def compose_video(
         segment_count=len(segments),
         run=run,
     )
+    if budget is not None:
+        _evidence(result.output_path)
+    return result
 
 
 # --- Recording-to-plan sync utilities (#296) ---

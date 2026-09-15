@@ -95,6 +95,16 @@ def test_from_dict_rejects_count_mismatch() -> None:
         Clipset.from_dict(data)
 
 
+def test_from_dict_rejects_legacy_or_unknown_schema() -> None:
+    data = Clipset.from_segments("job-1", _segments()).to_dict()
+    data.pop("schema_version")
+    with pytest.raises(ValueError, match="schema"):
+        Clipset.from_dict(data)
+    data["schema_version"] = "future-v99"
+    with pytest.raises(ValueError, match="schema"):
+        Clipset.from_dict(data)
+
+
 def test_plan_entry_round_trip() -> None:
     entry = ClipPlanEntry(
         clip_index=4,

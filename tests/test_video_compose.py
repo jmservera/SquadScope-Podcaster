@@ -14,6 +14,7 @@ import ssl
 import struct
 import subprocess
 import zlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
@@ -23,6 +24,7 @@ import pytest
 from podcaster import ssrf, watermark
 from podcaster.image_validation import sniff_image
 from podcaster.video import video_compose as vc
+from podcaster.video.budget import VideoStageBudget
 from podcaster.video.sync_plan import EpisodePlan, RepoReference, VideoSegment
 from podcaster.video.video_compose import (
     BOUNDARY_CONTENT_TO_CONTENT,
@@ -77,6 +79,25 @@ from podcaster.video.video_compose import (
     trim_recording_cmd,
 )
 from podcaster.video.video_gen import RecordedSegment
+
+
+class _RenderClock:
+    def __init__(self) -> None:
+        self.elapsed = 0.0
+        self.started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+
+    def monotonic(self):
+        return self.elapsed
+
+    def utcnow(self):
+        return self.started + timedelta(seconds=self.elapsed)
+
+    def budget(self):
+        return VideoStageBudget.start(
+            now_utc=self.started,
+            monotonic=self.monotonic,
+            utcnow=self.utcnow,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -2336,6 +2357,38 @@ class TestThirdPartyLogoNeverSubstituted:
         assert result is not None
         assert result != watermark.LOGO_PATH
         assert result.read_bytes() == _PNG_1X1
+
+
+class TestRenderBudgetBoundary:
+    def test_exact_t3300_rejects_new_ffmpeg_work(self, tmp_path):
+        clock = _RenderClock()
+        budget = clock.budget()
+        clock.elapsed = 3300.0
+        runner = MagicMock()
+        output = tmp_path / "partial.mp4"
+        output.write_bytes(b"partial")
+
+        bounded = vc._budgeted_runner(runner, budget)
+        with pytest.raises(TimeoutError):
+            bounded(["ffmpeg", "-i", "input.mp4", str(output)])
+
+        runner.assert_not_called()
+        assert not output.exists()
+
+    def test_zero_byte_ffmpeg_output_is_rejected_and_removed(self, tmp_path):
+        clock = _RenderClock()
+        budget = clock.budget()
+        clock.elapsed = 3299.0
+        output = tmp_path / "empty.mp4"
+
+        def runner(command):
+            output.touch()
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        bounded = vc._budgeted_runner(runner, budget)
+        with pytest.raises(RuntimeError, match="empty output"):
+            bounded(["ffmpeg", "-i", "input.mp4", str(output)])
+        assert not output.exists()
 
 
 class TestFetchDogLogoValidation:

@@ -601,6 +601,7 @@ def annotate_removed_repos(
     *,
     checker=None,
     timeout: float = _REMOVED_CHECK_TIMEOUT,
+    remaining_seconds=None,
 ) -> EpisodePlan:
     """Return a copy of *plan* with removed repos annotated (issue #394).
 
@@ -631,8 +632,17 @@ def annotate_removed_repos(
         if seg.repo is None or seg.removed_reason is not None:
             new_segments.append(seg)
             continue
+        effective_timeout = timeout
+        if remaining_seconds is not None:
+            effective_timeout = min(timeout, max(0.0, float(remaining_seconds())))
+            if effective_timeout <= 0:
+                logger.warning(
+                    "repo pre-flight deadline reached; skipping remaining network checks"
+                )
+                new_segments.extend(plan.segments[len(new_segments) :])
+                break
         try:
-            removed = checker(seg.repo.url, timeout=timeout)
+            removed = checker(seg.repo.url, timeout=effective_timeout)
         except Exception:  # noqa: BLE001 — never let a probe abort planning
             logger.exception("Removed-repo check raised for %s; assuming present", seg.repo.url)
             removed = False

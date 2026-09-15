@@ -1093,6 +1093,35 @@ class TestAnnotateRemovedRepos:
         assert calls == []  # not re-checked
         assert result.segments[0].removed_reason == "pre-set"
 
+    def test_preflight_clamps_each_network_check_to_t_plus_300_budget(self):
+        remaining = iter([2.5, 0.0])
+        timeouts: list[float] = []
+
+        def checker(_url, timeout=5.0):
+            timeouts.append(timeout)
+            return False
+
+        result = annotate_removed_repos(
+            self._plan(),
+            checker=checker,
+            remaining_seconds=lambda: next(remaining),
+        )
+
+        assert timeouts == [2.5]
+        assert result.segments == self._plan().segments
+
+    def test_preflight_at_cutoff_launches_no_network(self):
+        calls: list[str] = []
+
+        result = annotate_removed_repos(
+            self._plan(),
+            checker=lambda url, timeout=5.0: calls.append(url),
+            remaining_seconds=lambda: 0.0,
+        )
+
+        assert calls == []
+        assert result.segments == self._plan().segments
+
 
 class TestRemovedRepoSpeakerNotes:
     def test_notes_for_removed_repos_only(self):

@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from podcaster.video.budget import VideoStageBudget
 from podcaster.video.sync_plan import (
     EpisodePlan,
     RepoReference,
@@ -2474,6 +2475,29 @@ class TestRecordEpisodeCheckpointResume:
         assert store.exists("recording_000.mp4") is True
         # … and the local copy was deleted (disk holds only the current file).
         assert recorded_paths and not recorded_paths[0].exists()
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    def test_budgeted_recording_uses_owned_browser_boundary(self, mock_pw, tmp_path):
+        calls = []
+
+        def owned(segment, output_dir, timeout):
+            calls.append(timeout)
+            path = output_dir / "owned.webm"
+            path.write_bytes(b"owned-browser-result")
+            return RecordedSegment(segment=segment, video_path=path)
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        result = record_episode(
+            plan,
+            output_dir=tmp_path / "out",
+            budget=VideoStageBudget.start(),
+            owned_record_segment=owned,
+        )
+
+        assert len(result.recorded) == 1
+        assert calls and calls[0] > 0
+        mock_pw.assert_not_called()
 
 
 # --- Per-task recording retry (issue #483) ---
