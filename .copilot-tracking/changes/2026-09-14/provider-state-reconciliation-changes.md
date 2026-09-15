@@ -68,6 +68,22 @@
   validation, lockfile recompilation/diff, and repository diff checks.
 * Current blockers: None.
 
+## Post-Delivery Retry-Safety Correction
+
+* Completed scope: P07-T01 through P07-T03.
+* Triggering evidence: PR #680 discussions `discussion_r4014202116` and
+  `discussion_r4014202185`.
+* Evidence migration: duplicate legacy records must populate the new durable
+  blob instead of producing empty corrupt canonical evidence.
+* Provider retry fence: `uploaded` blocks YouTube, Spotify RSS, and Spotify
+  video mutations but remains unsuccessful for aggregate delivery.
+* Validation intent: focused publication/distribution tests, full Ruff/format,
+  diff integrity, commit/push, thread resolution, and fresh CI.
+* Delivery evidence: committed and pushed
+  `49b9c6e9f204d04c3d7fab2e68292b66b52c153e`; focused suite **212 passed**;
+  full suite **3027 passed, 2 skipped, 2 deselected**; Ruff and diff checks
+  passed; both triggering review threads were answered and resolved.
+
 ### Infrastructure-backed durable publication evidence — P06-T01
 
 * Canonical evidence now writes to

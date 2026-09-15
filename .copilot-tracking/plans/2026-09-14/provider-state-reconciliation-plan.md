@@ -5,7 +5,7 @@
 
 * Task ID: provider-state-reconciliation
 * Task slug: provider-state-reconciliation
-* Planning status: P06 reviewer-lockout correction complete; PR open and unmerged
+* Planning status: P07 post-delivery retry-safety correction complete; PR open and unmerged
 * Plan date: 2026-09-14
 * Phase details: .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
 * Changes record: .copilot-tracking/changes/2026-09-14/provider-state-reconciliation-changes.md
@@ -418,6 +418,26 @@ Run targeted/full tests, Ruff and format checks, infrastructure validation,
 lockfile verification, and diff checks; update docs/tracking/PR evidence,
 commit, push, resolve review threads, and leave the PR unmerged.
 
+<!-- rpi:phase id=P07 -->
+### [x] P07: Post-Delivery Retry-Safety Correction
+
+<!-- rpi:task id=P07-T01 -->
+#### [x] P07-T01: Preserve legacy evidence on duplicate migration
+
+When canonical storage is absent and an exact duplicate exists in the legacy
+document, write the legacy bytes to the durable prefix rather than an empty
+corrupt blob.
+
+<!-- rpi:task id=P07-T02 -->
+#### [x] P07-T02: Treat uploaded snapshots as terminal mutation fences
+
+Include `uploaded` in YouTube, Spotify RSS, and Spotify video skip guards and
+ensure uploaded markers suppress mutation without counting as successful.
+
+<!-- rpi:task id=P07-T03 -->
+#### [x] P07-T03: Validate, commit, push, resolve the new threads, and restore a
+green, thread-clean, open, unmerged PR.
+
 ## Dependencies
 
 * P01-T02 depends on P01-T01.
@@ -430,6 +450,8 @@ commit, push, resolve review threads, and leave the PR unmerged.
   delivered safeguards and accepted job namespace.
 * P06 is an independent reviewer-lockout correction of P05 and depends on the
   pushed P05 baseline and exact accepted-job namespace remaining intact.
+* P07 is a post-delivery retry-safety correction of P06 and depends on
+  preserving its durable prefix and normalized provider-state contract.
 
 ## Critique Disposition
 

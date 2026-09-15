@@ -28,6 +28,8 @@
 | P03 | Expose compatible status and monitoring | Complete | P03, P03-T01, P03-T02 |
 | P04 | Validate and deliver | Superseded by reviewer revision | P04, P04-T01, P04-T02 |
 | P05 | Independent contract revision | Complete | P05, P05-T01, P05-T02, P05-T03, P05-T04 |
+| P06 | Reviewer-lockout correction | Complete | P06, P06-T01, P06-T02, P06-T03, P06-T04 |
+| P07 | Post-delivery retry-safety correction | Complete | P07, P07-T01, P07-T02, P07-T03 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish canonical outcomes and durable evidence
@@ -822,3 +824,19 @@ be normalized and fenced before mutation.
   verification, and unknown/manual evidence neither succeeds nor mutates again.
 * Targeted and full suites, Ruff/format, infrastructure validation, lockfile
   verification, and diff checks pass without live services.
+
+<!-- rpi:phase id=P07 -->
+## P07: Post-Delivery Retry-Safety Correction
+
+Preserve a legacy evidence document when an exact duplicate is encountered
+during migrate-on-append; the new durable blob must contain the legacy records,
+not empty bytes. Treat `uploaded` as a terminal mutation fence in every video
+distribution provider guard, while keeping it unsuccessful for aggregate
+delivery. Validate the focused publication/distribution suites, full Ruff
+formatting and diff integrity, commit, push, reply to and resolve the new
+threads, and leave the PR open and unmerged without live services.
+
+Completion evidence: commit
+`49b9c6e9f204d04c3d7fab2e68292b66b52c153e`; focused suite 212 passed; full
+suite 3027 passed, 2 skipped, 2 deselected; Ruff and diff checks passed; both
+triggering review threads were answered and resolved.
