@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,7 @@ from podcaster.publication_state import (
     retry_is_blocked,
 )
 from podcaster.spotify_shows import resolve_show_target
+from podcaster.video.budget import ProviderMutationAdmissionError
 
 if TYPE_CHECKING:
     from podcaster.storage import StorageBackend
@@ -348,6 +350,9 @@ def _retry_request(
     attempts = max(1, int(max_attempts))
     for attempt in range(attempts):
         try:
+            before_mutation = getattr(session, "_before_provider_mutation", None)
+            if method.upper() not in {"GET", "HEAD", "OPTIONS"} and callable(before_mutation):
+                before_mutation()
             resp = session.request(method, url, **kwargs)
             resp.raise_for_status()
             return resp
@@ -1694,6 +1699,7 @@ def promote_spotify_video_draft(
     sp_dc: str | None = None,
     sp_key: str | None = None,
     show_id: str | None = None,
+    before_mutation: Callable[[], object] | None = None,
 ) -> VideoPromoteResult:
     """Promote the current job's Spotify video draft to live behind two gates."""
 
@@ -1859,6 +1865,8 @@ def promote_spotify_video_draft(
 
     try:
         session = _build_session(sp_dc, sp_key, show_id)
+        if before_mutation is not None:
+            setattr(session, "_before_provider_mutation", before_mutation)
         _station_id, user_id = _resolve_legacy_ids(session, show_id)
         current_state = _get_episode_publication_state(
             session,
@@ -1987,6 +1995,7 @@ def upload_video_to_episode(
     sp_key: str | None = None,
     season_number: int | None = None,
     episode_number: int | None = None,
+    before_mutation: Callable[[], object] | None = None,
 ) -> PublishResult:
     """Publish a video as a NEW separate Spotify episode draft (#340).
 
@@ -2042,6 +2051,8 @@ def upload_video_to_episode(
 
     try:
         session = _build_session(sp_dc, sp_key, show_id)
+        if before_mutation is not None:
+            setattr(session, "_before_provider_mutation", before_mutation)
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         # Create or reconcile a separate video draft — never touch the audio one.
@@ -2134,6 +2145,8 @@ def upload_video_to_episode(
                 "title": video_title,
             },
         )
+    except ProviderMutationAdmissionError:
+        raise
     except SpotifyCredentialExpiredError as exc:
         logger.error(
             "Spotify video upload failed — credentials expired: %s. "

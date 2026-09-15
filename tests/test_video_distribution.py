@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 from urllib.error import URLError
 
 import pytest
 
+from podcaster.storage import LocalStorageBackend
+from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import (
+    ArchiveResult,
     DistributionResult,
     VideoDistributionConfig,
     YouTubeDeliveryError,
@@ -18,11 +22,14 @@ from podcaster.video.distribution import (
     _escape_xml,
     _try_chunked_upload,
     archive_to_blob,
+    archive_video_verified,
     distribute_video,
     update_spotify_rss,
     upload_to_spotify_episode,
     upload_to_youtube,
 )
+from podcaster.video.intermediates import StorageOperationTimeout
+from podcaster.video.process import ProbeEvidence
 
 
 @pytest.fixture
@@ -250,6 +257,47 @@ class TestUploadToYouTube:
         )
         assert vid_id == "yt-abc123"
         assert "yt-abc123" in vid_url
+        resumable_inits = [
+            request
+            for request in transport.requests
+            if request["method"] == "POST" and "uploadType=resumable" in request["url"]
+        ]
+        assert len(resumable_inits) == 1
+
+    def test_large_upload_initializes_one_resumable_session(self, tmp_path, youtube_config):
+        video = tmp_path / "large.mp4"
+        with video.open("wb") as stream:
+            stream.truncate(128 * 1024 * 1024 + 1)
+
+        class LargeUploadTransport(FakeTransport):
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                self.requests.append(
+                    {"url": url, "method": method, "headers": headers, "data": data}
+                )
+                if method == "POST" and "uploadType=resumable" in url:
+                    return 200, {"location": "https://upload.example/large-session"}, b""
+                return 200, {}, b'{"id":"large-video-id"}'
+
+        transport = LargeUploadTransport(
+            responses=[(200, b'{"access_token":"token"}')],
+        )
+
+        video_id, video_url = upload_to_youtube(
+            video,
+            "title",
+            "description",
+            youtube_config,
+            transport=transport,
+        )
+
+        assert video_id == "large-video-id"
+        assert video_url == "https://youtube.com/watch?v=large-video-id"
+        resumable_inits = [
+            request
+            for request in transport.requests
+            if request["method"] == "POST" and "uploadType=resumable" in request["url"]
+        ]
+        assert len(resumable_inits) == 1
 
     def test_file_not_found(self, youtube_config):
         with pytest.raises(FileNotFoundError):
@@ -505,6 +553,404 @@ class TestArchiveToBlob:
         storage = FakeStorage()
         result = archive_to_blob(tmp_path / "missing.mp4", "job1", storage=storage)
         assert result is None
+
+
+class _ArchiveClock:
+    def __init__(self, elapsed: float) -> None:
+        self.elapsed = elapsed
+        self.started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+
+    def monotonic(self) -> float:
+        return self.elapsed
+
+    def utcnow(self) -> datetime:
+        return self.started + timedelta(seconds=self.elapsed)
+
+    def budget(self) -> VideoStageBudget:
+        self.elapsed = 0
+        budget = VideoStageBudget.start(
+            now_utc=self.started,
+            monotonic=self.monotonic,
+            utcnow=self.utcnow,
+        )
+        return budget
+
+
+def _archive_probe(path: Path, timeout: float) -> ProbeEvidence:
+    assert timeout > 0
+    assert path.stat().st_size > 0
+    return ProbeEvidence(format_name="mov,mp4,m4a,3gp,3g2,mj2", duration_seconds=12.0)
+
+
+class TestVerifiedArchive:
+    def test_valid_replay_and_equal_size_corruption_recompute(self, tmp_path):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 100
+
+        first = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        assert isinstance(first, ArchiveResult)
+        assert first.reused is False
+
+        replay = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        assert replay.reused is True
+
+        storage.put_bytes(first.blob_path, b"b" * 2048, "video/mp4")
+        repaired = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        assert repaired.reused is False
+        assert storage.get_bytes(first.blob_path) == video.read_bytes()
+
+    @pytest.mark.parametrize(
+        ("completion", "pending_only"),
+        [(3300.0, False), (3300.001, True), (3600.0, True)],
+    )
+    def test_archive_completion_boundaries(self, tmp_path, completion, pending_only):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299
+        calls = 0
+
+        def operation_runner(call, timeout):
+            nonlocal calls
+            assert timeout > 0
+            calls += 1
+            value = call()
+            if calls == 4:
+                clock.elapsed = completion
+            return value
+
+        result = archive_video_verified(
+            video,
+            "job",
+            storage=storage,
+            budget=budget,
+            probe=_archive_probe,
+            operation_runner=operation_runner,
+        )
+        assert result.completed_elapsed_seconds == completion
+        assert result.pending_only is pending_only
+
+    def test_archive_after_3600_fails_without_validation_claim(self, tmp_path):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299
+        calls = 0
+
+        def operation_runner(call, timeout):
+            nonlocal calls
+            calls += 1
+            value = call()
+            if calls == 4:
+                clock.elapsed = 3600.001
+            return value
+
+        with pytest.raises(StorageOperationTimeout, match=r"T\+3600"):
+            archive_video_verified(
+                video,
+                "job",
+                storage=storage,
+                budget=budget,
+                probe=_archive_probe,
+                operation_runner=operation_runner,
+            )
+        assert storage.get_bytes("jobs/job/video/job.mp4.validation.json") is None
+
+    def test_storage_timeout_fails_closed(self, tmp_path):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 100
+
+        def timeout_runner(call, timeout):
+            raise StorageOperationTimeout("blocked")
+
+        with pytest.raises(StorageOperationTimeout):
+            archive_video_verified(
+                video,
+                "job",
+                storage=storage,
+                budget=budget,
+                probe=_archive_probe,
+                operation_runner=timeout_runner,
+            )
+        assert storage.get_bytes("jobs/job/video/job.mp4.validation.json") is None
+
+    @pytest.mark.parametrize(
+        "sidecar",
+        [b"{not-json", json.dumps({"schema_version": 999}).encode()],
+    )
+    def test_malformed_or_unknown_archive_record_recomputes(self, tmp_path, sidecar):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 100
+        first = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        storage.put_bytes(
+            f"{first.blob_path}.validation.json",
+            sidecar,
+            "application/json",
+        )
+
+        result = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        assert result.reused is False
+
+    def test_corrupt_readback_is_rejected_and_removed(self, tmp_path):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 100
+        calls = 0
+
+        def probe(path, timeout):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise ValueError("not decodable")
+            return _archive_probe(path, timeout)
+
+        with pytest.raises(RuntimeError, match="readback"):
+            archive_video_verified(
+                video,
+                "job",
+                storage=storage,
+                budget=budget,
+                probe=probe,
+            )
+        assert storage.get_bytes("jobs/job/video/job.mp4") is None
+        assert storage.get_bytes("jobs/job/video/job.mp4.validation.json") is None
+
+
+class TestDistributionBudget:
+    @pytest.mark.parametrize("denied_elapsed", [3301.0, 4500.0, 4501.0])
+    def test_youtube_rechecks_admission_before_later_put(
+        self,
+        video_file,
+        youtube_config,
+        denied_elapsed,
+    ):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299.0
+
+        class AdvancingTransport(FakeTransport):
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                response = super().request_with_headers(
+                    url,
+                    method=method,
+                    headers=headers,
+                    data=data,
+                )
+                if method == "POST" and "uploadType=resumable" in url:
+                    clock.elapsed = denied_elapsed
+                return response
+
+        transport = AdvancingTransport(
+            responses=[
+                (200, b'{"access_token":"token"}'),
+                (200, b""),
+            ]
+        )
+
+        with pytest.raises(ProviderMutationAdmissionError) as captured:
+            upload_to_youtube(
+                video_file,
+                "title",
+                "description",
+                youtube_config,
+                transport=transport,
+                budget=budget,
+            )
+
+        assert captured.value.mutation_started is True
+        assert captured.value.provider == "youtube"
+        assert [request["method"] for request in transport.requests] == ["POST", "POST"]
+
+    def test_ambiguous_youtube_denial_persists_no_repeat_evidence(
+        self,
+        video_file,
+        youtube_config,
+    ):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299.0
+
+        class AdvancingTransport(FakeTransport):
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                response = super().request_with_headers(
+                    url,
+                    method=method,
+                    headers=headers,
+                    data=data,
+                )
+                if method == "POST" and "uploadType=resumable" in url:
+                    clock.elapsed = 4500.0
+                return response
+
+        snapshots: list[tuple[str, dict]] = []
+        result = distribute_video(
+            video_file,
+            "ambiguous-youtube",
+            "title",
+            "description",
+            60.0,
+            replace(youtube_config, blob_archive_enabled=False),
+            transport=AdvancingTransport(
+                responses=[
+                    (200, b'{"access_token":"token"}'),
+                    (200, b""),
+                ]
+            ),
+            budget=budget,
+            operation_runner=lambda call, timeout: call(),
+            on_published=lambda platform, record: snapshots.append((platform, record)),
+        )
+
+        assert result.provider_outcomes["youtube"] == "publication_unknown"
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert snapshots[0][0] == "youtube"
+        assert snapshots[0][1]["outcome"] == "publication_unknown"
+        assert snapshots[0][1]["retry_blocked"] is True
+
+    @pytest.mark.parametrize("denied_elapsed", [3301.0, 4500.0])
+    def test_large_youtube_post_init_denial_persists_no_repeat_evidence(
+        self,
+        tmp_path,
+        youtube_config,
+        denied_elapsed,
+    ):
+        video = tmp_path / "large.mp4"
+        with video.open("wb") as stream:
+            stream.truncate(128 * 1024 * 1024 + 1)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299.0
+
+        class AdvancingLargeTransport(FakeTransport):
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                self.requests.append(
+                    {"url": url, "method": method, "headers": headers, "data": data}
+                )
+                if method == "POST" and "uploadType=resumable" in url:
+                    clock.elapsed = denied_elapsed
+                    return 200, {"location": "https://upload.example/large-session"}, b""
+                raise AssertionError("chunk request must be denied before provider I/O")
+
+        transport = AdvancingLargeTransport(
+            responses=[(200, b'{"access_token":"token"}')],
+        )
+        snapshots: list[tuple[str, dict]] = []
+
+        result = distribute_video(
+            video,
+            "ambiguous-large-youtube",
+            "title",
+            "description",
+            60.0,
+            replace(youtube_config, blob_archive_enabled=False),
+            transport=transport,
+            budget=budget,
+            operation_runner=lambda call, timeout: call(),
+            on_published=lambda platform, record: snapshots.append((platform, record)),
+        )
+
+        assert result.provider_outcomes["youtube"] == "publication_unknown"
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert result.youtube_failure_retryable is False
+        assert snapshots[0][0] == "youtube"
+        assert snapshots[0][1]["outcome"] == "publication_unknown"
+        assert snapshots[0][1]["retry_blocked"] is True
+        resumable_inits = [
+            request
+            for request in transport.requests
+            if request["method"] == "POST" and "uploadType=resumable" in request["url"]
+        ]
+        assert len(resumable_inits) == 1
+
+    def test_hanging_provider_operation_is_cancelled_at_t82(self, video_file, monkeypatch):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 4919
+        provider = MagicMock()
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_spotify_episode",
+            provider,
+        )
+        timeouts: list[float] = []
+
+        def hanging_runner(call, timeout):
+            timeouts.append(timeout)
+            clock.elapsed = 4920
+            raise TimeoutError("cancelled at evidence deadline")
+
+        result = distribute_video(
+            video_file,
+            "job-t82",
+            "Title",
+            "Description",
+            60.0,
+            VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+            ),
+            budget=budget,
+            operation_runner=hanging_runner,
+        )
+
+        assert timeouts == [1.0]
+        assert provider.call_count == 0
+        assert result.provider_outcomes["spotify_upload"] == "publication_unknown"
+        assert result.provider_records["spotify_video"]["retry_blocked"] is True
+
+    def test_no_provider_operation_starts_at_t82(self, video_file, monkeypatch):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 4920
+        provider = MagicMock()
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_spotify_episode",
+            provider,
+        )
+
+        result = distribute_video(
+            video_file,
+            "job-t82-exact",
+            "Title",
+            "Description",
+            60.0,
+            VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+            ),
+            budget=budget,
+        )
+
+        assert result.status == "failed"
+        assert provider.call_count == 0
 
 
 # --- Distribute Video Tests ---

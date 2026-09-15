@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import VideoDistributionConfig
 from podcaster.video.youtube import (
     RESUMABLE_CHUNK_SIZE,
@@ -168,13 +170,68 @@ def test_upload_chunked_resumes_after_transient_failure(tmp_path):
     # Fail once when the chunk starting at offset 2*GRANULE is first attempted.
     t = _FakeTransport(total=total, chunk=_GRANULE, fail_at_offset=2 * _GRANULE)
     path = _make_file(tmp_path, total)
+    admission_calls = 0
+
+    class CountingBudget:
+        def require_provider_mutation(self):
+            nonlocal admission_calls
+            admission_calls += 1
+
     result = upload_chunked(
-        t, t.session_uri, "tok", path, total, chunk_size=_GRANULE, sleep=lambda s: None
+        t,
+        t.session_uri,
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda s: None,
+        budget=CountingBudget(),
     )
     assert result.succeeded
     assert result.bytes_uploaded == total
     # The status-query ("bytes */total") must have been used to resume.
     assert any(r[1].get("Content-Range") == f"bytes */{total}" for r in t.requests)
+    assert admission_calls == len(t.requests)
+
+
+def test_upload_chunked_rechecks_admission_before_resume_query(tmp_path):
+    total = 2 * _GRANULE
+    t = _FakeTransport(total=total, chunk=_GRANULE, fail_at_offset=0)
+    path = _make_file(tmp_path, total)
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    elapsed = 3299.0
+
+    def monotonic() -> float:
+        return elapsed
+
+    def utcnow() -> datetime:
+        return started + timedelta(seconds=elapsed)
+
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=monotonic,
+        utcnow=utcnow,
+    )
+
+    def advance_past_reserve(_: float) -> None:
+        nonlocal elapsed
+        elapsed = 3301.0
+
+    with pytest.raises(ProviderMutationAdmissionError) as captured:
+        upload_chunked(
+            t,
+            t.session_uri,
+            "tok",
+            path,
+            total,
+            chunk_size=_GRANULE,
+            sleep=advance_past_reserve,
+            budget=budget,
+        )
+
+    assert captured.value.mutation_started is True
+    assert captured.value.provider == "youtube"
+    assert len(t.requests) == 1
 
 
 def test_upload_chunked_308_without_range_header_re_queries_offset(tmp_path):

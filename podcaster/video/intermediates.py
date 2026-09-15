@@ -30,8 +30,21 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import uuid
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from podcaster.video.budget import VideoStage, VideoStageBudget
+from podcaster.video.process import (
+    MediaValidationRecord,
+    OwnedCallableTimeout,
+    ProbeEvidence,
+    collect_media_evidence,
+    run_owned_callable,
+    validate_media_record,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from podcaster.storage import StorageBackend
@@ -42,6 +55,7 @@ logger = logging.getLogger("podcaster.video.intermediates")
 SCRATCH_ROOT = "video-jobs"
 INTERMEDIATES_DIR = "intermediates"
 MANIFEST_NAME = "manifest.json"
+VALIDATION_SUFFIX = ".validation.json"
 
 _OCTET_STREAM = "application/octet-stream"
 
@@ -56,6 +70,30 @@ class InsufficientDiskError(RuntimeError):
     Surfaced as a *resumable* failure: the job aborts cleanly and a later run
     resumes from the blob checkpoints already written, so no work is lost.
     """
+
+
+class StorageOperationTimeout(TimeoutError):
+    """Raised when a storage operation exhausts its shared stage budget."""
+
+
+def _run_bounded(call: Callable[[], Any], timeout_seconds: float) -> Any:
+    """Run a potentially blocking operation in an owned cancellable process."""
+
+    if timeout_seconds <= 0:
+        raise StorageOperationTimeout("storage operation has no remaining budget")
+    try:
+        return run_owned_callable(
+            call,
+            timeout_seconds,
+            process_name="video-storage-operation",
+        )
+    except OwnedCallableTimeout as exc:
+        raise StorageOperationTimeout(
+            f"storage operation exceeded {timeout_seconds:.3f}s deadline"
+        ) from exc
+
+
+run_storage_operation = _run_bounded
 
 
 def ensure_disk_budget(
@@ -95,9 +133,16 @@ class IntermediateStore:
     unchanged in local development and tests where no scratch container exists.
     """
 
-    def __init__(self, backend: "StorageBackend | None", job_id: str) -> None:
+    def __init__(
+        self,
+        backend: "StorageBackend | None",
+        job_id: str,
+        *,
+        operation_runner: Callable[[Callable[[], Any], float], Any] = _run_bounded,
+    ) -> None:
         self._backend = backend
         self._job_id = job_id
+        self._operation_runner = operation_runner
 
     @property
     def enabled(self) -> bool:
@@ -118,12 +163,43 @@ class IntermediateStore:
         """Blob prefix covering every intermediate for this job."""
         return f"{SCRATCH_ROOT}/{self._job_id}/{INTERMEDIATES_DIR}/"
 
-    def exists(self, name: str) -> bool:
+    @staticmethod
+    def validation_name(name: str) -> str:
+        return f"{name}{VALIDATION_SUFFIX}"
+
+    def _call(
+        self,
+        operation: Callable[[], Any],
+        *,
+        budget: VideoStageBudget | None,
+        stage: VideoStage,
+        timeout_seconds: float | None,
+    ) -> Any:
+        if budget is None:
+            return operation()
+        timeout = budget.operation_timeout(stage, timeout_seconds)
+        return self._operation_runner(operation, timeout)
+
+    def exists(
+        self,
+        name: str,
+        *,
+        budget: VideoStageBudget | None = None,
+        stage: VideoStage = VideoStage.RENDER,
+        timeout_seconds: float | None = 30.0,
+    ) -> bool:
         """Return True when intermediate ``name`` is already checkpointed."""
         if self._backend is None:
             return False
         try:
-            return self._backend.blob_exists(self.blob_path(name))
+            return bool(
+                self._call(
+                    lambda: self._backend.blob_exists(self.blob_path(name)),
+                    budget=budget,
+                    stage=stage,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
         except Exception:
             # Checkpoint lookups must never break the pipeline; a failed probe
             # simply means we re-do the stage (correct, just slower).
@@ -135,7 +211,15 @@ class IntermediateStore:
             )
             return False
 
-    def download(self, name: str, dest: Path) -> bool:
+    def download(
+        self,
+        name: str,
+        dest: Path,
+        *,
+        budget: VideoStageBudget | None = None,
+        stage: VideoStage = VideoStage.RENDER,
+        timeout_seconds: float | None = 30.0,
+    ) -> bool:
         """Download checkpointed intermediate ``name`` to ``dest``.
 
         Returns True when the blob existed and was written to ``dest``; False
@@ -146,7 +230,12 @@ class IntermediateStore:
         if self._backend is None:
             return False
         try:
-            ok = self._backend.download_file(self.blob_path(name), Path(dest))
+            ok = self._call(
+                lambda: self._backend.download_file(self.blob_path(name), Path(dest)),
+                budget=budget,
+                stage=stage,
+                timeout_seconds=timeout_seconds,
+            )
         except Exception:
             logger.warning(
                 "intermediate download failed job_id=%s name=%s; will recompute",
@@ -159,7 +248,16 @@ class IntermediateStore:
             logger.info("resumed intermediate from blob job_id=%s name=%s", self._job_id, name)
         return ok
 
-    def upload(self, name: str, source: Path, content_type: str = _OCTET_STREAM) -> bool:
+    def upload(
+        self,
+        name: str,
+        source: Path,
+        content_type: str = _OCTET_STREAM,
+        *,
+        budget: VideoStageBudget | None = None,
+        stage: VideoStage = VideoStage.RENDER,
+        timeout_seconds: float | None = 30.0,
+    ) -> bool:
         """Checkpoint local file ``source`` as intermediate ``name``.
 
         After the streamed upload the blob's size is verified against the local
@@ -184,7 +282,12 @@ class IntermediateStore:
             return False
         expected = source.stat().st_size
         try:
-            self._backend.upload_file(self.blob_path(name), source, content_type)
+            self._call(
+                lambda: self._backend.upload_file(self.blob_path(name), source, content_type),
+                budget=budget,
+                stage=stage,
+                timeout_seconds=timeout_seconds,
+            )
         except Exception:
             logger.warning(
                 "intermediate upload failed job_id=%s name=%s; continuing without checkpoint",
@@ -193,7 +296,13 @@ class IntermediateStore:
                 exc_info=True,
             )
             return False
-        if not self._verify_size(name, expected):
+        if not self._verify_size(
+            name,
+            expected,
+            budget=budget,
+            stage=stage,
+            timeout_seconds=timeout_seconds,
+        ):
             logger.warning(
                 "intermediate upload size mismatch job_id=%s name=%s expected=%d; "
                 "discarding unverified checkpoint",
@@ -212,7 +321,15 @@ class IntermediateStore:
         logger.info("checkpointed intermediate to blob job_id=%s name=%s", self._job_id, name)
         return True
 
-    def _verify_size(self, name: str, expected: int) -> bool:
+    def _verify_size(
+        self,
+        name: str,
+        expected: int,
+        *,
+        budget: VideoStageBudget | None = None,
+        stage: VideoStage = VideoStage.RENDER,
+        timeout_seconds: float | None = 30.0,
+    ) -> bool:
         """Verify the uploaded blob's size equals ``expected`` local bytes.
 
         Returns True when sizes match.  When the backend cannot report a size
@@ -223,7 +340,12 @@ class IntermediateStore:
         if getter is None:
             return True
         try:
-            actual = getter(self.blob_path(name))
+            actual = self._call(
+                lambda: getter(self.blob_path(name)),
+                budget=budget,
+                stage=stage,
+                timeout_seconds=timeout_seconds,
+            )
         except Exception:
             logger.debug(
                 "blob size probe failed job_id=%s name=%s",
@@ -236,12 +358,24 @@ class IntermediateStore:
             return False
         return int(actual) == int(expected)
 
-    def read_text(self, name: str) -> str | None:
+    def read_text(
+        self,
+        name: str,
+        *,
+        budget: VideoStageBudget | None = None,
+        stage: VideoStage = VideoStage.RENDER,
+        timeout_seconds: float | None = 30.0,
+    ) -> str | None:
         """Return the UTF-8 text of intermediate ``name`` (sidecar metadata)."""
         if self._backend is None:
             return None
         try:
-            raw = self._backend.get_bytes(self.blob_path(name))
+            raw = self._call(
+                lambda: self._backend.get_bytes(self.blob_path(name)),
+                budget=budget,
+                stage=stage,
+                timeout_seconds=timeout_seconds,
+            )
         except Exception:
             logger.warning(
                 "intermediate read failed job_id=%s name=%s",
@@ -262,12 +396,23 @@ class IntermediateStore:
         name: str,
         text: str,
         content_type: str = "application/json; charset=utf-8",
+        *,
+        budget: VideoStageBudget | None = None,
+        stage: VideoStage = VideoStage.RENDER,
+        timeout_seconds: float | None = 30.0,
     ) -> bool:
         """Checkpoint small text/JSON intermediate ``name`` (sidecar metadata)."""
         if self._backend is None:
             return False
         try:
-            self._backend.put_bytes(self.blob_path(name), text.encode("utf-8"), content_type)
+            self._call(
+                lambda: self._backend.put_bytes(
+                    self.blob_path(name), text.encode("utf-8"), content_type
+                ),
+                budget=budget,
+                stage=stage,
+                timeout_seconds=timeout_seconds,
+            )
         except Exception:
             logger.warning(
                 "intermediate text write failed job_id=%s name=%s",
@@ -278,7 +423,137 @@ class IntermediateStore:
             return False
         return True
 
-    def cleanup(self) -> int:
+    def upload_validated(
+        self,
+        name: str,
+        source: Path,
+        *,
+        artifact_kind: str,
+        identity: Mapping[str, str],
+        content_type: str = _OCTET_STREAM,
+        budget: VideoStageBudget | None = None,
+        stage: VideoStage = VideoStage.RENDER,
+        timeout_seconds: float = 30.0,
+        probe: Callable[[Path, float], ProbeEvidence] | None = None,
+    ) -> MediaValidationRecord | None:
+        """Upload media and publish its validation sidecar only after verification."""
+
+        if self._backend is None:
+            return None
+        kwargs: dict[str, Any] = {
+            "timeout_seconds": timeout_seconds,
+            "budget": budget,
+            "stage": stage,
+        }
+        if probe is not None:
+            kwargs["probe"] = probe
+        evidence = collect_media_evidence(source, **kwargs)
+        if not self.upload(
+            name,
+            source,
+            content_type,
+            budget=budget,
+            stage=stage,
+            timeout_seconds=timeout_seconds,
+        ):
+            return None
+        record = MediaValidationRecord(
+            artifact_kind=artifact_kind,
+            identity=identity,
+            media=evidence,
+        )
+        if not self.write_text(
+            self.validation_name(name),
+            json.dumps(record.to_dict(), sort_keys=True, separators=(",", ":")),
+            budget=budget,
+            stage=stage,
+            timeout_seconds=timeout_seconds,
+        ):
+            self._delete_unverified(name)
+            return None
+        return record
+
+    def download_validated(
+        self,
+        name: str,
+        dest: Path,
+        *,
+        artifact_kind: str,
+        identity: Mapping[str, str],
+        budget: VideoStageBudget | None = None,
+        stage: VideoStage = VideoStage.RENDER,
+        timeout_seconds: float = 30.0,
+        probe: Callable[[Path, float], ProbeEvidence] | None = None,
+    ) -> MediaValidationRecord | None:
+        """Atomically download and validate a versioned reusable media artifact."""
+
+        if self._backend is None:
+            return None
+        sidecar = self.read_text(
+            self.validation_name(name),
+            budget=budget,
+            stage=stage,
+            timeout_seconds=timeout_seconds,
+        )
+        if not sidecar:
+            return None
+        try:
+            raw = json.loads(sidecar)
+            if not isinstance(raw, dict):
+                return None
+            record = MediaValidationRecord.from_dict(raw)
+            record.require_identity(artifact_kind, identity)
+        except (TypeError, ValueError):
+            return None
+
+        dest = Path(dest)
+        temporary = dest.with_name(f"{dest.name}.validation-{uuid.uuid4().hex}.part")
+        try:
+            if not self.download(
+                name,
+                temporary,
+                budget=budget,
+                stage=stage,
+                timeout_seconds=timeout_seconds,
+            ):
+                return None
+            kwargs: dict[str, Any] = {
+                "artifact_kind": artifact_kind,
+                "identity": identity,
+                "timeout_seconds": timeout_seconds,
+                "budget": budget,
+                "stage": stage,
+            }
+            if probe is not None:
+                kwargs["probe"] = probe
+            validate_media_record(temporary, record, **kwargs)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(temporary, dest)
+            return record
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            dest.unlink(missing_ok=True)
+            return None
+
+    def _delete_unverified(self, name: str) -> None:
+        if self._backend is None:
+            return
+        deleter = getattr(self._backend, "delete_blob", None)
+        if deleter is None:
+            return
+        for candidate in (name, self.validation_name(name)):
+            try:
+                deleter(self.blob_path(candidate))
+            except Exception:
+                logger.debug("could not delete unverified blob %s", candidate, exc_info=True)
+
+    def cleanup(
+        self,
+        *,
+        budget: VideoStageBudget | None = None,
+        timeout_seconds: float | None = 30.0,
+        operation_runner: Callable[[Callable[[], Any], float], Any] | None = None,
+    ) -> int:
         """Delete every intermediate for this job after a successful publish.
 
         Returns the number of blobs deleted (0 when disabled). Best-effort: the
@@ -287,8 +562,24 @@ class IntermediateStore:
         """
         if self._backend is None:
             return 0
+        runner = operation_runner or self._operation_runner
+        timeout = (
+            None
+            if budget is None
+            else budget.operation_timeout(VideoStage.SHUTDOWN, timeout_seconds)
+        )
+        if timeout is not None and timeout <= 0:
+            logger.warning(
+                "intermediate cleanup skipped with no shutdown budget job_id=%s",
+                self._job_id,
+            )
+            return 0
+
+        def operation() -> int:
+            return self._backend.delete_prefix(self.prefix())
+
         try:
-            deleted = self._backend.delete_prefix(self.prefix())
+            deleted = operation() if timeout is None else runner(operation, timeout)
         except Exception:
             logger.warning(
                 "intermediate cleanup failed job_id=%s; lifecycle policy will reclaim",

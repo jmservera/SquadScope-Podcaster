@@ -45,6 +45,19 @@ The Bicep template (`infra/main.bicep`) deploys:
 
 All resources are co-located in eastus2 to minimize latency.
 
+### Video job timeout contract
+
+The video editor ACA job keeps `replicaTimeout=5400` seconds, but application-owned
+work has a hard 5100-second lifetime. The final five minutes are platform reserve,
+not usable pipeline budget. Recorder defaults are 840 seconds for the ACA replica,
+780 seconds for queue visibility, and 600 seconds for capture, all beneath the
+editor's T+20 fan-in cutoff.
+
+Do not increase these values to recover a slow episode. The application stops
+fan-in at T+20, rendering at T+55, archive verification at T+60, provider
+readback/evidence at T+82, and completes durable lease/queue disposition by T+85.
+See `docs/scaleout-recorder-rfc.md` for the full stage table and recovery semantics.
+
 ### OIDC Federation Setup (GitHub ↔ Azure)
 
 **Goal:** GitHub Actions authenticate to Azure via OIDC, not long-lived credentials.

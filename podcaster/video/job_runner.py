@@ -26,7 +26,8 @@ import os
 import subprocess
 import tempfile
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -64,14 +65,33 @@ from podcaster.storage import (
     create_scratch_storage_backend,
     create_storage_backend,
 )
+from podcaster.video.budget import (
+    STAGE_DEADLINES,
+    ProviderMutationAdmissionError,
+    TimingEvidence,
+    TimingEvidenceKind,
+    VideoStage,
+    VideoStageBudget,
+)
 from podcaster.video.distribution import (
+    ArchiveResult,
     DistributionResult,
     VideoDistributionConfig,
+    archive_video_verified,
     distribute_video,
     youtube_enabled_for_language,
 )
-from podcaster.video.intermediates import create_intermediate_store
+from podcaster.video.intermediates import create_intermediate_store, run_storage_operation
 from podcaster.video.perf import PipelineTimings
+from podcaster.video.process import (
+    MediaValidationRecord,
+    OwnedCallableTimeout,
+    ProbeEvidence,
+    collect_media_evidence,
+    probe_media,
+    run_owned_callable,
+    validate_media_record,
+)
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
     extract_repo_urls,
@@ -92,6 +112,7 @@ VIDEO_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-video-queue-v1"
 STATUS_COMPLETED = "completed"
 STATUS_SKIPPED = "skipped"
 STATUS_FAILED = "failed"
+STATUS_RENDERED_PENDING_DISTRIBUTION = "rendered_pending_distribution"
 
 REASON_ALREADY_PROCESSED = "already_processed"
 REASON_NO_REPOS = "no_repos_in_script"
@@ -100,8 +121,14 @@ REASON_COMPOSITION_FAILED = "composition_failed"
 REASON_RETRY_EXHAUSTED = "retry_exhausted"
 REASON_PIPELINE_CONFLICT = "pipeline_locked_by_audio"
 REASON_EDITOR_LEASE_HELD = "editor_lease_held"
+REASON_RECORDING_INSUFFICIENT = "recording_insufficient"
 REASON_REQUIRED_YOUTUBE_FAILURE = "required_youtube_delivery_failed"
 REASON_INVALID_PUBLICATION_IDENTITY = "invalid_publication_identity"
+REASON_PROVIDER_ADMISSION_DENIED = "provider_admission_denied"
+REASON_EVIDENCE_DEADLINE_REACHED = "evidence_deadline_reached"
+
+RENDERED_PENDING_SCHEMA_VERSION = 1
+TIMING_EVIDENCE_MAX_EVENTS = 256
 #: A configured DOG watermark could not be resolved.  Terminal by construction:
 #: a retry re-reads the same config and re-fetches the same URL, so the queue
 #: message is deleted after one attempt instead of burning MAX_DEQUEUE_COUNT
@@ -149,10 +176,23 @@ class VideoOutcome:
     video_blob_path: str | None = None
     segment_count: int | None = None
     distribution: DistributionResult | None = None
+    _optional_cleanup: Callable[[], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 class TransientVideoError(RuntimeError):
     """A failure that should leave the queue message for retry."""
+
+
+class QueueDispositionError(TransientVideoError):
+    """Queue disposition failed and must be retried without repeating providers."""
+
+
+class QueueDispositionTimeout(QueueDispositionError):
+    """Queue disposition could not complete inside the shared shutdown budget."""
 
 
 class PermanentVideoError(RuntimeError):
@@ -173,6 +213,9 @@ class _StorageUploaderAdapter:
     def upload(self, path: str, content: bytes, content_type: str) -> str:
         artifact = self._backend.put_bytes(path, content, content_type)
         return artifact.url
+
+    def get_bytes(self, path: str) -> bytes | None:
+        return self._backend.get_bytes(path)
 
 
 def manifest_path(job_id: str) -> str:
@@ -484,6 +527,9 @@ def _record_video_state(
     storage: StorageBackend,
     job_id: str,
     state: dict[str, Any],
+    *,
+    budget: VideoStageBudget | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] | None = None,
 ) -> None:
     """Record video runner state in the manifest."""
     from podcaster.generation import manifest_bytes
@@ -497,9 +543,399 @@ def _record_video_state(
         return manifest_bytes(doc)
 
     try:
-        storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+        if budget is None or operation_runner is None:
+            storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+        else:
+            timeout = budget.operation_timeout(VideoStage.SHUTDOWN, 30.0)
+            if timeout <= 0:
+                logger.warning("no shutdown budget remains to record video state job_id=%s", job_id)
+                return
+            operation_runner(
+                lambda: storage.update_bytes(
+                    manifest_path(job_id),
+                    "application/json; charset=utf-8",
+                    _apply,
+                ),
+                timeout,
+            )
     except Exception:
         logger.warning("failed to record video state for job_id=%s", job_id, exc_info=True)
+
+
+def _append_video_timing_evidence(
+    storage: StorageBackend,
+    job_id: str,
+    budget: VideoStageBudget,
+    *,
+    kind: TimingEvidenceKind,
+    stage: VideoStage,
+    reason: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Append bounded, merge-safe timing evidence to the staged manifest."""
+    from podcaster.generation import manifest_bytes
+
+    event = TimingEvidence(
+        timestamp_utc=budget.now_utc(),
+        kind=kind,
+        stage=stage,
+        remaining_seconds=budget.remaining_seconds(stage),
+        reason=reason,
+        details={
+            "elapsed_seconds": f"{budget.elapsed_seconds():.3f}",
+            "stage_deadline_seconds": str(
+                int(
+                    (
+                        budget.projection.stage_deadline_at_utc(stage)
+                        - budget.projection.started_at_utc
+                    ).total_seconds()
+                )
+            ),
+            **{str(key): str(value) for key, value in (details or {}).items()},
+        },
+    ).to_dict()
+
+    def _apply(content: bytes | None) -> bytes:
+        document = json.loads(content.decode("utf-8")) if content else {}
+        if not isinstance(document, dict):
+            document = {}
+        generation = document.setdefault("generation", {})
+        if not isinstance(generation, dict):
+            generation = {}
+            document["generation"] = generation
+        evidence = generation.setdefault(
+            "video_timing_evidence",
+            {
+                "schema_version": 1,
+                "max_events": TIMING_EVIDENCE_MAX_EVENTS,
+                "events": [],
+                "dropped": 0,
+            },
+        )
+        if not isinstance(evidence, dict) or evidence.get("schema_version") != 1:
+            raise TransientVideoError(f"invalid timing evidence for job_id={job_id}")
+        events = evidence.get("events")
+        if not isinstance(events, list):
+            raise TransientVideoError(f"invalid timing evidence events for job_id={job_id}")
+        if len(events) < TIMING_EVIDENCE_MAX_EVENTS:
+            events.append(event)
+        else:
+            evidence["dropped"] = int(evidence.get("dropped", 0)) + 1
+        evidence["max_events"] = TIMING_EVIDENCE_MAX_EVENTS
+        evidence["events"] = events
+        generation["video_timing_evidence"] = evidence
+        return manifest_bytes(document)
+
+    timeout = budget.operation_timeout(VideoStage.SHUTDOWN, 30.0)
+    if timeout <= 0:
+        logger.warning("no shutdown budget remains for timing evidence job_id=%s", job_id)
+        return
+    try:
+        run_storage_operation(
+            lambda: storage.update_bytes(
+                manifest_path(job_id),
+                "application/json; charset=utf-8",
+                _apply,
+            ),
+            timeout,
+        )
+    except TransientVideoError:
+        raise
+    except Exception:
+        logger.warning("failed to append video timing evidence job_id=%s", job_id, exc_info=True)
+
+
+def _stable_sha256(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _current_video_stage(budget: VideoStageBudget) -> VideoStage:
+    elapsed = budget.elapsed_seconds()
+    for stage, deadline in STAGE_DEADLINES.items():
+        if elapsed < deadline:
+            return stage
+    return VideoStage.SHUTDOWN
+
+
+def _render_source_facts(manifest: dict[str, Any], script: str) -> dict[str, Any]:
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        request = {}
+    replay = request.get("replay")
+    if not isinstance(replay, dict):
+        replay = {}
+    return {
+        "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
+        "week": request.get("week"),
+        "accepted_job_id": request.get("accepted_job_id"),
+        "article_sha256": request.get("article_sha256") or replay.get("article_sha256"),
+        "manifest_sha256": request.get("manifest_sha256"),
+    }
+
+
+def _render_clipset_facts(plan: Any) -> dict[str, Any]:
+    segments = []
+    for segment in getattr(plan, "segments", ()):
+        repo = getattr(segment, "repo", None)
+        segments.append(
+            {
+                "start_seconds": float(segment.start_seconds),
+                "duration_seconds": float(segment.duration_seconds),
+                "repo": getattr(repo, "url", None),
+                "source_url": getattr(segment, "source_url", None),
+                "removed_reason": getattr(segment, "removed_reason", None),
+            }
+        )
+    return {"count": len(segments), "sha256": _stable_sha256(segments)}
+
+
+def _render_audio_facts(
+    audio_path: Path | None,
+    audio_duration: float | None,
+) -> dict[str, Any]:
+    if audio_path is None:
+        return {"present": False}
+    digest = hashlib.sha256()
+    with audio_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "present": True,
+        "size_bytes": audio_path.stat().st_size,
+        "sha256": digest.hexdigest(),
+        "duration_seconds": audio_duration,
+    }
+
+
+def _rendered_pending_payload(
+    *,
+    job_id: str,
+    manifest: dict[str, Any],
+    script: str,
+    plan: Any,
+    audio_path: Path | None,
+    audio_duration: float | None,
+    archive_result: ArchiveResult,
+    run_id: str | None,
+    budget: VideoStageBudget,
+) -> dict[str, Any]:
+    core = {
+        "schema_version": RENDERED_PENDING_SCHEMA_VERSION,
+        "status": STATUS_RENDERED_PENDING_DISTRIBUTION,
+        "job_id": job_id,
+        "artifact": {
+            "blob_path": archive_result.blob_path,
+            "blob_url": archive_result.blob_url,
+            "validation": archive_result.validation.to_dict(),
+            "archive_completed_elapsed_seconds": archive_result.completed_elapsed_seconds,
+            "archive_reused": archive_result.reused,
+        },
+        "source": _render_source_facts(manifest, script),
+        "clipset": _render_clipset_facts(plan),
+        "audio": _render_audio_facts(audio_path, audio_duration),
+        "run": {
+            "editor_run_id": run_id or "inline",
+            "persisted_at_utc": budget.now_utc().isoformat().replace("+00:00", "Z"),
+        },
+        "budget": {
+            **budget.to_dict(),
+            "persisted_elapsed_seconds": budget.elapsed_seconds(),
+            "remaining_seconds": budget.remaining_seconds(VideoStage.SHUTDOWN),
+        },
+    }
+    return {**core, "record_sha256": _stable_sha256(core)}
+
+
+def _validate_rendered_pending_record(
+    record: Any,
+    *,
+    job_id: str,
+    budget: VideoStageBudget,
+) -> tuple[dict[str, Any], MediaValidationRecord]:
+    if (
+        not isinstance(record, dict)
+        or record.get("schema_version") != RENDERED_PENDING_SCHEMA_VERSION
+        or record.get("status") != STATUS_RENDERED_PENDING_DISTRIBUTION
+        or record.get("job_id") != job_id
+    ):
+        raise TransientVideoError(f"invalid rendered pending state for job_id={job_id}")
+    record_hash = record.get("record_sha256")
+    core = {key: value for key, value in record.items() if key != "record_sha256"}
+    if not isinstance(record_hash, str) or record_hash != _stable_sha256(core):
+        raise TransientVideoError(f"rendered pending state hash mismatch for job_id={job_id}")
+    artifact = record.get("artifact")
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("validation"), dict):
+        raise TransientVideoError(f"rendered pending artifact is missing for job_id={job_id}")
+    try:
+        validation = MediaValidationRecord.from_dict(artifact["validation"])
+        validation.require_identity(
+            "video_archive",
+            {"job_id": job_id, "source_sha256": validation.media.sha256},
+        )
+        durable_budget = record.get("budget")
+        if not isinstance(durable_budget, dict):
+            raise ValueError("missing durable render budget")
+        for key in ("schema_version", "started_at_utc", "deadline_at_utc"):
+            if durable_budget.get(key) != budget.to_dict().get(key):
+                raise ValueError("rendered pending budget identity mismatch")
+    except (TypeError, ValueError) as exc:
+        raise TransientVideoError(f"invalid rendered pending artifact for job_id={job_id}") from exc
+    return record, validation
+
+
+def _persist_rendered_pending(
+    storage: StorageBackend,
+    job_id: str,
+    payload: dict[str, Any],
+    budget: VideoStageBudget,
+    *,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+) -> dict[str, Any]:
+    """Create the immutable render/distribution boundary without clobbering peers."""
+    from podcaster.generation import manifest_bytes
+
+    captured: dict[str, Any] = {}
+
+    def _apply(content: bytes | None) -> bytes:
+        if content is None:
+            raise TransientVideoError(f"no staged manifest for job_id={job_id}")
+        document = json.loads(content.decode("utf-8"))
+        generation = document.setdefault("generation", {})
+        existing = generation.get(STATUS_RENDERED_PENDING_DISTRIBUTION)
+        if existing is not None:
+            validated, _ = _validate_rendered_pending_record(
+                existing,
+                job_id=job_id,
+                budget=budget,
+            )
+            if validated.get("record_sha256") != payload.get("record_sha256"):
+                raise TransientVideoError(
+                    f"rendered pending state conflicts with verified archive for job_id={job_id}"
+                )
+            captured.update(validated)
+        else:
+            generation[STATUS_RENDERED_PENDING_DISTRIBUTION] = payload
+            captured.update(payload)
+        return manifest_bytes(document)
+
+    timeout = budget.operation_timeout(VideoStage.SHUTDOWN, 30.0)
+    if timeout <= 0:
+        raise TransientVideoError(f"no shutdown budget remains for job_id={job_id}")
+    operation_runner(
+        lambda: storage.update_bytes(
+            manifest_path(job_id),
+            "application/json; charset=utf-8",
+            _apply,
+        ),
+        timeout,
+    )
+    _append_video_timing_evidence(
+        storage,
+        job_id,
+        budget,
+        kind=TimingEvidenceKind.ARTIFACT,
+        stage=VideoStage.ARCHIVE,
+        reason=STATUS_RENDERED_PENDING_DISTRIBUTION,
+        details={
+            "artifact_sha256": payload["artifact"]["validation"]["media"]["sha256"],
+            "record_sha256": payload["record_sha256"],
+        },
+    )
+    return captured
+
+
+def _download_rendered_pending(
+    storage: StorageBackend,
+    job_id: str,
+    destination: Path,
+    record: dict[str, Any],
+    validation: MediaValidationRecord,
+    budget: VideoStageBudget,
+    *,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+    media_probe: Callable[[Path, float], ProbeEvidence] | None = None,
+) -> None:
+    artifact = record["artifact"]
+    blob_path = artifact.get("blob_path")
+    if not isinstance(blob_path, str) or not blob_path:
+        raise TransientVideoError(f"rendered pending blob path is invalid for job_id={job_id}")
+    timeout = budget.operation_timeout(VideoStage.PROVIDER_ADMISSION, 60.0)
+    if timeout <= 0:
+        raise TransientVideoError(f"provider admission deadline reached for job_id={job_id}")
+    downloader = getattr(storage, "download_file", None)
+    if downloader is not None:
+        downloaded = operation_runner(lambda: downloader(blob_path, destination), timeout)
+    else:
+        content = operation_runner(lambda: storage.get_bytes(blob_path), timeout)
+        downloaded = content is not None
+        if content is not None:
+            destination.write_bytes(content)
+    if not downloaded:
+        destination.unlink(missing_ok=True)
+        raise TransientVideoError(f"rendered pending archive is unavailable for job_id={job_id}")
+    kwargs: dict[str, Any] = {
+        "timeout_seconds": 30.0,
+        "budget": budget,
+        "stage": VideoStage.PROVIDER_ADMISSION,
+    }
+    if media_probe is not None:
+        kwargs["probe"] = media_probe
+    try:
+        validate_media_record(
+            destination,
+            validation,
+            artifact_kind="video_archive",
+            identity={"job_id": job_id, "source_sha256": validation.media.sha256},
+            **kwargs,
+        )
+    except Exception as exc:
+        destination.unlink(missing_ok=True)
+        raise TransientVideoError(
+            f"rendered pending archive validation failed for job_id={job_id}"
+        ) from exc
+
+
+def _load_or_create_video_budget(
+    storage: StorageBackend,
+    job_id: str,
+    *,
+    now_utc: datetime,
+    utcnow: Callable[[], datetime],
+) -> VideoStageBudget:
+    """Atomically load the job's durable budget or establish its first start."""
+    from podcaster.generation import manifest_bytes
+
+    proposed = VideoStageBudget.start(now_utc=now_utc, utcnow=utcnow)
+    captured: dict[str, Any] = {}
+
+    def _apply(content: bytes | None) -> bytes:
+        if content is None:
+            raise TransientVideoError(f"no staged manifest for job_id={job_id}")
+        document = json.loads(content.decode("utf-8"))
+        if not isinstance(document, dict):
+            raise TransientVideoError(f"manifest for job_id={job_id} is not a dict")
+        generation = document.setdefault("generation", {})
+        if not isinstance(generation, dict):
+            raise TransientVideoError(f"generation state for job_id={job_id} is not a dict")
+        existing = generation.get("video_budget")
+        if existing is None:
+            existing = proposed.to_dict()
+            generation["video_budget"] = existing
+        if not isinstance(existing, dict):
+            raise TransientVideoError(f"invalid video budget for job_id={job_id}")
+        captured.update(existing)
+        return manifest_bytes(document)
+
+    try:
+        storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+        return VideoStageBudget.from_dict(captured, now_utc=now_utc, utcnow=utcnow)
+    except TransientVideoError:
+        raise
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise TransientVideoError(f"invalid video budget for job_id={job_id}") from exc
+    except Exception as exc:
+        raise TransientVideoError(f"could not persist video budget for job_id={job_id}") from exc
 
 
 def _record_video_publish(
@@ -696,32 +1132,34 @@ def _get_audio_duration(manifest: dict[str, Any]) -> float | None:
     return None
 
 
-def _probe_audio_duration(audio_path: Path) -> float | None:
+def _probe_audio_duration(
+    audio_path: Path,
+    *,
+    budget: VideoStageBudget | None = None,
+    probe: Callable[[Path, float], ProbeEvidence] | None = None,
+) -> float | None:
     """Probe the duration (seconds) of an audio file via ffprobe.
 
     Returns ``None`` on any probe failure so callers fall back to the manifest
     value or the default. Reading the real MP3 duration here lets the segment
     plan match the actual podcast length (issue #353).
     """
-    import subprocess
-
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(audio_path),
-    ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        duration = float((proc.stdout or "").strip())
-    except (OSError, ValueError, subprocess.CalledProcessError):
+        evidence = (
+            probe(audio_path, 30.0)
+            if probe is not None
+            else probe_media(
+                audio_path,
+                30.0,
+                budget=budget,
+                stage=VideoStage.RENDER,
+            )
+        )
+        duration = evidence.duration_seconds
+    except (OSError, ValueError, subprocess.SubprocessError):
         logger.warning("failed to probe audio duration for %s", audio_path, exc_info=True)
         return None
-    return duration if duration > 0 else None
+    return duration if duration is not None and duration > 0 else None
 
 
 def _env_flag(env_value: str | None, *, default: bool) -> bool:
@@ -749,13 +1187,30 @@ def _resolve_fanout(
     return _env_flag(os.environ.get(ENV_FANOUT), default=True)
 
 
-def _release_editor_lease(scratch: StorageBackend | None, job_id: str, run_id: str | None) -> None:
+def _release_editor_lease(
+    scratch: StorageBackend | None,
+    job_id: str,
+    run_id: str | None,
+    *,
+    budget: VideoStageBudget | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] | None = None,
+) -> None:
     """Release the editor lease when fan-out is active (no-op otherwise)."""
     if scratch is None or run_id is None:
         return
     from podcaster.video.editor import release_lease
 
-    release_lease(scratch, job_id, run_id)
+    if budget is None or operation_runner is None:
+        release_lease(scratch, job_id, run_id)
+        return
+    timeout = budget.operation_timeout(VideoStage.SHUTDOWN, 30.0)
+    if timeout <= 0:
+        logger.warning("no shutdown budget remains to release editor lease job_id=%s", job_id)
+        return
+    try:
+        operation_runner(lambda: release_lease(scratch, job_id, run_id), timeout)
+    except TimeoutError:
+        logger.warning("editor lease release timed out job_id=%s", job_id)
 
 
 def _video_visibility_timeout(env: dict[str, str] | None = None) -> int:
@@ -771,6 +1226,378 @@ def _video_visibility_timeout(env: dict[str, str] | None = None) -> int:
     return value if value > 0 else DEFAULT_VIDEO_VISIBILITY_TIMEOUT
 
 
+def _resume_rendered_pending_distribution(
+    job_id: str,
+    manifest: dict[str, Any],
+    storage: StorageBackend,
+    config: VideoDistributionConfig,
+    budget: VideoStageBudget,
+    *,
+    media_probe: Callable[[Path, float], ProbeEvidence] | None,
+    storage_operation_runner: Callable[[Callable[[], Any], float], Any] | None,
+) -> VideoOutcome | None:
+    generation = manifest.get("generation")
+    if not isinstance(generation, dict):
+        return None
+    pending = generation.get(STATUS_RENDERED_PENDING_DISTRIBUTION)
+    if pending is None:
+        return None
+
+    def record_state(state: dict[str, Any]) -> None:
+        _record_video_state(
+            storage,
+            job_id,
+            state,
+            budget=budget,
+            operation_runner=storage_operation_runner or run_storage_operation,
+        )
+
+    record, validation = _validate_rendered_pending_record(
+        pending,
+        job_id=job_id,
+        budget=budget,
+    )
+    raw_script = storage.get_bytes(script_path(job_id))
+    if raw_script is None:
+        raise TransientVideoError(f"rendered pending script is unavailable for job_id={job_id}")
+    script = raw_script.decode("utf-8")
+    if record.get("source") != _render_source_facts(manifest, script):
+        raise TransientVideoError(f"rendered pending source identity mismatch for job_id={job_id}")
+    request = manifest.get("request")
+    if not isinstance(request, dict):
+        request = {}
+    language = str(request.get("language", "en"))
+    provider_enabled = (
+        youtube_enabled_for_language(config, language)
+        or config.spotify_rss_enabled
+        or config.spotify_upload_enabled
+    )
+    preliminary_admission = budget.admit_provider_mutation()
+    if provider_enabled and not config.dry_run and not preliminary_admission.allowed:
+        artifact = record["artifact"]
+        blob_url = str(artifact.get("blob_url") or artifact.get("blob_path"))
+        _append_video_timing_evidence(
+            storage,
+            job_id,
+            budget,
+            kind=TimingEvidenceKind.STAGE,
+            stage=VideoStage.PROVIDER_ADMISSION,
+            reason=preliminary_admission.reason.value,
+            details={
+                "allowed": False,
+                "remaining_seconds": preliminary_admission.remaining_seconds,
+                "redelivery": True,
+            },
+        )
+        record_state(
+            {
+                "status": STATUS_RENDERED_PENDING_DISTRIBUTION,
+                "reason": preliminary_admission.reason.value,
+                "at": _iso(budget.now_utc()),
+            },
+        )
+        return VideoOutcome(
+            job_id=job_id,
+            status=STATUS_RENDERED_PENDING_DISTRIBUTION,
+            reason=preliminary_admission.reason.value,
+            video_blob_path=blob_url,
+            segment_count=int(record.get("clipset", {}).get("count", 0)),
+            distribution=DistributionResult(status="pending", blob_path=blob_url),
+        )
+
+    resume_root = Path.cwd() / f".video-resume-{uuid.uuid4().hex}"
+    resume_root.mkdir(mode=0o700)
+    video_path = resume_root / f"{job_id}.mp4"
+    try:
+        _download_rendered_pending(
+            storage,
+            job_id,
+            video_path,
+            record,
+            validation,
+            budget,
+            operation_runner=storage_operation_runner or run_storage_operation,
+            media_probe=media_probe,
+        )
+        artifact = record["artifact"]
+        blob_url = str(artifact.get("blob_url") or artifact.get("blob_path"))
+        if not provider_enabled:
+            result = DistributionResult(status="completed", blob_path=blob_url)
+            record_state(
+                {
+                    "status": STATUS_COMPLETED,
+                    "at": _iso(budget.now_utc()),
+                    "segment_count": int(record.get("clipset", {}).get("count", 0)),
+                    "duration_seconds": validation.media.probe.duration_seconds,
+                    "distribution": {
+                        "status": "completed",
+                        "blob_path": blob_url,
+                        "provider_outcomes": {},
+                        "provider_records": {},
+                        "public_delivery_status": "pending",
+                    },
+                },
+            )
+            return VideoOutcome(
+                job_id=job_id,
+                status=STATUS_COMPLETED,
+                video_blob_path=blob_url,
+                segment_count=int(record.get("clipset", {}).get("count", 0)),
+                distribution=result,
+            )
+        admission = budget.admit_provider_mutation()
+        _append_video_timing_evidence(
+            storage,
+            job_id,
+            budget,
+            kind=TimingEvidenceKind.STAGE,
+            stage=VideoStage.PROVIDER_ADMISSION,
+            reason=admission.reason.value,
+            details={
+                "allowed": admission.allowed,
+                "remaining_seconds": admission.remaining_seconds,
+                "redelivery": True,
+            },
+        )
+        if not config.dry_run and not admission.allowed:
+            record_state(
+                {
+                    "status": STATUS_RENDERED_PENDING_DISTRIBUTION,
+                    "reason": admission.reason.value,
+                    "at": _iso(budget.now_utc()),
+                },
+            )
+            return VideoOutcome(
+                job_id=job_id,
+                status=STATUS_RENDERED_PENDING_DISTRIBUTION,
+                reason=admission.reason.value,
+                video_blob_path=blob_url,
+                segment_count=int(record.get("clipset", {}).get("count", 0)),
+                distribution=DistributionResult(
+                    status="pending",
+                    blob_path=blob_url,
+                ),
+            )
+        podcast_config = PodcastConfig.from_payload(request)
+        title, _ = _resolve_video_title(
+            request,
+            brand_name=podcast_config.name,
+            job_id=job_id,
+        )
+        spotify_publish_config = _resolve_spotify_publish_config(request)
+        fallback_description = str(request.get("description", f"Video podcast episode {job_id}"))
+        preferred_description = (
+            _sanitize_preferred_description(spotify_publish_config.description)
+            if spotify_publish_config is not None and spotify_publish_config.description.strip()
+            else _sanitize_preferred_description(request.get("article_summary"))
+        )
+        template = request.get("description_template")
+        description = _build_video_description(
+            storage,
+            job_id,
+            fallback_description,
+            music_credits=template if isinstance(template, str) and template.strip() else None,
+            show_name=podcast_config.name,
+            spoken_site=podcast_config.spoken_site,
+            preferred_description=preferred_description,
+        )
+        publish_run_id = _ensure_video_publish_run(storage, job_id)
+        try:
+            identity = publication_identity(manifest, job_id, publish_run_id)
+        except PublicationStateError as exc:
+            if canonical_identity_requested(request):
+                raise PermanentVideoError(
+                    "canonical publication identity is invalid; provider mutation blocked",
+                    reason=REASON_INVALID_PUBLICATION_IDENTITY,
+                    details={"job_id": job_id},
+                ) from exc
+            identity = None
+        published = generation.get("video_publish")
+        published_for_attempt = dict(published) if isinstance(published, dict) else {}
+        if identity is not None:
+            evidence = read_evidence(storage, job_id)
+            latest = latest_outcomes(evidence)
+            for platform, enabled in (
+                ("youtube", youtube_enabled_for_language(config, language)),
+                ("spotify_rss", config.spotify_rss_enabled),
+                ("spotify", config.spotify_upload_enabled),
+            ):
+                key = "spotify_upload" if platform == "spotify" else platform
+                if retry_is_blocked(evidence, platform=platform, media_kind="video"):
+                    prior = latest.get(f"{platform}:video", {})
+                    published_for_attempt[key] = {
+                        "status": "published",
+                        "outcome": prior.get("outcome", PUBLICATION_UNKNOWN),
+                        "provider_status": prior.get("status"),
+                        "provider_id": prior.get("provider_artifact_id"),
+                        "verification": prior.get("verification", "none"),
+                        "retry_blocked": True,
+                    }
+                elif enabled and not config.dry_run:
+                    try:
+                        claim = append_evidence(
+                            storage,
+                            identity,
+                            platform=platform,
+                            media_kind="video",
+                            operation="upload_intent",
+                            outcome=PUBLICATION_UNKNOWN,
+                            mutation_attempted=False,
+                            retry_blocked=True,
+                            code="mutation_intent",
+                        )
+                        if claim is None:
+                            published_for_attempt[key] = {
+                                "status": "published",
+                                "outcome": PUBLICATION_UNKNOWN,
+                                "retry_blocked": True,
+                            }
+                    except Exception:
+                        published_for_attempt[key] = {
+                            "status": "published",
+                            "outcome": PUBLICATION_UNKNOWN,
+                            "retry_blocked": True,
+                        }
+
+        evidence_failures: list[str] = []
+
+        def _record(platform: str, snapshot: dict[str, Any]) -> None:
+            timeout = budget.operation_timeout(VideoStage.EVIDENCE, 30.0)
+            if timeout <= 0:
+                evidence_failures.append(platform)
+                return
+            try:
+                persisted = (storage_operation_runner or run_storage_operation)(
+                    lambda: _record_video_publication(
+                        storage,
+                        job_id,
+                        identity,
+                        platform,
+                        snapshot,
+                    ),
+                    timeout,
+                )
+            except TimeoutError:
+                persisted = False
+            if not persisted:
+                evidence_failures.append(platform)
+
+        try:
+            dist_result = distribute_video(
+                video_path,
+                job_id,
+                title,
+                description,
+                validation.media.probe.duration_seconds or 0.0,
+                replace(config, blob_archive_enabled=False),
+                storage=_StorageUploaderAdapter(storage),
+                spotify_anchor_id=_resolve_anchor_id(manifest),
+                season_number=_extract_year(manifest),
+                episode_number=_extract_week(manifest),
+                language=language,
+                published=published_for_attempt,
+                publish_run_id=publish_run_id,
+                on_published=_record,
+                budget=budget,
+                operation_runner=storage_operation_runner or run_storage_operation,
+                archived_blob_url=str(
+                    record["artifact"].get("blob_url") or record["artifact"].get("blob_path")
+                ),
+            )
+        except ProviderMutationAdmissionError as exc:
+            reason = exc.decision.reason.value
+            record_state(
+                {
+                    "status": STATUS_RENDERED_PENDING_DISTRIBUTION,
+                    "reason": reason,
+                    "at": _iso(budget.now_utc()),
+                },
+            )
+            return VideoOutcome(
+                job_id=job_id,
+                status=STATUS_RENDERED_PENDING_DISTRIBUTION,
+                reason=reason,
+                video_blob_path=blob_url,
+                segment_count=int(record.get("clipset", {}).get("count", 0)),
+                distribution=DistributionResult(status="pending", blob_path=blob_url),
+            )
+        if not budget.admit(VideoStage.EVIDENCE).allowed:
+            _append_video_timing_evidence(
+                storage,
+                job_id,
+                budget,
+                kind=TimingEvidenceKind.CANCELLATION,
+                stage=VideoStage.SHUTDOWN,
+                reason=REASON_EVIDENCE_DEADLINE_REACHED,
+                details={"shutdown_only": True, "redelivery": True},
+            )
+        dist_result.blob_path = str(
+            record["artifact"].get("blob_url") or record["artifact"].get("blob_path")
+        )
+        for platform in evidence_failures:
+            outcome_key = "spotify_upload" if platform == "spotify_upload" else platform
+            provider_key = "spotify_video" if platform == "spotify_upload" else platform
+            dist_result.provider_outcomes[outcome_key] = PUBLICATION_UNKNOWN
+            dist_result.provider_records[provider_key] = {
+                **dist_result.provider_records.get(provider_key, {}),
+                "status": "unknown",
+                "verification": "none",
+                "last_error_code": "evidence_persistence_failed",
+                "retry_blocked": True,
+            }
+            dist_result.status = "failed"
+        delivery_unconfirmed = any(
+            outcome in (PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
+            for outcome in dist_result.provider_outcomes.values()
+        )
+        terminal_status = (
+            STATUS_FAILED
+            if delivery_unconfirmed or dist_result.status in ("failed", "partial")
+            else STATUS_COMPLETED
+        )
+        record_state(
+            {
+                "status": terminal_status,
+                "at": _iso(budget.now_utc()),
+                "segment_count": int(record.get("clipset", {}).get("count", 0)),
+                "duration_seconds": validation.media.probe.duration_seconds,
+                "distribution": {
+                    "status": dist_result.status,
+                    "youtube_id": dist_result.youtube_id,
+                    "blob_path": dist_result.blob_path,
+                    "spotify_rss_updated": dist_result.spotify_rss_updated,
+                    "spotify_upload_updated": dist_result.spotify_upload_updated,
+                    "publish_run_id": dist_result.publish_run_id,
+                    "provider_outcomes": dist_result.provider_outcomes,
+                    "provider_records": dist_result.provider_records,
+                    "public_delivery_status": dist_result.public_delivery_status,
+                },
+            },
+        )
+        _append_video_timing_evidence(
+            storage,
+            job_id,
+            budget,
+            kind=TimingEvidenceKind.STAGE,
+            stage=VideoStage.SHUTDOWN,
+            reason=terminal_status,
+            details={"redelivery": True},
+        )
+        return VideoOutcome(
+            job_id=job_id,
+            status=terminal_status,
+            video_blob_path=dist_result.blob_path,
+            segment_count=int(record.get("clipset", {}).get("count", 0)),
+            distribution=dist_result,
+        )
+    finally:
+        video_path.unlink(missing_ok=True)
+        try:
+            resume_root.rmdir()
+        except OSError:
+            logger.debug("could not remove rendered resume directory %s", resume_root)
+
+
 def run_video_generation(
     job_id: str,
     storage: StorageBackend,
@@ -781,6 +1608,13 @@ def run_video_generation(
     fanout: bool | None = None,
     fanout_scratch: StorageBackend | None = None,
     clip_producer: QueueProducer | None = None,
+    budget: VideoStageBudget | None = None,
+    budget_utcnow: Callable[[], datetime] | None = None,
+    media_probe: Callable[[Path, float], ProbeEvidence] | None = None,
+    storage_operation_runner: Callable[[Callable[[], Any], float], Any] | None = None,
+    attempt: int | None = None,
+    defer_optional_cleanup: bool = False,
+    on_budget_resolved: Callable[[VideoStageBudget], None] | None = None,
 ) -> VideoOutcome:
     """Generate video for a staged job_id and distribute to configured targets.
 
@@ -795,6 +1629,7 @@ def run_video_generation(
     # Imported here (not at module scope) to match the existing lazy
     # ``video_compose`` import policy in this module, while still binding the
     # name before the ``try`` block whose ``except`` clause needs it.
+    from podcaster.video.editor import RecordingInsufficientError
     from podcaster.video.video_compose import WatermarkTransientError, WatermarkUnavailableError
 
     current = now or datetime.now(timezone.utc)
@@ -825,6 +1660,67 @@ def run_video_generation(
     if not isinstance(manifest, dict):
         raise TransientVideoError(f"manifest for job_id={job_id} is not a dict")
 
+    # The production entry owns one durable job start. Redelivery reloads that
+    # projection rather than granting a fresh lifetime. Lower-level callers may
+    # still inject an already-constructed budget for compatibility and fake clocks.
+    if budget is None:
+        utcnow = budget_utcnow or (
+            (lambda: current) if now is not None else lambda: datetime.now(timezone.utc)
+        )
+        budget = _load_or_create_video_budget(storage, job_id, now_utc=current, utcnow=utcnow)
+    stage_budget = budget
+    if on_budget_resolved is not None:
+        on_budget_resolved(stage_budget)
+
+    def release_owned_lease() -> None:
+        _release_editor_lease(
+            scratch,
+            job_id,
+            run_id,
+            budget=stage_budget,
+            operation_runner=storage_operation_runner or run_storage_operation,
+        )
+
+    def record_state(state: dict[str, Any]) -> None:
+        _record_video_state(
+            storage,
+            job_id,
+            state,
+            budget=stage_budget,
+            operation_runner=storage_operation_runner or run_storage_operation,
+        )
+
+    def optional_cleanup() -> None:
+        intermediates.cleanup(
+            budget=stage_budget,
+            operation_runner=storage_operation_runner or run_storage_operation,
+        )
+        if fanout_enabled and run_id is not None:
+            from podcaster.video.editor import cleanup_clips
+
+            cleanup_clips(
+                scratch,
+                job_id,
+                budget=stage_budget,
+                operation_runner=storage_operation_runner or run_storage_operation,
+            )
+
+    def terminal_outcome(outcome: VideoOutcome) -> VideoOutcome:
+        if defer_optional_cleanup:
+            return replace(outcome, _optional_cleanup=optional_cleanup)
+        optional_cleanup()
+        return outcome
+
+    _append_video_timing_evidence(
+        storage,
+        job_id,
+        stage_budget,
+        kind=TimingEvidenceKind.ATTEMPT,
+        stage=VideoStage.PREFLIGHT,
+        reason="video_generation_attempt",
+        details={"job_id": job_id, "attempt": attempt if attempt is not None else "unknown"},
+    )
+
     # Check idempotency
     if _already_processed(manifest):
         logger.info("video skipped job_id=%s reason=%s", job_id, REASON_ALREADY_PROCESSED)
@@ -834,6 +1730,18 @@ def run_video_generation(
     if not claim_pipeline(storage, job_id, PIPELINE_VIDEO, now=current):
         logger.info("video skipped job_id=%s reason=%s", job_id, REASON_PIPELINE_CONFLICT)
         return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_PIPELINE_CONFLICT)
+
+    resumed = _resume_rendered_pending_distribution(
+        job_id,
+        manifest,
+        storage,
+        dist_config,
+        stage_budget,
+        media_probe=media_probe,
+        storage_operation_runner=storage_operation_runner,
+    )
+    if resumed is not None:
+        return resumed
 
     # Load script
     raw_script = storage.get_bytes(script_path(job_id))
@@ -902,10 +1810,22 @@ def run_video_generation(
 
             # Resolve the podcast audio first so the segment plan is driven by
             # the actual MP3 duration rather than the manifest default.
-            audio_path = _resolve_audio_path(manifest, job_id, storage, output_dir)
+            audio_path = _resolve_audio_path(
+                manifest,
+                job_id,
+                storage,
+                output_dir,
+                budget=stage_budget,
+                intermediates=intermediates,
+                media_probe=media_probe,
+            )
             audio_duration: float | None = None
             if audio_path is not None:
-                audio_duration = _probe_audio_duration(audio_path)
+                audio_duration = _probe_audio_duration(
+                    audio_path,
+                    budget=stage_budget,
+                    probe=media_probe,
+                )
             if audio_duration is None:
                 audio_duration = manifest_audio_duration
             if audio_duration is None:
@@ -983,16 +1903,14 @@ def run_video_generation(
                     REASON_INVALID_PLAN,
                     exc,
                 )
-                _record_video_state(
-                    storage,
-                    job_id,
+                record_state(
                     {
                         "status": STATUS_SKIPPED,
                         "reason": REASON_INVALID_PLAN,
                         "at": _iso(current),
                     },
                 )
-                _release_editor_lease(scratch, job_id, run_id)
+                release_owned_lease()
                 return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_INVALID_PLAN)
 
             # Show the claracle.com weekly page (derived from the job_id) as the
@@ -1012,7 +1930,16 @@ def run_video_generation(
             # Removed repos get a "Repo removed" card instead of a wasted
             # navigation, and speaker cues are persisted so the hosts can comment
             # on why the project is gone (issue #394).
-            plan = annotate_removed_repos(plan)
+            if budget.admit(VideoStage.PREFLIGHT).allowed:
+                plan = annotate_removed_repos(
+                    plan,
+                    remaining_seconds=lambda: budget.remaining_seconds(VideoStage.PREFLIGHT),
+                )
+            else:
+                logger.warning(
+                    "repo pre-flight cutoff reached; launching no HEAD requests job_id=%s",
+                    job_id,
+                )
             _persist_removed_repo_notes(storage, job_id, plan)
 
             # Record segments. Pass the script's Source URL so failed repo
@@ -1051,6 +1978,15 @@ def run_video_generation(
                                 run_id,
                             )
                             raise TransientVideoError(f"editor lease lost for job_id={job_id}")
+                        _append_video_timing_evidence(
+                            storage,
+                            job_id,
+                            stage_budget,
+                            kind=TimingEvidenceKind.HEARTBEAT,
+                            stage=VideoStage.FANIN,
+                            reason="editor_lease_renewed",
+                            details={"run_id": run_id},
+                        )
 
                     logger.info(
                         "video fan-out recording job_id=%s segments=%d run_id=%s",
@@ -1065,8 +2001,25 @@ def run_video_generation(
                         scratch=scratch,
                         producer=producer,
                         heartbeat=_heartbeat,
+                        budget=budget,
+                        media_validator=(
+                            lambda path, expected, timeout: collect_media_evidence(
+                                path,
+                                expected=expected,
+                                timeout_seconds=timeout,
+                                budget=budget,
+                                stage=VideoStage.FALLBACK,
+                                **({"probe": media_probe} if media_probe is not None else {}),
+                            )
+                        ),
                     )
                 else:
+                    if not budget.admit(VideoStage.FANIN).allowed:
+                        raise RecordingInsufficientError(
+                            job_id,
+                            -1,
+                            "recording cutoff reached before inline browser admission",
+                        )
                     recording = record_episode(
                         plan,
                         output_dir=output_dir,
@@ -1074,6 +2027,7 @@ def run_video_generation(
                         source_url=extract_source_url(script) if pinned_article is None else None,
                         intermediates=intermediates,
                         brand_name=brand_name,
+                        budget=stage_budget,
                     )
             # Compose final MP4
             output_path = output_dir / f"{job_id}.mp4"
@@ -1088,6 +2042,7 @@ def run_video_generation(
                 recording.recorded,
                 output_dir,
                 sections_metadata=sections_metadata,
+                budget=stage_budget,
             )
 
             with timings.phase("composition"):
@@ -1103,10 +2058,92 @@ def run_video_generation(
                     section_cards=section_cards,
                     intermediates=intermediates,
                     task_reporter=normalize_reporter,
+                    budget=stage_budget,
+                    media_probe=media_probe,
                 )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
                 raise RuntimeError(f"composition produced invalid output for job_id={job_id}")
+
+            archive_result: ArchiveResult | None = None
+            archive_request = manifest.get("request")
+            archive_language = (
+                str(archive_request.get("language", "en"))
+                if isinstance(archive_request, dict)
+                else "en"
+            )
+            provider_target_enabled = (
+                youtube_enabled_for_language(dist_config, archive_language)
+                or dist_config.spotify_rss_enabled
+                or dist_config.spotify_upload_enabled
+            )
+            if (
+                dist_config.blob_archive_enabled or provider_target_enabled
+            ) and not dist_config.dry_run:
+                archive_kwargs: dict[str, Any] = {
+                    "storage": storage,
+                    "budget": budget,
+                    "config": dist_config,
+                    "probe": media_probe,
+                }
+                if storage_operation_runner is not None:
+                    archive_kwargs["operation_runner"] = storage_operation_runner
+                archive_result = archive_video_verified(
+                    output_path,
+                    job_id,
+                    **archive_kwargs,
+                )
+                pending_payload = _rendered_pending_payload(
+                    job_id=job_id,
+                    manifest=manifest,
+                    script=script,
+                    plan=plan,
+                    audio_path=audio_path,
+                    audio_duration=audio_duration,
+                    archive_result=archive_result,
+                    run_id=run_id,
+                    budget=stage_budget,
+                )
+                _persist_rendered_pending(
+                    storage,
+                    job_id,
+                    pending_payload,
+                    stage_budget,
+                    operation_runner=storage_operation_runner or run_storage_operation,
+                )
+                if archive_result.pending_only:
+                    pending_distribution = DistributionResult(
+                        status="pending",
+                        blob_path=archive_result.blob_url,
+                    )
+                    record_state(
+                        {
+                            "status": STATUS_RENDERED_PENDING_DISTRIBUTION,
+                            "reason": REASON_PROVIDER_ADMISSION_DENIED,
+                            "at": _iso(stage_budget.now_utc()),
+                            "segment_count": compose_result.segment_count,
+                            "duration_seconds": compose_result.duration_seconds,
+                            "performance": timings.to_dict(),
+                        },
+                    )
+                    _append_video_timing_evidence(
+                        storage,
+                        job_id,
+                        stage_budget,
+                        kind=TimingEvidenceKind.CANCELLATION,
+                        stage=VideoStage.SHUTDOWN,
+                        reason=REASON_PROVIDER_ADMISSION_DENIED,
+                        details={"pre_mutation": True, "heartbeat_stopped": True},
+                    )
+                    release_owned_lease()
+                    return VideoOutcome(
+                        job_id=job_id,
+                        status=STATUS_RENDERED_PENDING_DISTRIBUTION,
+                        reason=REASON_PROVIDER_ADMISSION_DENIED,
+                        video_blob_path=archive_result.blob_url,
+                        segment_count=compose_result.segment_count,
+                        distribution=pending_distribution,
+                    )
 
             # Distribute
             request = manifest.get("request")
@@ -1170,6 +2207,100 @@ def run_video_generation(
             season_number = _extract_year(manifest)
             episode_number = _extract_week(manifest)
             job_language = str(request.get("language", "en"))
+            provider_enabled = (
+                youtube_enabled_for_language(dist_config, job_language)
+                or dist_config.spotify_rss_enabled
+                or dist_config.spotify_upload_enabled
+            )
+            if not provider_enabled and archive_result is not None:
+                dist_result = DistributionResult(
+                    status="completed",
+                    blob_path=archive_result.blob_url,
+                )
+                record_state(
+                    {
+                        "status": STATUS_COMPLETED,
+                        "at": _iso(stage_budget.now_utc()),
+                        "segment_count": compose_result.segment_count,
+                        "duration_seconds": compose_result.duration_seconds,
+                        "performance": timings.to_dict(),
+                        "distribution": {
+                            "status": "completed",
+                            "blob_path": archive_result.blob_url,
+                            "provider_outcomes": {},
+                            "provider_records": {},
+                            "public_delivery_status": "pending",
+                        },
+                    },
+                )
+                _append_video_timing_evidence(
+                    storage,
+                    job_id,
+                    stage_budget,
+                    kind=TimingEvidenceKind.STAGE,
+                    stage=VideoStage.SHUTDOWN,
+                    reason=STATUS_COMPLETED,
+                    details={"heartbeat_stopped": True, "archive_only": True},
+                )
+                release_owned_lease()
+                return terminal_outcome(
+                    VideoOutcome(
+                        job_id=job_id,
+                        status=STATUS_COMPLETED,
+                        video_blob_path=archive_result.blob_url,
+                        segment_count=compose_result.segment_count,
+                        distribution=dist_result,
+                    )
+                )
+            if provider_enabled and not dist_config.dry_run:
+                provider_admission = stage_budget.admit_provider_mutation()
+                _append_video_timing_evidence(
+                    storage,
+                    job_id,
+                    stage_budget,
+                    kind=TimingEvidenceKind.STAGE,
+                    stage=VideoStage.PROVIDER_ADMISSION,
+                    reason=provider_admission.reason.value,
+                    details={
+                        "allowed": provider_admission.allowed,
+                        "remaining_seconds": provider_admission.remaining_seconds,
+                    },
+                )
+                if not provider_admission.allowed:
+                    pending_distribution = DistributionResult(
+                        status="pending",
+                        blob_path=archive_result.blob_url if archive_result is not None else None,
+                    )
+                    record_state(
+                        {
+                            "status": STATUS_RENDERED_PENDING_DISTRIBUTION,
+                            "reason": provider_admission.reason.value,
+                            "at": _iso(stage_budget.now_utc()),
+                            "segment_count": compose_result.segment_count,
+                            "duration_seconds": compose_result.duration_seconds,
+                            "performance": timings.to_dict(),
+                        },
+                    )
+                    _append_video_timing_evidence(
+                        storage,
+                        job_id,
+                        stage_budget,
+                        kind=TimingEvidenceKind.CANCELLATION,
+                        stage=VideoStage.SHUTDOWN,
+                        reason=provider_admission.reason.value,
+                        details={"pre_mutation": True, "heartbeat_stopped": True},
+                    )
+                    release_owned_lease()
+                    return VideoOutcome(
+                        job_id=job_id,
+                        status=STATUS_RENDERED_PENDING_DISTRIBUTION,
+                        reason=provider_admission.reason.value,
+                        video_blob_path=(
+                            archive_result.blob_url if archive_result is not None else None
+                        ),
+                        segment_count=compose_result.segment_count,
+                        distribution=pending_distribution,
+                    )
             generation = manifest.get("generation")
             published = None
             if isinstance(generation, dict) and isinstance(generation.get("video_publish"), dict):
@@ -1251,13 +2382,33 @@ def run_video_generation(
             evidence_failures: list[str] = []
 
             def record_publication(platform: str, record: dict[str, Any]) -> None:
-                if not _record_video_publication(
-                    storage,
-                    job_id,
-                    publication_context,
-                    platform,
-                    record,
-                ):
+                timeout = stage_budget.operation_timeout(VideoStage.EVIDENCE, 30.0)
+                if timeout <= 0:
+                    _append_video_timing_evidence(
+                        storage,
+                        job_id,
+                        stage_budget,
+                        kind=TimingEvidenceKind.TIMEOUT,
+                        stage=VideoStage.EVIDENCE,
+                        reason=REASON_EVIDENCE_DEADLINE_REACHED,
+                        details={"platform": platform, "post_mutation": True},
+                    )
+                    evidence_failures.append(platform)
+                    return
+                try:
+                    persisted = (storage_operation_runner or run_storage_operation)(
+                        lambda: _record_video_publication(
+                            storage,
+                            job_id,
+                            publication_context,
+                            platform,
+                            record,
+                        ),
+                        timeout,
+                    )
+                except TimeoutError:
+                    persisted = False
+                if not persisted:
                     evidence_failures.append(platform)
 
             with timings.phase("distribution"):
@@ -1267,7 +2418,11 @@ def run_video_generation(
                     title,
                     description,
                     compose_result.duration_seconds,
-                    dist_config,
+                    (
+                        replace(dist_config, blob_archive_enabled=False)
+                        if archive_result is not None
+                        else dist_config
+                    ),
                     storage=_StorageUploaderAdapter(storage),
                     spotify_anchor_id=_resolve_anchor_id(manifest),
                     season_number=season_number,
@@ -1276,7 +2431,14 @@ def run_video_generation(
                     published=published_for_attempt,
                     publish_run_id=publish_run_id,
                     on_published=record_publication,
+                    budget=stage_budget,
+                    operation_runner=storage_operation_runner or run_storage_operation,
+                    archived_blob_url=(
+                        archive_result.blob_url if archive_result is not None else None
+                    ),
                 )
+            if archive_result is not None:
+                dist_result.blob_path = archive_result.blob_url
             result_publish_run_id = getattr(dist_result, "publish_run_id", None)
             if not isinstance(result_publish_run_id, str):
                 result_publish_run_id = publish_run_id
@@ -1337,9 +2499,7 @@ def run_video_generation(
                     "youtube_oauth_error": dist_result.youtube_oauth_error,
                     "youtube_oauth_error_subtype": dist_result.youtube_oauth_error_subtype,
                 }
-                _record_video_state(
-                    storage,
-                    job_id,
+                record_state(
                     {
                         "status": STATUS_FAILED,
                         "reason": REASON_REQUIRED_YOUTUBE_FAILURE,
@@ -1373,9 +2533,7 @@ def run_video_generation(
             timings.log_summary(logger)
 
             # Record the aggregate terminal state in the manifest.
-            _record_video_state(
-                storage,
-                job_id,
+            record_state(
                 {
                     "status": terminal_status,
                     "at": _iso(current),
@@ -1396,33 +2554,86 @@ def run_video_generation(
                 },
             )
 
-            # Intermediates are no longer needed once the episode is published;
-            # delete the job's scratch blobs (issue #410).  Best-effort — the
-            # 7-day lifecycle policy on the scratch container is the safety net.
-            intermediates.cleanup()
+            _append_video_timing_evidence(
+                storage,
+                job_id,
+                stage_budget,
+                kind=TimingEvidenceKind.STAGE,
+                stage=VideoStage.SHUTDOWN,
+                reason=terminal_status,
+                details={"heartbeat_stopped": True},
+            )
+            release_owned_lease()
 
-            # Fan-out scratch (clipset + per-clip blobs) is likewise spent once the
-            # compose succeeded; delete it and release the editor lease (RFC §5).
-            if fanout_enabled and run_id is not None:
-                from podcaster.video.editor import cleanup_clips
-
-                cleanup_clips(scratch, job_id)
-            _release_editor_lease(scratch, job_id, run_id)
-
-            return VideoOutcome(
-                job_id=job_id,
-                status=terminal_status,
-                video_blob_path=dist_result.blob_path,
-                segment_count=compose_result.segment_count,
-                distribution=dist_result,
+            return terminal_outcome(
+                VideoOutcome(
+                    job_id=job_id,
+                    status=terminal_status,
+                    video_blob_path=dist_result.blob_path,
+                    segment_count=compose_result.segment_count,
+                    distribution=dist_result,
+                )
             )
 
+    except ProviderMutationAdmissionError as exc:
+        reason = exc.decision.reason.value
+        record_state(
+            {
+                "status": STATUS_RENDERED_PENDING_DISTRIBUTION,
+                "reason": reason,
+                "at": _iso(stage_budget.now_utc()),
+            },
+        )
+        _append_video_timing_evidence(
+            storage,
+            job_id,
+            stage_budget,
+            kind=TimingEvidenceKind.CANCELLATION,
+            stage=VideoStage.PROVIDER_ADMISSION,
+            reason=reason,
+            details={
+                "provider": exc.provider or "unknown",
+                "pre_mutation": True,
+                "heartbeat_stopped": True,
+            },
+        )
+        release_owned_lease()
+        pending_blob = archive_result.blob_url if archive_result is not None else None
+        return VideoOutcome(
+            job_id=job_id,
+            status=STATUS_RENDERED_PENDING_DISTRIBUTION,
+            reason=reason,
+            video_blob_path=pending_blob,
+            distribution=DistributionResult(status="pending", blob_path=pending_blob),
+        )
     except TransientVideoError:
-        _release_editor_lease(scratch, job_id, run_id)
+        release_owned_lease()
         raise
     except PermanentVideoError:
-        _release_editor_lease(scratch, job_id, run_id)
+        release_owned_lease()
         raise
+    except RecordingInsufficientError as exc:
+        logger.error(
+            "video recording insufficient job_id=%s clip_index=%d reason=%s",
+            job_id,
+            exc.clip_index,
+            exc.reason,
+        )
+        record_state(
+            {
+                "status": STATUS_FAILED,
+                "reason": REASON_RECORDING_INSUFFICIENT,
+                "clip_index": exc.clip_index,
+                "details": exc.reason,
+                "at": _iso(datetime.now(timezone.utc)),
+            },
+        )
+        release_owned_lease()
+        raise PermanentVideoError(
+            str(exc),
+            reason=REASON_RECORDING_INSUFFICIENT,
+            details={"job_id": job_id, "clip_index": exc.clip_index},
+        ) from exc
     except WatermarkTransientError as exc:
         # The watermark endpoint timed out, could not be resolved/connected to,
         # or answered 408/425/429/5xx.  None of those are statements about the
@@ -1437,9 +2648,7 @@ def run_video_generation(
             exc.reason,
             exc.details,
         )
-        _record_video_state(
-            storage,
-            job_id,
+        record_state(
             {
                 "status": STATUS_FAILED,
                 "reason": exc.reason,
@@ -1449,7 +2658,7 @@ def run_video_generation(
                 "at": _iso(current),
             },
         )
-        _release_editor_lease(scratch, job_id, run_id)
+        release_owned_lease()
         raise TransientVideoError(str(exc)) from exc
     except WatermarkUnavailableError as exc:
         # A configured watermark that cannot be resolved is a *permanent*
@@ -1467,9 +2676,7 @@ def run_video_generation(
             exc.reason,
             exc.details,
         )
-        _record_video_state(
-            storage,
-            job_id,
+        record_state(
             {
                 "status": STATUS_FAILED,
                 "reason": exc.reason,
@@ -1477,7 +2684,7 @@ def run_video_generation(
                 "at": _iso(current),
             },
         )
-        _release_editor_lease(scratch, job_id, run_id)
+        release_owned_lease()
         raise PermanentVideoError(
             str(exc),
             reason=exc.reason,
@@ -1507,16 +2714,24 @@ def run_video_generation(
                 (stderr or "").strip(),
             )
         logger.exception("video generation failed job_id=%s error=%s", job_id, type(exc).__name__)
-        _record_video_state(
-            storage,
-            job_id,
+        if isinstance(exc, TimeoutError):
+            _append_video_timing_evidence(
+                storage,
+                job_id,
+                stage_budget,
+                kind=TimingEvidenceKind.TIMEOUT,
+                stage=_current_video_stage(stage_budget),
+                reason=type(exc).__name__,
+                details={"heartbeat_stopped": True},
+            )
+        record_state(
             {
                 "status": STATUS_FAILED,
                 "reason": type(exc).__name__,
                 "at": _iso(current),
             },
         )
-        _release_editor_lease(scratch, job_id, run_id)
+        release_owned_lease()
         raise TransientVideoError(f"video generation failed for job_id={job_id}") from exc
 
 
@@ -1610,6 +2825,7 @@ def _build_section_cards(
     output_dir: Path,
     *,
     sections_metadata: list[dict[str, Any]] | None = None,
+    budget: VideoStageBudget | None = None,
 ):
     """Build section title card inserts for the recorded content (issue #377).
 
@@ -1640,6 +2856,7 @@ def _build_section_cards(
             segment_repo_urls,
             output_dir / "section_cards",
             config=config,
+            budget=budget,
         )
     except Exception:  # pragma: no cover - defensive: cards must never block video
         logger.exception("section title card generation failed; continuing without cards")
@@ -1651,8 +2868,12 @@ def _resolve_audio_path(
     job_id: str,
     storage: StorageBackend,
     output_dir: Path,
+    *,
+    budget: VideoStageBudget | None = None,
+    intermediates=None,
+    media_probe: Callable[[Path, float], ProbeEvidence] | None = None,
 ) -> Path | None:
-    """Download the episode audio from blob storage if available."""
+    """Download and validate the exact episode audio used by composition."""
     # Check manifest for MP3 path
     artifacts = manifest.get("artifacts")
     mp3_path = None
@@ -1664,14 +2885,140 @@ def _resolve_audio_path(
     if mp3_path is None:
         mp3_path = f"jobs/{job_id}/audio/{job_id}.mp3"
 
-    audio_bytes = storage.get_bytes(mp3_path)
-    if audio_bytes is None:
-        logger.info("no audio track available for video composition job_id=%s", job_id)
-        return None
-
     local_audio = output_dir / "audio.mp3"
-    local_audio.write_bytes(audio_bytes)
+    artifact = artifacts.get(mp3_path) if isinstance(artifacts, dict) else None
+    expected_size: int | None = None
+    expected_sha256: str | None = None
+    if isinstance(artifact, dict):
+        raw_size = artifact.get("size_bytes")
+        raw_sha = artifact.get("sha256")
+        if isinstance(raw_size, int) and raw_size > 0:
+            expected_size = raw_size
+        if (
+            isinstance(raw_sha, str)
+            and len(raw_sha) == 64
+            and all(char in "0123456789abcdef" for char in raw_sha)
+        ):
+            expected_sha256 = raw_sha
+    identity = (
+        {
+            "job_id": job_id,
+            "blob_path": mp3_path,
+            "source_sha256": expected_sha256,
+            "source_size": str(expected_size),
+        }
+        if expected_sha256 is not None and expected_size is not None
+        else None
+    )
+    if budget is not None and intermediates is not None and identity is not None:
+        validation = intermediates.download_validated(
+            "audio_input.mp3",
+            local_audio,
+            artifact_kind="audio_input",
+            identity=identity,
+            budget=budget,
+            stage=VideoStage.RENDER,
+            probe=media_probe,
+        )
+        if validation is not None:
+            return local_audio
+
+    timeout = budget.operation_timeout(VideoStage.RENDER, 30.0) if budget is not None else 30.0
+    if timeout <= 0:
+        raise TimeoutError("render deadline reached before audio download")
+    downloader = getattr(storage, "download_file", None)
+    if downloader is not None:
+        downloaded = run_storage_operation(
+            lambda: downloader(mp3_path, local_audio),
+            timeout,
+        )
+        if not downloaded:
+            logger.info("no audio track available for video composition job_id=%s", job_id)
+            return None
+    else:
+        audio_bytes = run_storage_operation(lambda: storage.get_bytes(mp3_path), timeout)
+        if audio_bytes is None:
+            logger.info("no audio track available for video composition job_id=%s", job_id)
+            return None
+        local_audio.write_bytes(audio_bytes)
+
+    if budget is None:
+        return local_audio
+
+    kwargs: dict[str, Any] = {
+        "timeout_seconds": 30.0,
+        "budget": budget,
+        "stage": VideoStage.RENDER,
+    }
+    if media_probe is not None:
+        kwargs["probe"] = media_probe
+    evidence = collect_media_evidence(local_audio, **kwargs)
+    if expected_size is not None and evidence.size_bytes != expected_size:
+        local_audio.unlink(missing_ok=True)
+        raise RuntimeError("audio size does not match manifest evidence")
+    if expected_sha256 is not None and evidence.sha256 != expected_sha256:
+        local_audio.unlink(missing_ok=True)
+        raise RuntimeError("audio SHA-256 does not match manifest evidence")
+    if budget is not None and intermediates is not None and identity is not None:
+        intermediates.upload_validated(
+            "audio_input.mp3",
+            local_audio,
+            artifact_kind="audio_input",
+            identity=identity,
+            content_type="audio/mpeg",
+            budget=budget,
+            stage=VideoStage.RENDER,
+            probe=media_probe,
+        )
     return local_audio
+
+
+def _run_queue_operation(call: Callable[[], Any], timeout_seconds: float) -> Any:
+    try:
+        return run_owned_callable(
+            call,
+            timeout_seconds,
+            process_name="video-queue-disposition",
+        )
+    except OwnedCallableTimeout as exc:
+        raise QueueDispositionTimeout(
+            f"queue disposition exceeded {timeout_seconds:.3f}s shutdown budget"
+        ) from exc
+
+
+def _delete_queue_message(
+    queue: QueueBackend,
+    message: QueueMessage,
+    budget: VideoStageBudget,
+    *,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = _run_queue_operation,
+) -> None:
+    timeout = budget.operation_timeout(VideoStage.SHUTDOWN)
+    if timeout <= 0:
+        raise QueueDispositionTimeout("no shutdown budget remains for queue disposition")
+    try:
+        operation_runner(lambda: queue.delete_message(message), timeout)
+    except QueueDispositionError:
+        raise
+    except TimeoutError as exc:
+        raise QueueDispositionTimeout(
+            f"queue disposition exceeded {timeout:.3f}s shutdown budget"
+        ) from exc
+    except Exception as exc:
+        raise QueueDispositionError("queue delete failed; message retained for retry") from exc
+
+
+def _run_optional_cleanup(outcome: VideoOutcome, budget: VideoStageBudget) -> None:
+    cleanup = outcome._optional_cleanup
+    if cleanup is None:
+        return
+    if budget.remaining_seconds(VideoStage.SHUTDOWN) <= 0:
+        logger.warning(
+            "optional video cleanup skipped with no shutdown budget job_id=%s",
+            outcome.job_id,
+        )
+        return
+    cleanup()
 
 
 def process_message(
@@ -1681,8 +3028,25 @@ def process_message(
     queue: QueueBackend,
     config: VideoDistributionConfig | None = None,
     now: datetime | None = None,
+    budget: VideoStageBudget | None = None,
+    budget_utcnow: Callable[[], datetime] | None = None,
+    queue_operation_runner: Callable[[Callable[[], Any], float], Any] = _run_queue_operation,
 ) -> VideoOutcome:
     """Process one video queue message: generate, then delete on terminal outcome."""
+    current = now or datetime.now(timezone.utc)
+    utcnow = budget_utcnow or (
+        (lambda: current) if now is not None else lambda: datetime.now(timezone.utc)
+    )
+    resolved_budget = budget
+    fallback_budget = budget or VideoStageBudget.start(now_utc=current, utcnow=utcnow)
+
+    def capture_budget(value: VideoStageBudget) -> None:
+        nonlocal resolved_budget
+        resolved_budget = value
+
+    def disposition_budget() -> VideoStageBudget:
+        return resolved_budget or fallback_budget
+
     try:
         job_id = parse_job_id(message.body)
     except ValueError:
@@ -1691,7 +3055,13 @@ def process_message(
             message.message_id,
             message.dequeue_count,
         )
-        queue.delete_message(message)
+        malformed_budget = budget or VideoStageBudget.start(now_utc=current, utcnow=utcnow)
+        _delete_queue_message(
+            queue,
+            message,
+            malformed_budget,
+            operation_runner=queue_operation_runner,
+        )
         return VideoOutcome("", STATUS_FAILED, reason="malformed_message")
 
     logger.info(
@@ -1701,7 +3071,17 @@ def process_message(
     )
 
     try:
-        outcome = run_video_generation(job_id, storage, config=config, now=now)
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=config,
+            now=now,
+            budget=budget,
+            budget_utcnow=budget_utcnow,
+            attempt=message.dequeue_count,
+            defer_optional_cleanup=True,
+            on_budget_resolved=capture_budget,
+        )
     except PermanentVideoError as exc:
         logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)
         details: dict[str, Any] = {"job_id": job_id, "reason": exc.reason}
@@ -1712,7 +3092,12 @@ def process_message(
             error_message=str(exc),
             details=details,
         )
-        queue.delete_message(message)
+        _delete_queue_message(
+            queue,
+            message,
+            disposition_budget(),
+            operation_runner=queue_operation_runner,
+        )
         return VideoOutcome(job_id, STATUS_FAILED, reason=exc.reason)
     except TransientVideoError:
         if message.dequeue_count >= MAX_DEQUEUE_COUNT:
@@ -1726,7 +3111,12 @@ def process_message(
                 ),
                 details={"job_id": job_id, "dequeue_count": message.dequeue_count},
             )
-            queue.delete_message(message)
+            _delete_queue_message(
+                queue,
+                message,
+                disposition_budget(),
+                operation_runner=queue_operation_runner,
+            )
             return VideoOutcome(job_id, STATUS_FAILED, reason=REASON_RETRY_EXHAUSTED)
         logger.warning(
             "leaving video message for retry job_id=%s dequeue_count=%s",
@@ -1747,7 +3137,33 @@ def process_message(
         )
         return outcome
 
-    queue.delete_message(message)
+    if outcome.status == STATUS_RENDERED_PENDING_DISTRIBUTION:
+        if message.dequeue_count >= MAX_DEQUEUE_COUNT:
+            logger.error(
+                "rendered distribution retry exhausted; retaining durable pending state job_id=%s",
+                job_id,
+            )
+            _delete_queue_message(
+                queue,
+                message,
+                disposition_budget(),
+                operation_runner=queue_operation_runner,
+            )
+            return outcome
+        logger.info(
+            "leaving rendered video message for distribution redelivery job_id=%s reason=%s",
+            job_id,
+            outcome.reason or REASON_PROVIDER_ADMISSION_DENIED,
+        )
+        return outcome
+
+    _delete_queue_message(
+        queue,
+        message,
+        disposition_budget(),
+        operation_runner=queue_operation_runner,
+    )
+    _run_optional_cleanup(outcome, disposition_budget())
     return outcome
 
 
