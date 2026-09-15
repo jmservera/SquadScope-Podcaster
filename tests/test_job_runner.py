@@ -463,6 +463,53 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
             "article_title": "Skills go vertical",
         }
     ]
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    assert persisted["generation"]["publish_result"]["status"] == "draft"
+    assert persisted["generation"]["publish_result"]["outcome"] == "draft_created"
+    assert persisted["generation"]["publish_result"]["publish_run_id"]
+
+
+def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation(
+    monkeypatch,
+):
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    manifest["request"] = {
+        "week": "2026-W24",
+        "article_url": "https://claracle.com/weekly/2026/w24/",
+        "article_title": "Invalid canonical identity",
+        "article_sha256": "a" * 64,
+        "publish_run_id": "123",
+        "spotify_publish": {"publish_mode": "draft", "upload_format": "wav"},
+    }
+    _stage(storage, manifest, _two_voice_script())
+    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: False)
+    monkeypatch.setattr(
+        job_runner,
+        "publish_episode",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Spotify mutation path must not run")
+        ),
+    )
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
+    )
+
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    publish_result = persisted["generation"]["publish_result"]
+    assert publish_result["outcome"] == "publication_unknown"
+    assert publish_result["details"] == {
+        "retry_blocked": True,
+        "code": "invalid_publication_identity",
+    }
 
 
 def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(monkeypatch):

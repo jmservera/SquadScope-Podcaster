@@ -468,6 +468,22 @@ must not publish the W37 audio draft or touch any W35 draft.
 | False success from a 2xx response | Require `isPublished=true`, a public Spotify URL, and video identity |
 | Audio policy silently enables video | Separate `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH` gate and video-specific intent |
 
+### Reconciliation outcome compatibility
+
+Implementation adds the canonical `outcome` field while retaining every
+terminal-state value in this PRD. `draft_gate_denied` after a completed draft
+maps to `draft_created`; `published` and `already_published` map to
+`published`; `publication_state_unknown` maps to `publication_unknown`; and
+protected, rejected, or operator-owned states map to
+`manual_handoff_required`.
+
+Mutation intent and terminal evidence are stored atomically under the accepted
+job identity as immutable append-only records with no count-based eviction and
+a declared 28-day minimum retention window. A prior blocking outcome prevents
+queue redelivery from issuing another mutation. Rollback
+disables the additive evidence/outcome consumer or reverts the code; it never
+deletes or mutates an existing Spotify artifact.
+
 ## References
 
 - `docs/spotify-video-upload.md`

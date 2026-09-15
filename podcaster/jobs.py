@@ -26,6 +26,7 @@ from podcaster.costs import (
 )
 from podcaster.generation import checksum, generate_artifacts, manifest_bytes
 from podcaster.prior_episodes import fetch_prior_episode_themes
+from podcaster.publication_state import canonical_identity_requested
 from podcaster.queue import enqueue_synthesis_job
 from podcaster.script_gen import ScriptGenConfig, generate_script
 from podcaster.sections import parse_script_sections, sections_to_metadata
@@ -616,10 +617,15 @@ def _request_metadata(
     callback = payload.get("callback") if isinstance(payload.get("callback"), dict) else {}
     callback_url = callback.get("url") if isinstance(callback, dict) else None
     cost_override = _cost_override(payload)
+    canonical_identity = canonical_identity_requested(payload)
     request = {
         "week": payload.get("week"),
         "article_url": payload.get("article_url"),
-        "article_sha256": replay_metadata["article_sha256"],
+        "article_sha256": (
+            payload.get("article_sha256")
+            if canonical_identity
+            else replay_metadata["article_sha256"]
+        ),
         "article_title": payload.get("article_title"),
         "article_content_provided": bool(payload.get("article_content")),
         "source_artifacts": payload.get("source_artifacts", []),
@@ -638,7 +644,11 @@ def _request_metadata(
             else False,
         },
         "replay": replay_metadata,
+        "publication_identity_mode": "canonical" if canonical_identity else "legacy",
     }
+    for field in ("publish_run_id", "manifest_sha256"):
+        if field in payload:
+            request[field] = payload[field]
     for field in (
         "backchannels",
         "description",

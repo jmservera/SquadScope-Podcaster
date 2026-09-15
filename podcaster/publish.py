@@ -31,13 +31,30 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
 
 from podcaster.config import MAX_SPOTIFY_DESCRIPTION_CHARS, SpotifyPublishConfig
+from podcaster.publication_state import (
+    DRAFT_CREATED,
+    MANUAL_HANDOFF_REQUIRED,
+    PUBLICATION_UNKNOWN,
+    PUBLISHED,
+    UPLOADED,
+    PublicationIdentity,
+    append_evidence,
+    emit_publication_signal,
+    outcome_from_publish_status,
+    outcome_from_spotify_terminal_state,
+    read_evidence,
+    retry_is_blocked,
+)
 from podcaster.spotify_shows import resolve_show_target
+
+if TYPE_CHECKING:
+    from podcaster.storage import StorageBackend
 
 try:
     from spotifyconnector import SpotifyConnector
@@ -78,6 +95,12 @@ class PublishResult:
     error: str | None = None
     dry_run: bool = False
     details: dict[str, Any] = field(default_factory=dict)
+    outcome: str | None = None
+    publish_run_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.outcome is None:
+            self.outcome = outcome_from_publish_status(self.status)
 
 
 @dataclass
@@ -94,6 +117,8 @@ class VideoPromoteResult:
     dry_run: bool = False
     authorized: bool = False
     details: dict[str, Any] = field(default_factory=dict)
+    outcome: str | None = None
+    publish_run_id: str | None = None
 
 
 class SpotifyPublishError(Exception):
@@ -1388,6 +1413,7 @@ def _process_upload(
         session,
         "POST",
         url,
+        max_attempts=1,
         headers=_MUTATION_HEADERS,
         params=_mums_params(),
         json=payload,
@@ -1512,6 +1538,7 @@ def _set_metadata(
         session,
         "POST",
         url,
+        max_attempts=1,
         headers=_MUTATION_HEADERS,
         params=_mums_params(),
         json=payload,
@@ -1680,6 +1707,9 @@ def promote_spotify_video_draft(
         video_auth_granted: bool = False,
         w35_check: str = "not_run",
     ) -> VideoPromoteResult:
+        if result.outcome is None:
+            result.outcome = outcome_from_spotify_terminal_state(result.terminal_state)
+        result.publish_run_id = run_id
         logger.info(
             "spotify_video_publication_terminal job_id=%s run_id=%s video_anchor_id=%s "
             "audio_anchor_id=%s requested_mode=%s video_auth_granted=%s w35_check=%s "
@@ -2288,6 +2318,8 @@ def publish_episode(
     timestamps_html: str = "",
     language: str = "en",
     language_config: object | None = None,
+    publication_storage: StorageBackend | None = None,
+    publication_identity_context: PublicationIdentity | None = None,
 ) -> PublishResult:
     """Publish an episode to Spotify for Creators.
 
@@ -2429,6 +2461,123 @@ def publish_episode(
     if upload_path is None or not upload_path.exists():
         return PublishResult(status="failed", error=f"{format_label} file not found: {upload_path}")
 
+    if publication_storage is not None and publication_identity_context is not None:
+        try:
+            prior_evidence = read_evidence(
+                publication_storage, publication_identity_context.accepted_job_id
+            )
+        except Exception:
+            return PublishResult(
+                status="failed",
+                error="Publication evidence could not be read before Spotify mutation.",
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=publication_identity_context.publish_run_id,
+                details={"retry_blocked": True},
+            )
+        if retry_is_blocked(prior_evidence, platform="spotify", media_kind="audio"):
+            return PublishResult(
+                status="failed",
+                error="Spotify mutation blocked pending publication reconciliation.",
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=publication_identity_context.publish_run_id,
+                details={"retry_blocked": True},
+            )
+        try:
+            claim = append_evidence(
+                publication_storage,
+                publication_identity_context,
+                platform="spotify",
+                media_kind="audio",
+                operation="create_episode_intent",
+                outcome=PUBLICATION_UNKNOWN,
+                mutation_attempted=False,
+                retry_blocked=True,
+                code="mutation_intent",
+            )
+            if claim is None:
+                return PublishResult(
+                    status="failed",
+                    error="Spotify mutation already claimed for this publication identity.",
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True, "code": "mutation_claim_exists"},
+                )
+        except Exception:
+            return PublishResult(
+                status="failed",
+                error="Publication evidence could not be persisted before Spotify mutation.",
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=publication_identity_context.publish_run_id,
+                details={"retry_blocked": True},
+            )
+
+    mutation_started = False
+    safe_outcome: str | None = None
+    anchor_id: int | None = None
+    upload_id: str | None = None
+
+    def _finalize_with_evidence(result: PublishResult, operation: str) -> PublishResult:
+        result.publish_run_id = (
+            publication_identity_context.publish_run_id
+            if publication_identity_context is not None
+            else None
+        )
+        if publication_storage is None or publication_identity_context is None:
+            return result
+        try:
+            append_evidence(
+                publication_storage,
+                publication_identity_context,
+                platform="spotify",
+                media_kind="audio",
+                operation=operation,
+                outcome=result.outcome or PUBLICATION_UNKNOWN,
+                provider_artifact_id=result.anchor_episode_id,
+                mutation_attempted=mutation_started,
+                confirmation_source=(
+                    "spotify_episode_readback" if result.outcome == PUBLISHED else None
+                ),
+                retry_blocked=result.outcome
+                in (
+                    UPLOADED,
+                    PUBLICATION_UNKNOWN,
+                    MANUAL_HANDOFF_REQUIRED,
+                    DRAFT_CREATED,
+                    PUBLISHED,
+                ),
+                code=(
+                    str(result.details.get("code"))
+                    if isinstance(result.details, dict) and result.details.get("code")
+                    else None
+                ),
+            )
+        except Exception:
+            result.status = "failed"
+            result.outcome = PUBLICATION_UNKNOWN
+            result.error = (
+                "Publication evidence failed after Spotify mutation; reconciliation required."
+            )
+            result.details = {**result.details, "retry_blocked": True}
+            return result
+        try:
+            emit_publication_signal(
+                publication_storage,
+                publication_identity_context,
+                platform="spotify",
+                media_kind="audio",
+                outcome=result.outcome or PUBLICATION_UNKNOWN,
+                provider_artifact_id=result.anchor_episode_id,
+            )
+        except Exception:
+            logger.warning(
+                "publication signal failed after Spotify evidence persistence "
+                "(job_id=%s outcome=%s)",
+                publication_identity_context.accepted_job_id,
+                result.outcome or PUBLICATION_UNKNOWN,
+                exc_info=True,
+            )
+        return result
+
     try:
         session = _build_session(sp_dc, sp_key, show_id)
 
@@ -2437,6 +2586,7 @@ def publish_episode(
 
         # Step 2: Create draft episode
         anchor_id = _create_episode(session, station_id)
+        mutation_started = True
 
         # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
         is_video = content_type.startswith("video/")
@@ -2474,6 +2624,7 @@ def publish_episode(
             content_type=content_type,
             parts_etags=parts_etags if is_video else None,
         )
+        safe_outcome = UPLOADED
 
         # Step 6: Set metadata
         _set_metadata(
@@ -2489,8 +2640,18 @@ def publish_episode(
             episode_type=episode_type,
             explicit=explicit,
         )
+        safe_outcome = DRAFT_CREATED
         if publish_behavior != "draft":
-            _publish_episode_live(session, anchor_id, resolved_publish_on)
+            _publish_episode_live(session, anchor_id, resolved_publish_on, max_attempts=1)
+            confirmed = _get_episode_publication_state(session, anchor_id, user_id=user_id)
+            if confirmed is True and resolved_publish_on is None:
+                safe_outcome = PUBLISHED
+            elif confirmed is False:
+                safe_outcome = (
+                    DRAFT_CREATED if resolved_publish_on is not None else MANUAL_HANDOFF_REQUIRED
+                )
+            else:
+                safe_outcome = PUBLICATION_UNKNOWN
 
         status = (
             "draft"
@@ -2502,10 +2663,14 @@ def publish_episode(
             anchor_id,
             status,
         )
-        return PublishResult(
-            anchor_episode_id=anchor_id,
-            status=status,
-            details={"station_id": station_id, "upload_id": upload_id},
+        return _finalize_with_evidence(
+            PublishResult(
+                anchor_episode_id=anchor_id,
+                status=status,
+                outcome=safe_outcome,
+                details={"station_id": station_id, "upload_id": upload_id},
+            ),
+            "publish" if publish_behavior != "draft" else "draft_setup",
         )
 
     except SpotifyCredentialExpiredError as exc:
@@ -2521,18 +2686,59 @@ def publish_episode(
         except Exception:  # pragma: no cover - defensive; notify never raises
             logger.warning("credential-expiry notification failed", exc_info=True)
             issue_number = None
-        return PublishResult(
-            status="failed",
-            error=str(exc),
-            details={
-                "credentials_expired": True,
-                "notification_issue": issue_number,
-            },
+        return _finalize_with_evidence(
+            PublishResult(
+                anchor_episode_id=anchor_id,
+                status="failed",
+                error=str(exc),
+                outcome=(safe_outcome if safe_outcome == UPLOADED else MANUAL_HANDOFF_REQUIRED),
+                details={
+                    "credentials_expired": True,
+                    "notification_issue": issue_number,
+                },
+            ),
+            "credential_failure",
+        )
+    except SpotifyDraftCreateAmbiguousError as exc:
+        logger.error("Spotify draft create state unknown: %s", exc)
+        return _finalize_with_evidence(
+            PublishResult(
+                status="failed",
+                error=str(exc),
+                outcome=PUBLICATION_UNKNOWN,
+                details={"retry_blocked": True, "code": "ambiguous_create"},
+            ),
+            "create_episode",
         )
     except SpotifyPublishError as exc:
         logger.error("Spotify publish failed: %s", exc)
-        return PublishResult(status="failed", error=str(exc))
+        outcome = (
+            safe_outcome
+            if safe_outcome == UPLOADED
+            else PUBLICATION_UNKNOWN
+            if mutation_started
+            else MANUAL_HANDOFF_REQUIRED
+        )
+        return _finalize_with_evidence(
+            PublishResult(
+                anchor_episode_id=anchor_id,
+                status="failed",
+                error=str(exc),
+                outcome=outcome,
+                details={"retry_blocked": mutation_started},
+            ),
+            "provider_mutation_failure",
+        )
     except Exception as exc:
         safe_msg = re.sub(r"https?://\S+", lambda m: _safe_url(m.group()), str(exc))
         logger.error("Unexpected error during Spotify publish: %s", safe_msg)
-        return PublishResult(status="failed", error=f"Unexpected: {safe_msg}")
+        return _finalize_with_evidence(
+            PublishResult(
+                anchor_episode_id=anchor_id,
+                status="failed",
+                error=f"Unexpected: {safe_msg}",
+                outcome=PUBLICATION_UNKNOWN if mutation_started else MANUAL_HANDOFF_REQUIRED,
+                details={"retry_blocked": mutation_started},
+            ),
+            "unexpected_failure",
+        )

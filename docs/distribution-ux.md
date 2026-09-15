@@ -294,3 +294,29 @@ When Podcaster is deployed, the following values must be shared with SquadScope 
 - Use the API key in the `x-podcaster-api-key` header
 
 See `docs/integration-contract.md` and `README.md` for deployment details.
+
+## Provider reconciliation and operator action
+
+The operator UI should display the canonical provider outcome in addition to,
+not instead of, existing publish statuses:
+
+- `uploaded`: media transferred, later draft setup is not confirmed.
+- `draft_created`: a known non-public artifact is ready for review.
+- `manual_handoff_required`: provider rejection, credentials, capability, or a
+  protected workflow requires an operator.
+- `published`: provider read-back independently confirms the artifact is live.
+- `publication_unknown`: a mutation may have succeeded but cannot be proven.
+
+For the last two action-required states, do not offer an automatic retry.
+Inspect the provider artifact and reconciliation evidence first. Repeated
+signals for the same job/provider/media/outcome/artifact are deduplicated.
+Canonical provider records distinguish operational completion from public
+availability. The legacy distribution status remains readable, while
+`public_delivery_status` is `completed` only when every applicable
+listener-facing provider record has normalized `status=public`. Draft,
+unlisted, private, gated/manual-handoff, pending-readback, and unknown outcomes
+do not appear as publicly completed. A provider/API readback is recorded as
+`verification=provider_readback`; only a separate anonymous listener-facing
+check can set `verification=external_verified` and normalized `status=public`.
+Legacy publication snapshots keep `status=published` for at-most-once
+compatibility and expose the normalized value additively as `provider_status`.

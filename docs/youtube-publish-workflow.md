@@ -121,3 +121,19 @@ video `private` until `publishAt`, then makes it public automatically.
 The packet carries `locale` (`en` / `es` / `fr`) so the review notification and
 playlist routing (#449) can target the right language show. Each language's
 draft is reviewed and approved independently.
+
+## Canonical delivery state and reconciliation
+
+A successful unlisted/private upload is `draft_created`, while the existing
+legacy per-platform `status: published` value remains temporarily as the
+at-most-once compatibility marker. Promotion performs one `videos.update` and
+then a `videos.list` read-back. Only `privacyStatus=public` is canonical
+`published`; a transport loss, retryable HTTP response, unreadable response, or
+failed/contradictory read-back is `publication_unknown` and must not be
+automatically repeated. Scheduled private state remains `draft_created` until
+public state is independently confirmed.
+
+Accepted jobs persist bounded identity-bound evidence before provider mutation.
+Existing blocking evidence takes precedence over the legacy snapshot. Rollback
+retains provider artifacts and legacy fields; disable the additive projection
+or revert the implementation rather than deleting uploaded videos.

@@ -31,6 +31,13 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
+from podcaster.publication_state import (
+    DRAFT_CREATED,
+    MANUAL_HANDOFF_REQUIRED,
+    PUBLICATION_UNKNOWN,
+    PUBLISHED,
+)
+
 logger = logging.getLogger(__name__)
 
 # --- Constants ---------------------------------------------------------------
@@ -177,6 +184,7 @@ class PublishResult:
     privacy_status: str = ""
     scheduled_publish_at: str = ""
     error: str = ""
+    outcome: str = PUBLICATION_UNKNOWN
 
 
 def _build_status_body(
@@ -245,7 +253,12 @@ def publish_video(
         )
     except Exception as exc:  # pragma: no cover - network/transport failure
         logger.warning("Publish update error for video %s: %s", video_id, exc)
-        return PublishResult(video_id=video_id, succeeded=False, error=str(exc))
+        return PublishResult(
+            video_id=video_id,
+            succeeded=False,
+            error=str(exc),
+            outcome=PUBLICATION_UNKNOWN,
+        )
 
     if status == 200:
         effective = PRIVACY_PRIVATE if scheduled else privacy_status
@@ -255,14 +268,42 @@ def publish_video(
             effective,
             f" publishAt={scheduled}" if scheduled else "",
         )
+        try:
+            readback = get_video_snippet(video_id, access_token, transport=http)
+        except Exception as exc:  # noqa: BLE001 - post-mutation readback must fail closed
+            logger.warning("Publish readback failed for video %s: %s", video_id, exc)
+            readback = None
+        confirmed_privacy = readback.get("privacyStatus") if readback is not None else None
+        if readback is None:
+            outcome = PUBLICATION_UNKNOWN
+        elif scheduled and confirmed_privacy == PRIVACY_PRIVATE:
+            outcome = DRAFT_CREATED
+        elif confirmed_privacy == PRIVACY_PUBLIC:
+            outcome = PUBLISHED
+        else:
+            outcome = PUBLICATION_UNKNOWN
         return PublishResult(
             video_id=video_id,
-            succeeded=True,
+            succeeded=outcome != PUBLICATION_UNKNOWN,
             privacy_status=effective,
             scheduled_publish_at=scheduled,
+            outcome=outcome,
+            error=(
+                ""
+                if outcome != PUBLICATION_UNKNOWN
+                else "publish request accepted but public state was not confirmed"
+            ),
         )
     logger.warning("Publish update failed for video %s: HTTP %s", video_id, status)
-    return PublishResult(video_id=video_id, succeeded=False, error=f"HTTP {status}")
+    outcome = (
+        PUBLICATION_UNKNOWN if status in (408, 429) or status >= 500 else MANUAL_HANDOFF_REQUIRED
+    )
+    return PublishResult(
+        video_id=video_id,
+        succeeded=False,
+        error=f"HTTP {status}",
+        outcome=outcome,
+    )
 
 
 def approve_and_publish(
@@ -293,6 +334,7 @@ def approve_and_publish(
                 video_id=packet.video_id,
                 succeeded=False,
                 error="review gate not approved",
+                outcome=MANUAL_HANDOFF_REQUIRED,
             )
 
     if packet.is_scheduled:

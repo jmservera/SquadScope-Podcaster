@@ -164,6 +164,39 @@ def test_review_approval_publishes_when_audio_is_ready(tmp_path: Path, monkeypat
     assert outcome.manifest["publishing"]["result"]["anchor_episode_id"] == 42
 
 
+def test_review_approval_blocks_invalid_canonical_identity_before_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+    manifest = _synthesized_manifest()
+    manifest["request"].update(
+        {
+            "article_sha256": "a" * 64,
+            "publish_run_id": "123",
+            "publication_identity_mode": "canonical",
+        }
+    )
+    manifest["lifecycle"]["transitions"].append({"to": "accepted"})
+    _stage(storage, manifest)
+    monkeypatch.setattr(
+        "podcaster.orchestration.publish_episode",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("provider mutation must not run")
+        ),
+    )
+
+    outcome = process_review_decision(
+        _job_id(),
+        reviewer="leela",
+        decision="approved",
+        reviewed_at="2026-06-15T12:00:00Z",
+        storage=storage,
+    )
+    assert outcome.publish_result is not None
+    assert outcome.publish_result.outcome == "publication_unknown"
+    assert outcome.publish_result.details["retry_blocked"] is True
+
+
 def test_changes_requested_does_not_publish(tmp_path: Path, monkeypatch) -> None:
     storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
     _stage(storage, _synthesized_manifest())

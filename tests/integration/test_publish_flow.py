@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 import podcaster.orchestration as orchestration
 from podcaster.config import SpotifyPublishConfig
 from podcaster.music import TRACK_ATTRIBUTION
-from podcaster.publish import PublishResult, publish_episode
+from podcaster.publish import publish_episode
 from podcaster.video.distribution import (
     DistributionResult,
     VideoDistributionConfig,
@@ -32,7 +33,7 @@ def test_audio_only_publish_flow_calls_publish_episode(
                 "kwargs": kwargs,
             }
         )
-        return PublishResult(status="published", dry_run=True)
+        return orchestration.PublishResult(status="published", dry_run=True)
 
     monkeypatch.setattr(orchestration, "publish_episode", fake_publish_episode)
 
@@ -75,6 +76,35 @@ def test_audio_only_publish_flow_calls_publish_episode(
             },
         }
     ]
+
+
+def test_review_gated_audio_blocks_partial_implicit_canonical_identity(
+    monkeypatch,
+    fake_mp3: Path,
+) -> None:
+    publish = MagicMock()
+    monkeypatch.setattr(orchestration, "publish_episode", publish)
+    manifest = {
+        "job_id": "audio-partial-canonical",
+        "request": {
+            "week": "2026-W25",
+            "article_url": "https://example.invalid/post",
+            "publish_run_id": "123",
+            "spotify_publish": {"publish_mode": "draft", "upload_format": "mp3"},
+        },
+        "lifecycle": {"transitions": [{"to": "accepted"}]},
+    }
+
+    result = orchestration._publish_from_manifest(
+        (fake_mp3, None),
+        manifest,
+        storage=MagicMock(),
+        job_id=manifest["job_id"],
+    )
+
+    assert result.outcome == "publication_unknown"
+    assert result.details["retry_blocked"] is True
+    publish.assert_not_called()
 
 
 def test_video_distribution_dry_run_returns_expected_urls(fake_mp4: Path) -> None:
@@ -145,7 +175,7 @@ def test_audio_and_video_publish_paths_are_independent(
         ),
     )
 
-    assert isinstance(publish_result, PublishResult)
+    assert publish_result.status == "published"
     assert publish_result.dry_run is True
     assert publish_result.status == "published"
     # MP4 is preferred when present alongside audio

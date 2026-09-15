@@ -12,6 +12,7 @@ from podcaster.validation import (
     empty_error_response,
     is_authorized,
     validate_payload,
+    validate_payload_details,
 )
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures"
@@ -20,6 +21,58 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures"
 def test_valid_minimal_payload_has_no_errors() -> None:
     errors = validate_payload({"week": "2026-W23", "article_url": "https://example.com/article"})
     assert errors == []
+
+
+def test_canonical_publication_identity_fields_are_complete_and_validated() -> None:
+    payload = {
+        "week": "2026-W23",
+        "article_url": "https://example.com/article",
+        "publish_run_id": "12345",
+        "article_sha256": "a" * 64,
+        "manifest_sha256": "b" * 64,
+    }
+    assert validate_payload(payload) == []
+    assert "publish_run_id must be a non-empty decimal string" in validate_payload(
+        {**payload, "publish_run_id": "run-1"}
+    )
+    assert "publish_run_id must be a non-empty decimal string" in validate_payload(
+        {**payload, "publish_run_id": "١٢٣"}
+    )
+    assert "manifest_sha256 must be a lowercase hex SHA-256 digest" in validate_payload(
+        {**payload, "manifest_sha256": "invalid"}
+    )
+    partial = dict(payload)
+    partial.pop("article_sha256")
+    assert any(
+        error.startswith("canonical publication identity requires")
+        for error in validate_payload(partial)
+    )
+    assert "canonical publication identity week must use YYYY-WNN" in validate_payload(
+        {**payload, "week": "2026-W3"}
+    )
+    assert (
+        "legacy publication identity mode cannot include canonical identity fields"
+        in validate_payload({**payload, "publication_identity_mode": "legacy"})
+    )
+
+
+def test_legacy_publication_identity_path_is_explicit_and_bounded() -> None:
+    payload = {
+        "week": "legacy-week",
+        "article_url": "https://example.com/article",
+        "article_sha256": "a" * 64,
+        "publication_identity_mode": "legacy",
+    }
+    result = validate_payload_details(payload)
+    assert result.errors == []
+    assert result.warnings == [
+        "legacy request accepted without canonical publication identity; "
+        "provider reconciliation evidence is unavailable"
+    ]
+
+    assert "publication_identity_mode must be canonical or legacy" in validate_payload(
+        {**payload, "publication_identity_mode": "new"}
+    )
 
 
 def test_legacy_string_source_artifacts_fixture_has_no_errors() -> None:

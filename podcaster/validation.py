@@ -18,9 +18,11 @@ from podcaster.localization_qa import (  # noqa: F401
     evaluate_localization,
     localization_gate,
 )
+from podcaster.publication_state import canonical_identity_requested
 
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 WEEK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+CANONICAL_WEEK_RE = re.compile(r"^\d{4}-W(?:0[1-9]|[1-4]\d|5[0-3])$")
 SOURCE_ARTIFACT_OBJECT_FIELDS = {
     "artifact_checksum",
     "crawled_at",
@@ -124,6 +126,51 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
     if article_sha256 is not None:
         if not isinstance(article_sha256, str) or not SHA256_RE.match(article_sha256):
             errors.append("article_sha256 must be a lowercase hex SHA-256 digest")
+
+    manifest_sha256 = payload.get("manifest_sha256")
+    if manifest_sha256 is not None:
+        if not isinstance(manifest_sha256, str) or not SHA256_RE.match(manifest_sha256):
+            errors.append("manifest_sha256 must be a lowercase hex SHA-256 digest")
+
+    publish_run_id = payload.get("publish_run_id")
+    if publish_run_id is not None and (
+        not isinstance(publish_run_id, str)
+        or not publish_run_id
+        or not publish_run_id.isascii()
+        or not publish_run_id.isdecimal()
+    ):
+        errors.append("publish_run_id must be a non-empty decimal string")
+
+    identity_mode = payload.get("publication_identity_mode")
+    if identity_mode is not None and identity_mode not in {"canonical", "legacy"}:
+        errors.append("publication_identity_mode must be canonical or legacy")
+
+    identity_fields = {
+        "publish_run_id": publish_run_id,
+        "article_sha256": article_sha256,
+        "manifest_sha256": manifest_sha256,
+    }
+    supplied_identity_fields = {
+        name for name, value in identity_fields.items() if value is not None
+    }
+    canonical_requested = canonical_identity_requested(payload)
+    if canonical_requested and supplied_identity_fields != set(identity_fields):
+        missing = sorted(set(identity_fields) - supplied_identity_fields)
+        errors.append(
+            "canonical publication identity requires publish_run_id, article_sha256, "
+            f"and manifest_sha256 together; missing: {', '.join(missing)}"
+        )
+    elif canonical_requested and (
+        not isinstance(week, str) or not CANONICAL_WEEK_RE.fullmatch(week)
+    ):
+        errors.append("canonical publication identity week must use YYYY-WNN")
+    elif identity_mode == "legacy" and canonical_requested:
+        errors.append("legacy publication identity mode cannot include canonical identity fields")
+    elif not canonical_requested:
+        warnings.append(
+            "legacy request accepted without canonical publication identity; "
+            "provider reconciliation evidence is unavailable"
+        )
 
     source_artifacts = payload.get("source_artifacts")
     if source_artifacts is not None:

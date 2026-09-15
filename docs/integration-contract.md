@@ -22,8 +22,10 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 ```json
 {
   "week": "2026-W23",
+  "publish_run_id": "12345",
   "article_url": "https://squadscope.example/articles/2026-w23",
   "article_sha256": "optional-lowercase-hex-sha256",
+  "manifest_sha256": "optional-lowercase-hex-sha256",
   "article_title": "This Week in Tech: AI and Open Source",
   "article_content": "Full article text here (optional — enables LLM script generation)",
   "source_artifacts": [
@@ -65,8 +67,10 @@ x-podcaster-api-key: <PODCASTER_API_KEY>
 ### Fields
 
 - `week` (required string): Issue or ISO week identifier.
+- `publish_run_id` (optional decimal string): Exact SquadScope crawl-and-publish run identifier. When supplied with `manifest_sha256`, it is persisted unchanged as part of the cross-repository publication identity.
 - `article_url` (required string): Published article URL from SquadScope.
 - `article_sha256` (optional string): SHA-256 digest of article artifact/content.
+- `manifest_sha256` (optional string): SHA-256 digest of the exact SquadScope publish manifest bytes. It is additive for legacy callers and required for canonical reconciliation evidence.
 - `article_title` (optional string): Article title for script generation context.
 - `article_content` (optional string): Full article text. When provided and the Azure OpenAI chat endpoint is configured, the system generates a dynamic LLM-based script and extracts real claims from the article instead of producing deterministic placeholders.
 - `source_artifacts` (optional array): Supporting artifact references. For backward compatibility, each item may be either a string reference or an object reference emitted by SquadScope publish manifests.
@@ -199,7 +203,7 @@ The manifest and packet metadata include `artifact_access` with:
 
 Cleanup is owned by the operator or a storage lifecycle policy using `expires_at`/`cleanup_after`. Audit review uses the job manifest, review audit trail placeholders, Application Insights `correlation_id`, and Azure Storage diagnostics. Placeholder artifacts remain blocked from publication until human/editorial review and real TTS gates exist.
 
-The storage lifecycle policy (`infra/main.bicep`) auto-deletes only **auto-generated** outputs — the `jobs/` and `bakeoff/` prefixes — after `artifactRetentionDays` (7 days). Operator **review** artifacts under the `review/` prefix (including `review/v3/`) are intentionally **excluded** and retained indefinitely until the editorial gate signs off (#93). Azure blob lifecycle filters cannot express exclusions, so review artifacts are protected by omitting their prefix from `autoExpireArtifactPrefixes`. Retiring review artifacts is an explicit operator action, not an automatic expiry.
+The storage lifecycle policy (`infra/main.bicep`) auto-deletes only **auto-generated** outputs — the deployment-owned `jobs/` and `bakeoff/` prefixes — after `artifactRetentionDays` (7 days). Operator **review** artifacts under `review/` (including `review/v3/`) and canonical publication evidence under `publication-evidence/` are outside every automatic-expiry match. Azure lifecycle filters cannot express exclusions, so the expiry prefix list is non-configurable and limited to generated outputs. Retiring review artifacts is an explicit operator action; canonical publication evidence is retained for at least 28 days.
 
 ## Manifest and packet metadata
 
@@ -214,3 +218,63 @@ The top-level response keys remain stable for SquadScope compatibility. Addition
 - `artifact_access.model=private_operator_path`, retention/cleanup timestamps, and audit correlation metadata
 - artifact `content_type`, `size_bytes`, and `sha256`
 - `observability.correlation_id` and safe log field names only
+
+## Provider delivery outcomes
+
+Provider delivery state is additive and does not change the stable top-level
+response keys or legacy status values. Current manifests and authenticated job
+detail responses may expose `outcome`/`publication_outcome` using exactly:
+`uploaded`, `draft_created`, `manual_handoff_required`, `published`, or
+`publication_unknown`.
+
+`published` requires independent provider read-back. A successful upload that
+remains non-public is `draft_created`; an ambiguous mutation is
+`publication_unknown` and blocks automatic repetition. Accepted jobs may also
+have `publication-evidence/{job_id}.json`, an atomic immutable append-only
+transition log under a dedicated durable prefix that is not matched by the
+seven-day jobs lifecycle. It has no count-based eviction and a declared 28-day
+minimum retention window. Existing
+`jobs/{job_id}/publication-evidence.json` documents remain readable and migrate
+forward on the next append; legacy manifests without either document remain
+readable.
+
+Rollback does not delete provider artifacts. Disable consumption of the
+additive fields or revert the implementation while continuing to treat legacy
+fields as authoritative.
+## Publication identity and provider state
+
+New SquadScope handoffs use the canonical publication identity
+`(week, publish_run_id, article_sha256, manifest_sha256)`. If either
+`publish_run_id` or `manifest_sha256` is supplied, or
+`publication_identity_mode=canonical` is declared, all four identity fields are
+required. `week` must be `YYYY-WNN`, the run ID remains a decimal string, and
+both digests remain lowercase 64-hex values. The accepted manifest persists
+these values unchanged; mismatch, omission, or conflict blocks provider
+mutation. Requests that omit the canonical fields entirely remain readable
+through the bounded legacy path and are persisted with
+`publication_identity_mode=legacy`; explicitly legacy requests cannot include
+canonical-only fields and do not gain canonical reconciliation evidence.
+
+Provider evidence keeps transport, provider state, and public verification
+separate. Each record includes normalized `status`, `provider_id`,
+`native_state`, `verification`, `checked_at`, `evidence_source`,
+`last_error_code`, and `retry_blocked` semantics while retaining the legacy
+`outcome` and provider artifact field for readers already deployed.
+`verification=provider_readback` proves only API/provider state.
+`status=public` requires `verification=external_verified`, representing an
+anonymous listener-facing check. Uploaded, draft, private, unlisted, gated, and
+unknown records never count as publicly completed delivery.
+
+Existing video publication snapshots retain their legacy `status=published`
+at-most-once marker. Their additive `provider_status` and `verification` fields,
+and the normalized records exposed beside them, are authoritative for public
+visibility; the legacy marker alone never proves listener availability.
+
+Publication evidence is keyed by the accepted job ID under the dedicated
+`publication-evidence/` prefix as an append-only document. The deployed
+lifecycle expires only `jobs/` and `bakeoff/`, so canonical evidence is not
+deleted by the seven-day generated-artifact rule. Records are not evicted by
+count, preserving at least the four-week acceptance and reconciliation window.
+The document declares
+`minimum_retention_days=28` and
+`retention_policy=append_only_no_count_eviction`; rollback preserves it.

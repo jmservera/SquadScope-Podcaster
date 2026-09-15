@@ -935,3 +935,19 @@ A three-tier escalation, cheapest and fastest first:
 > **CI must be correct, not just green:** never weaken the ffmpeg-command
 > assertions or skip the colour/duration checks to make a build pass — those
 > assertions are exactly what protect against the §6 Spotify rejections.
+
+## 10. Canonical delivery state
+
+The legacy per-platform `status: published` marker remains the at-most-once
+compatibility guard, but it does not necessarily mean public availability.
+Spotify video upload reports `outcome: draft_created` after the separate video
+episode is uploaded and configured as a draft. Promotion reports `published`
+only after state read-back; ambiguous read-back is `publication_unknown`, and a
+known operator/capability stop is `manual_handoff_required`.
+
+The video publish run ID is threaded into promotion telemetry and durable
+accepted-job evidence. An existing `draft_created`, `published`,
+`manual_handoff_required`, or `publication_unknown` outcome blocks another
+create/upload mutation. The audio anchor, protected W35 IDs, two-key live gate,
+multipart behavior, quoted-ETag stripping, and per-language routing remain
+unchanged.

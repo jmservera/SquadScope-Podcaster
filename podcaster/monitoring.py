@@ -62,6 +62,7 @@ from podcaster.progress import (
     is_terminal,
     read_progress,
 )
+from podcaster.publication_state import latest_outcomes, read_evidence
 from podcaster.queue import enqueue_video_job
 from podcaster.stage_progress import summarize as summarize_stage_progress
 from podcaster.storage import StorageBackend, create_storage_backend
@@ -149,6 +150,9 @@ class JobDetailResponse(BaseModel):
     lifecycle: dict[str, Any] | None = None
     quality_score: float | None = None
     warnings: list[str] | None = None
+    publication_outcome: str | None = None
+    publication_outcomes: dict[str, dict[str, Any]] | None = None
+    publication_evidence: list[dict[str, Any]] | None = None
 
 
 class LogEntry(BaseModel):
@@ -353,7 +357,10 @@ def _extract_summary(manifest: dict[str, Any]) -> JobSummary:
     )
 
 
-def _extract_detail(manifest: dict[str, Any]) -> JobDetailResponse:
+def _extract_detail(
+    manifest: dict[str, Any],
+    evidence: dict[str, Any] | None = None,
+) -> JobDetailResponse:
     request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
     generation = (
         manifest.get("generation") if isinstance(manifest.get("generation"), dict) else None
@@ -368,6 +375,22 @@ def _extract_detail(manifest: dict[str, Any]) -> JobDetailResponse:
         elif av.get("status") == "placeholder":
             quality_score = 0.0
 
+    outcomes = latest_outcomes(evidence)
+    records = evidence.get("records") if isinstance(evidence, dict) else None
+    latest_outcome = (
+        records[-1].get("outcome")
+        if isinstance(records, list) and records and isinstance(records[-1], dict)
+        else None
+    )
+    if latest_outcome is None:
+        publishing = manifest.get("publishing")
+        publish_result = publishing.get("result") if isinstance(publishing, dict) else None
+        if isinstance(publish_result, dict):
+            latest_outcome = publish_result.get("outcome")
+    if latest_outcome is None and generation:
+        direct_publish_result = generation.get("publish_result")
+        if isinstance(direct_publish_result, dict):
+            latest_outcome = direct_publish_result.get("outcome")
     return JobDetailResponse(
         job_id=manifest.get("job_id", ""),
         status=manifest.get("status", "unknown"),
@@ -389,6 +412,9 @@ def _extract_detail(manifest: dict[str, Any]) -> JobDetailResponse:
         ),
         quality_score=quality_score,
         warnings=manifest.get("warnings") if isinstance(manifest.get("warnings"), list) else None,
+        publication_outcome=latest_outcome,
+        publication_outcomes=outcomes or None,
+        publication_evidence=records if isinstance(records, list) else None,
     )
 
 
@@ -665,7 +691,11 @@ def get_job(job_id: str):
     manifest = _parse_manifest(raw)
     if manifest is None:
         raise HTTPException(status_code=500, detail="Manifest is corrupt")
-    return _extract_detail(manifest)
+    try:
+        evidence = read_evidence(storage, job_id)
+    except Exception:
+        evidence = None
+    return _extract_detail(manifest, evidence)
 
 
 @app.get(
@@ -1167,6 +1197,7 @@ class EpisodeSummary(BaseModel):
     video_url: str | None = None
     quality_score: float | None = None
     publish_status: str | None = None
+    publication_outcome: str | None = None
     artifacts: list[EpisodeArtifact] = []
 
 
@@ -1257,7 +1288,10 @@ def _collect_artifacts(generation: dict[str, Any], exclude: set[str]) -> list[Ep
     return items
 
 
-def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
+def _extract_episode(
+    manifest: dict[str, Any],
+    evidence: dict[str, Any] | None = None,
+) -> EpisodeSummary | None:
     """Extract episode summary from a manifest. Returns None if no audio."""
     generation = (
         manifest.get("generation") if isinstance(manifest.get("generation"), dict) else None
@@ -1312,6 +1346,20 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
         elif av.get("status") == "placeholder":
             quality_score = 0.0
 
+    records = evidence.get("records") if isinstance(evidence, dict) else None
+    latest_outcome = (
+        records[-1].get("outcome")
+        if isinstance(records, list) and records and isinstance(records[-1], dict)
+        else None
+    )
+    if latest_outcome is None and publishing:
+        publish_result = publishing.get("result")
+        if isinstance(publish_result, dict):
+            latest_outcome = publish_result.get("outcome")
+    if latest_outcome is None:
+        direct_publish_result = generation.get("publish_result")
+        if isinstance(direct_publish_result, dict):
+            latest_outcome = direct_publish_result.get("outcome")
     return EpisodeSummary(
         job_id=manifest.get("job_id", ""),
         title=(
@@ -1325,6 +1373,7 @@ def _extract_episode(manifest: dict[str, Any]) -> EpisodeSummary | None:
         video_url=f"/api/stream/{video_path}" if video_path else None,
         quality_score=quality_score,
         publish_status=publishing.get("status") if publishing else None,
+        publication_outcome=latest_outcome,
         artifacts=artifacts,
     )
 
@@ -1358,7 +1407,11 @@ def list_episodes(
         manifest = _parse_manifest(raw)
         if manifest is None:
             continue
-        episode = _extract_episode(manifest)
+        try:
+            evidence = read_evidence(storage, str(manifest.get("job_id") or ""))
+        except Exception:
+            evidence = None
+        episode = _extract_episode(manifest, evidence)
         if episode is not None:
             episodes.append(episode)
 

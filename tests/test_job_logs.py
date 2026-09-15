@@ -150,6 +150,18 @@ class TestEmitLog:
         rec = emit_log(storage, "job-1", message="ok")
         assert rec is not None and rec.seq == 1
 
+    def test_emit_log_without_dedupe_key_is_backward_compatible(self):
+        storage = MemoryStorageBackend()
+        emit_log(storage, "job-1", message="same")
+        emit_log(storage, "job-1", message="same")
+        assert len(read_logs(storage, "job-1")["records"]) == 2
+
+    def test_dedupe_key_suppresses_duplicate_atomically(self):
+        storage = MemoryStorageBackend()
+        assert emit_log(storage, "job-1", message="signal", dedupe_key="state-1") is not None
+        assert emit_log(storage, "job-1", message="signal", dedupe_key="state-1") is None
+        assert len(read_logs(storage, "job-1")["records"]) == 1
+
 
 class TestReadLogs:
     def test_read_absent_returns_none(self):

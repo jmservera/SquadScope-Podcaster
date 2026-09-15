@@ -37,6 +37,38 @@ VALID_ARTICLE_CONTENT = (
 )
 
 
+def test_publication_identity_is_persisted_without_changing_legacy_job_id(tmp_path) -> None:
+    base_payload = {
+        "week": "2026-W37",
+        "article_url": "https://example.com/article",
+        "article_sha256": "a" * 64,
+    }
+    payload = {
+        **base_payload,
+        "publish_run_id": "12345",
+        "manifest_sha256": "b" * 64,
+    }
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+
+    result = run_generation_job(payload, storage=storage)
+
+    assert result.response["job_id"] == build_job_id(base_payload)
+    assert result.manifest["request"]["publish_run_id"] == "12345"
+    assert result.manifest["request"]["manifest_sha256"] == "b" * 64
+    assert result.manifest["request"]["publication_identity_mode"] == "canonical"
+
+
+def test_partial_canonical_identity_is_never_marked_legacy(tmp_path) -> None:
+    payload = {
+        "week": "2026-W37",
+        "article_url": "https://example.com/article",
+        "publish_run_id": "12345",
+    }
+    storage = LocalStorageBackend(tmp_path, "https://example.invalid/artifacts")
+    result = run_generation_job(payload, storage=storage)
+    assert result.manifest["request"]["publication_identity_mode"] == "canonical"
+
+
 def test_generation_job_warns_when_podcast_identity_absent(caplog) -> None:
     # Issue #545: when the payload omits podcast_config identity, the pipeline
     # falls back to default host/show names and must log that case so the
@@ -693,6 +725,7 @@ def test_job_lifecycle_metadata_observability_and_manifest_serialization(caplog)
             "summary_path": None,
             "summary_sha256": None,
         },
+        "publication_identity_mode": "legacy",
     }
     assert manifest["lifecycle"]["force"] is True
     assert manifest["lifecycle"]["transitions"][-1]["to"] == "accepted"
