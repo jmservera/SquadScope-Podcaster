@@ -17,6 +17,7 @@
 | P03 | Bound render, archive, and resume | Complete | P03, P03-T01, P03-T02, P03-T03 |
 | P04 | Persist render boundary and bound distribution/shutdown | Complete | P04, P04-T01, P04-T02, P04-T03 |
 | P05 | Validate, review, follow up, and deliver | Complete | P05, P05-T01, P05-T02, P05-T03 |
+| P06 | Fail closed audio-only publication | Active: P06-T02 | P06, P06-T01, P06-T02 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish shared budget and evidence contracts
@@ -388,6 +389,50 @@ Reserve T+55–T+60 for final validation, archive upload, checksum, media probe,
 #### Unresolved Items
 
 * None.
+
+<!-- rpi:phase id=P06 -->
+## P06: Fail closed audio-only publication
+
+### Context
+
+Synthesis currently has direct `auto_publish_job` and `publish_episode` paths after audio validation. Those paths bypass the explicit review/manual orchestration gate and can make an audio-only job appear externally complete.
+
+### Intent
+
+Make synthesis responsible only for staged audio, readiness state, and independent video enqueue. Keep all Spotify mutation behind `process_review_decision(..., decision="approved")` or an explicit operator call to `publish_staged_job`.
+
+### Boundaries
+
+* Included: Synthesis publication state, direct publish removal, approved/manual orchestration preservation, ambiguous outcome semantics, integration coverage, conflicting docs, PR evidence.
+* Excluded: Provider API changes, video publication behavior changes, deployment, production/W38 mutation.
+
+### Dependencies
+
+* Existing `publishing.blocked_by`, `eligible`, `packet_ready`, and `readiness_checks` contracts.
+* Existing canonical identity and `publication_unknown`, `draft_created`, `manual_handoff_required`, and `published` orchestration states.
+
+<!-- rpi:task id=P06-T01 -->
+### P06-T01: Remove synthesis-time Spotify mutation bypass
+
+#### Validation Expectations
+
+* `run_synthesis` never calls `publish_episode` or `auto_publish_job` without an explicit approved/manual gate.
+* Successful validated audio remains packet-ready but human-review-blocked and not eligible until approval.
+* Approved `process_review_decision` still calls `publish_staged_job` and publishes.
+* Ambiguous approved publication remains non-final and retry-blocked.
+* Audio staging and video draft/live behavior remain independent.
+* `podcaster/job_runner.py` and `docs/PRD.md` no longer promise automatic Spotify drafts.
+
+<!-- rpi:task id=P06-T02 -->
+### P06-T02: Validate, independently review, and update PR delivery
+
+#### Validation Expectations
+
+* Focused job runner, orchestration, publication integration, and video-independence tests pass.
+* `pytest tests/ -q`, Ruff lint/format, compileall, and `git diff --check` pass.
+* Independent reviewer accepts the exact audio-gate change; rejected findings use separate lockout implementation.
+* A conventional follow-up commit with required trailers is pushed to the existing PR #682 branch.
+* PR #682 description/test evidence is updated; PR remains open and unmerged, and hosted checks start.
 
 <!-- rpi:phase id=P04 -->
 ## P04: Persist render boundary and bound distribution/shutdown

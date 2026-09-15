@@ -10,17 +10,25 @@
 
 ## Execution Status
 
-* Status: Complete
+* Status: Partial
 * Declared invocation scope: Full plan
 * Completed scope markers: P01-P05 and all tasks
-* All remaining active-plan markers: None
-* Status basis: Implementation, validation, independent review, follow-up issue, commit, push, and unmerged PR are complete.
+* All remaining active-plan markers: P06-T02
+* Status basis: Audio publication bypass removal passed focused validation; full validation and independent review are active.
 
 ## Execution Summary
 
 The shared budget, recorder convergence, browser-free fallback, owned cancellation, validated resume, verified archive/readback, per-mutation provider admission, and bounded shutdown/queue disposition are complete and independently accepted. Production/W38/provider operations remain prohibited.
 
 ## Completed Work
+
+### Fail-closed audio staging
+
+* Related phase or task: P06-T01
+* Files: `podcaster/job_runner.py`, `tests/test_job_runner.py`, `tests/test_orchestration.py`, `tests/integration/test_publish_flow.py`, `docs/PRD.md`.
+* What changed and why: Removed synthesis-time `auto_publish_job` and direct `publish_episode` calls. Successful audio now remains `synthesized_review_ready`, packet-ready, ineligible, and blocked by `human_review` unless an explicit approved/manual orchestration gate owns publication. Video enqueue remains independent.
+* Completion evidence: Spotify config and auto-publish environment no longer trigger provider calls; approved review still publishes; ambiguous approved outcome remains `publication_unknown` and non-final; integration covers blocked manual request followed by approved publication.
+* Validation: Focused audio/orchestration/video suite passed (284 tests).
 
 ### Shared budget and conservative projection
 
@@ -96,6 +104,16 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 
 ## Implementation-Time Plan and Detail Updates
 
+### Added fail-closed audio publication follow-up
+
+* Affected plan area or markers: P06, P06-T01, P06-T02.
+* What changed: Added the explicit requirement that synthesis stages audio and readiness metadata but never mutates Spotify without an approved/manual orchestration gate.
+* Why: The direct synthesis-time `auto_publish_job` and `publish_episode` paths conflict with the user-required audio-only fail-closed policy.
+* Triggering evidence: Explicit PR #682 continuation requirement on 2026-09-15.
+* User answer or decision: Audio-only automatic publication is prohibited; approved/manual publication and video behavior must remain independent.
+* Reconciliation performed: Plan, phase details, active markers, validation boundary, and delivery lifecycle updated.
+* Planning and critique state: Immediate in-scope clarification preserving the accepted provider safeguard direction; no new critique required before implementation.
+
 ### Applied final-candidate critique corrections
 
 * Affected plan area or markers: Acceptance criteria; P01-P05.
@@ -130,21 +148,25 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 | Dependency lock assertion | Dependency manifests and lock | Passed | No changes |
 | `git diff --check` | Complete diff | Passed | No whitespace errors |
 | Independent lockout review | Complete implementation boundary | Passed | Final outcome Conformant; no open actionable defects |
+| P06 focused audio gate suite | Job runner, orchestration, integration, video distribution/runner | Passed | 284 passed |
+| P06 focused Ruff/format/compile/diff | Changed Python and complete diff | Passed | All checks passed; 4 files formatted |
+| `pytest tests/ -q` after P06 | Full repository | Passed | 3142 passed, 2 skipped, 2 deselected; one existing httpx deprecation warning |
+| Full Ruff/format/compile/diff after P06 | Python and complete diff | Passed | All checks passed; 187 files formatted |
 
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P01-P05 and all tasks complete.
+* Plan markers and phase details: P01-P05 and P06-T01 complete; P06-T02 active.
 * Completed-work evidence and handoff prose: Current.
 * Validation, blockers, remaining work, and follow-up items: Current.
-* Review readiness: Accepted; final independent verdict is Conformant.
+* Review readiness: P06 candidate is ready for independent read-only review.
 
 ## Blockers
 
-* None.
+* Independent P06 review rejected malformed/cost-state normalization, legacy duplicate convergence, and remaining architecture/README automatic-publication claims. Fixes are assigned to a separate lockout implementer.
 
 ## Remaining Work
 
-* None.
+* P06-T02 lockout fixes, revalidation, independent acceptance, commit, push, and PR update.
 
 ## Follow-Up Items
 
@@ -158,11 +180,11 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 ## Return-to-Caller State
 
 * Implementation execution status: Partial
-* Declared scope and markers: Full plan complete; P01-P05 and all tasks complete.
+* Declared scope and markers: Full plan; P01-P05 complete, P06 active.
 * Validation coverage: Mandatory focused/full pytest, real fanout integration, Ruff, compile, Bicep, Checkov, lock, and diff checks passed.
 * Blockers: None.
 * Current plan and detail updates: Critique corrections applied.
 * Planning and critique state: Implementation-ready.
 * Follow-up items: Distribution worker tracked in #681.
-* Review readiness or no-handoff reason: Accepted with no open defects; delivery complete.
+* Review readiness or no-handoff reason: Ready for independent P06 review; focused and full validation passed.
 * Continuation owner: Confirmed automatic RPI Agent.

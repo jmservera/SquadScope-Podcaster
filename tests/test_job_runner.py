@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from podcaster import episode, job_runner, tts
+from podcaster.costs import build_cost_ledger
 from podcaster.generation import manifest_bytes
 from podcaster.queue import QueueMessage, encode_synthesis_message, parse_job_id
 from podcaster.storage import StoredArtifact
@@ -105,6 +107,17 @@ def _base_manifest(status: str = "accepted") -> dict:
         "schema_version": "squadscope-podcaster-job-v1",
         "job_id": JOB_ID,
         "status": status,
+        "cost_ledger": build_cost_ledger(
+            week="2026-W24",
+            month="2026-06",
+            provider="openai-tts",
+            voice="fable,alloy",
+            voice_config_hash="abc123",
+            billable_characters=100,
+            duration_seconds=300,
+            audio_byte_length=512,
+            staged_byte_length=1024,
+        ),
         "generation": {
             "engine": "local-deterministic-placeholder",
             "audio_mode": "placeholder",
@@ -267,16 +280,125 @@ def test_run_synthesis_completes_and_marks_publish_ready(monkeypatch):
     )
     assert gen["synthesis_runner"]["audio"]["upload_format"] == "wav"
     assert gen["tts_synthesis"]["blocked_by"] == []
-    assert manifest["status"] == "synthesized_publish_ready"
+    assert manifest["status"] == "synthesized_review_ready"
 
     pub = manifest["publishing"]
-    assert pub["eligible"] is True
+    assert pub["eligible"] is False
     assert pub["packet_ready"] is True
-    assert "human_review" not in pub["blocked_by"]
+    assert "human_review" in pub["blocked_by"]
     assert "synthesis_not_completed" not in pub["blocked_by"]
     assert pub["readiness_checks"]["real_audio_available"] is True
     assert pub["readiness_checks"]["editorial_review_complete"] is False
     assert pub["readiness_checks"]["audio_validation_passed"] is True
+    assert pub["readiness_checks"]["cost_ledger_complete"] is True
+
+
+@pytest.mark.parametrize("publishing", [None, "legacy-publish-state"])
+def test_run_synthesis_normalizes_missing_or_malformed_publishing(monkeypatch, publishing):
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    if publishing is None:
+        manifest.pop("publishing")
+    else:
+        manifest["publishing"] = publishing
+    _stage(storage, manifest, _two_voice_script())
+
+    job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
+    )
+
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    assert persisted["status"] == "synthesized_review_ready"
+    assert persisted["publishing"]["eligible"] is False
+    assert persisted["publishing"]["packet_ready"] is True
+    assert persisted["publishing"]["blocked_by"] == ["human_review"]
+    assert persisted["publishing"]["readiness_checks"] == {
+        "cost_ledger_complete": True,
+        "editorial_review_complete": False,
+        "real_audio_available": True,
+        "audio_validation_passed": True,
+    }
+
+
+def test_run_synthesis_normalizes_missing_readiness_checks_and_malformed_blockers(
+    monkeypatch,
+):
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    manifest["publishing"].pop("readiness_checks")
+    manifest["publishing"]["blocked_by"] = [
+        "human_review",
+        "synthesis_not_completed",
+        "custom_lockout",
+        "",
+        None,
+        {"unhashable": True},
+        ["also", "unhashable"],
+    ]
+    _stage(storage, manifest, _two_voice_script())
+
+    job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
+    )
+
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    assert persisted["publishing"]["blocked_by"] == ["custom_lockout", "human_review"]
+    assert persisted["publishing"]["eligible"] is False
+    assert persisted["publishing"]["readiness_checks"]["cost_ledger_complete"] is True
+
+
+@pytest.mark.parametrize(
+    ("cost_state", "expected_blocker"),
+    [
+        ("missing", "cost_ledger_missing"),
+        ("incomplete", "cost_ledger_incomplete"),
+        ("over_budget", "monthly_budget_exceeded"),
+    ],
+)
+def test_run_synthesis_approved_manifest_fails_closed_on_cost_state(
+    monkeypatch, cost_state, expected_blocker
+):
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    storage = FakeStorage()
+    manifest = _base_manifest()
+    manifest["review"] = {"status": "approved"}
+    if cost_state == "missing":
+        manifest.pop("cost_ledger")
+    elif cost_state == "incomplete":
+        manifest["cost_ledger"] = {}
+    else:
+        manifest["cost_ledger"]["budget"]["status"] = "over_budget"
+    _stage(storage, manifest, _two_voice_script())
+
+    job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
+    )
+
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    publishing = persisted["publishing"]
+    assert persisted["status"] == "synthesized_review_ready"
+    assert publishing["eligible"] is False
+    assert publishing["packet_ready"] is True
+    assert expected_blocker in publishing["blocked_by"]
+    assert "human_review" not in publishing["blocked_by"]
+    assert publishing["readiness_checks"]["cost_ledger_complete"] is False
 
 
 def test_run_synthesis_persists_realized_audio_metadata(monkeypatch):
@@ -381,21 +503,15 @@ def test_run_synthesis_does_not_log_secrets(monkeypatch, caplog):
     assert "Bearer" not in combined
 
 
-def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
+def test_run_synthesis_does_not_auto_publish_when_enabled(monkeypatch):
     _patch_audio(monkeypatch)
     monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
     storage = FakeStorage()
     _stage(storage, _base_manifest(), _two_voice_script())
-    called: list[str] = []
-
-    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: True)
-    monkeypatch.setattr(
-        job_runner,
-        "auto_publish_job",
-        lambda job_id, storage=None, now=None: (
-            called.append(job_id) or type("Result", (), {"manifest": {"status": "published"}})()
-        ),
-    )
+    monkeypatch.setenv("PODCAST_AUTO_PUBLISH", "true")
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
+    publish = MagicMock()
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", publish)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -406,10 +522,15 @@ def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    assert called == [JOB_ID]
+    publish.assert_not_called()
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    assert persisted["status"] == "synthesized_review_ready"
+    assert persisted["publishing"]["eligible"] is False
+    assert persisted["publishing"]["packet_ready"] is True
+    assert "human_review" in persisted["publishing"]["blocked_by"]
 
 
-def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch):
+def test_run_synthesis_does_not_publish_when_spotify_config_present(monkeypatch):
     _patch_audio(monkeypatch)
     monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
     storage = FakeStorage()
@@ -423,25 +544,8 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
         "spotify_publish": {"publish_mode": "draft", "upload_format": "wav"},
     }
     _stage(storage, manifest, _two_voice_script())
-    published: list[dict[str, object]] = []
-
-    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: False)
-
-    def fake_publish_episode(mp3_path, title, description, **kwargs):
-        published.append(
-            {
-                "mp3_exists": Path(mp3_path).is_file(),
-                "wav_exists": Path(kwargs["wav_path"]).is_file(),
-                "title": title,
-                "description": description,
-                "year": kwargs["year"],
-                "week": kwargs["week"],
-                "article_title": kwargs["article_title"],
-            }
-        )
-        return job_runner.PublishResult(status="draft")
-
-    monkeypatch.setattr(job_runner, "publish_episode", fake_publish_episode)
+    publish = MagicMock()
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", publish)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -452,24 +556,22 @@ def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch)
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    assert published == [
-        {
-            "mp3_exists": True,
-            "wav_exists": True,
-            "title": "Skills go vertical",
-            "description": "<p>Claracle week 2026-W24.</p><p>Source article: https://claracle.com/weekly/2026/w24/</p>",
-            "year": 2026,
-            "week": 24,
-            "article_title": "Skills go vertical",
-        }
-    ]
+    publish.assert_not_called()
     persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
-    assert persisted["generation"]["publish_result"]["status"] == "draft"
-    assert persisted["generation"]["publish_result"]["outcome"] == "draft_created"
-    assert persisted["generation"]["publish_result"]["publish_run_id"]
+    assert persisted["status"] == "synthesized_review_ready"
+    assert persisted["publishing"]["packet_ready"] is True
+    assert persisted["publishing"]["eligible"] is False
+    assert persisted["publishing"]["readiness_checks"] == {
+        "cost_ledger_complete": True,
+        "editorial_review_complete": False,
+        "real_audio_available": True,
+        "audio_validation_passed": True,
+    }
+    assert "human_review" in persisted["publishing"]["blocked_by"]
+    assert "publish_result" not in persisted["generation"]
 
 
-def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation(
+def test_run_synthesis_leaves_canonical_identity_for_approved_publish_gate(
     monkeypatch,
 ):
     _patch_audio(monkeypatch)
@@ -482,17 +584,12 @@ def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation
         "article_title": "Invalid canonical identity",
         "article_sha256": "a" * 64,
         "publish_run_id": "123",
+        "publication_identity_mode": "canonical",
         "spotify_publish": {"publish_mode": "draft", "upload_format": "wav"},
     }
     _stage(storage, manifest, _two_voice_script())
-    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: False)
-    monkeypatch.setattr(
-        job_runner,
-        "publish_episode",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("Spotify mutation path must not run")
-        ),
-    )
+    publish = MagicMock()
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", publish)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -503,13 +600,11 @@ def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
+    publish.assert_not_called()
     persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
-    publish_result = persisted["generation"]["publish_result"]
-    assert publish_result["outcome"] == "publication_unknown"
-    assert publish_result["details"] == {
-        "retry_blocked": True,
-        "code": "invalid_publication_identity",
-    }
+    assert persisted["request"]["publication_identity_mode"] == "canonical"
+    assert persisted["status"] == "synthesized_review_ready"
+    assert persisted["publishing"]["blocked_by"] == ["human_review"]
 
 
 def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(monkeypatch):
@@ -526,14 +621,10 @@ def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(mon
     _stage(storage, manifest, _two_voice_script())
 
     enqueued: list[str] = []
-    auto_published: list[str] = []
-
-    def fake_auto_publish_job(job_id, **kwargs):
-        auto_published.append(job_id)
-        return _FakeAutoOutcome()
-
-    monkeypatch.setattr(job_runner, "auto_publish_enabled", lambda: True)
-    monkeypatch.setattr(job_runner, "auto_publish_job", fake_auto_publish_job)
+    monkeypatch.setenv("PODCAST_AUTO_PUBLISH", "true")
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
+    publish = MagicMock()
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", publish)
 
     outcome = job_runner.run_synthesis(
         JOB_ID,
@@ -545,13 +636,9 @@ def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(mon
     )
 
     assert outcome.status == job_runner.STATUS_COMPLETED
-    # Video is enqueued AND audio is published immediately — both independently.
+    # Video enqueue is independent from the staged audio publication gate.
     assert enqueued == [JOB_ID]
-    assert auto_published == [JOB_ID]
-
-
-class _FakeAutoOutcome:
-    manifest = {"status": "published"}
+    publish.assert_not_called()
 
 
 def test_run_synthesis_video_enqueue_failure_does_not_break_completion(monkeypatch):
@@ -593,6 +680,141 @@ def test_run_synthesis_is_idempotent_on_duplicate_delivery(monkeypatch):
     )
     assert outcome.status == job_runner.STATUS_SKIPPED
     assert outcome.reason == job_runner.REASON_ALREADY_SYNTHESIZED
+
+
+def test_duplicate_delivery_fails_closed_when_audio_validation_did_not_pass(
+    monkeypatch,
+):
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    storage = FakeStorage()
+    manifest = _base_manifest(status="synthesized_publish_ready")
+    manifest["generation"]["audio_mode"] = "synthesized"
+    manifest["generation"]["audio_validation"] = {"status": "failed", "ready": True}
+    manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
+    manifest["review"] = {"status": "approved"}
+    manifest["publishing"] = {
+        "eligible": True,
+        "packet_ready": True,
+        "blocked_by": [],
+    }
+    manifest["lifecycle"]["status"] = "synthesized_publish_ready"
+    _stage(storage, manifest, _two_voice_script())
+    publish = MagicMock()
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", publish)
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        transport=lambda request: pytest.fail("must not re-synthesize"),
+    )
+
+    assert outcome.status == job_runner.STATUS_SKIPPED
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    assert persisted["status"] == "synthesized_review_ready"
+    assert persisted["lifecycle"]["status"] == "synthesized_review_ready"
+    assert persisted["publishing"]["eligible"] is False
+    assert "audio_validation_not_passed" in persisted["publishing"]["blocked_by"]
+    assert persisted["publishing"]["blocked_by"] == ["audio_validation_not_passed"]
+    publish.assert_not_called()
+
+
+def test_duplicate_delivery_normalizes_legacy_unapproved_publish_ready_manifest(
+    monkeypatch,
+):
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    storage = FakeStorage()
+    manifest = _base_manifest(status="synthesized_publish_ready")
+    manifest["generation"]["audio_mode"] = "synthesized"
+    manifest["generation"]["audio_validation"] = {"status": "passed", "ready": True}
+    manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
+    manifest.pop("review", None)
+    manifest["publishing"] = {
+        "eligible": True,
+        "packet_ready": True,
+        "blocked_by": [],
+    }
+    manifest["lifecycle"]["status"] = "synthesized_publish_ready"
+    _stage(storage, manifest, _two_voice_script())
+    publish = MagicMock()
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", publish)
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        transport=lambda request: pytest.fail("must not re-synthesize"),
+    )
+
+    assert outcome.status == job_runner.STATUS_SKIPPED
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    assert persisted["status"] == "synthesized_review_ready"
+    assert persisted["lifecycle"]["status"] == "synthesized_review_ready"
+    assert persisted["publishing"]["eligible"] is False
+    assert persisted["publishing"]["packet_ready"] is True
+    assert persisted["publishing"]["blocked_by"] == ["human_review"]
+    assert persisted["publishing"]["readiness_checks"] == {
+        "cost_ledger_complete": True,
+        "editorial_review_complete": False,
+        "real_audio_available": True,
+        "audio_validation_passed": True,
+    }
+    publish.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "uploaded",
+        "draft_created",
+        "manual_handoff_required",
+        "published",
+        "publication_unknown",
+    ],
+)
+def test_duplicate_delivery_preserves_settled_or_ambiguous_publication_state(monkeypatch, outcome):
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    storage = FakeStorage()
+    manifest = _base_manifest(status="publish_failed")
+    manifest["generation"]["audio_mode"] = "synthesized"
+    manifest["generation"]["audio_validation"] = {"status": "passed", "ready": True}
+    manifest["generation"]["synthesis_runner"] = {"status": "completed", "job_id": JOB_ID}
+    manifest["review"] = {"status": "approved"}
+    manifest["publishing"] = {
+        "eligible": False,
+        "packet_ready": True,
+        "blocked_by": [],
+        "result": {
+            "status": "failed" if outcome == "publication_unknown" else "published",
+            "outcome": outcome,
+            "publish_run_id": "123",
+            "details": {"retry_blocked": True, "reconciliation": "required"},
+        },
+    }
+    manifest["lifecycle"] = {
+        "status": "publish_failed",
+        "revision": 7,
+        "transitions": [{"at": "t1", "to": "publish_failed", "reason": "provider_result"}],
+    }
+    original_publication = json.loads(json.dumps(manifest["publishing"]))
+    original_lifecycle = json.loads(json.dumps(manifest["lifecycle"]))
+    _stage(storage, manifest, _two_voice_script())
+    publish = MagicMock()
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", publish)
+
+    outcome_result = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        transport=lambda request: pytest.fail("must not re-synthesize"),
+    )
+
+    assert outcome_result.status == job_runner.STATUS_SKIPPED
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    assert persisted["status"] == "publish_failed"
+    assert persisted["publishing"] == original_publication
+    assert persisted["lifecycle"] == original_lifecycle
+    publish.assert_not_called()
 
 
 def test_run_synthesis_skip_enqueues_video_on_retrigger(monkeypatch):

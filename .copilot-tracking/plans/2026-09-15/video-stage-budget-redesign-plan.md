@@ -247,6 +247,26 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Expected result: Exact worker issue, synchronized RPI artifacts/docs, conventional commit with required trailers, pushed branch, and unmerged PR to `main`.
 * Detail section: P05-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
+<!-- rpi:phase id=P06 -->
+### [~] P06: Fail closed audio-only publication
+
+* Intent: Keep synthesized audio staged until an explicit approved/manual publication gate invokes `publish_staged_job`.
+* Dependencies: P05 and the existing orchestration review gate.
+
+<!-- rpi:task id=P06-T01 -->
+#### [x] P06-T01: Remove synthesis-time Spotify mutation bypass
+
+* Requirement and evidence: PR #682 hard requirement; synthesis must not call Spotify merely because audio validated or Spotify config/auto-publish environment is present.
+* Expected result: `run_synthesis` updates packet/readiness/blocker state and independently enqueues video, but only explicit approved/manual orchestration can publish audio.
+* Detail section: P06-T01 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P06-T02 -->
+#### [~] P06-T02: Validate, independently review, and update PR delivery
+
+* Requirement and evidence: Required focused/full gates, strict lockout review, follow-up commit, push, and PR #682 evidence update.
+* Expected result: Audio no-auto and approved-gate behavior are accepted, video behavior remains independent, and PR #682 stays open with checks triggered.
+* Detail section: P06-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
 ## Dependencies
 
 * Baseline provider evidence and distribution state machine: must remain additive and fail closed.
