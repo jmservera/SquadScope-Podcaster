@@ -221,7 +221,7 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Detail section: P04-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
 <!-- rpi:phase id=P05 -->
-### [~] P05: Validate, review, follow up, and deliver
+### [x] P05: Validate, review, follow up, and deliver
 
 * Intent: Prove all requirements, resolve review findings, create follow-up issue, commit, push, and open PR.
 * Dependencies: P01-P04.
@@ -241,7 +241,7 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Detail section: P05-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
 <!-- rpi:task id=P05-T03 -->
-#### [~] P05-T03: Record follow-up and deliver commit, push, and PR
+#### [x] P05-T03: Record follow-up and deliver commit, push, and PR
 
 * Requirement and evidence: Caller delivery and deferred-worker requirements.
 * Expected result: Exact worker issue, synchronized RPI artifacts/docs, conventional commit with required trailers, pushed branch, and unmerged PR to `main`.

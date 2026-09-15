@@ -16,7 +16,7 @@
 | P02 | Bound recorder fan-in and deterministic fallback | Complete | P02, P02-T01, P02-T02 |
 | P03 | Bound render, archive, and resume | Complete | P03, P03-T01, P03-T02, P03-T03 |
 | P04 | Persist render boundary and bound distribution/shutdown | Complete | P04, P04-T01, P04-T02, P04-T03 |
-| P05 | Validate, review, follow up, and deliver | Active: P05-T03 | P05, P05-T01, P05-T02, P05-T03 |
+| P05 | Validate, review, follow up, and deliver | Complete | P05, P05-T01, P05-T02, P05-T03 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish shared budget and evidence contracts
