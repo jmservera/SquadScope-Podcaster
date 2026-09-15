@@ -5,7 +5,7 @@
 
 * Task ID: provider-state-reconciliation
 * Task slug: provider-state-reconciliation
-* Planning status: P06 reviewer-lockout correction in progress; PR open and unmerged
+* Planning status: P06 reviewer-lockout correction complete; PR open and unmerged
 * Plan date: 2026-09-14
 * Phase details: .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
 * Changes record: .copilot-tracking/changes/2026-09-14/provider-state-reconciliation-changes.md
@@ -386,7 +386,7 @@ validation, update delivery evidence and PR description, push, and leave the PR
 unmerged for Livingston.
 
 <!-- rpi:phase id=P06 -->
-### [ ] P06: Reviewer-Lockout Correction
+### [x] P06: Reviewer-Lockout Correction
 
 <!-- rpi:task id=P06-T01 -->
 #### [x] P06-T01: Enforce infrastructure-backed publication evidence retention
@@ -412,7 +412,7 @@ ensure unknown/manual legacy markers neither count as successful nor permit a
 duplicate feed append after a crash.
 
 <!-- rpi:task id=P06-T04 -->
-#### [ ] P06-T04: Validate and deliver the independent correction
+#### [x] P06-T04: Validate and deliver the independent correction
 
 Run targeted/full tests, Ruff and format checks, infrastructure validation,
 lockfile verification, and diff checks; update docs/tracking/PR evidence,

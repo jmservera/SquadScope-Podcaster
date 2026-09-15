@@ -7,7 +7,7 @@
 * Task slug: provider-state-reconciliation
 * Related plan: .copilot-tracking/plans/2026-09-14/provider-state-reconciliation-plan.md
 * Phase details: .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
-* Status: Partial — P06 implementation and local validation complete; delivery pending
+* Status: Complete — P06 correction committed and pushed for unmerged review
 
 ## Implementation Opening
 
@@ -98,6 +98,18 @@
   suppress another append but do not count as succeeded or completed.
 * Callback evidence preserves normalized RSS provider fields and keeps RSS
   evidence distinct from Spotify upload evidence.
+
+### Delivered the reviewer-lockout correction — P06-T04
+
+* Committed the retention, state, identity, RSS fencing, regressions,
+  infrastructure, documentation, and tracking changes as
+  `3aa87f60b821bb8bc7a88c44b6cc51aa8d7140b4`.
+* Pushed `squad/provider-state-reconciliation` to PR #680 with the required
+  trailers and without deployment, provider mutation, dispatch, canary, or
+  merge.
+* Fresh PR CI is owned by the pushed head. All six current review threads were
+  answered with exact evidence and resolved; the PR remained open and unmerged
+  with zero unresolved threads.
 
 ### Canonical versus bounded legacy identity — P05-T01
 
@@ -359,5 +371,9 @@
 
 ## Delivery Evidence
 
-* Commit, pushed branch, and unmerged PR metadata are recorded in Git/GitHub and the final delivery handoff because a commit cannot contain its own final SHA or later PR URL.
+* Implementation commit:
+  `3aa87f60b821bb8bc7a88c44b6cc51aa8d7140b4`.
+* Pushed branch: `squad/provider-state-reconciliation`.
+* PR: https://github.com/jmservera/SquadScope-Podcaster/pull/680 remains open
+  and unmerged.
 * Merge/deployment/live provider activity: prohibited.
