@@ -370,7 +370,7 @@ def append_evidence(
                 existing.get("provider_artifact_id") or "",
             )
             if existing_key == dedupe_key:
-                return raw or b""
+                return raw if raw is not None else legacy_raw or b""
         next_seq = (
             max(
                 (

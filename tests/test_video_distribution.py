@@ -885,6 +885,48 @@ class TestDistributeVideo:
         assert result.provider_records["youtube"]["status"] == "draft"
         assert result.public_delivery_status == "failed"
 
+    def test_uploaded_snapshots_block_duplicate_provider_mutations(self, video_file, monkeypatch):
+        youtube_upload = MagicMock(side_effect=AssertionError("YouTube upload must remain blocked"))
+        rss_update = MagicMock(side_effect=AssertionError("RSS update must remain blocked"))
+        spotify_upload = MagicMock(side_effect=AssertionError("Spotify upload must remain blocked"))
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", youtube_upload)
+        monkeypatch.setattr("podcaster.video.distribution.update_spotify_rss", rss_update)
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_spotify_episode",
+            spotify_upload,
+        )
+
+        result = distribute_video(
+            video_file,
+            "job-uploaded-blocked",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(
+                youtube_enabled=True,
+                spotify_rss_enabled=True,
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+            ),
+            published={
+                "youtube": {"outcome": "uploaded", "video_id": "yt-uploaded"},
+                "spotify_rss": {"outcome": "uploaded"},
+                "spotify_upload": {"outcome": "uploaded", "episode_id": "sp-uploaded"},
+            },
+        )
+
+        youtube_upload.assert_not_called()
+        rss_update.assert_not_called()
+        spotify_upload.assert_not_called()
+        assert result.provider_outcomes == {
+            "youtube": "uploaded",
+            "spotify_rss": "uploaded",
+            "spotify_upload": "uploaded",
+        }
+        assert result.spotify_rss_updated is False
+        assert result.spotify_upload_updated is False
+        assert result.status == "failed"
+
     def test_public_completion_requires_external_verification_for_every_target(
         self, video_file, monkeypatch
     ):

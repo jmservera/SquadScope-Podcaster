@@ -111,6 +111,24 @@
   answered with exact evidence and resolved; the PR remained open and unmerged
   with zero unresolved threads.
 
+### Closed final migration and uploaded-state review gaps
+
+* Related phase or task: P06-T01, P06-T03, P06-T04
+* Files: `podcaster/publication_state.py`,
+  `podcaster/video/distribution.py`, `tests/test_publication_state.py`,
+  `tests/test_video_distribution.py`
+* What changed and why: An exact duplicate found only in the legacy evidence
+  document now writes the legacy bytes to the canonical durable path instead of
+  creating an empty document. `uploaded` snapshots now block YouTube, Spotify
+  RSS, and Spotify video mutations and do not count as successfully delivered.
+* Completion evidence: Migration preserves the complete legacy record set on a
+  duplicate append, while all three provider mutation mocks remain untouched
+  for prior `uploaded` evidence.
+* Validation: Focused publication/distribution/video-runner suite passed
+  **212 tests**. Final full repository suite passed **3027 tests, 2 skipped,
+  2 deselected**, with the pre-existing httpx warning; Ruff and diff checks
+  passed.
+
 ### Canonical versus bounded legacy identity — P05-T01
 
 * Canonical requests are selected by either new identity field or explicit
@@ -342,7 +360,7 @@
 * Changed-surface provider/publication/job/monitoring/infrastructure suite:
   **775 passed**, 1 pre-existing httpx deprecation warning.
 * Focused six-finding suite: **300 passed**.
-* Full repository suite: **3025 passed, 2 skipped, 2 deselected**, with the
+* Full repository suite: **3027 passed, 2 skipped, 2 deselected**, with the
   pre-existing httpx deprecation warning.
 * Scale-out fanout regression: **1 passed**.
 * `ruff check podcaster tests` and `ruff format --check podcaster tests` passed;

@@ -248,6 +248,51 @@ def test_read_evidence_accepts_legacy_job_scoped_path():
     assert read_evidence(storage, job_id)["job_id"] == job_id
 
 
+def test_duplicate_legacy_record_migrates_without_writing_empty_canonical_blob():
+    storage = MemoryStorage()
+    ident = identity()
+    legacy_document = {
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "job_id": ident.accepted_job_id,
+        "records": [
+            {
+                "seq": 1,
+                "at": "2026-09-15T00:00:00Z",
+                "week": ident.week,
+                "publish_run_id": ident.publish_run_id,
+                "article_sha256": ident.article_sha256,
+                "manifest_sha256": ident.manifest_sha256,
+                "job_id": ident.accepted_job_id,
+                "platform": "youtube",
+                "media_kind": "video",
+                "operation": "upload",
+                "outcome": DRAFT_CREATED,
+                "status": "unlisted",
+                "transport_status": "accepted",
+                "verification": "none",
+                "retry_blocked": True,
+            }
+        ],
+    }
+    storage.data[f"jobs/{ident.accepted_job_id}/publication-evidence.json"] = json.dumps(
+        legacy_document
+    ).encode()
+
+    assert (
+        append_evidence(
+            storage,
+            ident,
+            platform="youtube",
+            media_kind="video",
+            operation="upload",
+            outcome=DRAFT_CREATED,
+        )
+        is None
+    )
+    canonical = json.loads(storage.data[evidence_path(ident.accepted_job_id)])
+    assert canonical["records"] == legacy_document["records"]
+
+
 def test_provider_record_distinguishes_readback_from_external_visibility():
     storage = MemoryStorage()
     record = append_evidence(

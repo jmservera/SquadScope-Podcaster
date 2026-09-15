@@ -1079,7 +1079,13 @@ def distribute_video(
         and (
             youtube_record.get("status") == "published"
             or youtube_record.get("outcome")
-            in (DRAFT_CREATED, PUBLISHED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
+            in (
+                UPLOADED,
+                DRAFT_CREATED,
+                PUBLISHED,
+                PUBLICATION_UNKNOWN,
+                MANUAL_HANDOFF_REQUIRED,
+            )
         )
     ):
         video_id = youtube_record.get("video_id")
@@ -1242,7 +1248,13 @@ def distribute_video(
         if isinstance(rss_record, Mapping) and (
             rss_record.get("status") == "published"
             or rss_outcome
-            in (DRAFT_CREATED, PUBLISHED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
+            in (
+                UPLOADED,
+                DRAFT_CREATED,
+                PUBLISHED,
+                PUBLICATION_UNKNOWN,
+                MANUAL_HANDOFF_REQUIRED,
+            )
         ):
             result.spotify_rss_updated = rss_outcome == PUBLISHED
             result.provider_outcomes["spotify_rss"] = rss_outcome
@@ -1344,10 +1356,17 @@ def distribute_video(
         if isinstance(spotify_upload_record, Mapping) and (
             spotify_upload_record.get("status") == "published"
             or spotify_upload_record.get("outcome")
-            in (DRAFT_CREATED, PUBLISHED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
+            in (
+                UPLOADED,
+                DRAFT_CREATED,
+                PUBLISHED,
+                PUBLICATION_UNKNOWN,
+                MANUAL_HANDOFF_REQUIRED,
+            )
         ):
             spotify_upload_outcome = str(spotify_upload_record.get("outcome") or DRAFT_CREATED)
             result.spotify_upload_updated = spotify_upload_outcome not in (
+                UPLOADED,
                 PUBLICATION_UNKNOWN,
                 MANUAL_HANDOFF_REQUIRED,
             )
@@ -1473,7 +1492,7 @@ def distribute_video(
             (
                 result.youtube_id is not None
                 and result.provider_outcomes.get("youtube")
-                not in (PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
+                not in (UPLOADED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
             )
             if youtube_active
             else False,
