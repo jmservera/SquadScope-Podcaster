@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import multiprocessing
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from podcaster.video.budget import VideoStageBudget
 from podcaster.video.clipset import (
     clip_blob_path,
+    clip_content_blob_path,
     clip_manifest_blob_path,
     clips_prefix,
 )
 from podcaster.video.editor import (
     EditorLease,
+    RecordingInsufficientError,
     acquire_or_renew_lease,
     assemble_recording,
     cleanup_clips,
@@ -26,11 +32,28 @@ from podcaster.video.editor import (
     release_lease,
     wait_for_fanin,
 )
+from podcaster.video.process import MediaEvidence, ProbeEvidence
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 from podcaster.video.video_gen import RecordedSegment
 
 _JSON = "application/json; charset=utf-8"
 _WEBM = "video/webm"
+
+
+def _validate_media(path: Path, expected: MediaEvidence | None, _timeout: float) -> MediaEvidence:
+    if expected is not None:
+        return expected
+    payload = path.read_bytes()
+    return MediaEvidence(
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        probe=ProbeEvidence(format_name="matroska,webm", duration_seconds=1.0),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _stub_media_probe(monkeypatch):
+    monkeypatch.setattr("podcaster.video.editor._validate_downloaded_media", _validate_media)
 
 
 class FakeStorage:
@@ -152,9 +175,30 @@ def test_plan_or_load_clipset_is_immutable_on_redelivery():
     first = plan_or_load_clipset(storage, "job1", _segments(3))
     # A redelivered editor plans a *different* (shorter) set, but must reuse the
     # original immutable clipset rather than overwrite it.
-    second = plan_or_load_clipset(storage, "job1", _segments(2))
+    second = plan_or_load_clipset(
+        storage,
+        "job1",
+        _segments(2),
+        budget=VideoStageBudget.start(),
+    )
     assert second.count == first.count == 3
     assert second.indices() == [0, 1, 2]
+
+
+def test_budgeted_clipset_rejects_malformed_cache_and_recomputes():
+    storage = FakeStorage()
+    storage.put_bytes("video-jobs/job1/clipset.json", b"{malformed", _JSON)
+    storage.put_bytes("video-jobs/job1/clips/000.webm", b"stale", "video/webm")
+
+    clipset = plan_or_load_clipset(
+        storage,
+        "job1",
+        _segments(2),
+        budget=VideoStageBudget.start(),
+    )
+
+    assert clipset.count == 2
+    assert not storage.blob_exists("video-jobs/job1/clips/000.webm")
 
 
 # --- additive fan-out ---------------------------------------------------------
@@ -395,6 +439,75 @@ def test_cleanup_clips_removes_only_clip_prefix():
     assert storage.delete_prefix(clips_prefix("job1")) == 0
 
 
+def test_cleanup_clips_skips_when_shutdown_budget_is_exhausted():
+    storage = FakeStorage()
+    storage.put_bytes(clip_blob_path("job1", 0), b"clip", _WEBM)
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=lambda: 5100.0,
+        utcnow=lambda: started + timedelta(seconds=5100),
+    )
+    calls: list[float] = []
+
+    removed = cleanup_clips(
+        storage,
+        "job1",
+        budget=budget,
+        operation_runner=lambda call, timeout: calls.append(timeout),
+    )
+
+    assert removed == 0
+    assert calls == []
+    assert storage.blob_exists(clip_blob_path("job1", 0))
+
+
+def test_cleanup_clips_timeout_is_best_effort():
+    storage = FakeStorage()
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=lambda: 5099.0,
+        utcnow=lambda: started + timedelta(seconds=5099),
+    )
+
+    removed = cleanup_clips(
+        storage,
+        "job1",
+        budget=budget,
+        operation_runner=lambda call, timeout: (_ for _ in ()).throw(TimeoutError("blocked")),
+    )
+
+    assert removed == 0
+
+
+def test_started_blocking_clip_cleanup_is_killed_before_late_side_effect(tmp_path):
+    started_marker = tmp_path / "clip-cleanup-started"
+    committed = tmp_path / "clip-cleanup-committed"
+
+    class BlockingStorage(FakeStorage):
+        def delete_prefix(self, prefix: str) -> int:
+            started_marker.write_text(prefix, encoding="utf-8")
+            time.sleep(0.5)
+            committed.write_text("late", encoding="utf-8")
+            return 1
+
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=lambda: 5099.9,
+        utcnow=lambda: started + timedelta(seconds=5099.9),
+    )
+
+    assert cleanup_clips(BlockingStorage(), "job1", budget=budget) == 0
+    assert started_marker.exists()
+    time.sleep(0.5)
+    assert not committed.exists()
+    assert not any(
+        child.name == "video-storage-operation" for child in multiprocessing.active_children()
+    )
+
+
 # --- end-to-end orchestration -------------------------------------------------
 
 
@@ -475,3 +588,133 @@ def test_record_via_fanout_aborts_when_heartbeat_raises(tmp_path):
             monotonic=lambda: 0.0,
             heartbeat=_heartbeat,
         )
+
+
+class _Clock:
+    def __init__(self, started: datetime, elapsed: float = 0.0) -> None:
+        self.started = started
+        self.elapsed = elapsed
+
+    def utcnow(self) -> datetime:
+        return self.started + timedelta(seconds=self.elapsed)
+
+    def monotonic(self) -> float:
+        return self.elapsed
+
+    def sleep(self, seconds: float) -> None:
+        self.elapsed += seconds
+
+
+def _fallback_renderer(path: Path, _timeout: float) -> MediaEvidence:
+    path.write_bytes(b"fixed-static-fallback")
+    payload = path.read_bytes()
+    return MediaEvidence(
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        probe=ProbeEvidence(format_name="matroska,webm", duration_seconds=1.0),
+    )
+
+
+def test_fanin_stops_exactly_at_t_plus_1200_and_falls_back_by_t_plus_25(tmp_path):
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    clock = _Clock(started, elapsed=1199)
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+    storage = FakeStorage()
+    producer = FakeProducer()
+
+    result = record_via_fanout(
+        "job1",
+        _segments(2),
+        tmp_path,
+        scratch=storage,
+        producer=producer,
+        poll_seconds=15,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+        budget=budget,
+        fallback_renderer=_fallback_renderer,
+    )
+
+    assert clock.elapsed == 1200
+    assert len(producer.sent) == 2
+    assert len(result.recorded) == 2
+    for index in range(2):
+        manifest = json.loads(storage.get_bytes(clip_manifest_blob_path("job1", index)))
+        assert manifest["status"] == "fallback"
+        assert manifest["media"]["sha256"]
+
+
+def test_t_plus_25_missing_renderer_is_terminal_recording_insufficient(tmp_path):
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    clock = _Clock(started, elapsed=1500)
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+    storage = FakeStorage()
+    producer = FakeProducer()
+
+    with pytest.raises(RecordingInsufficientError):
+        record_via_fanout(
+            "job1",
+            _segments(1),
+            tmp_path,
+            scratch=storage,
+            producer=producer,
+            sleep=clock.sleep,
+            monotonic=clock.monotonic,
+            budget=budget,
+            fallback_renderer=_fallback_renderer,
+        )
+
+    manifest = json.loads(storage.get_bytes(clip_manifest_blob_path("job1", 0)))
+    assert manifest["status"] == "recording_insufficient"
+    assert producer.sent == []
+
+
+def test_hash_bound_terminal_media_ignores_late_legacy_overwrite(tmp_path):
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(1))
+    winner = b"winning-fallback-bytes"
+    evidence = MediaEvidence(
+        size_bytes=len(winner),
+        sha256=hashlib.sha256(winner).hexdigest(),
+        probe=ProbeEvidence(format_name="matroska,webm", duration_seconds=1.0),
+    )
+    content_path = clip_content_blob_path("job1", 0, evidence.sha256)
+    storage.put_bytes(content_path, winner, _WEBM)
+    storage.put_bytes(clip_blob_path("job1", 0), b"late-recorder-overwrite", _WEBM)
+    storage.put_bytes(
+        clip_manifest_blob_path("job1", 0),
+        json.dumps(
+            {
+                "clip_id": "clip-000",
+                "duration_ms": 1000,
+                "is_fallback": True,
+                "status": "fallback",
+                "media_blob_path": content_path,
+                "media": evidence.to_dict(),
+            }
+        ).encode(),
+        _JSON,
+    )
+
+    def _strict(path: Path, expected: MediaEvidence | None, _timeout: float) -> MediaEvidence:
+        assert expected is not None
+        payload = path.read_bytes()
+        assert hashlib.sha256(payload).hexdigest() == expected.sha256
+        assert len(payload) == expected.size_bytes
+        return expected
+
+    result = assemble_recording(storage, clipset, tmp_path, media_validator=_strict)
+
+    assert result.recorded[0].video_path.read_bytes() == winner
+    assert (
+        json.loads(storage.get_bytes(clip_manifest_blob_path("job1", 0)))["media_blob_path"]
+        == content_path
+    )

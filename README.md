@@ -59,7 +59,7 @@ Without Azure storage settings, generated manifests, script drafts, transcripts,
 
 ## Human review gate
 
-Non-dry-run jobs now synthesize first, then wait for review before publication. `.github/workflows/podcast-review-gate.yml` uses the GitHub Environment `podcast-review`, calls the runtime `/api/review` route for the real stored manifest, and uploads the returned `review-manifest.json` as the audit artifact. Automatic approval only activates when both `PODCAST_AUTO_PUBLISH=true` and `SPOTIFY_PUBLISH_ENABLED=true`; otherwise jobs remain manually reviewable after synthesis.
+Non-dry-run jobs synthesize and validate audio, then leave it staged for review. The synthesis runner never mutates Spotify, even when publication-related environment flags are enabled. `.github/workflows/podcast-review-gate.yml` uses the GitHub Environment `podcast-review`, calls the runtime `/api/review` route for the real stored manifest, and uploads the returned `review-manifest.json` as the audit artifact. Publication is owned by an explicit approved/manual orchestration call through `process_review_decision` → `publish_staged_job`. `PODCAST_AUTO_PUBLISH` remains an orchestration helper that permits the explicit auto-review path when `SPOTIFY_PUBLISH_ENABLED=true`; synthesis does not invoke that path automatically.
 
 Example request:
 
@@ -98,7 +98,7 @@ Optional `prod` environment variables:
 - `AZURE_LOCATION` defaults to `eastus2`; override only when deploying the full stack to another supported region.
 - `AZURE_STORAGE_ACCOUNT_NAME` - override the deterministic default Storage Account name.
 - `SPOTIFY_PUBLISH_ENABLED` - set to `true` to let runtime publish approved episodes.
-- `PODCAST_AUTO_PUBLISH` - set to `true` to auto-approve after synthesis, but publication still requires `SPOTIFY_PUBLISH_ENABLED=true`.
+- `PODCAST_AUTO_PUBLISH` - permits explicit orchestration to use the auto-review helper when `SPOTIFY_PUBLISH_ENABLED=true`; the synthesis runner never invokes publication automatically.
 
 Optional `prod` environment secret:
 

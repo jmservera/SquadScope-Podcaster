@@ -59,12 +59,12 @@ param jobMemory string = '4.0Gi'
 @description('Replica timeout (seconds) — the per-clip record budget. Kept >= the clip queue visibility timeout (equality is valid) so a replica is not killed before its received message can either be deleted or fall back to visible (RFC §8).')
 @minValue(60)
 @maxValue(172800)
-param replicaTimeoutSeconds int = 900
+param replicaTimeoutSeconds int = 840
 
 @description('Clip queue receive visibility timeout (seconds) the recorder applies to each received message. Must be <= replicaTimeout so a slow clip is not double-delivered mid-flight (RFC §8).')
 @minValue(30)
 @maxValue(172800)
-param clipVisibilityTimeoutSeconds int = 900
+param clipVisibilityTimeoutSeconds int = 780
 
 @description('Hard cap (seconds) on a single clip\'s recording/scroll duration. Keeps the capture phase under replicaTimeout for very long pages (e.g. huge READMEs); the partial clip is fit to its planned slot downstream (issue #592). Set 0 to disable.')
 @minValue(0)
@@ -171,6 +171,10 @@ resource recorderJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'PODCASTER_CLIP_VISIBILITY_TIMEOUT'
               value: string(clipVisibilityTimeoutSeconds)
+            }
+            {
+              name: 'PODCASTER_RECORDER_TIMEOUT'
+              value: string(replicaTimeoutSeconds)
             }
             {
               name: 'VIDEO_MAX_CLIP_RECORD_SECONDS'

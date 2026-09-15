@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlencode
 
+from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import (
     _MIN_VALID_MP4_BYTES,
     HttpTransport,
@@ -154,6 +155,7 @@ def initiate_resumable_session(
     *,
     file_size: int,
     content_type: str = "video/mp4",
+    budget: VideoStageBudget | None = None,
 ) -> str:
     """Start a resumable session and return the session URI.
 
@@ -162,6 +164,13 @@ def initiate_resumable_session(
 
     params = urlencode({"uploadType": "resumable", "part": "snippet,status"})
     init_url = f"{_YOUTUBE_UPLOAD_URL}?{params}"
+    if budget is not None:
+        try:
+            budget.require_provider_mutation()
+        except ProviderMutationAdmissionError as exc:
+            exc.provider = "youtube"
+            exc.mutation_started = False
+            raise
     status, resp_headers, _ = http.request_with_headers(
         init_url,
         method="POST",
@@ -187,6 +196,9 @@ def _query_resume_offset(
     session_uri: str,
     access_token: str,
     total_size: int,
+    *,
+    budget: VideoStageBudget | None = None,
+    mutation_started: bool = True,
 ) -> tuple[int, str | None]:
     """Ask the server how many bytes it has. Returns (next_offset, completed_id).
 
@@ -194,6 +206,13 @@ def _query_resume_offset(
     already finished server-side.
     """
 
+    if budget is not None:
+        try:
+            budget.require_provider_mutation()
+        except ProviderMutationAdmissionError as exc:
+            exc.provider = "youtube"
+            exc.mutation_started = mutation_started
+            raise
     status, headers, body = http.request_with_headers(
         session_uri,
         method="PUT",
@@ -228,6 +247,8 @@ def upload_chunked(
     content_type: str = "video/mp4",
     max_retries: int = _MAX_TRANSIENT_RETRIES,
     sleep: Callable[[float], None] = time.sleep,
+    budget: VideoStageBudget | None = None,
+    mutation_started: bool = False,
 ) -> YouTubeUploadResult:
     """Upload a file in resumable chunks, resuming over transient failures."""
 
@@ -243,6 +264,14 @@ def upload_chunked(
                 break
             end = start + len(chunk) - 1
             try:
+                if budget is not None:
+                    try:
+                        budget.require_provider_mutation()
+                    except ProviderMutationAdmissionError as exc:
+                        exc.provider = "youtube"
+                        exc.mutation_started = mutation_started
+                        raise
+                mutation_started = True
                 status, headers, body = http.request_with_headers(
                     session_uri,
                     method="PUT",
@@ -254,6 +283,8 @@ def upload_chunked(
                     },
                     data=chunk,
                 )
+            except ProviderMutationAdmissionError:
+                raise
             except Exception as exc:  # noqa: BLE001 - network error → resume
                 transient_retries += 1
                 if transient_retries > max_retries:
@@ -264,7 +295,13 @@ def upload_chunked(
                     )
                 sleep(_RETRY_BACKOFF_BASE ** (transient_retries - 1))
                 start = _resume_after_failure(
-                    http, session_uri, access_token, total_size, fallback=start
+                    http,
+                    session_uri,
+                    access_token,
+                    total_size,
+                    fallback=start,
+                    budget=budget,
+                    mutation_started=mutation_started,
                 )
                 continue
 
@@ -279,7 +316,13 @@ def upload_chunked(
                     # unknown (could be 0).  Query the real offset rather than
                     # blindly advancing past the chunk we just sent.
                     start = _resume_after_failure(
-                        http, session_uri, access_token, total_size, fallback=start
+                        http,
+                        session_uri,
+                        access_token,
+                        total_size,
+                        fallback=start,
+                        budget=budget,
+                        mutation_started=mutation_started,
                     )
                 transient_retries = 0
                 continue
@@ -293,7 +336,13 @@ def upload_chunked(
                     )
                 sleep(_RETRY_BACKOFF_BASE ** (transient_retries - 1))
                 start = _resume_after_failure(
-                    http, session_uri, access_token, total_size, fallback=start
+                    http,
+                    session_uri,
+                    access_token,
+                    total_size,
+                    fallback=start,
+                    budget=budget,
+                    mutation_started=mutation_started,
                 )
                 continue
 
@@ -304,7 +353,14 @@ def upload_chunked(
             )
 
     # Loop completed without a 200/201 — query the server for a final id.
-    offset, completed_id = _query_resume_offset(http, session_uri, access_token, total_size)
+    offset, completed_id = _query_resume_offset(
+        http,
+        session_uri,
+        access_token,
+        total_size,
+        budget=budget,
+        mutation_started=mutation_started,
+    )
     if completed_id:
         return _success_result(completed_id, total_size)
     return YouTubeUploadResult(
@@ -321,10 +377,21 @@ def _resume_after_failure(
     total_size: int,
     *,
     fallback: int,
+    budget: VideoStageBudget | None = None,
+    mutation_started: bool = True,
 ) -> int:
     try:
-        offset, _ = _query_resume_offset(http, session_uri, access_token, total_size)
+        offset, _ = _query_resume_offset(
+            http,
+            session_uri,
+            access_token,
+            total_size,
+            budget=budget,
+            mutation_started=mutation_started,
+        )
         return offset
+    except ProviderMutationAdmissionError:
+        raise
     except Exception as exc:  # noqa: BLE001 - keep retrying from last offset
         logger.warning("Resume-offset query failed, retrying from %d: %s", fallback, exc)
         return fallback
@@ -367,6 +434,7 @@ def upload_video(
     transport: HttpTransport | None = None,
     chunk_size: int = RESUMABLE_CHUNK_SIZE,
     sleep: Callable[[float], None] = time.sleep,
+    budget: VideoStageBudget | None = None,
 ) -> YouTubeUploadResult:
     """Upload *video_path* to YouTube via resumable chunked upload.
 
@@ -408,7 +476,15 @@ def upload_video(
     )
 
     try:
-        session_uri = initiate_resumable_session(http, access_token, metadata, file_size=file_size)
+        session_uri = initiate_resumable_session(
+            http,
+            access_token,
+            metadata,
+            file_size=file_size,
+            budget=budget,
+        )
+    except ProviderMutationAdmissionError:
+        raise
     except RuntimeError as exc:
         logger.error("YouTube resumable init failed: %s", exc)
         return YouTubeUploadResult(status="failed", error=str(exc))
@@ -422,4 +498,6 @@ def upload_video(
         chunk_size=chunk_size,
         max_retries=_MAX_TRANSIENT_RETRIES,
         sleep=sleep,
+        budget=budget,
+        mutation_started=True,
     )

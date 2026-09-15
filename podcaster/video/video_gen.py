@@ -19,7 +19,9 @@ Capture modes (issue #387):
 
 from __future__ import annotations
 
+import hashlib
 import html
+import json
 import logging
 import math
 import os
@@ -53,6 +55,12 @@ except ModuleNotFoundError:  # pragma: no cover
 from podcaster.generation import PODCAST_NAME
 from podcaster.repo_naming import naturalize_name
 from podcaster.retry import DEFAULT_TASK_RETRIES, retry_call
+from podcaster.video.budget import VideoStage, VideoStageBudget
+from podcaster.video.process import (
+    MediaEvidence,
+    collect_media_evidence,
+    run_owned_process,
+)
 from podcaster.video.recording_pool import (
     MAX_RECORDING_CONCURRENCY,
     RecordingPoolConfig,
@@ -715,6 +723,7 @@ class RecordedSegment:
     # (planning pre-flight flagged the repo as 404/removed → "Repo removed"
     # card, no navigation attempted — issue #394).
     recovery_path: str = "direct"
+    media_evidence: MediaEvidence | None = None
 
 
 @dataclass
@@ -742,6 +751,25 @@ def _recording_meta_name(index: int) -> str:
     return f"recording_{index:03d}.json"
 
 
+def _recording_identity(index: int, segment: "VideoSegment") -> dict[str, str]:
+    source = json.dumps(
+        {
+            "index": index,
+            "start_seconds": segment.start_seconds,
+            "duration_seconds": segment.duration_seconds,
+            "repo_url": segment.repo.url if segment.repo is not None else None,
+            "source_url": segment.source_url,
+            "removed_reason": segment.removed_reason,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return {
+        "segment_index": str(index),
+        "plan_sha256": hashlib.sha256(source).hexdigest(),
+    }
+
+
 def _serialize_recording_meta(recorded: "RecordedSegment") -> str:
     """Serialize the recording-only metadata of a RecordedSegment to JSON.
 
@@ -759,6 +787,9 @@ def _serialize_recording_meta(recorded: "RecordedSegment") -> str:
             "website_url": recorded.website_url,
             "is_removed": recorded.is_removed,
             "recovery_path": recorded.recovery_path,
+            "media": (
+                recorded.media_evidence.to_dict() if recorded.media_evidence is not None else None
+            ),
         }
     )
 
@@ -768,6 +799,8 @@ def _resume_recorded_segment(
     segment: "VideoSegment",
     output_dir: Path,
     intermediates,
+    *,
+    budget: VideoStageBudget | None = None,
 ) -> "RecordedSegment | None":
     """Rebuild a RecordedSegment from its blob checkpoint, or return None.
 
@@ -790,10 +823,28 @@ def _resume_recorded_segment(
         return None
     suffix = meta.get("suffix") or ".mp4"
     blob_name = _recording_blob_name(index, suffix)
-    if not intermediates.exists(blob_name):
-        return None
     dest = output_dir / blob_name
-    if not intermediates.download(blob_name, dest):
+    if budget is None:
+        if not intermediates.exists(blob_name) or not intermediates.download(blob_name, dest):
+            return None
+        return RecordedSegment(
+            segment=segment,
+            video_path=dest,
+            is_fallback=bool(meta.get("is_fallback", False)),
+            has_pages=bool(meta.get("has_pages", False)),
+            website_url=meta.get("website_url"),
+            is_removed=bool(meta.get("is_removed", False)),
+            recovery_path=str(meta.get("recovery_path", "direct")),
+        )
+    record = intermediates.download_validated(
+        blob_name,
+        dest,
+        artifact_kind="recorded_segment",
+        identity=_recording_identity(index, segment),
+        budget=budget,
+        stage=VideoStage.FANIN,
+    )
+    if record is None:
         return None
     return RecordedSegment(
         segment=segment,
@@ -803,10 +854,15 @@ def _resume_recorded_segment(
         website_url=meta.get("website_url"),
         is_removed=bool(meta.get("is_removed", False)),
         recovery_path=str(meta.get("recovery_path", "direct")),
+        media_evidence=record.media,
     )
 
 
-def _validate_recording(path: Path) -> None:
+def _validate_recording(
+    path: Path,
+    *,
+    budget: VideoStageBudget | None = None,
+) -> MediaEvidence | None:
     """Best-effort ffprobe sanity check of a freshly-recorded segment.
 
     Never raises: a probe failure (e.g. no system ffprobe, or a stub file in
@@ -817,29 +873,26 @@ def _validate_recording(path: Path) -> None:
         if not path.exists() or path.stat().st_size == 0:
             logger.warning("recorded segment is empty: %s", path)
             return
-        subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=nw=1:nk=1",
-                str(path),
-            ],
-            check=True,
-            capture_output=True,
-            timeout=30,
+        evidence = collect_media_evidence(
+            path,
+            timeout_seconds=30,
+            budget=budget,
+            stage=VideoStage.FANIN,
         )
+        return evidence
     except Exception:  # noqa: BLE001 — validation is advisory only
+        if budget is not None:
+            raise
         logger.debug("ffprobe validation skipped/failed for %s", path, exc_info=True)
+        return None
 
 
 def _checkpoint_recorded_segment(
     index: int,
     recorded: "RecordedSegment",
     intermediates,
+    *,
+    budget: VideoStageBudget | None = None,
 ) -> None:
     """Checkpoint a freshly-recorded segment to blob, then free local disk.
 
@@ -854,8 +907,30 @@ def _checkpoint_recorded_segment(
         return
     suffix = recorded.video_path.suffix or ".mp4"
     content_type = "video/webm" if suffix == ".webm" else "video/mp4"
-    _validate_recording(recorded.video_path)
-    if intermediates.upload(_recording_blob_name(index, suffix), recorded.video_path, content_type):
+    evidence = _validate_recording(recorded.video_path, budget=budget)
+    if evidence is not None:
+        recorded.media_evidence = evidence
+    if budget is None and evidence is None:
+        if intermediates.upload(
+            _recording_blob_name(index, suffix), recorded.video_path, content_type
+        ):
+            intermediates.write_text(
+                _recording_meta_name(index), _serialize_recording_meta(recorded)
+            )
+            intermediates.mark(f"recording_{index:03d}", recovery_path=recorded.recovery_path)
+            recorded.video_path.unlink(missing_ok=True)
+        return
+    uploaded = intermediates.upload_validated(
+        _recording_blob_name(index, suffix),
+        recorded.video_path,
+        artifact_kind="recorded_segment",
+        identity=_recording_identity(index, recorded.segment),
+        content_type=content_type,
+        budget=budget,
+        stage=VideoStage.FANIN,
+    )
+    if uploaded is not None:
+        recorded.media_evidence = uploaded.media
         intermediates.write_text(_recording_meta_name(index), _serialize_recording_meta(recorded))
         intermediates.mark(f"recording_{index:03d}", recovery_path=recorded.recovery_path)
         # Upload was size-verified above; the recording now lives safely in blob
@@ -1144,7 +1219,12 @@ def _pad_frames(capturer: _Capturer, target_count: int) -> None:
 
 
 def _compose_screenshot_segment(
-    capturer: _Capturer, duration_seconds: float, output_path: Path
+    capturer: _Capturer,
+    duration_seconds: float,
+    output_path: Path,
+    *,
+    budget: VideoStageBudget | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> Path:
     """Compose captured screenshots into the segment video at *output_path*.
 
@@ -1161,16 +1241,31 @@ def _compose_screenshot_segment(
     else:
         raise RuntimeError("No screenshots captured for screenshot-based segment composition")
 
+    command_runner = runner or run_owned_process
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    except subprocess.TimeoutExpired as exc:
+        if runner is None:
+            result = command_runner(
+                cmd,
+                timeout_seconds=600,
+                budget=budget,
+                stage=VideoStage.FANIN,
+                output_paths=(output_path,),
+            )
+        else:
+            if budget is not None and not budget.admit(VideoStage.FANIN).allowed:
+                output_path.unlink(missing_ok=True)
+                raise TimeoutError("fan-in deadline reached before screenshot finalization")
+            result = command_runner(cmd)
+    except (subprocess.TimeoutExpired, TimeoutError) as exc:
+        output_path.unlink(missing_ok=True)
         raise RuntimeError(f"ffmpeg timed out composing screenshot segment: {exc}") from exc
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg failed composing screenshot segment "
             f"(exit {result.returncode}): {result.stderr.strip()}"
         )
-    if not output_path.exists():
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        output_path.unlink(missing_ok=True)
         raise RuntimeError(f"ffmpeg did not produce screenshot segment at {output_path}")
     return output_path
 
@@ -2438,6 +2533,8 @@ def record_episode(
     intermediates=None,
     concurrency: int | None = None,
     brand_name: str | None = None,
+    budget: VideoStageBudget | None = None,
+    owned_record_segment: Callable[["VideoSegment", Path, float], RecordedSegment] | None = None,
 ) -> RecordingResult:
     """Record all video segments for an episode plan.
 
@@ -2490,7 +2587,13 @@ def record_episode(
     resumed: dict[int, RecordedSegment] = {}
     if intermediates is not None and getattr(intermediates, "enabled", False):
         for index, segment in enumerate(plan.segments):
-            recovered = _resume_recorded_segment(index, segment, output_dir, intermediates)
+            recovered = _resume_recorded_segment(
+                index,
+                segment,
+                output_dir,
+                intermediates,
+                budget=budget,
+            )
             if recovered is not None:
                 resumed[index] = recovered
         if resumed:
@@ -2507,27 +2610,48 @@ def record_episode(
     # record concurrently (issue #479).
     checkpoint_lock = threading.Lock()
 
-    def _record_one(browser: "Browser", index: int, segment: VideoSegment) -> RecordedSegment:
+    def _record_one(
+        browser: "Browser | None", index: int, segment: VideoSegment
+    ) -> RecordedSegment:
         """Record + checkpoint a single (non-resumed) segment."""
         logger.info(
             "Recording segment: %s (%.1fs)",
             segment.label,
             segment.duration_seconds,
         )
-        recorded = retry_call(
-            lambda: _record_segment(
+
+        def _record() -> RecordedSegment:
+            if budget is not None:
+                timeout = budget.operation_timeout(VideoStage.FANIN)
+                if timeout <= 0:
+                    raise TimeoutError("fan-in deadline reached before browser admission")
+                if owned_record_segment is not None:
+                    return owned_record_segment(segment, output_dir, timeout)
+                from podcaster.video.recorder import _owned_production_record_segment
+
+                return _owned_production_record_segment(
+                    segment,
+                    output_dir,
+                    timeout_seconds=timeout,
+                )
+            if browser is None:
+                raise RuntimeError("browser is required for inline recording")
+            return _record_segment(
                 browser,
                 segment,
                 output_dir,
                 check_accessibility,
                 source_url=source_url,
                 brand_name=brand_name,
-            ),
+            )
+
+        recorded = retry_call(
+            _record,
             attempts=RECORD_TASK_RETRIES,
             description=f"record segment {index} ({segment.label})",
         )
         with checkpoint_lock:
-            _checkpoint_recorded_segment(index, recorded, intermediates)
+            _checkpoint_recorded_segment(index, recorded, intermediates, budget=budget)
         logger.info(
             "Saved: %s (fallback=%s, pages=%s, website=%s, recovery=%s)",
             recorded.video_path.name,
@@ -2553,14 +2677,25 @@ def record_episode(
             _log_reused(index, recovered)
         return result
 
+    pending = [
+        (index, segment) for index, segment in enumerate(plan.segments) if index not in resumed
+    ]
+
+    if budget is not None:
+        produced: dict[int, RecordedSegment] = {}
+        for index, segment in pending:
+            produced[index] = _record_one(None, index, segment)
+        result.recorded = [
+            resumed[index] if index in resumed else produced[index]
+            for index in range(len(plan.segments))
+        ]
+        return result
+
     pool_config = (
         load_recording_pool_config()
         if concurrency is None
         else RecordingPoolConfig(concurrency=max(1, min(concurrency, MAX_RECORDING_CONCURRENCY)))
     )
-    pending = [
-        (index, segment) for index, segment in enumerate(plan.segments) if index not in resumed
-    ]
 
     def _launch(pw: "Playwright") -> "Browser":
         return pw.chromium.launch(headless=headless, args=RECORDING_CHROMIUM_ARGS)

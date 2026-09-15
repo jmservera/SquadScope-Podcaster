@@ -216,6 +216,8 @@ class ClipManifest:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ClipManifest":
+        if data.get("schema_version") != CLIP_MANIFEST_SCHEMA_VERSION:
+            raise ClipManifestError("unknown or legacy clip manifest schema version")
         return cls(
             clip_id=str(data["clip_id"]),
             duration_ms=int(data["duration_ms"]),
@@ -224,7 +226,7 @@ class ClipManifest:
             trim_ranges=tuple(TrimRange.from_dict(r) for r in data.get("trim_ranges", [])),
             loop_sections=tuple(LoopSection.from_dict(s) for s in data.get("loop_sections", [])),
             is_fallback=_parse_bool(data.get("is_fallback", False), field="is_fallback"),
-            schema_version=str(data.get("schema_version", CLIP_MANIFEST_SCHEMA_VERSION)),
+            schema_version=str(data["schema_version"]),
         )
 
 

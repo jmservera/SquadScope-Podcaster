@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from podcaster.video.budget import TimeoutReason, VideoStage, VideoStageBudget
 from podcaster.video.intro_outro import (
     FPS,
     HEIGHT,
@@ -48,6 +49,7 @@ from podcaster.video.intro_outro import (
     _get_drawtext_ffmpeg,
 )
 from podcaster.video.localization import localize_section_name
+from podcaster.video.process import OwnedProcessTimeout, run_owned_process
 
 logger = logging.getLogger(__name__)
 
@@ -483,6 +485,7 @@ def generate_section_card(
     config: SectionCardConfig | None = None,
     ffmpeg_bin: str | None = None,
     runner: Any = None,
+    budget: VideoStageBudget | None = None,
 ) -> ClipResult:
     """Render a single section title card to *output_path*.
 
@@ -506,12 +509,38 @@ def generate_section_card(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if ffmpeg_bin is None:
+    if budget is not None and not budget.admit(VideoStage.RENDER).allowed:
+        raise OwnedProcessTimeout(
+            ["ffmpeg"],
+            0.0,
+            reason=TimeoutReason.STAGE_DEADLINE,
+        )
+    if ffmpeg_bin is None and budget is not None:
+        ffmpeg_bin = "ffmpeg"
+    elif ffmpeg_bin is None:
         ffmpeg_bin = _get_drawtext_ffmpeg() or "ffmpeg"
 
     cmd = _build_section_card_cmd(marker, output_path, config, ffmpeg_bin)
-    run = runner or _default_runner
-    run(cmd)
+    if budget is not None and not budget.admit(VideoStage.RENDER).allowed:
+        output_path.unlink(missing_ok=True)
+        raise OwnedProcessTimeout(cmd, 0.0, reason=TimeoutReason.STAGE_DEADLINE)
+    try:
+        if runner is None and budget is not None:
+            run_owned_process(
+                cmd,
+                budget=budget,
+                stage=VideoStage.RENDER,
+                output_paths=(output_path,),
+                check=True,
+            )
+        else:
+            (runner or _default_runner)(cmd)
+    except BaseException:
+        output_path.unlink(missing_ok=True)
+        raise
+    if budget is not None and (not output_path.is_file() or output_path.stat().st_size <= 0):
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"section card renderer produced invalid output: {output_path}")
     logger.info("Generated section title card '%s': %s", marker.name, output_path)
 
     return ClipResult(
@@ -542,6 +571,7 @@ def build_section_card_inserts(
     config: SectionCardConfig | None = None,
     ffmpeg_bin: str | None = None,
     runner: Any = None,
+    budget: VideoStageBudget | None = None,
 ) -> list[SectionCardInsert]:
     """Parse sections, map them to segments, and render one card per section.
 
@@ -570,7 +600,11 @@ def build_section_card_inserts(
     if not plan:
         return []
 
-    if ffmpeg_bin is None:
+    if budget is not None and not budget.admit(VideoStage.RENDER).allowed:
+        return []
+    if ffmpeg_bin is None and budget is not None:
+        ffmpeg_bin = "ffmpeg"
+    elif ffmpeg_bin is None:
         ffmpeg_bin = _get_drawtext_ffmpeg()
     if ffmpeg_bin is None:
         logger.warning(
@@ -592,6 +626,7 @@ def build_section_card_inserts(
             config=config,
             ffmpeg_bin=ffmpeg_bin,
             runner=runner,
+            budget=budget,
         )
         inserts.append(
             SectionCardInsert(
