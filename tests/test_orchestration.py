@@ -164,6 +164,37 @@ def test_review_approval_publishes_when_audio_is_ready(tmp_path: Path, monkeypat
     assert outcome.manifest["publishing"]["result"]["anchor_episode_id"] == 42
 
 
+def test_review_approval_keeps_ambiguous_audio_outcome_non_final(
+    tmp_path: Path, monkeypatch
+) -> None:
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+    _stage(storage, _synthesized_manifest())
+    monkeypatch.setattr(
+        "podcaster.orchestration.publish_episode",
+        lambda *args, **kwargs: PublishResult(
+            status="failed",
+            outcome="publication_unknown",
+            error="provider response lost",
+            details={"retry_blocked": True},
+        ),
+    )
+
+    outcome = process_review_decision(
+        _job_id(),
+        reviewer="leela",
+        decision="approved",
+        reviewed_at="2026-06-15T12:00:00Z",
+        storage=storage,
+    )
+
+    assert outcome.publish_result is not None
+    assert outcome.publish_result.outcome == "publication_unknown"
+    assert outcome.manifest["status"] == "publish_failed"
+    assert outcome.manifest["publishing"]["eligible"] is False
+    assert outcome.manifest["publishing"]["result"]["outcome"] == "publication_unknown"
+    assert outcome.manifest["publishing"]["result"]["details"]["retry_blocked"] is True
+
+
 def test_review_approval_blocks_invalid_canonical_identity_before_provider(
     tmp_path: Path, monkeypatch
 ) -> None:
