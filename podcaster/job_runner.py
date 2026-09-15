@@ -487,38 +487,65 @@ def run_synthesis(
                         if isinstance(request_run_id, str) and request_run_id.isdecimal()
                         else new_publish_run_id()
                     )
+                    identity_blocked = False
                     try:
                         identity = publication_identity(manifest, job_id, publish_run_id)
-                    except PublicationStateError:
-                        identity = None
-                    pub_result: PublishResult = publish_episode(
-                        output_path,
-                        pub_title,
-                        pub_description,
-                        spotify_publish_config=spotify_publish_config,
-                        year=_extract_year(manifest),
-                        week=_extract_week(manifest),
-                        article_title=request.get("article_title")
-                        if isinstance(request.get("article_title"), str)
-                        else None,
-                        wav_path=episode_audio.wav_output_path,
-                        language=_request_language(manifest),
-                        **(
-                            {
-                                "publication_storage": storage,
-                                "publication_identity_context": identity,
-                            }
-                            if identity is not None
-                            else {}
-                        ),
-                    )
-                    _record_direct_publish_result(storage, job_id, pub_result, publish_run_id)
-                    logger.info(
-                        "draft publish attempted job_id=%s status=%s error=%s",
-                        job_id,
-                        pub_result.status,
-                        pub_result.error,
-                    )
+                    except PublicationStateError as exc:
+                        if request.get("publication_identity_mode") == "canonical":
+                            pub_result = PublishResult(
+                                status="failed",
+                                error=(
+                                    "Canonical publication identity is invalid; "
+                                    "Spotify mutation blocked."
+                                ),
+                                outcome="publication_unknown",
+                                publish_run_id=publish_run_id,
+                                details={
+                                    "retry_blocked": True,
+                                    "code": "invalid_publication_identity",
+                                },
+                            )
+                            _record_direct_publish_result(
+                                storage, job_id, pub_result, publish_run_id
+                            )
+                            logger.warning(
+                                "draft publish blocked by invalid canonical identity job_id=%s",
+                                job_id,
+                                exc_info=exc,
+                            )
+                            identity = None
+                            identity_blocked = True
+                        else:
+                            identity = None
+                    if not identity_blocked:
+                        pub_result = publish_episode(
+                            output_path,
+                            pub_title,
+                            pub_description,
+                            spotify_publish_config=spotify_publish_config,
+                            year=_extract_year(manifest),
+                            week=_extract_week(manifest),
+                            article_title=request.get("article_title")
+                            if isinstance(request.get("article_title"), str)
+                            else None,
+                            wav_path=episode_audio.wav_output_path,
+                            language=_request_language(manifest),
+                            **(
+                                {
+                                    "publication_storage": storage,
+                                    "publication_identity_context": identity,
+                                }
+                                if identity is not None
+                                else {}
+                            ),
+                        )
+                        _record_direct_publish_result(storage, job_id, pub_result, publish_run_id)
+                        logger.info(
+                            "draft publish attempted job_id=%s status=%s error=%s",
+                            job_id,
+                            pub_result.status,
+                            pub_result.error,
+                        )
                 except Exception:
                     logger.warning("draft publish failed job_id=%s", job_id, exc_info=True)
 

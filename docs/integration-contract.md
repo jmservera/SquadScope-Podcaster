@@ -230,10 +230,44 @@ detail responses may expose `outcome`/`publication_outcome` using exactly:
 `published` requires independent provider read-back. A successful upload that
 remains non-public is `draft_created`; an ambiguous mutation is
 `publication_unknown` and blocks automatic repetition. Accepted jobs may also
-have `jobs/{job_id}/publication-evidence.json`, an atomic immutable transition
-log retaining the newest 100 records. Legacy manifests without this document
-remain readable.
+have `jobs/{job_id}/publication-evidence.json`, an atomic immutable append-only
+transition log with no count-based eviction and a declared 28-day minimum
+retention window. Legacy manifests without this document remain readable.
 
 Rollback does not delete provider artifacts. Disable consumption of the
 additive fields or revert the implementation while continuing to treat legacy
 fields as authoritative.
+## Publication identity and provider state
+
+New SquadScope handoffs use the canonical publication identity
+`(week, publish_run_id, article_sha256, manifest_sha256)`. If either
+`publish_run_id` or `manifest_sha256` is supplied, or
+`publication_identity_mode=canonical` is declared, all four identity fields are
+required. `week` must be `YYYY-WNN`, the run ID remains a decimal string, and
+both digests remain lowercase 64-hex values. The accepted manifest persists
+these values unchanged; mismatch, omission, or conflict blocks provider
+mutation. Requests that omit the canonical fields entirely remain readable
+through the bounded legacy path and are persisted with
+`publication_identity_mode=legacy`; explicitly legacy requests cannot include
+canonical-only fields and do not gain canonical reconciliation evidence.
+
+Provider evidence keeps transport, provider state, and public verification
+separate. Each record includes normalized `status`, `provider_id`,
+`native_state`, `verification`, `checked_at`, `evidence_source`,
+`last_error_code`, and `retry_blocked` semantics while retaining the legacy
+`outcome` and provider artifact field for readers already deployed.
+`verification=provider_readback` proves only API/provider state.
+`status=public` requires `verification=external_verified`, representing an
+anonymous listener-facing check. Uploaded, draft, private, unlisted, gated, and
+unknown records never count as publicly completed delivery.
+
+Existing video publication snapshots retain their legacy `status=published`
+at-most-once marker. Their additive `provider_status` and `verification` fields,
+and the normalized records exposed beside them, are authoritative for public
+visibility; the legacy marker alone never proves listener availability.
+
+Publication evidence is stored durably under the accepted job namespace as an
+append-only document. Records are not evicted by count, preserving at least the
+four-week acceptance and reconciliation window. The document declares
+`minimum_retention_days=28` and
+`retention_policy=append_only_no_count_eviction`; rollback preserves it.

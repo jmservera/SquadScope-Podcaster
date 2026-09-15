@@ -26,7 +26,8 @@
 | P01 | Establish canonical outcomes and durable evidence | Complete | P01, P01-T01, P01-T02 |
 | P02 | Integrate fail-closed provider semantics | Complete | P02, P02-T01, P02-T02, P02-T03 |
 | P03 | Expose compatible status and monitoring | Complete | P03, P03-T01, P03-T02 |
-| P04 | Validate and deliver | In progress — validation complete | P04, P04-T01, P04-T02 |
+| P04 | Validate and deliver | Superseded by reviewer revision | P04, P04-T01, P04-T02 |
+| P05 | Independent contract revision | Complete | P05, P05-T01, P05-T02, P05-T03, P05-T04 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish canonical outcomes and durable evidence
@@ -59,7 +60,7 @@ Create the common vocabulary, identity validation, bounded evidence, and signal 
 
 * Outcome validation rejects unknown values.
 * Identity requires matching accepted manifest `job_id`, normalized week, 64-character lowercase `article_sha256`, and non-empty safe `publish_run_id`.
-* Evidence append is atomic, monotonic, immutable, duplicate-safe, bounded to 100, resilient to malformed prior content without converting it to success, and dry-run inert.
+* Evidence append is atomic, monotonic, immutable, duplicate-safe, retained without count eviction for at least 28 days, resilient to malformed prior content without converting it to success, and dry-run inert.
 * Evidence failure before mutation blocks mutation; failure after mutation is representable as `publication_unknown`.
 * Log signal dedupe is atomic and does not alter behavior when `dedupe_key` is omitted.
 
@@ -673,3 +674,113 @@ Deliver one conventional, reviewable, reversible commit and PR.
 #### Unresolved Items
 
 * None.
+
+<!-- rpi:phase id=P05 -->
+## P05: Independent contract revision
+
+### Context
+
+Livingston rejected proxy outcome semantics, optional canonical identity, and
+count-bounded evidence because those states could overstate public delivery or
+discard evidence during the four-week acceptance window.
+
+### Intent
+
+Make the prior implementation contract-complete while preserving its provider
+safeguards, deterministic accepted job namespace, legacy response fields, and
+fail-closed mutation behavior.
+
+### Boundaries
+
+* Included: request identity validation/mode, normalized provider records,
+  public aggregation, durable evidence retention, lock generation, tests,
+  documentation, tracking, commit, push, PR revision, and CI start.
+* Excluded: provider calls, production dispatch, deployment, canary, merge,
+  historical migration, or weakening any live gate.
+
+### Dependencies
+
+* Preserved P01-P03 implementation and reviewer fixes on commit
+  `ae1f557a2479c1d563ae745f5cd32f33a4a10f64`.
+
+### Validation Expectations
+
+* Canonical and legacy identity paths are distinguishable and malformed or
+  conflicting canonical identity blocks every provider entry point.
+* Normalized records do not treat transport success, provider readback, draft,
+  private, unlisted, gated, pending, or unknown state as anonymous public
+  completion.
+* More than 100 records and at least 28 days of required identity evidence are
+  retained without count eviction.
+* Repository-generated lock verification, targeted/full pytest, Ruff, and Git
+  whitespace checks pass.
+
+### Completion Evidence
+
+* P05-T01 through P05-T04 are implementation-complete. Delivery leaves the PR
+  open and unmerged for Livingston review.
+
+### Unresolved Items
+
+* None.
+
+<!-- rpi:task id=P05-T01 -->
+### P05-T01: Enforce canonical versus bounded legacy identity
+
+#### Status
+
+Complete.
+
+#### Result
+
+Canonical requests require exact `YYYY-WNN`, decimal-string `publish_run_id`,
+and lowercase 64-hex article and manifest digests. The accepted request records
+`publication_identity_mode=canonical`; missing, malformed, or conflicting
+identity blocks direct audio, review-gated audio, and video provider mutation.
+Identity-less compatible requests record `publication_identity_mode=legacy`;
+explicit legacy mode cannot carry canonical-only fields.
+
+<!-- rpi:task id=P05-T02 -->
+### P05-T02: Normalize provider records and aggregation
+
+#### Status
+
+Complete.
+
+#### Result
+
+Normalized records keep status, outcome, transport, native state, provider ID,
+verification, checked time, evidence source, last error code, and retry block
+separate. Existing video snapshots retain legacy `status=published` and add
+`provider_status`. Only `external_verified` records can be `public`, and every
+applicable listener target must be public before public delivery completes.
+
+<!-- rpi:task id=P05-T03 -->
+### P05-T03: Make evidence retention acceptance-safe
+
+#### Status
+
+Complete.
+
+#### Result
+
+Records remain immutable append-only under the accepted job namespace with no
+count eviction. Documents declare `minimum_retention_days=28` and
+`retention_policy=append_only_no_count_eviction`; tests retain 120 distinct
+identity records from sequence 1 onward.
+
+<!-- rpi:task id=P05-T04 -->
+### P05-T04: Reconcile lockfile, tests, docs, PR, commit, push, and CI
+
+#### Status
+
+Complete.
+
+#### Result
+
+`requirements.lock` was regenerated with repository-pinned `uv 0.10.11` and
+the CI compile command. Final targeted validation passed 742 tests; the full
+suite passed 3013 tests with 2 skipped and 2 deselected; Ruff, Git whitespace,
+and lock verification are clean. The conventional revision commit, branch
+push, PR update, superseded-thread resolution, and new CI start are delivery
+steps performed around this artifact without merging.

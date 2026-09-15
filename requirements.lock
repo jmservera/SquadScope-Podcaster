@@ -44,17 +44,17 @@ docutils==0.22.4
     #   sphinx
 fastapi==0.141.1
     # via squadscope-podcaster (pyproject.toml)
-greenlet==3.5.5
+greenlet==3.5.6
     # via playwright
 h11==0.16.0
     # via
     #   httpcore2
     #   uvicorn
-httpcore2==2.12.0
+httpcore2==2.13.0
     # via httpx2
 httptools==0.8.0
     # via uvicorn
-httpx2==2.12.0
+httpx2==2.13.0
     # via squadscope-podcaster (pyproject.toml)
 idna==3.19
     # via
@@ -115,7 +115,7 @@ pygments==2.21.0
     # via
     #   pytest
     #   sphinx
-pyjwt==2.13.0
+pyjwt==2.14.0
     # via
     #   squadscope-podcaster (pyproject.toml)
     #   msal
@@ -186,7 +186,7 @@ typing-inspection==0.4.4
     #   pydantic
 urllib3==2.7.0
     # via requests
-uvicorn==0.52.4
+uvicorn==0.53.0
     # via squadscope-podcaster (pyproject.toml)
 uvloop==0.22.1
     # via uvicorn

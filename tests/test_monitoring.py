@@ -322,6 +322,20 @@ class TestGetJob:
         assert response.status_code == 200
         assert response.json()["publication_outcome"] is None
 
+    def test_job_detail_falls_back_to_manifest_outcome_when_evidence_is_unavailable(
+        self, client, storage
+    ):
+        job_id = "podcast-2026-W24-manifest-outcome"
+        manifest = _make_manifest(job_id)
+        manifest["publishing"]["result"] = {"outcome": "publication_unknown"}
+        storage.put_bytes(
+            f"jobs/{job_id}/manifest.json",
+            json.dumps(manifest).encode(),
+            "application/json",
+        )
+        data = client.get(f"/api/jobs/{job_id}").json()
+        assert data["publication_outcome"] == "publication_unknown"
+
 
 # ---------------------------------------------------------------------------
 # Tests: GET /api/jobs/{id}/logs
@@ -1039,6 +1053,16 @@ class TestListEpisodes:
         resp = client.get("/api/episodes")
         data = resp.json()
         assert data["episodes"][0]["publish_status"] == "published"
+
+    def test_direct_synthesis_publish_outcome_is_exposed(self, client, storage):
+        m = self._manifest_with_audio("job-direct", audio_path="jobs/job-direct/ep.mp3")
+        m["generation"]["publish_result"] = {"outcome": "draft_created"}
+        storage.put_bytes(
+            "jobs/job-direct/manifest.json", json.dumps(m).encode(), "application/json"
+        )
+
+        data = client.get("/api/episodes").json()
+        assert data["episodes"][0]["publication_outcome"] == "draft_created"
 
     def test_episode_from_synthesis_runner_audio_path(self, client, storage):
         """Manifests produced by the synthesis runner record audio under

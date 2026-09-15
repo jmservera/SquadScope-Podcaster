@@ -268,7 +268,11 @@ def publish_video(
             effective,
             f" publishAt={scheduled}" if scheduled else "",
         )
-        readback = get_video_snippet(video_id, access_token, transport=http)
+        try:
+            readback = get_video_snippet(video_id, access_token, transport=http)
+        except Exception as exc:  # noqa: BLE001 - post-mutation readback must fail closed
+            logger.warning("Publish readback failed for video %s: %s", video_id, exc)
+            readback = None
         confirmed_privacy = readback.get("privacyStatus") if readback is not None else None
         if scheduled:
             outcome = DRAFT_CREATED
@@ -278,7 +282,7 @@ def publish_video(
             outcome = PUBLICATION_UNKNOWN
         return PublishResult(
             video_id=video_id,
-            succeeded=True,
+            succeeded=outcome != PUBLICATION_UNKNOWN,
             privacy_status=effective,
             scheduled_publish_at=scheduled,
             outcome=outcome,

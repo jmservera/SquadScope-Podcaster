@@ -478,8 +478,9 @@ protected, rejected, or operator-owned states map to
 `manual_handoff_required`.
 
 Mutation intent and terminal evidence are stored atomically under the accepted
-job identity and bounded to the newest 100 immutable records. A prior blocking
-outcome prevents queue redelivery from issuing another mutation. Rollback
+job identity as immutable append-only records with no count-based eviction and
+a declared 28-day minimum retention window. A prior blocking outcome prevents
+queue redelivery from issuing another mutation. Rollback
 disables the additive evidence/outcome consumer or reverts the code; it never
 deletes or mutates an existing Spotify artifact.
 

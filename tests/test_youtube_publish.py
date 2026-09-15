@@ -91,10 +91,10 @@ class TestPublishingPacket:
 
 
 class TestPublishVideo:
-    def test_flips_to_public(self):
+    def test_public_update_without_readback_is_not_confirmed_success(self):
         t = _FakeTransport(status=200)
         res = publish_video("vid123", "tok", transport=t)
-        assert res.succeeded is True
+        assert res.succeeded is False
         assert res.privacy_status == PRIVACY_PUBLIC
         body = json.loads(t.calls[0]["data"])
         assert body == {
@@ -136,7 +136,7 @@ class TestPublishVideo:
 
     def test_youtube_publish_200_without_confirmed_readback_is_publication_unknown(self):
         result = publish_video("vid123", "tok", transport=_FakeTransport(status=200))
-        assert result.succeeded is True
+        assert result.succeeded is False
         assert result.outcome == PUBLICATION_UNKNOWN
 
     def test_youtube_publish_transport_loss_is_publication_unknown_and_not_retried(self):
@@ -172,6 +172,17 @@ class TestPublishVideo:
         result = publish_video("vid123", "tok", transport=transport)
         assert result.outcome == PUBLISHED
         assert transport.calls == ["PUT", "GET"]
+
+    def test_youtube_publish_malformed_readback_fails_closed(self):
+        class MalformedReadbackTransport:
+            def request(self, url, *, method="GET", headers=None, data=None):
+                if method == "PUT":
+                    return 200, b"{}"
+                return 200, b"[]"
+
+        result = publish_video("vid123", "tok", transport=MalformedReadbackTransport())
+        assert result.succeeded is False
+        assert result.outcome == PUBLICATION_UNKNOWN
 
     def test_youtube_scheduled_publish_remains_draft_created_until_confirmed_public(self):
         result = publish_video(
@@ -213,7 +224,8 @@ class TestApproveAndPublish:
         t = _FakeTransport(status=200)
         packet = build_publishing_packet("vid123")
         res = approve_and_publish(packet, "tok", approved_by="leela", transport=t)
-        assert res.succeeded is True
+        assert res.succeeded is False
+        assert res.outcome == PUBLICATION_UNKNOWN
         assert packet.approved is True
         assert packet.approved_by == "leela"
         body = json.loads(t.calls[0]["data"])
@@ -224,7 +236,8 @@ class TestApproveAndPublish:
         packet = build_publishing_packet("vid123")
         packet.approve("amy")
         res = approve_and_publish(packet, "tok", transport=t)
-        assert res.succeeded is True
+        assert res.succeeded is False
+        assert res.outcome == PUBLICATION_UNKNOWN
 
     def test_scheduled_packet_schedules(self):
         t = _FakeTransport(status=200)

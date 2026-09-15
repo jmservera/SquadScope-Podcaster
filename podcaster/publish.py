@@ -2483,7 +2483,7 @@ def publish_episode(
                 details={"retry_blocked": True},
             )
         try:
-            append_evidence(
+            claim = append_evidence(
                 publication_storage,
                 publication_identity_context,
                 platform="spotify",
@@ -2494,6 +2494,14 @@ def publish_episode(
                 retry_blocked=True,
                 code="mutation_intent",
             )
+            if claim is None:
+                return PublishResult(
+                    status="failed",
+                    error="Spotify mutation already claimed for this publication identity.",
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True, "code": "mutation_claim_exists"},
+                )
         except Exception:
             return PublishResult(
                 status="failed",
@@ -2530,7 +2538,13 @@ def publish_episode(
                     "spotify_episode_readback" if result.outcome == PUBLISHED else None
                 ),
                 retry_blocked=result.outcome
-                in (PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED, DRAFT_CREATED, PUBLISHED),
+                in (
+                    UPLOADED,
+                    PUBLICATION_UNKNOWN,
+                    MANUAL_HANDOFF_REQUIRED,
+                    DRAFT_CREATED,
+                    PUBLISHED,
+                ),
                 code=(
                     str(result.details.get("code"))
                     if isinstance(result.details, dict) and result.details.get("code")

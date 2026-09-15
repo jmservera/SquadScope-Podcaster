@@ -5,14 +5,19 @@
 
 * Task ID: provider-state-reconciliation
 * Task slug: provider-state-reconciliation
-* Planning status: Implemented and validated
+* Planning status: P05 implementation complete; unmerged review delivery
 * Plan date: 2026-09-14
 * Phase details: .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
 * Changes record: .copilot-tracking/changes/2026-09-14/provider-state-reconciliation-changes.md
 
 ## Executive Summary
 
-The implementation will add one additive, canonical provider-delivery outcome vocabulary—`uploaded`, `draft_created`, `manual_handoff_required`, `published`, and `publication_unknown`—without replacing the existing top-level job, `PublishResult.status`, `DistributionResult.status`, or Spotify promotion terminal-state fields. Provider-specific adapters will populate the new outcome while legacy fields keep their current accepted values.
+The independent revision replaces the rejected canonical-outcome projection
+with the normalized provider-record contract: separate transport status,
+canonical provider status, verification, provider identity, timestamps,
+evidence source, error code, and retry-blocked semantics. Legacy fields remain
+readable, but draft/manual/upload completion cannot aggregate as public
+delivery.
 
 The main safety correction is to distinguish “a mutation request was sent” from “the provider state is confirmed.” An ambiguous create, metadata, process, or publish mutation must be recorded as `publication_unknown` and block automatic repetition until reconciliation proves a safe next action. Confirmed provider rejection or an unavailable operator/capability step becomes `manual_handoff_required`; successful draft completion becomes `draft_created`; completed media transfer before draft finalization is `uploaded`; only independent provider confirmation becomes `published`.
 
@@ -177,7 +182,7 @@ Compatibility rules:
 
 * Add at most one new production module, likely `podcaster/publication_state.py`, and one matching new test module, likely `tests/test_publication_state.py`.
 * Store a per-job document at `jobs/{accepted_job_id}/publication-evidence.json` using `StorageBackend.update_bytes`.
-* Schema: `squadscope-podcaster-publication-evidence-v1`; bounded to the newest **100** immutable records, with monotonic `seq`. Existing records are never edited; duplicate writes are no-ops; oldest records may be evicted only to enforce the declared bound, matching repository log/progress precedent.
+* Schema: `squadscope-podcaster-publication-evidence-v1`; immutable append-only records with monotonic `seq`, exact duplicate no-ops, no count-based eviction, and a declared minimum 28-day retention window.
 * Every record includes: UTC timestamp, `week`, `publish_run_id`, `article_sha256`, accepted `job_id`, platform, media kind, operation/phase, canonical outcome, provider artifact ID when known, mutation-attempted boolean, confirmation source/time, retry-blocked boolean, and sanitized code/details.
 * Identity construction must reject a mismatched passed `job_id`, missing/non-accepted manifest identity, malformed week/hash/run ID, or dry-run persistence. Legacy manifests lacking sufficient identity do not gain unsafe persistence; they return compatible results and fail closed before an otherwise repeatable mutation where evidence is required.
 * `publish_run_id` is created once per publish/distribution attempt, persisted before the first provider mutation, threaded through provider calls, results, manifest snapshots, and logs, and reused for all transitions in that attempt.
@@ -201,7 +206,9 @@ Compatibility rules:
 
 * Backward compatibility: no removal/rename of existing public fields or accepted status values.
 * Safety: zero blind retries after ambiguous provider mutation.
-* Boundedness: maximum 100 publication evidence records per accepted job; existing log/progress bounds remain.
+* Retention: append-only publication evidence must remain durable for at least
+  the four-week acceptance and reconciliation window. A record-count bound is
+  allowed only when age/identity retention prevents premature eviction.
 * Concurrency: evidence and signal dedupe use atomic `update_bytes`, not process-local sets.
 * Privacy/security: no credentials, raw provider bodies, article text, signed URLs, or authorization headers in evidence/log/API responses.
 * Isolation: no provider failure can invalidate generated article/audio/video artifacts or block SquadScope article publication.
@@ -217,7 +224,7 @@ Compatibility rules:
 * Deterministic provider rejection or unavailable required operator/capability action produces `manual_handoff_required`.
 * A confirmed provider read produces `published`; an already-published artifact produces no mutation.
 * Direct synthesis Spotify publishing persists its result/evidence instead of only logging it, while synthesis/video enqueue behavior remains non-blocking.
-* Evidence rejects identity mismatch, requires week/run/hash/accepted-job keys, is atomic, deduplicated, monotonic, bounded to 100, and does not persist in dry-run.
+* Evidence rejects identity mismatch, requires week/run/hash/accepted-job keys, is atomic, deduplicated, monotonic, retained without count eviction for at least 28 days, and does not persist in dry-run.
 * Monitoring signals are emitted once per dedupe key, include safe correlation fields, and surface through existing job logs/status without secret leakage.
 * All provider safeguards listed above remain covered.
 * If any full reconciler is deferred, each GitHub issue names the exact provider gap, affected mutation, safe current behavior, implementation boundary, tests, and acceptance criteria; the PR links it.
@@ -344,6 +351,37 @@ Compatibility rules:
 * Expected result: Conventional commit, pushed branch, and unmerged PR to `main` with required compatibility/rollback/test/safeguard/deferral sections.
 * Detail section: P04-T02 in .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
 
+<!-- rpi:phase id=P05 -->
+### [x] P05: Independent Contract Revision
+
+<!-- rpi:task id=P05-T01 -->
+#### [x] P05-T01: Enforce canonical versus bounded legacy identity
+
+New contract-complete requests require all four publication identity fields and
+must fail before any provider mutation when identity is missing or invalid.
+Legacy requests use an explicit bounded compatibility marker/path and cannot be
+mistaken for canonical handoffs.
+
+<!-- rpi:task id=P05-T02 -->
+#### [x] P05-T02: Normalize provider records and aggregation
+
+Persist the exact normalized provider status and verification vocabularies.
+Provider/API readback and anonymous external verification are distinct.
+Draft/manual/upload outcomes do not count as public completion.
+
+<!-- rpi:task id=P05-T03 -->
+#### [x] P05-T03: Make evidence retention acceptance-safe
+
+Preserve append-only immutable records in durable job storage for at least four
+weeks, with tests proving required identity evidence cannot be evicted early.
+
+<!-- rpi:task id=P05-T04 -->
+#### [x] P05-T04: Reconcile lockfile, tests, docs, PR, commit, push, and CI
+
+Regenerate `requirements.lock` with repository tooling, run targeted/full
+validation, update delivery evidence and PR description, push, and leave the PR
+unmerged for Livingston.
+
 ## Dependencies
 
 * P01-T02 depends on P01-T01.
@@ -352,6 +390,8 @@ Compatibility rules:
 * P03-T01 depends on persisted evidence and integrated outcomes.
 * P03-T02 depends on final implemented semantics.
 * P04 depends on all code, tests, and docs.
+* P05 is a reviewer-directed revision of P01-P04 and depends on preserving the
+  delivered safeguards and accepted job namespace.
 
 ## Critique Disposition
 
@@ -359,7 +399,7 @@ Compatibility rules:
 |---|---|---|
 | PC-001: Existing legacy `"published"` markers conflate uploaded drafts and public state. | Resolved by planner | Canonical `outcome` is additive; legacy fields remain for compatibility and are explicitly mapped. |
 | PC-002: Evidence persistence after a provider call can itself fail and recreate the crash window. | Resolved by planner | Intent/evidence must be persisted before mutation; post-mutation persistence failure becomes `publication_unknown` and blocks repeats. |
-| PC-003: “Append-only” and bounded retention can conflict. | Resolved by planner | Records are immutable and only appended; deterministic oldest-record eviction at 100 follows existing bounded log/progress precedent and is documented. |
+| PC-003: “Append-only” and bounded retention can conflict. | Superseded by Livingston revision | Publication evidence has no count-based eviction. The durable document declares a 28-day minimum and append-only/no-count-eviction policy so required four-week identity evidence cannot be displaced by record volume. |
 | PC-004: Generic retry currently covers some state-changing requests. | Resolved by planner | P02 requires endpoint classification and one-shot mutation plus read-back for ambiguous operations; known safe resumable part PUTs and idempotent playlist repair remain allowed. |
 | PC-005: A full provider reconciler may require unsupported APIs. | Accepted with explicit fallback | Stop at `publication_unknown`/manual handoff and create a narrow issue; never infer or call live services. |
 | PC-006: Separate critique artifact and worker are normally expected. | Accepted constraint | Caller permits only three artifacts, and the parent prohibits nested delegation absent explicit request; this complete planner-owned final evidence review is recorded here. |
@@ -371,6 +411,6 @@ Compatibility rules:
 ## Handoff
 
 * Implementation artifact: .copilot-tracking/changes/2026-09-14/provider-state-reconciliation-changes.md
-* Ready phase or task: P01-T01.
-* Marker order: P01-T01 → P01-T02 → P02-T01 → P02-T02 → P02-T03 → P03-T01 → P03-T02 → P04-T01 → P04-T02.
+* Ready phase or task: P05 is implementation-complete and ready for Livingston review.
+* Marker order: P05-T01 → P05-T02 → P05-T03 → P05-T04, all complete.
 * Remaining provisional question or blocker: None.

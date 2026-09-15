@@ -67,6 +67,7 @@ from podcaster.video.distribution import (
     DistributionResult,
     VideoDistributionConfig,
     distribute_video,
+    youtube_enabled_for_language,
 )
 from podcaster.video.intermediates import create_intermediate_store
 from podcaster.video.perf import PipelineTimings
@@ -99,6 +100,7 @@ REASON_RETRY_EXHAUSTED = "retry_exhausted"
 REASON_PIPELINE_CONFLICT = "pipeline_locked_by_audio"
 REASON_EDITOR_LEASE_HELD = "editor_lease_held"
 REASON_REQUIRED_YOUTUBE_FAILURE = "required_youtube_delivery_failed"
+REASON_INVALID_PUBLICATION_IDENTITY = "invalid_publication_identity"
 #: A configured DOG watermark could not be resolved.  Terminal by construction:
 #: a retry re-reads the same config and re-fetches the same URL, so the queue
 #: message is deleted after one attempt instead of burning MAX_DEQUEUE_COUNT
@@ -545,10 +547,12 @@ def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
         request = document.get("request")
         request_run_id = request.get("publish_run_id") if isinstance(request, dict) else None
         run_id = (
-            str(existing)
-            if isinstance(existing, str) and existing
-            else request_run_id
-            if isinstance(request_run_id, str) and request_run_id.isdecimal()
+            request_run_id
+            if isinstance(request_run_id, str)
+            and request_run_id.isascii()
+            and request_run_id.isdecimal()
+            else str(existing)
+            if isinstance(existing, str) and existing.isascii() and existing.isdecimal()
             else new_publish_run_id()
         )
         generation["video_publish_run_id"] = run_id
@@ -565,13 +569,13 @@ def _record_video_publication(
     identity: PublicationIdentity | None,
     platform: str,
     record: dict[str, Any],
-) -> None:
+) -> bool:
     _record_video_publish(storage, job_id, platform, record)
     outcome = record.get("outcome")
     if identity is None or not isinstance(outcome, str):
-        return
+        return True
     provider_artifact_id = record.get("video_id") or record.get("episode_id")
-    evidence_platform = "spotify" if platform.startswith("spotify") else platform
+    evidence_platform = "spotify" if platform == "spotify_upload" else platform
     try:
         append_evidence(
             storage,
@@ -582,8 +586,20 @@ def _record_video_publication(
             outcome=outcome,
             provider_artifact_id=provider_artifact_id,
             mutation_attempted=True,
-            confirmation_source="provider_readback" if outcome == "published" else None,
-            retry_blocked=True,
+            confirmation_source=(
+                str(record.get("evidence_source"))
+                if record.get("verification") == "provider_readback"
+                and record.get("evidence_source")
+                else None
+            ),
+            verification=str(record.get("verification") or "none"),
+            native_state=(str(record.get("native_state")) if record.get("native_state") else None),
+            transport_status=str(record.get("transport_status") or "mutation_attempted"),
+            evidence_source=(
+                str(record.get("evidence_source")) if record.get("evidence_source") else None
+            ),
+            retry_blocked=bool(record.get("retry_blocked", True)),
+            code=(str(record.get("last_error_code")) if record.get("last_error_code") else None),
         )
     except Exception:
         unknown_record = {
@@ -599,7 +615,7 @@ def _record_video_publication(
             platform,
             exc_info=True,
         )
-        return
+        return False
     try:
         emit_publication_signal(
             storage,
@@ -617,6 +633,7 @@ def _record_video_publication(
             outcome,
             exc_info=True,
         )
+    return True
 
 
 def realized_audio_metadata_path(job_id: str) -> str:
@@ -1157,14 +1174,24 @@ def run_video_generation(
             publish_run_id = _ensure_video_publish_run(storage, job_id)
             try:
                 publication_context = publication_identity(manifest, job_id, publish_run_id)
-            except PublicationStateError:
+            except PublicationStateError as exc:
+                if request.get("publication_identity_mode") == "canonical":
+                    raise PermanentVideoError(
+                        "canonical publication identity is invalid; provider mutation blocked",
+                        reason=REASON_INVALID_PUBLICATION_IDENTITY,
+                        details={"job_id": job_id},
+                    ) from exc
                 publication_context = None
             published_for_attempt = dict(published or {})
             if publication_context is not None:
                 evidence = read_evidence(storage, job_id)
                 latest = latest_outcomes(evidence)
+                youtube_active = youtube_enabled_for_language(
+                    dist_config,
+                    job_language,
+                )
                 for platform, enabled in (
-                    ("youtube", dist_config.youtube_enabled),
+                    ("youtube", youtube_active),
                     ("spotify", dist_config.spotify_upload_enabled),
                 ):
                     record_key = "spotify_upload" if platform == "spotify" else platform
@@ -1183,7 +1210,7 @@ def run_video_generation(
                         }
                     elif enabled and not dist_config.dry_run:
                         try:
-                            append_evidence(
+                            claim = append_evidence(
                                 storage,
                                 publication_context,
                                 platform=platform,
@@ -1194,12 +1221,30 @@ def run_video_generation(
                                 retry_blocked=True,
                                 code="mutation_intent",
                             )
+                            if claim is None:
+                                published_for_attempt[record_key] = {
+                                    "status": "published",
+                                    "outcome": "publication_unknown",
+                                    "publish_run_id": publish_run_id,
+                                }
                         except Exception:
                             published_for_attempt[record_key] = {
                                 "status": "published",
                                 "outcome": "publication_unknown",
                                 "publish_run_id": publish_run_id,
                             }
+
+            evidence_failures: list[str] = []
+
+            def record_publication(platform: str, record: dict[str, Any]) -> None:
+                if not _record_video_publication(
+                    storage,
+                    job_id,
+                    publication_context,
+                    platform,
+                    record,
+                ):
+                    evidence_failures.append(platform)
 
             with timings.phase("distribution"):
                 dist_result = distribute_video(
@@ -1216,13 +1261,7 @@ def run_video_generation(
                     language=job_language,
                     published=published_for_attempt,
                     publish_run_id=publish_run_id,
-                    on_published=lambda platform, record: _record_video_publication(
-                        storage,
-                        job_id,
-                        publication_context,
-                        platform,
-                        record,
-                    ),
+                    on_published=record_publication,
                 )
             result_publish_run_id = getattr(dist_result, "publish_run_id", None)
             if not isinstance(result_publish_run_id, str):
@@ -1230,9 +1269,39 @@ def run_video_generation(
             result_provider_outcomes = getattr(dist_result, "provider_outcomes", None)
             if not isinstance(result_provider_outcomes, dict):
                 result_provider_outcomes = {}
+            result_provider_records = getattr(dist_result, "provider_records", None)
+            if not isinstance(result_provider_records, dict):
+                result_provider_records = {}
+            for failed_platform in evidence_failures:
+                outcome_key = (
+                    "spotify_upload" if failed_platform == "spotify_upload" else failed_platform
+                )
+                provider_key = (
+                    "spotify_video" if failed_platform == "spotify_upload" else failed_platform
+                )
+                result_provider_outcomes[outcome_key] = PUBLICATION_UNKNOWN
+                prior_record = result_provider_records.get(provider_key, {})
+                result_provider_records[provider_key] = {
+                    **prior_record,
+                    "status": "unknown",
+                    "verification": "none",
+                    "last_error_code": "evidence_persistence_failed",
+                    "retry_blocked": True,
+                }
+                dist_result.status = "failed"
+            public_delivery_status = getattr(dist_result, "public_delivery_status", "pending")
+            if not isinstance(public_delivery_status, str):
+                public_delivery_status = "pending"
             delivery_unconfirmed = any(
                 outcome in (PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
                 for outcome in result_provider_outcomes.values()
+            )
+            terminal_status = (
+                STATUS_FAILED
+                if delivery_unconfirmed
+                else dist_result.status
+                if dist_result.status in ("failed", "partial")
+                else STATUS_COMPLETED
             )
 
             if dist_result.youtube_required_failed:
@@ -1244,6 +1313,8 @@ def run_video_generation(
                     "spotify_upload_updated": dist_result.spotify_upload_updated,
                     "publish_run_id": result_publish_run_id,
                     "provider_outcomes": result_provider_outcomes,
+                    "provider_records": result_provider_records,
+                    "public_delivery_status": public_delivery_status,
                     "youtube_required_failed": dist_result.youtube_required_failed,
                     "youtube_failure_retryable": dist_result.youtube_failure_retryable,
                     "youtube_failure_code": dist_result.youtube_failure_code,
@@ -1292,7 +1363,7 @@ def run_video_generation(
                 storage,
                 job_id,
                 {
-                    "status": STATUS_FAILED if delivery_unconfirmed else STATUS_COMPLETED,
+                    "status": terminal_status,
                     "at": _iso(current),
                     "segment_count": compose_result.segment_count,
                     "duration_seconds": compose_result.duration_seconds,
@@ -1305,6 +1376,8 @@ def run_video_generation(
                         "spotify_upload_updated": dist_result.spotify_upload_updated,
                         "publish_run_id": result_publish_run_id,
                         "provider_outcomes": result_provider_outcomes,
+                        "provider_records": result_provider_records,
+                        "public_delivery_status": public_delivery_status,
                     },
                 },
             )
@@ -1324,7 +1397,7 @@ def run_video_generation(
 
             return VideoOutcome(
                 job_id=job_id,
-                status=STATUS_FAILED if delivery_unconfirmed else STATUS_COMPLETED,
+                status=terminal_status,
                 video_blob_path=dist_result.blob_path,
                 segment_count=compose_result.segment_count,
                 distribution=dist_result,

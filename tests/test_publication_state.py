@@ -9,7 +9,7 @@ from podcaster.publication_state import (
     DRAFT_CREATED,
     EVIDENCE_SCHEMA_VERSION,
     MANUAL_HANDOFF_REQUIRED,
-    MAX_EVIDENCE_RECORDS,
+    MIN_EVIDENCE_RETENTION_DAYS,
     PUBLICATION_UNKNOWN,
     PUBLISHED,
     UPLOADED,
@@ -23,6 +23,7 @@ from podcaster.publication_state import (
     outcome_from_spotify_terminal_state,
     publication_identity,
     read_evidence,
+    retry_is_blocked,
     validate_outcome,
 )
 
@@ -110,6 +111,11 @@ def test_identity_rejects_manifest_job_id_mismatch():
         publication_identity(manifest(), "other", "1")
 
 
+def test_identity_rejects_conflicting_publish_run_id():
+    with pytest.raises(PublicationStateError, match="conflicts with manifest identity"):
+        publication_identity(manifest(), manifest()["job_id"], "999")
+
+
 def test_identity_rejects_nonaccepted_or_dry_run_manifest():
     with pytest.raises(PublicationStateError):
         publication_identity(manifest(dry_run=True), "podcast-2026-W37-abc", "1")
@@ -153,9 +159,9 @@ def test_evidence_duplicate_key_is_a_noop():
     assert len(read_evidence(storage, identity().accepted_job_id)["records"]) == 1
 
 
-def test_evidence_is_bounded_to_100_newest_records():
+def test_evidence_retains_more_than_four_weeks_without_eviction():
     storage = MemoryStorage()
-    for number in range(MAX_EVIDENCE_RECORDS + 3):
+    for number in range(120):
         append_evidence(
             storage,
             publication_identity(
@@ -174,10 +180,54 @@ def test_evidence_is_bounded_to_100_newest_records():
             operation="upload",
             outcome=DRAFT_CREATED,
         )
-    records = read_evidence(storage, manifest()["job_id"])["records"]
-    assert len(records) == MAX_EVIDENCE_RECORDS
-    assert records[0]["seq"] == 4
-    assert records[-1]["seq"] == 103
+    document = read_evidence(storage, manifest()["job_id"])
+    records = document["records"]
+    assert MIN_EVIDENCE_RETENTION_DAYS >= 28
+    assert len(records) == 120
+    assert records[0]["seq"] == 1
+    assert records[-1]["seq"] == 120
+    assert document["minimum_retention_days"] == 28
+    assert document["retention_policy"] == "append_only_no_count_eviction"
+
+
+def test_provider_record_distinguishes_readback_from_external_visibility():
+    storage = MemoryStorage()
+    record = append_evidence(
+        storage,
+        identity(),
+        platform="youtube",
+        media_kind="video",
+        operation="publish_readback",
+        outcome=PUBLISHED,
+        provider_artifact_id="video-1",
+        confirmation_source="youtube_api",
+        native_state="public",
+        transport_status="accepted",
+        retry_blocked=True,
+    )
+    assert record.status == "pending"
+    assert record.verification == "provider_readback"
+    assert record.provider_id == "video-1"
+    assert record.evidence_source == "youtube_api"
+    assert record.checked_at == record.at
+    assert record.last_error_code is None
+
+    externally_verified = append_evidence(
+        storage,
+        identity(),
+        platform="youtube",
+        media_kind="video",
+        operation="anonymous_verification",
+        outcome=PUBLISHED,
+        provider_artifact_id="video-1",
+        verification="external_verified",
+        native_state="public",
+        transport_status="verified",
+        evidence_source="anonymous_watch_page",
+        retry_blocked=True,
+    )
+    assert externally_verified.status == "public"
+    assert externally_verified.verification == "external_verified"
 
 
 def test_corrupt_evidence_fails_closed_before_mutation():
@@ -277,3 +327,22 @@ def test_changed_outcome_emits_a_new_signal():
         UPLOADED,
         DRAFT_CREATED,
     ]
+
+
+def test_uploaded_evidence_blocks_blind_retry():
+    storage = MemoryStorage()
+    append_evidence(
+        storage,
+        identity(),
+        platform="spotify",
+        media_kind="audio",
+        operation="process_upload",
+        outcome=UPLOADED,
+        mutation_attempted=True,
+        retry_blocked=True,
+    )
+    assert retry_is_blocked(
+        read_evidence(storage, identity().accepted_job_id),
+        platform="spotify",
+        media_kind="audio",
+    )

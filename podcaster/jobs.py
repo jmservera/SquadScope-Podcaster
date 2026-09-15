@@ -638,6 +638,13 @@ def _request_metadata(
             else False,
         },
         "replay": replay_metadata,
+        "publication_identity_mode": (
+            "canonical"
+            if payload.get("publication_identity_mode") == "canonical"
+            or payload.get("publish_run_id") is not None
+            or payload.get("manifest_sha256") is not None
+            else "legacy"
+        ),
     }
     for field in ("publish_run_id", "manifest_sha256"):
         if field in payload:

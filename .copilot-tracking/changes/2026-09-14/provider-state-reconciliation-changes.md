@@ -7,7 +7,7 @@
 * Task slug: provider-state-reconciliation
 * Related plan: .copilot-tracking/plans/2026-09-14/provider-state-reconciliation-plan.md
 * Phase details: .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
-* Status: Complete — validated and independently accepted; delivery metadata pending
+* Status: Complete — P05 delivered for unmerged Livingston review
 
 ## Implementation Opening
 
@@ -33,6 +33,91 @@
 * Validation intent: Run only focused changed-area pytest selections plus Ruff on touched files.
 * Prohibited operations: Reset/discard/redesign, commit, push, PR creation, live APIs, and production mutation.
 * Current blockers: None.
+
+## Livingston Rejection Revision
+
+* Active scope: P05-T01 through P05-T04.
+* Identity: canonical requests require and persist the four-field publication
+  identity; fully identity-less requests are explicitly persisted as legacy.
+* Provider records: normalized status, transport, provider ID, native state,
+  verification, timestamps/evidence source, error code, and retry-blocked
+  semantics are separate from legacy outcomes.
+* Public completion: provider readback is not anonymous verification; draft,
+  unlisted/private, gated/manual, pending, and unknown records cannot aggregate
+  as publicly completed.
+* Retention: publication evidence remains append-only in durable job storage
+  without record-count eviction, satisfying the minimum four-week window.
+* Delivery: canonical lockfile regeneration and full local validation are
+  complete; the revision is committed, pushed, reflected in PR #680, and left
+  open/unmerged with CI started.
+
+### Canonical versus bounded legacy identity — P05-T01
+
+* Canonical requests are selected by either new identity field or explicit
+  `publication_identity_mode=canonical` and require exact `YYYY-WNN`, a
+  decimal-string run ID, and both lowercase 64-hex digests.
+* Accepted manifests persist all four values unchanged and record canonical
+  mode. Partial canonical inputs cannot be relabeled as legacy; explicit legacy
+  mode rejects canonical-only fields.
+* Publication identity rejects run-ID conflicts. Direct synthesis publishing,
+  review-gated/automatic publishing, and video distribution block malformed
+  canonical identity before provider mutation while retaining the
+  identity-less legacy compatibility path.
+
+### Normalized provider state and public aggregation — P05-T02
+
+* Evidence and distribution records keep normalized status, transport status,
+  canonical outcome, provider ID/native state, verification, checked time,
+  evidence source, last error code, and retry-blocked state independently.
+* Existing `status=published` video snapshots remain readable as at-most-once
+  markers and add `provider_status`; the legacy field alone never proves
+  visibility.
+* Mutation/upload response uses `verification=none`; provider/API readback uses
+  `provider_readback`; only anonymous `external_verified` proof can set
+  normalized `status=public`. Every applicable target must be public for
+  `public_delivery_status=completed`.
+
+### Acceptance-safe durable evidence — P05-T03
+
+* Removed count eviction from the immutable append-only accepted-job evidence
+  document. It declares a 28-day minimum and
+  `append_only_no_count_eviction`, preserving all 120 records in the retention
+  regression rather than dropping the earliest identities.
+
+### Generated lock and revision validation — P05-T04
+
+* Regenerated `requirements.lock` with `uv 0.10.11` using
+  `uv pip compile pyproject.toml --extra dev --extra video --python-version
+  3.11 --no-header -o requirements.lock`.
+* CI-equivalent lock recompilation and diff passed (68 packages; the existing
+  `myst-parser` extra warning remains informational).
+* Final targeted revision suite: **742 passed**, 1 pre-existing httpx
+  deprecation warning.
+* Final full repository suite: **3013 passed, 2 skipped, 2 deselected**, with
+  the same pre-existing httpx deprecation warning.
+* The first full-suite attempt exposed a compatibility-fixture `MagicMock`
+  value in the additive public-delivery field. The field is now type-sanitized
+  to `pending`; the scale-out fanout regression passed independently before
+  the clean full-suite rerun.
+* Full Ruff: `ruff check podcaster tests` passed; `ruff format --check
+  podcaster tests` reported 183 files formatted.
+
+### Review-thread reconciliation and branch review — P05-T04
+
+* Reviewed all branch files against `origin/main` and retained the prior
+  provider, queue, approval, quota, budget, lease, secret, and rollback
+  safeguards.
+* Closed the remaining fail-closed gaps identified on PR #680: `uploaded`
+  blocks retries and eligibility; atomic intent duplicates suppress concurrent
+  Spotify/audio/video mutation; RSS and Spotify upload evidence keys remain
+  distinct; post-mutation evidence failure propagates into distribution state;
+  failed/partial distribution is not collapsed to completed; YouTube unknown
+  readback is not reported as success; legacy identity remains optional while
+  malformed canonical identity blocks.
+* Also reconciled the review summary's suppressed findings: ASCII-only run IDs,
+  language-aware YouTube intent, requested run-ID precedence, RSS outcome
+  projection, deterministic Spotify failure outcome, safe malformed YouTube
+  readback, and monitoring fallbacks to persisted manifest outcomes.
 
 ## Approved Write Boundary
 
@@ -107,7 +192,7 @@
 ### Atomic evidence and signal primitives — P01-T02
 
 * Added accepted-job identity validation for week, decimal `publish_run_id`, pinned article SHA-256, manifest SHA-256, accepted lifecycle evidence, matching `job_id`, and dry-run rejection.
-* Added immutable atomic append at `jobs/{job_id}/publication-evidence.json`, monotonic sequence numbers, exact dedupe key, newest-100 retention, corrupt-document fail-closed behavior, and safe detail filtering.
+* Added immutable atomic append at `jobs/{job_id}/publication-evidence.json`, monotonic sequence numbers, exact dedupe key, no count-based eviction, declared 28-day minimum retention, corrupt-document fail-closed behavior, and safe detail filtering.
 * Extended durable job logs with optional atomic `dedupe_key`; callers omitting it retain append behavior.
 * Added outcome-transition monitoring signals keyed by accepted job, platform, media kind, outcome, and provider artifact ID.
 

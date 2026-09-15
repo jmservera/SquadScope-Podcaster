@@ -282,6 +282,31 @@ class TestPublishEpisode:
         assert result.outcome == "publication_unknown"
         build.assert_not_called()
 
+    def test_spotify_existing_mutation_claim_prevents_provider_call(
+        self, monkeypatch, mp3_file, wav_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        build = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", build)
+        monkeypatch.setattr(pub, "read_evidence", lambda *args: None)
+        monkeypatch.setattr(pub, "append_evidence", MagicMock(return_value=None))
+
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            wav_path=wav_file,
+            publication_storage=object(),
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.outcome == "publication_unknown"
+        assert result.details["code"] == "mutation_claim_exists"
+        build.assert_not_called()
+
     def test_spotify_evidence_read_failure_blocks_even_when_write_would_succeed(
         self, monkeypatch, mp3_file, wav_file, spotify_env
     ):

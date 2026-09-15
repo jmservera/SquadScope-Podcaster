@@ -310,3 +310,13 @@ not instead of, existing publish statuses:
 For the last two action-required states, do not offer an automatic retry.
 Inspect the provider artifact and reconciliation evidence first. Repeated
 signals for the same job/provider/media/outcome/artifact are deduplicated.
+Canonical provider records distinguish operational completion from public
+availability. The legacy distribution status remains readable, while
+`public_delivery_status` is `completed` only when every applicable
+listener-facing provider record has normalized `status=public`. Draft,
+unlisted, private, gated/manual-handoff, pending-readback, and unknown outcomes
+do not appear as publicly completed. A provider/API readback is recorded as
+`verification=provider_readback`; only a separate anonymous listener-facing
+check can set `verification=external_verified` and normalized `status=public`.
+Legacy publication snapshots keep `status=published` for at-most-once
+compatibility and expose the normalized value additively as `provider_status`.

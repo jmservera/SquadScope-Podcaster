@@ -18,6 +18,8 @@ from podcaster.publication_state import (
     MANUAL_HANDOFF_REQUIRED,
     PUBLICATION_UNKNOWN,
     PUBLISHED,
+    UPLOADED,
+    PublicationStateError,
     new_publish_run_id,
     publication_identity,
 )
@@ -224,14 +226,22 @@ def _publish_from_manifest(
     year, week = _parse_week(str(request.get("week") or ""))
     publishing = manifest.get("publishing")
     publish_run_id = publishing.get("publish_run_id") if isinstance(publishing, dict) else None
-    has_identity_inputs = bool(
-        isinstance(request.get("article_sha256"), str) and request.get("article_sha256")
-    )
-    identity = (
-        publication_identity(manifest, job_id, str(publish_run_id or ""))
-        if storage is not None and job_id is not None and has_identity_inputs
-        else None
-    )
+    canonical_identity = request.get("publication_identity_mode") == "canonical"
+    identity = None
+    if storage is not None and job_id is not None and canonical_identity:
+        try:
+            identity = publication_identity(manifest, job_id, str(publish_run_id or ""))
+        except PublicationStateError:
+            return PublishResult(
+                status="failed",
+                error="Canonical publication identity is invalid; Spotify mutation blocked.",
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=str(publish_run_id or ""),
+                details={
+                    "retry_blocked": True,
+                    "code": "invalid_publication_identity",
+                },
+            )
     kwargs: dict[str, Any] = {
         "spotify_publish_config": spotify_publish_config,
         "year": year,
@@ -362,7 +372,7 @@ def _apply_publish_result(
     publishing["eligible"] = (
         publish_result.status == "failed"
         and publish_result.outcome
-        not in (PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED, DRAFT_CREATED, PUBLISHED)
+        not in (UPLOADED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED, DRAFT_CREATED, PUBLISHED)
         and not blocked_by
     )
     publishing["packet_ready"] = not _audio_pending(updated)

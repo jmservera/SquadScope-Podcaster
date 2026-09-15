@@ -382,6 +382,15 @@ def _extract_detail(
         if isinstance(records, list) and records and isinstance(records[-1], dict)
         else None
     )
+    if latest_outcome is None:
+        publishing = manifest.get("publishing")
+        publish_result = publishing.get("result") if isinstance(publishing, dict) else None
+        if isinstance(publish_result, dict):
+            latest_outcome = publish_result.get("outcome")
+    if latest_outcome is None and generation:
+        direct_publish_result = generation.get("publish_result")
+        if isinstance(direct_publish_result, dict):
+            latest_outcome = direct_publish_result.get("outcome")
     return JobDetailResponse(
         job_id=manifest.get("job_id", ""),
         status=manifest.get("status", "unknown"),
@@ -1347,6 +1356,10 @@ def _extract_episode(
         publish_result = publishing.get("result")
         if isinstance(publish_result, dict):
             latest_outcome = publish_result.get("outcome")
+    if latest_outcome is None:
+        direct_publish_result = generation.get("publish_result")
+        if isinstance(direct_publish_result, dict):
+            latest_outcome = direct_publish_result.get("outcome")
     return EpisodeSummary(
         job_id=manifest.get("job_id", ""),
         title=(

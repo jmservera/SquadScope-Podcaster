@@ -28,7 +28,19 @@ CANONICAL_OUTCOMES = (
 )
 
 EVIDENCE_SCHEMA_VERSION = "squadscope-podcaster-publication-evidence-v1"
-MAX_EVIDENCE_RECORDS = 100
+MIN_EVIDENCE_RETENTION_DAYS = 28
+PROVIDER_STATUSES = (
+    "not_requested",
+    "gated",
+    "pending",
+    "draft",
+    "private",
+    "unlisted",
+    "public",
+    "failed",
+    "unknown",
+)
+VERIFICATION_STATES = ("none", "provider_readback", "external_verified")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _WEEK_RE = re.compile(r"^\d{4}-W(?:0[1-9]|[1-4]\d|5[0-3])$")
 _RUN_RE = re.compile(r"^[0-9]+$")
@@ -64,12 +76,20 @@ class PublicationEvidence:
     media_kind: str
     operation: str
     outcome: str
+    status: str
+    transport_status: str
+    native_state: str | None = None
+    verification: str = "none"
+    evidence_source: str | None = None
+    provider_id: str | None = None
     provider_artifact_id: str | None = None
     mutation_attempted: bool = False
     confirmation_source: str | None = None
     confirmed_at: str | None = None
     retry_blocked: bool = False
     code: str | None = None
+    checked_at: str | None = None
+    last_error_code: str | None = None
     details: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,6 +100,30 @@ def validate_outcome(outcome: str) -> str:
     if outcome not in CANONICAL_OUTCOMES:
         raise PublicationStateError(f"unknown publication outcome: {outcome!r}")
     return outcome
+
+
+def _provider_status(
+    outcome: str,
+    *,
+    verification: str,
+    native_state: str | None,
+) -> str:
+    if verification not in VERIFICATION_STATES:
+        raise PublicationStateError(f"unknown verification state: {verification!r}")
+    normalized_native = str(native_state or "").strip().lower()
+    if outcome == PUBLISHED:
+        return "public" if verification == "external_verified" else "pending"
+    if outcome == DRAFT_CREATED:
+        if normalized_native in ("private", "unlisted", "draft"):
+            return normalized_native
+        return "draft"
+    if outcome == UPLOADED:
+        return "pending"
+    if outcome == MANUAL_HANDOFF_REQUIRED:
+        return "gated"
+    if outcome == PUBLICATION_UNKNOWN:
+        return "unknown"
+    raise PublicationStateError(f"cannot normalize publication outcome: {outcome!r}")
 
 
 def outcome_from_publish_status(
@@ -143,6 +187,8 @@ def publication_identity(
     week = str(request.get("week") or "").strip()
     manifest_publish_run_id = request.get("publish_run_id")
     if manifest_publish_run_id is not None:
+        if publish_run_id and publish_run_id != manifest_publish_run_id:
+            raise PublicationStateError("publish_run_id conflicts with manifest identity")
         publish_run_id = manifest_publish_run_id
     article_sha256 = str(request.get("article_sha256") or "").strip()
     manifest_sha256 = str(request.get("manifest_sha256") or "").strip()
@@ -194,6 +240,8 @@ def _load_evidence(raw: bytes | None, job_id: str, *, strict: bool) -> dict[str,
         return {
             "schema_version": EVIDENCE_SCHEMA_VERSION,
             "job_id": job_id,
+            "minimum_retention_days": MIN_EVIDENCE_RETENTION_DAYS,
+            "retention_policy": "append_only_no_count_eviction",
             "updated_at": None,
             "records": [],
         }
@@ -205,6 +253,8 @@ def _load_evidence(raw: bytes | None, job_id: str, *, strict: bool) -> dict[str,
         return {
             "schema_version": EVIDENCE_SCHEMA_VERSION,
             "job_id": job_id,
+            "minimum_retention_days": MIN_EVIDENCE_RETENTION_DAYS,
+            "retention_policy": "append_only_no_count_eviction",
             "updated_at": None,
             "records": [],
             "corrupt": True,
@@ -220,6 +270,8 @@ def _load_evidence(raw: bytes | None, job_id: str, *, strict: bool) -> dict[str,
         return {
             "schema_version": EVIDENCE_SCHEMA_VERSION,
             "job_id": job_id,
+            "minimum_retention_days": MIN_EVIDENCE_RETENTION_DAYS,
+            "retention_policy": "append_only_no_count_eviction",
             "updated_at": None,
             "records": [],
             "corrupt": True,
@@ -238,12 +290,27 @@ def append_evidence(
     provider_artifact_id: str | int | None = None,
     mutation_attempted: bool = False,
     confirmation_source: str | None = None,
+    verification: str = "none",
+    native_state: str | None = None,
+    transport_status: str | None = None,
+    evidence_source: str | None = None,
     retry_blocked: bool = False,
     code: str | None = None,
     details: Mapping[str, Any] | None = None,
     at: datetime | None = None,
 ) -> PublicationEvidence | None:
     validate_outcome(outcome)
+    effective_verification = (
+        "provider_readback" if confirmation_source and verification == "none" else verification
+    )
+    status = _provider_status(
+        outcome,
+        verification=effective_verification,
+        native_state=native_state,
+    )
+    normalized_transport_status = transport_status or (
+        "mutation_attempted" if mutation_attempted else "not_attempted"
+    )
     timestamp = _iso(at)
     artifact_id = str(provider_artifact_id) if provider_artifact_id is not None else None
     dedupe_key = (
@@ -303,17 +370,29 @@ def append_evidence(
             media_kind=str(media_kind)[:32],
             operation=str(operation)[:64],
             outcome=outcome,
+            status=status,
+            transport_status=str(normalized_transport_status)[:64],
+            native_state=str(native_state)[:64] if native_state else None,
+            verification=effective_verification,
+            evidence_source=(
+                str(evidence_source or confirmation_source)[:64]
+                if evidence_source or confirmation_source
+                else None
+            ),
+            provider_id=artifact_id,
             provider_artifact_id=artifact_id,
             mutation_attempted=mutation_attempted,
             confirmation_source=(str(confirmation_source)[:64] if confirmation_source else None),
             confirmed_at=timestamp if confirmation_source else None,
             retry_blocked=retry_blocked,
             code=str(code)[:64] if code else None,
+            checked_at=timestamp,
+            last_error_code=str(code)[:64] if code else None,
             details=_safe_details(details),
         ).to_dict()
         records.append(record)
-        if len(records) > MAX_EVIDENCE_RECORDS:
-            del records[: len(records) - MAX_EVIDENCE_RECORDS]
+        document["minimum_retention_days"] = MIN_EVIDENCE_RETENTION_DAYS
+        document["retention_policy"] = "append_only_no_count_eviction"
         document["records"] = records
         document["updated_at"] = timestamp
         captured.update(record)
@@ -357,7 +436,7 @@ def retry_is_blocked(
     return bool(
         record
         and record.get("outcome")
-        in (PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED, DRAFT_CREATED, PUBLISHED)
+        in (UPLOADED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED, DRAFT_CREATED, PUBLISHED)
         and record.get("retry_blocked", True)
     )
 
