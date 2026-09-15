@@ -781,6 +781,7 @@ class TestRunVideoGeneration:
                 "request": {
                     "article_title": "Evidence Failure",
                     "week": "2026-W37",
+                    "publish_run_id": "123",
                     "article_sha256": "a" * 64,
                     "manifest_sha256": "b" * 64,
                 },
@@ -842,7 +843,6 @@ class TestRunVideoGeneration:
                     "week": "2026-W37",
                     "publish_run_id": "123",
                     "article_sha256": "a" * 64,
-                    "publication_identity_mode": "canonical",
                 },
                 "lifecycle": {"transitions": [{"to": "accepted"}]},
             },
@@ -865,6 +865,7 @@ class TestRunVideoGeneration:
                 storage,
                 config=VideoDistributionConfig(
                     youtube_enabled=True,
+                    spotify_rss_enabled=True,
                     blob_archive_enabled=False,
                     dry_run=False,
                 ),
@@ -908,7 +909,8 @@ class TestRunVideoGeneration:
                 has_audio=False,
             ),
         )[1]
-        monkeypatch.setattr(job_runner, "append_evidence", MagicMock(return_value=None))
+        append_evidence = MagicMock(return_value=None)
+        monkeypatch.setattr(job_runner, "append_evidence", append_evidence)
         mock_distribute.return_value = DistributionResult(status="failed")
 
         run_video_generation(
@@ -916,6 +918,7 @@ class TestRunVideoGeneration:
             storage,
             config=VideoDistributionConfig(
                 youtube_enabled=True,
+                spotify_rss_enabled=True,
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
@@ -924,6 +927,13 @@ class TestRunVideoGeneration:
         assert mock_distribute.call_args.kwargs["published"]["youtube"]["outcome"] == (
             "publication_unknown"
         )
+        assert mock_distribute.call_args.kwargs["published"]["spotify_rss"]["outcome"] == (
+            "publication_unknown"
+        )
+        assert {call.kwargs["platform"] for call in append_evidence.call_args_list} == {
+            "youtube",
+            "spotify_rss",
+        }
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")

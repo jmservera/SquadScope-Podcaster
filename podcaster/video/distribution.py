@@ -35,6 +35,7 @@ from podcaster.publication_state import (
     MANUAL_HANDOFF_REQUIRED,
     PUBLICATION_UNKNOWN,
     PUBLISHED,
+    UPLOADED,
     outcome_from_spotify_terminal_state,
 )
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
@@ -193,22 +194,28 @@ def _record_from_snapshot(
 ) -> dict[str, Any]:
     outcome = str(snapshot.get("outcome") or DRAFT_CREATED)
     verification = str(snapshot.get("verification") or "none")
+    derived_status = (
+        "public"
+        if outcome == PUBLISHED and verification == "external_verified"
+        else "pending"
+        if outcome in (PUBLISHED, UPLOADED)
+        else "draft"
+        if outcome == DRAFT_CREATED
+        else "gated"
+        if outcome == MANUAL_HANDOFF_REQUIRED
+        else "unknown"
+    )
     status = snapshot.get("provider_status")
-    if not isinstance(status, str):
-        status = (
-            "public"
-            if outcome == PUBLISHED and verification == "external_verified"
-            else "pending"
-            if outcome == PUBLISHED
-            else "draft"
-            if outcome == DRAFT_CREATED
-            else "gated"
-            if outcome == MANUAL_HANDOFF_REQUIRED
-            else "unknown"
-        )
+    if (
+        not isinstance(status, str)
+        or status == "public"
+        and not (outcome == PUBLISHED and verification == "external_verified")
+    ):
+        status = derived_status
     provider_id = snapshot.get("provider_id") or snapshot.get(provider_id_field)
     return {
         "provider": provider,
+        "outcome": outcome,
         "status": status,
         "provider_id": str(provider_id) if provider_id is not None else None,
         "native_state": snapshot.get("native_state"),
@@ -482,6 +489,9 @@ def upload_to_youtube(
     if config.dry_run:
         logger.info("YouTube upload dry-run: %s", title)
         return "dry-run-id", "https://youtube.com/watch?v=dry-run-id"
+
+    if config.youtube_privacy not in ("private", "unlisted"):
+        raise ValueError("YouTube uploads must start as private or unlisted drafts")
 
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
@@ -1109,6 +1119,7 @@ def distribute_video(
                 result.provider_outcomes["youtube"] = DRAFT_CREATED
                 result.provider_records["youtube"] = {
                     "provider": "youtube",
+                    "outcome": DRAFT_CREATED,
                     "status": "unlisted" if config.youtube_privacy == "unlisted" else "private",
                     "provider_id": video_id,
                     "native_state": config.youtube_privacy,
@@ -1225,10 +1236,26 @@ def distribute_video(
     # 3. Update Spotify RSS
     if config.spotify_rss_enabled:
         rss_record = prior_published.get("spotify_rss")
-        if isinstance(rss_record, Mapping) and rss_record.get("status") == "published":
-            result.spotify_rss_updated = True
-            result.provider_outcomes["spotify_rss"] = str(rss_record.get("outcome") or PUBLISHED)
-            logger.info("Spotify RSS update skipped for job_id=%s: already published", job_id)
+        rss_outcome = (
+            str(rss_record.get("outcome") or PUBLISHED) if isinstance(rss_record, Mapping) else None
+        )
+        if isinstance(rss_record, Mapping) and (
+            rss_record.get("status") == "published"
+            or rss_outcome
+            in (DRAFT_CREATED, PUBLISHED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED)
+        ):
+            result.spotify_rss_updated = rss_outcome == PUBLISHED
+            result.provider_outcomes["spotify_rss"] = rss_outcome
+            result.provider_records["spotify_rss"] = _record_from_snapshot(
+                rss_record,
+                provider="spotify_rss",
+                provider_id_field="provider_id",
+            )
+            logger.info(
+                "Spotify RSS update skipped for job_id=%s: prior outcome=%s",
+                job_id,
+                rss_outcome,
+            )
         else:
             # blob_path is now a full URL returned from storage.upload(); prefer it over YouTube URL
             enclosure_url = blob_path or result.youtube_url or ""
@@ -1236,6 +1263,20 @@ def distribute_video(
             if not enclosure_url:
                 logger.warning("No enclosure URL available for Spotify RSS — skipping")
                 result.errors.append("Spotify RSS skipped: no enclosure URL")
+                result.provider_outcomes["spotify_rss"] = MANUAL_HANDOFF_REQUIRED
+                result.provider_records["spotify_rss"] = {
+                    "provider": "spotify_rss",
+                    "outcome": MANUAL_HANDOFF_REQUIRED,
+                    "status": "gated",
+                    "provider_id": config.spotify_rss_feed_path or None,
+                    "native_state": None,
+                    "transport_status": "not_attempted",
+                    "verification": "none",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "evidence_source": "distribution_precondition",
+                    "last_error_code": "missing_enclosure_url",
+                    "retry_blocked": False,
+                }
             else:
                 rss_ok = update_spotify_rss(
                     enclosure_url,
@@ -1248,12 +1289,48 @@ def distribute_video(
                 result.spotify_rss_updated = rss_ok
                 if rss_ok:
                     result.provider_outcomes["spotify_rss"] = PUBLISHED
+                    result.provider_records["spotify_rss"] = {
+                        "provider": "spotify_rss",
+                        "outcome": PUBLISHED,
+                        "status": "pending",
+                        "provider_id": config.spotify_rss_feed_path or None,
+                        "native_state": "feed_updated",
+                        "transport_status": "accepted",
+                        "verification": "none",
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                        "evidence_source": "rss_storage_update",
+                        "last_error_code": None,
+                        "retry_blocked": True,
+                    }
+                else:
+                    result.provider_outcomes["spotify_rss"] = PUBLICATION_UNKNOWN
+                    result.provider_records["spotify_rss"] = {
+                        "provider": "spotify_rss",
+                        "outcome": PUBLICATION_UNKNOWN,
+                        "status": "unknown",
+                        "provider_id": config.spotify_rss_feed_path or None,
+                        "native_state": None,
+                        "transport_status": "failed",
+                        "verification": "none",
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                        "evidence_source": "rss_update_result",
+                        "last_error_code": "spotify_rss_update_failed",
+                        "retry_blocked": True,
+                    }
                 if rss_ok and on_published is not None and not config.dry_run:
                     on_published(
                         "spotify_rss",
                         {
                             "status": "published",
+                            "provider_status": "pending",
                             "outcome": PUBLISHED,
+                            "provider": "spotify_rss",
+                            "provider_id": config.spotify_rss_feed_path or None,
+                            "native_state": "feed_updated",
+                            "transport_status": "accepted",
+                            "verification": "none",
+                            "evidence_source": "rss_storage_update",
+                            "retry_blocked": True,
                             "publish_run_id": publish_run_id,
                             "at": datetime.now(timezone.utc).isoformat(),
                         },
@@ -1324,6 +1401,7 @@ def distribute_video(
             result.provider_outcomes["spotify_upload"] = spotify_outcome
             result.provider_records["spotify_video"] = {
                 "provider": "spotify_video",
+                "outcome": spotify_outcome,
                 "status": (
                     "pending"
                     if spotify_outcome == PUBLISHED
@@ -1412,6 +1490,7 @@ def distribute_video(
     )
     expected_public_providers = [
         *(["youtube"] if youtube_active else []),
+        *(["spotify_rss"] if config.spotify_rss_enabled else []),
         *(["spotify_video"] if config.spotify_upload_enabled else []),
     ]
     public_records = [
@@ -1419,9 +1498,19 @@ def distribute_video(
     ]
     if not public_records:
         result.public_delivery_status = "not_requested"
-    elif all(record.get("status") == "public" for record in public_records):
+    elif all(
+        record.get("status") == "public"
+        and record.get("outcome") == PUBLISHED
+        and record.get("verification") == "external_verified"
+        for record in public_records
+    ):
         result.public_delivery_status = "completed"
-    elif any(record.get("status") == "public" for record in public_records):
+    elif any(
+        record.get("status") == "public"
+        and record.get("outcome") == PUBLISHED
+        and record.get("verification") == "external_verified"
+        for record in public_records
+    ):
         result.public_delivery_status = "partial"
     elif any(record.get("status") == "pending" for record in public_records):
         result.public_delivery_status = "pending"

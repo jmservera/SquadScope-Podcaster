@@ -7,7 +7,7 @@
 * Task slug: provider-state-reconciliation
 * Related plan: .copilot-tracking/plans/2026-09-14/provider-state-reconciliation-plan.md
 * Phase details: .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
-* Status: Complete — P05 delivered for unmerged Livingston review
+* Status: Partial — P06 implementation and local validation complete; delivery pending
 
 ## Implementation Opening
 
@@ -45,11 +45,59 @@
 * Public completion: provider readback is not anonymous verification; draft,
   unlisted/private, gated/manual, pending, and unknown records cannot aggregate
   as publicly completed.
-* Retention: publication evidence remains append-only in durable job storage
-  without record-count eviction, satisfying the minimum four-week window.
+* Retention: P05 removed record-count eviction and declared the minimum window;
+  P06 corrects the later-discovered seven-day infrastructure lifecycle conflict.
 * Delivery: canonical lockfile regeneration and full local validation are
   complete; the revision is committed, pushed, reflected in PR #680, and left
   open/unmerged with CI started.
+
+## Reviewer-Lockout Correction
+
+* Active scope: P06-T01 through P06-T04.
+* Independent owner: Frank; prior implementers are locked out from revising
+  these newly rejected artifacts.
+* Retention boundary: write canonical evidence under a dedicated durable prefix
+  outside the deployed seven-day `jobs/` lifecycle match and retain legacy read
+  compatibility.
+* State boundary: explicit legacy mode cannot produce canonical evidence;
+  normalized `public` requires `published` plus `external_verified`; Spotify RSS
+  is expected but pending without independent verification.
+* Mutation boundary: Spotify RSS participates in the accepted-identity
+  pre-mutation claim/retry fence so a crash cannot append the episode twice.
+* Validation intent: targeted and full tests, Ruff/format, infrastructure
+  validation, lockfile recompilation/diff, and repository diff checks.
+* Current blockers: None.
+
+### Infrastructure-backed durable publication evidence — P06-T01
+
+* Canonical evidence now writes to
+  `publication-evidence/{accepted_job_id}.json`, outside the deployed
+  seven-day `jobs/` and `bakeoff/` lifecycle matches.
+* The lifecycle prefix list is deployment-owned rather than caller-configurable,
+  so the durable evidence prefix cannot be added accidentally through a
+  deployment parameter.
+* Existing `jobs/{accepted_job_id}/publication-evidence.json` remains readable
+  and is migrated into the durable document on the next append.
+* Infrastructure and storage regressions prove the path separation, legacy
+  compatibility, and retention contract.
+
+### Fail-closed identity and public projections — P06-T02
+
+* Explicit `publication_identity_mode=legacy` is rejected before canonical
+  evidence can be created, even when all four identity fields are present.
+* Persisted `provider_status=public` is clamped unless the canonical outcome is
+  `published` and verification is `external_verified`.
+* Spotify RSS is a normalized expected public target; a successful feed write
+  remains `pending` until independent external verification.
+
+### Identity-bound Spotify RSS mutation fence — P06-T03
+
+* Canonical video execution now claims and checks `spotify_rss:video` evidence
+  before feed mutation, alongside YouTube and Spotify upload claims.
+* Existing `publication_unknown` and `manual_handoff_required` RSS markers
+  suppress another append but do not count as succeeded or completed.
+* Callback evidence preserves normalized RSS provider fields and keeps RSS
+  evidence distinct from Spotify upload evidence.
 
 ### Canonical versus bounded legacy identity — P05-T01
 
@@ -77,12 +125,13 @@
   normalized `status=public`. Every applicable target must be public for
   `public_delivery_status=completed`.
 
-### Acceptance-safe durable evidence — P05-T03
+### Count-safe evidence history — P05-T03
 
 * Removed count eviction from the immutable append-only accepted-job evidence
   document. It declares a 28-day minimum and
   `append_only_no_count_eviction`, preserving all 120 records in the retention
-  regression rather than dropping the earliest identities.
+  regression rather than dropping the earliest identities. The later P06
+  correction moves canonical writes outside the seven-day `jobs/` lifecycle.
 
 ### Generated lock and revision validation — P05-T04
 
@@ -192,7 +241,11 @@
 ### Atomic evidence and signal primitives — P01-T02
 
 * Added accepted-job identity validation for week, decimal `publish_run_id`, pinned article SHA-256, manifest SHA-256, accepted lifecycle evidence, matching `job_id`, and dry-run rejection.
-* Added immutable atomic append at `jobs/{job_id}/publication-evidence.json`, monotonic sequence numbers, exact dedupe key, no count-based eviction, declared 28-day minimum retention, corrupt-document fail-closed behavior, and safe detail filtering.
+* Added immutable atomic append at `publication-evidence/{job_id}.json`,
+  outside the deployed seven-day `jobs/` lifecycle rule, with legacy-path read
+  compatibility, monotonic sequence numbers, exact dedupe, no count-based
+  eviction, a 28-day minimum retention contract, corrupt-document fail-closed
+  behavior, and safe detail filtering.
 * Extended durable job logs with optional atomic `dedupe_key`; callers omitting it retain append behavior.
 * Added outcome-transition monitoring signals keyed by accepted job, platform, media kind, outcome, and provider artifact ID.
 
@@ -271,6 +324,22 @@
 * `ruff format --check podcaster tests` — 183 files already formatted.
 * `git diff --check` — passed.
 * No live provider API, production, deployment, or canary operation was performed.
+
+### Reviewer-lockout correction validation
+
+* Changed-surface provider/publication/job/monitoring/infrastructure suite:
+  **775 passed**, 1 pre-existing httpx deprecation warning.
+* Focused six-finding suite: **300 passed**.
+* Full repository suite: **3025 passed, 2 skipped, 2 deselected**, with the
+  pre-existing httpx deprecation warning.
+* Scale-out fanout regression: **1 passed**.
+* `ruff check podcaster tests` and `ruff format --check podcaster tests` passed;
+  183 files were already formatted.
+* `az bicep build --file infra/main.bicep --stdout` passed with the existing
+  nullable-module BCP318 warning; exact storage network-access contract passed.
+* Checkov Bicep scan: **34 passed, 0 failed**.
+* CI-equivalent `uv 0.10.11` lock recompilation and diff passed.
+* `python3 -m compileall -q podcaster` and `git diff --check` passed.
 
 ### Independent review finding validation
 

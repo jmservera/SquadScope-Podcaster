@@ -42,6 +42,7 @@ from podcaster.publication_state import (
     PublicationIdentity,
     PublicationStateError,
     append_evidence,
+    canonical_identity_requested,
     emit_publication_signal,
     latest_outcomes,
     new_publish_run_id,
@@ -574,7 +575,9 @@ def _record_video_publication(
     outcome = record.get("outcome")
     if identity is None or not isinstance(outcome, str):
         return True
-    provider_artifact_id = record.get("video_id") or record.get("episode_id")
+    provider_artifact_id = (
+        record.get("provider_id") or record.get("video_id") or record.get("episode_id")
+    )
     evidence_platform = "spotify" if platform == "spotify_upload" else platform
     try:
         append_evidence(
@@ -1175,7 +1178,7 @@ def run_video_generation(
             try:
                 publication_context = publication_identity(manifest, job_id, publish_run_id)
             except PublicationStateError as exc:
-                if request.get("publication_identity_mode") == "canonical":
+                if canonical_identity_requested(request):
                     raise PermanentVideoError(
                         "canonical publication identity is invalid; provider mutation blocked",
                         reason=REASON_INVALID_PUBLICATION_IDENTITY,
@@ -1192,6 +1195,7 @@ def run_video_generation(
                 )
                 for platform, enabled in (
                     ("youtube", youtube_active),
+                    ("spotify_rss", dist_config.spotify_rss_enabled),
                     ("spotify", dist_config.spotify_upload_enabled),
                 ):
                     record_key = "spotify_upload" if platform == "spotify" else platform
@@ -1200,6 +1204,16 @@ def run_video_generation(
                         published_for_attempt[record_key] = {
                             "status": "published",
                             "outcome": prior.get("outcome", "publication_unknown"),
+                            "provider_status": prior.get("status"),
+                            "provider_id": prior.get("provider_id")
+                            or prior.get("provider_artifact_id"),
+                            "native_state": prior.get("native_state"),
+                            "transport_status": prior.get("transport_status"),
+                            "verification": prior.get("verification", "none"),
+                            "checked_at": prior.get("checked_at") or prior.get("at"),
+                            "evidence_source": prior.get("evidence_source"),
+                            "last_error_code": prior.get("last_error_code") or prior.get("code"),
+                            "retry_blocked": bool(prior.get("retry_blocked", True)),
                             "publish_run_id": prior.get("publish_run_id"),
                             "video_id": prior.get("provider_artifact_id")
                             if platform == "youtube"

@@ -45,6 +45,7 @@ from podcaster.pipeline_lock import PIPELINE_AUDIO, claim_pipeline
 from podcaster.progress import PipelineStage, emit_progress
 from podcaster.publication_state import (
     PublicationStateError,
+    canonical_identity_requested,
     new_publish_run_id,
     publication_identity,
 )
@@ -491,7 +492,7 @@ def run_synthesis(
                     try:
                         identity = publication_identity(manifest, job_id, publish_run_id)
                     except PublicationStateError as exc:
-                        if request.get("publication_identity_mode") == "canonical":
+                        if canonical_identity_requested(request):
                             pub_result = PublishResult(
                                 status="failed",
                                 error=(

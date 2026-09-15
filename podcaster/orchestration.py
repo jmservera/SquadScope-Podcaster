@@ -20,6 +20,7 @@ from podcaster.publication_state import (
     PUBLISHED,
     UPLOADED,
     PublicationStateError,
+    canonical_identity_requested,
     new_publish_run_id,
     publication_identity,
 )
@@ -226,7 +227,7 @@ def _publish_from_manifest(
     year, week = _parse_week(str(request.get("week") or ""))
     publishing = manifest.get("publishing")
     publish_run_id = publishing.get("publish_run_id") if isinstance(publishing, dict) else None
-    canonical_identity = request.get("publication_identity_mode") == "canonical"
+    canonical_identity = canonical_identity_requested(request)
     identity = None
     if storage is not None and job_id is not None and canonical_identity:
         try:

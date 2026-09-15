@@ -274,7 +274,9 @@ def publish_video(
             logger.warning("Publish readback failed for video %s: %s", video_id, exc)
             readback = None
         confirmed_privacy = readback.get("privacyStatus") if readback is not None else None
-        if scheduled:
+        if readback is None:
+            outcome = PUBLICATION_UNKNOWN
+        elif scheduled and confirmed_privacy == PRIVACY_PRIVATE:
             outcome = DRAFT_CREATED
         elif confirmed_privacy == PRIVACY_PUBLIC:
             outcome = PUBLISHED

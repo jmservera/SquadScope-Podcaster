@@ -482,7 +482,6 @@ def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation
         "article_title": "Invalid canonical identity",
         "article_sha256": "a" * 64,
         "publish_run_id": "123",
-        "publication_identity_mode": "canonical",
         "spotify_publish": {"publish_mode": "draft", "upload_format": "wav"},
     }
     _stage(storage, manifest, _two_voice_script())

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from podcaster.publication_state import DRAFT_CREATED, PUBLICATION_UNKNOWN, PUBLISHED
+from podcaster.publication_state import PUBLICATION_UNKNOWN, PUBLISHED
 from podcaster.video.youtube_publish import (
     DEFAULT_DRAFT_PRIVACY,
     PRIVACY_PRIVATE,
@@ -112,7 +112,29 @@ class TestPublishVideo:
         assert t.calls[0]["headers"]["Authorization"] == expected
 
     def test_scheduled_publish_uses_private_plus_publishat(self):
-        t = _FakeTransport(status=200)
+        class ScheduledTransport(_FakeTransport):
+            def request(self, url, *, method="GET", headers=None, data=None):
+                self.calls.append({"url": url, "method": method, "headers": headers, "data": data})
+                if method == "PUT":
+                    return 200, b"{}"
+                return (
+                    200,
+                    json.dumps(
+                        {
+                            "items": [
+                                {
+                                    "snippet": {
+                                        "title": "Episode",
+                                        "description": "Description",
+                                    },
+                                    "status": {"privacyStatus": "private"},
+                                }
+                            ]
+                        }
+                    ).encode(),
+                )
+
+        t = ScheduledTransport()
         when = datetime(2025, 6, 30, 14, 0, 0, tzinfo=timezone.utc)
         res = publish_video("vid123", "tok", publish_at=when, transport=t)
         assert res.succeeded is True
@@ -184,14 +206,15 @@ class TestPublishVideo:
         assert result.succeeded is False
         assert result.outcome == PUBLICATION_UNKNOWN
 
-    def test_youtube_scheduled_publish_remains_draft_created_until_confirmed_public(self):
+    def test_youtube_scheduled_publish_without_readback_is_unknown(self):
         result = publish_video(
             "vid123",
             "tok",
             publish_at="2026-09-15T12:00:00Z",
             transport=_FakeTransport(status=200),
         )
-        assert result.outcome == DRAFT_CREATED
+        assert result.succeeded is False
+        assert result.outcome == PUBLICATION_UNKNOWN
 
     def test_invalid_privacy_rejected(self):
         with pytest.raises(ValueError):
@@ -239,13 +262,14 @@ class TestApproveAndPublish:
         assert res.succeeded is False
         assert res.outcome == PUBLICATION_UNKNOWN
 
-    def test_scheduled_packet_schedules(self):
+    def test_scheduled_packet_without_readback_is_unknown(self):
         t = _FakeTransport(status=200)
         when = datetime(2025, 6, 30, 14, 0, 0, tzinfo=timezone.utc)
         packet = build_publishing_packet("vid123", scheduled_publish_at=when)
         packet.approve("amy")
         res = approve_and_publish(packet, "tok", transport=t)
-        assert res.succeeded is True
+        assert res.succeeded is False
+        assert res.outcome == PUBLICATION_UNKNOWN
         assert res.scheduled_publish_at == "2025-06-30T14:00:00Z"
         body = json.loads(t.calls[0]["data"])
         assert body["status"]["privacyStatus"] == "private"

@@ -5,7 +5,7 @@
 
 * Task ID: provider-state-reconciliation
 * Task slug: provider-state-reconciliation
-* Planning status: P05 implementation complete; unmerged review delivery
+* Planning status: P06 reviewer-lockout correction in progress; PR open and unmerged
 * Plan date: 2026-09-14
 * Phase details: .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
 * Changes record: .copilot-tracking/changes/2026-09-14/provider-state-reconciliation-changes.md
@@ -181,7 +181,9 @@ Compatibility rules:
 ## Evidence and Monitoring Contract
 
 * Add at most one new production module, likely `podcaster/publication_state.py`, and one matching new test module, likely `tests/test_publication_state.py`.
-* Store a per-job document at `jobs/{accepted_job_id}/publication-evidence.json` using `StorageBackend.update_bytes`.
+* Store a per-job document at `publication-evidence/{accepted_job_id}.json`
+  using `StorageBackend.update_bytes`. This top-level prefix is excluded from
+  the deployed seven-day `jobs/` lifecycle rule.
 * Schema: `squadscope-podcaster-publication-evidence-v1`; immutable append-only records with monotonic `seq`, exact duplicate no-ops, no count-based eviction, and a declared minimum 28-day retention window.
 * Every record includes: UTC timestamp, `week`, `publish_run_id`, `article_sha256`, accepted `job_id`, platform, media kind, operation/phase, canonical outcome, provider artifact ID when known, mutation-attempted boolean, confirmation source/time, retry-blocked boolean, and sanitized code/details.
 * Identity construction must reject a mismatched passed `job_id`, missing/non-accepted manifest identity, malformed week/hash/run ID, or dry-run persistence. Legacy manifests lacking sufficient identity do not gain unsafe persistence; they return compatible results and fail closed before an otherwise repeatable mutation where evidence is required.
@@ -370,10 +372,11 @@ Provider/API readback and anonymous external verification are distinct.
 Draft/manual/upload outcomes do not count as public completion.
 
 <!-- rpi:task id=P05-T03 -->
-#### [x] P05-T03: Make evidence retention acceptance-safe
+#### [x] P05-T03: Remove count-based evidence eviction
 
-Preserve append-only immutable records in durable job storage for at least four
-weeks, with tests proving required identity evidence cannot be evicted early.
+Preserve append-only immutable records without count-based eviction. P06-T01
+corrects the subsequently identified infrastructure lifecycle gap and provides
+the actual four-week storage retention boundary.
 
 <!-- rpi:task id=P05-T04 -->
 #### [x] P05-T04: Reconcile lockfile, tests, docs, PR, commit, push, and CI
@@ -381,6 +384,39 @@ weeks, with tests proving required identity evidence cannot be evicted early.
 Regenerate `requirements.lock` with repository tooling, run targeted/full
 validation, update delivery evidence and PR description, push, and leave the PR
 unmerged for Livingston.
+
+<!-- rpi:phase id=P06 -->
+### [ ] P06: Reviewer-Lockout Correction
+
+<!-- rpi:task id=P06-T01 -->
+#### [x] P06-T01: Enforce infrastructure-backed publication evidence retention
+
+Move canonical evidence to a dedicated durable prefix outside the deployed
+7-day `jobs/` lifecycle match, preserve legacy evidence reads, and prove the
+lifecycle and documentation contract retain canonical evidence for at least 28
+days.
+
+<!-- rpi:task id=P06-T02 -->
+#### [x] P06-T02: Clamp identity and public-provider projections
+
+Reject explicit legacy identity mode in canonical evidence helpers, clamp
+persisted `public` status unless canonical outcome and independent verification
+both prove it, and normalize Spotify RSS as an expected public target that
+remains pending without external verification.
+
+<!-- rpi:task id=P06-T03 -->
+#### [x] P06-T03: Fence Spotify RSS mutation and aggregate outcomes
+
+Include Spotify RSS in the identity-bound pre-mutation retry/claim path and
+ensure unknown/manual legacy markers neither count as successful nor permit a
+duplicate feed append after a crash.
+
+<!-- rpi:task id=P06-T04 -->
+#### [ ] P06-T04: Validate and deliver the independent correction
+
+Run targeted/full tests, Ruff and format checks, infrastructure validation,
+lockfile verification, and diff checks; update docs/tracking/PR evidence,
+commit, push, resolve review threads, and leave the PR unmerged.
 
 ## Dependencies
 
@@ -392,6 +428,8 @@ unmerged for Livingston.
 * P04 depends on all code, tests, and docs.
 * P05 is a reviewer-directed revision of P01-P04 and depends on preserving the
   delivered safeguards and accepted job namespace.
+* P06 is an independent reviewer-lockout correction of P05 and depends on the
+  pushed P05 baseline and exact accepted-job namespace remaining intact.
 
 ## Critique Disposition
 
@@ -399,7 +437,7 @@ unmerged for Livingston.
 |---|---|---|
 | PC-001: Existing legacy `"published"` markers conflate uploaded drafts and public state. | Resolved by planner | Canonical `outcome` is additive; legacy fields remain for compatibility and are explicitly mapped. |
 | PC-002: Evidence persistence after a provider call can itself fail and recreate the crash window. | Resolved by planner | Intent/evidence must be persisted before mutation; post-mutation persistence failure becomes `publication_unknown` and blocks repeats. |
-| PC-003: “Append-only” and bounded retention can conflict. | Superseded by Livingston revision | Publication evidence has no count-based eviction. The durable document declares a 28-day minimum and append-only/no-count-eviction policy so required four-week identity evidence cannot be displaced by record volume. |
+| PC-003: “Append-only” and bounded retention can conflict. | Superseded by P06 reviewer-lockout correction | P05 removed record-count eviction but left evidence under the seven-day `jobs/` lifecycle. P06 moves canonical evidence to the non-expiring `publication-evidence/` prefix and retains the 28-day minimum contract. |
 | PC-004: Generic retry currently covers some state-changing requests. | Resolved by planner | P02 requires endpoint classification and one-shot mutation plus read-back for ambiguous operations; known safe resumable part PUTs and idempotent playlist repair remain allowed. |
 | PC-005: A full provider reconciler may require unsupported APIs. | Accepted with explicit fallback | Stop at `publication_unknown`/manual handoff and create a narrow issue; never infer or call live services. |
 | PC-006: Separate critique artifact and worker are normally expected. | Accepted constraint | Caller permits only three artifacts, and the parent prohibits nested delegation absent explicit request; this complete planner-owned final evidence review is recorded here. |

@@ -18,6 +18,7 @@ from podcaster.localization_qa import (  # noqa: F401
     evaluate_localization,
     localization_gate,
 )
+from podcaster.publication_state import canonical_identity_requested
 
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 WEEK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
@@ -152,22 +153,20 @@ def validate_payload_details(payload: Any) -> PayloadValidationResult:
     supplied_identity_fields = {
         name for name, value in identity_fields.items() if value is not None
     }
-    canonical_identity_requested = (
-        identity_mode == "canonical" or publish_run_id is not None or manifest_sha256 is not None
-    )
-    if canonical_identity_requested and supplied_identity_fields != set(identity_fields):
+    canonical_requested = canonical_identity_requested(payload)
+    if canonical_requested and supplied_identity_fields != set(identity_fields):
         missing = sorted(set(identity_fields) - supplied_identity_fields)
         errors.append(
             "canonical publication identity requires publish_run_id, article_sha256, "
             f"and manifest_sha256 together; missing: {', '.join(missing)}"
         )
-    elif canonical_identity_requested and (
+    elif canonical_requested and (
         not isinstance(week, str) or not CANONICAL_WEEK_RE.fullmatch(week)
     ):
         errors.append("canonical publication identity week must use YYYY-WNN")
-    elif identity_mode == "legacy" and canonical_identity_requested:
+    elif identity_mode == "legacy" and canonical_requested:
         errors.append("legacy publication identity mode cannot include canonical identity fields")
-    elif not canonical_identity_requested:
+    elif not canonical_requested:
         warnings.append(
             "legacy request accepted without canonical publication identity; "
             "provider reconciliation evidence is unavailable"

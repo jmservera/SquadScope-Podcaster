@@ -130,8 +130,11 @@ Persist immutable transition records for an accepted publish attempt and emit on
 
 #### Boundaries
 
-* Included: `jobs/{job_id}/publication-evidence.json`, max 100 retained records, atomic dedupe, optional log `dedupe_key`.
-* Excluded: unbounded history, global cross-job indexes, provider polling daemons, article content.
+* Included: `publication-evidence/{job_id}.json`, append-only records without
+  count eviction, atomic dedupe, legacy-path read compatibility, and optional
+  log `dedupe_key`.
+* Excluded: global cross-job indexes, provider polling daemons, article content,
+  and the deployed seven-day `jobs/` lifecycle boundary.
 
 #### Likely Targets
 
@@ -756,7 +759,7 @@ separate. Existing video snapshots retain legacy `status=published` and add
 applicable listener target must be public before public delivery completes.
 
 <!-- rpi:task id=P05-T03 -->
-### P05-T03: Make evidence retention acceptance-safe
+### P05-T03: Remove count-based evidence eviction
 
 #### Status
 
@@ -764,10 +767,12 @@ Complete.
 
 #### Result
 
-Records remain immutable append-only under the accepted job namespace with no
-count eviction. Documents declare `minimum_retention_days=28` and
+Records remain immutable append-only with no count eviction. Documents declare
+`minimum_retention_days=28` and
 `retention_policy=append_only_no_count_eviction`; tests retain 120 distinct
-identity records from sequence 1 onward.
+identity records from sequence 1 onward. This phase did not override the
+deployed seven-day `jobs/` lifecycle; P06-T01 supplies the actual durable-prefix
+retention correction.
 
 <!-- rpi:task id=P05-T04 -->
 ### P05-T04: Reconcile lockfile, tests, docs, PR, commit, push, and CI
@@ -784,3 +789,36 @@ suite passed 3013 tests with 2 skipped and 2 deselected; Ruff, Git whitespace,
 and lock verification are clean. The conventional revision commit, branch
 push, PR update, superseded-thread resolution, and new CI start are delivery
 steps performed around this artifact without merging.
+
+<!-- rpi:phase id=P06 -->
+## P06: Reviewer-Lockout Correction
+
+### Intent
+
+Close all six current PR findings without involving the locked-out P05 author.
+Canonical publication evidence must survive the deployed lifecycle, public
+state must require canonical published outcome plus independent verification,
+explicit legacy mode must never gain canonical evidence, and Spotify RSS must
+be normalized and fenced before mutation.
+
+### Boundaries
+
+* Included: publication evidence storage paths and lifecycle tests/docs,
+  identity validation, provider-record normalization and aggregation, Spotify
+  RSS retry claims, directly related tests, lockfile verification, PR metadata,
+  review-thread replies, commit, push, and CI observation.
+* Excluded: live provider calls, production dispatch/deployment, provider
+  capability invention, accepted job-ID changes, or merge.
+
+### Validation Expectations
+
+* Infrastructure tests prove the canonical evidence prefix is outside every
+  automatic-expiry match and has a documented minimum retention of 28 days.
+* Legacy evidence remains readable, while new writes use the durable prefix.
+* Explicit legacy mode is rejected by canonical evidence helpers.
+* Persisted/provider `public` is clamped unless outcome is `published` and
+  verification is `external_verified`.
+* Spotify RSS is an expected public provider, remains pending until independent
+  verification, and unknown/manual evidence neither succeeds nor mutates again.
+* Targeted and full suites, Ruff/format, infrastructure validation, lockfile
+  verification, and diff checks pass without live services.

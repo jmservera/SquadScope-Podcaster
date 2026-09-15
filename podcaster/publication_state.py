@@ -29,6 +29,7 @@ CANONICAL_OUTCOMES = (
 
 EVIDENCE_SCHEMA_VERSION = "squadscope-podcaster-publication-evidence-v1"
 MIN_EVIDENCE_RETENTION_DAYS = 28
+EVIDENCE_PREFIX = "publication-evidence"
 PROVIDER_STATUSES = (
     "not_requested",
     "gated",
@@ -166,6 +167,14 @@ def new_publish_run_id() -> str:
     return str(uuid.uuid4().int)
 
 
+def canonical_identity_requested(request: Mapping[str, Any]) -> bool:
+    return (
+        request.get("publication_identity_mode") == "canonical"
+        or request.get("publish_run_id") is not None
+        or request.get("manifest_sha256") is not None
+    )
+
+
 def publication_identity(
     manifest: Mapping[str, Any],
     accepted_job_id: str,
@@ -177,6 +186,11 @@ def publication_identity(
     request = manifest.get("request")
     if not isinstance(request, Mapping) or request.get("dry_run") is True:
         raise PublicationStateError("publication evidence requires an accepted non-dry-run job")
+    identity_mode = request.get("publication_identity_mode")
+    if identity_mode == "legacy":
+        raise PublicationStateError("legacy requests cannot create canonical publication evidence")
+    if identity_mode not in (None, "canonical"):
+        raise PublicationStateError("publication identity mode is malformed")
     lifecycle = manifest.get("lifecycle")
     transitions = lifecycle.get("transitions") if isinstance(lifecycle, Mapping) else None
     accepted = isinstance(transitions, list) and any(
@@ -186,10 +200,11 @@ def publication_identity(
         raise PublicationStateError("manifest does not contain accepted job identity")
     week = str(request.get("week") or "").strip()
     manifest_publish_run_id = request.get("publish_run_id")
-    if manifest_publish_run_id is not None:
-        if publish_run_id and publish_run_id != manifest_publish_run_id:
-            raise PublicationStateError("publish_run_id conflicts with manifest identity")
-        publish_run_id = manifest_publish_run_id
+    if not isinstance(manifest_publish_run_id, str) or not manifest_publish_run_id:
+        raise PublicationStateError("manifest publish_run_id is missing")
+    if publish_run_id and publish_run_id != manifest_publish_run_id:
+        raise PublicationStateError("publish_run_id conflicts with manifest identity")
+    publish_run_id = manifest_publish_run_id
     article_sha256 = str(request.get("article_sha256") or "").strip()
     manifest_sha256 = str(request.get("manifest_sha256") or "").strip()
     if not _WEEK_RE.fullmatch(week):
@@ -210,6 +225,10 @@ def publication_identity(
 
 
 def evidence_path(job_id: str) -> str:
+    return f"{EVIDENCE_PREFIX}/{job_id}.json"
+
+
+def legacy_evidence_path(job_id: str) -> str:
     return f"jobs/{job_id}/publication-evidence.json"
 
 
@@ -326,9 +345,14 @@ def append_evidence(
         artifact_id or "",
     )
     captured: dict[str, Any] = {}
+    legacy_raw = storage.get_bytes(legacy_evidence_path(identity.accepted_job_id))
 
     def _apply(raw: bytes | None) -> bytes:
-        document = _load_evidence(raw, identity.accepted_job_id, strict=True)
+        document = _load_evidence(
+            raw if raw is not None else legacy_raw,
+            identity.accepted_job_id,
+            strict=True,
+        )
         records = document["records"]
         for existing in records:
             if not isinstance(existing, dict):
@@ -408,6 +432,8 @@ def append_evidence(
 
 def read_evidence(storage: StorageBackend, job_id: str) -> dict[str, Any] | None:
     raw = storage.get_bytes(evidence_path(job_id))
+    if raw is None:
+        raw = storage.get_bytes(legacy_evidence_path(job_id))
     return None if raw is None else _load_evidence(raw, job_id, strict=False)
 
 

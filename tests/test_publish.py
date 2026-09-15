@@ -307,6 +307,35 @@ class TestPublishEpisode:
         assert result.details["code"] == "mutation_claim_exists"
         build.assert_not_called()
 
+    def test_spotify_deterministic_create_rejection_requires_manual_handoff(
+        self, monkeypatch, mp3_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        monkeypatch.setattr(pub, "read_evidence", lambda *args: None)
+        monkeypatch.setattr(pub, "append_evidence", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(pub, "emit_publication_signal", MagicMock())
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: (1, 2))
+        monkeypatch.setattr(
+            pub,
+            "_create_episode",
+            MagicMock(side_effect=pub.SpotifyPublishError("request rejected")),
+        )
+
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            publication_storage=object(),
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.outcome == "manual_handoff_required"
+        assert result.details.get("retry_blocked", False) is False
+
     def test_spotify_evidence_read_failure_blocks_even_when_write_would_succeed(
         self, monkeypatch, mp3_file, wav_file, spotify_env
     ):

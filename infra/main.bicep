@@ -31,11 +31,14 @@ param storageContainerName string = 'podcaster-artifacts'
 @description('Private blob container used for video pipeline intermediates (segment recordings, normalized clips, composed video) for checkpoint/resume (#410).')
 param videoScratchContainerName string = 'video-scratch'
 
-@description('Blob prefixes (relative to the artifacts container) holding auto-generated outputs that are safe to auto-expire.')
-param autoExpireArtifactPrefixes array = [
+// Deployment-owned so callers cannot accidentally add the durable
+// publication-evidence/ prefix to the seven-day lifecycle match.
+var autoExpireArtifactPrefixes = [
   'jobs/'
   'bakeoff/'
 ]
+
+var publicationEvidencePrefix = 'publication-evidence/'
 
 @description('Days after which generated podcaster artifacts are auto-deleted by the Storage lifecycle policy.')
 @minValue(1)
@@ -615,6 +618,7 @@ output storageAccountName string = storage.name
 output storageContainerName string = storageContainerName
 output videoScratchContainerName string = videoScratchContainerName
 output artifactRetentionDays int = artifactRetentionDays
+output publicationEvidencePrefix string = publicationEvidencePrefix
 output openAiEndpoint string = openAiEndpoint
 output openAiAccountName string = openAiAccountName
 output ttsDeploymentName string = ttsDeploymentName

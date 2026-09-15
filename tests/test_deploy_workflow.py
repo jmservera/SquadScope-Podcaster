@@ -400,8 +400,8 @@ def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
     # Artifact container must be covered by delete rules tied to the retention param.
     # The artifacts rule targets auto-generated output prefixes (jobs/, bakeoff/) but must
     # NOT target the bare container, so operator review artifacts under review/ are retained (#93).
-    assert "param autoExpireArtifactPrefixes array" in bicep, (
-        "auto-expire prefixes must be parametrised so review/ can be excluded"
+    assert "var autoExpireArtifactPrefixes = [" in bicep, (
+        "auto-expire prefixes must be deployment-owned so durable prefixes cannot be added"
     )
     assert re.search(
         (
@@ -416,6 +416,17 @@ def test_bicep_provisions_blob_lifecycle_cleanup_policy() -> None:
     assert "'review/'" not in bicep, (
         "operator review artifacts (review/) must not be subject to lifecycle auto-delete (#93)"
     )
+    assert "var publicationEvidencePrefix = 'publication-evidence/'" in bicep
+    auto_expire_block = re.search(
+        r"var autoExpireArtifactPrefixes = \[(?P<prefixes>.*?)\]",
+        bicep,
+        re.DOTALL,
+    )
+    assert auto_expire_block is not None
+    assert "publication-evidence/" not in auto_expire_block.group("prefixes"), (
+        "canonical publication evidence must remain outside the seven-day lifecycle match"
+    )
+    assert "output publicationEvidencePrefix string = publicationEvidencePrefix" in bicep
     assert "prefixMatch: [\n          '${storageContainerName}/'" not in bicep and not re.search(
         r"prefixMatch:\s*\[\s*'\$\{storageContainerName\}/'\s*\]", bicep
     ), "artifacts rule must not match the whole container (would auto-delete review/ artifacts)"

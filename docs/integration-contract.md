@@ -203,7 +203,7 @@ The manifest and packet metadata include `artifact_access` with:
 
 Cleanup is owned by the operator or a storage lifecycle policy using `expires_at`/`cleanup_after`. Audit review uses the job manifest, review audit trail placeholders, Application Insights `correlation_id`, and Azure Storage diagnostics. Placeholder artifacts remain blocked from publication until human/editorial review and real TTS gates exist.
 
-The storage lifecycle policy (`infra/main.bicep`) auto-deletes only **auto-generated** outputs — the `jobs/` and `bakeoff/` prefixes — after `artifactRetentionDays` (7 days). Operator **review** artifacts under the `review/` prefix (including `review/v3/`) are intentionally **excluded** and retained indefinitely until the editorial gate signs off (#93). Azure blob lifecycle filters cannot express exclusions, so review artifacts are protected by omitting their prefix from `autoExpireArtifactPrefixes`. Retiring review artifacts is an explicit operator action, not an automatic expiry.
+The storage lifecycle policy (`infra/main.bicep`) auto-deletes only **auto-generated** outputs — the deployment-owned `jobs/` and `bakeoff/` prefixes — after `artifactRetentionDays` (7 days). Operator **review** artifacts under `review/` (including `review/v3/`) and canonical publication evidence under `publication-evidence/` are outside every automatic-expiry match. Azure lifecycle filters cannot express exclusions, so the expiry prefix list is non-configurable and limited to generated outputs. Retiring review artifacts is an explicit operator action; canonical publication evidence is retained for at least 28 days.
 
 ## Manifest and packet metadata
 
@@ -230,9 +230,13 @@ detail responses may expose `outcome`/`publication_outcome` using exactly:
 `published` requires independent provider read-back. A successful upload that
 remains non-public is `draft_created`; an ambiguous mutation is
 `publication_unknown` and blocks automatic repetition. Accepted jobs may also
-have `jobs/{job_id}/publication-evidence.json`, an atomic immutable append-only
-transition log with no count-based eviction and a declared 28-day minimum
-retention window. Legacy manifests without this document remain readable.
+have `publication-evidence/{job_id}.json`, an atomic immutable append-only
+transition log under a dedicated durable prefix that is not matched by the
+seven-day jobs lifecycle. It has no count-based eviction and a declared 28-day
+minimum retention window. Existing
+`jobs/{job_id}/publication-evidence.json` documents remain readable and migrate
+forward on the next append; legacy manifests without either document remain
+readable.
 
 Rollback does not delete provider artifacts. Disable consumption of the
 additive fields or revert the implementation while continuing to treat legacy
@@ -266,8 +270,11 @@ at-most-once marker. Their additive `provider_status` and `verification` fields,
 and the normalized records exposed beside them, are authoritative for public
 visibility; the legacy marker alone never proves listener availability.
 
-Publication evidence is stored durably under the accepted job namespace as an
-append-only document. Records are not evicted by count, preserving at least the
-four-week acceptance and reconciliation window. The document declares
+Publication evidence is keyed by the accepted job ID under the dedicated
+`publication-evidence/` prefix as an append-only document. The deployed
+lifecycle expires only `jobs/` and `bakeoff/`, so canonical evidence is not
+deleted by the seven-day generated-artifact rule. Records are not evicted by
+count, preserving at least the four-week acceptance and reconciliation window.
+The document declares
 `minimum_retention_days=28` and
 `retention_policy=append_only_no_count_eviction`; rollback preserves it.

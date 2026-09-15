@@ -224,6 +224,15 @@ class TestUploadToYouTube:
         assert vid_id == "dry-run-id"
         assert "dry-run-id" in vid_url
 
+    def test_public_initial_upload_is_rejected_before_provider_io(self, video_file):
+        transport = FakeTransport()
+        config = VideoDistributionConfig(youtube_enabled=True, youtube_privacy="public")
+
+        with pytest.raises(ValueError, match="private or unlisted"):
+            upload_to_youtube(video_file, "title", "desc", config, transport=transport)
+
+        assert transport.requests == []
+
     def test_successful_upload(self, video_file, youtube_config):
         transport = FakeTransport(
             responses=[
@@ -777,6 +786,10 @@ class TestDistributeVideo:
             lambda *args, **kwargs: True,
         )
         monkeypatch.setattr(
+            "podcaster.video.distribution.archive_to_blob",
+            lambda *args, **kwargs: "https://storage.test/video.mp4",
+        )
+        monkeypatch.setattr(
             "podcaster.video.distribution.upload_to_spotify_episode",
             lambda *args, **kwargs: (True, 321),
         )
@@ -904,6 +917,112 @@ class TestDistributeVideo:
         )
         assert result.provider_records["youtube"]["status"] == "public"
         assert result.public_delivery_status == "completed"
+
+    def test_malformed_public_snapshot_is_clamped_fail_closed(self, video_file, monkeypatch):
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("upload should be skipped")
+            ),
+        )
+        result = distribute_video(
+            video_file,
+            "job-youtube-malformed-public",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(youtube_enabled=True, blob_archive_enabled=False),
+            published={
+                "youtube": {
+                    "status": "published",
+                    "provider_status": "public",
+                    "outcome": "draft_created",
+                    "verification": "none",
+                    "video_id": "yt-draft",
+                }
+            },
+        )
+
+        assert result.provider_records["youtube"]["status"] == "draft"
+        assert result.public_delivery_status == "failed"
+
+    def test_provider_readback_only_cannot_complete_public_delivery(self, video_file, monkeypatch):
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("upload should be skipped")
+            ),
+        )
+        result = distribute_video(
+            video_file,
+            "job-youtube-readback-only",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(youtube_enabled=True, blob_archive_enabled=False),
+            published={
+                "youtube": {
+                    "status": "published",
+                    "provider_status": "public",
+                    "outcome": "published",
+                    "verification": "provider_readback",
+                    "video_id": "yt-readback",
+                }
+            },
+        )
+
+        assert result.provider_records["youtube"]["status"] == "pending"
+        assert result.public_delivery_status == "pending"
+
+    @pytest.mark.parametrize("outcome", ["publication_unknown", "manual_handoff_required"])
+    def test_spotify_rss_unconfirmed_snapshot_is_not_counted_successful(self, video_file, outcome):
+        result = distribute_video(
+            video_file,
+            "job-rss-unknown",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(
+                spotify_rss_enabled=True,
+                blob_archive_enabled=False,
+            ),
+            published={
+                "spotify_rss": {
+                    "status": "published",
+                    "provider_status": "unknown",
+                    "outcome": outcome,
+                    "verification": "none",
+                }
+            },
+        )
+
+        assert result.spotify_rss_updated is False
+        assert result.status == "failed"
+        assert result.public_delivery_status == "failed"
+
+    def test_spotify_rss_update_requires_external_verification_for_public_completion(
+        self, video_file, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "podcaster.video.distribution.update_spotify_rss",
+            lambda *args, **kwargs: True,
+        )
+        result = distribute_video(
+            video_file,
+            "job-rss-pending",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(
+                spotify_rss_enabled=True,
+                blob_archive_enabled=True,
+            ),
+            storage=FakeStorage(),
+        )
+
+        assert result.spotify_rss_updated is True
+        assert result.provider_records["spotify_rss"]["status"] == "pending"
+        assert result.public_delivery_status == "pending"
 
     def test_spotify_video_upload_reports_draft_created_not_published(
         self, video_file, monkeypatch

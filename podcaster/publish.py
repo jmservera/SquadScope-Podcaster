@@ -2585,8 +2585,8 @@ def publish_episode(
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         # Step 2: Create draft episode
-        mutation_started = True
         anchor_id = _create_episode(session, station_id)
+        mutation_started = True
 
         # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
         is_video = content_type.startswith("video/")

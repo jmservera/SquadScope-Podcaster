@@ -273,7 +273,7 @@ class TestGetJob:
             "application/json",
         )
         storage.put_bytes(
-            f"jobs/{job_id}/publication-evidence.json",
+            f"publication-evidence/{job_id}.json",
             json.dumps(
                 {
                     "schema_version": "squadscope-podcaster-publication-evidence-v1",
@@ -314,7 +314,7 @@ class TestGetJob:
             "application/json",
         )
         storage.put_bytes(
-            f"jobs/{job_id}/publication-evidence.json",
+            f"publication-evidence/{job_id}.json",
             b"{broken",
             "application/json",
         )

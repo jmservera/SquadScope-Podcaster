@@ -18,6 +18,7 @@ from podcaster.publication_state import (
     emit_publication_signal,
     evidence_path,
     latest_outcomes,
+    legacy_evidence_path,
     outcome_from_distribution_status,
     outcome_from_publish_status,
     outcome_from_spotify_terminal_state,
@@ -116,6 +117,20 @@ def test_identity_rejects_conflicting_publish_run_id():
         publication_identity(manifest(), manifest()["job_id"], "999")
 
 
+def test_identity_rejects_missing_manifest_publish_run_id():
+    value = manifest()
+    del value["request"]["publish_run_id"]
+    with pytest.raises(PublicationStateError, match="publish_run_id is missing"):
+        publication_identity(value, value["job_id"], "1")
+
+
+def test_explicit_legacy_request_cannot_create_canonical_evidence():
+    value = manifest()
+    value["request"]["publication_identity_mode"] = "legacy"
+    with pytest.raises(PublicationStateError, match="legacy requests"):
+        publication_identity(value, value["job_id"], "1")
+
+
 def test_identity_rejects_nonaccepted_or_dry_run_manifest():
     with pytest.raises(PublicationStateError):
         publication_identity(manifest(dry_run=True), "podcast-2026-W37-abc", "1")
@@ -123,6 +138,34 @@ def test_identity_rejects_nonaccepted_or_dry_run_manifest():
     value["lifecycle"]["transitions"] = []
     with pytest.raises(PublicationStateError):
         publication_identity(value, value["job_id"], "1")
+
+
+def test_evidence_uses_durable_prefix_and_migrates_legacy_records_on_append():
+    storage = MemoryStorage()
+    job_id = manifest()["job_id"]
+    legacy_document = {
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "job_id": job_id,
+        "minimum_retention_days": 28,
+        "retention_policy": "append_only_no_count_eviction",
+        "updated_at": None,
+        "records": [],
+    }
+    storage.data[legacy_evidence_path(job_id)] = json.dumps(legacy_document).encode()
+
+    assert evidence_path(job_id) == f"publication-evidence/{job_id}.json"
+    assert read_evidence(storage, job_id) == legacy_document
+
+    append_evidence(
+        storage,
+        identity(),
+        platform="youtube",
+        media_kind="video",
+        operation="upload",
+        outcome=DRAFT_CREATED,
+    )
+    assert evidence_path(job_id) in storage.data
+    assert len(read_evidence(storage, job_id)["records"]) == 1
 
 
 def test_evidence_append_is_monotonic_and_preserves_prior_records():
@@ -188,6 +231,21 @@ def test_evidence_retains_more_than_four_weeks_without_eviction():
     assert records[-1]["seq"] == 120
     assert document["minimum_retention_days"] == 28
     assert document["retention_policy"] == "append_only_no_count_eviction"
+    assert evidence_path(manifest()["job_id"]) == ("publication-evidence/podcast-2026-W37-abc.json")
+
+
+def test_read_evidence_accepts_legacy_job_scoped_path():
+    storage = MemoryStorage()
+    job_id = manifest()["job_id"]
+    storage.data[f"jobs/{job_id}/publication-evidence.json"] = json.dumps(
+        {
+            "schema_version": EVIDENCE_SCHEMA_VERSION,
+            "job_id": job_id,
+            "records": [],
+        }
+    ).encode()
+
+    assert read_evidence(storage, job_id)["job_id"] == job_id
 
 
 def test_provider_record_distinguishes_readback_from_external_visibility():
