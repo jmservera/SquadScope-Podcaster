@@ -137,13 +137,12 @@
 
 ## Residual Work
 
-* P05-T03 commit, push, and PR delivery remains planned subsequent work.
 * The separate distribution worker is tracked in #681 as a distinct follow-up, not an open defect.
 
 ## Blockers and Remaining Work
 
 * Blockers: None.
-* Remaining active work: Execute P05-T03 issue/commit/push/PR delivery.
+* Remaining active work: None.
 
 ## Validation Evidence
 
@@ -173,7 +172,7 @@
 | Implementation defect | None | All RV findings resolved |
 | Decision gap or invalid assumption | None | No route required |
 | Material evidence gap | None | No route required |
-| Non-blocking residual work | Distinct follow-up | #681 and remaining P05-T03 delivery |
+| Non-blocking residual work | Distinct follow-up | #681 |
 
 * Execution status: Complete
 * Outcome: Conformant
@@ -190,4 +189,4 @@
 
 ## Next Steps
 
-The active parent should complete P05-T03: commit, push, and open the unmerged PR; the distribution-worker follow-up is #681.
+No user action is required for this review. Delivery is recorded in implementation commit `4033df6`, pushed branch `squad/video-stage-budget-redesign`, PR #682, and follow-up issue #681.
