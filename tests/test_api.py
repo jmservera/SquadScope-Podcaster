@@ -13,6 +13,7 @@ import pytest
 
 from podcaster.api import GenerateHandler
 from podcaster.auth import create_token
+from podcaster.dispatch_receipts import dispatch_receipt_path
 from podcaster.jobs import ReplayCollisionError
 from podcaster.orchestration import JobPublishOutcome
 from podcaster.publish import PublishResult
@@ -403,6 +404,63 @@ class TestSuccessfulGeneration:
         assert resp["status"] == "accepted"
         assert resp["manifest_url"] is not None
         assert resp["errors"] == []
+
+    def test_registered_dispatch_intent_correlates_first_durable_arrival(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
+        correlation_id = "weekly-2026-W39-integration"
+        intent_body = json.dumps(
+            {
+                "dispatch_correlation_id": correlation_id,
+                "week": "2026-W39",
+                "dispatch_result": "accepted",
+                "source": "squadscope_weekly",
+            }
+        ).encode()
+        intent = make_handler(
+            "POST",
+            "/api/dispatch-intents",
+            body=intent_body,
+            headers=self._headers(intent_body),
+        )
+        assert intent.response_code == HTTPStatus.CREATED
+
+        generate_body = json.dumps(
+            {
+                "week": "2026-W39",
+                "article_url": "https://example.com/article",
+                "dispatch_correlation_id": correlation_id,
+            }
+        ).encode()
+        generated = make_handler(
+            "POST",
+            "/api/generate",
+            body=generate_body,
+            headers=self._headers(generate_body),
+        )
+        assert generated.response_code == HTTPStatus.ACCEPTED
+        receipt = json.loads((tmp_path / dispatch_receipt_path(correlation_id)).read_text())
+        assert receipt["arrival_state"] == "arrived"
+        assert receipt["accepted_job_id"] == generated.get_response_json()["job_id"]
+
+    @patch("podcaster.api.run_generation_job")
+    def test_unregistered_dispatch_correlation_fails_before_generation(
+        self, mock_run, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")
+        monkeypatch.setenv("PODCASTER_LOCAL_STORAGE_PATH", str(tmp_path))
+        body = json.dumps(
+            {
+                "week": "2026-W39",
+                "article_url": "https://example.com/article",
+                "dispatch_correlation_id": "unregistered-weekly-dispatch",
+            }
+        ).encode()
+        handler = make_handler("POST", "/api/generate", body=body, headers=self._headers(body))
+        assert handler.response_code == HTTPStatus.CONFLICT
+        mock_run.assert_not_called()
 
     def test_dry_run_returns_200(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PODCASTER_ARTIFACT_BASE_URL", "https://test.example")

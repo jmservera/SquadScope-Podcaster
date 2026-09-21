@@ -19,6 +19,7 @@ from podcaster.storage import StorageBackend
 OUTBOX_SCHEMA_VERSION = "squadscope-podcaster-distribution-outbox-v1"
 OUTBOX_PREFIX = "distribution-outbox"
 ARTIFACT_PREFIX = "distribution-artifacts"
+ARTIFACT_METADATA_PREFIX = "distribution-artifact-metadata"
 RECONCILIATION_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-distribution-reconcile-v1"
 
 PROVIDER_RESULTS = frozenset(
@@ -197,6 +198,25 @@ def commit_immutable_artifact(
     elif existing_size != size:
         raise OutboxConflictError("content-addressed artifact size conflicts with existing blob")
     verify_artifact(storage, ArtifactReference(path, digest, size, media_kind))
+    metadata_path = f"{ARTIFACT_METADATA_PREFIX}/{digest}.json"
+
+    def _metadata(raw: bytes | None) -> bytes:
+        if raw is not None:
+            return raw
+        document = {
+            "artifact_path": path,
+            "sha256": digest,
+            "size_bytes": size,
+            "media_kind": _require_token("media_kind", media_kind),
+            "created_at": _iso(utc_now()),
+        }
+        return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    storage.update_bytes(
+        metadata_path,
+        "application/json; charset=utf-8",
+        _metadata,
+    )
     return ArtifactReference(path, digest, size, media_kind)
 
 
@@ -335,6 +355,8 @@ class DistributionOutboxRepository:
                     "verification_budget": 8,
                     "verification_horizon_at": _iso(self.now() + timedelta(hours=24)),
                     "active_schedule_token": None,
+                    "schedule_notification_token": None,
+                    "schedule_notification_sent_at": None,
                 }
                 for provider, objective in sorted(provider_objectives.items())
             }
@@ -638,6 +660,8 @@ class DistributionOutboxRepository:
             leg["next_reconcile_at"] = _iso(next_reconcile_at) if next_reconcile_at else None
             if result != "pending_provider":
                 leg["active_schedule_token"] = None
+                leg["schedule_notification_token"] = None
+                leg["schedule_notification_sent_at"] = None
             self._refresh_aggregate(document)
             captured.update(verification)
 
@@ -678,6 +702,8 @@ class DistributionOutboxRepository:
             ).hexdigest()
             leg["next_reconcile_at"] = _iso(due_at)
             leg["active_schedule_token"] = token
+            leg["schedule_notification_token"] = None
+            leg["schedule_notification_sent_at"] = None
             leg["result"] = "pending_provider"
             self._refresh_aggregate(document)
             captured["token"] = token
@@ -701,6 +727,8 @@ class DistributionOutboxRepository:
             if due is None or due > self.now():
                 raise DistributionOutboxError("reconciliation token is not due")
             leg["active_schedule_token"] = None
+            leg["schedule_notification_token"] = None
+            leg["schedule_notification_sent_at"] = None
             leg["last_reconciled_at"] = _iso(self.now())
 
         self._update(claim.outbox_id, _consume)
@@ -723,10 +751,39 @@ class DistributionOutboxRepository:
 
         return self._update(claim.outbox_id, _release)
 
-    def due_reconciliations(self, *, limit: int = 100) -> list[tuple[str, str, str]]:
+    def due_reconciliations(
+        self,
+        *,
+        limit: int = 100,
+        scan_limit: int = 5000,
+        after_path: str | None = None,
+        notification_stale_after: timedelta = timedelta(minutes=15),
+    ) -> list[tuple[str, str, str]]:
+        due, _cursor = self.due_reconciliations_page(
+            limit=limit,
+            scan_limit=scan_limit,
+            after_path=after_path,
+            notification_stale_after=notification_stale_after,
+        )
+        return due
+
+    def due_reconciliations_page(
+        self,
+        *,
+        limit: int = 100,
+        scan_limit: int = 5000,
+        after_path: str | None = None,
+        notification_stale_after: timedelta = timedelta(minutes=15),
+    ) -> tuple[list[tuple[str, str, str]], str | None]:
         now = self.now()
         due: list[tuple[str, str, str]] = []
-        for path in self.storage.list_blobs(f"{OUTBOX_PREFIX}/", limit=limit):
+        paths = sorted(self.storage.list_blobs(f"{OUTBOX_PREFIX}/", limit=scan_limit))
+        if after_path and after_path in paths:
+            split = paths.index(after_path) + 1
+            paths = paths[split:] + paths[:split]
+        last_scanned: str | None = None
+        for path in paths:
+            last_scanned = path
             raw = self.storage.get_bytes(path)
             if raw is None:
                 continue
@@ -734,11 +791,81 @@ class DistributionOutboxRepository:
             for provider, leg in document.get("providers", {}).items():
                 due_at = _parse_time(str(leg.get("next_reconcile_at") or ""))
                 token = leg.get("active_schedule_token")
+                notified_token = leg.get("schedule_notification_token")
+                notified_at = _parse_time(str(leg.get("schedule_notification_sent_at") or ""))
+                notification_is_fresh = (
+                    notified_token == token
+                    and notified_at is not None
+                    and now - notified_at < notification_stale_after
+                )
                 if due_at is not None and due_at <= now and isinstance(token, str):
+                    if notification_is_fresh:
+                        continue
                     due.append((str(document["outbox_id"]), str(provider), token))
                     if len(due) >= limit:
-                        return due
-        return due
+                        return due, last_scanned
+        return due, last_scanned
+
+    def mark_reconciliation_notified(
+        self,
+        outbox_id: str,
+        *,
+        provider: str,
+        token: str,
+    ) -> dict[str, Any]:
+        def _mark(document: dict[str, Any]) -> None:
+            leg = self._provider(document, provider)
+            if leg.get("active_schedule_token") != token:
+                raise StaleClaimError("reconciliation token is stale")
+            leg["schedule_notification_token"] = token
+            leg["schedule_notification_sent_at"] = _iso(self.now())
+
+        return self._update(outbox_id, _mark)
+
+    def cleanup_orphan_artifacts(
+        self,
+        *,
+        retention: timedelta = timedelta(hours=24),
+        limit: int = 100,
+        outbox_scan_limit: int = 5000,
+    ) -> int:
+        referenced: set[str] = set()
+        outbox_paths = self.storage.list_blobs(
+            f"{OUTBOX_PREFIX}/",
+            limit=outbox_scan_limit,
+        )
+        if len(outbox_paths) >= outbox_scan_limit:
+            return 0
+        for path in outbox_paths:
+            raw = self.storage.get_bytes(path)
+            if raw is None:
+                continue
+            document = json.loads(raw.decode("utf-8"))
+            artifact = document.get("artifact")
+            if isinstance(artifact, Mapping) and artifact.get("path"):
+                referenced.add(str(artifact["path"]))
+        removed = 0
+        for metadata_path in self.storage.list_blobs(
+            f"{ARTIFACT_METADATA_PREFIX}/",
+            limit=limit,
+        ):
+            raw = self.storage.get_bytes(metadata_path)
+            if raw is None:
+                continue
+            metadata = json.loads(raw.decode("utf-8"))
+            artifact_path_value = str(metadata.get("artifact_path") or "")
+            created_at = _parse_time(str(metadata.get("created_at") or ""))
+            if (
+                not artifact_path_value
+                or artifact_path_value in referenced
+                or created_at is None
+                or self.now() - created_at < retention
+            ):
+                continue
+            self.storage.delete_blob(artifact_path_value)
+            self.storage.delete_blob(metadata_path)
+            removed += 1
+        return removed
 
     def repair_notifications(self, notify: Callable[[str], None], *, limit: int = 100) -> int:
         repaired = 0

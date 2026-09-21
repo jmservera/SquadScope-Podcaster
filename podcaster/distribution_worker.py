@@ -92,7 +92,8 @@ def _process_youtube(
                 claim,
                 provider="youtube",
                 result="publication_unknown",
-                source="identity_bound_reconciliation",
+                source="youtube_identity_unprovable",
+                exhaustion_reason="consumed_upload_intent_has_no_provider_identity",
             )
             return
         repository.persist_intent(claim, provider="youtube", operation="draft_upload")
@@ -200,6 +201,18 @@ def _process_youtube(
             source="youtube_processing_readback",
             provider_item_id=video_id,
             native_state=processing_status,
+        )
+        return
+
+    if claim.read_only:
+        repository.record_verification(
+            claim,
+            provider="youtube",
+            result="publication_unknown",
+            source="youtube_promotion_identity_readback",
+            provider_item_id=video_id,
+            native_state=privacy or processing_status,
+            exhaustion_reason="consumed_promotion_intent_not_public",
         )
         return
 

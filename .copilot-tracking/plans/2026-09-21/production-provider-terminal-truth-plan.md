@@ -5,39 +5,47 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Implementation-ready after one critique and planner-owned revision
+* Planning status: Implementation-ready after authoritative post-implementation incident correction
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
 
 ## Executive Summary
 
-This plan makes production distribution truthful from durable enqueue through provider readback and process exit. It starts from current `origin/main` and merged PR #680, completes issue #681 as an atomic fenced distribution outbox, and selectively reworks—not wholesale merges—PR #682 changes. A worker may exit successfully only when every requested provider is externally verified in its required public state. Partial, draft, pending, unknown, manual-handoff, or failed outcomes remain durable and recoverable but are not reported as successful completion.
+This revision makes the **W39 pre-Azure dispatch failure** the primary incident boundary. W39 never reached Azure, so no W39 synth, recorder, video, outbox, or provider execution exists. The plan must prevent or detect an upstream dispatch block, persist correlation from accepted weekly intent through dispatch and first Azure-side durable arrival, and verify the same publication end to end through authoritative external-provider readback.
+
+W38 was successfully published and is not a missed week. Its failed or partial attempt path remains useful comparative evidence for retries, reconciliation, multi-attempt history, and truthful observability. The already implemented outbox, provider lifecycle, truthful exit, receipt, and alert work remains necessary production hardening, but it is not proof that W38 was unpublished and cannot by itself remediate W39's upstream failure boundary.
 
 Provider mutation is intentionally *at-most-once per consumed intent*, not “exactly once.” Every attempt persists sanitized identity and consumes its one mutation authorization before I/O, reconciles before mutation, persists receipts/readback before queue acknowledgment, and stops unattended mutation when identity or state is ambiguous. A lease takeover may reconcile a possibly issued mutation but can never authorize a second mutation for that intent. YouTube follows draft upload → processing verification → public promotion → authoritative privacy readback. Spotify remains bounded reconcile/manual-handoff wherever the unsupported mutation contract or immutable identity cannot be proven, and manual publication must still be followed by external provider readback before canary or weekly acceptance.
 
-The rollout is feature-flagged and reversible. It adds provider-state alerts, focused crash/concurrency/provider fault tests, repository-standard validation, independent implementation review with no accepted critical finding, a linked implementation PR, a real-provider production canary, and four consecutive weeks of external readback evidence.
+The rollout remains feature-flagged and reversible. The canary must originate at the W39-class upstream weekly-publication boundary, prove dispatch and Azure arrival, run the downstream pipeline, and end with authoritative external-provider readback. It must also deliberately observe a W38-modeled partial-attempt/retry path without calling that missed-week recovery. Sustained acceptance requires four consecutive scheduled weeks with upstream dispatch evidence, Azure execution correlation, and external provider readback.
 
 ### User Decisions and Requirements Highlights
 
+* W39 upstream dispatch prevention/detection and end-to-end terminal publication verification are the primary incident goals.
+* W38 was published successfully; use it only as comparative evidence for partial attempts, retries, reconciliation, and observability.
 * ACA/container success must represent requested-provider terminal truth, not queue drain or API acceptance.
 * Initial YouTube `public` configuration is rejected before any provider mutation.
 * Unknown mutations are never blindly retried; manual handoff is preserved when exact state cannot be proven.
-* PR #682 is superseded or selectively reworked only after all 13 relevant unresolved threads have explicit closure evidence.
+* PR #682 is superseded or selectively reworked only after the historical W17–W29 set, all six RV-006 threads, and later current unresolved safety threads have explicit closure evidence.
 * Existing CI, tests, idempotency, provider safety, and security gates remain intact.
 
 ### What You May Not Know
 
+* W39 has no downstream execution evidence because dispatch was blocked before Azure; provider/outbox changes cannot be presented as its root-cause fix.
 * Current `main` already contains #680 canonical identity, append-only evidence, external-verification semantics, and ambiguity safeguards, but it has no fenced outbox and still exits zero for `partial`.
 * PR #682 includes #680 in its ancestry but changes 62 files and has unresolved mutation, boundedness, lease, cleanup, and entrypoint findings; green checks do not make it safe to merge wholesale.
 * A durable `unknown` or `manual_handoff_required` item can be acknowledged from the mutation queue to prevent unsafe replay while the worker still exits non-zero and a deduplicated due-time reconciliation/operator path remains actionable.
 
 ### Unresolved Decisions or Blockers
 
-* None. The single critique returned `Revise` with 9 planner-owned findings; all are dispositioned below without a second critique.
+* The exact upstream component that blocked W39 dispatch remains an implementation evidence task, not a planning blocker. No second critique was run because this revision applies an authoritative post-implementation user correction; the original critique and its dispositions remain historical evidence.
 
 ## User Decisions and Requirements
 
+* Treat W39 as the active missed-publication incident: it was blocked before Azure dispatch and has no synth, recorder, video, outbox, or provider execution.
+* Prevent or detect W39-class upstream dispatch blockage, correlate accepted weekly intent through dispatch and first Azure-side durable arrival, and verify terminal publication by external provider readback.
+* Treat W38 as successfully published. A failed or partial W38 attempt/provider path may be used only as comparative evidence for retries, reconciliation, partial-attempt visibility, and truthful final publication history; it is not missed-week recovery.
 * Make worker/container terminal status truthful: processed failures, partial distribution, unknown provider state, and manual handoff cannot exit as successful completion, while retries remain reconcile-first and idempotent.
 * Enforce YouTube draft upload → processing verification → public promotion → authoritative privacy readback, rejecting initial `public` configuration before mutation.
 * Use identity-bound bounded reconciliation for ambiguous YouTube/Spotify operations; never blindly retry unknown mutations and retain manual handoff when provider state cannot be proven.
@@ -47,29 +55,36 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 * Add focused provider timeout/500, ambiguous create, mutation-to-receipt crash, lease/concurrency, partial outcome, bad privacy config, and ACA exit/status tests using repository-standard validation.
 * Require independent implementation review with no accepted critical finding.
 * Push the implementation branch and PR with validation, deployment/canary/rollback instructions, and links to `jmservera/SquadScope-Coordinator#17` and the upstream SquadScope PR when available.
-* Verify production by external provider readback during canary and for four consecutive weeks, not by internal green status alone.
+* Canary from the W39-class upstream boundary through Azure execution and external provider readback, including deliberate W38-modeled partial-attempt/retry observation without missed-week framing.
+* Verify four consecutive scheduled weeks with upstream dispatch evidence, Azure execution correlation, and external provider readback; W38 cannot count as missed-week recovery.
+* Preserve the single existing critique as historical evidence and do not run a second critique for this authoritative post-implementation correction.
 * Do not weaken CI/tests/provider safety/idempotency/security gates and do not modify `/home/azureuser/source/SquadScope`.
 
 ## Goals
 
-* Establish one durable terminal contract across enqueue, claim, provider mutation/readback, aggregation, worker exit, ACA execution, telemetry, and operations.
+* Prevent or promptly detect recurrence of the W39 pre-Azure dispatch blockage and make cross-boundary arrival evidence durable.
+* Establish one durable terminal contract across upstream intent/dispatch, Azure arrival, enqueue, claim, provider mutation/readback, aggregation, worker exit, ACA execution, telemetry, and operations.
 * Make redelivery and crash recovery safe through atomic intent creation, fenced claims, identity-bound reconciliation, durable receipts, and fail-closed ambiguity handling.
 * Preserve #680 evidence guarantees while completing #681 and replacing only the safe, independently validated intent of #682.
+* Preserve W38's successful-publication truth while retaining its partial-attempt evidence for comparative observability validation.
 * Deliver a reversible rollout and sustained production proof based on external provider state.
 
 ## Scope and Non-Goals
 
 ### In Scope
 
+* W39-class upstream weekly-publication intent, dispatch attempt/result, Azure API acceptance, first Azure-side durable arrival, missing-arrival detection, and cross-boundary correlation.
 * Immutable artifact upload and integrity verification followed by one conditional authoritative outbox create, claim-time artifact revalidation, idempotent queue notification, and orphan repair.
 * Claim ownership, lease expiry, heartbeat, attempt identity, monotonically increasing fencing token, CAS persistence, consumed mutation authorization, read-only takeover after any possibly issued mutation, bounded reconciliation scheduling, bounded retry, and poison/manual states.
 * Sanitized correlation among canonical publication identity, enqueue, outbox item, execution attempt, provider operation, provider item/state, receipt, verification, and aggregate result.
 * YouTube and Spotify reconcile-before-mutate state machines.
-* Truthful aggregation, process exit, ACA status behavior, telemetry/alerts, tests/fault injection, feature-flagged deployment, canary, rollback, four-week readback verification, review, PR, and #682 supersession.
+* Truthful aggregation, process exit, ACA status behavior, telemetry/alerts, tests/fault injection, feature-flagged deployment, W39-class end-to-end canary, W38 comparative partial-attempt observation, rollback, four-week verification, review, PR, and #682 supersession.
 
 ### Non-Goals
 
 * Wholesale merge or cherry-pick of PR #682.
+* Describing W38 as unpublished, missed, recovered, or evidence that downstream provider hardening would have prevented W39.
+* Attributing W39 to Podcaster synthesis, recorder, video, outbox, or provider code when no W39 Azure execution exists.
 * Claims of exactly-once provider mutation.
 * Treating draft-only, private, unlisted, pending, unknown, manual handoff, skipped required work, or empty unexpected drains as production success.
 * Unattended Spotify public mutation without an authoritative supported contract and immutable identity proof.
@@ -78,6 +93,10 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 
 ## Functional Requirements
 
+* W39-class weekly publication intent is durably correlated across the upstream dispatch boundary.
+  * Observable acceptance criteria: one sanitized correlation key binds accepted upstream intent, dispatch attempt/result, Azure API acceptance, and the first Azure-side durable enqueue/execution record; a blocked dispatch is distinguishable from a downstream execution failure.
+* Missing Azure arrival is detected within a reviewed service-level window.
+  * Observable acceptance criteria: an accepted intent with no correlated Azure arrival fires an actionable alert; authoritative arrival clears it; a direct/manual downstream invocation cannot satisfy the missing dispatch evidence.
 * Recoverably atomic outbox creation binds a re-readable verified rendered artifact to canonical publication identity through the selected commit protocol.
   * Observable acceptance criteria: immutable artifact upload/readback verification precedes one conditional authoritative outbox create; queue notification is idempotent; claim revalidates integrity; orphan repair is deterministic; repeated enqueue returns the same logical work or a conflict, never a duplicate mutation intent.
 * Claims are fenced and bounded without pretending repository fencing can revoke an in-flight provider call.
@@ -93,10 +112,13 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 * Operator signals expose provider truth and age through deployable operational contracts.
   * Observable acceptance criteria: every required alert has a signal, threshold/window, severity, owner/route, missing-data behavior, runbook, and deterministic fire/clear evidence.
 * PR #682 is closed or superseded with complete thread evidence.
-  * Observable acceptance criteria: each W17–W29 thread links to a task, code/test or explicit non-port disposition, reviewer reply, and resolved/closed state; the replacement PR explains why #682 must not be merged wholesale.
+  * Observable acceptance criteria: every row in the authoritative closure matrix links to a task, code/test or explicit non-port disposition, reviewer reply, and actual resolved/open state; the replacement PR explains why #682 must not be merged wholesale.
 
 ## Non-Functional Requirements
 
+* Cross-boundary observability: dispatch evidence is sanitized, durable, queryable, and low-cardinality without carrying article bodies, credentials, tokens, signed URLs, or unnecessary PII.
+  * Objective threshold or evaluation condition: every accepted scheduled intent has one correlation chain or one explicit blocked/failed dispatch terminal record.
+  * Observable acceptance criteria: correlation, duplicate intent, delayed arrival, missing arrival, and alert fire/clear tests pass.
 * Idempotency and fencing: provider mutation is at-most-once for each durable consumed intent; reconciliation is required before every mutation.
   * Objective threshold or evaluation condition: injected concurrency, lease expiry, response loss, and crash boundaries produce no known duplicate mutation and reject stale writes deterministically.
   * Observable acceptance criteria: semantic fault tests cover all #681 crash/replay boundaries and stale takeover.
@@ -113,16 +135,19 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 
 ## Acceptance Criteria
 
+* A W39-class scheduled publication is accepted upstream, dispatched, correlated to Azure API acceptance and first durable Azure arrival, executes through the Podcaster pipeline, and reaches authoritative external-provider terminal state.
+* An accepted W39-class intent that does not arrive in Azure within the reviewed window is durably classified and alerted; no W39 downstream execution is fabricated.
 * A durable schema, concrete immutable-artifact/conditional-outbox protocol, and state machine implement the invariants in P01 and preserve #680 canonical identity/evidence compatibility.
 * YouTube reaches success only after processing success, promotion, and authoritative public readback; initial public config fails before I/O.
 * Spotify unknown/unsupported states stop automation and produce durable manual/actionable evidence; manual publication alone never satisfies external-readback acceptance.
 * Requested-provider partial, pending, private/unlisted/draft, unknown, manual, failed, skipped, or unexpected empty-drain states cannot produce exit 0.
 * All required telemetry and alert rules are deployable, documented, and tested against emitted dimensions.
 * The locked test contract is honored: exact owners, no removals, maximum additions, canonical/generated targets, semantic/regression split, and validation evidence.
-* Every W17–W29 thread has exact closure evidence; #682 is explicitly resolved or superseded.
+* Every W17–W29 thread, all six RV-006 threads, and any later unresolved #682 safety thread present before delivery have exact closure evidence; no thread is marked resolved without a reviewer reply plus code/test or explicit non-port evidence.
 * Branch is pushed; required checks and final-SHA independent review pass; the PR is approved and merged without content drift; a release image is proven to derive from the merge SHA; the PR contains validation, canary, rollback, Coordinator #17, and the upstream PR link when metadata proves one exists.
 * Independent implementation review has no unresolved or accepted critical finding.
-* Production canary and four consecutive weekly checks record external YouTube/Spotify readback rather than internal green status.
+* The production canary starts at the W39-class upstream boundary, proves dispatch and Azure arrival/execution, records external YouTube/Spotify readback, and deliberately observes a W38-modeled partial-attempt/retry path while preserving W38 as successfully published.
+* Four consecutive scheduled weeks each contain upstream dispatch evidence, Azure execution correlation, and authoritative external-provider readback. W38 is not counted as missed-week recovery.
 
 ## Implementation Context Record
 
@@ -130,30 +155,58 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 |---|---|
 | Plan | `.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md` |
 | Phase details | `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md` |
-| Latest critique | `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md` (`Revise`: 1 Critical, 4 High, 4 Medium; all PC-001–PC-009 resolved by this revision) |
+| Latest critique | `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md` (`Revise`: 1 Critical, 4 High, 4 Medium; PC-001–PC-009 were resolved by the original planner revision and remain historical) |
 | Relevant research | `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md` |
 | Changes-record role | `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md` is created and maintained by implementation as the evidence record |
-| Planning execution and readiness | Exactly one critique complete; planner-owned revision applied; implementation-ready |
+| Planning execution and readiness | Exactly one critique complete; authoritative post-implementation correction applied without a second critique; implementation-ready after this revision |
 | Continuation context | Active `rpi-quick` parent may continue automatically to implementation |
 
 ## Implementation Status
 
-* Execution status: Partial — local implementation and P01–P04 validation complete; externally gated P05–P06 remain open
-* Declared scope: Full approved plan, P01-T01 through P06-T02
-* Active implementation boundary: P05-T01, dependency-gated by the caller's no-push/no-PR/no-issue instruction
-* Approved write boundary: this worktree's production source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts; `/home/azureuser/source/SquadScope` is excluded
+* Execution status: Partial — downstream surfaces were implemented, but P00 is new and RV-001–RV-005 reopen specific P01–P04 markers; P05–P06 remain open
+* Declared scope: revised P00 plus every reopened dependency-ready marker for RV-001–RV-005 and W38/W39 correction across P01–P04; P05 deployment/delivery and P06 elapsed verification are outside this invocation
+* Active implementation boundary: P00-T01 begins with Podcaster-side receipt/absence observability and an explicit upstream cross-repository blocker because `/home/azureuser/source/SquadScope` cannot be modified; then the reopened markers listed in `Implementation Marker Reconciliation`
+* Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
 * Validation intent: task-focused semantic and fault tests followed by the full locked repository-standard validation contract
-* Current blockers: none for local implementation; P05 delivery and P06 production verification remain dependency-gated and the caller has prohibited push/PR/issue mutation during this implementation invocation
+* Current blockers: the exact upstream W39 dispatch prevention/fix belongs to the owning `jmservera/SquadScope` component and is outside this worktree; P00 completes here only to the supported Podcaster receipt/absence boundary with that cross-repository blocker recorded. P05–P06 remain outside scope.
 
 ## Sources
 
 * `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md`: completed C1–C20/W1–W30 evidence, safe direction, constraints, #682 inventory, and validation/deployment baseline.
 * `jmservera/SquadScope-Podcaster#681`: required atomic/fenced outbox boundary.
 * `jmservera/SquadScope-Podcaster#680`: merged canonical publication identity, evidence, and reconciliation baseline.
-* `jmservera/SquadScope-Podcaster#682`: replacement/supersession target with W17–W29 unresolved safety threads.
-* Caller requirements dated 2026-09-21: authoritative outcomes, exact artifact paths, one-critique constraint, implementation review, PR, and production verification.
+* `jmservera/SquadScope-Podcaster#682`: replacement/supersession target with W17–W29, six RV-006, and later current unresolved safety threads.
+* `.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md`: RV-001–RV-005 implementation findings and RV-006 closure-matrix planning route.
+* Authoritative caller correction dated 2026-09-21: W38 published; W39 blocked before Azure; one-critique constraint; revised canary/four-week/marker requirements.
 
 ## Phase Checklist
+
+<!-- rpi:phase id=P00 -->
+### [ ] P00: Prevent and detect W39-class upstream dispatch blockage
+
+* Intent: Identify the W39 dispatch boundary, make intent-to-Azure arrival observable, and prove the incident path before relying on downstream hardening.
+* Dependencies: corrected research and access to upstream/Azure metadata.
+
+<!-- rpi:task id=P00-T01 -->
+#### [ ] P00-T01: Trace and control the W39 dispatch boundary
+
+* Requirement and evidence: authoritative correction; corrected research Q10/Q12.
+* Expected result: the owning upstream stage that blocked W39 is identified from durable evidence, recurrence controls are implemented in the owning repository, and no Podcaster worker/provider component is named as W39 root cause without execution evidence.
+* Detail section: P00-T01 in `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`.
+
+<!-- rpi:task id=P00-T02 -->
+#### [x] P00-T02: Persist dispatch-to-Azure correlation and missing-arrival alerts
+
+* Requirement and evidence: corrected research Implementation Constraints A1–A3.
+* Expected result: accepted weekly intent, dispatch attempt/result, Azure API acceptance, and first Azure durable arrival share one sanitized correlation; missing arrival fires and authoritative arrival clears an actionable alert.
+* Detail section: P00-T02 in phase details.
+
+<!-- rpi:task id=P00-T03 -->
+#### [x] P00-T03: Prove the upstream-to-provider integration boundary
+
+* Requirement and evidence: corrected research C18/Q7 and authoritative canary correction.
+* Expected result: automated integration coverage starts at the W39-class upstream boundary and proves dispatch, Azure arrival, downstream execution, and terminal provider-readback correlation without requiring live provider credentials in ordinary CI.
+* Detail section: P00-T03 in phase details.
 
 <!-- rpi:phase id=P01 -->
 ### [x] P01: Establish the durable outbox contract
@@ -172,14 +225,14 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 #### [x] P01-T02: Implement atomic enqueue and fenced claim lifecycle
 
 * Requirement and evidence: C14, W14; research constraints 3–5.
-* Expected result: immutable artifact upload/verification precedes one conditional authoritative outbox create; queue notification is idempotent; claim-time integrity revalidation and orphan repair are defined; lease/heartbeat/takeover uses monotonic fencing and consumed mutation authorization so any possibly issued mutation can only be reconciled.
+* Expected result: retain the implemented immutable artifact, conditional outbox, claim, and fencing surfaces; add RV-004 bounded orphan discovery, retention, and repair-or-delete behavior with interruption tests.
 * Detail section: P01-T02 in phase details.
 
 <!-- rpi:task id=P01-T03 -->
 #### [x] P01-T03: Schedule deduplicated provider reconciliation
 
 * Requirement and evidence: provider pending/unknown states; safe queue acknowledgment; critique PC-003.
-* Expected result: durable `next_reconcile_at`, separate verification attempt/budget, one active scheduled token, fenced one-item execution, exhaustion/manual transitions, safe empty-drain behavior, and alert clearing are explicit and tested.
+* Expected result: retain due-time/budget/token state; fix RV-002 with durable notification state, paginated/fair scanning beyond 100 records, restart recovery, and stale-notification repair tests.
 * Detail section: P01-T03 in phase details.
 
 <!-- rpi:task id=P01-T04 -->
@@ -199,7 +252,7 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 #### [x] P02-T01: Enforce the YouTube draft-processing-public lifecycle
 
 * Requirement and evidence: C6–C9, W4–W7, W12, W25.
-* Expected result: early privacy validation, persisted upload intent, bounded identity reconciliation, processing/upload verification, gated promotion, public readback, and no blind retry after ambiguous resumable-session initiation.
+* Expected result: preserve early privacy validation and no-blind-retry behavior; fix RV-001 read-only promotion convergence and RV-005 by performing genuinely identity-bound lookup where provider-supported or recording accurately named unprovable unknown/manual evidence.
 * Detail section: P02-T01 in phase details.
 
 <!-- rpi:task id=P02-T02 -->
@@ -213,7 +266,7 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 #### [x] P02-T03: Persist provider intent, receipts, and terminal readback
 
 * Requirement and evidence: C13–C15; caller requirement 5.
-* Expected result: append-only sanitized evidence records every provider transition and authoritative final state before acknowledgment.
+* Expected result: append-only sanitized evidence records every provider transition and authoritative final state before acknowledgment, including bounded read-only takeover outcomes required by RV-001 and accurate evidence-source naming required by RV-005.
 * Detail section: P02-T03 in phase details.
 
 <!-- rpi:phase id=P03 -->
@@ -233,14 +286,14 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 #### [x] P03-T02: Bound execution, cleanup, and one-item worker behavior
 
 * Requirement and evidence: W17–W24, W26–W29.
-* Expected result: bounded cleanup/storage/subprocess/finalization, safe artifact handling, visibility/application budget alignment, terminal cleanup on resume, and one claimed item per worker execution.
+* Expected result: preserve the implemented bounded/one-item behavior; add RV-002 starvation-safe reconciliation scanning and RV-004 orphan artifact retention/cleanup. The six RV-006 #682 threads remain closure evidence work under P05-T03.
 * Detail section: P03-T02 in phase details.
 
 <!-- rpi:task id=P03-T03 -->
 #### [x] P03-T03: Add provider-state telemetry and alerts
 
 * Requirement and evidence: C15, C17–C18; caller requirement 6.
-* Expected result: sanitized metrics/logs/alerts for outbox age, claim latency/lease loss, provider unknown, manual handoff, non-public YouTube, Spotify draft, poison, and verification lag.
+* Expected result: retain sanitized signals; fix RV-003 by implementing warning and critical thresholds/windows, missing-data behavior, explicit routing, and generated-query fire/clear tests for every alert contract row.
 * Detail section: P03-T03 in phase details.
 
 <!-- rpi:phase id=P04 -->
@@ -253,48 +306,48 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 #### [x] P04-T01: Add outbox, fencing, crash, and concurrency fault tests
 
 * Requirement and evidence: C16–C17; #681 crash matrix.
-* Expected result: deterministic fake-clock and injected-fault coverage for artifact/outbox interruption, enqueue, scheduling/deduplication, claim, lease expiry before/during/after provider I/O, consumed intent, read-only takeover, mutation/receipt crash windows, poison, and stale-owner rejection.
+* Expected result: extend existing coverage for RV-001, RV-002, and RV-004, including lost promotion response/takeover convergence, repeated scheduler ticks, more than 100 retained records, restart repair, and artifact interruption/orphan retention.
 * Detail section: P04-T01 in phase details.
 
 <!-- rpi:task id=P04-T02 -->
 #### [x] P04-T02: Add provider and terminal-exit semantic tests
 
 * Requirement and evidence: C1–C12, C16–C17.
-* Expected result: provider timeout/500, ambiguous create/publish, bad privacy config, processing/readback, partial/manual/unknown/draft/pending/skipped/empty outcomes, and ACA entrypoint exit behavior are proven.
+* Expected result: retain existing provider/exit tests; add RV-003 alert-contract assertions and RV-005 genuine lookup-or-unprovable evidence assertions.
 * Detail section: P04-T02 in phase details.
 
 <!-- rpi:task id=P04-T03 -->
 #### [x] P04-T03: Run locked repository-standard validation
 
 * Requirement and evidence: C18; caller requirement 7.
-* Expected result: targeted tests plus full pytest, compileall, Ruff check/format, Bicep build, Checkov, relevant workflow tests, and synthesis container build complete without weakened gates.
+* Expected result: rerun targeted and full validation after P00 and RV-001–RV-005 changes without weakening gates; preserve the previous baseline as historical implementation evidence, not final acceptance.
 * Detail section: P04-T03 in phase details.
 
 <!-- rpi:phase id=P05 -->
 ### [ ] P05: Deliver reviewed, reversible implementation
 
-* Intent: Push the replacement PR, pass required checks, independently review the final pushed SHA, merge without drift, establish merge-SHA image provenance, resolve prior work, and deploy reversibly.
+* Intent: Push coordinated upstream/Podcaster PRs as required, pass checks, independently review final pushed SHAs with an agent other than locked-out original implementer Bender, merge without drift, establish merge-SHA image provenance, resolve prior work, and deploy reversibly.
 * Dependencies: P04.
 
 <!-- rpi:task id=P05-T01 -->
 #### [ ] P05-T01: Push branch and open the implementation PR
 
 * Requirement and evidence: caller requirement 9.
-* Expected result: branch is pushed; PR includes validation evidence, schema/state-machine summary, deployment/canary/rollback, Coordinator #17, metadata-only discovery of the upstream SquadScope PR when available, and explicit `Supersedes #682`.
+* Expected result: branch is pushed; PR includes W39 dispatch/Azure-arrival evidence, W38 successful-publication correction, validation evidence, hardening summary, deployment/canary/rollback, Coordinator #17, the coordinated upstream PR, and explicit `Supersedes #682`.
 * Detail section: P05-T01 in phase details.
 
 <!-- rpi:task id=P05-T02 -->
 #### [ ] P05-T02: Pass required checks and independent final-SHA review
 
 * Requirement and evidence: caller requirement 8 and repository required checks.
-* Expected result: required PR checks pass; independent review of the final pushed SHA covers correctness, concurrency/idempotency, provider safety, evidence security, operations, and tests; no critical finding is accepted or unresolved, and any post-review content change triggers revalidation/re-review.
+* Expected result: required PR checks pass; an independent agent other than Bender reviews each final pushed SHA for dispatch correctness, concurrency/idempotency, provider safety, evidence security, operations, and tests; no critical finding is accepted or unresolved, and any post-review content change triggers revalidation/re-review.
 * Detail section: P05-T02 in phase details.
 
 <!-- rpi:task id=P05-T03 -->
 #### [ ] P05-T03: Resolve or supersede every PR #682 safety thread
 
 * Requirement and evidence: W16–W29.
-* Expected result: W17–W29 each has code/test or non-port evidence, a reviewer-facing reply, and resolved/closed status; #682 is closed once replacement linkage is durable.
+* Expected result: W17–W29, the six RV-006 rows, and later current unresolved rows each have code/test or non-port evidence, a reviewer-facing reply, and actual resolved/closed state; #682 is closed once replacement linkage is durable. No row is pre-marked resolved.
 * Detail section: P05-T03 in phase details.
 
 <!-- rpi:task id=P05-T04 -->
@@ -308,20 +361,20 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 #### [ ] P05-T05: Deploy feature-flagged canary and verify rollback
 
 * Requirement and evidence: C18; research constraints 14–15.
-* Expected result: exact merge-derived image is deployed with routing disabled, controlled real-provider canary proves external YouTube and Spotify state (including post-handoff Spotify readback where necessary), staged enablement occurs, alert contracts fire/clear, and rollback stops new claims while preserving outbox evidence.
+* Expected result: exact merge-derived artifacts are deployed with routing disabled; a canary originating at the W39-class upstream weekly-publication boundary proves dispatch, Azure acceptance/arrival, downstream execution, and external YouTube/Spotify state. A deliberate W38-modeled partial-attempt/retry observation proves truthful reconciliation without calling W38 missed-week recovery. Alert contracts fire/clear and rollback stops new dispatch/claims while preserving evidence.
 * Detail section: P05-T05 in phase details.
 
 <!-- rpi:phase id=P06 -->
 ### [ ] P06: Verify four consecutive production weeks
 
-* Intent: Prove sustained production terminal truth through external provider readback.
+* Intent: Prove sustained scheduled dispatch, Azure execution correlation, and external provider terminal truth.
 * Dependencies: P05 canary accepted and production routing enabled.
 
 <!-- rpi:task id=P06-T01 -->
 #### [ ] P06-T01: Record four weekly external-readback verification windows
 
 * Requirement and evidence: caller requirement 10.
-* Expected result: four consecutive publication weeks record sanitized correlation, YouTube authoritative public/processing readback, Spotify authoritative expected-item public readback after any manual handoff, ACA exit, alert health, and reconciliation outcome; handoff alone never satisfies a week.
+* Expected result: four consecutive scheduled publication weeks each record upstream intent/dispatch result, Azure API acceptance and first durable execution correlation, YouTube authoritative public/processing readback, Spotify authoritative expected-item readback after any handoff, ACA exit, alert health, and reconciliation outcome. W38 cannot count as missed-week recovery.
 * Detail section: P06-T01 in phase details.
 
 <!-- rpi:task id=P06-T02 -->
@@ -333,18 +386,48 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 
 ## Dependencies
 
+* P00 begins at the owning upstream weekly-publication boundary. It may require a coordinated upstream repository worktree/PR, but must not directly modify `/home/azureuser/source/SquadScope`.
 * Current `origin/main` and merged PR #680 are the authoritative baseline; implementation first updates the worktree from that baseline without importing #682 wholesale.
 * P01 precedes provider mutation because truthful non-zero exit is unsafe until retries are fenced.
 * P02 precedes terminal aggregation because provider state definitions and receipts must exist before exit can be authoritative.
 * P04 must pass before independent review and deployment.
 * P05 required checks and independent final-pushed-SHA review must have no accepted critical finding before approval/merge.
 * Production deploy uses only a release image proven to derive from the merge SHA.
-* P06 requires an accepted production canary from P05-T05 and remains open until four consecutive weekly external-readback windows complete.
+* P06 requires an accepted W39-class end-to-end canary from P05-T05 and remains open until four consecutive scheduled weeks have upstream dispatch, Azure execution, and external-readback evidence.
+
+## Implementation Marker Reconciliation
+
+| Marker(s) | Revised disposition | Required next evidence |
+|---|---|---|
+| P00-T01–P00-T03 | New implementation work | Exact W39 blocked-stage evidence; upstream prevention/detection; dispatch-to-Azure correlation; missing-arrival alert; cross-boundary integration tests |
+| P01-T02, P03-T02, P04-T01 | Reopened for RV-004 | Bounded orphan discovery, retention, repair-or-delete implementation and interruption tests |
+| P01-T03, P03-T02, P04-T01 | Reopened for RV-002 | Durable notification state, paginated/fair scan beyond 100 records, restart and stale-notification repair tests |
+| P02-T01, P02-T03, P04-T01, P04-T02 | Reopened for RV-001/RV-005 | Read-only promotion convergence; genuine identity-bound lookup or accurately named unprovable state; fault/semantic tests |
+| P03-T03, P04-T02 | Reopened for RV-003 | Per-signal warning/critical windows, missing-data behavior, explicit routing, generated-query fire/clear tests |
+| P04-T03 | Reopened validation gate | Targeted and full repository validation after P00 and RV-001–RV-005 changes |
+| P05-T03 | Expanded by RV-006 and refreshed current metadata | Closure evidence for W17–W29, the six RV-006 threads, and four later unresolved threads found during revision; do not claim resolution without GitHub evidence |
+| P01-T01, P01-T04, P02-T02, P03-T01 | Implemented surfaces; text-only incident-role correction | Preserve code/tests unless required by reopened dependencies; describe as downstream hardening, not W39 root-cause remediation |
+| Existing W38 references in plan/PR handoff | Documentation-only correction | State W38 published successfully; retain partial-attempt evidence only for comparative observability |
+| Any W38 missed-week recovery tasks/claims | Removed or narrowed | No implementation or acceptance credit; W38 cannot satisfy W39 incident recovery or reset/fill a four-week window |
+| Original PC-001–PC-009 dispositions | Historical, no change | Preserve existing critique artifact and disposition record; no second critique |
+
+Implementation and independent review for reopened markers must be assigned to an agent other than Bender.
+
+### Implemented Surface Disposition
+
+| Disposition | Exact existing surfaces | Revision consequence |
+|---|---|---|
+| Text-only incident correction | `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`, `.copilot-tracking/pr/pr.md`, implementation PR body/handoff, production evidence summaries | Replace W38-missed implications with successful-publication comparative framing; separate W39 remediation from downstream hardening. No production code change is justified solely by the incorrect W38 framing. |
+| W39 observability additions | Owning upstream dispatch workflow/client/status store identified by P00-T01; Podcaster/Azure ingress or queue arrival metadata; `podcaster/monitoring.py` or the selected low-cardinality telemetry owner; alert infrastructure; cross-boundary integration owner | Add accepted-intent → dispatch → Azure API acceptance → first durable arrival correlation, missing-arrival fire/clear, and integration/canary evidence. Exact upstream paths are evidence-selected in P00-T01 rather than guessed. |
+| Review-driven code/test additions | `podcaster/distribution_worker.py`, `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, `infra/modules/distribution-alerts.bicep`, and their focused outbox/worker/telemetry/deployment tests | Implement RV-001–RV-005 only; retain already safe behavior and avoid redesign beyond each routed finding. |
+| No change except dependency verification | `podcaster/publication_state.py` schema/sanitization; disabled-by-default routing; `podcaster/publish.py` Spotify fail-closed/manual handoff; `podcaster/video/job_runner.py` externally-verified-public exit lattice | Preserve these independent safety requirements. Reopen only if P00 correlation or an RV fix requires a minimal compatible extension. |
+| Narrowed/removed | Any W38 missed-week recovery implementation, W38 incident-cause claim, Podcaster-only W39 canary, or provider hardening presented as W39 root-cause remediation | Remove from active implementation and acceptance; retain only W38 comparative partial/retry observation. |
 
 ## Locked Test and Validation Contract
 
 ### Ownership and allowed test targets
 
+* P00-T01–P00-T03 own focused tests in the upstream dispatch owner plus Podcaster ingress/deployment integration assertions; exact upstream paths are selected only after P00-T01 identifies the owning stage.
 * P01-T01/P01-T04 own `tests/test_publication_state.py` and compatibility assertions in `tests/test_monitoring.py`.
 * P01-T02/P04-T01 own a new `tests/test_distribution_outbox.py` and, only if process-level storage integration requires it, one new `tests/integration/test_distribution_outbox.py`.
 * P01-T03/P04-T01 own at most one new `tests/test_distribution_reconciliation.py`.
@@ -358,7 +441,7 @@ The rollout is feature-flagged and reversible. It adds provider-state alerts, fo
 ### Removals and maximum additions
 
 * Test removals: **none**. Existing provider safety, ambiguity, sanitization, lease, and external-verification assertions must remain semantically equivalent or stronger.
-* Maximum new test files: **six** total, allocated to outbox unit, optional outbox integration, reconciliation scheduler, telemetry, canary, and one independently diagnosable provider/ACA integration boundary if existing owners cannot express it.
+* Existing downstream maximum new test-file allocation remains **six**. P00 may add the minimum focused tests in the owning upstream repository and one cross-boundary integration owner; those additions are separately justified because the original downstream-only lock could not cover the corrected W39 boundary.
 * Maximum new shared test helper/fixture modules: **two**, under `tests/fixtures/`, only when each is reused across at least three owner suites.
 * New named test cases have **no numerical ceiling**: every required scenario matrix row must have independently diagnosable assertions. The file/helper maxima organize ownership and may not be used to omit, merge beyond diagnosis, skip, or weaken safety coverage; exceeding them requires an explicit plan update before implementation continues.
 
@@ -398,6 +481,7 @@ Thresholds are initial production defaults and remain configurable through revie
 | Alert | Signal and sanitized dimensions | Default threshold/window | Severity and route | Missing-data behavior | Required fire/clear evidence |
 |---|---|---|---|---|---|
 | Pending distribution age | oldest non-terminal outbox age by environment/provider/media kind | warning `>15m for 10m`; critical `>60m for 5m` | warning to operations; critical page to production owner | no-data is healthy only when queue depth is also zero; inconsistent no-data warns | fake-clock aged item fires; authoritative terminal transition clears |
+| Missing Azure arrival | accepted upstream intent without correlated first Azure durable arrival | reviewed warning/critical windows derived in P00-T02; critical before the scheduled publication window is irrecoverable | upstream dispatch owner and production owner | missing upstream telemetry is itself warning; direct downstream execution does not clear | blocked-dispatch fixture fires; correlated first arrival clears |
 | Claim latency / lease loss | enqueue-to-claim latency and lease-loss counter | latency warning `p95 >5m for 15m`; any lease loss `>=1 in 5m` critical | operations/page | heartbeat metric missing while active claims exist is critical | delayed claim and forced expiry fire; clean claim/heartbeat clears |
 | Provider unknown | count of `publication_unknown` | any item `>=1 for 5m` critical | production owner page + incident ticket | missing state metric with active outbox is warning | ambiguous response fixture fires; authoritative reconciliation clears |
 | Manual handoff | count/age of `manual_handoff_required` | any item warning in `5m`; critical if age `>24h` | operator queue; aged item pages | no-data with known manual records is warning | manual fixture fires; post-handoff external readback clears |
@@ -438,8 +522,20 @@ Every deployed rule records rule ID, owner, route, runbook URL, dimensions, and 
 | W27 / r4018903866 | Resumed terminal outcome bypasses cleanup | P03-T02, P04-T03, P05-T03 | Unified terminal wrapper and resume cleanup test; reviewer reply and resolved thread |
 | W28 / r4018903912 | Recorder finalization ignores deadline | P03-T02, P04-T03, P05-T03 | Deadline-aware finalization test; reviewer reply and resolved thread |
 | W29 / r4018903953 | Recorder drains multiple messages | P03-T02, P04-T03, P05-T03 | One-message entrypoint test; reviewer reply and resolved thread |
+| RV-006 / r4066838845 | Non-fan-out resume mutates before equivalent durable claim | P01-T02, P03-T01, P04-T01, P05-T03 | Shared lease/fence-protected resume path or explicit non-port proof; concurrency test; reviewer reply; actual thread state |
+| RV-006 / r4066838898 | Provider admission exception swallowed by generic playlist handler | P02-T01, P03-T01, P04-T02, P05-T03 | Preserve/re-raise admission failure or explicit non-port proof; provider-cutoff test; reviewer reply; actual thread state |
+| RV-006 / r4066838929 | Recorder runbook visibility contradicts deployed 840-second contract | P03-T02, P04-T03, P05-T03 | Align canonical deployment/RFC/runbook value with test evidence; reviewer reply; actual thread state |
+| RV-006 / r4066838959 | Fallback storage work escapes remaining deadline | P03-T02, P04-T03, P05-T03 | Pass admission/bounded storage runner or explicit non-port proof; timeout test; reviewer reply; actual thread state |
+| RV-006 / r4066838991 | Durable video budget starts after retryable preflight I/O | P03-T02, P04-T03, P05-T03 | Persist lifecycle start before retryable preflight or explicit non-port proof; redelivery test; reviewer reply; actual thread state |
+| RV-006 / r4066839027 | Synchronous full-file hashing ignores stage budget | P03-T02, P04-T03, P05-T03 | Budget-aware/owned hashing or explicit non-port proof; large/stalled-read test; reviewer reply; actual thread state |
+| Current / r4066949442 | Terminal manifest can reference another job/clip blob | P03-T02, P04-T02, P05-T03 | Validate clip identity and exact content-addressed path or explicit non-port proof; ownership test; reviewer reply; actual thread state |
+| Current / r4066949487 | Broad recorder setup handler deletes transient storage failures | P03-T02, P04-T02, P05-T03 | Preserve retry for transient storage/timeouts or explicit non-port proof; redelivery test; reviewer reply; actual thread state |
+| Current / r4066949518 | Composed checkpoint identity omits source/removal fields | P03-T02, P04-T02, P05-T03 | Include all composition-affecting fields or explicit non-port proof; stale-checkpoint test; reviewer reply; actual thread state |
+| Current / r4066949564 | Failed checkpoint validation deletes existing destination | P03-T02, P04-T02, P05-T03 | Preserve existing destination and clean only staged temporary file or explicit non-port proof; failure test; reviewer reply; actual thread state |
 
 ## Critique Disposition
+
+The existing critique is preserved unchanged as historical evidence. No second critique was run because this revision applies an authoritative post-implementation user correction rather than reopening the original candidate critique gate. PC-001–PC-009 retain their recorded dispositions; the corrected W39/W38 boundary and RV-006 matrix expansion are planner-owned revisions after implementation review.
 
 | Critique run and finding | Disposition | Plan response or residual risk |
 |---|---|---|
@@ -456,10 +552,10 @@ Every deployed rule records rule ID, owner, route, runbook URL, dimensions, and 
 ## Follow-Up Items
 
 * If Spotify publishes an authoritative creator mutation/idempotency contract and immutable identity capability, evaluate a separate plan to replace permanent manual handoff; this is outside current safe automation scope.
-* If causal W38 forensics are still desired, trace the deployed image/revision separately; it does not change this implementation boundary.
+* If deeper W38 attempt reconstruction is desired, trace the deployed image/revision as comparative observability work only; W38's successful publication is authoritative and not reopened.
 
 ## Handoff
 
 * Implementation artifact: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
-* Approved implementation marker range: P01-T01 through P06-T02, including newly added P01-T04 and P05-T05.
+* Approved implementation marker range: P00-T01 through P06-T02, limited by the dispositions in `Implementation Marker Reconciliation`.
 * Remaining provisional question or blocker: None.

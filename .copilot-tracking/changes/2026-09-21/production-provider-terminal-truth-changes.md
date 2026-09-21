@@ -11,10 +11,11 @@
 ## Execution Status
 
 * Status: Partial
-* Declared invocation scope: full plan, P01-T01 through P06-T02
-* Completed scope markers: P01–P04 and P01-T01 through P04-T03
-* All remaining active-plan markers: P05-T01 through P06-T02
-* Status basis: local source, infrastructure, fault tests, full repository validation, and container build are complete; delivery and production verification are external/dependency-gated.
+* Declared invocation scope: revised P00 plus reopened dependency-ready RV-001–RV-005 and W38/W39 correction markers across P01–P04
+* Completed scope markers: P00-T02, P00-T03, P01–P04 and all P01-T01 through P04-T03 tasks
+* Remaining in-scope marker: P00-T01 is blocked on the exact upstream prevention change in `jmservera/SquadScope`; Podcaster-side receipt/absence observability is complete
+* Outside-scope active-plan markers: P05-T01 through P06-T02
+* Status basis: authoritative correction implementation and locked validation are complete in this worktree; exact upstream prevention remains cross-repository blocked and delivery/elapsed verification remain outside scope.
 
 ## Execution Summary
 
@@ -112,6 +113,16 @@ Implementation is complete on local baseline `0752d1a` from current `origin/main
 
 ## Implementation-Time Plan and Detail Updates
 
+### Opened the authoritative correction implementation boundary
+
+* Affected plan area or markers: P00-T01–P00-T03; reopened P01-T02, P01-T03, P02-T01, P02-T03, P03-T02, P03-T03, and P04-T01–P04-T03
+* What changed: recorded Hermes as the non-Bender correction owner; bounded this invocation to Podcaster-side receipt/absence observability, RV-001–RV-005, W38/W39 narrative correction, and validation. P05/P06, git/GitHub mutation, deployment, production, and direct changes to `/home/azureuser/source/SquadScope` are excluded.
+* Why: the caller supplied an authoritative correction and explicit implementation boundary after independent review reopened these markers.
+* Triggering evidence: W38 was successfully published; W39 was blocked before Azure and has no downstream execution; RV-001–RV-005 require focused corrections.
+* Reconciliation performed: plan implementation status, phase-detail execution boundary, and this changes-record status now agree on scope, owner, blocker, and validation intent.
+* First execution boundary: implement durable sanitized Podcaster receipt/absence evidence that distinguishes no Azure arrival from downstream execution/provider failure, while recording the exact upstream prevention fix as a `jmservera/SquadScope` blocker.
+* Planning and critique state: authoritative current-state update; the historical critique is unchanged and will not be repeated.
+
 ### Opened the approved full-plan implementation boundary
 
 * Affected plan area or markers: Implementation Status, phase index, P01-T01 through P06-T02
@@ -141,7 +152,69 @@ Implementation is complete on local baseline `0752d1a` from current `origin/main
 * Reconciliation performed: no source conflict or semantic change was required; static checks and container build remained green.
 * Validation note: the first post-fast-forward full suite reported one scale-out recorder failure because `docker-compose.fanout.yml` reused the stale pre-fast-forward `podcaster-synthesis:test` image. An explicit Compose rebuild restored the focused test, and the subsequent complete suite passed. No test or gate was weakened.
 
-## Validation Record
+## Authoritative Correction Work
+
+### Added W39-class dispatch receipt and missing-arrival observability
+
+* Related markers: P00-T01, P00-T02, P00-T03
+* Files: `podcaster/dispatch_receipts.py`, `podcaster/api.py`, `podcaster/validation.py`, `podcaster/distribution_scheduler.py`, `infra/modules/distribution-alerts.bicep`, `docs/ops/distribution-terminal-truth.md`, `tests/test_dispatch_receipts.py`, `tests/test_api.py`, `tests/test_deploy_workflow.py`
+* What changed: added an authenticated idempotent dispatch-intent receipt endpoint, sanitized stable correlation validation, server-timestamped Azure API acceptance/first durable arrival, missing-arrival warning/critical signals, scheduler emission, deployable alert rules, and an integration fixture that binds upstream intent through Azure arrival and a deterministic externally-public provider readback.
+* Security semantics: only correlation ID, week, source/result, server timestamps, and accepted job ID are durable. Article content/URL, credentials, tokens, signed URLs, provider/account identity, titles, and PII are excluded.
+* Boundary evidence: a direct `/api/generate` call cannot clear a missing-arrival record unless a matching upstream intent was registered first. This distinguishes no dispatch/no arrival from downstream execution or provider failure.
+* Blocker: the exact W39 upstream prevention mechanism and owning workflow/client change are in `jmservera/SquadScope`, which this invocation was prohibited from modifying. P00-T01 therefore remains blocked at that owner while the Podcaster receipt/absence boundary is complete.
+
+### Made YouTube promotion takeover converge read-only
+
+* Related markers: RV-001; P02-T01, P02-T03, P04-T01, P04-T02
+* Files: `podcaster/distribution_worker.py`, `tests/test_distribution_worker.py`
+* What changed: takeover after a consumed promotion intent first performs identity-bound `videos.list` readback. Public state completes successfully; a still-non-public expected video becomes durable `publication_unknown` with `youtube_promotion_identity_readback` evidence and never receives another promotion mutation.
+* Completion evidence: lost-promotion-response tests prove both authoritative public convergence and non-public fail-closed behavior while making duplicate `publish_video` invocation an assertion failure.
+
+### Added durable deduplicated fair reconciliation scheduling
+
+* Related markers: RV-002; P01-T03, P03-T02, P04-T01
+* Files: `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, `tests/test_distribution_outbox.py`, `tests/test_distribution_worker.py`
+* What changed: persisted schedule notification token/time, suppressed duplicate notifications until a bounded stale interval, cleared notification state on token consumption/terminal verification, persisted a scheduler cursor, and rotated bounded scans across up to 5,000 records.
+* Completion evidence: tests cover more than 100 due records, cursor fairness, fresh deduplication, stale repair, and one queue notification per outbox even with multiple provider legs.
+
+### Deployed the reviewed alert contract
+
+* Related markers: RV-003; P03-T03, P04-T02
+* Files: `infra/modules/distribution-alerts.bicep`, `podcaster/dispatch_receipts.py`, `docs/ops/distribution-terminal-truth.md`, `tests/test_deploy_workflow.py`
+* What changed: warning/critical rules now preserve the documented 5/10/15-minute windows, explicit operations/upstream/operator/production routes, missing-data semantics, W39 missing-arrival signals, and deterministic event/metric/severity queries.
+* Completion evidence: deployment assertions cover every required rule family, route, window, missing-data description, and dispatch event; Bicep compilation passes.
+
+### Added bounded retained orphan artifact cleanup
+
+* Related markers: RV-004; P01-T02, P03-T02, P04-T01
+* Files: `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, `tests/test_distribution_outbox.py`
+* What changed: immutable artifact commit now writes non-secret creation metadata. Scheduled cleanup scans a bounded number of metadata/outbox records, preserves every referenced artifact, and deletes only unreferenced artifacts older than the retention interval.
+* Completion evidence: tests simulate interruption after artifact commit, age both referenced and orphan metadata, prove referenced retention, orphan deletion, and bounded cleanup.
+
+### Corrected reconciliation evidence naming and W38/W39 narratives
+
+* Related markers: RV-005 and W38/W39 correction across P00–P04
+* Files: `podcaster/distribution_worker.py`, `docs/ops/distribution-terminal-truth.md`, `.copilot-tracking/pr/pr.md`, `tests/test_distribution_outbox.py`, `tests/test_distribution_worker.py`
+* What changed: a consumed YouTube upload without provider identity is now accurately recorded as `youtube_identity_unprovable`; identity-bound promotion readback is named separately. W38 is stated only as successfully published comparative partial-attempt evidence. W39 is stated as the pre-Azure missed-publication boundary with no downstream execution.
+* Scope removed/narrowed: no W38 recovery implementation, no claim that provider hardening fixes W39's upstream root boundary, and no Podcaster-only canary acceptance. Independent safety behavior—truthful exit, fail-closed mutation, fenced outbox, bounded reconciliation, receipts/readback, and manual handoff—was preserved.
+
+## Authoritative Correction Validation
+
+| Check | Status | Exact result |
+|---|---|---|
+| Focused correction suite | Passed | Final correlation/outbox/worker/deployment subset → `104 passed in 2.18s`. |
+| P00 plus locked targeted contract | Passed | `TMPDIR="$PWD/.test-tmp" pytest tests/test_dispatch_receipts.py tests/test_api.py tests/test_distribution_outbox.py tests/test_distribution_worker.py tests/test_distribution_telemetry.py tests/test_publication_state.py tests/test_video_distribution.py tests/test_youtube_publish.py tests/test_youtube_upload.py tests/test_publish.py tests/test_video_job_runner.py tests/test_monitoring.py tests/test_deploy_workflow.py -q` → `741 passed, 1 warning in 55.30s`. |
+| Scale-out fanout regression | Passed after required image refresh | The first final full run exposed the known stale `podcaster-synthesis:test` Compose image (`1 failed, 3070 passed`). `docker compose -f docker-compose.fanout.yml build --quiet` followed by the focused integration → `1 passed in 15.06s`; no source/test/gate change was made. |
+| Final RV-002/RV-004 focused regression | Passed | `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py -q` → `22 passed in 3.90s`, including fail-closed cleanup when the bounded outbox reference scan may be incomplete. |
+| Full pytest | Passed | Final post-guard `TMPDIR="$PWD/.test-tmp" pytest tests/ -q` → `3071 passed, 2 skipped, 2 deselected, 1 warning in 123.12s`. |
+| Compile/lint/format/diff | Passed | `python3 -m compileall -q podcaster`; `ruff check podcaster tests`; `ruff format --check podcaster tests` → `192 files already formatted`; `git diff --check`. |
+| Bicep build | Passed | `az bicep build --file infra/main.bicep --stdout >/dev/null`; only existing BCP318 warning. |
+| Exact Checkov | Baseline retained | `checkov --directory infra --framework bicep --quiet` → `36 passed, 7 failed`; failures are the documented pre-existing ACR/storage/OpenAI baseline and no new alert-resource finding. |
+| Repository Checkov gate | Passed | CI skip-list command → `34 passed, 0 failed`. |
+| Container build | Passed | Final `docker build -f Containerfile -t podcaster-synthesis:ci . --quiet` → `sha256:ac60e9065a3ccbdd77f26253b88bb61ae610926424878f2d92eb0a7372fe6b1d`. |
+| Truthful container exit | Passed | `docker run --rm podcaster-synthesis:ci python -m podcaster.distribution_worker` without queue configuration → exit `2`. |
+
+## Historical Validation Record
 
 | Check | Scope | Status | Evidence or reason |
 |---|---|---|---|
@@ -161,20 +234,22 @@ Implementation is complete on local baseline `0752d1a` from current `origin/main
 
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P01–P04 reconciled complete; P05–P06 remain open.
-* Completed-work evidence and handoff prose: current through local implementation and validation.
+* Plan markers and phase details: P00-T02/P00-T03 and P01–P04 are complete; P00-T01 remains blocked upstream; P05–P06 remain open and outside scope.
+* Completed-work evidence and handoff prose: current through authoritative correction implementation and locked validation.
 * Validation, blockers, remaining work, and follow-up items: current.
-* Review readiness: ready for independent review of local implementation, but not delivery/production completion.
+* Review readiness: ready for independent review of the local correction implementation; not ready for delivery/production completion.
 
 ## Blockers
 
-* P05-T01–P05-T04: caller prohibited push and PR/issue mutation; clearing action is independent review followed by caller/parent authorization for delivery.
+* P00-T01: exact W39 upstream prevention/fix belongs to `jmservera/SquadScope`; clearing evidence is the owning workflow/client/status change and focused blocked-dispatch test in that repository. Podcaster receipt/absence detection is complete.
+* P05-T01–P05-T04: outside this invocation; caller prohibited commit, push, PR/issue mutation, and thread resolution.
 * P05-T05: requires merge-derived image deployment authority, real provider credentials, controlled canary, and rollback evidence.
 * P06-T01–P06-T02: require four consecutive elapsed production weeks and issue/PR closure evidence.
 
 ## Remaining Work
 
-* P05-T01 through P06-T02.
+* In scope: P00-T01 upstream prevention owner evidence.
+* Outside scope: P05-T01 through P06-T02.
 
 ## Follow-Up Items
 
@@ -184,12 +259,12 @@ Implementation is complete on local baseline `0752d1a` from current `origin/main
 
 ## Return-to-Caller State
 
-* Implementation execution status: Partial
-* Declared scope and markers: full plan; P01–P04 complete; P05-T01 through P06-T02 remain.
-* Validation coverage: targeted, expanded, full pytest, compile, Ruff, Bicep, repository-standard Checkov, container build, exit smoke, and diff safety completed; exact unskipped Checkov retains the documented pre-existing baseline failures.
-* Blockers: delivery and production-evidence phases are dependency-gated and excluded from external mutation in this invocation.
-* Current plan and detail updates: implementation opening state recorded.
+* Implementation execution status: Partial for declared correction scope because P00-T01's exact upstream prevention change is cross-repository blocked.
+* Declared scope and markers: P00-T02/P00-T03 and P01–P04 complete; P00-T01 remains; P05–P06 are outside scope.
+* Validation coverage: correction-focused, locked targeted, full pytest, compile, Ruff, Bicep, exact and repository-standard Checkov, container build, truthful exit smoke, and diff safety completed.
+* Blockers: exact upstream prevention evidence; delivery and production-evidence phases remain outside scope/dependency-gated.
+* Current plan and detail updates: markers, execution boundary, W38/W39 semantics, blocker, and validation are reconciled.
 * Planning and critique state: approved and implementation-ready.
 * Follow-up items: Spotify contract reevaluation and optional W38 deployed-image forensics.
-* Review readiness or no-handoff reason: local implementation is ready for independent RPI review; delivery and production acceptance remain dependency-gated.
-* Continuation owner: active `rpi-quick` parent.
+* Review readiness or no-handoff reason: local Podcaster correction is ready for independent RPI review; P00-T01 requires coordinated upstream evidence, and delivery/production acceptance remain dependency-gated.
+* Continuation owner: requesting parent/reviewer.
