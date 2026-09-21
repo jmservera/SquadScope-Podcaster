@@ -20,7 +20,7 @@ Implement only the four approved PR #682 review remediations, add focused regres
 ## Implementation
 
 <!-- rpi:phase id=P01 -->
-### P01 — Four bounded remediations
+### [x] P01 — Four bounded remediations
 
 - [x] <!-- rpi:task id=P01-T01 --> Validate terminal `clip_id` and exact content-addressed `media_blob_path` before editor download; add regression coverage.
 - [x] <!-- rpi:task id=P01-T02 --> Restrict recorder setup terminalization to permanent timing/schema failures while retaining transient storage/time-out messages; add operation-runner/fake-clock taxonomy regressions.
@@ -34,9 +34,9 @@ Implement only the four approved PR #682 review remediations, add focused regres
 - [x] Repository-defined relevant video test grouping passes, with exact command and duration recorded.
 - [x] `ruff check` and `ruff format --check` pass for all touched Python files.
 - [x] Final diff contains no scope creep.
-- [x] Hermes rejection revision is implemented and locally validated; final approval remains pending independent re-review.
-- [x] One new conventional commit is pushed to `origin/squad/video-stage-budget-redesign`.
-- [x] Exact four review threads are replied to with commit/evidence and resolved; unresolved threads are re-queried.
+- [x] Hermes' initial rejection was handled under strict reviewer lockout by an independent Farnsworth revision; Hermes' final re-review disposition is APPROVE.
+- [ ] One new conventional commit is pushed to `origin/squad/video-stage-budget-redesign`.
+- [ ] Exact four review threads are replied to with commit/evidence and resolved; unresolved threads are re-queried.
 
 ## Follow-Up Items
 

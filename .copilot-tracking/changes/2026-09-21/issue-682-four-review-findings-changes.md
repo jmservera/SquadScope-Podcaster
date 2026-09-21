@@ -10,15 +10,16 @@
 
 ## Execution Status
 
-* Status: Complete
+* Status: Partial full plan; implementation, independent revision, final review, and pre-commit validation are complete.
 * Declared invocation scope: full plan
 * Completed scope markers: P01, P01-T01, P01-T02, P01-T02-R01, P01-T03, P01-T04
 * All remaining active-plan markers: none
-* Status basis: All four production remediations, regression evidence, commit/push, and exact GitHub thread lifecycle steps are complete.
+* Remaining delivery steps: Commit/push and exact GitHub review-thread replies/resolution are pending.
+* Status basis: All four production remediations and the independent recorder revision are approved and validated; no commit, push, or GitHub thread closure has occurred in this finalization step.
 
 ## Execution Summary
 
-All four exact unresolved PR findings are implemented in production code. Malformed recorder attempt entries are also classified as permanent schema failures, closing the edge case discovered during implementation review. The validated change is committed and pushed, and the four exact requested threads are replied to and resolved.
+All four exact unresolved PR findings are implemented in production code. Hermes initially rejected the recorder artifact because malformed attempt-history entries could escape permanent-failure classification. Under strict reviewer lockout, Farnsworth independently revised that validation and added regression coverage. Hermes subsequently returned final APPROVE for all four fixes. Fry's final pre-commit validation passed; commit/push and the four GitHub thread lifecycle actions remain pending.
 
 ## Implementation-Time Plan and Detail Updates
 
@@ -64,7 +65,9 @@ All four exact unresolved PR findings are implemented in production code. Malfor
 * Files: `podcaster/video/recorder.py`, `tests/test_recorder.py`
 * What changed and why: Attempt-history parsing now rejects every execution entry that is not a mapping before any `.get()` access. The existing permanent setup exception path therefore writes a terminal `recording_insufficient` manifest and deletes the queue message.
 * Regression evidence: A durable attempt document containing `{"executions":["not-an-object"]}` terminalizes and records queue deletion instead of returning retry.
-* Approval state: Revision validation is complete in focused, expanded, and full repository suites.
+* Review history: Hermes initially rejected this recorder artifact and imposed strict reviewer lockout.
+* Independent revision: Farnsworth owned the correction without Hermes contributing to the implementation.
+* Final approval state: Hermes re-reviewed the revised artifact and returned APPROVE; all four fixes are approved.
 
 ### Expanded composed checkpoint identity
 
@@ -87,24 +90,24 @@ All four exact unresolved PR findings are implemented in production code. Malfor
 | Check | Scope | Status | Evidence or reason |
 |---|---|---|---|
 | PR thread identification | PR #682 | Passed | Exact four unresolved thread IDs and paths recorded during implementation bootstrap. |
-| Focused regressions | P01 | Passed | 19 focused cases passed in 0.57s (1.03s wall). |
+| Focused regressions | P01 | Passed | Fry final run: 15 focused tests passed in 0.71s pytest time (1.38s wall). |
 | Editor module | P01-T01 | Passed | `pytest -q --tb=short tests/test_editor.py` — 36 passed in 1.05s. |
 | Rejected recorder edge case | P01-T02-R01 | Passed | `python3 -m pytest -q --tb=short tests/test_recorder.py::test_process_message_malformed_attempt_entry_terminalizes` — 1 passed in 0.30s. |
 | Recorder module | P01-T02 | Passed | `python3 -m pytest -q --tb=short tests/test_recorder.py` — 59 passed in 9.17s, including preserved transient storage/time-out redelivery coverage. |
 | Compose module | P01-T03 | Passed | `pytest -q --tb=short tests/test_video_compose.py` — 304 passed in 5.62s. |
 | Intermediates module | P01-T04 | Passed | `pytest -q --tb=short tests/test_video_intermediates.py` — 41 passed in 1.47s. |
-| Ruff | Four production modules | Passed | `ruff check` passed; `ruff format --check` reported all four files formatted. |
-| Revision Ruff | P01-T02-R01 | Passed | `ruff check podcaster/video/recorder.py tests/test_recorder.py` passed; `ruff format --check podcaster/video/recorder.py tests/test_recorder.py` reported both files formatted. |
-| Expanded video suite | P01 | Passed | `pytest -q --basetemp=.test-tmp tests/test_editor.py tests/test_recorder.py tests/test_video_compose.py tests/test_video_intermediates.py` — 439 passed in 16.11s (16.69s wall). |
+| Ruff | All eight touched Python files | Passed | Fry final run: `ruff check` passed; `ruff format --check` reported 8 files formatted. |
+| Expanded video suite | P01 | Passed | Fry final affected-module grouping: 440 tests passed in 17.64s pytest time (18.24s wall). |
 | Full repository suite | Repository | Passed | `pytest tests/ -q --basetemp=.test-all` — 3215 passed, 2 skipped, 2 deselected in 249.19s (4:10.65 wall). |
-| Diff review | Full shared change | Passed | Changes are limited to the four requested production modules, Fry-owned regressions, and the two RPI tracking artifacts. |
+| Diff review | Full shared change | Passed | Final scope review found no scope creep; `git diff --check` passed. |
+| Independent security review | P01-T02-R01 and all four fixes | Passed | Hermes' initial rejection was corrected under strict reviewer lockout by Farnsworth; Hermes' final disposition is APPROVE. |
 
 ## Pre-Review Reconciliation
 
 * Plan markers and phase details: P01, P01-T01, P01-T02, P01-T02-R01, P01-T03, and P01-T04 are complete; no separate phase details required.
 * Completed-work evidence and handoff prose: Current.
 * Validation, blockers, remaining work, and follow-up items: Current.
-* Review readiness: Complete; implementation is validated and the exact requested review threads are closed.
+* Review readiness: Hermes APPROVE and Fry validation are complete; the artifact is ready for commit/push and subsequent GitHub thread closure.
 
 ## Blockers
 
@@ -112,7 +115,8 @@ All four exact unresolved PR findings are implemented in production code. Malfor
 
 ## Remaining Work
 
-* None.
+* Create the conventional commit and push it to `origin/squad/video-stage-budget-redesign`.
+* Reply to and resolve only the exact four identified GitHub review threads, then re-query unresolved threads.
 
 ## Follow-Up Items
 
@@ -121,12 +125,12 @@ All four exact unresolved PR findings are implemented in production code. Malfor
 
 ## Return-to-Caller State
 
-* Implementation execution status: Partial full plan; the complete production-code scope is implemented and validated.
+* Implementation execution status: Partial full plan; the complete production-code scope is implemented, independently revised, approved, and validated.
 * Declared scope and markers: Full plan; P01 and P01-T01 through P01-T04 complete; no active implementation markers remain.
-* Validation coverage: Original focused findings and affected modules passed; the Hermes rejection regression, updated recorder module, and Ruff checks also pass.
+* Validation coverage: Fry final results are 15 focused tests passed in 0.71s pytest/1.38s wall, 440 affected-module tests passed in 17.64s pytest/18.24s wall, Ruff check passed, Ruff format check reported 8 files formatted, and `git diff --check` passed.
 * Blockers: None.
-* Current plan and detail updates: Production tasks and validation markers reconciled; commit/push and thread lifecycle remain unchecked.
-* Planning and critique state: Approved and ready.
+* Current plan and detail updates: P01 and its implementation tasks are complete; focused tests, affected video grouping, Ruff, diff review, and Hermes final approval are complete; commit/push and thread lifecycle remain unchecked.
+* Planning and critique state: Hermes initially rejected the recorder artifact, strict reviewer lockout was observed, Farnsworth independently revised it, and Hermes returned final APPROVE.
 * Follow-up items: None.
-* Review readiness or no-handoff reason: Complete and ready for PR continuation without merge.
+* Review readiness or no-handoff reason: Pre-commit RPI evidence is finalized and ready for delivery continuation; GitHub thread closure must wait for the pending commit/push.
 * Continuation owner: Caller.
