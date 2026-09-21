@@ -362,19 +362,13 @@ def get_video_snippet(
     *,
     transport: object | None = None,
 ) -> dict[str, object] | None:
-    """Return the ``snippet`` + ``status`` fields for ``video_id``, or ``None`` on error.
-
-    Calls ``videos.list?part=snippet,status&id={video_id}``. Returns the first
-    item's combined ``snippet``/``status`` dict, or ``None`` when the video is not
-    found or an HTTP/transport error occurs. The token is only sent in the
-    ``Authorization`` header and never logged.
-    """
+    """Return authoritative metadata, status, and processing fields for a video."""
     from urllib.parse import urlencode
 
     if not video_id:
         raise ValueError("video_id is required")
     http = transport if transport is not None else _default_transport()
-    params = urlencode({"part": "snippet,status", "id": video_id})
+    params = urlencode({"part": "snippet,status,processingDetails", "id": video_id})
     url = f"{VIDEOS_LIST_URL}?{params}"
     try:
         status, body = http.request(
@@ -396,7 +390,11 @@ def get_video_snippet(
     if not items:
         return None
     item = items[0]
-    return {**item.get("snippet", {}), **item.get("status", {})}
+    return {
+        **item.get("snippet", {}),
+        **item.get("status", {}),
+        **item.get("processingDetails", {}),
+    }
 
 
 def verify_draft_ready(
@@ -429,6 +427,15 @@ def verify_draft_ready(
         problems.append("video description is empty")
     if snippet.get("privacyStatus") == PRIVACY_PUBLIC:
         problems.append("video is already public — promotion would be a no-op")
+    upload_status = str(snippet.get("uploadStatus") or "").strip().lower()
+    if upload_status not in ("uploaded", "processed"):
+        problems.append(f"video upload is not complete (uploadStatus={upload_status or 'missing'})")
+    processing_status = str(snippet.get("processingStatus") or "").strip().lower()
+    if processing_status != "succeeded":
+        problems.append(
+            "video processing is not successful "
+            f"(processingStatus={processing_status or 'missing'})"
+        )
     if playlist_id:
         try:
             is_member = playlist_contains_video(
