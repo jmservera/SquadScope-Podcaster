@@ -837,7 +837,12 @@ def process_clip_message(
             message.message_id,
             message.dequeue_count,
         )
-        queue.delete_message(message)
+        _delete_queue_message(
+            queue,
+            message,
+            remaining_seconds=30.0,
+            operation_runner=queue_operation_runner,
+        )
         return ClipOutcome("", -1, OUTCOME_MALFORMED)
 
     now_utc = utcnow()

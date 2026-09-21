@@ -301,6 +301,29 @@ def test_process_message_malformed_body_is_deleted(tmp_path) -> None:
     assert queue.deleted == [message]  # poison removed, no crash-loop
 
 
+def test_process_message_malformed_delete_timeout_retains_message(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    queue = FakeQueue()
+    message = QueueMessage(
+        message_id="bad-2",
+        pop_receipt="pr",
+        body="not-base64-or-json",
+        dequeue_count=1,
+    )
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        queue_operation_runner=lambda _call, _timeout: (_ for _ in ()).throw(
+            TimeoutError("blocked")
+        ),
+    )
+
+    assert outcome.status == recorder.OUTCOME_MALFORMED
+    assert queue.deleted == []
+
+
 def test_write_manifest_if_absent_never_overwrites(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     path = "video-jobs/job-x/clips/000.manifest.json"
