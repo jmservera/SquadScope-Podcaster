@@ -139,7 +139,7 @@ class TestVideoDistributionConfig:
             "youtube_enabled": True,
             "youtube_playlist_id": "PLpayload",
             "youtube_category_id": "22",
-            "youtube_privacy": "public",
+            "youtube_privacy": "private",
             "spotify_rss_enabled": True,
             "spotify_rss_feed_path": "feeds/test.xml",
             "spotify_video_publish_mode": "live",
@@ -150,11 +150,18 @@ class TestVideoDistributionConfig:
         assert config.youtube_enabled is True
         assert config.youtube_playlist_id == "PLpayload"
         assert config.youtube_category_id == "22"
-        assert config.youtube_privacy == "public"
+        assert config.youtube_privacy == "private"
         assert config.spotify_rss_enabled is True
         assert config.spotify_video_publish_mode == "live"
         assert config.blob_archive_enabled is False
         assert config.dry_run is True
+
+    def test_public_privacy_is_rejected_during_config_parse(self, monkeypatch):
+        monkeypatch.setenv("VIDEO_YOUTUBE_PRIVACY", "public")
+        with pytest.raises(ValueError, match="private or unlisted"):
+            VideoDistributionConfig.from_env()
+        with pytest.raises(ValueError, match="private or unlisted"):
+            VideoDistributionConfig.from_payload({"youtube_privacy": "public"})
 
     def test_defaults(self):
         config = VideoDistributionConfig()
@@ -226,10 +233,8 @@ class TestUploadToYouTube:
 
     def test_public_initial_upload_is_rejected_before_provider_io(self, video_file):
         transport = FakeTransport()
-        config = VideoDistributionConfig(youtube_enabled=True, youtube_privacy="public")
-
         with pytest.raises(ValueError, match="private or unlisted"):
-            upload_to_youtube(video_file, "title", "desc", config, transport=transport)
+            VideoDistributionConfig(youtube_enabled=True, youtube_privacy="public")
 
         assert transport.requests == []
 
@@ -273,22 +278,24 @@ class TestUploadToYouTube:
                 transport=FakeTransport(),
             )
 
-    def test_upload_failure_returns_none(self, video_file, youtube_config):
+    def test_upload_init_500_is_ambiguous_and_not_retried(self, video_file, youtube_config):
         transport = FakeTransport(
             responses=[
                 (200, json.dumps({"access_token": "tok"}).encode()),
                 (500, b"error"),  # init fails
             ]
         )
-        vid_id, vid_url = upload_to_youtube(
-            video_file,
-            "title",
-            "desc",
-            youtube_config,
-            transport=transport,
-        )
-        assert vid_id is None
-        assert vid_url is None
+        with pytest.raises(YouTubeDeliveryError) as exc:
+            upload_to_youtube(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                transport=transport,
+            )
+        assert exc.value.mutation_ambiguous is True
+        assert exc.value.retryable is False
+        assert len(transport.requests) == 2
 
     def test_required_permanent_upload_failure_is_not_retried(self, video_file, youtube_config):
         transport = FakeTransport(

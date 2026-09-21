@@ -33,6 +33,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from podcaster.storage import bounded_delete_prefix
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from podcaster.storage import StorageBackend
 
@@ -288,7 +290,7 @@ class IntermediateStore:
         if self._backend is None:
             return 0
         try:
-            deleted = self._backend.delete_prefix(self.prefix())
+            deleted = bounded_delete_prefix(self._backend, self.prefix())
         except Exception:
             logger.warning(
                 "intermediate cleanup failed job_id=%s; lifecycle policy will reclaim",

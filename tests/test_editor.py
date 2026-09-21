@@ -73,6 +73,9 @@ class FakeStorage:
     def delete_blob(self, path: str) -> bool:
         return self._data.pop(path, None) is not None
 
+    def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
+        return sorted(key for key in self._data if key.startswith(prefix))[:limit]
+
     def delete_prefix(self, prefix: str) -> int:
         keys = [k for k in self._data if k.startswith(prefix)]
         for k in keys:

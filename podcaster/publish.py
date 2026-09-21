@@ -558,13 +558,10 @@ def _spotify_reconcile_enabled() -> bool:
 
 
 def _spotify_strict_paging_enabled() -> bool:
-    """Whether an explicitly paginated listing should fail closed (opt-in).
-
-    The Anchor v5 paging contract is unverified (see :data:`_PAGINATION_HINT_KEYS`),
-    so failing closed on a *guessed* key name could block every new video publish.
-    Operators who have confirmed the contract for their show can opt in.
-    """
-    raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING", "")
+    """Whether an explicitly paginated listing must fail closed."""
+    raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING")
+    if raw is None:
+        return True
     return raw.strip().lower() in _TRUTHY
 
 
@@ -951,22 +948,10 @@ def _match_existing_draft(
 
     hint_key = _pagination_hint(data)
     if hint_key is not None:
-        if _spotify_strict_paging_enabled():
-            raise SpotifyDraftReconcileError(
-                f"Spotify draft reconcile lookup for station {station_id} signalled "
-                f"further pages via '{hint_key}' and found no match on the first "
-                "page; strict paging is enabled, so a possibly incomplete read "
-                "will not be used to justify creating a new draft."
-            )
-        logger.warning(
-            "Spotify episode listing for station %s carries a truthy '%s' key and "
-            "contained no match for title=%r. Pagination is NOT implemented (the "
-            "real paging contract is unverified), so this read may be incomplete "
-            "and a duplicate draft is possible. Set "
-            "PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1 to fail closed instead.",
-            station_id,
-            hint_key,
-            title,
+        raise SpotifyDraftReconcileError(
+            f"Spotify draft reconcile lookup for station {station_id} signalled "
+            f"further pages via '{hint_key}' and found no match on the first "
+            "page; an incomplete read cannot authorize a new draft."
         )
 
     logger.info("No existing Spotify draft matched title=%r; a new draft is needed.", title)
@@ -1682,6 +1667,32 @@ def _get_episode_publication_state(
         )
         return None
     return _extract_state(payload)
+
+
+def read_spotify_video_publication_state(
+    anchor_id: int,
+    *,
+    show_id: str | None = None,
+    sp_dc: str | None = None,
+    sp_key: str | None = None,
+) -> bool | None:
+    """Read one expected Spotify item without authorizing any mutation."""
+
+    try:
+        if not show_id or not sp_dc or not sp_key:
+            env_show_id, env_sp_dc, env_sp_key = _get_credentials()
+            show_id = show_id or env_show_id
+            sp_dc = sp_dc or env_sp_dc
+            sp_key = sp_key or env_sp_key
+        session = _build_session(sp_dc, sp_key, show_id)
+        _station_id, user_id = _resolve_legacy_ids(session, show_id)
+        return _get_episode_publication_state(session, anchor_id, user_id=user_id)
+    except (SpotifyCredentialExpiredError, SpotifyPublishError, ValueError):
+        logger.warning(
+            "Spotify read-only publication verification failed for expected item %s",
+            anchor_id,
+        )
+        return None
 
 
 def promote_spotify_video_draft(

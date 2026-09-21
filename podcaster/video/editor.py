@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from podcaster.queue import QueueProducer, enqueue_clip_job
-from podcaster.storage import StorageBackend
+from podcaster.storage import StorageBackend, bounded_delete_prefix
 from podcaster.video.clipset import (
     Clipset,
     clip_blob_path,
@@ -338,7 +338,7 @@ def assemble_recording(
 def cleanup_clips(scratch: StorageBackend, job_id: str) -> int:
     """Delete the per-job ``clips/**`` scratch after a successful compose (RFC §5)."""
     try:
-        return scratch.delete_prefix(clips_prefix(job_id))
+        return bounded_delete_prefix(scratch, clips_prefix(job_id))
     except Exception:  # pragma: no cover - best-effort; lifecycle rule is the backstop
         logger.debug("failed to clean up clips for job_id=%s", job_id, exc_info=True)
         return 0

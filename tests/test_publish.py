@@ -2157,17 +2157,12 @@ class TestFindExistingDraft:
         with pytest.raises(pub.SpotifyDraftReconcileError):
             pub._find_existing_draft(session, "99", "My Show", user_id="7")
 
-    def test_truncated_listing_warns_but_does_not_block_by_default(self, caplog):
-        """The paging contract is unverified — a guessed key must not gate publishes."""
-        import logging
-
+    def test_truncated_listing_blocks_by_default(self):
         from podcaster import publish as pub
 
         session = self._session({"episodes": [], "hasMore": True})
-        with caplog.at_level(logging.WARNING, logger="podcaster.publish"):
-            assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
-        assert "hasMore" in caplog.text
-        assert "Pagination is NOT implemented" in caplog.text
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="incomplete read"):
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
 
     def test_truncated_listing_raises_when_strict_paging_opted_in(self, monkeypatch):
         from podcaster import publish as pub

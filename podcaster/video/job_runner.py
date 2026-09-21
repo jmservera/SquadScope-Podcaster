@@ -32,6 +32,11 @@ from pathlib import Path
 from typing import Any
 
 from podcaster.config import PodcastConfig, SpotifyPublishConfig
+from podcaster.distribution_outbox import (
+    DistributionOutboxRepository,
+    commit_immutable_artifact,
+    outbox_routing_enabled,
+)
 from podcaster.failure_reporting import report_failure
 from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE, _plain_text_from_html
 from podcaster.music import TRACK_ATTRIBUTION
@@ -55,6 +60,7 @@ from podcaster.queue import (
     QueueMessage,
     QueueProducer,
     create_clip_queue_backend,
+    enqueue_distribution_job,
     parse_job_id,
 )
 from podcaster.sanitization import neutralize
@@ -1222,7 +1228,7 @@ def run_video_generation(
                             if platform == "spotify"
                             else None,
                         }
-                    elif enabled and not dist_config.dry_run:
+                    elif enabled and not dist_config.dry_run and not outbox_routing_enabled():
                         try:
                             claim = append_evidence(
                                 storage,
@@ -1261,22 +1267,78 @@ def run_video_generation(
                     evidence_failures.append(platform)
 
             with timings.phase("distribution"):
-                dist_result = distribute_video(
-                    output_path,
-                    job_id,
-                    title,
-                    description,
-                    compose_result.duration_seconds,
-                    dist_config,
-                    storage=_StorageUploaderAdapter(storage),
-                    spotify_anchor_id=_resolve_anchor_id(manifest),
-                    season_number=season_number,
-                    episode_number=episode_number,
-                    language=job_language,
-                    published=published_for_attempt,
-                    publish_run_id=publish_run_id,
-                    on_published=record_publication,
-                )
+                if outbox_routing_enabled():
+                    if publication_context is None:
+                        raise PermanentVideoError(
+                            "distribution outbox requires canonical publication identity",
+                            reason=REASON_INVALID_PUBLICATION_IDENTITY,
+                            details={"job_id": job_id},
+                        )
+                    objectives: dict[str, str] = {}
+                    if youtube_enabled_for_language(dist_config, job_language):
+                        objectives["youtube"] = "public"
+                    if dist_config.spotify_upload_enabled:
+                        objectives["spotify"] = "public"
+                    if not objectives:
+                        raise PermanentVideoError(
+                            "distribution outbox requires a requested production provider",
+                            reason="distribution_provider_not_requested",
+                            details={"job_id": job_id},
+                        )
+                    artifact = commit_immutable_artifact(
+                        storage,
+                        output_path,
+                        media_kind="video",
+                        content_type="video/mp4",
+                        suffix=output_path.suffix,
+                    )
+                    repository = DistributionOutboxRepository(storage)
+                    outbox_document, _created = repository.enqueue(
+                        publication_context,
+                        artifact,
+                        provider_objectives=objectives,
+                        enqueue_source="video_runner",
+                        enqueue_version="v1",
+                    )
+                    if enqueue_distribution_job(outbox_document["outbox_id"]):
+                        repository.mark_notification_sent(outbox_document["outbox_id"])
+                    dist_result = DistributionResult(
+                        status="partial",
+                        public_delivery_status="pending",
+                        outbox_id=outbox_document["outbox_id"],
+                        provider_outcomes={
+                            provider: "publication_unknown" for provider in objectives
+                        },
+                        provider_records={
+                            provider: {
+                                "provider": provider,
+                                "outcome": "publication_unknown",
+                                "status": "pending",
+                                "transport_status": "not_attempted",
+                                "verification": "none",
+                                "evidence_source": "distribution_outbox",
+                                "retry_blocked": True,
+                            }
+                            for provider in objectives
+                        },
+                    )
+                else:
+                    dist_result = distribute_video(
+                        output_path,
+                        job_id,
+                        title,
+                        description,
+                        compose_result.duration_seconds,
+                        dist_config,
+                        storage=_StorageUploaderAdapter(storage),
+                        spotify_anchor_id=_resolve_anchor_id(manifest),
+                        season_number=season_number,
+                        episode_number=episode_number,
+                        language=job_language,
+                        published=published_for_attempt,
+                        publish_run_id=publish_run_id,
+                        on_published=record_publication,
+                    )
             result_publish_run_id = getattr(dist_result, "publish_run_id", None)
             if not isinstance(result_publish_run_id, str):
                 result_publish_run_id = publish_run_id
@@ -1773,6 +1835,20 @@ def drain(
     return outcomes
 
 
+def outcomes_exit_code(outcomes: list[VideoOutcome]) -> int:
+    """Return success only when expected work externally completed."""
+
+    if not outcomes:
+        return 1
+    for outcome in outcomes:
+        if outcome.status != STATUS_COMPLETED:
+            return 1
+        distribution = outcome.distribution
+        if distribution is not None and distribution.public_delivery_status != "completed":
+            return 1
+    return 0
+
+
 def main() -> int:
     """Entry point for the video ACA container job."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -1797,10 +1873,10 @@ def main() -> int:
             logger.exception("managed identity token startup health check failed")
             return 3
 
-    outcomes = drain(queue, storage, config)
+    outcomes = drain(queue, storage, config, max_messages=1)
     completed = sum(1 for o in outcomes if o.status == STATUS_COMPLETED)
     skipped = sum(1 for o in outcomes if o.status == STATUS_SKIPPED)
-    failed = sum(1 for o in outcomes if o.status == STATUS_FAILED)
+    failed = sum(1 for o in outcomes if outcomes_exit_code([o]) != 0)
 
     logger.info(
         "video run finished processed=%s completed=%s skipped=%s failed=%s",
@@ -1811,7 +1887,7 @@ def main() -> int:
     )
 
     if failed:
-        failed_jobs = [o.job_id for o in outcomes if o.status == STATUS_FAILED and o.job_id]
+        failed_jobs = [o.job_id for o in outcomes if outcomes_exit_code([o]) != 0 and o.job_id]
         report_failure(
             container="podcaster-video",
             error_type="VideoRunFailure",
@@ -1819,7 +1895,7 @@ def main() -> int:
             details={"failed_jobs": failed_jobs, "completed": completed, "skipped": skipped},
         )
 
-    return 1 if failed else 0
+    return outcomes_exit_code(outcomes)
 
 
 if __name__ == "__main__":

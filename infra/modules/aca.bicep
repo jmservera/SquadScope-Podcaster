@@ -33,6 +33,9 @@ param synthesisQueueName string = 'synthesis-jobs'
 @description('Storage Queue that carries video-generation messages (job_id only; no secrets/PII).')
 param videoQueueName string = 'video-jobs'
 
+@description('Storage Queue carrying distribution outbox identities only.')
+param distributionQueueName string = 'distribution-jobs'
+
 @description('Storage Queue that carries per-clip recording messages (job_id + clip_index only; no secrets/PII).')
 param videoClipQueueName string = 'video-clip-jobs'
 
@@ -151,6 +154,11 @@ resource synthesisQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@
 // synthesis queue so both share the single 'default' queue service on the storage account.
 resource videoQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
   name: videoQueueName
+  parent: queueService
+}
+
+resource distributionQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  name: distributionQueueName
   parent: queueService
 }
 
@@ -399,6 +407,7 @@ output environmentId string = useVnet ? managedEnvWithVnet.id : managedEnvNoVnet
 output defaultDomain string = useVnet ? managedEnvWithVnet.properties.defaultDomain : managedEnvNoVnet.properties.defaultDomain
 output queueName string = synthesisQueueName
 output videoQueueName string = videoQueueName
+output distributionQueueName string = distributionQueueName
 output videoClipQueueName string = videoClipQueueName
 output jobIdentityName string = jobIdentity.name
 output jobIdentityPrincipalId string = jobIdentity.properties.principalId

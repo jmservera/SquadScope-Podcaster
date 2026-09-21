@@ -44,6 +44,12 @@ param storageAccountName string
 @description('Storage Queue that carries video-generation messages (job_id only; no secrets/PII).')
 param videoQueueName string = 'video-jobs'
 
+@description('Storage Queue carrying provider-distribution outbox identities only.')
+param distributionQueueName string = 'distribution-jobs'
+
+@description('Route provider distribution through the durable outbox. Disabled until canary.')
+param distributionOutboxEnabled string = 'false'
+
 @description('Storage Queue the editor fans per-clip recording messages onto for the recorder job (job_id + clip_index only).')
 param videoClipQueueName string = 'video-clip-jobs'
 
@@ -55,6 +61,9 @@ param videoScratchContainerName string = 'video-scratch'
 
 @description('Video container image. Same image as synthesis (ffmpeg baked in); only the command differs.')
 param videoImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
+
+@description('Python module executed by the queue-triggered job.')
+param runnerModule string = 'podcaster.video.job_runner'
 
 @description('Optional container registry login server for the image. When set, the job pulls with its managed identity.')
 param containerRegistryServer string = ''
@@ -116,7 +125,7 @@ param videoYoutubeRequired string = 'false'
 @description('YouTube upload category id (default 28 = Science & Technology).')
 param videoYoutubeCategoryId string = '28'
 
-@description('YouTube upload privacy status (unlisted, private, or public; default unlisted). Use unlisted or private to hold for review before public release.')
+@description('Initial YouTube draft privacy status (unlisted or private; default unlisted). Public is rejected before provider I/O.')
 param videoYoutubePrivacy string = 'unlisted'
 
 @description('YouTube playlist ID. Required when videoYoutubeEnabled is true.')
@@ -235,7 +244,7 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
           command: [
             'python'
             '-m'
-            'podcaster.video.job_runner'
+            runnerModule
           ]
           resources: {
             cpu: json(jobCpu)
@@ -297,6 +306,14 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             {
               name: 'VIDEO_BLOB_ARCHIVE_ENABLED'
               value: 'true'
+            }
+            {
+              name: 'DISTRIBUTION_OUTBOX_ENABLED'
+              value: distributionOutboxEnabled
+            }
+            {
+              name: 'PODCASTER_DISTRIBUTION_QUEUE'
+              value: distributionQueueName
             }
             {
               name: 'VIDEO_YOUTUBE_ENABLED'

@@ -288,12 +288,16 @@ class _SnippetTransport:
         title: str = "Episode",
         description: str = "Desc",
         privacy: str = "unlisted",
+        upload_status: str = "processed",
+        processing_status: str = "succeeded",
         found: bool = True,
         status_code: int = 200,
     ):
         self.title = title
         self.description = description
         self.privacy = privacy
+        self.upload_status = upload_status
+        self.processing_status = processing_status
         self.found = found
         self.status_code = status_code
         self.calls: list[dict] = []
@@ -309,7 +313,13 @@ class _SnippetTransport:
                 "items": [
                     {
                         "snippet": {"title": self.title, "description": self.description},
-                        "status": {"privacyStatus": self.privacy},
+                        "status": {
+                            "privacyStatus": self.privacy,
+                            "uploadStatus": self.upload_status,
+                        },
+                        "processingDetails": {
+                            "processingStatus": self.processing_status,
+                        },
                     }
                 ]
             }
@@ -339,7 +349,13 @@ class _PlaylistTransport(_SnippetTransport):
                 "items": [
                     {
                         "snippet": {"title": self.title, "description": self.description},
-                        "status": {"privacyStatus": self.privacy},
+                        "status": {
+                            "privacyStatus": self.privacy,
+                            "uploadStatus": self.upload_status,
+                        },
+                        "processingDetails": {
+                            "processingStatus": self.processing_status,
+                        },
                     }
                 ]
             }
@@ -457,6 +473,16 @@ class TestVerifyDraftReady:
         t = _SnippetTransport(title="W35", description="Desc", privacy="unlisted")
         problems = verify_draft_ready("vid1", "tok", transport=t)
         assert problems == []
+
+    def test_processing_failure_blocks_promotion(self):
+        t = _SnippetTransport(processing_status="failed")
+        problems = verify_draft_ready("vid1", "tok", transport=t)
+        assert any("processing is not successful" in problem for problem in problems)
+
+    def test_incomplete_upload_blocks_promotion(self):
+        t = _SnippetTransport(upload_status="uploading")
+        problems = verify_draft_ready("vid1", "tok", transport=t)
+        assert any("upload is not complete" in problem for problem in problems)
 
     def test_metadata_read_failure_returns_single_problem(self):
         t = _SnippetTransport(found=False)

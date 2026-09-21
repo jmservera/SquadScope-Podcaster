@@ -2638,6 +2638,9 @@ class _ScratchStorage:
     def delete_blob(self, path):
         return self._data.pop(path, None) is not None
 
+    def list_blobs(self, prefix, *, limit=10):
+        return sorted(key for key in self._data if key.startswith(prefix))[:limit]
+
     def delete_prefix(self, prefix):
         keys = [k for k in self._data if k.startswith(prefix)]
         for k in keys:
@@ -3096,3 +3099,13 @@ class TestInvalidUrlWatermarkLifecycle:
         # The failure report carries only the redacted URL, never the body or
         # the offending request line ``InvalidURL`` echoes back.
         assert kwargs["details"]["logo_url"] == "https://logo.example.com/images/partner-logo.png"
+
+
+def test_outcomes_exit_code_requires_nonempty_all_completed():
+    from podcaster.video.job_runner import outcomes_exit_code
+
+    assert outcomes_exit_code([]) == 1
+    assert outcomes_exit_code([VideoOutcome("ok", STATUS_COMPLETED)]) == 0
+    assert outcomes_exit_code([VideoOutcome("partial", "partial")]) == 1
+    assert outcomes_exit_code([VideoOutcome("unknown", STATUS_FAILED)]) == 1
+    assert outcomes_exit_code([VideoOutcome("manual", STATUS_SKIPPED)]) == 1

@@ -79,6 +79,20 @@ class StorageBackend(Protocol):
     def delete_prefix(self, prefix: str) -> int: ...
 
 
+def bounded_delete_prefix(
+    storage: StorageBackend,
+    prefix: str,
+    *,
+    max_blobs: int = 1000,
+) -> int:
+    """Delete at most ``max_blobs`` under one already-scoped prefix."""
+
+    if max_blobs <= 0:
+        return 0
+    names = storage.list_blobs(prefix, limit=max_blobs)
+    return sum(1 for name in names if storage.delete_blob(name))
+
+
 class LocalStorageBackend:
     def __init__(self, root: Path, base_url: str) -> None:
         self.root = root
