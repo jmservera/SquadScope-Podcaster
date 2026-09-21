@@ -6,6 +6,8 @@ Unit tests mock Playwright and requests; the integration test class
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import tempfile
 import time
@@ -2515,15 +2517,32 @@ class TestRecordEpisodeCheckpointResume:
         assert calls and calls[0] > 0
         mock_pw.assert_not_called()
 
+    @patch("podcaster.video.video_gen._validate_recording")
+    @patch("podcaster.video.intermediates.collect_media_evidence")
     @patch("podcaster.video.recorder._owned_production_record_segment")
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
-    def test_budgeted_recording_wraps_default_owned_result(self, owned_record, tmp_path):
+    def test_budgeted_recording_wraps_default_owned_result(
+        self,
+        owned_record,
+        collect_media_evidence,
+        validate_recording,
+        tmp_path,
+    ):
+        from podcaster.video.process import MediaEvidence, ProbeEvidence
         from podcaster.video.recorder import RecordResult
 
         store = self._store(tmp_path)
         output_path = tmp_path / "out" / "owned.webm"
         output_path.parent.mkdir(parents=True)
-        output_path.write_bytes(b"owned-browser-result")
+        payload = b"owned-browser-result"
+        output_path.write_bytes(payload)
+        evidence = MediaEvidence(
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            probe=ProbeEvidence("matroska,webm", 2.0),
+        )
+        validate_recording.return_value = evidence
+        collect_media_evidence.return_value = evidence
         owned_record.return_value = RecordResult(
             video_path=output_path,
             duration_ms=2000,
