@@ -27,7 +27,13 @@ from podcaster.video.budget import (
     VideoStage,
     VideoStageBudget,
 )
-from podcaster.video.job_runner import STATUS_SKIPPED, run_video_generation
+from podcaster.video.job_runner import (
+    STATUS_SKIPPED,
+    TransientVideoError,
+    manifest_path,
+    run_video_generation,
+    video_budget_path,
+)
 
 
 class FakeClock:
@@ -201,32 +207,87 @@ def test_recorder_timing_envelope_uses_earliest_durable_deadline():
 
 class _ManifestStorage:
     def __init__(self, manifest: dict) -> None:
-        self.document = manifest
+        self._data = {"jobs/job-1/manifest.json": json.dumps(manifest).encode()}
         self.update_count = 0
 
     def get_bytes(self, path: str) -> bytes | None:
-        return json.dumps(self.document).encode()
+        return self._data.get(path)
 
     def update_bytes(self, path: str, content_type: str, update):
         self.update_count += 1
-        self.document = json.loads(update(json.dumps(self.document).encode()).decode())
+        self._data[path] = update(self._data.get(path))
+
+    def set_manifest(self, job_id: str, manifest: dict | bytes) -> None:
+        self._data[manifest_path(job_id)] = (
+            manifest if isinstance(manifest, bytes) else json.dumps(manifest).encode()
+        )
+
+    def manifest(self, job_id: str) -> dict:
+        return json.loads(self._data[manifest_path(job_id)].decode())
 
 
 def test_production_entry_persists_once_and_reloads_budget_on_redelivery():
     storage = _ManifestStorage({"generation": {"video_runner": {"status": "completed"}}})
     first_now = datetime(2026, 9, 15, 12, tzinfo=timezone.utc)
-    first = run_video_generation("job-1", storage, now=first_now)
-    persisted = storage.document["generation"]["video_budget"]
 
-    second = run_video_generation("job-1", storage, now=first_now + timedelta(seconds=900))
+    def runner(call, timeout):
+        return call()
+
+    first = run_video_generation("job-1", storage, now=first_now, storage_operation_runner=runner)
+    persisted = storage.manifest("job-1")["generation"]["video_budget"]
+
+    second = run_video_generation(
+        "job-1",
+        storage,
+        now=first_now + timedelta(seconds=900),
+        storage_operation_runner=runner,
+    )
 
     assert first.status == STATUS_SKIPPED
     assert second.status == STATUS_SKIPPED
-    assert storage.document["generation"]["video_budget"] == persisted
-    evidence = storage.document["generation"]["video_timing_evidence"]
+    assert storage.manifest("job-1")["generation"]["video_budget"] == persisted
+    evidence = storage.manifest("job-1")["generation"]["video_timing_evidence"]
     assert len(evidence["events"]) == 2
     assert all(event["kind"] == "attempt" for event in evidence["events"])
-    assert storage.update_count == 4
+    assert storage.update_count == 6
+
+
+def test_malformed_manifest_repair_cannot_reset_durable_job_lifetime():
+    job_id = "job-malformed-retry"
+    storage = _ManifestStorage({"generation": {}})
+    storage.set_manifest(job_id, b"not json")
+    first_now = datetime(2026, 9, 15, 12, tzinfo=timezone.utc)
+
+    def runner(call, timeout):
+        return call()
+
+    with pytest.raises(TransientVideoError, match="invalid manifest"):
+        run_video_generation(
+            job_id,
+            storage,
+            now=first_now,
+            storage_operation_runner=runner,
+        )
+
+    persisted = json.loads(storage._data[video_budget_path(job_id)].decode())
+    assert persisted["started_at_utc"] == "2026-09-15T12:00:00Z"
+    assert persisted["deadline_at_utc"] == "2026-09-15T13:25:00Z"
+    storage.set_manifest(job_id, {"generation": {"video_runner": {"status": "completed"}}})
+    outcome = run_video_generation(
+        job_id,
+        storage,
+        now=first_now + timedelta(seconds=900),
+        storage_operation_runner=runner,
+    )
+
+    assert outcome.status == STATUS_SKIPPED
+    assert storage.manifest(job_id)["generation"]["video_budget"] == persisted
+    assert storage.manifest(job_id)["generation"]["video_budget"]["started_at_utc"] == (
+        "2026-09-15T12:00:00Z"
+    )
+    assert storage.manifest(job_id)["generation"]["video_budget"]["deadline_at_utc"] == (
+        "2026-09-15T13:25:00Z"
+    )
 
 
 def test_injected_budget_preserves_lower_level_storage_compatibility():

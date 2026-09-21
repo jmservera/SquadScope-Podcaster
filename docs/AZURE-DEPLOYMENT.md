@@ -50,7 +50,7 @@ All resources are co-located in eastus2 to minimize latency.
 The video editor ACA job keeps `replicaTimeout=5400` seconds, but application-owned
 work has a hard 5100-second lifetime. The final five minutes are platform reserve,
 not usable pipeline budget. Recorder defaults are 840 seconds for the ACA replica,
-780 seconds for queue visibility, and 600 seconds for capture, all beneath the
+840 seconds for queue visibility, and 600 seconds for capture, all beneath the
 editor's T+20 fan-in cutoff.
 
 Do not increase these values to recover a slow episode. The application stops

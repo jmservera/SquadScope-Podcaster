@@ -151,6 +151,40 @@ def test_media_evidence_collects_size_sha256_and_probe(tmp_path):
     assert MediaEvidence.from_dict(evidence.to_dict()) == evidence
 
 
+def test_media_hashing_uses_owned_stage_timeout_and_stops_before_probe(tmp_path):
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"valid-media")
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=lambda: 3295.0,
+        utcnow=lambda: started + timedelta(seconds=3295),
+    )
+    probe_called = False
+
+    def hash_runner(call, timeout):
+        assert timeout == 5
+        raise TimeoutError("stalled read")
+
+    def probe(path, timeout):
+        nonlocal probe_called
+        probe_called = True
+        return ProbeEvidence("mp4", 1)
+
+    with pytest.raises(MediaValidationError) as captured:
+        collect_media_evidence(
+            media,
+            probe=probe,
+            timeout_seconds=30,
+            budget=budget,
+            stage=VideoStage.RENDER,
+            hash_runner=hash_runner,
+        )
+
+    assert captured.value.reason is MediaValidationReason.DEADLINE_REACHED
+    assert probe_called is False
+
+
 @pytest.mark.parametrize(
     "content,reason",
     [

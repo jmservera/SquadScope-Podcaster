@@ -1045,6 +1045,40 @@ class TestRunVideoGeneration:
         assert mock_archive.call_count == 1
         assert mock_distribute.call_count == 1
 
+    def test_non_fanout_pending_resume_honors_durable_editor_lease(
+        self,
+        storage,
+        dry_config,
+    ):
+        from podcaster.video.editor import EditorLease, editor_lease_blob_path
+
+        job_id = "resume-lease-non-fanout"
+        now = datetime(2026, 9, 15, tzinfo=timezone.utc)
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {
+                    STATUS_RENDERED_PENDING_DISTRIBUTION: {"sentinel": True},
+                },
+            },
+        )
+        storage.put_bytes(
+            editor_lease_blob_path(job_id),
+            EditorLease("other-run", now, now + timedelta(seconds=900)).to_bytes(),
+            "application/json",
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            now=now,
+            fanout=False,
+        )
+
+        assert outcome.status == STATUS_SKIPPED
+        assert outcome.reason == REASON_EDITOR_LEASE_HELD
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_no_repos_generates_generic_video(self, mock_compose, mock_record, storage, dry_config):

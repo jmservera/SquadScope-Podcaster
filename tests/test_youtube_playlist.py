@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.youtube_playlist import (
     add_to_show_playlist,
     add_video_to_playlist,
@@ -131,6 +133,26 @@ class TestContains:
 
 
 class TestAddVideo:
+    def test_provider_admission_error_is_not_converted_to_failed_result(self):
+        started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+        budget = VideoStageBudget.start(
+            now_utc=started,
+            monotonic=lambda: 4500.0,
+            utcnow=lambda: started + timedelta(seconds=4500),
+        )
+
+        with pytest.raises(ProviderMutationAdmissionError) as captured:
+            add_video_to_playlist(
+                "PL",
+                "vid",
+                "tok",
+                transport=_FakeTransport([]),
+                budget=budget,
+            )
+
+        assert captured.value.provider == "youtube_playlist"
+        assert captured.value.mutation_started is False
+
     def test_insert_success(self):
         t = _FakeTransport([(200, json.dumps({"id": "item1"}).encode())])
         res = add_video_to_playlist("PL", "vid", "tok", transport=t)

@@ -757,7 +757,7 @@ def test_missing_asset_or_renderer_timeout_is_recording_insufficient(tmp_path, r
     assert "media_blob_path" not in manifest
 
 
-@pytest.mark.parametrize("stop_at", range(1, 6))
+@pytest.mark.parametrize("stop_at", range(1, 9))
 def test_fallback_finalization_operations_are_budgeted_and_stop_on_timeout(
     tmp_path, stop_at
 ) -> None:
@@ -785,6 +785,73 @@ def test_fallback_finalization_operations_are_budgeted_and_stop_on_timeout(
         )
 
     assert calls == stop_at
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_fallback_pre_finalization_work_stops_at_shared_deadline(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    elapsed = 1498.0
+    timeouts: list[float] = []
+    rendered = False
+
+    def remaining() -> float:
+        return max(0.0, 1500.0 - elapsed)
+
+    def renderer(_path, _timeout):
+        nonlocal rendered
+        rendered = True
+        pytest.fail("stalled render escaped the owned operation runner")
+
+    def operation_runner(call, timeout):
+        nonlocal elapsed
+        timeouts.append(timeout)
+        if len(timeouts) < 3:
+            result = call()
+            elapsed += 0.25
+            return result
+        elapsed += timeout
+        raise StorageOperationTimeout("render stalled")
+
+    with pytest.raises(StorageOperationTimeout, match="render stalled"):
+        write_fallback_manifest(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            reason="fanin_deadline_reached",
+            renderer=renderer,
+            admission_check=remaining,
+            operation_runner=operation_runner,
+        )
+
+    assert timeouts == [2.0, 1.75, 1.5]
+    assert elapsed == 1500.0
+    assert rendered is False
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_fallback_rejects_late_pre_finalization_without_starting_work(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    operations = 0
+
+    def operation_runner(_call, _timeout):
+        nonlocal operations
+        operations += 1
+        pytest.fail("operation runner started after fallback deadline")
+
+    with pytest.raises(StorageOperationTimeout, match="fallback finalization"):
+        write_fallback_manifest(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            reason="fanin_deadline_reached",
+            renderer=_fallback,
+            admission_check=lambda: 0,
+            operation_runner=operation_runner,
+        )
+
+    assert operations == 0
     assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
 
 

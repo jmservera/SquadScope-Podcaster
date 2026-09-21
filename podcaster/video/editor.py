@@ -55,7 +55,7 @@ from podcaster.video.clipset import (
     clipset_blob_path,
     job_prefix,
 )
-from podcaster.video.intermediates import run_storage_operation
+from podcaster.video.intermediates import StorageOperationTimeout, run_storage_operation
 from podcaster.video.process import MediaEvidence, MediaValidationError, collect_media_evidence
 from podcaster.video.sync_plan import VideoSegment
 from podcaster.video.video_gen import RecordedSegment, RecordingResult
@@ -240,11 +240,27 @@ def plan_or_load_clipset(
     return clipset
 
 
-def missing_indices(scratch: StorageBackend, clipset: Clipset) -> list[int]:
+def missing_indices(
+    scratch: StorageBackend,
+    clipset: Clipset,
+    *,
+    admission_check: Callable[[], float] | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+) -> list[int]:
     """Expected indices with no terminal manifest yet (fan-in incomplete)."""
     pending: list[int] = []
     for index in clipset.indices():
-        if not scratch.blob_exists(clip_manifest_blob_path(clipset.job_id, index)):
+        path = clip_manifest_blob_path(clipset.job_id, index)
+        if admission_check is None:
+            exists = scratch.blob_exists(path)
+        else:
+            remaining = admission_check()
+            if remaining <= 0:
+                raise StorageOperationTimeout(
+                    "fallback deadline reached during missing clip inspection"
+                )
+            exists = operation_runner(lambda path=path: scratch.blob_exists(path), remaining)
+        if not exists:
             pending.append(index)
     return pending
 
@@ -375,10 +391,31 @@ def assemble_recording(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     recorded: list[RecordedSegment] = []
+
+    def _storage_call(call: Callable[[], Any]) -> Any:
+        if budget is None:
+            return call()
+        timeout = budget.operation_timeout(VideoStage.FALLBACK)
+        if timeout <= 0:
+            raise TimeoutError("fallback deadline reached during recording assembly")
+        return operation_runner(call, timeout)
+
     for entry in clipset.clips:
         index = entry.clip_index
         segment = entry.to_segment()
-        manifest = _read_clip_manifest(scratch, clipset.job_id, index)
+        try:
+            manifest = _read_clip_manifest(
+                scratch,
+                clipset.job_id,
+                index,
+                storage_call=_storage_call,
+            )
+        except TimeoutError as exc:
+            raise RecordingInsufficientError(
+                clipset.job_id,
+                index,
+                "terminal manifest read timed out",
+            ) from exc
         if budget is not None and manifest.get("schema_version") != CLIP_MANIFEST_SCHEMA_VERSION:
             raise RecordingInsufficientError(
                 clipset.job_id,
@@ -422,14 +459,6 @@ def assemble_recording(
         # (RFC §5). On the normal path the fan-in barrier already waited for it;
         # on a timeout a half-written ``.webm`` may exist without a manifest, in
         # which case we fill the gap rather than compose an unverified clip.
-        def _storage_call(call: Callable[[], Any]) -> Any:
-            if budget is None:
-                return call()
-            timeout = budget.operation_timeout(VideoStage.FALLBACK)
-            if timeout <= 0:
-                raise TimeoutError("fallback deadline reached during recording assembly")
-            return operation_runner(call, timeout)
-
         if (
             _storage_call(lambda: scratch.blob_exists(manifest_path))
             and _storage_call(lambda: scratch.blob_exists(clip_path))
@@ -472,12 +501,23 @@ def terminalize_missing_clips(
     *,
     budget: VideoStageBudget,
     renderer=None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> None:
     """After fan-in cutoff, resolve every missing index without browser/network."""
     from podcaster.video.recorder import write_fallback_manifest
 
-    for index in missing_indices(scratch, clipset):
+    if budget.remaining_seconds(VideoStage.FALLBACK) <= 0:
+        return
+    pending = missing_indices(
+        scratch,
+        clipset,
+        admission_check=lambda: budget.remaining_seconds(VideoStage.FALLBACK),
+        operation_runner=operation_runner,
+    )
+    for index in pending:
         remaining = budget.remaining_seconds(VideoStage.FALLBACK)
+        if remaining <= 0:
+            break
         write_fallback_manifest(
             clipset.job_id,
             index,
@@ -485,6 +525,8 @@ def terminalize_missing_clips(
             reason="fanin_deadline_reached",
             timeout_seconds=min(30.0, remaining),
             renderer=renderer,
+            admission_check=lambda: budget.remaining_seconds(VideoStage.FALLBACK),
+            operation_runner=operation_runner,
         )
 
 
@@ -546,6 +588,7 @@ def record_via_fanout(
     budget: VideoStageBudget | None = None,
     fallback_renderer=None,
     media_validator: MediaValidator | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> RecordingResult:
     """Plan → fan out → fan in → assemble, returning a ``RecordingResult``.
 
@@ -572,6 +615,7 @@ def record_via_fanout(
         monotonic=monotonic,
         on_poll=_on_poll,
         budget=budget,
+        operation_runner=operation_runner,
     )
     if not complete:
         logger.warning(
@@ -587,6 +631,7 @@ def record_via_fanout(
                 clipset,
                 budget=budget,
                 renderer=fallback_renderer,
+                operation_runner=operation_runner,
             )
     validation_timeout = (
         min(30.0, budget.remaining_seconds(VideoStage.FALLBACK)) if budget is not None else 30.0
@@ -599,11 +644,21 @@ def record_via_fanout(
         media_validator=media_validator,
         validation_timeout_seconds=validation_timeout,
         budget=budget,
+        operation_runner=operation_runner,
     )
 
 
-def _read_clip_manifest(scratch: StorageBackend, job_id: str, clip_index: int) -> Mapping[str, Any]:
-    raw = scratch.get_bytes(clip_manifest_blob_path(job_id, clip_index))
+def _read_clip_manifest(
+    scratch: StorageBackend,
+    job_id: str,
+    clip_index: int,
+    *,
+    storage_call: Callable[[Callable[[], Any]], Any] | None = None,
+) -> Mapping[str, Any]:
+    def read() -> bytes | None:
+        return scratch.get_bytes(clip_manifest_blob_path(job_id, clip_index))
+
+    raw = read() if storage_call is None else storage_call(read)
     if not raw:
         return {}
     import json

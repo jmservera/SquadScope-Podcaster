@@ -30,8 +30,10 @@ from podcaster.video.editor import (
     plan_or_load_clipset,
     record_via_fanout,
     release_lease,
+    terminalize_missing_clips,
     wait_for_fanin,
 )
+from podcaster.video.intermediates import StorageOperationTimeout
 from podcaster.video.process import MediaEvidence, ProbeEvidence
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 from podcaster.video.video_gen import RecordedSegment
@@ -384,6 +386,65 @@ def test_assemble_recording_stops_after_budgeted_probe_timeout(tmp_path):
     assert calls == 2
 
 
+def test_assemble_recording_manifest_read_timeout_stops_storage_calls(tmp_path):
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    clock = _Clock(started, elapsed=1499)
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(1))
+    _write_manifest(storage, "job1", 0)
+    manifest_path = clip_manifest_blob_path("job1", 0)
+    storage_calls: list[tuple[str, str]] = []
+    timeouts: list[float] = []
+    original_get_bytes = storage.get_bytes
+    original_blob_exists = storage.blob_exists
+    original_download_file = storage.download_file
+
+    def tracked_get_bytes(path):
+        storage_calls.append(("get_bytes", path))
+        return original_get_bytes(path)
+
+    def tracked_blob_exists(path):
+        storage_calls.append(("blob_exists", path))
+        return original_blob_exists(path)
+
+    def tracked_download_file(path, dest):
+        storage_calls.append(("download_file", path))
+        return original_download_file(path, dest)
+
+    storage.get_bytes = tracked_get_bytes
+    storage.blob_exists = tracked_blob_exists
+    storage.download_file = tracked_download_file
+
+    def blocking_runner(call, timeout):
+        timeouts.append(timeout)
+        call()
+        clock.sleep(timeout)
+        raise StorageOperationTimeout("manifest read stalled")
+
+    with pytest.raises(
+        RecordingInsufficientError,
+        match="terminal manifest read timed out",
+    ) as exc_info:
+        assemble_recording(
+            storage,
+            clipset,
+            tmp_path,
+            budget=budget,
+            operation_runner=blocking_runner,
+        )
+
+    assert isinstance(exc_info.value.__cause__, StorageOperationTimeout)
+    assert str(exc_info.value.__cause__) == "manifest read stalled"
+    assert timeouts == [1]
+    assert clock.elapsed == 1500
+    assert storage_calls == [("get_bytes", manifest_path)]
+
+
 def test_assemble_recording_fills_poison_gap(tmp_path):
     storage = FakeStorage()
     clipset = plan_or_load_clipset(storage, "job1", _segments(2))
@@ -728,7 +789,80 @@ def test_fanin_stops_exactly_at_t_plus_1200_and_falls_back_by_t_plus_25(tmp_path
         assert manifest["media"]["sha256"]
 
 
-def test_t_plus_25_missing_renderer_is_terminal_recording_insufficient(tmp_path):
+def test_editor_threads_fallback_admission_and_owned_storage_runner(monkeypatch):
+    from podcaster.video import recorder
+
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    clock = _Clock(started, elapsed=1400)
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(1))
+    captured: dict[str, object] = {}
+
+    def operation_runner(call, timeout):
+        return call()
+
+    def write_fallback(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(recorder, "write_fallback_manifest", write_fallback)
+
+    terminalize_missing_clips(
+        storage,
+        clipset,
+        budget=budget,
+        renderer=_fallback_renderer,
+        operation_runner=operation_runner,
+    )
+
+    assert captured["operation_runner"] is operation_runner
+    assert captured["admission_check"]() == 100
+    assert captured["timeout_seconds"] == 30
+
+
+def test_fallback_missing_clip_inspection_times_out_at_t_plus_1500(monkeypatch):
+    from podcaster.video import recorder
+
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    clock = _Clock(started, elapsed=1499)
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(2))
+    timeouts: list[float] = []
+
+    def operation_runner(_call, timeout):
+        timeouts.append(timeout)
+        clock.sleep(timeout)
+        raise StorageOperationTimeout("inspection stalled")
+
+    monkeypatch.setattr(
+        recorder,
+        "write_fallback_manifest",
+        lambda *_args, **_kwargs: pytest.fail("fallback started after inspection timeout"),
+    )
+
+    with pytest.raises(StorageOperationTimeout, match="inspection stalled"):
+        terminalize_missing_clips(
+            storage,
+            clipset,
+            budget=budget,
+            renderer=_fallback_renderer,
+            operation_runner=operation_runner,
+        )
+
+    assert timeouts == [1]
+    assert clock.elapsed == 1500
+
+
+def test_t_plus_25_blocks_fallback_storage_finalization(tmp_path):
     started = datetime(2026, 9, 15, tzinfo=timezone.utc)
     clock = _Clock(started, elapsed=1500)
     budget = VideoStageBudget.start(
@@ -752,8 +886,7 @@ def test_t_plus_25_missing_renderer_is_terminal_recording_insufficient(tmp_path)
             fallback_renderer=_fallback_renderer,
         )
 
-    manifest = json.loads(storage.get_bytes(clip_manifest_blob_path("job1", 0)))
-    assert manifest["status"] == "recording_insufficient"
+    assert storage.get_bytes(clip_manifest_blob_path("job1", 0)) is None
     assert producer.sent == []
 
 

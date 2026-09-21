@@ -571,6 +571,7 @@ def collect_media_evidence(
     budget: VideoStageBudget | None = None,
     stage: VideoStage = VideoStage.RENDER,
     expected: MediaEvidence | None = None,
+    hash_runner: Callable[[Callable[[], Any], float], Any] = run_owned_callable,
 ) -> MediaEvidence:
     """Collect size, SHA-256 and bounded probe evidence, rejecting incomplete media."""
 
@@ -586,11 +587,29 @@ def collect_media_evidence(
             f"media size mismatch for {media_path}: expected {expected.size_bytes}, got {size}",
         )
 
-    digest = hashlib.sha256()
-    with media_path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    sha256 = digest.hexdigest()
+    hash_timeout = timeout_seconds
+    if budget is not None:
+        hash_timeout = budget.operation_timeout(stage, timeout_seconds)
+    if hash_timeout <= 0:
+        raise MediaValidationError(
+            MediaValidationReason.DEADLINE_REACHED,
+            f"no remaining hash budget for {media_path}",
+        )
+
+    def _hash() -> str:
+        digest = hashlib.sha256()
+        with media_path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    try:
+        sha256 = str(hash_runner(_hash, hash_timeout))
+    except TimeoutError as exc:
+        raise MediaValidationError(
+            MediaValidationReason.DEADLINE_REACHED,
+            f"media hashing exceeded its deadline for {media_path}",
+        ) from exc
     if expected is not None and sha256 != expected.sha256:
         raise MediaValidationError(
             MediaValidationReason.SHA256_MISMATCH, f"media SHA-256 mismatch for {media_path}"

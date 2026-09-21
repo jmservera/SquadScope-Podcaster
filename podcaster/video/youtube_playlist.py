@@ -214,6 +214,8 @@ def add_video_to_playlist(
             },
             data=payload,
         )
+    except ProviderMutationAdmissionError:
+        raise
     except Exception as exc:
         logger.warning("playlistItems.insert error for %s: %s", video_id, exc)
         return PlaylistAddResult(

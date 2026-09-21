@@ -680,9 +680,22 @@ def write_fallback_manifest(
     (success or fallback) already exists for the index this is a no-op.
     """
     manifest_path = clip_manifest_blob_path(job_id, clip_index)
+
+    def _finalize(
+        call: Callable[[], Any],
+        requested_seconds: float | None = None,
+    ) -> Any:
+        if admission_check is None:
+            return call()
+        remaining = admission_check()
+        timeout = remaining if requested_seconds is None else min(remaining, requested_seconds)
+        if timeout <= 0:
+            raise StorageOperationTimeout("recorder deadline reached during fallback finalization")
+        return operation_runner(call, timeout)
+
     # Fast-path skip (cheap) — the conditional write below is the authoritative
     # guard that holds under concurrency.
-    if scratch.blob_exists(manifest_path):
+    if _finalize(lambda: scratch.blob_exists(manifest_path)):
         logger.info(
             "terminal manifest already present; not writing fallback job_id=%s clip_index=%d",
             job_id,
@@ -692,19 +705,11 @@ def write_fallback_manifest(
 
     repo_url: str | None = None
     try:
-        repo_url = load_clipset(scratch, job_id).entry(clip_index).repo_url
+        repo_url = _finalize(lambda: load_clipset(scratch, job_id)).entry(clip_index).repo_url
     except (KeyError, ValueError):
         repo_url = None
 
     renderer = renderer or _render_static_fallback
-
-    def _finalize(call: Callable[[], Any]) -> Any:
-        if admission_check is None:
-            return call()
-        remaining = admission_check()
-        if remaining <= 0:
-            raise StorageOperationTimeout("recorder deadline reached during fallback finalization")
-        return operation_runner(call, remaining)
 
     media: MediaEvidence | None = None
     content_path: str | None = None
@@ -714,7 +719,10 @@ def write_fallback_manifest(
             raise TimeoutError("no fallback rendering budget remains")
         with tempfile.TemporaryDirectory(prefix=f"fallback-{clip_index:03d}-") as tmp:
             output_path = Path(tmp) / "fallback.webm"
-            media = renderer(output_path, timeout_seconds)
+            media = _finalize(
+                lambda: renderer(output_path, timeout_seconds),
+                timeout_seconds,
+            )
             content_path = clip_content_blob_path(job_id, clip_index, media.sha256)
             _finalize(lambda: scratch.upload_file(content_path, output_path, _WEBM_CONTENT_TYPE))
             if not _finalize(lambda: _verify_size(scratch, content_path, media.size_bytes)):

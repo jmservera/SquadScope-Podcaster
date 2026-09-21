@@ -227,6 +227,10 @@ def manifest_path(job_id: str) -> str:
     return f"jobs/{job_id}/manifest.json"
 
 
+def video_budget_path(job_id: str) -> str:
+    return f"jobs/{job_id}/video-budget.json"
+
+
 def script_path(job_id: str) -> str:
     return f"jobs/{job_id}/script.txt"
 
@@ -914,38 +918,73 @@ def _load_or_create_video_budget(
     *,
     now_utc: datetime,
     utcnow: Callable[[], datetime],
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> VideoStageBudget:
     """Atomically load the job's durable budget or establish its first start."""
-    from podcaster.generation import manifest_bytes
-
     proposed = VideoStageBudget.start(now_utc=now_utc, utcnow=utcnow)
-    captured: dict[str, Any] = {}
+    proposed_bytes = json.dumps(proposed.to_dict(), sort_keys=True).encode("utf-8")
+
+    def _commit() -> dict[str, Any]:
+        captured: dict[str, Any] = {}
+
+        def _apply(content: bytes | None) -> bytes:
+            if content is None:
+                captured.update(proposed.to_dict())
+                return proposed_bytes
+            existing = json.loads(content.decode("utf-8"))
+            if not isinstance(existing, dict):
+                raise TransientVideoError(f"invalid video budget for job_id={job_id}")
+            captured.update(existing)
+            return content
+
+        storage.update_bytes(
+            video_budget_path(job_id),
+            "application/json; charset=utf-8",
+            _apply,
+        )
+        return captured
+
+    try:
+        captured = operation_runner(_commit, 60.0)
+        return VideoStageBudget.from_dict(captured, now_utc=now_utc, utcnow=utcnow)
+    except TransientVideoError:
+        raise
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise TransientVideoError(f"invalid video budget for job_id={job_id}") from exc
+    except Exception as exc:
+        raise TransientVideoError(f"could not persist video budget for job_id={job_id}") from exc
+
+
+def _persist_video_budget_in_manifest(
+    storage: StorageBackend,
+    job_id: str,
+    budget: VideoStageBudget,
+) -> None:
+    """Mirror the authoritative lifecycle budget into a valid staged manifest."""
+    from podcaster.generation import manifest_bytes
 
     def _apply(content: bytes | None) -> bytes:
         if content is None:
-            raise TransientVideoError(f"no staged manifest for job_id={job_id}")
+            raise TransientVideoError(f"no manifest for job_id={job_id}")
         document = json.loads(content.decode("utf-8"))
         if not isinstance(document, dict):
             raise TransientVideoError(f"manifest for job_id={job_id} is not a dict")
         generation = document.setdefault("generation", {})
         if not isinstance(generation, dict):
             raise TransientVideoError(f"generation state for job_id={job_id} is not a dict")
-        existing = generation.get("video_budget")
-        if existing is None:
-            existing = proposed.to_dict()
-            generation["video_budget"] = existing
-        if not isinstance(existing, dict):
-            raise TransientVideoError(f"invalid video budget for job_id={job_id}")
-        captured.update(existing)
+        generation["video_budget"] = budget.to_dict()
         return manifest_bytes(document)
 
     try:
-        storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
-        return VideoStageBudget.from_dict(captured, now_utc=now_utc, utcnow=utcnow)
+        storage.update_bytes(
+            manifest_path(job_id),
+            "application/json; charset=utf-8",
+            _apply,
+        )
     except TransientVideoError:
         raise
-    except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
-        raise TransientVideoError(f"invalid video budget for job_id={job_id}") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise TransientVideoError(f"invalid manifest for job_id={job_id}") from exc
     except Exception as exc:
         raise TransientVideoError(f"could not persist video budget for job_id={job_id}") from exc
 
@@ -1658,12 +1697,29 @@ def run_video_generation(
     producer = clip_producer if clip_producer is not None else create_clip_queue_backend()
     fanout_enabled = _resolve_fanout(fanout, scratch, producer)
     run_id = uuid.uuid4().hex if fanout_enabled else None
+    owns_budget = budget is None
+    # The durable lifecycle starts in its own CAS record before any retryable
+    # preflight manifest I/O, so a malformed manifest cannot grant a fresh
+    # lifetime after repair and redelivery.
+    if budget is None:
+        utcnow = budget_utcnow or (
+            (lambda: current) if now is not None else lambda: datetime.now(timezone.utc)
+        )
+        budget = _load_or_create_video_budget(
+            storage,
+            job_id,
+            now_utc=current,
+            utcnow=utcnow,
+            operation_runner=storage_operation_runner or run_storage_operation,
+        )
+    stage_budget = budget
+    if on_budget_resolved is not None:
+        on_budget_resolved(stage_budget)
 
     # Load manifest
     raw_manifest = storage.get_bytes(manifest_path(job_id))
     if raw_manifest is None:
         raise TransientVideoError(f"no manifest for job_id={job_id}")
-
     try:
         manifest = json.loads(raw_manifest.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
@@ -1672,23 +1728,25 @@ def run_video_generation(
     if not isinstance(manifest, dict):
         raise TransientVideoError(f"manifest for job_id={job_id} is not a dict")
 
-    # The production entry owns one durable job start. Redelivery reloads that
-    # projection rather than granting a fresh lifetime. Lower-level callers may
-    # still inject an already-constructed budget for compatibility and fake clocks.
-    if budget is None:
-        utcnow = budget_utcnow or (
-            (lambda: current) if now is not None else lambda: datetime.now(timezone.utc)
-        )
-        budget = _load_or_create_video_budget(storage, job_id, now_utc=current, utcnow=utcnow)
-    stage_budget = budget
-    if on_budget_resolved is not None:
-        on_budget_resolved(stage_budget)
-
-    def release_owned_lease() -> None:
-        _release_editor_lease(
-            scratch,
+    if owns_budget:
+        _persist_video_budget_in_manifest(
+            storage,
             job_id,
-            run_id,
+            stage_budget,
+        )
+
+    def release_owned_lease(
+        lease_storage: StorageBackend | None = None,
+        lease_run_id: str | None = None,
+    ) -> None:
+        owned_storage = lease_storage if lease_storage is not None else scratch
+        owned_run_id = lease_run_id if lease_run_id is not None else run_id
+        if owned_storage is None or owned_run_id is None:
+            return
+        _release_editor_lease(
+            owned_storage,
+            job_id,
+            owned_run_id,
             budget=stage_budget,
             operation_runner=storage_operation_runner or run_storage_operation,
         )
@@ -1747,10 +1805,22 @@ def run_video_generation(
         logger.info("video skipped job_id=%s reason=%s", job_id, REASON_PIPELINE_CONFLICT)
         return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_PIPELINE_CONFLICT)
 
-    if fanout_enabled and run_id is not None:
+    generation = manifest.get("generation")
+    has_pending_distribution = (
+        isinstance(generation, dict)
+        and generation.get(STATUS_RENDERED_PENDING_DISTRIBUTION) is not None
+    )
+    if fanout_enabled or has_pending_distribution:
         from podcaster.video.editor import acquire_or_renew_lease
 
-        if not acquire_or_renew_lease(scratch, job_id, run_id, now=current):
+        resume_lease_storage = scratch if fanout_enabled and scratch is not None else storage
+        resume_run_id = run_id or uuid.uuid4().hex
+        if not acquire_or_renew_lease(
+            resume_lease_storage,
+            job_id,
+            resume_run_id,
+            now=current,
+        ):
             logger.info("video skipped job_id=%s reason=%s", job_id, REASON_EDITOR_LEASE_HELD)
             return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_EDITOR_LEASE_HELD)
         try:
@@ -1763,13 +1833,8 @@ def run_video_generation(
                 media_probe=media_probe,
                 storage_operation_runner=storage_operation_runner,
             )
-        except Exception:
-            release_owned_lease()
-            raise
-        if resumed is not None:
-            release_owned_lease()
-            return terminal_outcome(resumed)
-        release_owned_lease()
+        finally:
+            release_owned_lease(resume_lease_storage, resume_run_id)
     else:
         resumed = _resume_rendered_pending_distribution(
             job_id,
@@ -1780,8 +1845,8 @@ def run_video_generation(
             media_probe=media_probe,
             storage_operation_runner=storage_operation_runner,
         )
-        if resumed is not None:
-            return terminal_outcome(resumed)
+    if resumed is not None:
+        return terminal_outcome(resumed)
 
     # Load script
     raw_script = storage.get_bytes(script_path(job_id))
@@ -2042,6 +2107,7 @@ def run_video_generation(
                         producer=producer,
                         heartbeat=_heartbeat,
                         budget=budget,
+                        operation_runner=storage_operation_runner or run_storage_operation,
                         media_validator=(
                             lambda path, expected, timeout: collect_media_evidence(
                                 path,
