@@ -315,7 +315,84 @@ class TestValidatedCheckpoint:
             )
             is None
         )
-        assert not replay.exists()
+        assert replay.read_bytes() == source.read_bytes()
+
+    def test_failed_validation_preserves_existing_destination(self, backend, tmp_path, monkeypatch):
+        store = IntermediateStore(backend, "job-v")
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"a" * 2048)
+        identity = {"job_id": "job-v", "source_sha256": "a" * 64}
+        assert (
+            store.upload_validated(
+                "normalized_000.mp4",
+                source,
+                artifact_kind="normalized_segment",
+                identity=identity,
+                probe=self._probe,
+            )
+            is not None
+        )
+        dest = tmp_path / "dest.mp4"
+        dest.write_bytes(b"existing")
+        backend.put_bytes(
+            store.blob_path("normalized_000.mp4"),
+            b"b" * 2048,
+            "video/mp4",
+        )
+        temporaries: list[Path] = []
+        original_download = store.download
+
+        def tracked_download(name, temporary, **kwargs):
+            temporaries.append(temporary)
+            return original_download(name, temporary, **kwargs)
+
+        monkeypatch.setattr(store, "download", tracked_download)
+
+        assert (
+            store.download_validated(
+                "normalized_000.mp4",
+                dest,
+                artifact_kind="normalized_segment",
+                identity=identity,
+                probe=self._probe,
+            )
+            is None
+        )
+        assert dest.read_bytes() == b"existing"
+        assert temporaries and not temporaries[0].exists()
+
+    def test_identity_mismatch_preserves_existing_destination_without_download(
+        self, backend, tmp_path, monkeypatch
+    ):
+        store = IntermediateStore(backend, "job-v")
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"a" * 2048)
+        store.upload_validated(
+            "normalized_000.mp4",
+            source,
+            artifact_kind="normalized_segment",
+            identity={"job_id": "job-v", "source_sha256": "a" * 64},
+            probe=self._probe,
+        )
+        dest = tmp_path / "dest.mp4"
+        dest.write_bytes(b"existing")
+        monkeypatch.setattr(
+            store,
+            "download",
+            lambda *_args, **_kwargs: pytest.fail("identity mismatch downloaded remote media"),
+        )
+
+        assert (
+            store.download_validated(
+                "normalized_000.mp4",
+                dest,
+                artifact_kind="normalized_segment",
+                identity={"job_id": "job-v", "source_sha256": "b" * 64},
+                probe=self._probe,
+            )
+            is None
+        )
+        assert dest.read_bytes() == b"existing"
 
     def test_budgeted_validated_upload_writes_sidecar_and_replays(self, backend, tmp_path):
         store = IntermediateStore(backend, "job-v")

@@ -27,6 +27,7 @@ from podcaster.video.recorder import (
     FAILED_EXECUTION_LIMIT,
     MAX_DEQUEUE_COUNT,
     OUTCOME_FALLBACK,
+    OUTCOME_INSUFFICIENT,
     OUTCOME_RECORDED,
     OUTCOME_RETRY,
     OUTCOME_SKIPPED,
@@ -463,6 +464,112 @@ def test_process_message_transient_error_leaves_message(tmp_path) -> None:
 
     assert outcome.status == OUTCOME_RETRY
     assert queue.deleted == []  # left for redelivery / eventual poison
+
+
+@pytest.mark.parametrize(
+    "failure_call",
+    [1, 2, 3],
+    ids=["clipset-load", "admission-blob", "attempt-history"],
+)
+def test_process_message_transient_setup_storage_failure_leaves_message(
+    tmp_path, failure_call
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+    message = _message(1)
+    started = datetime(2026, 9, 21, tzinfo=timezone.utc)
+    calls = 0
+
+    def setup_operation_runner(call, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 30.0
+        if calls == failure_call:
+            raise StorageOperationTimeout("storage unavailable")
+        return call()
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        utcnow=lambda: started,
+        monotonic=lambda: 0.0,
+        setup_operation_runner=setup_operation_runner,
+    )
+
+    assert outcome.status == OUTCOME_RETRY
+    assert queue.deleted == []
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+@pytest.mark.parametrize(
+    "failure_site",
+    ["clipset-schema", "admission-schema", "timing-envelope"],
+)
+def test_process_message_permanent_setup_failure_terminalizes(
+    tmp_path, monkeypatch, failure_site
+) -> None:
+    scratch = _scratch(tmp_path)
+    if failure_site == "clipset-schema":
+        scratch.put_bytes(clipset_blob_path(JOB_ID), b"{malformed", "application/json")
+    else:
+        _stage_clipset(scratch)
+    if failure_site == "admission-schema":
+        scratch.put_bytes(
+            recorder.clip_admission_blob_path(JOB_ID, 1),
+            b"{malformed",
+            "application/json",
+        )
+    elif failure_site == "timing-envelope":
+        monkeypatch.setattr(
+            recorder,
+            "_timing_envelope",
+            lambda *_args: (_ for _ in ()).throw(ValueError("invalid timing envelope")),
+        )
+    queue = FakeQueue()
+    message = _message(1)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_INSUFFICIENT
+    assert queue.deleted == [message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["status"] == recorder.STATUS_RECORDING_INSUFFICIENT
+
+
+def test_process_message_malformed_attempt_entry_terminalizes(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    scratch.put_bytes(
+        recorder.clip_attempts_blob_path(JOB_ID, 1),
+        json.dumps(
+            {
+                "schema_version": recorder.ATTEMPT_STATE_SCHEMA_VERSION,
+                "executions": ["not-an-object"],
+            }
+        ).encode(),
+        "application/json",
+    )
+    queue = FakeQueue()
+    message = _message(1)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_INSUFFICIENT
+    assert queue.deleted == [message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["status"] == recorder.STATUS_RECORDING_INSUFFICIENT
 
 
 def test_drain_processes_until_empty(tmp_path) -> None:

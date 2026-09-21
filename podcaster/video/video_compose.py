@@ -3279,6 +3279,8 @@ def compose_video(
                     "start": item.segment.start_seconds,
                     "duration": item.segment.duration_seconds,
                     "repo": item.segment.repo.url if item.segment.repo is not None else None,
+                    "source_url": item.segment.source_url,
+                    "removed_reason": item.segment.removed_reason,
                 }
                 for item in segments
             ],

@@ -142,8 +142,15 @@ def _write_manifest(
     website_url: str | None = None,
     write_clip: bool = True,
 ) -> None:
+    payload = b"WEBMDATA"
+    evidence = MediaEvidence(
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        probe=ProbeEvidence(format_name="matroska,webm", duration_seconds=1.0),
+    )
+    content_path = clip_content_blob_path(job_id, index, evidence.sha256)
     if write_clip:
-        storage.put_bytes(clip_blob_path(job_id, index), b"WEBMDATA", _WEBM)
+        storage.put_bytes(content_path, payload, _WEBM)
     body = {
         "clip_id": f"clip-{index:03d}",
         "duration_ms": 10000,
@@ -152,6 +159,8 @@ def _write_manifest(
         "has_pages": has_pages,
         "website_url": website_url,
         "recovery_path": "fallback" if is_fallback else "direct",
+        "media_blob_path": content_path,
+        "media": evidence.to_dict(),
     }
     storage.put_bytes(
         clip_manifest_blob_path(job_id, index),
@@ -931,3 +940,55 @@ def test_hash_bound_terminal_media_ignores_late_legacy_overwrite(tmp_path):
         json.loads(storage.get_bytes(clip_manifest_blob_path("job1", 0)))["media_blob_path"]
         == content_path
     )
+
+
+@pytest.mark.parametrize(
+    ("clip_id", "path_job_id", "path_clip_index", "message"),
+    [
+        ("clip-999", "job1", 0, "clip_id does not match"),
+        ("not-a-clip-id", "job1", 0, "clip_id does not match"),
+        ("clip-000", "other-job", 0, "media path does not match"),
+        ("clip-000", "job1", 1, "media path does not match"),
+    ],
+    ids=["mismatched-clip-id", "invalid-clip-id", "cross-job-media", "cross-clip-media"],
+)
+def test_assemble_recording_rejects_manifest_identity_mismatch(
+    tmp_path, clip_id, path_job_id, path_clip_index, message
+):
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(1))
+    payload = b"owned-clip"
+    evidence = MediaEvidence(
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        probe=ProbeEvidence(format_name="matroska,webm", duration_seconds=1.0),
+    )
+    content_path = clip_content_blob_path(path_job_id, path_clip_index, evidence.sha256)
+    storage.put_bytes(content_path, payload, _WEBM)
+    manifest = {
+        "clip_id": clip_id,
+        "duration_ms": 1000,
+        "is_fallback": False,
+        "status": "success",
+        "media_blob_path": content_path,
+        "media": evidence.to_dict(),
+    }
+    storage.put_bytes(
+        clip_manifest_blob_path("job1", 0),
+        json.dumps(manifest).encode(),
+        _JSON,
+    )
+
+    downloads: list[str] = []
+    original_download = storage.download_file
+
+    def tracked_download(path, dest):
+        downloads.append(path)
+        return original_download(path, dest)
+
+    storage.download_file = tracked_download
+
+    with pytest.raises(RecordingInsufficientError, match=message):
+        assemble_recording(storage, clipset, tmp_path)
+
+    assert downloads == []

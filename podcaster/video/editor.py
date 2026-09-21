@@ -50,6 +50,7 @@ from podcaster.video.clip_manifest import CLIP_MANIFEST_SCHEMA_VERSION
 from podcaster.video.clipset import (
     Clipset,
     clip_blob_path,
+    clip_content_blob_path,
     clip_manifest_blob_path,
     clips_prefix,
     clipset_blob_path,
@@ -440,19 +441,43 @@ def assemble_recording(
                 index,
                 "terminal manifest has invalid media evidence",
             ) from exc
-        if budget is not None and expected_media is None:
+        raw_media_path = manifest.get("media_blob_path")
+        manifest_path = clip_manifest_blob_path(clipset.job_id, index)
+        manifest_exists = _storage_call(lambda: scratch.blob_exists(manifest_path))
+        if manifest_exists and not manifest:
             raise RecordingInsufficientError(
                 clipset.job_id,
                 index,
-                "terminal manifest is missing media evidence",
+                "terminal manifest is empty or malformed",
             )
-        raw_media_path = manifest.get("media_blob_path")
-        clip_path = (
-            str(raw_media_path)
-            if isinstance(raw_media_path, str) and raw_media_path.strip()
-            else clip_blob_path(clipset.job_id, index)
-        )
-        manifest_path = clip_manifest_blob_path(clipset.job_id, index)
+        if manifest:
+            if expected_media is None:
+                raise RecordingInsufficientError(
+                    clipset.job_id,
+                    index,
+                    "terminal manifest is missing media evidence",
+                )
+            expected_clip_id = f"clip-{index:03d}"
+            if manifest.get("clip_id") != expected_clip_id:
+                raise RecordingInsufficientError(
+                    clipset.job_id,
+                    index,
+                    "terminal manifest clip_id does not match clip index",
+                )
+            expected_media_path = clip_content_blob_path(
+                clipset.job_id,
+                index,
+                expected_media.sha256,
+            )
+            if raw_media_path != expected_media_path:
+                raise RecordingInsufficientError(
+                    clipset.job_id,
+                    index,
+                    "terminal manifest media path does not match clip identity",
+                )
+            clip_path = expected_media_path
+        else:
+            clip_path = clip_blob_path(clipset.job_id, index)
         dest = output_dir / f"clip_{index:03d}.webm"
 
         # Only treat a clip as terminal when its manifest sentinel is present
@@ -460,7 +485,7 @@ def assemble_recording(
         # on a timeout a half-written ``.webm`` may exist without a manifest, in
         # which case we fill the gap rather than compose an unverified clip.
         if (
-            _storage_call(lambda: scratch.blob_exists(manifest_path))
+            manifest_exists
             and _storage_call(lambda: scratch.blob_exists(clip_path))
             and _storage_call(lambda: scratch.download_file(clip_path, dest))
         ):

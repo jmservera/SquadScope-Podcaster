@@ -3399,6 +3399,68 @@ class TestComposeVideoCheckpointResume:
         ran = [str(c[0][0]) for c in runner.call_args_list]
         assert not any("scale" in r for r in ran)
 
+    @pytest.mark.parametrize(
+        ("initial_metadata", "updated_metadata"),
+        [
+            (
+                {"source_url": "https://example.test/old"},
+                {"source_url": "https://example.test/new"},
+            ),
+            (
+                {"removed_reason": None},
+                {"removed_reason": "Repository removed"},
+            ),
+        ],
+        ids=["source-url", "removed-reason"],
+    )
+    def test_segment_metadata_change_invalidates_composed_checkpoint(
+        self, tmp_path, initial_metadata, updated_metadata
+    ):
+        store = self._store(tmp_path)
+        clip = tmp_path / "seg.webm"
+        clip.write_bytes(b"\x00" * 2048)
+
+        def _probe(_path, _timeout):
+            return vc.ProbeEvidence(format_name="matroska,webm", duration_seconds=10.0)
+
+        initial = RecordedSegment(
+            segment=VideoSegment(
+                start_seconds=0.0,
+                duration_seconds=10.0,
+                **initial_metadata,
+            ),
+            video_path=clip,
+        )
+        compose_video(
+            segments=[initial],
+            output_dir=tmp_path / "initial",
+            runner=_touch_output_runner(),
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=_probe,
+        )
+
+        changed = RecordedSegment(
+            segment=VideoSegment(
+                start_seconds=0.0,
+                duration_seconds=10.0,
+                **updated_metadata,
+            ),
+            video_path=clip,
+        )
+        runner = MagicMock(side_effect=_touch_output_runner())
+        compose_video(
+            segments=[changed],
+            output_dir=tmp_path / "changed",
+            runner=runner,
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=_probe,
+        )
+
+        commands = [[str(arg) for arg in call.args[0]] for call in runner.call_args_list]
+        assert any("-vf" in command and "scale=" in " ".join(command) for command in commands)
+
     def test_resumes_normalized_segment(self, tmp_path):
         store = self._store(tmp_path)
         # Pre-seed a normalized clip checkpoint.

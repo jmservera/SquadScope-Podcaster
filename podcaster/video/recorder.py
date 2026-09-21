@@ -154,6 +154,10 @@ class RecorderConfigError(RuntimeError):
     """Raised when the recorder is not configured (no scratch/queue backend)."""
 
 
+class PermanentRecorderSetupError(ValueError):
+    """Malformed durable recorder state that cannot succeed on redelivery."""
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -193,16 +197,22 @@ def _load_or_create_admission(
     captured: dict[str, object] = {}
 
     def _update(current: bytes | None) -> bytes:
-        if current:
-            document = json.loads(current.decode("utf-8"))
-            admission = ClipAdmission.first_or_existing(clip_id, existing=document)
-        else:
-            admission = ClipAdmission.first_or_existing(clip_id, now_utc=now_utc)
+        try:
+            if current:
+                document = json.loads(current.decode("utf-8"))
+                admission = ClipAdmission.first_or_existing(clip_id, existing=document)
+            else:
+                admission = ClipAdmission.first_or_existing(clip_id, now_utc=now_utc)
+        except (KeyError, TypeError, UnicodeError, ValueError) as exc:
+            raise PermanentRecorderSetupError("invalid recorder admission state") from exc
         captured.update(admission.to_dict())
         return json.dumps(admission.to_dict(), separators=(",", ":")).encode("utf-8")
 
     scratch.update_bytes(path, _JSON_CONTENT_TYPE, _update)
-    return ClipAdmission.from_dict(captured)
+    try:
+        return ClipAdmission.from_dict(captured)
+    except (KeyError, TypeError, UnicodeError, ValueError) as exc:
+        raise PermanentRecorderSetupError("invalid recorder admission state") from exc
 
 
 def _attempt_document(payload: bytes | None) -> dict[str, Any]:
@@ -216,6 +226,7 @@ def _attempt_document(payload: bytes | None) -> dict[str, Any]:
         not isinstance(document, dict)
         or int(document.get("schema_version", 0)) != ATTEMPT_STATE_SCHEMA_VERSION
         or not isinstance(document.get("executions"), list)
+        or any(not isinstance(execution, Mapping) for execution in document["executions"])
     ):
         raise ValueError("invalid recorder attempt history")
     return document
@@ -235,7 +246,10 @@ def _begin_execution(
 
     def _update(current: bytes | None) -> bytes:
         nonlocal failed_count
-        document = _attempt_document(current)
+        try:
+            document = _attempt_document(current)
+        except (KeyError, TypeError, UnicodeError, ValueError) as exc:
+            raise PermanentRecorderSetupError("invalid recorder attempt history") from exc
         executions = document["executions"]
         existing = next(
             (execution for execution in executions if execution.get("key") == execution_key),
@@ -431,7 +445,12 @@ def _delete_queue_message(
 def load_clipset(scratch: StorageBackend, job_id: str) -> Clipset:
     """Load and parse the editor-written ``clipset.json`` for *job_id*."""
     payload = scratch.get_bytes(clipset_blob_path(job_id))
-    return Clipset.from_bytes(payload)
+    if payload is None:
+        raise FileNotFoundError(f"clipset.json is unavailable for job {job_id}")
+    try:
+        return Clipset.from_bytes(payload)
+    except (KeyError, TypeError, UnicodeError, ValueError) as exc:
+        raise PermanentRecorderSetupError("invalid recorder clipset") from exc
 
 
 def _clip_manifest_bytes(
@@ -820,6 +839,7 @@ def process_clip_message(
     monotonic: Callable[[], float] | None = None,
     media_validator: MediaValidator | None = None,
     fallback_renderer: FallbackRenderer | None = None,
+    setup_operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
     queue_operation_runner: Callable[[Callable[[], Any], float], Any] = _run_queue_operation,
 ) -> ClipOutcome:
     """Process one ``video-clip-jobs`` message end-to-end.
@@ -857,29 +877,41 @@ def process_clip_message(
     execution_key = f"{message.message_id}:{message.dequeue_count}"
 
     try:
-        clipset = load_clipset(scratch, job_id)
-        admission = _load_or_create_admission(
-            scratch,
-            job_id,
-            clip_index,
-            now_utc=now_utc,
+        clipset = setup_operation_runner(
+            lambda: load_clipset(scratch, job_id),
+            30.0,
         )
-        envelope = _timing_envelope(clipset, admission, env)
-        parent_budget = VideoStageBudget.from_dict(
-            envelope.budget.to_dict(),
-            now_utc=now_utc,
-            monotonic=monotonic,
-            utcnow=utcnow,
+        admission = setup_operation_runner(
+            lambda: _load_or_create_admission(
+                scratch,
+                job_id,
+                clip_index,
+                now_utc=now_utc,
+            ),
+            30.0,
         )
+        try:
+            envelope = _timing_envelope(clipset, admission, env)
+            parent_budget = VideoStageBudget.from_dict(
+                envelope.budget.to_dict(),
+                now_utc=now_utc,
+                monotonic=monotonic,
+                utcnow=utcnow,
+            )
+        except (KeyError, TypeError, UnicodeError, ValueError) as exc:
+            raise PermanentRecorderSetupError("invalid recorder timing state") from exc
         admitted_at_monotonic = monotonic()
-        failed_before = _begin_execution(
-            scratch,
-            job_id,
-            clip_index,
-            execution_key,
-            now_utc=now_utc,
+        failed_before = setup_operation_runner(
+            lambda: _begin_execution(
+                scratch,
+                job_id,
+                clip_index,
+                execution_key,
+                now_utc=now_utc,
+            ),
+            30.0,
         )
-    except Exception as exc:  # noqa: BLE001 - timing uncertainty fails closed
+    except PermanentRecorderSetupError as exc:
         outcome = write_fallback_manifest(
             job_id,
             clip_index,
@@ -896,6 +928,13 @@ def process_clip_message(
             operation_runner=queue_operation_runner,
         )
         return outcome
+    except Exception:
+        logger.exception(
+            "transient recorder setup failure job_id=%s clip_index=%d (left for retry)",
+            job_id,
+            clip_index,
+        )
+        return ClipOutcome(job_id, clip_index, OUTCOME_RETRY)
 
     remaining = _remaining_seconds(
         envelope,
