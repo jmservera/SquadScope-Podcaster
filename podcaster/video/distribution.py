@@ -1275,10 +1275,16 @@ def _try_chunked_upload(
     if result.succeeded:
         return result.video_id, result.video_url
     if result.status == "unknown":
+        code = str(result.details.get("code", "youtube_resumable_outcome_ambiguous"))
+        stage = (
+            "resumable_session_init"
+            if code == "youtube_resumable_init_ambiguous"
+            else "resumable_final_status"
+        )
         raise YouTubeDeliveryError(
-            "YouTube resumable session initiation outcome is unknown",
-            code="youtube_resumable_init_ambiguous",
-            stage="resumable_session_init",
+            result.error or "YouTube resumable upload outcome is unknown",
+            code=code,
+            stage=stage,
             retryable=False,
         )
     if raise_on_failure:
@@ -1572,7 +1578,10 @@ def distribute_video(
                 )
         except YouTubeDeliveryError as exc:
             result.errors.append(str(exc))
-            if exc.code == "youtube_resumable_init_ambiguous":
+            if exc.code in {
+                "youtube_resumable_init_ambiguous",
+                "youtube_resumable_final_status_ambiguous",
+            }:
                 result.provider_outcomes["youtube"] = PUBLICATION_UNKNOWN
                 result.provider_records["youtube"] = {
                     "provider": "youtube",
@@ -1583,7 +1592,7 @@ def distribute_video(
                     "transport_status": "response_lost",
                     "verification": "none",
                     "checked_at": datetime.now(timezone.utc).isoformat(),
-                    "evidence_source": "youtube_resumable_session_init",
+                    "evidence_source": exc.stage,
                     "last_error_code": exc.code,
                     "retry_blocked": True,
                 }

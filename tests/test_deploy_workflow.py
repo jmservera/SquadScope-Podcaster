@@ -183,6 +183,7 @@ def test_video_aca_preserves_platform_kill_reserve_for_application_deadline() ->
     assert "param videoVisibilityTimeoutSeconds int = 5400" in aca_video_module
     assert "JOB_DEADLINE_SECONDS = 5100" in budget_module
     assert "five minutes before this 5400-second platform limit" in aca_video_module
+    assert "args: [\n            '--max-messages'\n            '1'\n          ]" in aca_video_module
 
 
 def test_reusable_deploy_workflow_deploys_bicep_infrastructure() -> None:

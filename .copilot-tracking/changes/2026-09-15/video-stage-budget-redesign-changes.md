@@ -10,15 +10,15 @@
 
 ## Execution Status
 
-* Status: Partial — P07 review remediation planned
+* Status: Complete — P07 review remediation implemented and validated
 * Declared invocation scope: Full plan
-* Completed scope markers: P01-P06 and all tasks
-* All remaining active-plan markers: P07-T01 through P07-T05
-* Status basis: P06 was independently accepted and pushed in `eecaffc`; 13 unresolved PR #682 review threads are now design-mapped for lockout correction.
+* Completed scope markers: P01-P07 and all tasks
+* All remaining active-plan markers: None
+* Status basis: As of this remediation commit, the five correctness findings open at the start of this cycle are implemented and locally validated. Live PR thread state is queried after push rather than copied here as a count that can immediately drift.
 
 ## Execution Summary
 
-The shared budget, recorder convergence, browser-free fallback, owned cancellation, validated resume, verified archive/readback, per-mutation provider admission, bounded shutdown/queue disposition, and fail-closed audio publication gate are complete. P07 is the active correction cycle for 13 unresolved PR review threads. Production/W38/provider operations remain prohibited.
+The shared budget, recorder convergence, browser-free fallback, owned cancellation, validated resume, verified archive/readback, per-mutation provider admission, bounded shutdown/queue disposition, fail-closed audio publication gate, and P07 production/doc/infra corrections are complete. Production/W38/provider operations remain prohibited.
 
 ## Completed Work
 
@@ -30,7 +30,7 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 * Completion evidence: Spotify config and auto-publish environment no longer trigger provider calls; approved review still publishes; ambiguous approved outcome remains `publication_unknown` and non-final; integration covers blocked manual request followed by approved publication.
 * Validation: Final P06 correction `eecaffc` passed 3155 tests (2 skipped, 2 deselected), Ruff, format, compileall, lockfile verification, and independent review; hosted PR checks are green.
 
-### P07 before-work design review
+### P07 before-work design review (historical)
 
 * Related phase or task: P07, P07-T01 through P07-T05.
 * Files: RPI plan, phase details, and this changes record only.
@@ -38,6 +38,13 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 * Assignment: Bender is the correction implementer because the original Copilot author is locked out. Fry independently reviews functional/test completeness. Hermes independently reviews lease/CAS/SSRF/poison/provider ambiguity/no-repeat/public-verification preservation. Reviewers are read-only.
 * Design decisions: Scope malformed cleanup; remove all partial artifacts on failure; cover full recorder finalization with lease and budget; send-first handoff only while provider admission remains usable; acquire editor ownership before resume; bound final reap; replay checkpoints before Playwright; persist YouTube init ambiguity as retry-blocked unknown; budget each named storage call; wrap resumed terminal outcomes; cap ACA recorder entrypoint at one message.
 * Material blockers: None. The separate distribution worker remains deferred to `jmservera/SquadScope-Podcaster#681`; P07 does not reopen that design.
+
+### P07 review remediation implementation
+
+* Related phase or task: P07-T01 through P07-T04.
+* Files: Video editor/recorder handoff, generation, distribution/YouTube, ACA editor command wiring, focused regression tests, and this audit record.
+* What changed and why: Completed the 13 mapped review corrections, including one-message ACA editor execution, fail-closed recorder terminal-status admission, conversion of the owned production recorder result into the generation pipeline's `RecordedSegment`, and retry-blocking ambiguity when the final YouTube resumable status response is lost after mutation.
+* Completion evidence: Empty/unknown manifest status fails closed; the real default owned delegate path produces a valid `RecordedSegment`; final YouTube status-query loss becomes retry-blocked `publication_unknown`; and the production ACA command processes one message per replica while explicit larger local/test caps remain supported.
 
 ### Shared budget and conservative projection
 
@@ -170,23 +177,31 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 | P06 focused Ruff/format/compile/diff | Changed Python and complete diff | Passed | All checks passed; 4 files formatted |
 | `pytest tests/ -q` after P06 | Full repository | Passed | 3142 passed, 2 skipped, 2 deselected; one existing httpx deprecation warning |
 | Full Ruff/format/compile/diff after P06 | Python and complete diff | Passed | All checks passed; 187 files formatted |
+| P07 five-finding focused regressions | ACA config, editor, generation, distribution, YouTube | Passed locally | 8 passed |
+| P07 expanded video suites | Deploy/video runner/editor/video generation/YouTube/distribution | Passed locally | 515 passed, 2 deselected |
+| `pytest tests/ -q` after P07 | Full repository | Passed locally | 3223 passed, 2 skipped, 2 deselected; one existing httpx deprecation warning |
+| P07 focused Ruff/format | Changed Python and focused tests | Passed locally | All checks passed; 10 files already formatted |
+| P07 Bicep build | `infra/modules/aca-video.bicep` and `infra/main.bicep` | Passed locally | Both compiled; existing nullable-module BCP318 warning in `main.bicep` |
+| P07 changed-module Checkov | `infra/modules/aca-video.bicep` | Passed locally | 5 passed, 0 failed |
+| P07 full infra Checkov | `infra/` | Baseline findings | 36 passed, 7 pre-existing failures outside the changed module |
+| P07 deploy contract tests | `tests/test_deploy_workflow.py` | Passed locally | 33 passed |
+| P07 Zizmor workflow scan | `.github/workflows/` | Baseline findings | Completed with 98 findings (77 suppressed); no finding points to the added process-contract step |
 
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P01-P06 complete; P07 active with P07-T01 through P07-T04 dependency-ready.
-* Completed-work evidence and handoff prose: Current through `eecaffc`.
-* Validation, blockers, remaining work, and follow-up items: Current for the 13-thread correction cycle.
-* Review readiness: Source implementation has not started; design handoff is ready for Bender.
+* Plan markers and phase details: P01-P07 implementation complete.
+* Completed-work evidence and handoff prose: Current through this P07 remediation.
+* Validation, blockers, remaining work, and follow-up items: Current for the five-finding correction cycle.
+* Review readiness: Source implementation and local validation are complete.
 
 ## Blockers
 
-* None. The 13 unresolved review threads are actionable local corrections. The separate distribution worker remains a non-blocking follow-up in `jmservera/SquadScope-Podcaster#681`.
+* None. The separate distribution worker remains a non-blocking follow-up in `jmservera/SquadScope-Podcaster#681`.
 
 ## Remaining Work
 
-* Bender implements P07-T01 through P07-T04 with focused tests.
-* Fry and Hermes independently execute P07-T05 and record acceptance or rejection under strict lockout.
-* Only after acceptance: update delivery evidence and resolve the corresponding review threads; do not merge or deploy.
+* Push this remediation commit, reply to and resolve each targeted PR thread after verifying the pushed fix, then re-query PR #682 for newly surfaced correctness findings.
+* Do not merge or deploy as part of this remediation.
 
 ## Follow-Up Items
 
@@ -195,17 +210,17 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 * Implementation commit: `4033df6`.
 * Pushed branch: `origin/squad/video-stage-budget-redesign`.
 * Unmerged pull request: #682.
-* Active unresolved review set: 13 threads, mapped in P07 phase details.
+* Review-thread source of truth: live PR #682 GraphQL state after push; no unresolved count is duplicated in this record.
 * Merge/deploy/production mutation: Not performed.
 
 ## Return-to-Caller State
 
-* Implementation execution status: Partial
-* Declared scope and markers: Full plan; P01-P06 complete, P07 active.
-* Validation coverage: Completed implementation through P06 passed mandatory focused/full pytest, real fanout integration, Ruff, compile, Bicep, Checkov, lock, diff, and hosted checks; P07 validation is specified but not yet run.
+* Implementation execution status: Complete.
+* Declared scope and markers: Full plan; P01-P07 complete.
+* Validation coverage: P07 passed focused and expanded regressions, full pytest, touched-file Ruff and format, Bicep builds, and changed-module Checkov. Full-infra Checkov retains seven unrelated baseline findings.
 * Blockers: None.
-* Current plan and detail updates: P07 review-remediation design and exact assignment added.
-* Planning and critique state: P07 implementation-ready.
+* Current plan and detail updates: P07 review-remediation implementation and validation are complete.
+* Planning and critique state: P07 complete.
 * Follow-up items: Distribution worker tracked in #681.
-* Review readiness or no-handoff reason: Bender implementation handoff ready; Fry/Hermes review follows.
-* Continuation owner: Bender (implementation), then Fry and Hermes (independent review).
+* Review readiness or no-handoff reason: Implementation is validated; live PR thread resolution and post-push re-query are operational follow-through.
+* Continuation owner: Bender for thread replies/resolution; PR owner for merge decision.

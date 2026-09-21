@@ -360,6 +360,42 @@ def test_assemble_recording_reconstructs_metadata(tmp_path):
         assert rec.video_path.exists()
 
 
+@pytest.mark.parametrize(
+    ("status", "is_fallback"),
+    [("success", False), ("fallback", True)],
+)
+def test_assemble_recording_accepts_explicit_terminal_success_statuses(
+    tmp_path, status, is_fallback
+):
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(1))
+    _write_manifest(storage, "job1", 0, is_fallback=is_fallback)
+    manifest = json.loads(storage.get_bytes(clip_manifest_blob_path("job1", 0)))
+
+    assert manifest["status"] == status
+    result = assemble_recording(storage, clipset, tmp_path)
+
+    assert len(result.recorded) == 1
+    assert result.recorded[0].is_fallback is is_fallback
+
+
+@pytest.mark.parametrize("status", ["", "unexpected_terminal"])
+def test_assemble_recording_rejects_unrecognized_terminal_status(tmp_path, status):
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(1))
+    _write_manifest(storage, "job1", 0)
+    manifest_path = clip_manifest_blob_path("job1", 0)
+    manifest = json.loads(storage.get_bytes(manifest_path))
+    manifest["status"] = status
+    storage.put_bytes(manifest_path, json.dumps(manifest).encode(), _JSON)
+
+    with pytest.raises(
+        RecordingInsufficientError,
+        match="terminal manifest has invalid recorder status",
+    ):
+        assemble_recording(storage, clipset, tmp_path)
+
+
 def test_assemble_recording_stops_after_budgeted_probe_timeout(tmp_path):
     storage = FakeStorage()
     clipset = plan_or_load_clipset(storage, "job1", _segments(1))

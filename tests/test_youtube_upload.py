@@ -314,6 +314,39 @@ def test_upload_chunked_non_retryable_fails(tmp_path):
     assert "403" in result.error
 
 
+def test_upload_chunked_blocks_retry_when_final_status_response_is_lost(tmp_path):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+
+    class _LostFinalStatus:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            content_range = (headers or {}).get("Content-Range")
+            if content_range == f"bytes 0-{total - 1}/{total}":
+                return 308, {"range": f"bytes=0-{total - 1}"}, b""
+            if content_range == f"bytes */{total}":
+                raise TimeoutError("final status response lost")
+            raise AssertionError(f"unexpected request: {method} {content_range}")
+
+    result = upload_chunked(
+        _LostFinalStatus(),
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda _seconds: None,
+        mutation_started=True,
+    )
+
+    assert result.status == "unknown"
+    assert result.bytes_uploaded == total
+    assert result.details == {
+        "retry_blocked": True,
+        "code": "youtube_resumable_final_status_ambiguous",
+    }
+    assert "final resumable status query outcome is unknown" in result.error
+
+
 # --- upload_video top-level ---------------------------------------------------
 
 

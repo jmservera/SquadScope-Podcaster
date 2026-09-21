@@ -237,6 +237,10 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             '-m'
             'podcaster.video.job_runner'
           ]
+          args: [
+            '--max-messages'
+            '1'
+          ]
           resources: {
             cpu: json(jobCpu)
             memory: jobMemory

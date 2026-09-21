@@ -2623,10 +2623,19 @@ def record_episode(
                     return owned_record_segment(segment, output_dir, timeout)
                 from podcaster.video.recorder import _owned_production_record_segment
 
-                return _owned_production_record_segment(
+                recording = _owned_production_record_segment(
                     segment,
                     output_dir,
                     timeout_seconds=timeout,
+                )
+                return RecordedSegment(
+                    segment=segment,
+                    video_path=recording.video_path,
+                    is_fallback=recording.is_fallback,
+                    has_pages=recording.has_pages,
+                    website_url=recording.website_url,
+                    is_removed=recording.is_removed,
+                    recovery_path=recording.recovery_path,
                 )
             if browser is None:
                 raise RuntimeError("browser is required for inline recording")

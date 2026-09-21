@@ -19,6 +19,7 @@ Identity-only data plane (Blob + Queue). No keys, tokens, or secrets logged.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import logging
@@ -3352,8 +3353,19 @@ def drain(
     return outcomes
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Entry point for the video ACA container job."""
+    parser = argparse.ArgumentParser(description="Process queued video jobs")
+    parser.add_argument(
+        "--max-messages",
+        type=int,
+        default=32,
+        help="maximum queue messages to process before exiting",
+    )
+    args = parser.parse_args(argv)
+    if args.max_messages < 1:
+        parser.error("--max-messages must be at least 1")
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     from podcaster.queue import create_video_queue_backend
@@ -3376,7 +3388,7 @@ def main() -> int:
             logger.exception("managed identity token startup health check failed")
             return 3
 
-    outcomes = drain(queue, storage, config)
+    outcomes = drain(queue, storage, config, max_messages=args.max_messages)
     completed = sum(1 for o in outcomes if o.status == STATUS_COMPLETED)
     skipped = sum(1 for o in outcomes if o.status == STATUS_SKIPPED)
     failed = sum(1 for o in outcomes if o.status == STATUS_FAILED)

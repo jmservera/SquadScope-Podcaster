@@ -20,6 +20,31 @@ jobs:
       - name: Build Bicep templates
         run: az bicep build --file infra/main.bicep --stdout >/dev/null
 
+      - name: Verify video editor process contract
+        run: |
+          az bicep build --file infra/modules/aca-video.bicep --stdout 2>/dev/null |
+            python3 -c '
+          import json
+          import sys
+
+          template = json.load(sys.stdin)
+          jobs = [
+              resource
+              for resource in template["resources"]
+              if resource["type"] == "Microsoft.App/jobs"
+          ]
+          assert len(jobs) == 1, f"expected one video job, found {len(jobs)}"
+          containers = jobs[0]["properties"]["template"]["containers"]
+          assert len(containers) == 1, f"expected one video container, found {len(containers)}"
+          container = containers[0]
+          assert container["command"] == [
+              "python",
+              "-m",
+              "podcaster.video.job_runner",
+          ], container["command"]
+          assert container["args"] == ["--max-messages", "1"], container["args"]
+          '
+
       - name: Verify storage network access contract (#675)
         run: |
           arm_json=$(az bicep build --file infra/main.bicep --stdout 2>/dev/null)

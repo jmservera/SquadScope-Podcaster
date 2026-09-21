@@ -487,6 +487,35 @@ class TestUploadToYouTube:
         assert raised.value.code == "youtube_resumable_init_ambiguous"
         assert raised.value.retryable is False
 
+    def test_chunked_final_status_ambiguity_is_not_retryable(
+        self, video_file, youtube_config, monkeypatch
+    ):
+        from podcaster.video.youtube import YouTubeUploadResult
+
+        monkeypatch.setattr(
+            "podcaster.video.youtube.upload_video",
+            lambda *args, **kwargs: YouTubeUploadResult(
+                status="unknown",
+                error="final status response lost",
+                details={
+                    "retry_blocked": True,
+                    "code": "youtube_resumable_final_status_ambiguous",
+                },
+            ),
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            _try_chunked_upload(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                tags=None,
+                transport=FakeTransport(),
+            )
+        assert raised.value.code == "youtube_resumable_final_status_ambiguous"
+        assert raised.value.stage == "resumable_final_status"
+        assert raised.value.retryable is False
+
 
 # --- Spotify RSS Tests ---
 
@@ -1151,6 +1180,94 @@ class TestDistributeVideo:
         assert recorded[0][0] == "youtube"
         assert recorded[0][1]["outcome"] == "publication_unknown"
         assert recorded[0][1]["retry_blocked"] is True
+
+    def test_youtube_final_status_ambiguity_persists_unknown_and_blocks_retry(
+        self, video_file, monkeypatch
+    ):
+        from podcaster.video.youtube import upload_chunked
+
+        recorded: list[tuple[str, dict]] = []
+        requests: list[str | None] = []
+
+        class LostFinalStatusTransport:
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                content_range = (headers or {}).get("Content-Range")
+                requests.append(content_range)
+                total = video_file.stat().st_size
+                if content_range == f"bytes 0-{total - 1}/{total}":
+                    return 308, {"range": f"bytes=0-{total - 1}"}, b""
+                if content_range == f"bytes */{total}":
+                    raise TimeoutError("final status response lost")
+                raise AssertionError(f"unexpected request: {method} {content_range}")
+
+        transport = LostFinalStatusTransport()
+
+        def lose_final_status(path, *args, **kwargs):
+            return upload_chunked(
+                transport,
+                "https://upload.example/session",
+                "token",
+                path,
+                path.stat().st_size,
+                sleep=lambda _seconds: None,
+                mutation_started=True,
+            )
+
+        monkeypatch.setattr("podcaster.video.youtube.upload_video", lose_final_status)
+
+        def chunked_upload(path, title, description, config, **kwargs):
+            return _try_chunked_upload(
+                path,
+                title,
+                description,
+                config,
+                tags=kwargs.get("tags"),
+                transport=transport,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", chunked_upload)
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+        result = distribute_video(
+            video_file,
+            "job-final-status-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            on_published=lambda platform, record: recorded.append((platform, record)),
+            publish_run_id="8",
+        )
+
+        assert result.provider_outcomes["youtube"] == "publication_unknown"
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert result.provider_records["youtube"]["evidence_source"] == "resumable_final_status"
+        assert recorded[0][0] == "youtube"
+        assert recorded[0][1]["outcome"] == "publication_unknown"
+        assert recorded[0][1]["retry_blocked"] is True
+        total = video_file.stat().st_size
+        assert requests == [f"bytes 0-{total - 1}/{total}", f"bytes */{total}"]
+
+        request_count = len(requests)
+        redelivery = distribute_video(
+            video_file,
+            "job-final-status-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            published={"youtube": recorded[0][1]},
+            publish_run_id="8",
+        )
+
+        assert len(requests) == request_count
+        assert redelivery.provider_outcomes["youtube"] == "publication_unknown"
+        assert redelivery.provider_records["youtube"]["retry_blocked"] is True
 
     def test_required_youtube_but_disabled_is_terminal_config_failure(
         self, video_file, monkeypatch

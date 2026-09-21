@@ -58,6 +58,7 @@ from podcaster.video.clipset import (
 )
 from podcaster.video.intermediates import StorageOperationTimeout, run_storage_operation
 from podcaster.video.process import MediaEvidence, MediaValidationError, collect_media_evidence
+from podcaster.video.recorder import STATUS_FALLBACK, STATUS_RECORDING_INSUFFICIENT, STATUS_SUCCESS
 from podcaster.video.sync_plan import VideoSegment
 from podcaster.video.video_gen import RecordedSegment, RecordingResult
 
@@ -424,11 +425,17 @@ def assemble_recording(
                 "terminal manifest has unknown or legacy schema",
             )
         status = str(manifest.get("status", ""))
-        if status == "recording_insufficient":
+        if status == STATUS_RECORDING_INSUFFICIENT:
             raise RecordingInsufficientError(
                 clipset.job_id,
                 index,
                 str(manifest.get("failure_reason", "local fallback unavailable")),
+            )
+        if manifest and status not in {STATUS_SUCCESS, STATUS_FALLBACK}:
+            raise RecordingInsufficientError(
+                clipset.job_id,
+                index,
+                f"terminal manifest has invalid recorder status: {status or '<empty>'}",
             )
         media_data = manifest.get("media")
         try:

@@ -362,14 +362,28 @@ def upload_chunked(
             )
 
     # Loop completed without a 200/201 — query the server for a final id.
-    offset, completed_id = _query_resume_offset(
-        http,
-        session_uri,
-        access_token,
-        total_size,
-        budget=budget,
-        mutation_started=mutation_started,
-    )
+    try:
+        offset, completed_id = _query_resume_offset(
+            http,
+            session_uri,
+            access_token,
+            total_size,
+            budget=budget,
+            mutation_started=mutation_started,
+        )
+    except ProviderMutationAdmissionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - provider outcome is ambiguous after mutation
+        logger.error("Final YouTube resumable status query outcome is unknown: %s", exc)
+        return YouTubeUploadResult(
+            status="unknown",
+            bytes_uploaded=start,
+            error=f"final resumable status query outcome is unknown: {exc}",
+            details={
+                "retry_blocked": True,
+                "code": "youtube_resumable_final_status_ambiguous",
+            },
+        )
     if completed_id:
         return _success_result(completed_id, total_size)
     return YouTubeUploadResult(

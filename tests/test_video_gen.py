@@ -2515,6 +2515,48 @@ class TestRecordEpisodeCheckpointResume:
         assert calls and calls[0] > 0
         mock_pw.assert_not_called()
 
+    @patch("podcaster.video.recorder._owned_production_record_segment")
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    def test_budgeted_recording_wraps_default_owned_result(self, owned_record, tmp_path):
+        from podcaster.video.recorder import RecordResult
+
+        store = self._store(tmp_path)
+        output_path = tmp_path / "out" / "owned.webm"
+        output_path.parent.mkdir(parents=True)
+        output_path.write_bytes(b"owned-browser-result")
+        owned_record.return_value = RecordResult(
+            video_path=output_path,
+            duration_ms=2000,
+            is_fallback=True,
+            has_pages=True,
+            website_url="https://example.test",
+            is_removed=True,
+            recovery_path="website",
+        )
+        segment = _make_segment(duration=2.0)
+
+        result = record_episode(
+            _make_plan(segment, total=2.0),
+            output_dir=output_path.parent,
+            budget=VideoStageBudget.start(),
+            intermediates=store,
+        )
+
+        recorded = result.recorded[0]
+        assert recorded.segment == segment
+        assert recorded.is_fallback is True
+        assert recorded.has_pages is True
+        assert recorded.website_url == "https://example.test"
+        assert recorded.is_removed is True
+        assert recorded.recovery_path == "website"
+        checkpoint = json.loads(store.read_text("recording_000.json"))
+        assert checkpoint["is_fallback"] is True
+        assert checkpoint["has_pages"] is True
+        assert checkpoint["website_url"] == "https://example.test"
+        assert checkpoint["is_removed"] is True
+        assert checkpoint["recovery_path"] == "website"
+        owned_record.assert_called_once()
+
 
 # --- Per-task recording retry (issue #483) ---
 
