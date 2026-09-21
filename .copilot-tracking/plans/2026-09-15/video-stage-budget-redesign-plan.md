@@ -5,7 +5,7 @@
 
 * Task ID: video-stage-budget-redesign
 * Task slug: video-stage-budget-redesign
-* Planning status: Ready; critique revisions applied
+* Planning status: Active review remediation; P07 design review complete
 * Plan date: 2026-09-15
 * Phase details: .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 * Plan critique: .copilot-tracking/reviews/plans/2026-09-15/video-stage-budget-redesign-plan-critique.md
@@ -28,7 +28,7 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 
 ### Unresolved Decisions or Blockers
 
-* None.
+* No design blocker. PR #682 has 13 unresolved review threads assigned to Bender for correction under author lockout, followed by independent Fry and Hermes review.
 
 ## User Decisions and Requirements
 
@@ -248,7 +248,7 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Detail section: P05-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
 <!-- rpi:phase id=P06 -->
-### [~] P06: Fail closed audio-only publication
+### [x] P06: Fail closed audio-only publication
 
 * Intent: Keep synthesized audio staged until an explicit approved/manual publication gate invokes `publish_staged_job`.
 * Dependencies: P05 and the existing orchestration review gate.
@@ -261,16 +261,59 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Detail section: P06-T01 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
 <!-- rpi:task id=P06-T02 -->
-#### [~] P06-T02: Validate, independently review, and update PR delivery
+#### [x] P06-T02: Validate, independently review, and update PR delivery
 
 * Requirement and evidence: Required focused/full gates, strict lockout review, follow-up commit, push, and PR #682 evidence update.
 * Expected result: Audio no-auto and approved-gate behavior are accepted, video behavior remains independent, and PR #682 stays open with checks triggered.
 * Detail section: P06-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
+<!-- rpi:phase id=P07 -->
+### [~] P07: Remediate unresolved PR review findings
+
+* Intent: Correct all 13 unresolved PR #682 review threads without weakening publication, lease, CAS, SSRF, poison, provider ambiguity/no-repeat, or public-verification safeguards.
+* Dependencies: P06 complete; this before-work design review accepted; original Copilot author remains locked out.
+
+<!-- rpi:task id=P07-T01 -->
+#### [ ] P07-T01: Correct artifact cleanup, process reap, and browser-free replay
+
+* Requirement and evidence: Threads `PRRT_kwDOSzuis86iosWy`, `PRRT_kwDOSzuis86iosXi`, `PRRT_kwDOSzuis86iosYL`, `PRRT_kwDOSzuis86ipal6`, and `PRRT_kwDOSzuis86ipamb`.
+* Expected result: Cleanup is scoped and atomic, killed processes have a bounded final reap, and fully checkpointed replay never requires Playwright.
+* Detail section: P07-T01 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P07-T02 -->
+#### [ ] P07-T02: Correct lease, redelivery, ownership, cleanup, and ACA entrypoint behavior
+
+* Requirement and evidence: Threads `PRRT_kwDOSzuis86ipakb`, `PRRT_kwDOSzuis86ipak9`, `PRRT_kwDOSzuis86ipalc`, `PRRT_kwDOSzuis86ipaoD`, and `PRRT_kwDOSzuis86ipao6`.
+* Expected result: Recorder visibility covers finalization, usable provider-window redelivery is not visibility-delayed, resumed distribution is single-owner, terminal resumed outcomes clean up, and each ACA recorder execution consumes one message.
+* Detail section: P07-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P07-T03 -->
+#### [ ] P07-T03: Fail closed on ambiguous YouTube resumable-session initiation
+
+* Requirement and evidence: Thread `PRRT_kwDOSzuis86ipanQ`.
+* Expected result: A transport-ambiguous session-init POST persists deterministic `publication_unknown` evidence and blocks blind session/video creation retries.
+* Detail section: P07-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P07-T04 -->
+#### [ ] P07-T04: Budget editor fan-in probes and recorder finalization storage calls
+
+* Requirement and evidence: Threads `PRRT_kwDOSzuis86ipany` and `PRRT_kwDOSzuis86ipaoh`, each covering two call sites.
+* Expected result: Every affected storage call uses the remaining stage/recorder budget and stops without late side effects after timeout.
+* Detail section: P07-T04 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P07-T05 -->
+#### [ ] P07-T05: Validate and independently accept the correction
+
+* Requirement and evidence: Reviewer-protocol lockout and all 13 unresolved PR #682 threads.
+* Expected result: Bender implements only the correction boundary; Fry independently reviews functional/test completeness; Hermes independently reviews lease/CAS/SSRF/poison/provider ambiguity/no-repeat/public-verification preservation; all focused and comprehensive checks pass before threads are eligible for resolution.
+* Detail section: P07-T05 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
 ## Dependencies
 
 * Baseline provider evidence and distribution state machine: must remain additive and fail closed.
 * Existing ffmpeg/ffprobe/Playwright/storage test doubles: phase details will assign exact coverage.
+* P07 correction ownership: Bender. Original Copilot author is locked out for this revision cycle.
+* P07 acceptance ownership: Fry for functional/regression evidence and Hermes for security/provider/lease invariants. Neither reviewer writes the correction they review.
 
 ## Critique Disposition
 
@@ -287,9 +330,10 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 ## Follow-Up Items
 
 * Separate distribution worker with atomic outbox/claim, reconcile-before-mutate, independent queue/lease/recovery, and provider crash matrix: #681.
+* P07 must not implement that separate worker. It may add only the bounded same-queue handoff needed to avoid delaying a still-admissible durable distribution retry; once provider admission is no longer possible, the record remains durable pending for `jmservera/SquadScope-Podcaster#681` rather than blind mutation.
 
 ## Handoff
 
 * Implementation artifact: .copilot-tracking/changes/2026-09-15/video-stage-budget-redesign-changes.md
-* Ready phase or task: P01-T01.
-* Remaining provisional question or blocker: None.
+* Ready phase or task: P07-T01 through P07-T04 are dependency-ready for Bender and may be implemented as one correction commit; P07-T05 follows.
+* Remaining provisional question or blocker: None. The safest local decisions are fixed in P07 details.

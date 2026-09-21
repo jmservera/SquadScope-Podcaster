@@ -17,7 +17,8 @@
 | P03 | Bound render, archive, and resume | Complete | P03, P03-T01, P03-T02, P03-T03 |
 | P04 | Persist render boundary and bound distribution/shutdown | Complete | P04, P04-T01, P04-T02, P04-T03 |
 | P05 | Validate, review, follow up, and deliver | Complete | P05, P05-T01, P05-T02, P05-T03 |
-| P06 | Fail closed audio-only publication | Active: P06-T02 | P06, P06-T01, P06-T02 |
+| P06 | Fail closed audio-only publication | Complete | P06, P06-T01, P06-T02 |
+| P07 | Remediate unresolved PR review findings | Active: P07-T01-P07-T04 ready | P07, P07-T01, P07-T02, P07-T03, P07-T04, P07-T05 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish shared budget and evidence contracts
@@ -433,6 +434,133 @@ Make synthesis responsible only for staged audio, readiness state, and independe
 * Independent reviewer accepts the exact audio-gate change; rejected findings use separate lockout implementation.
 * A conventional follow-up commit with required trailers is pushed to the existing PR #682 branch.
 * PR #682 description/test evidence is updated; PR remains open and unmerged, and hosted checks start.
+
+<!-- rpi:phase id=P07 -->
+## P07: Remediate unresolved PR review findings
+
+### Context
+
+PR #682 received 13 unresolved review threads after P06 was independently accepted and pushed in `eecaffc`. The original Copilot author is locked out of this correction cycle. This design review assigns Bender as the sole correction implementer, Fry as independent functional/test reviewer, and Hermes as independent safeguard/security reviewer.
+
+### Intent
+
+Apply the narrowest backward-compatible corrections, preserve completed P01-P06 history, and prove that publication, lease, CAS, SSRF, poison, provider ambiguity/no-repeat, and public-verification gates remain at least as strict.
+
+### Boundaries
+
+* Included writes: `podcaster/video/editor.py`, `edl_render.py`, `intermediates.py`, `job_runner.py`, `process.py`, `video_gen.py`, `youtube.py`, `distribution.py`, `recorder.py`; `infra/modules/aca-recorder.bicep` and only directly threaded deployment parameters/docs; focused tests in existing files; RPI/PR evidence.
+* Excluded writes: unrelated synthesis/audio APIs, provider credentials/config payloads, new public response fields, production state, deployment, W38 state, merge, thread resolution before acceptance, and the separate distribution worker tracked by `jmservera/SquadScope-Podcaster#681`.
+* Bender must not broaden cleanup prefixes, weaken queue poison deletion, bypass editor/recorder leases, replace conditional manifest writes, relax SSRF checks, retry ambiguous provider mutations, or aggregate draft/private/unlisted/readback/unknown as externally public.
+
+### Dependency and Assignment Board
+
+| Task | Owner | Dependencies | Reviewer |
+|---|---|---|---|
+| P07-T01 | Bender | P06 and this design review | Fry, then Hermes where process/storage safety overlaps |
+| P07-T02 | Bender | P06 and this design review | Fry + Hermes |
+| P07-T03 | Bender | P06 and baseline provider-state reconciliation | Hermes + Fry |
+| P07-T04 | Bender | P01 budget helpers and this design review | Fry + Hermes |
+| P07-T05 | Fry and Hermes, read-only | P07-T01-P07-T04 implementation and focused validation | Leela final readiness |
+
+### Thread-to-Correction and Evidence Matrix
+
+| Thread / URL | Safest backward-compatible correction | Focused regression evidence | Comprehensive checks | Docs/infra |
+|---|---|---|---|---|
+| `PRRT_kwDOSzuis86iosWy` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018616332 | On malformed clipset, delete only `clipset_blob_path(job_id)` and `clips_prefix(job_id)` before CAS recreation; retain intermediates/checkpoints and unrelated job scratch. | Extend `test_budgeted_clipset_rejects_malformed_cache_and_recomputes` to prove stale clip data is removed while an intermediate and unrelated job artifact survive. | `pytest -q tests/test_editor.py tests/test_video_job_runner.py` | No. |
+| `PRRT_kwDOSzuis86iosXi` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018616414 | Unlink `output_path` before raising on nonzero ffmpeg return, matching timeout/exception/empty-output behavior. | `tests/test_edl_render.py`: runner writes partial output and returns nonzero; output is absent and stderr remains reported. | `pytest -q tests/test_edl_render.py tests/test_video_compose.py tests/test_video_process.py` | No. |
+| `PRRT_kwDOSzuis86iosYL` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018616473 | Put unique `.part` cleanup in `finally`; preserve a pre-existing valid destination because replacement never occurred. | `tests/test_video_intermediates.py`: failing backend creates partial temporary data and returns false; no `.part` remains and an existing destination is unchanged. | `pytest -q tests/test_video_intermediates.py tests/test_video_gen.py tests/test_video_compose.py` | No. |
+| `PRRT_kwDOSzuis86ipakb` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903541 | Make recorder visibility cover the full ACA execution (default equal to the 840-second replica timeout) while P07-T04 bounds validation/uploads/readback/CAS inside the recorder deadline. | Update recorder Bicep assertions and browser-deadline tests; add a finalization-near-capture-limit case proving no visibility gap. | `pytest -q tests/test_recorder.py tests/test_deploy_workflow.py`; Bicep build and Checkov for changed infra. | Infra and `docs/scaleout-recorder-rfc.md` validation required. |
+| `PRRT_kwDOSzuis86ipak9` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903592 | For `rendered_pending_distribution` while conservative provider admission is still usable, perform a shutdown-budgeted send-first replacement enqueue and delete the current message, avoiding the original 5400-second visibility delay. If admission is already impossible, retain durable pending state for `jmservera/SquadScope-Podcaster#681` and do not hot-loop or mutate. | Queue-order tests for enqueue-before-delete, send/delete ambiguity, still-admissible immediate handoff, and exhausted-admission durable retention. | `pytest -q tests/test_video_job_runner.py tests/test_video_distribution.py tests/test_video_budget.py tests/test_clip_queue.py`; preserve poison ceiling. | Update deployment/runbook wording only if queue behavior text changes; Bicep defaults need not be shortened. |
+| `PRRT_kwDOSzuis86ipalc` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903639 | Acquire/renew the editor lease before `_resume_rendered_pending_distribution`; ensure every resumed exit releases only the owned lease. | Two redeliveries with the same pipeline lock: one owns distribution, the other returns lease-held without provider mutation; release-on-success/failure/pending cases. | `pytest -q tests/test_video_job_runner.py tests/test_video_distribution.py` | No. |
+| `PRRT_kwDOSzuis86ipal6` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903679 | After SIGKILL, use a bounded final `communicate`; on expiry close owned pipes, retain bounded captured output, reap within grace, remove outputs, and raise timeout. | Escaped descendant retains stdout/stderr after parent kill; runner returns within the asserted bound and removes partial output. | `pytest -q tests/test_video_process.py tests/test_video_compose.py tests/test_edl_render.py` | No. |
+| `PRRT_kwDOSzuis86ipamb` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903724 | Scan and validate checkpoints before the Playwright guard; require Playwright only when `needs_browser` is true. | Full valid replay with `_PLAYWRIGHT_AVAILABLE=False` succeeds without browser; partial replay still raises before recording. | `pytest -q tests/test_video_gen.py tests/test_video_intermediates.py tests/test_video_compose.py` | No. |
+| `PRRT_kwDOSzuis86ipanQ` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903793 | Treat transport loss after resumable-session POST as mutation-ambiguous, bind it to the stable job/publish identity, persist `publication_unknown` with `retry_blocked=true`, and never start another session on replay. | Small and large upload init transport-loss tests; persisted unknown/no-repeat replay test; deterministic identity equality test. | `pytest -q tests/test_youtube_upload.py tests/test_video_distribution.py tests/test_video_job_runner.py tests/test_youtube_publish.py tests/test_publication_state.py` | No; PR evidence must call out ambiguity behavior. |
+| `PRRT_kwDOSzuis86ipany` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903838 | Route each per-index `blob_exists` probe at both editor fan-in sites through the owned storage runner with remaining stage budget; stop the barrier/assembly path on timeout. | Blocking probe tests at both sites prove no subsequent index is probed and T+1200/fallback deadlines are honored. | `pytest -q tests/test_editor.py tests/test_video_intermediates.py tests/test_video_job_runner.py` | No. |
+| `PRRT_kwDOSzuis86ipaoD` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903866 | Return resumed outcomes through `terminal_outcome`; terminal outcomes carry cleanup after queue deletion, pending outcomes retain the callback but do not run it. | Resumed terminal delete-then-cleanup, resumed pending no-cleanup, and cleanup-timeout no-republication tests. | `pytest -q tests/test_video_job_runner.py tests/test_video_distribution.py` | No. |
+| `PRRT_kwDOSzuis86ipaoh` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903912 | At both success and fallback finalization sites, wrap every validation/upload/size/readback/legacy-upload/attempt-finalization/manifest-CAS storage call with the remaining recorder budget; timeout fails closed before later calls. | Parameterized blocking-operation tests for both sites, including partial content cleanup, no manifest after timeout, and winning CAS preservation. | `pytest -q tests/test_recorder.py tests/test_editor.py tests/test_video_process.py tests/integration/test_scaleout_fanout.py` | Recorder infra validation required with the visibility change. |
+| `PRRT_kwDOSzuis86ipao6` / https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903953 | ACA `main()` calls `drain(..., max_messages=1)`; keep `drain`'s explicit test/local override compatible. | Entrypoint unit test asserts one-message cap; existing explicit multi-message drain test remains green. | `pytest -q tests/test_recorder.py tests/integration/test_scaleout_fanout.py` | No separate docs unless entrypoint wording claims queue drain. |
+
+### P07-T01: Correct artifact cleanup, process reap, and browser-free replay
+
+#### Dependencies
+
+* P06 complete and Bender assignment active.
+
+#### Validation Expectations
+
+* Implement the exact corrections for threads `PRRT_kwDOSzuis86iosWy`, `PRRT_kwDOSzuis86iosXi`, `PRRT_kwDOSzuis86iosYL`, `PRRT_kwDOSzuis86ipal6`, and `PRRT_kwDOSzuis86ipamb`.
+* Preserve atomic replacement, valid cached artifacts, bounded output capture, and checkpoint size/hash/probe validation.
+
+#### Completion Evidence
+
+* Focused tests from the matrix pass and no cleanup expands beyond the affected artifact namespace.
+
+### P07-T02: Correct lease, redelivery, ownership, cleanup, and ACA entrypoint behavior
+
+#### Dependencies
+
+* P06 complete; may proceed in parallel with P07-T01, P07-T03, and P07-T04 in Bender's single correction branch.
+
+#### Validation Expectations
+
+* Implement threads `PRRT_kwDOSzuis86ipakb`, `PRRT_kwDOSzuis86ipak9`, `PRRT_kwDOSzuis86ipalc`, `PRRT_kwDOSzuis86ipaoD`, and `PRRT_kwDOSzuis86ipao6`.
+* Send-first handoff is budgeted and preserves poison semantics; ownership precedes every provider path; queue deletion still precedes optional cleanup.
+
+#### Completion Evidence
+
+* Queue/lease race tests, recorder infra assertions, Bicep build, and Checkov pass.
+
+### P07-T03: Fail closed on ambiguous YouTube resumable-session initiation
+
+#### Dependencies
+
+* Baseline canonical provider identity and `publication_unknown` record schema from `bd59b69`.
+
+#### Validation Expectations
+
+* A request known not to have been sent may remain retryable; any transport loss after the init POST is issued is ambiguous and retry-blocked.
+* Both single-request and chunked/resumable helper paths converge on the same deterministic identity and no-repeat evidence.
+
+#### Completion Evidence
+
+* Provider ambiguity/no-repeat and public-verification suites pass; no test expects a second session POST after unknown evidence.
+
+### P07-T04: Budget editor fan-in probes and recorder finalization storage calls
+
+#### Dependencies
+
+* Existing `run_storage_operation`, stage budgets, durable recorder projection, and conditional manifest CAS.
+
+#### Validation Expectations
+
+* Every named call site derives a positive timeout immediately before the call.
+* A timed-out owned call cannot perform a late upload/CAS side effect; later operations are not attempted.
+* Timeout cannot convert partial media or missing evidence into a terminal success/fallback manifest.
+
+#### Completion Evidence
+
+* Both editor sites and both recorder finalization sites have blocking-call regression tests and pass integration fan-out coverage.
+
+### P07-T05: Validate and independently accept the correction
+
+#### Dependencies
+
+* P07-T01 through P07-T04 implemented by Bender with focused tests passing.
+
+#### Validation Expectations
+
+* Fry runs the matrix's focused commands, `pytest tests/ -q`, `ruff check podcaster tests`, `ruff format --check podcaster tests`, compileall, and `git diff --check`.
+* For infra/docs changes, Fry also runs Bicep builds for `aca-recorder.bicep` and any changed parent module plus `checkov --directory infra --framework bicep`.
+* Hermes independently verifies SSRF behavior, lease ownership/visibility, poison ceiling, manifest/provider CAS, deterministic identity, publication ambiguity/no-repeat, secrets/PII exclusion, and externally-verified-public aggregation.
+* Reviewers remain read-only. A rejection locks Bender out of the next revision and requires a new implementer.
+
+#### Completion Evidence
+
+* Fry and Hermes each record an independent verdict with exact commands/results. Leela confirms all 13 thread IDs are covered before any thread is resolved.
+
+#### Unresolved Items
+
+* None. The separate distribution worker remains `jmservera/SquadScope-Podcaster#681` and is not a P07 blocker.
 
 <!-- rpi:phase id=P04 -->
 ## P04: Persist render boundary and bound distribution/shutdown

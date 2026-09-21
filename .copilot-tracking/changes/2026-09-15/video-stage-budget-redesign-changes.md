@@ -10,15 +10,15 @@
 
 ## Execution Status
 
-* Status: Partial
+* Status: Partial — P07 review remediation planned
 * Declared invocation scope: Full plan
-* Completed scope markers: P01-P05 and all tasks
-* All remaining active-plan markers: P06-T02
-* Status basis: Audio publication bypass removal passed focused validation; full validation and independent review are active.
+* Completed scope markers: P01-P06 and all tasks
+* All remaining active-plan markers: P07-T01 through P07-T05
+* Status basis: P06 was independently accepted and pushed in `eecaffc`; 13 unresolved PR #682 review threads are now design-mapped for lockout correction.
 
 ## Execution Summary
 
-The shared budget, recorder convergence, browser-free fallback, owned cancellation, validated resume, verified archive/readback, per-mutation provider admission, and bounded shutdown/queue disposition are complete and independently accepted. Production/W38/provider operations remain prohibited.
+The shared budget, recorder convergence, browser-free fallback, owned cancellation, validated resume, verified archive/readback, per-mutation provider admission, bounded shutdown/queue disposition, and fail-closed audio publication gate are complete. P07 is the active correction cycle for 13 unresolved PR review threads. Production/W38/provider operations remain prohibited.
 
 ## Completed Work
 
@@ -28,7 +28,16 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 * Files: `podcaster/job_runner.py`, `tests/test_job_runner.py`, `tests/test_orchestration.py`, `tests/integration/test_publish_flow.py`, `docs/PRD.md`.
 * What changed and why: Removed synthesis-time `auto_publish_job` and direct `publish_episode` calls. Successful audio now remains `synthesized_review_ready`, packet-ready, ineligible, and blocked by `human_review` unless an explicit approved/manual orchestration gate owns publication. Video enqueue remains independent.
 * Completion evidence: Spotify config and auto-publish environment no longer trigger provider calls; approved review still publishes; ambiguous approved outcome remains `publication_unknown` and non-final; integration covers blocked manual request followed by approved publication.
-* Validation: Focused audio/orchestration/video suite passed (284 tests).
+* Validation: Final P06 correction `eecaffc` passed 3155 tests (2 skipped, 2 deselected), Ruff, format, compileall, lockfile verification, and independent review; hosted PR checks are green.
+
+### P07 before-work design review
+
+* Related phase or task: P07, P07-T01 through P07-T05.
+* Files: RPI plan, phase details, and this changes record only.
+* What changed and why: Mapped all 13 unresolved PR #682 thread IDs and discussion URLs to the narrowest backward-compatible correction, focused tests, comprehensive suites, infra/docs needs, write boundaries, and acceptance evidence before source implementation.
+* Assignment: Bender is the correction implementer because the original Copilot author is locked out. Fry independently reviews functional/test completeness. Hermes independently reviews lease/CAS/SSRF/poison/provider ambiguity/no-repeat/public-verification preservation. Reviewers are read-only.
+* Design decisions: Scope malformed cleanup; remove all partial artifacts on failure; cover full recorder finalization with lease and budget; send-first handoff only while provider admission remains usable; acquire editor ownership before resume; bound final reap; replay checkpoints before Playwright; persist YouTube init ambiguity as retry-blocked unknown; budget each named storage call; wrap resumed terminal outcomes; cap ACA recorder entrypoint at one message.
+* Material blockers: None. The separate distribution worker remains deferred to `jmservera/SquadScope-Podcaster#681`; P07 does not reopen that design.
 
 ### Shared budget and conservative projection
 
@@ -114,6 +123,15 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 * Reconciliation performed: Plan, phase details, active markers, validation boundary, and delivery lifecycle updated.
 * Planning and critique state: Immediate in-scope clarification preserving the accepted provider safeguard direction; no new critique required before implementation.
 
+### Added P07 unresolved-review remediation
+
+* Affected plan area or markers: P06 completion reconciliation; new P07 and P07-T01 through P07-T05.
+* What changed: Preserved P01-P06 completed history and added dependency-ready correction tasks for all 13 unresolved threads, exact ownership, write boundaries, thread URLs, regression evidence, comprehensive validation, and review lockout.
+* Why: PR #682 received actionable post-P06 review findings that must be planned before any source implementation.
+* Triggering evidence: GraphQL review-thread fetch on 2026-09-21 and direct inspection of the affected PR diff/code.
+* Reconciliation performed: Plan status/checklist/handoff, phase index/details, changes status/current work/blockers/remaining work, and validation expectations synchronized.
+* Planning state: P07 design-review complete and implementation-ready for Bender.
+
 ### Applied final-candidate critique corrections
 
 * Affected plan area or markers: Acceptance criteria; P01-P05.
@@ -155,18 +173,20 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P01-P05 and P06-T01 complete; P06-T02 active.
-* Completed-work evidence and handoff prose: Current.
-* Validation, blockers, remaining work, and follow-up items: Current.
-* Review readiness: P06 candidate is ready for independent read-only review.
+* Plan markers and phase details: P01-P06 complete; P07 active with P07-T01 through P07-T04 dependency-ready.
+* Completed-work evidence and handoff prose: Current through `eecaffc`.
+* Validation, blockers, remaining work, and follow-up items: Current for the 13-thread correction cycle.
+* Review readiness: Source implementation has not started; design handoff is ready for Bender.
 
 ## Blockers
 
-* Independent P06 review rejected malformed/cost-state normalization, legacy duplicate convergence, and remaining architecture/README automatic-publication claims. Fixes are assigned to a separate lockout implementer.
+* None. The 13 unresolved review threads are actionable local corrections. The separate distribution worker remains a non-blocking follow-up in `jmservera/SquadScope-Podcaster#681`.
 
 ## Remaining Work
 
-* P06-T02 lockout fixes, revalidation, independent acceptance, commit, push, and PR update.
+* Bender implements P07-T01 through P07-T04 with focused tests.
+* Fry and Hermes independently execute P07-T05 and record acceptance or rejection under strict lockout.
+* Only after acceptance: update delivery evidence and resolve the corresponding review threads; do not merge or deploy.
 
 ## Follow-Up Items
 
@@ -175,16 +195,17 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 * Implementation commit: `4033df6`.
 * Pushed branch: `origin/squad/video-stage-budget-redesign`.
 * Unmerged pull request: #682.
+* Active unresolved review set: 13 threads, mapped in P07 phase details.
 * Merge/deploy/production mutation: Not performed.
 
 ## Return-to-Caller State
 
 * Implementation execution status: Partial
-* Declared scope and markers: Full plan; P01-P05 complete, P06 active.
-* Validation coverage: Mandatory focused/full pytest, real fanout integration, Ruff, compile, Bicep, Checkov, lock, and diff checks passed.
+* Declared scope and markers: Full plan; P01-P06 complete, P07 active.
+* Validation coverage: Completed implementation through P06 passed mandatory focused/full pytest, real fanout integration, Ruff, compile, Bicep, Checkov, lock, diff, and hosted checks; P07 validation is specified but not yet run.
 * Blockers: None.
-* Current plan and detail updates: Critique corrections applied.
-* Planning and critique state: Implementation-ready.
+* Current plan and detail updates: P07 review-remediation design and exact assignment added.
+* Planning and critique state: P07 implementation-ready.
 * Follow-up items: Distribution worker tracked in #681.
-* Review readiness or no-handoff reason: Ready for independent P06 review; focused and full validation passed.
-* Continuation owner: Confirmed automatic RPI Agent.
+* Review readiness or no-handoff reason: Bender implementation handoff ready; Fry/Hermes review follows.
+* Continuation owner: Bender (implementation), then Fry and Hermes (independent review).
