@@ -64,6 +64,14 @@ class StorageBackend(Protocol):
 
     def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]: ...
 
+    def list_blobs_page(
+        self,
+        prefix: str,
+        *,
+        limit: int = 1000,
+        continuation: str | None = None,
+    ) -> tuple[list[str], str | None]: ...
+
     def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl: ...
 
     def blob_exists(self, path: str) -> bool: ...
@@ -155,6 +163,29 @@ class LocalStorageBackend:
                 if len(matches) >= limit:
                     break
         return matches
+
+    def list_blobs_page(
+        self,
+        prefix: str,
+        *,
+        limit: int = 1000,
+        continuation: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        safe_prefix = _safe_blob_prefix(prefix)
+        if limit <= 0 or not self.root.exists():
+            return [], None
+        names = sorted(
+            target.relative_to(self.root).as_posix()
+            for target in self.root.rglob("*")
+            if target.is_file() and target.relative_to(self.root).as_posix().startswith(safe_prefix)
+        )
+        start = 0
+        if continuation:
+            while start < len(names) and names[start] <= continuation:
+                start += 1
+        page = names[start : start + limit]
+        next_marker = page[-1] if start + len(page) < len(names) and page else None
+        return page, next_marker
 
     def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
         # Local development has no SAS service; the locator is unsigned and
@@ -419,6 +450,55 @@ class AzureBlobStorageBackend:
                     names.append(child.text)
                     break
         return names[:limit]
+
+    def list_blobs_page(
+        self,
+        prefix: str,
+        *,
+        limit: int = 1000,
+        continuation: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        safe_prefix = _safe_blob_prefix(prefix)
+        if limit <= 0:
+            return [], None
+        token = self._credential.get_token("https://storage.azure.com/.default")
+        values = {
+            "restype": "container",
+            "comp": "list",
+            "prefix": safe_prefix,
+            "maxresults": str(limit),
+        }
+        if continuation:
+            values["marker"] = continuation
+        request = Request(
+            f"{self._account_url}/{self._container_name}?{urlencode(values)}",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {token.token}",
+                "x-ms-date": formatdate(timeval=None, localtime=False, usegmt=True),
+                "x-ms-version": "2023-11-03",
+            },
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                root = ET.fromstring(response.read())
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(
+                f"blob list failed for {safe_prefix}: HTTP {exc.code} {detail}"
+            ) from exc
+        names = [
+            child.text
+            for blob in root.iter()
+            if blob.tag.endswith("Blob")
+            for child in blob
+            if child.tag.endswith("Name") and child.text
+        ]
+        marker = next(
+            (element.text for element in root.iter() if element.tag.endswith("NextMarker")),
+            None,
+        )
+        return names[:limit], marker or None
 
     def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
         """Mint a read-only, time-limited *user-delegation* SAS download URL.
@@ -756,6 +836,25 @@ class ConnectionStringStorageBackend:
             if len(names) >= limit:
                 break
         return names
+
+    def list_blobs_page(
+        self,
+        prefix: str,
+        *,
+        limit: int = 1000,
+        continuation: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        safe_prefix = _safe_blob_prefix(prefix)
+        if limit <= 0:
+            return [], None
+        pager = self._container.list_blob_names(
+            name_starts_with=safe_prefix,
+        ).by_page(continuation_token=continuation, results_per_page=limit)
+        try:
+            page = next(pager)
+        except StopIteration:
+            return [], None
+        return list(page), pager.continuation_token
 
     def generate_download_url(self, path: str, *, expiry: datetime) -> SignedDownloadUrl:
         safe_path = _safe_blob_path(path)

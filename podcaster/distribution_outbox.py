@@ -20,6 +20,7 @@ OUTBOX_SCHEMA_VERSION = "squadscope-podcaster-distribution-outbox-v1"
 OUTBOX_PREFIX = "distribution-outbox"
 ARTIFACT_PREFIX = "distribution-artifacts"
 ARTIFACT_METADATA_PREFIX = "distribution-artifact-metadata"
+ORPHAN_CLEANUP_STATE_PATH = "distribution-scheduler/orphan-cleanup-state.json"
 RECONCILIATION_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-distribution-reconcile-v1"
 
 PROVIDER_RESULTS = frozenset(
@@ -30,7 +31,9 @@ PROVIDER_RESULTS = frozenset(
         "manual_handoff_required",
         "failed_retryable_pre_mutation",
         "failed_terminal",
+        "partial",
         "poisoned",
+        "identity_conflict",
     }
 )
 ACTIONABLE_RESULTS = frozenset(
@@ -40,7 +43,9 @@ ACTIONABLE_RESULTS = frozenset(
         "manual_handoff_required",
         "failed_retryable_pre_mutation",
         "failed_terminal",
+        "partial",
         "poisoned",
+        "identity_conflict",
     }
 )
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -88,6 +93,7 @@ class Claim:
     fencing_token: int
     lease_expires_at: str
     read_only: bool
+    attempt_id: str
 
 
 def utc_now() -> datetime:
@@ -255,6 +261,94 @@ def _artifact_dict(artifact: ArtifactReference) -> dict[str, Any]:
     }
 
 
+def _publication_digest(identity: Mapping[str, Any], artifact: Mapping[str, Any]) -> str:
+    values = (
+        str(identity.get("accepted_job_id") or ""),
+        str(identity.get("week") or ""),
+        str(identity.get("publish_run_id") or ""),
+        str(identity.get("article_sha256") or ""),
+        str(identity.get("manifest_sha256") or ""),
+        str(artifact.get("sha256") or ""),
+        str(artifact.get("media_kind") or ""),
+    )
+    return hashlib.sha256("|".join(values).encode("utf-8")).hexdigest()
+
+
+def _attempt_event(attempt: dict[str, Any], state: str, at: str, **details: Any) -> None:
+    event = {"sequence": len(attempt["events"]) + 1, "at": at, "state": state}
+    event.update({key: value for key, value in details.items() if value is not None})
+    attempt["events"].append(event)
+    attempt["state"] = state
+
+
+def _ensure_truth_fields(document: dict[str, Any]) -> None:
+    identity = document.get("publication_identity")
+    artifact = document.get("artifact")
+    if not isinstance(identity, Mapping) or not isinstance(artifact, Mapping):
+        return
+    digest = _publication_digest(identity, artifact)
+    document.setdefault("publication_digest", digest)
+    document.setdefault(
+        "canonical_artifact",
+        {
+            "artifact_id": str(artifact.get("sha256") or ""),
+            "path": str(artifact.get("path") or ""),
+            "sha256": str(artifact.get("sha256") or ""),
+            "media_kind": str(artifact.get("media_kind") or ""),
+            "selected": True,
+            "selection_reason": "content_addressed_render",
+            "selection_version": "v1",
+        },
+    )
+    attempts = document.setdefault("attempts", [])
+    if not attempts:
+        timestamp = str(document.get("created_at") or _iso(utc_now()))
+        attempt_id = uuid.uuid4().hex
+        attempts.append(
+            {
+                "attempt_id": attempt_id,
+                "authz_id": hashlib.sha256(
+                    f"initial|{document.get('outbox_id')}|{attempt_id}".encode()
+                ).hexdigest(),
+                "authz_source": "initial_enqueue",
+                "authz_reason": "accepted_publication",
+                "authorized_at": timestamp,
+                "predecessor_attempt_id": None,
+                "state": "pending",
+                "terminal_outcome": None,
+                "events": [{"sequence": 1, "at": timestamp, "state": "accepted"}],
+                "proof_references": [],
+            }
+        )
+    document.setdefault("recovery_authz", [])
+    document.setdefault(
+        "weekly_aggregation",
+        {
+            "decision_id": hashlib.sha256(
+                f"weekly|{document.get('outbox_id')}|v1".encode()
+            ).hexdigest(),
+            "rule_version": "weekly-publication-truth-v1",
+            "evaluated_attempt_ids": [attempt["attempt_id"] for attempt in attempts],
+            "state": "pending",
+            "winning_attempt_id": None,
+            "proof_references": [],
+            "unresolved_conditions": [],
+            "decided_at": str(document.get("updated_at") or document.get("created_at")),
+            "worker_exit_class": "nonzero",
+        },
+    )
+
+
+def _active_attempt(document: Mapping[str, Any]) -> dict[str, Any]:
+    attempts = document.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        raise DistributionOutboxError("attempt ledger is missing")
+    attempt = attempts[-1]
+    if not isinstance(attempt, dict):
+        raise DistributionOutboxError("attempt ledger is malformed")
+    return attempt
+
+
 def _artifact_from(document: Mapping[str, Any]) -> ArtifactReference:
     artifact = document.get("artifact")
     if not isinstance(artifact, Mapping):
@@ -304,6 +398,7 @@ class DistributionOutboxRepository:
             raise DistributionOutboxError("outbox record is corrupt") from exc
         if not isinstance(document, dict):
             raise DistributionOutboxError("outbox record is malformed")
+        _ensure_truth_fields(document)
         _validate_document(document, outbox_id)
         return document
 
@@ -385,6 +480,7 @@ class DistributionOutboxRepository:
                 "created_at": timestamp,
                 "updated_at": timestamp,
             }
+            _ensure_truth_fields(document)
             _validate_document(document, item_id)
             captured.update(document)
             created = True
@@ -420,6 +516,7 @@ class DistributionOutboxRepository:
 
         def _claim(document: dict[str, Any]) -> None:
             now = self.now()
+            _ensure_truth_fields(document)
             current = document.get("claim")
             if isinstance(current, Mapping):
                 expiry = _parse_time(str(current.get("lease_expires_at") or ""))
@@ -453,11 +550,20 @@ class DistributionOutboxRepository:
                 "heartbeat_at": _iso(now),
                 "lease_expires_at": _iso(now + timedelta(seconds=lease_seconds)),
                 "read_only": consumed,
+                "attempt_id": _active_attempt(document)["attempt_id"],
             }
             document["claim"] = claim
             document["fencing_token"] = token
             document["attempt_count"] = int(document.get("attempt_count") or 0) + 1
             document["state"] = "reconciling" if consumed else "claimed"
+            _attempt_event(
+                _active_attempt(document),
+                "reconciling" if consumed else "claimed",
+                _iso(now),
+                claim_id=claim["claim_id"],
+                execution_id=claim["execution_id"],
+                fencing_token=token,
+            )
             result.update(claim)
 
         self._update(outbox_id, _claim)
@@ -469,7 +575,79 @@ class DistributionOutboxRepository:
             fencing_token=result["fencing_token"],
             lease_expires_at=result["lease_expires_at"],
             read_only=result["read_only"],
+            attempt_id=result["attempt_id"],
         )
+
+    def authorize_recovery(
+        self,
+        outbox_id: str,
+        *,
+        predecessor_attempt_id: str,
+        source: str,
+        reason: str,
+        no_mutation_proven: bool,
+    ) -> str:
+        """Create a new attempt without rewriting its predecessor."""
+
+        captured: dict[str, str] = {}
+
+        def _authorize(document: dict[str, Any]) -> None:
+            _ensure_truth_fields(document)
+            attempts = document["attempts"]
+            predecessor = next(
+                (
+                    attempt
+                    for attempt in attempts
+                    if attempt.get("attempt_id") == predecessor_attempt_id
+                ),
+                None,
+            )
+            if not isinstance(predecessor, Mapping) or not predecessor.get("terminal_outcome"):
+                raise DistributionOutboxError("recovery predecessor is not terminal")
+            if predecessor.get("terminal_outcome") == "provider_unknown":
+                raise DistributionOutboxError("unknown provider mutation cannot authorize retry")
+            if not no_mutation_proven:
+                raise DistributionOutboxError(
+                    "recovery requires proof that mutation is identity-safe"
+                )
+            at = _iso(self.now())
+            authorization_id = uuid.uuid4().hex
+            attempt_id = uuid.uuid4().hex
+            authorization = {
+                "authz_id": authorization_id,
+                "source": _require_token("authorization_source", source),
+                "reason": _require_token("authorization_reason", reason),
+                "authorized_at": at,
+                "predecessor_attempt_id": predecessor_attempt_id,
+                "no_mutation_proven": True,
+                "attempt_id": attempt_id,
+            }
+            document["recovery_authz"].append(authorization)
+            attempts.append(
+                {
+                    "attempt_id": attempt_id,
+                    "authz_id": authorization_id,
+                    "authz_source": authorization["source"],
+                    "authz_reason": authorization["reason"],
+                    "authorized_at": at,
+                    "predecessor_attempt_id": predecessor_attempt_id,
+                    "state": "pending",
+                    "terminal_outcome": None,
+                    "events": [{"sequence": 1, "at": at, "state": "accepted"}],
+                    "proof_references": [],
+                }
+            )
+            for leg in document["providers"].values():
+                leg["result"] = "pending_provider"
+                leg["verification"] = None
+                leg["intent"] = None
+                leg["receipts"] = []
+            document["state"] = "pending"
+            self._refresh_aggregate(document)
+            captured["authorization_id"] = authorization_id
+
+        self._update(outbox_id, _authorize)
+        return captured["authorization_id"]
 
     def heartbeat(self, claim: Claim, *, lease_seconds: int) -> dict[str, Any]:
         def _heartbeat(document: dict[str, Any]) -> None:
@@ -535,6 +713,13 @@ class DistributionOutboxRepository:
             }
             leg["intent"] = intent
             document["state"] = "intent_persisted"
+            _attempt_event(
+                _active_attempt(document),
+                "intent_persisted",
+                _iso(self.now()),
+                provider=provider,
+                intent_id=intent["intent_id"],
+            )
             captured.update(intent)
 
         self._update(claim.outbox_id, _persist)
@@ -568,6 +753,13 @@ class DistributionOutboxRepository:
             intent["consumed_at"] = _iso(self.now())
             intent["consumed_fence"] = claim.fencing_token
             document["state"] = "mutating"
+            _attempt_event(
+                _active_attempt(document),
+                "mutating",
+                intent["consumed_at"],
+                provider=provider,
+                intent_id=intent["intent_id"],
+            )
             captured.update(intent)
 
         self._update(claim.outbox_id, _consume)
@@ -611,6 +803,13 @@ class DistributionOutboxRepository:
             }
             leg["receipts"].append(receipt)
             document["state"] = "receipt_persisted"
+            _attempt_event(
+                _active_attempt(document),
+                "receipt_persisted",
+                receipt["at"],
+                provider=provider,
+                receipt_id=receipt["receipt_id"],
+            )
             captured.update(receipt)
 
         self._update(claim.outbox_id, _record)
@@ -627,6 +826,7 @@ class DistributionOutboxRepository:
         native_state: str | None = None,
         next_reconcile_at: datetime | None = None,
         exhaustion_reason: str | None = None,
+        proof: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if result not in PROVIDER_RESULTS:
             raise ValueError(f"unsupported provider result: {result}")
@@ -635,6 +835,17 @@ class DistributionOutboxRepository:
         def _verify(document: dict[str, Any]) -> None:
             self._require_claim(document, claim)
             leg = self._provider(document, provider)
+            proof_value = self._verification_proof(
+                document,
+                leg,
+                provider_item_id=provider_item_id,
+                native_state=native_state,
+                source=source,
+                proof=proof,
+            )
+            effective_result = result
+            if result == "externally_verified_public" and not proof_value["green"]:
+                effective_result = "identity_conflict"
             verification = {
                 "at": _iso(self.now()),
                 "source": _require_token("verification_source", source),
@@ -646,23 +857,31 @@ class DistributionOutboxRepository:
                 "native_state": (
                     _require_token("native_state", native_state) if native_state else None
                 ),
-                "result": result,
+                "result": effective_result,
                 "fencing_token": claim.fencing_token,
                 "exhaustion_reason": (
                     _require_token("exhaustion_reason", exhaustion_reason)
                     if exhaustion_reason
                     else None
                 ),
+                "proof": proof_value,
             }
             leg["verification"] = verification
-            leg["result"] = result
+            leg["result"] = effective_result
             leg["verification_attempt"] = int(leg.get("verification_attempt") or 0) + 1
             leg["next_reconcile_at"] = _iso(next_reconcile_at) if next_reconcile_at else None
-            if result != "pending_provider":
+            if effective_result != "pending_provider":
                 leg["active_schedule_token"] = None
                 leg["schedule_notification_token"] = None
                 leg["schedule_notification_sent_at"] = None
             self._refresh_aggregate(document)
+            _attempt_event(
+                _active_attempt(document),
+                "verifying",
+                verification["at"],
+                provider=provider,
+                result=effective_result,
+            )
             captured.update(verification)
 
         self._update(claim.outbox_id, _verify)
@@ -736,13 +955,45 @@ class DistributionOutboxRepository:
     def release(self, claim: Claim) -> dict[str, Any]:
         def _release(document: dict[str, Any]) -> None:
             self._require_claim(document, claim)
+            attempt = _active_attempt(document)
+            weekly_state = str(document["weekly_aggregation"]["state"])
+            terminal_map = {
+                "published_verified": "published_verified",
+                "published_verified_recovered": "published_verified",
+                "identity_conflict": "identity_conflict",
+                "provider_unknown": "provider_unknown",
+                "manual_action_required": "manual_action_required",
+                "partial": "partial",
+                "failed_terminal": "failed_terminal",
+            }
+            outcome = terminal_map.get(weekly_state)
+            if outcome and not attempt.get("terminal_outcome"):
+                attempt["terminal_outcome"] = outcome
+                attempt["provider_evidence"] = {
+                    provider: {
+                        "intent": leg.get("intent"),
+                        "receipts": leg.get("receipts", []),
+                        "verification": leg.get("verification"),
+                        "result": leg.get("result"),
+                    }
+                    for provider, leg in document["providers"].items()
+                }
+                attempt["proof_references"] = [
+                    str(leg.get("verification", {}).get("provider_item_id"))
+                    for leg in document["providers"].values()
+                    if isinstance(leg.get("verification"), Mapping)
+                    and leg["verification"].get("provider_item_id")
+                ]
+                _attempt_event(attempt, "completed", _iso(self.now()), outcome=outcome)
             document["claim"] = None
-            if document["aggregate"]["externally_verified_public"]:
+            if weekly_state in ("published_verified", "published_verified_recovered"):
                 document["state"] = "completed_public"
             elif document["aggregate"]["result"] in (
                 "publication_unknown",
                 "manual_handoff_required",
                 "failed_terminal",
+                "partial",
+                "identity_conflict",
                 "poisoned",
             ):
                 document["state"] = document["aggregate"]["result"]
@@ -777,34 +1028,45 @@ class DistributionOutboxRepository:
     ) -> tuple[list[tuple[str, str, str]], str | None]:
         now = self.now()
         due: list[tuple[str, str, str]] = []
-        paths = sorted(self.storage.list_blobs(f"{OUTBOX_PREFIX}/", limit=scan_limit))
-        if after_path and after_path in paths:
-            split = paths.index(after_path) + 1
-            paths = paths[split:] + paths[:split]
+        continuation = after_path
         last_scanned: str | None = None
-        for path in paths:
-            last_scanned = path
-            raw = self.storage.get_bytes(path)
-            if raw is None:
-                continue
-            document = json.loads(raw.decode("utf-8"))
-            for provider, leg in document.get("providers", {}).items():
-                due_at = _parse_time(str(leg.get("next_reconcile_at") or ""))
-                token = leg.get("active_schedule_token")
-                notified_token = leg.get("schedule_notification_token")
-                notified_at = _parse_time(str(leg.get("schedule_notification_sent_at") or ""))
-                notification_is_fresh = (
-                    notified_token == token
-                    and notified_at is not None
-                    and now - notified_at < notification_stale_after
-                )
-                if due_at is not None and due_at <= now and isinstance(token, str):
-                    if notification_is_fresh:
-                        continue
-                    due.append((str(document["outbox_id"]), str(provider), token))
-                    if len(due) >= limit:
-                        return due, last_scanned
-        return due, last_scanned
+        scanned = 0
+        while scanned < scan_limit:
+            page_size = min(limit, scan_limit - scanned)
+            paths, next_continuation = self._list_page(
+                f"{OUTBOX_PREFIX}/",
+                limit=page_size,
+                continuation=continuation,
+            )
+            if not paths:
+                return due, None
+            for path in sorted(paths):
+                last_scanned = path
+                scanned += 1
+                raw = self.storage.get_bytes(path)
+                if raw is None:
+                    continue
+                document = json.loads(raw.decode("utf-8"))
+                for provider, leg in document.get("providers", {}).items():
+                    due_at = _parse_time(str(leg.get("next_reconcile_at") or ""))
+                    token = leg.get("active_schedule_token")
+                    notified_token = leg.get("schedule_notification_token")
+                    notified_at = _parse_time(str(leg.get("schedule_notification_sent_at") or ""))
+                    notification_is_fresh = (
+                        notified_token == token
+                        and notified_at is not None
+                        and now - notified_at < notification_stale_after
+                    )
+                    if due_at is not None and due_at <= now and isinstance(token, str):
+                        if notification_is_fresh:
+                            continue
+                        due.append((str(document["outbox_id"]), str(provider), token))
+                if len(due) >= limit:
+                    return due[:limit], next_continuation
+            continuation = next_continuation
+            if not continuation:
+                return due, None
+        return due, continuation or last_scanned
 
     def mark_reconciliation_notified(
         self,
@@ -830,25 +1092,36 @@ class DistributionOutboxRepository:
         outbox_scan_limit: int = 5000,
     ) -> int:
         referenced: set[str] = set()
-        outbox_paths = self.storage.list_blobs(
-            f"{OUTBOX_PREFIX}/",
-            limit=outbox_scan_limit,
-        )
-        if len(outbox_paths) >= outbox_scan_limit:
-            return 0
-        for path in outbox_paths:
-            raw = self.storage.get_bytes(path)
-            if raw is None:
-                continue
-            document = json.loads(raw.decode("utf-8"))
-            artifact = document.get("artifact")
-            if isinstance(artifact, Mapping) and artifact.get("path"):
-                referenced.add(str(artifact["path"]))
+        continuation: str | None = None
+        while True:
+            outbox_paths, continuation = self._list_page(
+                f"{OUTBOX_PREFIX}/",
+                limit=outbox_scan_limit,
+                continuation=continuation,
+            )
+            for path in outbox_paths:
+                raw = self.storage.get_bytes(path)
+                if raw is None:
+                    continue
+                document = json.loads(raw.decode("utf-8"))
+                artifact = document.get("artifact")
+                if isinstance(artifact, Mapping) and artifact.get("path"):
+                    referenced.add(str(artifact["path"]))
+            if not continuation:
+                break
         removed = 0
-        for metadata_path in self.storage.list_blobs(
+        raw_state = self.storage.get_bytes(ORPHAN_CLEANUP_STATE_PATH)
+        cleanup_state = json.loads(raw_state.decode("utf-8")) if raw_state else {}
+        metadata_paths, metadata_continuation = self._list_page(
             f"{ARTIFACT_METADATA_PREFIX}/",
             limit=limit,
-        ):
+            continuation=cleanup_state.get("metadata_cursor"),
+        )
+        if not metadata_paths and cleanup_state.get("metadata_cursor"):
+            metadata_paths, metadata_continuation = self._list_page(
+                f"{ARTIFACT_METADATA_PREFIX}/", limit=limit, continuation=None
+            )
+        for metadata_path in metadata_paths:
             raw = self.storage.get_bytes(metadata_path)
             if raw is None:
                 continue
@@ -865,7 +1138,31 @@ class DistributionOutboxRepository:
             self.storage.delete_blob(artifact_path_value)
             self.storage.delete_blob(metadata_path)
             removed += 1
+        self.storage.put_bytes(
+            ORPHAN_CLEANUP_STATE_PATH,
+            json.dumps(
+                {"metadata_cursor": metadata_continuation},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
         return removed
+
+    def _list_page(
+        self,
+        prefix: str,
+        *,
+        limit: int,
+        continuation: str | None,
+    ) -> tuple[list[str], str | None]:
+        pager = getattr(self.storage, "list_blobs_page", None)
+        if callable(pager):
+            return pager(prefix, limit=limit, continuation=continuation)
+        paths = sorted(self.storage.list_blobs(prefix, limit=limit))
+        if continuation:
+            paths = [path for path in paths if path > continuation]
+        return paths[:limit], paths[-1] if len(paths) >= limit else None
 
     def repair_notifications(self, notify: Callable[[str], None], *, limit: int = 100) -> int:
         repaired = 0
@@ -881,6 +1178,24 @@ class DistributionOutboxRepository:
             self.mark_notification_sent(item_id)
             repaired += 1
         return repaired
+
+    def operational_documents(self, *, page_size: int = 1000) -> Iterable[dict[str, Any]]:
+        continuation: str | None = None
+        while True:
+            paths, continuation = self._list_page(
+                f"{OUTBOX_PREFIX}/",
+                limit=page_size,
+                continuation=continuation,
+            )
+            for path in paths:
+                raw = self.storage.get_bytes(path)
+                if raw is None:
+                    continue
+                document = json.loads(raw.decode("utf-8"))
+                _ensure_truth_fields(document)
+                yield document
+            if not continuation:
+                break
 
     def backfill_from_publication_evidence(
         self,
@@ -961,6 +1276,7 @@ class DistributionOutboxRepository:
             if raw is None:
                 raise DistributionOutboxError("outbox item does not exist")
             document = json.loads(raw.decode("utf-8"))
+            _ensure_truth_fields(document)
             _validate_document(document, outbox_id)
             mutation(document)
             document["updated_at"] = _iso(self.now())
@@ -1007,19 +1323,88 @@ class DistributionOutboxRepository:
         return leg
 
     @staticmethod
+    def _verification_proof(
+        document: Mapping[str, Any],
+        leg: Mapping[str, Any],
+        *,
+        provider_item_id: str | None,
+        native_state: str | None,
+        source: str,
+        proof: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        supplied = dict(proof or {})
+        identity = document["publication_identity"]
+        artifact = document["artifact"]
+        expected_provider_ids = {
+            str(receipt.get("provider_item_id"))
+            for receipt in leg.get("receipts", [])
+            if isinstance(receipt, Mapping) and receipt.get("provider_item_id")
+        }
+        intent = leg.get("intent")
+        if isinstance(intent, Mapping) and intent.get("expected_provider_item_id"):
+            expected_provider_ids.add(str(intent["expected_provider_item_id"]))
+        observed_provider_id = str(provider_item_id or "")
+        provider_identity_match = bool(observed_provider_id) and (
+            not expected_provider_ids or expected_provider_ids == {observed_provider_id}
+        )
+        values = {
+            "week_match": supplied.get("week") in (None, identity["week"]),
+            "manifest_match": supplied.get("manifest_sha256")
+            in (None, identity["manifest_sha256"]),
+            "publication_digest_match": supplied.get("publication_digest")
+            in (None, document["publication_digest"]),
+            "artifact_sha256_match": supplied.get("artifact_sha256") in (None, artifact["sha256"]),
+            "canonical_artifact_selected": supplied.get(
+                "canonical_artifact_selected",
+                document.get("canonical_artifact", {}).get("selected") is True,
+            )
+            is True,
+            "provider_identity_match": supplied.get(
+                "provider_identity_match", provider_identity_match
+            )
+            is True,
+            "terminal_authoritative_readback": supplied.get(
+                "terminal_authoritative_readback",
+                bool(provider_item_id)
+                and str(native_state or "").lower() in ("public", "published")
+                and (
+                    "readback" in source or source in ("youtube_videos_list", "provider_readback")
+                ),
+            )
+            is True,
+            "duplicate_ambiguity_resolved": supplied.get(
+                "duplicate_ambiguity_resolved", len(expected_provider_ids) <= 1
+            )
+            is True,
+        }
+        values["green"] = all(values.values())
+        return values
+
+    @staticmethod
     def _refresh_aggregate(document: dict[str, Any]) -> None:
+        _ensure_truth_fields(document)
         results = [str(leg.get("result")) for leg in document["providers"].values()]
-        all_public = bool(results) and all(
-            result == "externally_verified_public" for result in results
+        proofs = [
+            leg.get("verification", {}).get("proof", {})
+            for leg in document["providers"].values()
+            if isinstance(leg.get("verification"), Mapping)
+        ]
+        all_public = (
+            bool(results)
+            and all(result == "externally_verified_public" for result in results)
+            and len(proofs) == len(results)
+            and all(proof.get("green") is True for proof in proofs)
         )
         if all_public:
             aggregate = "completed_public"
             reason = None
         else:
             priority = (
+                "identity_conflict",
                 "poisoned",
                 "publication_unknown",
                 "manual_handoff_required",
+                "partial",
                 "failed_terminal",
                 "failed_retryable_pre_mutation",
                 "pending_provider",
@@ -1034,6 +1419,98 @@ class DistributionOutboxRepository:
             "externally_verified_public": all_public,
             "terminal_reason": reason,
         }
+        attempts = document["attempts"]
+        current_attempt = _active_attempt(document)
+        previous_non_green = [
+            attempt
+            for attempt in attempts[:-1]
+            if attempt.get("terminal_outcome") not in (None, "published_verified")
+        ]
+        unresolved: list[str] = []
+        precedence = (
+            "identity_conflict",
+            "provider_unknown",
+            "manual_action_required",
+            "partial",
+            "missed_not_dispatched",
+            "failed_terminal",
+            "pending",
+        )
+        normalized = {
+            "identity_conflict": "identity_conflict",
+            "publication_unknown": "provider_unknown",
+            "manual_handoff_required": "manual_action_required",
+            "partial": "partial",
+            "poisoned": "failed_terminal",
+            "failed_terminal": "failed_terminal",
+            "failed_retryable_pre_mutation": "pending",
+            "pending_provider": "pending",
+        }
+        if all_public:
+            prior_outcomes = {
+                str(attempt.get("terminal_outcome")) for attempt in previous_non_green
+            }
+            if "identity_conflict" in prior_outcomes:
+                weekly_state = "identity_conflict"
+                winning_attempt_id = None
+                unresolved = ["identity_conflict"]
+            elif "provider_unknown" in prior_outcomes:
+                weekly_state = "provider_unknown"
+                winning_attempt_id = None
+                unresolved = ["provider_unknown"]
+            else:
+                weekly_state = (
+                    "published_verified_recovered" if previous_non_green else "published_verified"
+                )
+                winning_attempt_id = current_attempt["attempt_id"]
+        else:
+            candidates = [normalized.get(result, result) for result in results]
+            if "identity_conflict" in candidates:
+                weekly_state = "identity_conflict"
+            elif "provider_unknown" in candidates:
+                weekly_state = "provider_unknown"
+            elif "manual_action_required" in candidates:
+                weekly_state = "manual_action_required"
+            elif "partial" in candidates or (
+                "externally_verified_public" in candidates
+                and any(item != "externally_verified_public" for item in candidates)
+            ):
+                weekly_state = "partial"
+            elif candidates and all(item == "failed_terminal" for item in candidates):
+                weekly_state = "failed_terminal"
+            elif "pending" in candidates:
+                weekly_state = "pending"
+            else:
+                weekly_state = next(
+                    (candidate for candidate in precedence if candidate in candidates),
+                    "partial",
+                )
+            winning_attempt_id = None
+            unresolved = sorted(set(candidates))
+        decision = document["weekly_aggregation"]
+        decision.update(
+            {
+                "evaluated_attempt_ids": [str(attempt["attempt_id"]) for attempt in attempts],
+                "state": weekly_state,
+                "winning_attempt_id": winning_attempt_id,
+                "proof_references": [
+                    str(leg.get("verification", {}).get("provider_item_id"))
+                    for leg in document["providers"].values()
+                    if isinstance(leg.get("verification"), Mapping)
+                    and leg["verification"].get("provider_item_id")
+                ],
+                "failed_attempt_references": [
+                    str(attempt["attempt_id"]) for attempt in previous_non_green
+                ],
+                "unresolved_conditions": unresolved,
+                "decided_at": _iso(utc_now()),
+                "worker_exit_class": (
+                    "zero"
+                    if weekly_state in ("published_verified", "published_verified_recovered")
+                    else "nonzero"
+                ),
+            }
+        )
         document["state"] = "completed_public" if all_public else "verifying"
 
 
@@ -1054,10 +1531,54 @@ def aggregate_exit_code(documents: Iterable[Mapping[str, Any]]) -> int:
     return (
         0
         if all(
-            item.get("aggregate", {}).get("externally_verified_public") is True for item in items
+            item.get("weekly_aggregation", {}).get("state")
+            in ("published_verified", "published_verified_recovered")
+            and item.get("aggregate", {}).get("externally_verified_public") is True
+            for item in items
         )
         else 1
     )
+
+
+def four_cycle_acceptance(documents: Iterable[Mapping[str, Any]]) -> bool:
+    items = list(documents)
+    return len(items) == 4 and all(
+        item.get("weekly_aggregation", {}).get("state")
+        in ("published_verified", "published_verified_recovered")
+        for item in items
+    )
+
+
+def weekly_state_from_attempts(
+    attempts: Iterable[Mapping[str, Any]],
+    *,
+    missed_not_dispatched: bool = False,
+) -> str:
+    """Deterministically aggregate immutable attempt outcomes for one week."""
+
+    items = list(attempts)
+    outcomes = [str(item.get("terminal_outcome") or item.get("outcome") or "") for item in items]
+    if "identity_conflict" in outcomes:
+        return "identity_conflict"
+    if "provider_unknown" in outcomes:
+        return "provider_unknown"
+    if missed_not_dispatched and not items:
+        return "missed_not_dispatched"
+    verified = [item for item in items if str(item.get("terminal_outcome")) == "published_verified"]
+    if verified:
+        earlier_non_green = any(
+            item is not verified[-1]
+            and str(item.get("terminal_outcome") or "") not in ("", "published_verified")
+            for item in items
+        )
+        return "published_verified_recovered" if earlier_non_green else "published_verified"
+    precedence = (
+        "manual_action_required",
+        "partial",
+        "failed_terminal",
+        "pending",
+    )
+    return next((state for state in precedence if state in outcomes), "pending")
 
 
 def outbox_routing_enabled(environ: Mapping[str, str] | None = None) -> bool:

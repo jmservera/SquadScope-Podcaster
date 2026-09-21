@@ -10,18 +10,58 @@
 
 ## Execution Status
 
-* Status: Partial
-* Declared invocation scope: revised P00 plus reopened dependency-ready RV-001–RV-005 and W38/W39 correction markers across P01–P04
-* Completed scope markers: P00-T02, P00-T03, P01–P04 and all P01-T01 through P04-T03 tasks
-* Remaining in-scope marker: P00-T01 is blocked on the exact upstream prevention change in `jmservera/SquadScope`; Podcaster-side receipt/absence observability is complete
-* Outside-scope active-plan markers: P05-T01 through P06-T02
-* Status basis: authoritative correction implementation and locked validation are complete in this worktree; exact upstream prevention remains cross-repository blocked and delivery/elapsed verification remain outside scope.
+* Status: Complete for the declared reopened P01–P04 scope
+* Declared invocation scope: all dependency-ready reopened P01–P04 tasks for the dual-level publication truth gate plus RV-002, RV-003, RV-004, and source/docs/tests/runbook/tracking consistency for RV-007
+* Completed scope markers: P01-T01–P01-T03, P02-T03, P03-T01–P03-T03, P04-T01–P04-T03; phases P01–P04 are restored complete because their previously completed tasks remain valid
+* Remaining in-scope markers: none
+* Outside-scope active-plan markers: P00-T01 and P05-T01 through P06-T02
+* Status basis: Amy implemented the exact state model, scalable scheduling/cleanup, deployable alert routing and absence signals, artifact consistency, focused fault tests, and full repository validation. P00-T01, P05, and P06 remain outside scope.
 
 ## Execution Summary
 
 Implementation is complete on local baseline `0752d1a` from current `origin/main` and merged PR #680. P01 established the durable boundary before provider mutation and truthful exit changes. Push, PR/issue mutation, merge, deployment, canary, and four-week production verification are intentionally not performed during this invocation.
 
 ## Completed Work
+
+### Added immutable attempt evidence and deterministic weekly publication truth
+
+* Related phase or task: P01-T01, P02-T03, P03-T01
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`
+* What changed and why: added a unique append-only attempt ledger with lifecycle events, recovery authorization and predecessor linkage, per-attempt provider evidence snapshots, publication digest, canonical artifact selection evidence, and a separate weekly aggregation decision. Exact manifest/digest/artifact/provider/readback/duplicate proof is required for green.
+* Completion evidence: failed attempts remain byte-for-byte present after authorized successful recovery; the weekly decision references failed and winning attempt IDs; mismatch, missing readback, canonical mismatch, and duplicate ambiguity are `identity_conflict`; unknown mutation cannot authorize retry.
+* Validation: Passed focused and full suites.
+
+### Implemented controlled recovery and four-cycle acceptance semantics
+
+* Related phase or task: P03-T01, P04-T01, P04-T02
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`, `tests/test_dispatch_receipts.py`
+* What changed and why: added deterministic attempt precedence, W38 recovery-candidate and W39 missed/not-dispatched fixtures, explicit authorization requiring proven identity-safe/no-mutation state, and a four-cycle evaluator accepting exactly four green weekly decisions.
+* Completion evidence: failed-then-authorized-success yields `published_verified_recovered`; prior `provider_unknown` remains non-green and blocks mutation retry; any partial/unknown/manual/conflict cycle fails acceptance.
+* Validation: Passed.
+
+### Added complete paginated scheduler enumeration and bounded orphan cleanup progress
+
+* Related phase or task: P01-T02, P01-T03, P03-T02, P04-T01; RV-002 and RV-004
+* Files: `podcaster/storage.py`, `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, `tests/test_distribution_outbox.py`
+* What changed and why: added continuation-aware blob pages for local, managed-identity Azure, and connection-string backends; scheduler scans persist continuation beyond 5,000 retained records; cleanup fully enumerates references before deletion and persists a bounded metadata cursor.
+* Completion evidence: a due record at position 5,001 is reached on the next bounded scan; cleanup preserves referenced artifacts while progressing through bounded metadata pages.
+* Validation: Passed.
+
+### Made alert routing and missing-data contracts executable
+
+* Related phase or task: P03-T03, P04-T02; RV-003
+* Files: `infra/main.bicep`, `infra/modules/distribution-alerts.bicep`, `podcaster/distribution_scheduler.py`, `podcaster/distribution_telemetry.py`, `tests/test_distribution_telemetry.py`, `tests/test_deploy_workflow.py`
+* What changed and why: replaced one shared action-group input with explicit operations/upstream/operator/production routes; added an executable scheduler-heartbeat absence query plus authoritative depth and overdue-claim emissions; added identity-conflict and non-green weekly alerts.
+* Completion evidence: generated infrastructure assertions bind every logical route to its own action-group input and assert absence/depth/heartbeat queries and signals.
+* Validation: Bicep build and repository Checkov gate passed.
+
+### Reconciled RV-007 repository state-model terminology
+
+* Related phase or task: RV-007 across P01–P04
+* Files: `docs/ops/distribution-terminal-truth.md`, source/tests above, plan, phase details, and this changes record
+* What changed and why: runbook, implementation, fixtures, and tracking now distinguish immutable attempt truth from weekly identity truth; W38 is evidence-conditional and W39 is missed/not-dispatched; four-cycle and alert terminology match code.
+* Completion evidence: no repository artifact in the allowed boundary assumes W38 green without proof. The PR body was intentionally not edited because the caller prohibited P05/PR changes.
+* Validation: Documentation assertions and full repository suite passed.
 
 ### Added the versioned sanitized outbox and correlation schema
 
@@ -112,6 +152,26 @@ Implementation is complete on local baseline `0752d1a` from current `origin/main
 * Validation: Passed.
 
 ## Implementation-Time Plan and Detail Updates
+
+### Opened Amy's independent reopened P01–P04 implementation boundary
+
+* Affected plan area or markers: P01-T01–P01-T03, P02-T03, P03-T01–P03-T03, P04-T01–P04-T03; RV-002, RV-003, RV-004, and RV-007
+* What changed: recorded Amy as implementation owner; limited active work to dependency-ready reopened P01–P04 source, tests, infrastructure, runbook, and tracking artifacts; retained P00-T01, P05, and P06 outside scope.
+* Why: the caller declared the exact correction boundary and locked prior authors Bender and Hermes out of this artifact revision cycle.
+* Triggering evidence: authoritative QA gate, current plan/details, and review findings RV-002, RV-003, RV-004, and RV-007.
+* User answer or decision: explicit caller scope and delivery restrictions.
+* Reconciliation performed: plan implementation status, phase-detail execution boundary, changes execution status, allowed write boundary, blockers, and validation intent now agree.
+* Planning and critique state: implementation-ready; the historical critique remains unchanged and is not repeated.
+
+### Selected the first dependency-ready implementation boundary
+
+* Affected plan area or markers: P01-T01 followed by dependency-ready P01-T02 and P01-T03
+* What changed: established immutable attempt persistence and exact weekly proof aggregation as the first source boundary, followed by complete bounded storage enumeration for scheduler fairness and orphan cleanup.
+* Why: later provider receipt, truthful execution, alert, and acceptance-test markers depend on the durable attempt and identity contract.
+* Triggering evidence: reopened marker order and the authoritative distinction between immutable attempt truth and weekly publication-identity truth.
+* User answer or decision: none; this follows approved plan order.
+* Reconciliation performed: active scope, first execution boundary, validation intent, and outside-scope restrictions are current.
+* Planning and critique state: no planning reconsideration required.
 
 ### Opened the authoritative correction implementation boundary
 
@@ -232,24 +292,37 @@ Implementation is complete on local baseline `0752d1a` from current `origin/main
 | Container exit smoke | distribution worker | Passed | Image execution without required queue configuration returned exit `2`, not success. |
 | Diff safety | worktree | Passed | `git diff --check`; no deleted test files; no tracking path added to production code/docs/comments. |
 
+## Amy Correction Validation
+
+| Check | Scope | Status | Evidence or reason |
+|---|---|---|---|
+| Focused correction suite | attempt truth, scheduler, cleanup, worker, telemetry, alerts | Passed | `TMPDIR="$PWD/.test-tmp" python3 -m pytest tests/test_distribution_outbox.py tests/test_distribution_worker.py tests/test_distribution_telemetry.py tests/test_deploy_workflow.py -q` → final `81 passed in 2.02s`. |
+| Locked targeted contract | dispatch/API/outbox/worker/provider/publication/monitoring/deployment | Passed | `TMPDIR="$PWD/.test-tmp" python3 -m pytest tests/test_dispatch_receipts.py tests/test_api.py tests/test_distribution_outbox.py tests/test_distribution_worker.py tests/test_distribution_telemetry.py tests/test_publication_state.py tests/test_video_distribution.py tests/test_youtube_publish.py tests/test_youtube_upload.py tests/test_publish.py tests/test_video_job_runner.py tests/test_monitoring.py tests/test_deploy_workflow.py -q` → `754 passed, 1 warning in 59.15s`. |
+| Full pytest | repository | Passed after required image refresh | First final run exposed the known stale Compose recorder image (`1 failed, 3085 passed`). `docker compose -f docker-compose.fanout.yml build --quiet` plus the focused integration → `1 passed in 28.56s`; final `TMPDIR="$PWD/.test-tmp" python3 -m pytest tests/ -q` → `3086 passed, 2 skipped, 2 deselected, 1 warning in 86.00s`. No source, test, or gate was weakened. |
+| Compile/lint/format/diff | production Python, tests, worktree | Passed | `python3 -m compileall -q podcaster`; `ruff check podcaster tests --quiet`; `ruff format --check podcaster tests --quiet`; `git diff --check`. |
+| Bicep build | infrastructure | Passed | `az bicep build --file infra/main.bicep --stdout >/dev/null`; existing BCP318 warning only. |
+| Exact Checkov | infrastructure baseline | Baseline retained | `checkov --directory infra --framework bicep --quiet` → `36 passed, 7 failed`; all seven are the documented pre-existing ACR/storage/OpenAI findings. |
+| Repository Checkov gate | blocking infrastructure policy | Passed | CI-equivalent skip-list command → `34 passed, 0 failed`. |
+| Initial command variance | host Python alias | Corrected | `python -m pytest ...` was unavailable (`python: command not found`); repository validation used `python3` without changing any gate. |
+| First locked targeted run | exact-proof fixture correction | Corrected and rerun | The deterministic provider fixture used source `deterministic_external_fixture`, which no longer proved authoritative readback; renaming it to `deterministic_external_readback` made the proof explicit. Final locked run passed. |
+
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P00-T02/P00-T03 and P01–P04 are complete; P00-T01 remains blocked upstream; P05–P06 remain open and outside scope.
-* Completed-work evidence and handoff prose: current through authoritative correction implementation and locked validation.
-* Validation, blockers, remaining work, and follow-up items: current.
-* Review readiness: ready for independent review of the local correction implementation; not ready for delivery/production completion.
+* Plan markers and phase details: all declared reopened P01–P04 markers are checked and their phase statuses are current; P00-T01, P05, and P06 remain explicitly outside scope.
+* Completed-work evidence and handoff prose: source, tests, runbook, plan, details, and changes record agree on immutable attempts, weekly precedence, exact proof, W38/W39, RV-002/RV-003/RV-004, and four-cycle semantics.
+* Validation, blockers, remaining work, and follow-up items: current with exact Amy-cycle commands and results.
+* Review readiness: ready for independent review of the declared local scope. Delivery/production completion is not claimed.
 
 ## Blockers
 
-* P00-T01: exact W39 upstream prevention/fix belongs to `jmservera/SquadScope`; clearing evidence is the owning workflow/client/status change and focused blocked-dispatch test in that repository. Podcaster receipt/absence detection is complete.
-* P05-T01–P05-T04: outside this invocation; caller prohibited commit, push, PR/issue mutation, and thread resolution.
-* P05-T05: requires merge-derived image deployment authority, real provider credentials, controlled canary, and rollback evidence.
-* P06-T01–P06-T02: require four consecutive elapsed production weeks and issue/PR closure evidence.
+* None within the declared reopened P01–P04 scope.
+* Outside scope: P00-T01 belongs to `jmservera/SquadScope`; P05 requires git/GitHub/deployment authority; P06 requires four elapsed production cycles.
 
 ## Remaining Work
 
-* In scope: P00-T01 upstream prevention owner evidence.
-* Outside scope: P05-T01 through P06-T02.
+* In scope: none.
+* Outside scope: P00-T01 and P05-T01 through P06-T02.
+* RV-007 PR-body rewriting remains P05 work and was intentionally not performed.
 
 ## Follow-Up Items
 
@@ -259,12 +332,12 @@ Implementation is complete on local baseline `0752d1a` from current `origin/main
 
 ## Return-to-Caller State
 
-* Implementation execution status: Partial for declared correction scope because P00-T01's exact upstream prevention change is cross-repository blocked.
-* Declared scope and markers: P00-T02/P00-T03 and P01–P04 complete; P00-T01 remains; P05–P06 are outside scope.
-* Validation coverage: correction-focused, locked targeted, full pytest, compile, Ruff, Bicep, exact and repository-standard Checkov, container build, truthful exit smoke, and diff safety completed.
-* Blockers: exact upstream prevention evidence; delivery and production-evidence phases remain outside scope/dependency-gated.
-* Current plan and detail updates: markers, execution boundary, W38/W39 semantics, blocker, and validation are reconciled.
+* Implementation execution status: Complete for the declared reopened P01–P04 scope.
+* Declared scope and markers: P01-T01–P01-T03, P02-T03, P03-T01–P03-T03, and P04-T01–P04-T03 complete; phases P01–P04 restored complete; P00-T01 and P05–P06 are outside scope.
+* Validation coverage: focused 81-test correction suite, locked 754-test contract, final full 3086-test suite, compile, Ruff, Bicep, exact and repository-standard Checkov, and diff safety completed.
+* Blockers: none in scope; outside-scope upstream, delivery, deployment, and elapsed-cycle dependencies remain.
+* Current plan and detail updates: markers, execution boundary, immutable-attempt/weekly-state model, exact proof, W38/W39 semantics, RV dispositions, and validation are reconciled.
 * Planning and critique state: approved and implementation-ready.
 * Follow-up items: Spotify contract reevaluation and optional W38 deployed-image forensics.
-* Review readiness or no-handoff reason: local Podcaster correction is ready for independent RPI review; P00-T01 requires coordinated upstream evidence, and delivery/production acceptance remain dependency-gated.
+* Review readiness or no-handoff reason: ready for independent review of the declared local scope; no delivery or production acceptance is claimed.
 * Continuation owner: requesting parent/reviewer.

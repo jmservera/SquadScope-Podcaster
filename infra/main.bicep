@@ -136,8 +136,14 @@ param videoGenerationEnabled string = 'true'
 @description('Route provider distribution through the durable outbox. Disabled until canary.')
 param distributionOutboxEnabled string = 'false'
 
-@description('Optional Azure Monitor action group resource ID for distribution alerts.')
-param distributionAlertActionGroupId string = ''
+@description('Optional Azure Monitor action group resource ID for operations alerts.')
+param distributionOperationsActionGroupId string = ''
+@description('Optional Azure Monitor action group resource ID for upstream dispatch alerts.')
+param distributionUpstreamActionGroupId string = ''
+@description('Optional Azure Monitor action group resource ID for publication operator alerts.')
+param distributionOperatorActionGroupId string = ''
+@description('Optional Azure Monitor action group resource ID for production-owner alerts.')
+param distributionProductionActionGroupId string = ''
 
 @description('Synthesis container image (ffmpeg baked in, built by #77).')
 param synthesisImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
@@ -557,7 +563,10 @@ module distributionAlerts 'modules/distribution-alerts.bicep' = {
   params: {
     location: location
     logAnalyticsWorkspaceId: workspace.id
-    actionGroupResourceId: distributionAlertActionGroupId
+    operationsActionGroupResourceId: distributionOperationsActionGroupId
+    upstreamActionGroupResourceId: distributionUpstreamActionGroupId
+    operatorActionGroupResourceId: distributionOperatorActionGroupId
+    productionActionGroupResourceId: distributionProductionActionGroupId
     enabled: distributionOutboxEnabled == 'true'
   }
 }

@@ -48,6 +48,31 @@ def signals_for_outbox(
     if not isinstance(providers, Mapping):
         return []
     signals: list[DistributionSignal] = []
+    weekly = document.get("weekly_aggregation")
+    if isinstance(weekly, Mapping):
+        weekly_state = str(weekly.get("state") or "pending")
+        if weekly_state == "identity_conflict":
+            signals.append(
+                DistributionSignal(
+                    "distribution_identity_conflict",
+                    1,
+                    "critical",
+                    "all",
+                    media_kind,
+                    weekly_state,
+                )
+            )
+        if weekly_state not in ("published_verified", "published_verified_recovered"):
+            signals.append(
+                DistributionSignal(
+                    "distribution_weekly_non_green",
+                    1,
+                    "critical",
+                    "all",
+                    media_kind,
+                    weekly_state,
+                )
+            )
     claim = document.get("claim")
     if isinstance(claim, Mapping):
         claimed_at = str(claim.get("claimed_at") or "")

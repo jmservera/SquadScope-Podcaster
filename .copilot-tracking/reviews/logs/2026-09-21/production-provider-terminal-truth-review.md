@@ -5,249 +5,278 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Review date: 2026-09-21
-* Review scope: One corrected full-task review, reassessing the Hermes correction implementation and preserving the prior finding history
-* Assessed boundary: Corrected W38/W39 incident framing; P00 Podcaster receipt/arrival observability; P01-P04 implementation; RV-001-RV-005 dispositions; safety invariants; validation; and residual P00-T01/P05/P06 work
+* Review scope: One independent full-task review of Amy's current revision, including committed and uncommitted worktree state
+* Assessed boundary: Immutable attempt truth; deterministic weekly aggregation; exact provider proof; controlled recovery; unknown-mutation safety; RV-002 scheduler fairness/deduplication; RV-003 alert deployment; RV-004 cleanup; RV-007 terminology/tracking consistency; W38/W39 fixtures; four-cycle evaluation; validation; and residual P00-T01/P05/P06 work
 * Plan: `.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md`
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
 * Changes: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
-* Other evidence considered: `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md`; `.copilot-tracking/pr/pr.md`; complete `origin/main` worktree delta; source, tests, Bicep, and operations documentation; independently rerun validation recorded below
+* Other evidence considered: `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md`; `.copilot-tracking/pr/pr.md`; complete `origin/main` delta; current uncommitted author corrections; source, tests, Bicep, runbook, and independently reproduced validation below
 
 ## Opening Review State
 
-* Interpreted review goal: Independently determine whether the authoritative W38/W39 correction and RV-001-RV-005 implementation are conformant, while separating local execution from upstream delivery and production outcomes.
-* Review scope: Corrected full-task boundary, without a second review pass.
-* Evidence readiness: One unambiguous artifact set and one canonical review record exist. The correction source, tests, documentation, infrastructure, and validation evidence are available locally.
-* Acceptance basis: Authoritative correction; plan functional/non-functional requirements and acceptance criteria; historical PC-001-PC-009 dispositions; prior RV findings; no unsafe narrowing or weakened quality/security gate.
-* First comparison boundary: Reconcile corrected incident facts and plan/detail/change markers before reassessing each RV finding and validation claim.
+* Interpreted review goal: Independently assess Amy's current immutable-attempt and weekly terminal-truth revision, transparently update prior RV dispositions, and distinguish in-repository conformance from upstream, delivery, and elapsed-cycle residual work.
+* Review scope: Full current task boundary and `origin/main` delta, including the author's uncommitted correction state, without a second review pass.
+* Evidence readiness: One unambiguous artifact set and one canonical review record exist. Plan, phase details, research, changes, historical critique, source, tests, runbook, infrastructure, and prior review state are available locally.
+* Acceptance basis: The caller's authoritative QA gate; current plan requirements and acceptance criteria; historical PC-001-PC-009 dispositions; prior RV-001-RV-007 dispositions; exact provider proof, recovery, retry-safety, fairness, alert, cleanup, terminology, W38/W39, and four-cycle contracts.
+* First comparison boundary: Inspect the actual `origin/main` implementation delta and current uncommitted author corrections for immutable attempts, weekly aggregation, exact proof, controlled recovery, and mutation safety before reassessing RV-002/RV-003/RV-004/RV-007 and validation.
 * Active read-only boundaries: Source, tests, docs, plan, details, research, critique, changes, git, GitHub, and deployment state are read-only. This review record is the only writable artifact.
-* Initial blockers: P00-T01 requires an owning `jmservera/SquadScope` prevention change. P05 requires repository/delivery/deployment authority. P06 requires four elapsed production weeks.
+* Initial blockers: P00-T01 requires an owning `jmservera/SquadScope` change. P05 requires repository/delivery/deployment authority. P06 requires four elapsed production cycles.
 
 ## Execution Status
 
 * Review execution status: Complete
-* Assessed implementation execution status: Partial
-* Review execution evidence: Corrected artifacts and implementation were inspected; targeted/full tests, compile, Ruff, diff safety, Bicep, both Checkov modes, image digest, and container exit were independently checked.
-* Partial implementation basis: Podcaster-side P00-T02/P00-T03 and P01-P04 ran. P00-T01 remains cross-repository work; P05-P06 were not executed and are not defects merely because they remain open.
+* Assessed implementation execution status: Complete for Amy's declared in-repository P01-P04/RV correction scope
+* Review execution evidence: Actual source and test behavior were inspected and probed; focused, locked, full, compile, Ruff, format, Bicep, diff, and Checkov validation were independently run.
+* Scope boundary: P00-T01, P05, and P06 did not execute and remain distinct external or elapsed residual work, not incomplete Amy execution.
 
 ## Plan-to-Change Reconciliation
 
 | Current plan scope | Descriptive changes-record summary | Current-state reconciliation | Gap or rationale |
 |---|---|---|---|
-| W38/W39 correction | W38 is published comparative evidence; W39 is the missed publication blocked before Azure | Reconciled in research, plan, changes, source-facing docs, tests, and current PR draft | No W39 downstream execution is fabricated. Canary prose starts upstream and ends at provider readback. |
-| P00-T01 | Exact upstream prevention change | Correctly blocked/residual | Owned by `jmservera/SquadScope`, not automatically a Podcaster defect. |
-| P00-T02-P00-T03 | Dispatch intent, Azure arrival, missing-arrival signals, deterministic provider fixture | Reconciled for the Podcaster boundary | Registered intent is required before correlated generation can clear arrival absence. The fixture proves correlation shape, not live cross-repository deployment. |
-| P01-T03 / RV-002 | Deduplicated fair reconciliation scheduler | Partial | Fresh notifications deduplicate and a cursor rotates within the returned set, but storage enumeration is capped at the first 5,000 paths without continuation. Records beyond that set can starve; RV-002 remains open in narrowed form. |
-| P02-T01/P02-T03 / RV-001 | Read-only promotion convergence | Reconciled | A takeover performs authoritative readback, converges public, or records durable identity-bound unknown without issuing a second promotion mutation. |
-| P03-T03 / RV-003 | Deployable warning/critical alerts, missing-data behavior, routes | Partial | Warning/critical query classification and windows are generated, but all logical routes still share one action group and missing-data behavior is description text rather than an executable absence/depth/heartbeat query. RV-003 remains open. |
-| P01-T02/P03-T02 / RV-004 | Reference-safe retained orphan cleanup | Partial | Cleanup is age-bounded and reference-safe for a fully enumerated outbox set, but disables all cleanup at 5,000 returned outbox paths instead of continuing safely. RV-004 remains open in narrowed form. |
-| P02-T01/P02-T03 / RV-005 | Identity-bound reconciliation or accurate fail-closed evidence | Reconciled | Missing provider identity is now accurately recorded as `youtube_identity_unprovable`; known promotion identity uses provider readback. |
-| P04 | Locked validation | Reconciled with one environment variance | Targeted 741 passed. Current full rerun produced 3070 passed/3 skipped/2 deselected because the scale-out integration skipped when Docker Compose startup was unavailable; the changes record preserves the earlier 3071/2/2 run. |
-| P05-P06 | Delivery, merge/image provenance, canary, rollback, four weeks | Correctly open | Residual external work, not proof of a Podcaster implementation defect. |
+| Immutable attempts and weekly aggregation | Append-only attempts plus separate weekly decision | Reconciled in structure and preservation behavior | Failed attempt identity, outcome, events, and evidence survive a later authorized attempt. |
+| Exact green proof | Week, manifest, publication digest, canonical artifact, expected provider item, terminal readback, and no duplicate ambiguity | Missing | The implementation defaults omitted proof fields to success and accepts any non-empty provider item when no expected identity was persisted. See RV-008. |
+| Controlled recovery | Failed/non-green predecessor plus distinct authorized success | Partial | A distinct attempt and predecessor are retained, but authorization is a caller-supplied `no_mutation_proven=True` assertion without durable proof, and W38-style fixtures can derive recovered green from labels alone. See RV-008. |
+| Unknown mutation safety | No blind retry after `provider_unknown` | Reconciled | `authorize_recovery()` rejects a `provider_unknown` predecessor; read-only reconciliation remains the safe path. |
+| RV-002 scheduler | Paginated fairness and notification deduplication | Partial | Continuation reaches records beyond 5,000, but selection and sent-marking are not atomic across concurrent scheduler runs. See RV-002. |
+| RV-003 alerts | Distinct routes and executable missing-data/non-green rules | Partial | Route-specific action groups and scheduler absence query exist, but weekly critical rows use an event name that deployed weekly rules do not query. Active-depth semantics also alert on any active depth, not missing state. See RV-003. |
+| RV-004 cleanup | Bounded, reference-safe, scalable cleanup | Partial | Pagination resolves the fixed 5,000 cap, but every run scans the complete outbox into an unbounded reference set and deletion is not protected from a concurrent new reference. See RV-004. |
+| RV-007 consistency | Source/docs/tests/runbook/tracking terminology and dispositions | Partial | Terminology is substantially aligned, but plan/details/changes claim RV-002/RV-003/RV-004 complete and record a locked count of 754 while the current command collects 756. See RV-007. |
+| W38/W39 | W38 evidence-conditional; W39 missed/not-dispatched | Partial | Narrative is correct, but executable W38-style fixtures permit recovered green without the required exact proof. W39 remains correctly `missed_not_dispatched`. |
+| Four-cycle gate | Exactly four fully proven green cycles | Missing | `four_cycle_acceptance()` trusts weekly labels only and accepts documents with no provider proof or external readback. See RV-009. |
+| P00-T01/P05/P06 | Upstream prevention, delivery/canary, four elapsed cycles | Correctly open | External residual work; no deployment or production acceptance is claimed. |
 
 ## Completed Work Assessment
 
 | Related marker | Files | What changed and why | Completion evidence | Validation | Assessment |
 |---|---|---|---|---|---|
-| P00-T02/P00-T03 | `podcaster/dispatch_receipts.py`, `podcaster/api.py`, `podcaster/distribution_scheduler.py`, tests and alert Bicep | Added sanitized dispatch intent/arrival correlation and missing-arrival classification | Registered-intent requirement, fire/clear test, API correlation, terminal-provider fixture | Targeted suite passed | Conformant for Podcaster receipt/arrival observability; upstream prevention remains P00-T01. |
-| RV-001 | `podcaster/distribution_worker.py`, `tests/test_distribution_worker.py` | Added read-only known-video promotion readback | Public takeover converges; non-public takeover records unknown; duplicate promotion is an assertion failure | Passed | Resolved. |
-| RV-002 | `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, tests | Added notification markers, stale repair, and cursor rotation | 130-record and repeated-notification tests pass | Passed | Improved but not resolved beyond the fixed 5,000-path enumeration boundary. |
-| RV-003 | `infra/modules/distribution-alerts.bicep`, docs, deployment tests | Added separate warning/critical rule definitions and descriptive route/missing-data metadata | Generated-query tests and Bicep build pass | Passed syntactically | Not fully deployable as accepted: route separation and missing-data detection are not executable. |
-| RV-004 | `podcaster/distribution_outbox.py`, scheduler, tests | Added artifact metadata, retention, reference scan, and deletion | Referenced artifact retained; old orphan removed | Passed | Safe for fewer than 5,000 outbox paths, but cleanup stalls at/above the cap. |
-| RV-005 | `podcaster/distribution_worker.py`, tests | Corrected ambiguous-upload evidence naming | `youtube_identity_unprovable` is durable and non-success | Passed | Resolved by the accepted fail-closed alternative. |
-| Truthful terminal execution | worker/outbox/provider code and tests | Preserved non-zero exits, fencing, consumed intent, receipts, manual handoff, and external-readback-only success | State-lattice tests and container smoke | Exit 2 reproduced | Conformant. |
+| Attempt truth | `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py` | Added attempt ledger, events, predecessor/authz links, and separate aggregation | Failed attempt equality and references survive recovery | Focused and full suites passed | Conformant for immutable preservation. |
+| Unknown mutation | `podcaster/distribution_outbox.py` | Prevented recovery authorization from a `provider_unknown` predecessor | Independent inspection and existing test | Passed | Conformant. |
+| RV-002 paging | `podcaster/storage.py`, `podcaster/distribution_outbox.py`, scheduler/tests | Added continuation-based scanning beyond 5,000 | Beyond-5,000 test passed | Passed | Prior fixed-window starvation defect resolved; concurrent dedup defect remains. |
+| RV-003 routing | `infra/main.bicep`, `infra/modules/distribution-alerts.bicep`, telemetry/tests | Added route-specific action-group parameters and scheduled-query rules | Bicep and Checkov gate passed | Passed syntactically | Route wiring improved; weekly alert mismatch remains functional. |
+| RV-004 pagination | outbox/storage/tests | Added complete reference pagination and metadata cursor | Pagination tests passed | Passed | Fixed-cap liveness improved; boundedness and concurrent reference safety remain incomplete. |
+| RV-007 terminology | runbook, plan, details, changes, tests | Aligned attempt/weekly, W38/W39, and four-cycle vocabulary | Text comparison | No terminology contradiction found in source/runbook | Tracking completion and validation claims remain stale. |
 
 ## Implementation-Time Plan and Detail Update Assessment
 
 | Affected area or marker | What changed and why | Triggering evidence and user decision | Reconciliation performed | Planning and critique state | Assessment |
 |---|---|---|---|---|---|
-| W38/W39 incident boundary | Replaced W38 missed-week implications with W39 pre-Azure boundary | Authoritative caller correction | Research, plan, top-level details, changes, runbook, and PR draft updated | Historical critique intentionally unchanged | Reconciled. |
-| P00 | Added upstream-to-Azure correlation lane | W39 had no Azure execution | Podcaster receipt/absence work completed; upstream prevention separately blocked | Compatible material revision | Reconciled. |
-| RV-006 / P05-T03 | Expanded #682 closure inventory | Prior review found newer unresolved threads | Plan matrix includes six RV-006 rows and later rows without claiming GitHub resolution | Planning route completed | Prior RV-006 is resolved at planning level; execution remains P05 residual work. |
-| Detail current-state prose | Some historical sentences still say RV-001-RV-005 or RV-002-RV-004 “remain open” despite completion claims elsewhere | Correction implementation | Not fully reconciled inside phase details | No second critique required | Medium artifact-state inconsistency; see RV-007. |
-| PR narrative | Draft still says RV-001-RV-006 are unimplemented, reports the old image digest/test counts, and says “Do not deploy this draft” based on the superseded review state | Correction implementation and new review | Not updated after correction | P05 not executed | Must be rewritten before PR use; see PR narrative requirements. |
+| Attempt/weekly state model | Added immutable attempts and weekly aggregation | Authoritative QA gate | Plan, details, changes, runbook, source, and tests updated | Historical critique preserved | Direction is reconciled; implementation proof gate is incomplete. |
+| RV-002/RV-003/RV-004 | Marked complete after Amy's correction | Prior review findings | Source/tests/tracking updated | No second critique required | Completion claims overstate behavior; findings remain open in narrowed current form. |
+| RV-007 | Marked reconciled except PR body | Authoritative consistency requirement | Source/docs/tests/runbook/tracking updated | PR remains P05 | Terminology is improved, but current dispositions/counts are inconsistent. |
+| W38/W39 | W38 changed to evidence-conditional candidate; W39 retained as missed/not-dispatched | Authoritative caller correction | Narrative artifacts updated | Historical critique unchanged | Narrative is correct; W38 fixture behavior is not. |
 
 ## Critique and Material Revision Assessment
 
-* Latest critique dispositions: PC-001-PC-009 remain historical and unchanged as required. The corrected plan retains consumed-intent fencing, concrete artifact/outbox ordering, reconciliation scheduling, external Spotify readback, delivery provenance, issue/thread gates, alert contracts, validation coverage, and cross-repository linkage.
-* Material revisions: The W39 upstream lane and W38 comparative-only treatment preserve confirmed user intent and do not justify removal of independent provider safety.
-* Dependent-work pause assessment: P05/P06 remain open. No delivery or production acceptance is falsely claimed.
-* Justification assessment: The incident correction is supported. Completion is overstated for RV-002/RV-003/RV-004 and phase-detail current-state prose is internally stale.
+* Latest critique dispositions: PC-001-PC-009 remain historical and were not mutated or repeated.
+* Material revisions: The dual-level attempt/weekly model, exact proof requirement, W38/W39 correction, pagination, alert routing, and cleanup revisions preserve confirmed intent.
+* Dependent-work pause assessment: P05 and P06 remain open, and no deployment acceptance is claimed.
+* Justification assessment: Revision direction is supported, but current completion claims are not supported for RV-002/RV-003/RV-004/RV-007 or the exact green/four-cycle gates.
 
 ## Plan Follow-Up Assessment
 
 | Follow-up item | Why outside immediate scope | Owner or next action | Assessment and route |
 |---|---|---|---|
-| Future authoritative Spotify mutation/idempotency support | Provider contract is unsupported today | Distinct provider-capability follow-up | Properly remains outside active implementation. |
-| Optional W38 deployed-image/revision forensics | Historical reconstruction does not change the authoritative publication fact | Distinct incident-forensics follow-up | Optional; never use it to reclassify W38 as missed. |
+| Future authoritative Spotify mutation/idempotency support | Provider contract remains unsupported | Distinct provider-capability follow-up | Properly outside current acceptance. |
+| Optional W38 deployed-image/revision forensics | Historical causal reconstruction does not establish current exact proof | Distinct incident-forensics follow-up | Optional; must not manufacture recovered-green evidence. |
+| P00-T01 upstream prevention | Owning code is in `jmservera/SquadScope` | Upstream owner | External residual work. |
+| P05 delivery/canary | Requires git/GitHub/deployment/provider authority | Delivery owner | External residual work. |
+| P06 four elapsed cycles | Requires future calendar cycles and production evidence | Production verification owner | Elapsed residual work. |
 
 ## Findings
 
 <!-- rpi:review id=RV-001 -->
 ### RV-001 [High, resolved]: Read-only YouTube promotion takeover convergence
 
-* Related scope: P02-T01, P02-T03, P04
-* Evidence: `podcaster/distribution_worker.py` now performs known-identity readback before any promotion branch. `tests/test_distribution_worker.py` proves public convergence and non-public fail-closed behavior while forbidding duplicate mutation.
-* Impact: The former repeated-failure/stale-claim gap is closed.
+* Related scope: P02-T01, P02-T03
+* Evidence: Known-identity promotion takeover performs authoritative readback and does not issue a second mutation.
+* Impact: Prior duplicate-promotion/stale-claim risk remains closed.
 * Destination: Resolved in current implementation.
-* Disposition: Resolved; retain historical context and the regression tests.
+* Disposition: Resolved; retain regression coverage.
 
 <!-- rpi:review id=RV-002 -->
-### RV-002 [High, remains open]: Scheduler fairness stops at the fixed 5,000-path storage window
+### RV-002 [High, remains open]: Scheduler notification deduplication is not atomic across concurrent runs
 
 * Related scope: P01-T03, P03-T02, P04
-* Evidence: `due_reconciliations_page()` calls `list_blobs(..., limit=5000)` and rotates only that returned list. There is no storage continuation marker that can reach paths beyond the first 5,000. Notification deduplication and 130-record fairness tests pass but do not cover the cap.
-* Impact: Long-retained outbox evidence can permanently starve valid due reconciliation work, despite the accepted starvation-safe contract.
+* Evidence: `due_reconciliations_page()` only reads due state. `distribution_scheduler.run_once()` enqueues first and calls `mark_reconciliation_notified()` afterward. Two independent pre-mark scans returned the identical outbox/provider/token, so concurrent schedulers can both enqueue the same reconciliation. Continuation paging does reach records beyond 5,000.
+* Impact: Duplicate work can race provider reconciliation and violates the required bounded-concurrency deduplication contract.
 * Destination: `rpi-implement`
-* Smallest useful next action: Add backend continuation/pagination or a bounded shard/index contract that eventually visits every retained outbox record, with a test above the boundary.
+* Smallest useful next action: Add a fenced/CAS notification reservation or equivalent durable single-winner transition before enqueue, with a concurrent two-run test and stale-reservation recovery.
 
 <!-- rpi:review id=RV-003 -->
-### RV-003 [High, remains open]: Alert routing and missing-data behavior are descriptive, not deployable
+### RV-003 [High, remains open]: Deployed weekly non-green alerts do not match emitted telemetry
 
 * Related scope: P03-T03, P04-T02, P05-T05
-* Evidence: `infra/modules/distribution-alerts.bicep` now creates warning and critical queries, but every route uses the single `actionGroupResourceId`; route names exist only in descriptions. Missing-data contracts also exist only in descriptions, while queries require an emitted matching log row and cannot detect absence, active outbox depth without telemetry, or missing claim heartbeat.
-* Impact: Operations/upstream/operator/production routing cannot be enforced, and the accepted missing-telemetry failures remain invisible. Canary fire/clear evidence would not prove the documented contract.
+* Evidence: `signal_rows()` emits `distribution_identity_conflict` and `distribution_weekly_non_green` with event `distribution_provider_state`; `distribution-alerts.bicep` queries event `distribution_weekly_state` for both rules. Independent output confirmed the mismatched event. The active-depth rule also matches every warning active-depth row rather than detecting active depth without state rows.
+* Impact: Required identity-conflict and weekly non-green critical alerts cannot fire from actual emitted rows, and the active-depth rule does not implement its documented missing-state condition.
 * Destination: `rpi-implement`
-* Smallest useful next action: Bind logical routes to distinct action-group inputs and add executable absence/depth/heartbeat rules or authoritative scheduled emissions, then assert generated actions and queries.
+* Smallest useful next action: Align emitted/query event contracts, implement the active-depth-without-state join/absence condition, and add tests that evaluate representative emitted rows against generated rule queries.
 
 <!-- rpi:review id=RV-004 -->
-### RV-004 [Medium, remains open]: Orphan cleanup is safe but can stop permanently at scale
+### RV-004 [Medium, remains open]: Cleanup pagination is complete but not bounded or concurrency-safe
 
 * Related scope: P01-T02, P03-T02, P04
-* Evidence: `cleanup_orphan_artifacts()` returns zero whenever `list_blobs(..., limit=5000)` returns 5,000 paths. This avoids deleting referenced artifacts from an incomplete scan, but provides no continuation or alternate repair path.
-* Impact: Reference safety is preserved, but old orphan artifacts can accumulate indefinitely once the durable outbox reaches the fixed cap.
+* Evidence: `cleanup_orphan_artifacts()` paginates every outbox record and retains every referenced artifact path in one in-memory set before deleting metadata-page candidates. No durable reference index, snapshot, or conditional deletion prevents an artifact from becoming referenced after the scan and before deletion.
+* Impact: Work and memory grow with the complete retained outbox corpus, and a concurrent enqueue can create a new reference after the scan, violating the required bounded/reference-safe cleanup contract.
 * Destination: `rpi-implement`
-* Smallest useful next action: Use complete paginated reference enumeration, a durable artifact-reference index, or another bounded fail-safe design that retains safety while making cleanup progress.
+* Smallest useful next action: Use a durable reference index/refcount or bounded snapshot/mark-and-sweep generation with conditional deletion, plus scale and concurrent-reference tests.
 
 <!-- rpi:review id=RV-005 -->
-### RV-005 [Medium, resolved]: Ambiguous upload evidence no longer claims identity-bound readback
+### RV-005 [Medium, resolved]: Ambiguous upload evidence remains accurately fail-closed
 
-* Related scope: P02-T01, P02-T03, P04
-* Evidence: A consumed upload without provider identity records `youtube_identity_unprovable`; a consumed promotion with known identity records `youtube_promotion_identity_readback`.
-* Impact: Durable evidence is accurate and fail-closed without inventing provider observations.
+* Related scope: P02-T01, P02-T03
+* Evidence: Missing provider identity remains `youtube_identity_unprovable`/non-green rather than being described as identity-bound readback.
+* Impact: Durable evidence does not invent provider observations.
 * Destination: Resolved in current implementation.
-* Disposition: Resolved by the accepted accurately named unprovable-state alternative.
+* Disposition: Resolved; retain fail-closed behavior.
 
 <!-- rpi:review id=RV-006 -->
-### RV-006 [High, resolved at planning level]: Current PR #682 safety inventory
+### RV-006 [High, resolved at planning level]: PR #682 closure inventory
 
 * Related scope: P05-T03
-* Evidence: The plan closure matrix now includes all six prior RV-006 threads and later current rows, with evidence/reply/actual-state requirements.
-* Impact: The planning gap is closed without falsely claiming GitHub thread resolution.
+* Evidence: The plan retains the historical and current review-thread closure matrix without claiming GitHub resolution.
+* Impact: Planning coverage is present; actual replies/resolution remain delivery work.
 * Destination: Residual P05-T03 execution.
-* Disposition: Planning finding resolved; thread replies/resolution remain external delivery work.
+* Disposition: Planning-level finding remains resolved.
 
 <!-- rpi:review id=RV-007 -->
-### RV-007 [Medium]: Phase details and PR handoff retain superseded review state
+### RV-007 [Medium, remains open]: Canonical tracking overstates resolved findings and current validation counts
 
-* Related scope: Artifact reconciliation and P05 handoff
-* Evidence: Phase details still contain statements that RV-001-RV-005 or RV-002-RV-004 remain open, conflicting with its completion table. `.copilot-tracking/pr/pr.md` still presents the former six-finding rejection, old `3059`/image-digest evidence, and says the correction findings are unimplemented.
-* Impact: A delivery owner could publish a materially false review and validation narrative even though source behavior changed.
-* Destination: `rpi-plan` for canonical phase-detail reconciliation; P05 PR narrative update before delivery.
-* Smallest useful next action: Reconcile phase-detail status prose and replace the PR review/validation sections with this review’s exact dispositions and current evidence without claiming P05/P06 completion.
+* Related scope: Source/docs/tests/runbook/tracking consistency and P05 handoff
+* Evidence: Phase details and plan state that RV-002/RV-003/RV-004 are complete, but this review reproduces current defects. The changes record says the locked contract is 754 tests, while the exact current command passes 756. The PR body remains intentionally outside Amy's scope.
+* Impact: A delivery owner could publish incorrect dispositions and validation evidence.
+* Destination: `rpi-plan` for canonical tracking reconciliation; P05 for PR narrative.
+* Smallest useful next action: After implementation corrections, update plan/details/changes with the exact dispositions and current command outputs; rewrite the PR narrative during P05 without claiming deployment acceptance.
+
+<!-- rpi:review id=RV-008 -->
+### RV-008 [High]: Exact provider proof and controlled-recovery authorization are not enforced
+
+* Related scope: P01-P04 exact green gate; W38 fixture; controlled recovery
+* Evidence: `_verification_proof()` treats omitted week, manifest, publication digest, and artifact digest as matches; defaults canonical selection from the local record; and accepts any observed provider item when no expected provider ID exists. An independent probe with no intent/receipt/expected provider ID and no supplied proof returned all proof fields green and produced `published_verified`. `authorize_recovery()` persists only a caller assertion `no_mutation_proven=True`, not durable safety evidence. `weekly_state_from_attempts()` derives `published_verified_recovered` from outcome labels without authorization or exact proof.
+* Impact: W38 or any week can be classified green/recovered without the exact identity, expected provider item, duplicate-resolution, and proven-safe authorization required by the authoritative gate.
+* Destination: `rpi-implement`
+* Smallest useful next action: Require explicit identity-bound proof values, a persisted expected provider identity, authoritative readback source/state, explicit duplicate reconciliation, and durable authorization proof references; make label-only W38/recovery fixtures non-green.
+
+<!-- rpi:review id=RV-009 -->
+### RV-009 [High]: Four-cycle acceptance trusts weekly labels without external proof
+
+* Related scope: P06 evaluator and acceptance gate
+* Evidence: `four_cycle_acceptance()` checks only that four `weekly_aggregation.state` values are green. An independent probe of four label-only dictionaries returned `True`; no attempts, publication identity, manifest/digest, canonical artifact, provider item, duplicate resolution, aggregate provider state, or external readback was present.
+* Impact: The production acceptance evaluator can accept four cycles containing missing external readback or other absent proof merely because their labels are green.
+* Destination: `rpi-implement`
+* Smallest useful next action: Evaluate each cycle's complete proof envelope and reject missing/partial/unknown/manual/identity-conflict/duplicate-ambiguous/no-readback evidence, with a parameterized negative matrix.
 
 ## Defects
 
-* RV-002 and RV-003 are high-severity implementation defects routed to `rpi-implement`.
-* RV-004 is a medium-severity implementation defect routed to `rpi-implement`.
-* RV-007 is a medium artifact-state/handoff defect routed to `rpi-plan` and P05 narrative work.
-* RV-001 and RV-005 are resolved. RV-006 is resolved at planning level.
-* No critical-severity defect was found. Fencing, consumed mutation authority, truthful exits, provider readback, manual handoff, and secret/PII protections remain fail-closed.
+* High: RV-002, RV-003, RV-008, RV-009.
+* Medium: RV-004, RV-007.
+* Resolved: RV-001 and RV-005.
+* Resolved at planning level with external execution remaining: RV-006.
+* No critical defect was identified.
 
 ## Routed Findings
 
 | Finding | Destination | Owner or next action | Reason for route |
 |---|---|---|---|
-| RV-002 | `rpi-implement` | Add complete bounded scheduler enumeration | Accepted design, remaining implementation defect |
-| RV-003 | `rpi-implement` | Implement executable route and missing-data contracts | Accepted design, remaining implementation defect |
-| RV-004 | `rpi-implement` | Make cleanup progress beyond the safe scan cap | Accepted design, remaining implementation defect |
-| RV-007 | `rpi-plan` plus P05 handoff | Reconcile details and PR narrative | Canonical artifact-state inconsistency |
+| RV-002 | `rpi-implement` | Add atomic scheduler reservation/deduplication | In-repository implementation defect |
+| RV-003 | `rpi-implement` | Align telemetry/query contracts and absence semantics | In-repository implementation defect |
+| RV-004 | `rpi-implement` | Make cleanup bounded and concurrent-reference-safe | In-repository implementation defect |
+| RV-007 | `rpi-plan` plus P05 handoff | Reconcile tracking and PR narrative | Canonical artifact/handoff gap |
+| RV-008 | `rpi-implement` | Enforce exact proof and durable recovery authorization | In-repository acceptance defect |
+| RV-009 | `rpi-implement` | Validate complete proof per four-cycle row | In-repository acceptance defect |
 
-Later implementation of a routed finding does not require another Review.
+Later implementation of routed findings does not require another Review.
 
 ## Residual Work
 
-* P00-T01 is cross-repository residual work owned by `jmservera/SquadScope`: prevent/classify the blocked dispatch at its exact source and prove it with focused upstream tests.
-* P05 remains external delivery work: commit/push/PR checks, final-SHA independent review, #682 evidence/replies, approval/merge, release provenance, deployment, canary, and rollback.
-* P06 remains elapsed production work: four consecutive weeks with upstream dispatch evidence, Azure correlation, and authoritative provider readback.
-* These residual items are not automatically Podcaster defects.
+* P00-T01 remains cross-repository residual work owned by `jmservera/SquadScope`.
+* P05 remains external delivery work: commit/push/PR, final-SHA independent review, checks, approval/merge, release provenance, deployment, canary, alert fire/clear, and rollback evidence.
+* P06 remains elapsed production work: four consecutive future post-fix cycles with full upstream, Azure, attempt, aggregation, and provider-readback evidence.
+* These residual items do not reduce the severity of current in-repository defects and do not constitute deployment acceptance.
 
 ## Blockers and Remaining Work
 
-* Blockers: P00-T01 upstream repository ownership; P05 repository/deployment/provider authority; P06 elapsed calendar weeks.
-* Remaining implementation defects: RV-002, RV-003, RV-004.
-* Remaining artifact/handoff correction: RV-007.
-* Remaining active plan work: P00-T01 and P05-T01 through P06-T02.
+* Blockers: P00-T01 upstream ownership; P05 repository/deployment/provider authority; P06 elapsed calendar cycles.
+* Remaining implementation defects: RV-002, RV-003, RV-004, RV-008, RV-009.
+* Remaining planning/handoff reconciliation: RV-007.
+* Remaining external work: P00-T01, P05, P06.
 
 ## Validation Evidence
 
 | Command | Scope | Status | Summary |
 |---|---|---|---|
-| Targeted correction command from changes record | P00/outbox/worker/provider/deploy owners | Passed | Independently reproduced `741 passed, 1 warning in 55.54s`. |
-| `pytest tests/ -q` | Full repository | Passed with environment variance | `3070 passed, 3 skipped, 2 deselected, 1 warning`; scale-out skipped because Docker Compose startup was unavailable. Author record reports `3071 passed, 2 skipped, 2 deselected` when that integration ran. |
+| Focused correction command | Outbox/worker/telemetry/deploy | Passed | `81 passed in 2.03s`. |
+| Locked contract command | Dispatch/API/outbox/worker/provider/publication/monitoring/deployment | Passed with current count | `756 passed, 1 warning in 55.69s`; current worktree count differs from the recorded 754. |
+| Initial `pytest tests/ -q` | Full repository | Failed from stale Compose image | `1 failed, 3085 passed, 2 skipped, 2 deselected`; missing fanout clip. |
+| `docker compose -f docker-compose.fanout.yml build --quiet` plus focused integration | Existing scale-out image | Passed | Rebuilt existing test image; integration `1 passed in 29.65s`. |
+| Final `pytest tests/ -q` | Full repository | Passed | `3086 passed, 2 skipped, 2 deselected, 1 warning in 85.64s`. |
 | `python3 -m compileall -q podcaster` | Production Python | Passed | No compile failures. |
 | `ruff check podcaster tests --quiet` | Production and tests | Passed | No lint findings. |
 | `ruff format --check podcaster tests --quiet` | Production and tests | Passed | Formatting check passed. |
-| `git diff --check` and deleted-test query | Worktree safety | Passed | No whitespace errors and no deleted tests. |
 | `az bicep build --file infra/main.bicep --stdout >/dev/null` | Infrastructure | Passed with existing warning | Existing BCP318 warning only. |
-| Exact unskipped Checkov | Infrastructure security baseline | Baseline retained | `36 passed, 7 failed`; the seven are the documented pre-existing ACR/storage/OpenAI findings. |
-| Repository-standard Checkov skip-list gate | Blocking infrastructure gate | Passed | `34 passed, 0 failed`. |
-| `docker image inspect podcaster-synthesis:ci --format '{{.Id}}'` | Corrected local image | Passed | `sha256:ac60e9065a3ccbdd77f26253b88bb61ae610926424878f2d92eb0a7372fe6b1d`. |
-| Distribution-worker container smoke | Truthful process exit | Passed | Missing required queue configuration exited `2`. |
+| `git diff --check` and deleted-file query | Worktree safety | Passed | No whitespace errors; no deleted files in the implementation delta. |
+| Exact Checkov | Infrastructure baseline | Baseline retained | `36 passed, 7 failed`; failures are the documented ACR/storage/OpenAI baseline. |
+| CI-equivalent Checkov skip-list gate | Blocking infrastructure policy | Passed | `34 passed, 0 failed`. |
+| Exact-proof independent probe | Green provider gate | Failed | Missing explicit proof and expected IDs still produced all-green proof and `published_verified`. |
+| Concurrent scheduler pre-mark probe | RV-002 deduplication | Failed | Two scans selected the identical outbox/provider/token. |
+| Weekly telemetry/query probe | RV-003 alert contract | Failed | Emitted event was `distribution_provider_state`; deployed weekly rule expects `distribution_weekly_state`. |
+| Label-only four-cycle probe | P06 evaluator | Failed | Four green labels with no external evidence returned `True`. |
 
 ## Unsafe-Narrowing Assessment
 
-* Truthful exits: Preserved; non-public, partial, pending, unknown, manual, failed, and unexpected empty work remain non-success.
-* Provider safety and fencing: Preserved; consumed intent prevents takeover mutation and stale writes remain rejected.
-* Bounded reconciliation: Preserved in per-operation behavior, but global enumeration defects remain RV-002/RV-004.
-* Terminal receipts and manual handoff: Preserved.
-* External readback: Preserved as the only provider-success basis.
-* CI/security gates: Not weakened; exact baseline and blocking Checkov modes are both disclosed.
-* PII/secrets: Dispatch and outbox durable fields remain allowlisted/sanitized; no body, URL, token, cookie, signed URL, account identity, or provider identity is added to dispatch correlation.
+* Truthful non-green exits remain preserved in worker aggregation.
+* Immutable attempt preservation is implemented.
+* Unknown mutations remain blocked from blind recovery authorization.
+* Provider green proof is unsafely broadened by inferred/omitted fields; RV-008 is material.
+* Four-cycle acceptance is unsafely narrowed to labels; RV-009 is material.
+* CI/security gates were not weakened.
+* No secret/PII regression was identified in the reviewed boundary.
 
 ## PR Narrative Changes Required
 
-Before `.copilot-tracking/pr/pr.md` is used as a real PR description:
+Before `.copilot-tracking/pr/pr.md` is used:
 
-1. Replace the former “0 Critical / 4 High / 2 Medium” rejection section with this review’s current dispositions: RV-001 and RV-005 resolved, RV-006 resolved at planning level, RV-002/RV-003/RV-004 open, and RV-007 added.
-2. Replace old validation counts and image digest with targeted `741`, author full `3071/2/2` plus the independent environment-variant `3070/3/2`, exact Checkov `36/7`, gate `34/0`, digest `sha256:ac60e9065a3ccbdd77f26253b88bb61ae610926424878f2d92eb0a7372fe6b1d`, and smoke exit `2`.
-3. Keep W38 explicitly published and comparative-only; keep W39 as the pre-Azure incident with no downstream execution.
-4. State that P00-T01 is owned by `jmservera/SquadScope` and that P05/P06 remain residual external work.
-5. Do not claim merge readiness, deployment readiness, #682 supersession, canary acceptance, or four-week completion while open high findings and external gates remain.
+1. State review execution `Complete`, implementation execution `Complete for Amy's declared in-repository scope`, and outcome `Not accepted`.
+2. List exact dispositions: RV-001 resolved; RV-002 high open; RV-003 high open; RV-004 medium open; RV-005 resolved; RV-006 planning-level resolved with P05 execution open; RV-007 medium open; RV-008 high open; RV-009 high open.
+3. Use independent validation: focused 81; locked 756/1 warning; final full 3086/2 skipped/2 deselected/1 warning after stale-image refresh; compile/Ruff/format/Bicep/diff passed; exact Checkov 36/7 baseline; gate 34/0.
+4. Keep W38 evidence-conditional and explicitly state current fixtures do not yet enforce the full recovered-green proof contract. Keep W39 `missed_not_dispatched`.
+5. State P00-T01 is owned by `jmservera/SquadScope`; P05 and P06 remain external/elapsed residual work.
+6. Do not claim merge readiness, deployment readiness, canary acceptance, four-cycle completion, or production acceptance.
 
 ## Outcome
 
 * Outcome: Not accepted
-* Outcome rationale: Execution is Partial and external P00/P05/P06 work is correctly residual. However, RV-002 and RV-003 are actual high-severity defects in accepted scheduler and alert contracts, RV-004 remains a medium cleanup-liveness defect, and RV-007 leaves canonical detail/PR state inconsistent. The correction is materially safer and resolves RV-001/RV-005, but the high findings require a Not accepted outcome.
+* Outcome rationale: Amy completed the declared in-repository execution and materially improved attempt preservation, paging, routing, and terminology. However, RV-002 and RV-003 remain high operational defects, RV-008 and RV-009 allow false green/recovered and four-cycle acceptance without exact external proof, RV-004 remains a boundedness/reference-safety defect, and RV-007 leaves canonical claims inaccurate. High-severity defects prevent acceptance.
 
 ## Closeout Routing Record
 
 | Finding class | Destination | Owner or next action |
 |---|---|---|
-| Implementation defect | `rpi-implement` | Resolve RV-002, RV-003, and RV-004. |
-| Decision/artifact gap | `rpi-plan` | Reconcile RV-007 phase-detail status and P05 handoff state. |
+| Implementation defect | `rpi-implement` | Resolve RV-002, RV-003, RV-004, RV-008, and RV-009. |
+| Decision/artifact gap | `rpi-plan` | Reconcile RV-007 after implementation, with PR narrative handled in P05. |
 | Material evidence gap | None | Evidence is sufficient for this verdict. |
 | Non-blocking residual work | P00-T01, P05, P06 | Upstream owner, delivery owner, and production verification owner respectively. |
 
 * Review execution status: Complete
-* Assessed implementation execution status: Partial
+* Assessed implementation execution status: Complete for Amy's declared in-repository scope
 * Outcome: Not accepted
-* Severity summary: 0 Critical; 2 High open; 2 Medium open; 2 resolved prior findings; 1 planning-level prior finding resolved
-* Validation coverage: Targeted/full pytest, compile, Ruff, diff safety, Bicep, exact and blocking Checkov, image digest, and truthful container exit
-* Blockers: P00-T01 upstream ownership; P05 delivery/deployment authority; P06 elapsed weeks
+* Severity summary: 0 Critical; 4 High open; 2 Medium open; 2 resolved prior findings; 1 planning-level prior finding resolved
+* Validation coverage: Focused/locked/full pytest, compile, Ruff, format, diff safety, Bicep, exact and blocking Checkov, and independent negative probes
+* Blockers: P00-T01 upstream ownership; P05 delivery/deployment authority; P06 elapsed cycles
 
 ## Relevant Artifacts
 
 | Artifact | Description |
 |---|---|
-| [.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md](.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md) | Corrected plan, acceptance criteria, closure matrix, and residual phases |
-| [.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md](.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md) | Phase/task semantics and the RV-007 stale-state inconsistency |
-| [.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md](.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md) | Authoritative W38/W39 correction evidence |
-| [.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md](.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md) | Single preserved historical critique |
-| [.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md](.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md) | Hermes implementation and validation evidence |
-| [.copilot-tracking/pr/pr.md](.copilot-tracking/pr/pr.md) | Draft PR narrative requiring the changes listed above |
-| [.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md](.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md) | Canonical corrected review result |
+| [.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md](.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md) | Current requirements, acceptance gates, markers, and residual phases |
+| [.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md](.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md) | Detailed state model and task contracts |
+| [.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md](.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md) | W38/W39 and provider evidence research |
+| [.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md](.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md) | Preserved historical critique |
+| [.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md](.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md) | Amy's implementation and validation claims |
+| [docs/ops/distribution-terminal-truth.md](docs/ops/distribution-terminal-truth.md) | Operational truth, alert, canary, and rollback contract |
+| [.copilot-tracking/pr/pr.md](.copilot-tracking/pr/pr.md) | Draft PR narrative requiring the listed corrections |
+| [.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md](.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md) | Canonical independent review result |
 
 ## Next Steps
 
-Return this canonical record to the requesting parent. Route RV-002/RV-003/RV-004 to `/rpi-implement` and RV-007 to `/rpi-plan`; separately clear P00-T01 in `jmservera/SquadScope` and retain P05/P06 as external residual work. Do not run another review.
+Route RV-002, RV-003, RV-004, RV-008, and RV-009 to `/rpi-implement`; route RV-007 tracking reconciliation to `/rpi-plan` after those corrections. Separately clear P00-T01 in `jmservera/SquadScope` and retain P05/P06 as external residual work. Do not run another review.

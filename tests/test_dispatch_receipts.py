@@ -140,7 +140,7 @@ def test_w39_class_trace_localizes_dispatch_arrival_and_terminal_provider_fixtur
         claim,
         provider="youtube",
         result="externally_verified_public",
-        source="deterministic_external_fixture",
+        source="deterministic_external_readback",
         provider_item_id="fixture-video",
         native_state="public",
     )

@@ -1,82 +1,85 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **BLOCKED — independent review outcome: Not accepted.** Review execution is **Complete**, implementation is **Partial**, and this draft is not merge-ready or accepted. It does not close or supersede `jmservera/SquadScope-Podcaster#682`.
+> **OPEN / DRAFT / BLOCKED — independent review outcome: Not accepted.** Review execution is **Complete**. Amy's declared in-repo implementation execution is **Complete**. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
-## Incident summary and motivation
+## Incident and acceptance truth
 
-The active missed-publication incident is W39. Its upstream dispatch was blocked before Azure, so there is no W39 synthesis, recorder, video, outbox, or provider execution. The primary incident remediation is therefore W39-class upstream dispatch intent/evidence and missing-arrival detection, correlated end to end through Podcaster acceptance, Azure execution, and authoritative external-provider readback.
+Attempt-level truth is immutable and distinct from weekly identity delivery. Every failed, partial, unknown, manual-action, or conflicting attempt must remain visible beneath any later weekly recovery; a later success must not overwrite attempt history.
 
-W38 was successfully published. A W38 attempt or provider path may have failed or been partial, but W38 is not a missed or unpublished week. It is used only as comparative evidence for partial attempts, retries, reconciliation, recovery behavior, and truthful observability.
+W38 may be classified `published_verified_recovered` only if evidence binds the exact week/publication identity, manifest and publication digest, canonical artifact, authorized succeeding attempt, expected provider item, authoritative terminal provider readback, and resolved duplicate state. That proof has not been established by the current executable fixtures, so this PR does not assert W38 recovered-green.
 
-Provider lifecycle, outbox, fencing, reconciliation, and truthful exit behavior remain independently required production hardening. They make retries safer and downstream status truthful after Azure arrival, but they are not presented as the root-cause fix for W39's pre-Azure dispatch blockage.
+W39 remains the incident and is `missed_not_dispatched`. It has no synthesis, recorder, video, outbox, or provider attempt because dispatch was blocked before Azure.
 
-## Implemented scope and residual delivery work
+Green weekly success requires all of the following:
 
-The branch contains the Podcaster-side P00 receipt/absence evidence plus the local P01-P04 implementation:
+- Exact week and publication identity.
+- Exact manifest/digest identity and canonical artifact.
+- Expected provider item identity.
+- Authoritative external readback proving terminal visibility and state.
+- No unresolved duplicate ambiguity.
+- Authorized recovery backed by durable proof, with no blind retry after an unknown mutation.
 
-- **P00 Podcaster boundary:** authenticated arrival and acceptance evidence, correlation identifiers, and absence diagnostics for the upstream-to-Azure handoff.
-- **P01 outbox lifecycle:** versioned sanitized state, immutable artifact correlation, recoverable enqueue, fenced claims, consumed mutation intents, reconciliation scheduling, notification deduplication, and reference-safe cleanup.
-- **P02 provider lifecycle:** draft-first YouTube processing/promotion/readback, fail-closed Spotify reconciliation/manual handoff, and durable provider intent, receipt, and verification evidence.
-- **P03 truthful execution:** worker and ACA exit semantics, bounded execution and cleanup, telemetry, alert infrastructure, and the terminal-truth runbook.
-- **P04 verification:** crash, concurrency, provider ambiguity, process-exit, infrastructure, and lifecycle coverage.
+Four future post-fix cycles must each end `published_verified` or controlled `published_verified_recovered`. `partial`, `provider_unknown`, `manual_action_required`, `identity_conflict`, missing readback, duplicate ambiguity, or any other incomplete proof is non-green.
 
-Implementation remains **Partial**. Residual external work is:
+## Implemented scope
 
-- **P00-T01:** implement and verify the exact upstream dispatch prevention in `jmservera/SquadScope`.
-- **P05:** complete delivery, final-SHA review, provenance, deployment, canary, and rollback gates.
-- **P06:** verify four future consecutive scheduled weeks end to end.
+The branch contains the Podcaster-side P00 receipt/absence boundary and Amy's declared in-repo P01-P04 implementation:
+
+- Durable dispatch acceptance and absence evidence with cross-boundary correlation.
+- Immutable attempt history, separate weekly aggregation, fenced claims, recovery records, reconciliation scheduling, and cleanup changes.
+- Provider intent, receipt, verification, readback, and fail-closed/manual-handoff behavior.
+- Truthful worker/ACA exits, telemetry, alert infrastructure, runbook updates, and fault/concurrency/lifecycle coverage.
+
+Completion of the declared implementation scope does not imply acceptance. The independent review found material defects in scheduler deduplication, alert contracts, cleanup safety, exact provider proof, four-cycle proof evaluation, and canonical tracking accuracy.
 
 ## Independent review: Not accepted
 
-The completed independent review reports **0 Critical; 2 High open; 2 Medium open**.
+**Severity:** 0 Critical, 4 High open, 2 Medium open.
 
-Resolved findings:
+| Finding | State | Review result |
+|---|---|---|
+| RV-001 | Resolved | Read-only YouTube promotion takeover converges through authoritative readback without a duplicate mutation. |
+| RV-002 | **High open** | Concurrent schedulers can select and enqueue the same notification because selection and sent-marking are not atomic. |
+| RV-003 | **High open** | Weekly alert queries do not match emitted event names, so required critical signals can fail to fire. |
+| RV-004 | **Medium open** | Cleanup is paginated but remains unbounded across the retained corpus and unsafe against a concurrent new reference. |
+| RV-005 | Resolved | Missing provider identity remains accurately fail-closed rather than inventing identity-bound readback. |
+| RV-006 | Planning-resolved | The closure inventory is present; P05 execution remains outstanding, and no issue or review thread is treated as resolved by this delivery. |
+| RV-007 | **Medium open** | Canonical tracking overstates finding dispositions and retains a stale locked-test count. |
+| RV-008 | **High open** | Exact provider identity/proof and durable recovery authorization are not enforced; omitted proof can produce false green. |
+| RV-009 | **High open** | The four-cycle evaluator accepts green labels without validating external proof. |
 
-- **RV-001 (High, resolved):** read-only YouTube promotion takeover now converges through authoritative readback or durable fail-closed evidence without issuing a duplicate mutation.
-- **RV-005 (Medium, resolved):** ambiguous upload evidence no longer claims identity-bound readback when provider identity is unavailable.
-- **RV-006 (High, resolved at planning level):** the `jmservera/SquadScope-Podcaster#682` closure inventory was expanded in the plan. Execution remains part of P05 and no GitHub thread is treated as resolved by this PR update.
+Do not implement these findings in this delivery. They remain routed follow-up work under the **Not accepted** outcome.
 
-Open findings:
+## Independent validation evidence
 
-- **RV-002 (High):** scheduler fairness stops at the fixed 5,000-path storage enumeration window, so later records can starve.
-- **RV-003 (High):** warning/critical alert routing and missing-data behavior remain descriptive rather than fully deployable contracts.
-- **RV-004 (Medium):** orphan cleanup is reference-safe within the enumerated set but can stop making progress at scale.
-- **RV-007 (Medium):** stale artifact and PR handoff narrative remains an open consistency finding.
-
-This PR body update addresses the **PR narrative portion** of RV-007 after review. It does not modify the review record, change the **Not accepted** verdict, claim RV-007 fully resolved, or claim acceptance.
-
-## Validation evidence
-
-Independent review recorded:
-
-- Targeted correction suite: **741 passed**.
-- Full repository suite: **3070 passed, 3 skipped, 2 deselected**; the scale-out integration skipped because Docker Compose startup was unavailable in the review environment.
-- Ruff check and format, Python compile, Bicep build, and diff safety checks: **passed**.
+- Focused correction suite: **81 passed**.
+- Locked contract suite: **756 passed, 1 warning**.
+- Full repository suite after refreshing the stale Compose image: **3086 passed, 2 skipped, 2 deselected, 1 warning**.
+- Python compile, Ruff check, Ruff format check, Bicep build, and diff safety: **passed**.
 - Exact Checkov baseline: **36 passed, 7 failed**, matching the documented pre-existing baseline.
-- Repository Checkov wrapper: **34 passed, 0 failed**.
-- Required container digest: `sha256:ac60e9065a3ccbdd77f26253b88bb61ae610926424878f2d92eb0a7372fe6b1d`.
-- Distribution-worker smoke without required queue configuration: **exit 2**, not success.
+- CI-equivalent Checkov gate: **34 passed, 0 failed**.
 
-No validation gate was weakened. Compose unavailability is reported as an environment variance rather than converted into a passing integration result.
+The initial full run failed only against the stale Compose image; rebuilding that existing test image made the focused integration pass before the final full-suite result above. No validation or security gate was weakened.
 
-## Canary, rollback, and production verification
+## Negative probes
 
-Do not deploy or merge this blocked draft.
+Independent QA reproduced:
 
-After the open findings and P05 gates are completed, the canary must prove this exact chain:
+- **False green without identity proof:** missing explicit proof and expected provider IDs still produced all-green proof and `published_verified`.
+- **Duplicate scheduler selection:** two concurrent pre-mark scans selected the same outbox/provider/token and could enqueue duplicate work.
+- **Telemetry/query mismatch:** emitted weekly critical rows use `distribution_provider_state`, while deployed weekly rules query `distribution_weekly_state`.
+- **Label-only four-cycle acceptance:** four green labels with no attempts, identity, provider item, duplicate resolution, or external readback returned accepted.
 
-1. **Upstream dispatch intent and dispatch evidence** at the scheduled weekly boundary.
-2. **Podcaster authenticated arrival and acceptance** correlated to that upstream intent.
-3. **Enqueue and execution correlation** across the durable outbox and Azure workload.
-4. **Azure terminal result** with truthful process and workload exit semantics.
-5. **Authoritative external-provider readback** for the expected YouTube and Spotify publication state.
+These probes are acceptance blockers even though the positive test suites pass.
 
-The canary must also exercise a W38-inspired partial-attempt/retry path as an observability and recovery comparison. That comparison is not missed-week recovery and must not describe W38 as unpublished.
+## Residual external gates
 
-Rollback is required on duplicate provider mutation, stale fenced writes, missing durable receipt, unbounded reconciliation, missing upstream-to-Azure correlation, or terminal success without authoritative provider readback. Rollback disables new routing and claims while preserving outbox records, consumed intents, receipts, provider identifiers, reconciliation schedules, and correlation evidence for diagnosis.
+- **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
+- **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
+- **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 
-P06 requires **four future consecutive scheduled weeks**, each with upstream dispatch evidence, Azure arrival and execution correlation, and authoritative external-provider readback. Internal CI, API, workflow, queue, or ACA green status alone is insufficient. W38 does not count as missed-week recovery or as one of these future verification weeks.
+No merge, deployment, canary, four-cycle completion, or production acceptance is claimed.
 
 ## Related work
 
@@ -88,28 +91,26 @@ P06 requires **four future consecutive scheduled weeks**, each with upstream dis
 - jmservera/SquadScope-Podcaster#681
 - jmservera/SquadScope-Podcaster#682
 
-`jmservera/SquadScope-Podcaster#682` remains open and is not superseded. Do not resolve its review threads or mutate that issue from this delivery.
+`jmservera/SquadScope-Podcaster#682` remains open and is not superseded. This delivery does not mutate issues, review threads, deployments, canaries, or production state.
 
-## Security and idempotency
+## Security and delivery controls
 
-No safety, infrastructure, test, or security gate was weakened. Provider mutations remain at-most-once per consumed intent. Ambiguous mutation outcomes remain fail-closed and reconciliation-only or manual-handoff; they are never permission for a blind retry. Durable state excludes credentials, tokens, request/response bodies, URLs, and PII.
+The current change set and public PR text were checked for suspected secrets and PII; none were identified. Durable state is intended to exclude credentials, tokens, request/response bodies, URLs, and PII. Ambiguous provider mutation remains fail-closed and must never authorize a blind retry.
 
 ## Delivery checklist
 
-- [x] Existing correction diff and worktree status inspected.
-- [x] Changed content reviewed for suspected secrets and PII before staging.
-- [x] W38 recorded as successfully published and comparative-only.
-- [x] W39 recorded as the pre-Azure missed-publication incident with no downstream execution.
-- [x] Independent review status, severity, dispositions, validation, and residual work recorded.
-- [x] PR narrative portion of RV-007 corrected without changing the review verdict.
-- [ ] RV-002 scheduler fairness implemented and independently verified.
-- [ ] RV-003 deployable alert contract implemented and independently verified.
-- [ ] RV-004 scalable orphan cleanup implemented and independently verified.
-- [ ] Remaining RV-007 artifact-state inconsistency reconciled through the routed follow-up.
-- [ ] P00-T01 exact upstream prevention completed in `jmservera/SquadScope`.
-- [ ] P05 final-SHA review, provenance, deployment, canary, and rollback gates completed.
-- [ ] P06 four-future-week verification completed.
-- [ ] `jmservera/SquadScope-Podcaster#682` superseded or closed only after its own evidence and delivery gates pass.
+- [x] Current status, branch diff, independent review, and existing draft PR inspected.
+- [x] Public PR content checked under the content-policy citation rules; no citation was required.
+- [x] Review execution and Amy's declared in-repo implementation execution recorded as Complete.
+- [x] Outcome retained as Not accepted with 0 Critical, 4 High open, and 2 Medium open.
+- [x] W38 retained as evidence-conditional and W39 retained as `missed_not_dispatched`.
+- [x] Positive validation and independent negative probes recorded exactly.
+- [x] Existing PR retained OPEN, DRAFT, and BLOCKED.
+- [ ] RV-002, RV-003, RV-004, RV-008, and RV-009 corrected and independently verified.
+- [ ] RV-007 canonical tracking reconciled after implementation corrections.
+- [ ] P00-T01 completed in `jmservera/SquadScope`.
+- [ ] P05 deployment/canary gates completed.
+- [ ] P06 four future elapsed cycles proven green with authoritative external evidence.
 
 ## Artifacts
 
