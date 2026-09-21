@@ -2,8 +2,10 @@
 
 ## Incident boundary and correlation
 
-W38 was published successfully. Its partial-attempt history is comparative evidence for retries,
-reconciliation, and truthful observability; it is not a missed-publication recovery case.
+W38 may be classified `published_verified_recovered` only when exact durable proof binds its weekly
+identity, manifest and publication digest, canonical artifact, authorized succeeding attempt,
+provider item identities, and authoritative terminal readback. Fixtures and operator summaries must
+not assume that green state. Earlier failed or partial attempts remain immutable evidence.
 
 W39 is the active missed-publication class. Its dispatch was blocked before Azure, so there is no
 W39 synthesis, recorder, video, outbox, or provider execution to inspect. The upstream weekly
@@ -22,6 +24,14 @@ Provider delivery succeeds only after authoritative external readback proves eve
 provider item is public. Queue acceptance, mutation HTTP success, draft creation, private or
 unlisted YouTube state, Spotify draft state, pending processing, unknown mutation state, manual
 handoff, partial delivery, and poison exhaustion are non-success outcomes.
+
+Attempt records are append-only and use unique attempt identities, lifecycle events, authorization
+and predecessor references, mutation intents, receipts, and terminal evidence. A weekly decision is
+a separate deterministic record. Its precedence is `identity_conflict`, `provider_unknown`,
+`manual_action_required`, `partial`, `missed_not_dispatched`, `failed_terminal`, `pending`,
+`published_verified_recovered`, then `published_verified`. Recovery never rewrites the failed
+attempt. An unknown possible mutation permits read-only reconciliation only and cannot authorize a
+blind retry.
 
 ## Rollout and rollback
 
@@ -43,6 +53,11 @@ mutation for an item with a consumed intent.
 | `distribution_spotify_draft` | >15m | >24h | Publication operator; publish manually when required, then read back expected item |
 | `distribution_public_verification_lag_seconds` | >15m | >60m | Operations; run bounded read-only reconciliation |
 | `distribution_poisoned` | n/a | any | Production owner; inspect invariant failure and perform explicit operator resolution |
+| `distribution_identity_conflict` | n/a | any | Production owner; resolve manifest/digest, canonical artifact, provider identity, or duplicate ambiguity |
+| `distribution_weekly_non_green` | n/a | any | Production owner; weekly acceptance is blocked |
+| `distribution_scheduler_heartbeat` | missing >15m | missing >15m | Production owner; restore authoritative scheduler telemetry |
+| `distribution_active_outbox_depth` | active without state rows | n/a | Operations; inspect scheduler and worker emission |
+| `distribution_claim_heartbeat_missing` | n/a | any active overdue claim | Production owner; fence stale ownership and reconcile read-only where required |
 
 Missing telemetry is healthy only when authoritative outbox depth is zero. Missing telemetry while
 active outbox records exist is itself a warning; missing claim heartbeat while a claim is active is
@@ -59,6 +74,9 @@ Podcaster-only injection does not prove the W39-class boundary. A manual Spotify
 pass until the expected provider item is authoritatively read as public.
 
 Separately exercise a W38-inspired partial-attempt/retry fixture to prove truthful reconciliation
-and multi-attempt observability. Never describe that fixture as missed-week recovery. Roll back
+and multi-attempt observability. The fixture is green only with the complete proof chain and must
+retain both the failed attempt and authorized successful attempt. Never describe that fixture as
+missed-week recovery. Four consecutive post-fix cycles must each end `published_verified` or
+controlled `published_verified_recovered`; every other weekly state blocks acceptance. Roll back
 immediately on a duplicate mutation, stale fenced write, missing receipt, unbounded reconciliation,
 or success without public readback.

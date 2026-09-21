@@ -10,9 +10,9 @@
 
 ## Task-Level Context
 
-The authoritative incident boundary is W39's blocked upstream dispatch before Azure. W39 has no synth, recorder, video, outbox, or provider execution. Planning therefore adds durable upstream intent-to-dispatch-to-Azure-arrival correlation and missing-arrival detection as the primary incident lane, then verifies publication through downstream execution and authoritative external-provider readback.
+The authoritative QA correction separates attempt-level truth from weekly publication-identity truth. Every attempt remains immutable even when a later authorized attempt publishes successfully. Weekly state is a separate deterministic aggregation decision backed by exact identity, manifest/digest, canonical artifact, provider item, and terminal external-provider readback.
 
-W38 was successfully published. Its failed or partial attempt/provider path remains comparative evidence for retries, reconciliation, multi-attempt history, and truthful observability; it is never a missed-week recovery case. Current `origin/main`/#680 and the locally implemented P01–P04 provider/outbox work remain necessary production hardening after Azure arrival, not the W39 root-cause remedy.
+W39 remains `missed_not_dispatched`: it has no synth, recorder, video, outbox, or provider attempt. W38 may be classified `published_verified_recovered` only if its exact proof chain satisfies this plan; otherwise that state is an allowed candidate, not assumed proof.
 
 ## Cross-Phase Invariants
 
@@ -22,10 +22,12 @@ W38 was successfully published. Its failed or partial attempt/provider path rema
 4. **Consumed intent before I/O:** provider operation intent is durable and atomically marked consumed before network mutation. A call starts only when `remaining_lease > configured_provider_timeout + receipt_persistence_margin`; receipt/ambiguity/readback is durable before queue acknowledgment.
 5. **Reconcile before mutate:** every provider transition first performs bounded identity-bound readback; ambiguous absence or identity is never treated as permission to create.
 6. **At-most-once mutation:** each consumed intent permits one mutation call. Lease expiry or takeover after intent consumption authorizes read-only reconciliation only, even when provider absence is observed; lost/ambiguous response is quarantined as pending/unknown/manual and never receives a second mutation authorization.
-7. **Truthful success:** a requested production provider succeeds only with authoritative external verification of its required public state.
-8. **Safe actionable terminal states:** `publication_unknown`, `manual_handoff_required`, poison, and deterministic non-public states are durably acknowledged from the mutation queue to prevent replay, but produce non-zero execution and alerts. Due reconciliation is represented by one deduplicated durable token, not ACA redelivery.
-9. **Sanitized evidence:** identifiers/hashes/state/timestamps/error codes are allowed; secrets, tokens, cookies, signed URLs, bodies, content, and unnecessary PII are rejected.
-10. **Rollback preservation:** disabling new routing/claims never deletes intent, receipts, or unknown/manual records and never restores inline blind mutation.
+7. **Immutable attempt truth:** attempt lifecycle events and terminal outcomes are append-only. Recovery creates a new authorized attempt and never edits or hides an earlier result.
+8. **Truthful weekly success:** a weekly identity succeeds only as `published_verified` or controlled `published_verified_recovered` after exact external verification.
+9. **Safe actionable terminal states:** `provider_unknown`, `manual_action_required`, poison, identity conflict, and deterministic non-public states are durably acknowledged from the mutation queue to prevent replay, but produce non-zero execution and alerts.
+10. **Deterministic aggregation:** the weekly decision records the evaluated attempt set, rule version, precedence result, proof references, and unresolved conditions.
+11. **Sanitized evidence:** identifiers/hashes/state/timestamps/error codes are allowed; secrets, tokens, cookies, signed URLs, bodies, content, and unnecessary PII are rejected.
+12. **Rollback preservation:** disabling new routing/claims never deletes attempts, intents, receipts, aggregation decisions, or unknown/manual records and never restores inline blind mutation.
 
 ## Identity and Correlation Schema
 
@@ -33,54 +35,79 @@ The implementation may refine field names but must preserve these meanings and u
 
 | Record | Required correlation |
 |---|---|
-| Publication identity | `accepted_job_id`, `week`, `publish_run_id`, `article_sha256`, `manifest_sha256` from #680 |
-| Outbox identity | stable `outbox_id`, schema version, media kind, requested providers/objectives, artifact path/hash/size, enqueue timestamp, enqueue source/version |
-| Claim/execution | `claim_owner`, `claim_id`, `execution_id`, mutation attempt, verification attempt, `fencing_token`, `claimed_at`, `lease_expires_at`, heartbeat, provider timeout, receipt margin, remaining deadline |
-| Provider intent | provider, operation, stable intent ID, consumed flag/timestamp/fence, expected publication identity, expected provider item ID when known, precondition/readback fingerprint |
-| Provider receipt | transport class/status, provider item/artifact ID, native state, mutation ambiguity, sanitized code, response/readback timestamp |
-| Verification | processing/upload state, privacy/publication state, verification source, `checked_at`, `confirmed_at`, verification class |
+| Publication identity | stable weekly identity ID, `accepted_job_id`, `week`, `publish_run_id`, requested provider objectives, `article_sha256`, `manifest_sha256`, publication digest |
+| Canonical artifact | stable artifact ID/path, media kind, hash, size, manifest reference, canonical-selection reason/version, creation timestamp |
+| Attempt identity | stable `attempt_id`, parent weekly identity, authorization source/reason/time, predecessor attempt when recovery applies, lifecycle event sequence, terminal outcome |
+| Outbox identity | stable `outbox_id`, schema version, attempt ID, artifact reference, enqueue timestamp, enqueue source/version |
+| Claim/execution | `claim_owner`, `claim_id`, `execution_id`, attempt ID, verification attempt, `fencing_token`, `claimed_at`, `lease_expires_at`, heartbeat, provider timeout, receipt margin, remaining deadline |
+| Provider intent | provider, operation, stable mutation intent ID, consumed flag/timestamp/fence, mutation authorization ID, expected publication/artifact identity, expected provider item ID when known, precondition/readback fingerprint |
+| Provider receipt | attempt and intent IDs, mutation request class, transport class/status, provider item ID, native state, ambiguity class, sanitized code, receipt timestamp |
+| Terminal readback | attempt/provider item IDs, external readback source, visibility/publication/processing state, identity-match result, `checked_at`, `confirmed_at`, terminal classification |
 | Reconciliation schedule | `next_reconcile_at`, verification attempt/budget/horizon, active schedule token, last scheduled/executed timestamps, exhaustion reason |
-| Aggregate | per-provider objective/result, requested/required flags, public-verification completeness, terminal reason, worker exit class |
+| Weekly aggregation | stable decision ID, rule/version, evaluated attempt IDs, precedence state, winning proof references, unresolved ambiguity list, decision timestamp, worker exit class |
 
 Provider item IDs are treated as operational identifiers and never combined with channel/account names, email addresses, cookies, titles, or payload content in metric dimensions.
 
 ## Safe State Model
 
-### Outbox states
+### Attempt lifecycle and terminal states
 
 `pending → claimed → reconciling → intent_persisted → mutating → receipt_persisted → verifying`
 
-From `verifying`, a provider leg transitions to one of:
+An attempt terminates as exactly one of:
 
-* `externally_verified_public` — only provider success.
-* `pending_provider` — processing/readback not terminal; set `next_reconcile_at` under a separate verification budget and emit one deduplicated schedule token; current execution is non-zero.
-* `publication_unknown` — mutation may have occurred but identity/state is unprovable; no automatic mutation retry.
-* `manual_handoff_required` — unsupported or deterministic provider/operator action required; no automatic mutation retry.
+* `published_verified` — exact identity, manifest/digest, canonical artifact, provider item, and terminal external state are proven for this attempt.
+* `partial` — some requested objective or proof is incomplete.
+* `provider_unknown` — mutation may have occurred but identity/state is unprovable; no automatic mutation retry.
+* `manual_action_required` — unsupported or deterministic provider/operator action is required; no automatic mutation retry.
 * `failed_retryable_pre_mutation` — no mutation intent was consumed and a bounded retry is safe.
 * `failed_terminal` — deterministic non-provider/transformation/configuration failure.
-* `poisoned` — bounded attempts exhausted or invariant violation; operator action required.
+* `cancelled_safe` — cancellation occurred with retained proof that no mutation was issued.
 
-The aggregate becomes `completed_public` only when every requested production provider is `externally_verified_public`. Every other aggregate exits non-zero. Queue acknowledgment is independent from process success: durable unknown/manual/poison/non-public outcomes acknowledge the mutation message after evidence persistence. A scheduler conditionally creates one token for due records; the one-item ACA execution claims that token, performs read-only reconciliation unless a fresh unconsumed intent is explicitly safe, persists the next due/terminal state, and acknowledges the token. ACA platform retries do not grant mutation authority. An empty scheduled drain returns a distinct no-work success only for an expected timer poll; an expected work execution with a missing token is non-success and alerts.
+Terminal attempt outcomes are immutable. `pending_provider` remains a non-terminal lifecycle condition with a separate reconciliation budget. A safe retry creates a new attempt with explicit authorization and predecessor linkage.
+
+### Weekly identity states and precedence
+
+Weekly states are `identity_conflict`, `provider_unknown`, `manual_action_required`, `partial`, `missed_not_dispatched`, `failed_terminal`, `pending`, `published_verified_recovered`, and `published_verified`.
+
+Aggregation evaluates in that order:
+
+1. `identity_conflict` for manifest/digest mismatch, wrong canonical artifact, conflicting provider item, or unresolved duplicate ambiguity.
+2. `provider_unknown` when any possibly mutated attempt remains unproven.
+3. `manual_action_required` while operator action or post-action readback remains open.
+4. `partial` when requested objectives remain incomplete.
+5. `missed_not_dispatched` after cutoff without an authorized downstream attempt or proven Azure arrival.
+6. `failed_terminal` when all attempts failed deterministically with no safe continuation.
+7. `pending` while an authorized attempt remains inside its reviewed processing/reconciliation window.
+8. `published_verified_recovered` when a succeeding authorized attempt satisfies all green proof and earlier non-green attempts remain referenced.
+9. `published_verified` when the clean verified proof exists with no earlier non-green attempt.
+
+Every non-green state exits non-zero and blocks canary/four-cycle acceptance. Queue acknowledgment is independent from process success. ACA retry never grants mutation authority.
+
+### Controlled recovery
+
+Recovery requires bounded reconciliation proving the prior attempt safe for a new mutation, or explicit operator authorization based on that proof. Unknown mutation cannot be blindly retried. The recovery authorization, predecessor attempt, succeeding attempt, receipts, and terminal readback are all retained. A `published_verified_recovered` weekly decision is invalid if any earlier possibly-mutated attempt remains unresolved.
 
 ## Phase Index
 
 | Phase ID | Name | Status | Detail sections |
 |---|---|---|---|
 | P00 | Prevent and detect W39-class dispatch blockage | Podcaster receipt/absence boundary implemented; upstream prevention owner blocked | P00, P00-T01–P00-T03 |
-| P01 | Establish the durable outbox contract | Complete, including RV-002/RV-004 | P01, P01-T01–P01-T04 |
-| P02 | Implement reconcile-first provider state machines | Complete, including RV-001/RV-005 | P02, P02-T01–P02-T03 |
-| P03 | Make execution, cleanup, and provider aggregation truthful | Complete, including RV-002/RV-003/RV-004 | P03, P03-T01–P03-T03 |
-| P04 | Prove safety with focused tests and repository validation | Complete for this invocation | P04, P04-T01–P04-T03 |
-| P05 | Deliver reviewed, reversible implementation | Blocked by P00 and reopened P01–P04 markers | P05, P05-T01–P05-T05 |
-| P06 | Verify four consecutive production weeks | Blocked by accepted P05 canary and elapsed weeks | P06, P06-T01–P06-T02 |
+| P01 | Establish the durable outbox and immutable attempt contract | Complete in Amy correction cycle | P01, P01-T01–P01-T04 |
+| P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
+| P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
+| P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
+| P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
+| P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: revised P00 plus every reopened dependency-ready marker for RV-001–RV-005 and W38/W39 correction across P01–P04. P05 and P06 are outside this invocation.
-* Current task: Podcaster-side P00-T02/P00-T03 and reopened RV-001–RV-005 markers are complete and validated. P00-T01 remains blocked only on the exact upstream prevention change in the owning `jmservera/SquadScope` component. The implementation owner is Hermes, not original implementer Bender.
+* Declared scope: all dependency-ready reopened P01–P04 tasks for the QA state model plus RV-002, RV-003, RV-004, and source/docs/tests/runbook/tracking consistency for RV-007.
+* Current task: implement immutable attempts, deterministic weekly aggregation, exact receipt/readback proof, controlled recovery, scalable scheduler/cleanup, deployable alerts, and consistent repository artifacts. P00-T01, P05, and P06 remain outside this invocation.
+* Implementation owner: Amy. Bender and Hermes are locked out of this artifact revision cycle.
 * Source boundary: this Podcaster worktree's narrowly identified downstream owners, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts. Do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, deployment, or production.
 * Validation boundary: focused semantic/fault checks per task, then the complete locked validation contract.
-* Delivery boundary: P05 and P06 are outside scope. This invocation performs no commit, push, PR/issue mutation, deployment, or production-week claim.
+* Delivery boundary: P00-T01, P05, and P06 are outside scope. This invocation performs no commit, push, PR/issue mutation, deployment, production-week claim, or modification of `/home/azureuser/source/SquadScope`.
 
 ## Implementation Marker Reconciliation
 
@@ -88,25 +115,28 @@ The aggregate becomes `completed_public` only when every requested production pr
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P01-T02, P03-T02, P04-T01 | Complete for RV-004 | Retained metadata, bounded reference-safe orphan cleanup, and interruption tests |
-| P01-T03, P03-T02, P04-T01 | Complete for RV-002 | Durable notification state, fair scan beyond 100 records, stale-notification repair, and scheduler tests |
-| P02-T01, P02-T03, P04-T01–P04-T02 | Complete for RV-001/RV-005 | Read-only promotion convergence plus accurately named unprovable identity/manual evidence |
-| P03-T03, P04-T02 | Complete for RV-003 | Warning/critical windows, missing-data contract, routes, and generated-query assertions |
-| P04-T03 | Complete | Targeted and full repository validation rerun after all additions |
+| P01-T01, P02-T03, P03-T01, P04-T01–P04-T02 | Reopened for QA correction | Immutable attempt history, exact receipt schema, aggregation precedence, controlled recovery, W38/W39 classification |
+| P01-T02, P03-T02, P04-T01 | Reopened for RV-004 | Reference-safe cleanup that makes bounded progress beyond 5,000 retained paths |
+| P01-T03, P03-T02, P04-T01 | Reopened for RV-002 | Pagination/continuation or bounded sharding that eventually visits every retained due record |
+| P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
+| P03-T03, P04-T02 | Reopened for RV-003 | Distinct deployable routes and executable missing-data/depth/heartbeat alerts |
+| P04-T03 | Reopened | Targeted and full validation after all current corrections |
+| Phase details; P05-T01 | RV-007 planning half resolved; handoff pending | Canonical details are current; PR narrative must be rewritten before delivery |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
-| P01-T01, P01-T04, P02-T02, P03-T01 | Implemented; text-only role correction | Preserve behavior; describe as downstream hardening rather than W39 root-cause remediation |
-| W38 missed-week/recovery claims | Removed | W38 remains successfully published comparative evidence only |
+| P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
+| W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
+| W39 classification | Settled | `missed_not_dispatched` |
 | Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
 
 All reopened implementation and independent-review work must be assigned to an agent other than Bender.
 
 ### Implemented Surface Disposition
 
-* **Text-only correction:** later update `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`, `.copilot-tracking/pr/pr.md`, PR handoff, and production evidence summaries so W38 is published comparative evidence and P01–P04 are downstream hardening. No production-code deletion is justified solely by the former W38-missed framing.
+* **State-model and narrative correction:** later update `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`, `.copilot-tracking/pr/pr.md`, PR handoff, and production evidence summaries to preserve every attempt, use W38 recovery only with exact proof, keep W39 `missed_not_dispatched`, and separate downstream hardening from W39 root cause.
 * **W39 additions:** P00-T01 selects the exact upstream dispatch owner; then extend its workflow/client/status store plus the selected Podcaster/Azure ingress-arrival metadata, monitoring/alert infrastructure, and cross-boundary tests.
-* **Review-driven narrow additions:** restrict code/test changes to RV-001–RV-005 owners (`podcaster/distribution_worker.py`, `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, `infra/modules/distribution-alerts.bicep`, and focused owner tests) unless a failing dependency proves another minimal target.
+* **Review-driven additions:** update publication/outbox/worker aggregation owners for the QA state model; implement RV-002/RV-003/RV-004 in scheduler/outbox/alerts; preserve resolved RV-001/RV-005 behavior.
 * **No-change safety surfaces:** preserve publication schema/sanitization, disabled-by-default routing, Spotify fail-closed/manual handoff, and externally-verified-public exit semantics except for compatible P00 correlation.
-* **Removed/narrowed:** no W38 recovery implementation, no W39 downstream-cause claim, no Podcaster-only incident canary, and no acceptance credit for provider hardening without upstream dispatch/Azure evidence.
+* **Removed/narrowed:** no assumed W38 recovery, no W39 downstream-cause claim, no Podcaster-only incident canary, no blind retry, and no acceptance credit for provider hardening without upstream dispatch/Azure evidence.
 
 <!-- rpi:phase id=P00 -->
 ## P00: Prevent and detect W39-class dispatch blockage
@@ -258,7 +288,7 @@ Add an integration scenario beginning at the authoritative upstream weekly-publi
 * The authoritative correction supersedes every assumption that W38 was unpublished, missed, or awaiting recovery.
 * W39 is the only active missed-publication incident and ends before Azure arrival; no W39 downstream execution may be inferred.
 * The original critique remains unchanged as historical evidence. No second critique was run because this is an authoritative post-implementation user correction.
-* RV-001–RV-005 remain later implementation work for an agent other than Bender. RV-006 is resolved at planning level by the expanded closure matrix, without claiming any GitHub thread resolved.
+* RV-002, RV-003, and RV-004 are implemented and validated in Amy's correction cycle. RV-007 is reconciled across source/docs/tests/runbook/tracking; the prohibited PR-body rewrite remains P05 delivery work. RV-001/RV-005 remain resolved; RV-006 remains resolved at planning level without claiming any GitHub thread resolved.
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish the durable outbox contract
@@ -269,7 +299,7 @@ Add an integration scenario beginning at the authoritative upstream weekly-publi
 
 ### Intent
 
-Create a backward-compatible durable boundary where artifact integrity, enqueue, claim ownership, intent, receipt, and terminal provider evidence are authoritative.
+Create a backward-compatible durable boundary where artifact integrity, immutable attempt history, enqueue, claim ownership, mutation authorization, receipt, terminal provider evidence, and weekly aggregation decisions are authoritative.
 
 ### Boundaries
 
@@ -293,7 +323,7 @@ Create a backward-compatible durable boundary where artifact integrity, enqueue,
 
 ### Completion Evidence
 
-* Existing implementation evidence remains valid for completed surfaces; RV-002 and RV-004 additions plus updated tests are required before phase completion is restored.
+* Phase completion is restored by the immutable attempt ledger, exact weekly proof aggregation, paginated scheduler/cleanup corrections, and focused/full validation recorded in the changes artifact.
 
 ### Unresolved Items
 
@@ -308,7 +338,7 @@ Research C13 shows an adequate canonical identity foundation; the new schema mus
 
 #### Intent
 
-Implement versioned allowlisted records described in `Identity and Correlation Schema`, including retention and aggregate state.
+Implement versioned allowlisted records described in `Identity and Correlation Schema`, including immutable attempt events/outcomes, recovery authorization, terminal readback, retention, and separate weekly aggregation decisions.
 
 #### Boundaries
 
@@ -325,7 +355,7 @@ Implement versioned allowlisted records described in `Identity and Correlation S
 
 #### Validation Expectations
 
-* Round-trip, malformed identity, unsafe key/value, schema upgrade, duplicate key, and retention tests.
+* Round-trip, malformed identity, unsafe key/value, schema upgrade, immutable-history, duplicate key, deterministic re-aggregation, out-of-order receipt, and retention tests.
 
 #### Completion Evidence
 
@@ -370,7 +400,7 @@ Claims persist heartbeat/expiry/fence and atomically consume mutation intent. Be
 
 #### Validation Expectations
 
-* Concurrent claims yield one owner; takeover increments fence; stale owners cannot persist/ack; lease expiry before I/O permits a fresh claim, while expiry during/after a consumed intent permits read-only reconciliation only. Tests interrupt after artifact upload, verification, outbox create, and queue notify and prove repair without duplicate provider intent.
+* Concurrent claims yield one owner; takeover increments fence; stale owners cannot persist/ack; lease expiry before I/O permits a separately authorized new attempt, while expiry during/after a consumed intent permits read-only reconciliation only. Tests interrupt after artifact upload, verification, outbox create, and queue notify and prove repair without duplicate provider intent. Reference enumeration and orphan cleanup remain safe and make progress beyond 5,000 records.
 
 #### Completion Evidence
 
@@ -389,7 +419,7 @@ Pending processing/readback and durable unknown states must continue progressing
 
 #### Intent
 
-Persist `next_reconcile_at`, verification attempt/budget/horizon, and one active schedule token. A scheduler scans due authoritative records, conditionally creates one token, and launches/feeds a one-item reconciliation worker under normal claim/fence rules.
+Persist `next_reconcile_at`, verification attempt/budget/horizon, storage continuation/shard position, and one active schedule token. A scheduler scans due authoritative records through bounded pages/shards that eventually visit every retained record, conditionally creates one token, and launches/feeds a one-item reconciliation worker under normal claim/fence rules.
 
 #### Boundaries
 
@@ -406,7 +436,7 @@ Persist `next_reconcile_at`, verification attempt/budget/horizon, and one active
 
 #### Validation Expectations
 
-* Fake-clock tests prove due/not-due selection, one active token, process restart, lost notification repair, verification budget exhaustion, successful clearing, and no second mutation after consumed intent.
+* Fake-clock tests prove due/not-due selection, one active token, process restart, lost notification repair, traversal beyond the 5,000-record boundary, verification budget exhaustion, successful clearing, and no second mutation after consumed intent.
 
 #### Completion Evidence
 
@@ -569,7 +599,7 @@ Provider mutations and verification must be reconstructable without storing unsa
 
 #### Intent
 
-Append intent, transport classification, provider identifiers/state, ambiguity, verification source, timestamps, and terminal outcome to the canonical evidence chain.
+Append attempt identity, mutation authorization/intent, transport classification, provider item/state, ambiguity, verification source, timestamps, terminal attempt outcome, and weekly decision proof references to the canonical evidence chain.
 
 #### Boundaries
 
@@ -586,7 +616,7 @@ Append intent, transport classification, provider identifiers/state, ambiguity, 
 
 #### Validation Expectations
 
-* Crash after mutation but before receipt leaves durable consumed intent and read-only reconciliation schedule; crash after receipt reuses receipt; sequence/CAS remains append-only.
+* Crash after mutation but before receipt leaves durable consumed intent and read-only reconciliation schedule; crash after receipt reuses receipt; a later authorized success leaves the failed/unknown predecessor unchanged; sequence/CAS remains append-only.
 
 #### Completion Evidence
 
@@ -605,7 +635,7 @@ ACA sees only process exit. The execution must distinguish mutation queue acknow
 
 ### Intent
 
-Make process exit authoritative, keep retry paths safe, bound affected operations, and alert on all actionable non-public states.
+Make process exit authoritative from deterministic weekly aggregation, keep retry paths safe through new authorized attempts, bound affected operations, and alert on all actionable non-green states.
 
 ### Boundaries
 
@@ -626,7 +656,7 @@ Make process exit authoritative, keep retry paths safe, bound affected operation
 
 ### Completion Evidence
 
-* State-lattice/entrypoint evidence remains valid; RV-002, RV-003, RV-004, and the expanded RV-006 thread mapping remain open.
+* The QA aggregation contract and RV-002, RV-003, and RV-004 corrections are complete and validated. Expanded RV-006 thread closure evidence remains P05 delivery work.
 
 ### Unresolved Items
 
@@ -641,7 +671,7 @@ Current `main()` counts only `failed`; drafts/pending/readback-only may be compl
 
 #### Intent
 
-Aggregate requested provider objectives from durable evidence and return non-zero for any non-public leg, including unexpected empty drains or skipped required work. Timer-driven scheduler polls may return a distinct successful no-work result only when no work was expected; ACA retries never create mutation authority.
+Aggregate requested provider objectives from immutable attempts using the plan's precedence. Return zero only for `published_verified` or controlled `published_verified_recovered`; return non-zero for every other weekly state, unexpected empty drains, or skipped required work. Timer-driven polls may return no-work success only when no publication decision was expected; ACA retries never create mutation authority.
 
 #### Boundaries
 
@@ -658,7 +688,7 @@ Aggregate requested provider objectives from durable evidence and return non-zer
 
 #### Validation Expectations
 
-* Exit 0 only for all-requested externally verified public; unknown/manual messages are acknowledged after durable evidence but execution exits non-zero; safe pre-mutation transient paths retain bounded retry.
+* Exit 0 only for the two green weekly states with complete exact proof; failed attempts remain queryable after recovered success; unknown/manual messages are acknowledged after durable evidence but execution exits non-zero; safe pre-mutation recovery creates a new authorized attempt.
 
 #### Completion Evidence
 
@@ -677,7 +707,7 @@ W17–W24 and W26–W29 cover cleanup scope, partial artifacts, visibility budge
 
 #### Intent
 
-Rework only required lifecycle safety behavior from current main, with remaining-deadline propagation and deterministic cleanup/finalization.
+Rework only required lifecycle safety behavior from current main, with remaining-deadline propagation, deterministic cleanup/finalization, complete bounded scheduler enumeration, and reference-safe orphan cleanup that progresses at scale.
 
 #### Boundaries
 
@@ -694,7 +724,7 @@ Rework only required lifecycle safety behavior from current main, with remaining
 
 #### Validation Expectations
 
-* Each W17–W24/W26–W29 row has a focused regression test or explicit current-main non-port proof; operations terminate inside remaining budget.
+* Each W17–W24/W26–W29 row has a focused regression test or explicit current-main non-port proof; operations terminate inside remaining budget; scheduler and cleanup tests cross the former 5,000-path boundary without starvation or unsafe deletion.
 
 #### Completion Evidence
 
@@ -713,7 +743,7 @@ Current monitoring can display evidence but lacks provider-age/lag alerts.
 
 #### Intent
 
-Emit low-cardinality provider/outbox metrics and actionable logs; deploy the plan’s exact alert contract with configurable reviewed thresholds, rule IDs, routes, runbooks, and deterministic fire/clear fixtures.
+Emit low-cardinality attempt/weekly/provider metrics and actionable logs; deploy the plan’s exact alert contract with distinct action routes, executable absence/depth/heartbeat rules, configurable thresholds, rule IDs, runbooks, and deterministic fire/clear fixtures.
 
 #### Boundaries
 
@@ -730,7 +760,7 @@ Emit low-cardinality provider/outbox metrics and actionable logs; deploy the pla
 
 #### Validation Expectations
 
-* Each alert contract row is deployed with its threshold/window, severity/route, missing-data behavior, deterministic fire fixture, and authoritative clear fixture.
+* Each alert contract row is deployed with its threshold/window, distinct enforceable action route, executable missing-data behavior, deterministic fire fixture, and authoritative clear fixture.
 
 #### Completion Evidence
 
@@ -785,7 +815,7 @@ Prove semantics under faults and retain the full regression/quality baseline def
 
 #### Intent
 
-Inject faults before/after artifact upload, artifact verification, conditional outbox create, queue notification, scheduling, claim, intent consumption, mutation, response, receipt, verification, and acknowledgment; use fake clocks for heartbeat/expiry/takeover before, during, and after provider I/O.
+Inject faults before/after artifact upload, artifact verification, conditional outbox create, queue notification, scheduling/pagination, claim, intent consumption, mutation, response, receipt, verification, aggregation, and acknowledgment; use fake clocks for heartbeat/expiry/takeover before, during, and after provider I/O.
 
 #### Boundaries
 
@@ -802,7 +832,7 @@ Inject faults before/after artifact upload, artifact verification, conditional o
 
 #### Validation Expectations
 
-* Every crash point has expected durable state and allowed next action; any possibly issued mutation permanently removes second-mutation authority and has an explicit read-only reconciliation assertion.
+* Every crash point has expected durable state and allowed next action; any possibly issued mutation permanently removes second-mutation authority; failed-attempt evidence survives a succeeding recovery attempt; scheduler/cleanup traversal beyond 5,000 is proven.
 
 #### Completion Evidence
 
@@ -821,7 +851,7 @@ Provider timeout/500, ambiguous create, processing/readback, partial/manual/unkn
 
 #### Intent
 
-Prove provider and process behavior through state-lattice scenario tables and adapter faults.
+Prove provider, attempt, weekly aggregation, alert, and process behavior through state-lattice scenario tables and adapter faults.
 
 #### Boundaries
 
@@ -838,7 +868,7 @@ Prove provider and process behavior through state-lattice scenario tables and ad
 
 #### Validation Expectations
 
-* Initial public configuration produces zero provider calls; ambiguous mutation never retries; only external public verification exits 0.
+* Initial public configuration produces zero provider calls; ambiguous mutation never retries; precedence is deterministic for identity conflict/unknown/manual/partial/missed/failure/pending; only the two externally proven green weekly states exit 0.
 
 #### Completion Evidence
 
@@ -878,7 +908,7 @@ Run targeted and full validation exactly as locked in the plan and resolve failu
 
 #### Completion Evidence
 
-* Baseline `0752d1a`, command summaries, image digests, stale-Compose-image diagnosis, focused scale-out rerun, and final `3059 passed, 2 skipped, 2 deselected` full-suite accounting are recorded in changes.
+* Prior baseline/SHA/image/test counts in the changes record are historical only. Final completion requires a fresh targeted and full validation record after the current QA and review-driven corrections.
 
 #### Unresolved Items
 
@@ -929,7 +959,7 @@ The durable handoff must make validation, operations, and cross-repository relat
 
 #### Intent
 
-Commit and push the validated Podcaster implementation, open the replacement PR against current main, and link the coordinated upstream W39 dispatch PR created from its dedicated owning-repository worktree.
+Commit and push the validated Podcaster implementation, open the replacement PR against current main, and link the coordinated upstream W39 dispatch PR created from its dedicated owning-repository worktree. Replace the superseded RV-007 handoff narrative with the immutable-attempt/weekly-aggregation model and current review dispositions.
 
 #### Boundaries
 
@@ -946,7 +976,7 @@ Commit and push the validated Podcaster implementation, open the replacement PR 
 
 #### Validation Expectations
 
-* PR handoff links Coordinator #17, #681, #680, #682, and the coordinated upstream W39 dispatch PR. It states that W38 published successfully, describes W38 only as comparative partial-attempt evidence, separates P00 incident remediation from P01–P04 hardening, identifies RV-001–RV-005 implementation evidence, and includes validation, canary, rollback, and changes-record pointers.
+* PR handoff links Coordinator #17, #681, #680, #682, and the coordinated upstream W39 dispatch PR. It states W38's evidence-conditional `published_verified_recovered` rule, W39's `missed_not_dispatched` state, immutable attempt preservation, current RV-002/RV-003/RV-004/RV-007 dispositions, exact validation evidence, four-cycle gate, canary, rollback, and changes-record pointers.
 
 #### Completion Evidence
 
@@ -1073,12 +1103,12 @@ Current release validates API health only and proves neither W39-class upstream 
 
 #### Intent
 
-Deploy the exact merge-derived image with routing disabled, run migration/readiness checks, then initiate a bounded canary from the W39-class upstream weekly-publication boundary. Prove dispatch, Azure API acceptance, first durable Azure arrival, downstream execution, external provider state, and alert contracts. Deliberately observe a W38-modeled partial-attempt/retry path while preserving W38 as successfully published, then stage routing while proving rollback.
+Deploy the exact merge-derived image with routing disabled, run migration/readiness checks, then initiate a bounded canary from the W39-class upstream weekly-publication boundary. Prove dispatch, Azure API acceptance, first durable Azure arrival, immutable attempts, deterministic aggregation, exact publication/manifest/digest/canonical-artifact identity, external provider state, and alert contracts. The canary must end `published_verified` or controlled `published_verified_recovered`.
 
 #### Boundaries
 
-* Included: upstream dispatch control, correlation, config flag, queue routing, one W39-class scheduled publication identity, provider readback, W38-modeled partial/retry observation, alert fire/clear, rollback drill.
-* Excluded: Podcaster-only injection as incident proof, calling W38 missed/recovered, broad enablement before canary evidence, accepting manual handoff without later external readback, or rollback by deleting durable evidence.
+* Included: upstream dispatch control, correlation, config flag, queue routing, one W39-class scheduled publication identity, controlled recovery if safely authorized, provider readback, alert fire/clear, rollback drill.
+* Excluded: Podcaster-only injection as incident proof, assuming W38 recovery without proof, blind retry after unknown mutation, broad enablement before canary evidence, accepting manual handoff without later external readback, or rollback by deleting durable evidence.
 
 #### Likely Targets
 
@@ -1090,7 +1120,7 @@ Deploy the exact merge-derived image with routing disabled, run migration/readin
 
 #### Validation Expectations
 
-* Exact merge-derived image digest; correlated upstream intent/dispatch/Azure arrival; YouTube processing/public readback; Spotify externally read expected item/state after automated or manual publication; ACA non-zero for non-public legs; W38-modeled partial/retry evidence converges to truthful final publication without duplicate mutation; every alert contract has deployed rule ID and controlled fire/clear evidence; disabling dispatch/routing stops new work and preserves records.
+* Exact merge-derived image digest; correlated upstream intent/dispatch/Azure arrival; exact manifest/digest and canonical artifact; YouTube processing/public readback; Spotify externally read expected item/state after automated or manual publication; zero unresolved duplicate ambiguity; immutable failed-attempt evidence after any controlled recovery; ACA non-zero for every non-green state; every alert contract has deployed route/query and controlled fire/clear evidence; rollback preserves records.
 
 #### Completion Evidence
 
@@ -1101,7 +1131,7 @@ Deploy the exact merge-derived image with routing disabled, run migration/readin
 * None.
 
 <!-- rpi:phase id=P06 -->
-## P06: Verify four consecutive production weeks
+## P06: Verify four consecutive post-fix production cycles
 
 ### Context
 
@@ -1109,7 +1139,7 @@ A single canary cannot establish sustained dispatch reliability, Azure correlati
 
 ### Intent
 
-Keep the task open through four consecutive scheduled publication weeks and verify each from upstream intent through dispatch, Azure execution correlation, and external provider readback.
+Keep the task open through four future consecutive post-fix scheduled cycles and verify each from upstream intent through immutable attempts, deterministic aggregation, Azure execution correlation, and external provider readback.
 
 ### Boundaries
 
@@ -1126,7 +1156,7 @@ Keep the task open through four consecutive scheduled publication weeks and veri
 
 ### Validation Expectations
 
-* Four consecutive scheduled weeks have complete dispatch, Azure, and provider evidence. W38 cannot count as a missed-week recovery. A future incomplete week is remediated and restarts the count unless the caller explicitly changes the rule.
+* Each of four future consecutive post-fix cycles ends `published_verified` or controlled `published_verified_recovered`. Any `partial`, `provider_unknown`, `manual_action_required`, `missed_not_dispatched`, `failed_terminal`, `identity_conflict`, unresolved duplicate ambiguity, identity mismatch, or missing readback blocks acceptance and restarts the gate after correction.
 
 ### Completion Evidence
 
@@ -1145,7 +1175,7 @@ Each week must prove provider truth independently from internal execution status
 
 #### Intent
 
-Record sanitized upstream intent/dispatch result, Azure API acceptance and first durable execution correlation, canonical/outbox/execution correlation, provider IDs/states, YouTube processing/privacy, Spotify authoritative state after automated or manual publication, ACA exit, pending age, alerts, and reconciliation. Manual-handoff status alone cannot accept a week.
+Record sanitized upstream intent/dispatch result, Azure API acceptance and first durable execution correlation, canonical artifact and manifest/digest, complete attempt set, recovery authorization when used, provider items/states, terminal external readbacks, aggregation decision/proof, ACA exit, pending age, alerts, and reconciliation. Manual action alone cannot accept a cycle.
 
 #### Boundaries
 
@@ -1162,7 +1192,7 @@ Record sanitized upstream intent/dispatch result, Azure API acceptance and first
 
 #### Validation Expectations
 
-* Each row is time-stamped, tied to upstream and Podcaster merge SHAs plus deployed image digest, proves dispatch and first Azure arrival, and independently confirms provider state. If Spotify requires manual publication, bounded readback must confirm the expected item/state/timestamp; unavailable correlation or readback fails the week and restarts the consecutive count.
+* Each row is time-stamped, tied to upstream and Podcaster merge SHAs plus deployed image digest, proves dispatch and first Azure arrival, references immutable attempts, and independently confirms exact provider state. If Spotify requires manual publication, bounded readback must confirm the expected item/state/timestamp. Any non-green state, unavailable correlation, identity mismatch, duplicate ambiguity, or missing readback fails the cycle and restarts the consecutive count after correction.
 
 #### Completion Evidence
 
@@ -1198,7 +1228,7 @@ Summarize four-week outcomes, reconciliations/incidents, alert quality, rollback
 
 #### Validation Expectations
 
-* No unresolved critical implementation finding; no missing weekly dispatch/Azure/readback evidence; W38 remains recorded as published; all acceptance criteria trace to evidence.
+* No unresolved critical implementation finding; no missing cycle dispatch/Azure/readback evidence; all four cycles are green under the exact state model; W38 is classified only according to available proof; all acceptance criteria trace to evidence.
 
 #### Completion Evidence
 

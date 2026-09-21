@@ -61,3 +61,17 @@ def test_expired_claim_and_poison_emit_critical_signals():
     names = {signal.name for signal in signals if signal.severity == "critical"}
     assert "distribution_lease_loss" in names
     assert "distribution_poisoned" in names
+
+
+def test_identity_conflict_and_non_green_weekly_state_are_alertable():
+    document = _document("identity_conflict")
+    document["weekly_aggregation"] = {"state": "identity_conflict"}
+    names = {
+        signal.name
+        for signal in signals_for_outbox(
+            document,
+            now=datetime(2026, 9, 21, 21, 0, tzinfo=timezone.utc),
+        )
+    }
+    assert "distribution_identity_conflict" in names
+    assert "distribution_weekly_non_green" in names

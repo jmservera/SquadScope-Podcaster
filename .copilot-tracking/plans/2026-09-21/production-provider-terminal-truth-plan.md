@@ -5,37 +5,40 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Implementation-ready after authoritative post-implementation incident correction
+* Planning status: Implementation-ready after authoritative QA state-model revision
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
 
 ## Executive Summary
 
-This revision makes the **W39 pre-Azure dispatch failure** the primary incident boundary. W39 never reached Azure, so no W39 synth, recorder, video, outbox, or provider execution exists. The plan must prevent or detect an upstream dispatch block, persist correlation from accepted weekly intent through dispatch and first Azure-side durable arrival, and verify the same publication end to end through authoritative external-provider readback.
+This revision separates **immutable attempt-level truth** from **weekly publication-identity truth**. Every failed, partial, unknown, manual, and successful attempt remains append-only evidence. Weekly success is derived only by deterministic aggregation over those attempts and exact external-provider proof; a later success never overwrites an earlier failed attempt.
 
-W38 was successfully published and is not a missed week. Its failed or partial attempt path remains useful comparative evidence for retries, reconciliation, multi-attempt history, and truthful observability. The already implemented outbox, provider lifecycle, truthful exit, receipt, and alert work remains necessary production hardening, but it is not proof that W38 was unpublished and cannot by itself remediate W39's upstream failure boundary.
+W39 remains the missed publication and is classified `missed_not_dispatched` unless stronger dispatch evidence emerges. W38 may be classified `published_verified_recovered` only if evidence binds the exact weekly publication identity, manifest/digest, canonical artifact, authorized succeeding attempt, provider item, and terminal provider readback while retaining all earlier failed/partial attempt records. Until that proof exists, `published_verified_recovered` is an allowed W38 classification candidate, not an assumed fact.
 
 Provider mutation is intentionally *at-most-once per consumed intent*, not “exactly once.” Every attempt persists sanitized identity and consumes its one mutation authorization before I/O, reconciles before mutation, persists receipts/readback before queue acknowledgment, and stops unattended mutation when identity or state is ambiguous. A lease takeover may reconcile a possibly issued mutation but can never authorize a second mutation for that intent. YouTube follows draft upload → processing verification → public promotion → authoritative privacy readback. Spotify remains bounded reconcile/manual-handoff wherever the unsupported mutation contract or immutable identity cannot be proven, and manual publication must still be followed by external provider readback before canary or weekly acceptance.
 
-The rollout remains feature-flagged and reversible. The canary must originate at the W39-class upstream weekly-publication boundary, prove dispatch and Azure arrival, run the downstream pipeline, and end with authoritative external-provider readback. It must also deliberately observe a W38-modeled partial-attempt/retry path without calling that missed-week recovery. Sustained acceptance requires four consecutive scheduled weeks with upstream dispatch evidence, Azure execution correlation, and external provider readback.
+The rollout remains feature-flagged and reversible. The canary must originate at the W39-class upstream weekly-publication boundary and end in `published_verified` or controlled `published_verified_recovered` using external provider readback. Four future consecutive post-fix cycles must each end in one of those two green states. `partial`, `provider_unknown`, `manual_action_required`, unresolved duplicate ambiguity, identity mismatch, missing readback, or any other non-green state blocks acceptance.
 
 ### User Decisions and Requirements Highlights
 
 * W39 upstream dispatch prevention/detection and end-to-end terminal publication verification are the primary incident goals.
-* W38 was published successfully; use it only as comparative evidence for partial attempts, retries, reconciliation, and observability.
+* W38 is a `published_verified_recovered` candidate only when exact identity and provider-readback proof exists; never erase its failed/partial attempts.
 * ACA/container success must represent requested-provider terminal truth, not queue drain or API acceptance.
 * Initial YouTube `public` configuration is rejected before any provider mutation.
 * Unknown mutations are never blindly retried; manual handoff is preserved when exact state cannot be proven.
+* Attempt history is immutable; weekly identity aggregation is deterministic and separately recorded.
+* Four future post-fix cycles must each be `published_verified` or controlled `published_verified_recovered`; internal status is never sufficient.
 * PR #682 is superseded or selectively reworked only after the historical W17–W29 set, all six RV-006 threads, and later current unresolved safety threads have explicit closure evidence.
 * Existing CI, tests, idempotency, provider safety, and security gates remain intact.
 
 ### What You May Not Know
 
 * W39 has no downstream execution evidence because dispatch was blocked before Azure; provider/outbox changes cannot be presented as its root-cause fix.
-* Current `main` already contains #680 canonical identity, append-only evidence, external-verification semantics, and ambiguity safeguards, but it has no fenced outbox and still exits zero for `partial`.
+* The worktree contains the implemented fenced outbox and provider hardening, but the current review keeps scheduler fairness, deployable alerts, scalable orphan cleanup, and artifact/handoff consistency open.
 * PR #682 includes #680 in its ancestry but changes 62 files and has unresolved mutation, boundedness, lease, cleanup, and entrypoint findings; green checks do not make it safe to merge wholesale.
-* A durable `unknown` or `manual_handoff_required` item can be acknowledged from the mutation queue to prevent unsafe replay while the worker still exits non-zero and a deduplicated due-time reconciliation/operator path remains actionable.
+* A durable `provider_unknown` or `manual_action_required` attempt can be acknowledged from the mutation queue to prevent unsafe replay while the worker still exits non-zero and a deduplicated reconciliation/operator path remains actionable.
+* A week can be green after controlled recovery only when the earlier non-green attempts remain visible and the succeeding authorized attempt independently satisfies every exact-identity and provider-readback requirement.
 
 ### Unresolved Decisions or Blockers
 
@@ -45,18 +48,20 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 
 * Treat W39 as the active missed-publication incident: it was blocked before Azure dispatch and has no synth, recorder, video, outbox, or provider execution.
 * Prevent or detect W39-class upstream dispatch blockage, correlate accepted weekly intent through dispatch and first Azure-side durable arrival, and verify terminal publication by external provider readback.
-* Treat W38 as successfully published. A failed or partial W38 attempt/provider path may be used only as comparative evidence for retries, reconciliation, partial-attempt visibility, and truthful final publication history; it is not missed-week recovery.
+* Treat W38 as an allowed `published_verified_recovered` classification candidate, not assumed proof. Require exact weekly identity, manifest/digest, canonical artifact, succeeding authorized attempt, provider item, and terminal provider readback evidence while preserving every earlier failed/partial/unknown/manual attempt.
 * Make worker/container terminal status truthful: processed failures, partial distribution, unknown provider state, and manual handoff cannot exit as successful completion, while retries remain reconcile-first and idempotent.
 * Enforce YouTube draft upload → processing verification → public promotion → authoritative privacy readback, rejecting initial `public` configuration before mutation.
 * Use identity-bound bounded reconciliation for ambiguous YouTube/Spotify operations; never blindly retry unknown mutations and retain manual handoff when provider state cannot be proven.
 * Complete or safely advance issue #681 from current `origin/main`/#680 and resolve every relevant unresolved safety thread on PR #682; if replaced, document and close/supersede PR #682 clearly.
 * Persist sanitized terminal publication receipts and correlations across publication identity, enqueue, execution, provider item identity/state, and aggregate outcome.
+* Keep immutable attempt history and a separate weekly aggregation decision; never overwrite a failed attempt with a later weekly success.
+* Use explicit weekly states: `published_verified`, `published_verified_recovered`, `partial`, `provider_unknown`, `manual_action_required`, `missed_not_dispatched`, plus deterministic pending/failure/identity-conflict states where evidence requires them.
 * Add alerts for pending distribution age, provider unknown, manual handoff, non-public YouTube, Spotify draft, and public-verification lag.
 * Add focused provider timeout/500, ambiguous create, mutation-to-receipt crash, lease/concurrency, partial outcome, bad privacy config, and ACA exit/status tests using repository-standard validation.
 * Require independent implementation review with no accepted critical finding.
 * Push the implementation branch and PR with validation, deployment/canary/rollback instructions, and links to `jmservera/SquadScope-Coordinator#17` and the upstream SquadScope PR when available.
-* Canary from the W39-class upstream boundary through Azure execution and external provider readback, including deliberate W38-modeled partial-attempt/retry observation without missed-week framing.
-* Verify four consecutive scheduled weeks with upstream dispatch evidence, Azure execution correlation, and external provider readback; W38 cannot count as missed-week recovery.
+* Canary from the W39-class upstream boundary through Azure execution and external provider readback, ending in one of the two defined green weekly states.
+* Verify four future consecutive post-fix scheduled cycles; each must end `published_verified` or controlled `published_verified_recovered` with external provider readback. Every non-green state blocks acceptance.
 * Preserve the single existing critique as historical evidence and do not run a second critique for this authoritative post-implementation correction.
 * Do not weaken CI/tests/provider safety/idempotency/security gates and do not modify `/home/azureuser/source/SquadScope`.
 
@@ -66,7 +71,8 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * Establish one durable terminal contract across upstream intent/dispatch, Azure arrival, enqueue, claim, provider mutation/readback, aggregation, worker exit, ACA execution, telemetry, and operations.
 * Make redelivery and crash recovery safe through atomic intent creation, fenced claims, identity-bound reconciliation, durable receipts, and fail-closed ambiguity handling.
 * Preserve #680 evidence guarantees while completing #681 and replacing only the safe, independently validated intent of #682.
-* Preserve W38's successful-publication truth while retaining its partial-attempt evidence for comparative observability validation.
+* Preserve W38's complete attempt history and classify its weekly identity only from the exact available proof.
+* Preserve every attempt as immutable evidence and derive weekly identity state without destructive collapse.
 * Deliver a reversible rollout and sustained production proof based on external provider state.
 
 ## Scope and Non-Goals
@@ -77,13 +83,14 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * Immutable artifact upload and integrity verification followed by one conditional authoritative outbox create, claim-time artifact revalidation, idempotent queue notification, and orphan repair.
 * Claim ownership, lease expiry, heartbeat, attempt identity, monotonically increasing fencing token, CAS persistence, consumed mutation authorization, read-only takeover after any possibly issued mutation, bounded reconciliation scheduling, bounded retry, and poison/manual states.
 * Sanitized correlation among canonical publication identity, enqueue, outbox item, execution attempt, provider operation, provider item/state, receipt, verification, and aggregate result.
+* Attempt-level lifecycle/outcome records and weekly identity-level aggregation decisions with deterministic precedence and proof references.
 * YouTube and Spotify reconcile-before-mutate state machines.
 * Truthful aggregation, process exit, ACA status behavior, telemetry/alerts, tests/fault injection, feature-flagged deployment, W39-class end-to-end canary, W38 comparative partial-attempt observation, rollback, four-week verification, review, PR, and #682 supersession.
 
 ### Non-Goals
 
 * Wholesale merge or cherry-pick of PR #682.
-* Describing W38 as unpublished, missed, recovered, or evidence that downstream provider hardening would have prevented W39.
+* Assuming W38 is `published_verified_recovered` without exact identity/readback evidence, or deleting/overwriting its earlier failed attempts.
 * Attributing W39 to Podcaster synthesis, recorder, video, outbox, or provider code when no W39 Azure execution exists.
 * Claims of exactly-once provider mutation.
 * Treating draft-only, private, unlisted, pending, unknown, manual handoff, skipped required work, or empty unexpected drains as production success.
@@ -106,9 +113,11 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * YouTube follows a safe public lifecycle.
   * Observable acceptance criteria: initial `public` is rejected at config/payload validation; upload begins private/unlisted; processing/upload success is authoritatively read; public promotion is single-attempt under a fence; final success requires authoritative `privacyStatus=public` readback bound to the expected video identity.
 * Spotify remains fail-closed.
-  * Observable acceptance criteria: production uses complete bounded reconciliation where supported; ambiguous create/publish, incomplete absence proof, unsupported mutation, or identity mismatch becomes `publication_unknown` or `manual_handoff_required`, never an automatic retry or success; after manual publication, authoritative readback of the expected provider item/state is still required for canary or weekly acceptance.
+  * Observable acceptance criteria: production uses complete bounded reconciliation where supported; ambiguous create/publish, incomplete absence proof, unsupported mutation, or identity mismatch becomes `provider_unknown` or `manual_action_required`, never an automatic retry or success; after manual publication, authoritative readback of the expected provider item/state is still required for canary or cycle acceptance.
 * Terminal aggregation is provider-objective aware and truthful.
-  * Observable acceptance criteria: exit 0 requires every requested production provider to be externally verified public; all other requested-provider outcomes produce durable actionable evidence and non-zero exit. Pre-mutation transient failures may retry; durable unknown/manual states are queue-acknowledged to prevent mutation replay but remain execution failure/actionable.
+  * Observable acceptance criteria: exit 0 requires the weekly identity to aggregate to `published_verified` or controlled `published_verified_recovered`; every requested provider is externally verified against the exact manifest/digest and canonical artifact, all duplicate ambiguity is resolved, and all attempt records remain immutable. Every other outcome produces durable actionable evidence and non-zero exit.
+* Controlled recovery is authorized, evidence-bound, and never blind.
+  * Observable acceptance criteria: retry/reconciliation occurs only after proving the prior mutation state safe; unknown mutation never grants mutation authority. `published_verified_recovered` references the retained failed attempt(s), the explicit authorization, and the succeeding verified attempt.
 * Operator signals expose provider truth and age through deployable operational contracts.
   * Observable acceptance criteria: every required alert has a signal, threshold/window, severity, owner/route, missing-data behavior, runbook, and deterministic fire/clear evidence.
 * PR #682 is closed or superseded with complete thread evidence.
@@ -128,6 +137,9 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * Evidence safety: durable records contain no secrets, tokens, cookies, signed URLs, request/response bodies, or unnecessary PII.
   * Objective threshold or evaluation condition: allowlisted fields and existing sanitization rules reject unsafe keys/values.
   * Observable acceptance criteria: serialization and sanitization tests cover schema additions.
+* Evidence immutability and deterministic aggregation: attempt records are append-only and aggregation decisions are reproducible from referenced receipts.
+  * Objective threshold or evaluation condition: no attempt outcome is mutated into another attempt's result; re-aggregation over the same evidence produces the same weekly state and proof set.
+  * Observable acceptance criteria: multi-attempt, out-of-order receipt, duplicate candidate, identity mismatch, and recovery tests prove stable precedence.
 * Compatibility and rollout: new routing is disabled by default until canary; rollback stops new claims without discarding state or restoring blind inline mutation.
   * Observable acceptance criteria: old evidence remains readable, flag-off behavior is tested, and rollback preserves pending/unknown/manual records for reconciliation.
 * Quality: no CI, test, provider safety, idempotency, or security gate is removed, skipped, weakened, or made non-blocking.
@@ -135,19 +147,79 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 
 ## Acceptance Criteria
 
-* A W39-class scheduled publication is accepted upstream, dispatched, correlated to Azure API acceptance and first durable Azure arrival, executes through the Podcaster pipeline, and reaches authoritative external-provider terminal state.
+* Attempt records use explicit lifecycle/outcome states and remain immutable; weekly aggregation is stored separately and references the complete attempt set.
+* A W39-class scheduled publication is accepted upstream, dispatched, correlated to Azure API acceptance and first durable Azure arrival, executes through the Podcaster pipeline, and reaches `published_verified` or controlled `published_verified_recovered`.
 * An accepted W39-class intent that does not arrive in Azure within the reviewed window is durably classified and alerted; no W39 downstream execution is fabricated.
 * A durable schema, concrete immutable-artifact/conditional-outbox protocol, and state machine implement the invariants in P01 and preserve #680 canonical identity/evidence compatibility.
 * YouTube reaches success only after processing success, promotion, and authoritative public readback; initial public config fails before I/O.
 * Spotify unknown/unsupported states stop automation and produce durable manual/actionable evidence; manual publication alone never satisfies external-readback acceptance.
-* Requested-provider partial, pending, private/unlisted/draft, unknown, manual, failed, skipped, or unexpected empty-drain states cannot produce exit 0.
+* Requested-provider partial, pending, private/unlisted/draft, `provider_unknown`, `manual_action_required`, failed, skipped, identity mismatch, unresolved duplicate ambiguity, missing readback, or unexpected empty-drain states cannot produce exit 0 or a green weekly state.
 * All required telemetry and alert rules are deployable, documented, and tested against emitted dimensions.
 * The locked test contract is honored: exact owners, no removals, maximum additions, canonical/generated targets, semantic/regression split, and validation evidence.
 * Every W17–W29 thread, all six RV-006 threads, and any later unresolved #682 safety thread present before delivery have exact closure evidence; no thread is marked resolved without a reviewer reply plus code/test or explicit non-port evidence.
 * Branch is pushed; required checks and final-SHA independent review pass; the PR is approved and merged without content drift; a release image is proven to derive from the merge SHA; the PR contains validation, canary, rollback, Coordinator #17, and the upstream PR link when metadata proves one exists.
 * Independent implementation review has no unresolved or accepted critical finding.
-* The production canary starts at the W39-class upstream boundary, proves dispatch and Azure arrival/execution, records external YouTube/Spotify readback, and deliberately observes a W38-modeled partial-attempt/retry path while preserving W38 as successfully published.
-* Four consecutive scheduled weeks each contain upstream dispatch evidence, Azure execution correlation, and authoritative external-provider readback. W38 is not counted as missed-week recovery.
+* The production canary starts at the W39-class upstream boundary and ends `published_verified` or controlled `published_verified_recovered`, with exact identity/manifest/digest/canonical-artifact proof and external YouTube/Spotify readback.
+* Four future consecutive post-fix scheduled cycles each end `published_verified` or controlled `published_verified_recovered`. Any non-green state blocks acceptance and restarts the gate after correction.
+* W38 is recorded as `published_verified_recovered` only if the exact proof contract is met; otherwise it remains an explicitly unproven candidate. W39 remains `missed_not_dispatched`.
+
+## Attempt and Weekly Identity State Model
+
+### Attempt-level truth
+
+Each attempt has a stable `attempt_id` and append-only lifecycle events. Required lifecycle states are `created`, `claimed`, `reconciling`, `mutation_authorized`, `mutation_issued`, `receipt_recorded`, and `verifying`. Each attempt terminates independently as exactly one of:
+
+* `published_verified` — exact publication identity, manifest/digest, canonical artifact, provider item, and terminal external-provider state are proven.
+* `partial` — some required provider objective or proof completed, but the attempt did not verify the complete requested publication.
+* `provider_unknown` — mutation or provider state cannot be proven; no blind retry is authorized.
+* `manual_action_required` — safe automation cannot continue and an operator action plus later external readback is required.
+* `failed_retryable_pre_mutation` — evidence proves no mutation was issued and a new authorized attempt may be created.
+* `failed_terminal` — deterministic failure that cannot continue automatically.
+* `cancelled_safe` — cancellation occurred before mutation and the no-mutation proof is retained.
+
+Terminal attempt outcomes are immutable. Recovery creates a new authorized attempt; it never edits, replaces, or hides an earlier attempt.
+
+### Weekly publication-identity truth
+
+The weekly aggregation record has its own stable decision ID and one of:
+
+* `published_verified` — exactly one clean verified publication path, with no earlier non-green attempt and no unresolved ambiguity.
+* `published_verified_recovered` — a later authorized attempt satisfies the full green proof contract after one or more retained non-green attempts.
+* `partial`
+* `provider_unknown`
+* `manual_action_required`
+* `missed_not_dispatched`
+* `failed_terminal`
+* `pending`
+* `identity_conflict`
+
+Deterministic precedence is:
+
+1. `identity_conflict` for manifest/digest mismatch, wrong canonical artifact, conflicting provider item, or unresolved duplicate ambiguity.
+2. `provider_unknown` when any possibly mutated attempt remains unproven.
+3. `manual_action_required` when operator action or post-action readback remains open.
+4. `partial` when some required objective is incomplete and no higher-precedence condition applies.
+5. `missed_not_dispatched` when the weekly cutoff passes without an authorized downstream attempt or proven Azure arrival.
+6. `failed_terminal` when all authorized attempts failed deterministically with no safe continuation.
+7. `pending` while an authorized attempt remains inside its reviewed processing/reconciliation window.
+8. `published_verified_recovered` when a succeeding authorized attempt meets every green proof requirement, all higher-precedence conditions are resolved, and earlier non-green attempts remain referenced.
+9. `published_verified` when the clean verified proof exists without prior non-green attempts.
+
+The aggregation decision persists the evaluated attempt IDs, rule/version, decision timestamp, winning proof references, and reasons every higher-precedence state did or did not apply.
+
+### Green proof and controlled recovery gate
+
+A weekly green state requires all of:
+
+* exact week/publication identity and requested provider objectives;
+* exact manifest and digest match;
+* one canonical artifact selection with hash/size proof;
+* provider item identity bound to the publication;
+* terminal provider visibility/state readback from the external provider;
+* zero unresolved duplicate ambiguity or identity mismatch;
+* immutable receipts for mutation intent, mutation result/ambiguity, and terminal readback.
+
+Controlled recovery is allowed only after bounded reconciliation proves a new mutation safe or an authorized operator explicitly approves a new attempt from that evidence. Unknown mutation state cannot be blindly retried. `published_verified_recovered` must reference the retained failed/partial attempt evidence, the recovery authorization, and the succeeding verified attempt.
 
 ## Implementation Context Record
 
@@ -158,16 +230,18 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 | Latest critique | `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md` (`Revise`: 1 Critical, 4 High, 4 Medium; PC-001–PC-009 were resolved by the original planner revision and remain historical) |
 | Relevant research | `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md` |
 | Changes-record role | `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md` is created and maintained by implementation as the evidence record |
-| Planning execution and readiness | Exactly one critique complete; authoritative post-implementation correction applied without a second critique; implementation-ready after this revision |
+| Planning execution and readiness | Exactly one critique remains historical; authoritative QA revision applied without a second critique; implementation-ready with reopened dependency-ready markers |
 | Continuation context | Active `rpi-quick` parent may continue automatically to implementation |
 
 ## Implementation Status
 
-* Execution status: Partial — downstream surfaces were implemented, but P00 is new and RV-001–RV-005 reopen specific P01–P04 markers; P05–P06 remain open
-* Declared scope: revised P00 plus every reopened dependency-ready marker for RV-001–RV-005 and W38/W39 correction across P01–P04; P05 deployment/delivery and P06 elapsed verification are outside this invocation
+* Execution status: Complete for the declared reopened P01–P04 scope — Amy implemented and validated the attempt/weekly aggregation contract plus RV-002, RV-003, RV-004, and source/docs/tests/runbook/tracking consistency for RV-007; P00-T01, P05, and P06 remain outside this invocation
+* Declared scope: reopened P01-T01–P01-T03, P02-T03, P03-T01–P03-T03, and P04-T01–P04-T03, including RV-002, RV-003, RV-004, and the source/docs/tests/runbook/tracking portion of RV-007
+* Implementation owner: Amy, independent from locked-out prior authors Bender and Hermes
+* Delivery restrictions: no commit, push, deployment, PR/GitHub mutation, or changes to `/home/azureuser/source/SquadScope`
 * Active implementation boundary: P00-T01 begins with Podcaster-side receipt/absence observability and an explicit upstream cross-repository blocker because `/home/azureuser/source/SquadScope` cannot be modified; then the reopened markers listed in `Implementation Marker Reconciliation`
 * Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
-* Validation intent: task-focused semantic and fault tests followed by the full locked repository-standard validation contract
+* Validation intent: task-focused attempt-history, aggregation-precedence, recovery, pagination/cleanup, alert-contract, and external-readback tests followed by the full locked repository-standard validation contract
 * Current blockers: the exact upstream W39 dispatch prevention/fix belongs to the owning `jmservera/SquadScope` component and is outside this worktree; P00 completes here only to the supported Podcaster receipt/absence boundary with that cross-repository blocker recorded. P05–P06 remain outside scope.
 
 ## Sources
@@ -176,8 +250,8 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * `jmservera/SquadScope-Podcaster#681`: required atomic/fenced outbox boundary.
 * `jmservera/SquadScope-Podcaster#680`: merged canonical publication identity, evidence, and reconciliation baseline.
 * `jmservera/SquadScope-Podcaster#682`: replacement/supersession target with W17–W29, six RV-006, and later current unresolved safety threads.
-* `.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md`: RV-001–RV-005 implementation findings and RV-006 closure-matrix planning route.
-* Authoritative caller correction dated 2026-09-21: W38 published; W39 blocked before Azure; one-critique constraint; revised canary/four-week/marker requirements.
+* `.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md`: current RV-002, RV-003, RV-004, and RV-007 findings; RV-001/RV-005 resolved; RV-006 planning-level disposition.
+* Authoritative QA correction dated 2026-09-21: immutable attempt truth; deterministic weekly aggregation; evidence-conditional W38 recovery classification; W39 missed/not-dispatched; exact external-readback and four-cycle gates.
 
 ## Phase Checklist
 
@@ -209,16 +283,16 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * Detail section: P00-T03 in phase details.
 
 <!-- rpi:phase id=P01 -->
-### [x] P01: Establish the durable outbox contract
+### [x] P01: Establish the durable outbox and immutable attempt contract
 
 * Intent: Add the atomic/fenced storage, identity, correlation, claim, receipt, and migration foundation without provider mutation.
 * Dependencies: current `origin/main`/#680.
 
 <!-- rpi:task id=P01-T01 -->
-#### [x] P01-T01: Define outbox and correlation schemas
+#### [x] P01-T01: Define outbox, attempt, receipt, and aggregation schemas
 
 * Requirement and evidence: C13–C14, C20; #681; caller requirements 4–5.
-* Expected result: versioned sanitized records bind canonical publication identity to enqueue, artifact, claim/execution, provider operations, receipts/readback, aggregation, and retention.
+* Expected result: versioned sanitized records bind week/publication identity, immutable attempt identity/history, manifest/digest, canonical artifact, provider item, mutation intent/receipt, terminal readback, and weekly aggregation decision.
 * Detail section: P01-T01 in `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`.
 
 <!-- rpi:task id=P01-T02 -->
@@ -263,23 +337,23 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * Detail section: P02-T02 in phase details.
 
 <!-- rpi:task id=P02-T03 -->
-#### [x] P02-T03: Persist provider intent, receipts, and terminal readback
+#### [x] P02-T03: Persist provider intent, receipts, terminal readback, and attempt outcomes
 
 * Requirement and evidence: C13–C15; caller requirement 5.
 * Expected result: append-only sanitized evidence records every provider transition and authoritative final state before acknowledgment, including bounded read-only takeover outcomes required by RV-001 and accurate evidence-source naming required by RV-005.
 * Detail section: P02-T03 in phase details.
 
 <!-- rpi:phase id=P03 -->
-### [x] P03: Make execution, cleanup, and provider aggregation truthful
+### [x] P03: Make execution, cleanup, and weekly aggregation truthful
 
 * Intent: Align queue disposition, worker exit, ACA status, bounded lifecycle behavior, and operator signals with durable provider truth.
 * Dependencies: P01–P02.
 
 <!-- rpi:task id=P03-T01 -->
-#### [x] P03-T01: Implement truthful aggregation and queue disposition
+#### [x] P03-T01: Implement truthful attempt and weekly aggregation
 
 * Requirement and evidence: C1–C5; W1–W3.
-* Expected result: exit 0 only for all-requested externally verified public providers; durable unknown/manual states are mutation-queue acknowledged without becoming success; transient pre-mutation work remains safely retryable.
+* Expected result: attempt outcomes remain immutable; weekly aggregation follows the defined precedence; exit 0 occurs only for `published_verified` or controlled `published_verified_recovered`; safe retries create new authorized attempts.
 * Detail section: P03-T01 in phase details.
 
 <!-- rpi:task id=P03-T02 -->
@@ -290,7 +364,7 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * Detail section: P03-T02 in phase details.
 
 <!-- rpi:task id=P03-T03 -->
-#### [x] P03-T03: Add provider-state telemetry and alerts
+#### [x] P03-T03: Add attempt/weekly-state telemetry and deployable alerts
 
 * Requirement and evidence: C15, C17–C18; caller requirement 6.
 * Expected result: retain sanitized signals; fix RV-003 by implementing warning and critical thresholds/windows, missing-data behavior, explicit routing, and generated-query fire/clear tests for every alert contract row.
@@ -303,17 +377,17 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * Dependencies: P01–P03.
 
 <!-- rpi:task id=P04-T01 -->
-#### [x] P04-T01: Add outbox, fencing, crash, and concurrency fault tests
+#### [x] P04-T01: Add attempt-history, outbox, fencing, crash, and concurrency fault tests
 
 * Requirement and evidence: C16–C17; #681 crash matrix.
-* Expected result: extend existing coverage for RV-001, RV-002, and RV-004, including lost promotion response/takeover convergence, repeated scheduler ticks, more than 100 retained records, restart repair, and artifact interruption/orphan retention.
+* Expected result: prove immutable failed-attempt retention, authorized recovery, no retry after unknown mutation, scheduler traversal beyond storage-page boundaries, and scalable reference-safe orphan cleanup.
 * Detail section: P04-T01 in phase details.
 
 <!-- rpi:task id=P04-T02 -->
-#### [x] P04-T02: Add provider and terminal-exit semantic tests
+#### [x] P04-T02: Add provider, aggregation, alert, and terminal-exit semantic tests
 
 * Requirement and evidence: C1–C12, C16–C17.
-* Expected result: retain existing provider/exit tests; add RV-003 alert-contract assertions and RV-005 genuine lookup-or-unprovable evidence assertions.
+* Expected result: table-drive every aggregation state and precedence edge, exact identity/readback proof, W38 candidate classification, W39 missed classification, RV-003 executable routes/missing-data alerts, and non-green exit behavior.
 * Detail section: P04-T02 in phase details.
 
 <!-- rpi:task id=P04-T03 -->
@@ -333,7 +407,7 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 #### [ ] P05-T01: Push branch and open the implementation PR
 
 * Requirement and evidence: caller requirement 9.
-* Expected result: branch is pushed; PR includes W39 dispatch/Azure-arrival evidence, W38 successful-publication correction, validation evidence, hardening summary, deployment/canary/rollback, Coordinator #17, the coordinated upstream PR, and explicit `Supersedes #682`.
+* Expected result: branch is pushed; PR explains immutable attempt versus weekly identity truth, gives W38's evidence-conditional classification rule and W39's `missed_not_dispatched` status, includes current RV-002/RV-003/RV-004/RV-007 dispositions, validation evidence, deployment/canary/rollback, Coordinator #17, the coordinated upstream PR, and explicit `Supersedes #682`.
 * Detail section: P05-T01 in phase details.
 
 <!-- rpi:task id=P05-T02 -->
@@ -361,11 +435,11 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 #### [ ] P05-T05: Deploy feature-flagged canary and verify rollback
 
 * Requirement and evidence: C18; research constraints 14–15.
-* Expected result: exact merge-derived artifacts are deployed with routing disabled; a canary originating at the W39-class upstream weekly-publication boundary proves dispatch, Azure acceptance/arrival, downstream execution, and external YouTube/Spotify state. A deliberate W38-modeled partial-attempt/retry observation proves truthful reconciliation without calling W38 missed-week recovery. Alert contracts fire/clear and rollback stops new dispatch/claims while preserving evidence.
+* Expected result: exact merge-derived artifacts are deployed with routing disabled; the canary originates at the W39-class upstream boundary and ends `published_verified` or controlled `published_verified_recovered`. Evidence proves exact identity, manifest/digest, canonical artifact, authorized attempt chain, provider item, terminal external readback, and zero unresolved duplicate ambiguity. Every non-green state rejects the canary. Alert contracts fire/clear and rollback stops new dispatch/claims while preserving every attempt.
 * Detail section: P05-T05 in phase details.
 
 <!-- rpi:phase id=P06 -->
-### [ ] P06: Verify four consecutive production weeks
+### [ ] P06: Verify four consecutive post-fix production cycles
 
 * Intent: Prove sustained scheduled dispatch, Azure execution correlation, and external provider terminal truth.
 * Dependencies: P05 canary accepted and production routing enabled.
@@ -374,7 +448,7 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 #### [ ] P06-T01: Record four weekly external-readback verification windows
 
 * Requirement and evidence: caller requirement 10.
-* Expected result: four consecutive scheduled publication weeks each record upstream intent/dispatch result, Azure API acceptance and first durable execution correlation, YouTube authoritative public/processing readback, Spotify authoritative expected-item readback after any handoff, ACA exit, alert health, and reconciliation outcome. W38 cannot count as missed-week recovery.
+* Expected result: four future consecutive post-fix cycles each independently end `published_verified` or controlled `published_verified_recovered`, with upstream dispatch/Azure correlation, immutable attempt history, exact identity/manifest/digest/canonical-artifact proof, provider item identity, and terminal external readback. Any non-green state blocks acceptance and restarts the gate after correction.
 * Detail section: P06-T01 in phase details.
 
 <!-- rpi:task id=P06-T02 -->
@@ -393,22 +467,23 @@ The rollout remains feature-flagged and reversible. The canary must originate at
 * P04 must pass before independent review and deployment.
 * P05 required checks and independent final-pushed-SHA review must have no accepted critical finding before approval/merge.
 * Production deploy uses only a release image proven to derive from the merge SHA.
-* P06 requires an accepted W39-class end-to-end canary from P05-T05 and remains open until four consecutive scheduled weeks have upstream dispatch, Azure execution, and external-readback evidence.
+* P06 requires an accepted W39-class end-to-end canary from P05-T05 and remains open until four future consecutive post-fix cycles each have complete green proof.
 
 ## Implementation Marker Reconciliation
 
 | Marker(s) | Revised disposition | Required next evidence |
 |---|---|---|
-| P00-T01–P00-T03 | New implementation work | Exact W39 blocked-stage evidence; upstream prevention/detection; dispatch-to-Azure correlation; missing-arrival alert; cross-boundary integration tests |
-| P01-T02, P03-T02, P04-T01 | Reopened for RV-004 | Bounded orphan discovery, retention, repair-or-delete implementation and interruption tests |
-| P01-T03, P03-T02, P04-T01 | Reopened for RV-002 | Durable notification state, paginated/fair scan beyond 100 records, restart and stale-notification repair tests |
-| P02-T01, P02-T03, P04-T01, P04-T02 | Reopened for RV-001/RV-005 | Read-only promotion convergence; genuine identity-bound lookup or accurately named unprovable state; fault/semantic tests |
-| P03-T03, P04-T02 | Reopened for RV-003 | Per-signal warning/critical windows, missing-data behavior, explicit routing, generated-query fire/clear tests |
-| P04-T03 | Reopened validation gate | Targeted and full repository validation after P00 and RV-001–RV-005 changes |
+| P00-T01 | Preserved external gate | Exact W39 blocked-stage evidence and upstream prevention/detection remain owned by `jmservera/SquadScope`; W39 stays `missed_not_dispatched` |
+| P01-T01, P02-T03, P03-T01, P04-T01–P04-T02 | Reopened for authoritative QA state model | Immutable attempt ledger; receipt/correlation schema; deterministic weekly aggregation; controlled recovery; W38/W39 classification tests |
+| P01-T02, P03-T02, P04-T01 | Reopened for RV-004 | Complete bounded/paginated reference enumeration or equivalent safe index; cleanup must make progress beyond 5,000 records |
+| P01-T03, P03-T02, P04-T01 | Reopened for RV-002 | Durable pagination/continuation or bounded sharding that eventually visits every retained due record; starvation test beyond 5,000 |
+| P03-T03, P04-T02 | Reopened for RV-003 | Distinct deployable action routes plus executable absence/depth/heartbeat detection and generated action/query assertions |
+| P04-T03 | Reopened validation gate | Targeted and full validation after the QA state-model and RV-002/RV-003/RV-004 corrections |
+| Phase details; P05-T01 | Reopened for RV-007 | Canonical artifact statuses reconciled in planning; PR narrative must use current review, state model, validation, and residual-work truth |
 | P05-T03 | Expanded by RV-006 and refreshed current metadata | Closure evidence for W17–W29, the six RV-006 threads, and four later unresolved threads found during revision; do not claim resolution without GitHub evidence |
-| P01-T01, P01-T04, P02-T02, P03-T01 | Implemented surfaces; text-only incident-role correction | Preserve code/tests unless required by reopened dependencies; describe as downstream hardening, not W39 root-cause remediation |
-| Existing W38 references in plan/PR handoff | Documentation-only correction | State W38 published successfully; retain partial-attempt evidence only for comparative observability |
-| Any W38 missed-week recovery tasks/claims | Removed or narrowed | No implementation or acceptance credit; W38 cannot satisfy W39 incident recovery or reset/fill a four-week window |
+| P01-T04, P02-T01–P02-T02 | Implemented surfaces; dependency verification | Preserve safe behavior unless the new receipt/attempt schema requires minimal compatible updates |
+| Existing W38 references in plan/PR handoff | Evidence-conditional correction | Use `published_verified_recovered` only with full exact proof; otherwise label it an allowed candidate and retain all attempt history |
+| W39 classification | Settled | `missed_not_dispatched`; no downstream attempt may be fabricated |
 | Original PC-001–PC-009 dispositions | Historical, no change | Preserve existing critique artifact and disposition record; no second critique |
 
 Implementation and independent review for reopened markers must be assigned to an agent other than Bender.
@@ -417,11 +492,11 @@ Implementation and independent review for reopened markers must be assigned to a
 
 | Disposition | Exact existing surfaces | Revision consequence |
 |---|---|---|
-| Text-only incident correction | `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`, `.copilot-tracking/pr/pr.md`, implementation PR body/handoff, production evidence summaries | Replace W38-missed implications with successful-publication comparative framing; separate W39 remediation from downstream hardening. No production code change is justified solely by the incorrect W38 framing. |
+| State-model and narrative correction | `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`, `.copilot-tracking/pr/pr.md`, implementation PR body/handoff, production evidence summaries | Preserve immutable attempt truth; use W38 `published_verified_recovered` only with exact proof; keep W39 `missed_not_dispatched`; separate W39 remediation from downstream hardening. |
 | W39 observability additions | Owning upstream dispatch workflow/client/status store identified by P00-T01; Podcaster/Azure ingress or queue arrival metadata; `podcaster/monitoring.py` or the selected low-cardinality telemetry owner; alert infrastructure; cross-boundary integration owner | Add accepted-intent → dispatch → Azure API acceptance → first durable arrival correlation, missing-arrival fire/clear, and integration/canary evidence. Exact upstream paths are evidence-selected in P00-T01 rather than guessed. |
-| Review-driven code/test additions | `podcaster/distribution_worker.py`, `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, `infra/modules/distribution-alerts.bicep`, and their focused outbox/worker/telemetry/deployment tests | Implement RV-001–RV-005 only; retain already safe behavior and avoid redesign beyond each routed finding. |
-| No change except dependency verification | `podcaster/publication_state.py` schema/sanitization; disabled-by-default routing; `podcaster/publish.py` Spotify fail-closed/manual handoff; `podcaster/video/job_runner.py` externally-verified-public exit lattice | Preserve these independent safety requirements. Reopen only if P00 correlation or an RV fix requires a minimal compatible extension. |
-| Narrowed/removed | Any W38 missed-week recovery implementation, W38 incident-cause claim, Podcaster-only W39 canary, or provider hardening presented as W39 root-cause remediation | Remove from active implementation and acceptance; retain only W38 comparative partial/retry observation. |
+| Review-driven code/test additions | `podcaster/publication_state.py`, `podcaster/distribution_worker.py`, `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, `infra/modules/distribution-alerts.bicep`, and focused owner tests | Implement the QA attempt/aggregation contract plus RV-002, RV-003, and RV-004; preserve resolved RV-001/RV-005 behavior. |
+| Dependency verification | disabled-by-default routing; `podcaster/publish.py` Spotify fail-closed/manual action; YouTube read-only promotion convergence | Preserve these independent safety requirements and extend only as needed for the compatible receipt/attempt schema. |
+| Narrowed/removed | Assumed W38 recovery, W38 incident-cause claims, Podcaster-only W39 canary, blind retry, or provider hardening presented as W39 root-cause remediation | Remove from active implementation and acceptance. |
 
 ## Locked Test and Validation Contract
 
@@ -437,6 +512,7 @@ Implementation and independent review for reopened markers must be assigned to a
 * P03-T02 owns existing affected lifecycle suites: `tests/test_clipset.py`, `tests/test_edl_render.py`, `tests/test_video_intermediates.py`, `tests/test_recorder.py`, `tests/test_editor.py`, and `tests/test_video_gen.py`.
 * P03-T03 owns `tests/test_monitoring.py`, deployment assertions in `tests/test_deploy_workflow.py`, and at most one new `tests/test_distribution_telemetry.py`.
 * P05-T04/P05-T05 own `tests/test_deploy_workflow.py` and at most one new `tests/integration/test_distribution_canary.py`.
+* The existing outbox/publication-state/worker owners must cover immutable multi-attempt history, aggregation precedence, exact proof references, controlled recovery authorization, and out-of-order receipt replay; do not add a parallel state-model test owner.
 
 ### Removals and maximum additions
 
@@ -454,6 +530,7 @@ Implementation and independent review for reopened markers must be assigned to a
 ### Semantic versus regression coverage
 
 * Semantic coverage proves state transitions, fencing, identity binding, ambiguity handling, provider readback, queue disposition, exit codes, alert conditions, feature flags, and rollback.
+* Fault coverage includes failed attempt followed by authorized success, unknown mutation followed by prohibited blind retry, manifest/digest mismatch, wrong canonical artifact, duplicate provider candidates, missing terminal readback, out-of-order receipts, scheduler records beyond 5,000, cleanup beyond 5,000, and executable alert missing-data behavior.
 * Regression coverage preserves #680 evidence/readback behavior and all existing provider, lifecycle, infrastructure, workflow, sanitization, and security tests.
 * Mock-only green status is insufficient for canary or four-week acceptance; those phases require sanitized external provider readback.
 
@@ -483,12 +560,14 @@ Thresholds are initial production defaults and remain configurable through revie
 | Pending distribution age | oldest non-terminal outbox age by environment/provider/media kind | warning `>15m for 10m`; critical `>60m for 5m` | warning to operations; critical page to production owner | no-data is healthy only when queue depth is also zero; inconsistent no-data warns | fake-clock aged item fires; authoritative terminal transition clears |
 | Missing Azure arrival | accepted upstream intent without correlated first Azure durable arrival | reviewed warning/critical windows derived in P00-T02; critical before the scheduled publication window is irrecoverable | upstream dispatch owner and production owner | missing upstream telemetry is itself warning; direct downstream execution does not clear | blocked-dispatch fixture fires; correlated first arrival clears |
 | Claim latency / lease loss | enqueue-to-claim latency and lease-loss counter | latency warning `p95 >5m for 15m`; any lease loss `>=1 in 5m` critical | operations/page | heartbeat metric missing while active claims exist is critical | delayed claim and forced expiry fire; clean claim/heartbeat clears |
-| Provider unknown | count of `publication_unknown` | any item `>=1 for 5m` critical | production owner page + incident ticket | missing state metric with active outbox is warning | ambiguous response fixture fires; authoritative reconciliation clears |
-| Manual handoff | count/age of `manual_handoff_required` | any item warning in `5m`; critical if age `>24h` | operator queue; aged item pages | no-data with known manual records is warning | manual fixture fires; post-handoff external readback clears |
+| Provider unknown | count of `provider_unknown` | any item `>=1 for 5m` critical | production owner page + incident ticket | missing state metric with active outbox is warning | ambiguous response fixture fires; authoritative reconciliation clears |
+| Manual action | count/age of `manual_action_required` | any item warning in `5m`; critical if age `>24h` | operator queue; aged item pages | no-data with known manual records is warning | manual fixture fires; post-action external readback clears |
 | Non-public YouTube | promoted/expected-public video not authoritatively public | warning after `15m`; critical after `60m` | production owner | readback failures count as verification lag, not healthy | private/unlisted readback fires; public readback clears |
 | Spotify draft | requested-public Spotify item remains draft | warning after `15m`; critical after `24h` | manual publication owner; aged item pages | unavailable readback remains non-success and warns | draft readback fires; externally read published state clears |
 | Poison exhaustion | outbox item enters `poisoned` | any item immediate critical | production owner page + incident ticket | missing poison metric with poison record is critical | exhaustion fixture fires; operator resolution/requeue clears |
 | Public-verification lag | mutation/receipt-to-external-verification duration | warning `>15m`; critical `>60m` | operations/page | missing verification heartbeat while pending is warning | delayed verifier fires; external verification clears |
+| Identity/duplicate ambiguity | weekly aggregate has manifest/digest mismatch, wrong canonical artifact, conflicting provider items, or unresolved duplicate candidates | any item immediate critical | production owner page + incident ticket | missing aggregation telemetry with active attempts is warning | ambiguity fixture fires; exact identity reconciliation and re-aggregation clears |
+| Weekly non-green terminal state | weekly identity reaches `partial`, `provider_unknown`, `manual_action_required`, `missed_not_dispatched`, `failed_terminal`, or `identity_conflict` | any scheduled identity immediate critical | production owner plus owning operational route | missing weekly decision after cutoff is critical | each state fixture fires; only externally proven green decision clears |
 
 Every deployed rule records rule ID, owner, route, runbook URL, dimensions, and canary-safe synthetic/controlled fire-clear evidence in the changes record.
 
@@ -503,7 +582,7 @@ Every deployed rule records rule ID, owner, route, runbook URL, dimensions, and 
 | Crash/replay matrix | P04-T01 | All artifact/enqueue/claim/intent/mutation/receipt/verification/ack boundaries mapped and passing |
 | Metrics and alerts | P03-T03, P05-T05 | Alert contract, deployed rule IDs, fire/clear evidence |
 | Feature flag and rollback | P01-T04, P05-T05 | Disabled-by-default routing, staged enablement, rollback drill preserving state |
-| Production acceptance and issue closure | P06-T01–P06-T02 | Canary plus four-week external readback, closure comment linking replacement PR/evidence, issue closed |
+| Production acceptance and issue closure | P06-T01–P06-T02 | Accepted canary plus four future green post-fix cycles, closure comment linking replacement PR/evidence, issue closed |
 
 ## PR #682 Thread Closure Matrix
 
@@ -535,7 +614,7 @@ Every deployed rule records rule ID, owner, route, runbook URL, dimensions, and 
 
 ## Critique Disposition
 
-The existing critique is preserved unchanged as historical evidence. No second critique was run because this revision applies an authoritative post-implementation user correction rather than reopening the original candidate critique gate. PC-001–PC-009 retain their recorded dispositions; the corrected W39/W38 boundary and RV-006 matrix expansion are planner-owned revisions after implementation review.
+The existing critique is preserved unchanged as historical evidence. No second critique was run or requested. PC-001–PC-009 retain their recorded dispositions; this authoritative QA revision and the current review's RV-002/RV-003/RV-004/RV-007 routes are planner-owned current-state updates.
 
 | Critique run and finding | Disposition | Plan response or residual risk |
 |---|---|---|
@@ -558,4 +637,4 @@ The existing critique is preserved unchanged as historical evidence. No second c
 
 * Implementation artifact: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
 * Approved implementation marker range: P00-T01 through P06-T02, limited by the dispositions in `Implementation Marker Reconciliation`.
-* Remaining provisional question or blocker: None.
+* Remaining blockers: P00-T01 upstream ownership; P05 git/GitHub/deployment/provider authority; P06 four elapsed future post-fix cycles.

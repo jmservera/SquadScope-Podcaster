@@ -40,6 +40,11 @@ def test_distribution_alert_contract_has_routes_windows_and_missing_data() -> No
         "distribution-public-verification-lag-warning",
         "distribution-public-verification-lag-critical",
         "distribution-poisoned",
+        "distribution-identity-conflict",
+        "distribution-weekly-non-green",
+        "distribution-scheduler-telemetry-missing",
+        "distribution-active-depth-without-state",
+        "distribution-active-claim-heartbeat-missing",
     ):
         assert f"name: '{alert}'" in alerts
     for route in (
@@ -54,6 +59,17 @@ def test_distribution_alert_contract_has_routes_windows_and_missing_data() -> No
     assert "window: 'PT5M'" in alerts
     assert "Missing data: ${alert.missingData}" in alerts
     assert "dispatch_arrival_state" in alerts
+    for action_group in (
+        "operationsActionGroupResourceId",
+        "upstreamActionGroupResourceId",
+        "operatorActionGroupResourceId",
+        "productionActionGroupResourceId",
+    ):
+        assert action_group in alerts
+    assert "routeActionGroups[alert.route]" in alerts
+    assert "where observed == 0" in alerts
+    assert "distribution_active_outbox_depth" in alerts
+    assert "distribution_claim_heartbeat_missing" in alerts
 
 
 def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:

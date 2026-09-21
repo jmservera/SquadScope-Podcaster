@@ -2,8 +2,18 @@ targetScope = 'resourceGroup'
 
 param location string
 param logAnalyticsWorkspaceId string
-param actionGroupResourceId string = ''
+param operationsActionGroupResourceId string = ''
+param upstreamActionGroupResourceId string = ''
+param operatorActionGroupResourceId string = ''
+param productionActionGroupResourceId string = ''
 param enabled bool = true
+
+var routeActionGroups = {
+  operations: operationsActionGroupResourceId
+  'upstream-dispatch-owner': upstreamActionGroupResourceId
+  'publication-operator': operatorActionGroupResourceId
+  'production-owner': productionActionGroupResourceId
+}
 
 // The application emits the reviewed warning/critical classification from durable
 // state. These rules preserve the matching evaluation window, explicit route, and
@@ -196,6 +206,61 @@ var alertDefinitions = [
     route: 'production-owner'
     missingData: 'missing state metric with known poison record warns'
   }
+  {
+    name: 'distribution-identity-conflict'
+    event: 'distribution_weekly_state'
+    metric: 'distribution_identity_conflict'
+    signalSeverity: 'critical'
+    severity: 0
+    frequency: 'PT5M'
+    window: 'PT5M'
+    route: 'production-owner'
+    missingData: 'weekly decision telemetry is required while an active publication exists'
+  }
+  {
+    name: 'distribution-weekly-non-green'
+    event: 'distribution_weekly_state'
+    metric: 'distribution_weekly_non_green'
+    signalSeverity: 'critical'
+    severity: 0
+    frequency: 'PT5M'
+    window: 'PT5M'
+    route: 'production-owner'
+    missingData: 'weekly decision telemetry is required while an active publication exists'
+  }
+  {
+    name: 'distribution-scheduler-telemetry-missing'
+    event: 'distribution_scheduler_state'
+    metric: 'distribution_scheduler_heartbeat'
+    signalSeverity: 'info'
+    severity: 0
+    frequency: 'PT5M'
+    window: 'PT15M'
+    route: 'production-owner'
+    missingData: 'absence of the authoritative scheduler heartbeat is critical'
+  }
+  {
+    name: 'distribution-active-depth-without-state'
+    event: 'distribution_scheduler_state'
+    metric: 'distribution_active_outbox_depth'
+    signalSeverity: 'warning'
+    severity: 2
+    frequency: 'PT5M'
+    window: 'PT10M'
+    route: 'operations'
+    missingData: 'authoritative depth is emitted by every scheduler run'
+  }
+  {
+    name: 'distribution-active-claim-heartbeat-missing'
+    event: 'distribution_scheduler_state'
+    metric: 'distribution_claim_heartbeat_missing'
+    signalSeverity: 'critical'
+    severity: 0
+    frequency: 'PT5M'
+    window: 'PT5M'
+    route: 'production-owner'
+    missingData: 'authoritative claim scan emits a row when a heartbeat is overdue'
+  }
 ]
 
 resource distributionAlerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
@@ -215,7 +280,7 @@ resource distributionAlerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' 
       criteria: {
         allOf: [
           {
-            query: 'ContainerAppConsoleLogs_CL | where Log_s contains "\\"event\\": \\"${alert.event}\\"" | where Log_s contains "\\"metric\\": \\"${alert.metric}\\"" | where Log_s contains "\\"severity\\": \\"${alert.signalSeverity}\\""'
+            query: alert.name == 'distribution-scheduler-telemetry-missing' ? 'let observed = toscalar(ContainerAppConsoleLogs_CL | where TimeGenerated > ago(15m) | where Log_s contains "\\"event\\": \\"distribution_scheduler_state\\"" and Log_s contains "\\"metric\\": \\"distribution_scheduler_heartbeat\\"" | count); print observed | where observed == 0' : 'ContainerAppConsoleLogs_CL | where Log_s contains "\\"event\\": \\"${alert.event}\\"" | where Log_s contains "\\"metric\\": \\"${alert.metric}\\"" | where Log_s contains "\\"severity\\": \\"${alert.signalSeverity}\\""'
             timeAggregation: 'Count'
             operator: 'GreaterThan'
             threshold: 0
@@ -230,8 +295,8 @@ resource distributionAlerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' 
       checkWorkspaceAlertsStorageConfigured: false
       skipQueryValidation: false
       actions: {
-        actionGroups: empty(actionGroupResourceId) ? [] : [
-          actionGroupResourceId
+        actionGroups: empty(routeActionGroups[alert.route]) ? [] : [
+          routeActionGroups[alert.route]
         ]
       }
     }

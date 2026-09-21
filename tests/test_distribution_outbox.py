@@ -18,8 +18,10 @@ from podcaster.distribution_outbox import (
     UnsafeOutboxValueError,
     aggregate_exit_code,
     commit_immutable_artifact,
+    four_cycle_acceptance,
     outbox_routing_enabled,
     reconciliation_message,
+    weekly_state_from_attempts,
 )
 from podcaster.publication_state import PublicationIdentity
 from podcaster.storage import LocalStorageBackend
@@ -359,6 +361,49 @@ def test_reconciliation_scan_is_fair_beyond_one_hundred_records(tmp_path):
     assert len({item[0] for item in first + second}) == 130
 
 
+def test_reconciliation_scan_reaches_due_record_beyond_five_thousand():
+    now = datetime(2026, 9, 21, 21, 0, tzinfo=timezone.utc)
+    paths = [f"distribution-outbox/{index:064x}.json" for index in range(5001)]
+    documents = {}
+    for index, path in enumerate(paths):
+        due = index == 5000
+        documents[path] = json.dumps(
+            {
+                "outbox_id": f"{index:064x}",
+                "providers": {
+                    "youtube": {
+                        "next_reconcile_at": ("2026-09-21T20:59:00Z" if due else None),
+                        "active_schedule_token": "a" * 64 if due else None,
+                        "schedule_notification_token": None,
+                        "schedule_notification_sent_at": None,
+                    }
+                },
+            }
+        ).encode()
+
+    class PagedStorage:
+        def get_bytes(self, path):
+            return documents.get(path)
+
+        def list_blobs_page(self, prefix, *, limit, continuation=None):
+            start = int(continuation or 0)
+            page = paths[start : start + limit]
+            next_cursor = str(start + len(page)) if start + len(page) < len(paths) else None
+            return page, next_cursor
+
+    repository = DistributionOutboxRepository(PagedStorage(), now=lambda: now)
+    first, cursor = repository.due_reconciliations_page(limit=100, scan_limit=5000)
+    assert first == []
+    assert cursor == "5000"
+    second, cursor = repository.due_reconciliations_page(
+        limit=100,
+        scan_limit=5000,
+        after_path=cursor,
+    )
+    assert second == [(f"{5000:064x}", "youtube", "a" * 64)]
+    assert cursor is None
+
+
 def test_reconciliation_notification_is_deduplicated_until_stale(setup):
     _storage, repository, clock, document, _created = setup
     claim = repository.claim(
@@ -460,6 +505,191 @@ def test_historical_ambiguous_evidence_backfills_reconciliation_only(setup, iden
         document["outbox_id"], owner="takeover", execution_id="reconcile", lease_seconds=300
     )
     assert claim.read_only is True
+
+
+def test_failed_attempt_remains_immutable_after_authorized_verified_recovery(setup):
+    _storage, repository, _clock, document, _created = setup
+    first = repository.claim(
+        document["outbox_id"], owner="first", execution_id="exec-first", lease_seconds=300
+    )
+    repository.record_verification(
+        first,
+        provider="youtube",
+        result="failed_terminal",
+        source="youtube_processing_readback",
+        provider_item_id="youtube-failed",
+        native_state="failed",
+    )
+    repository.record_verification(
+        first,
+        provider="spotify",
+        result="failed_terminal",
+        source="spotify_episode_readback",
+        provider_item_id="spotify-failed",
+        native_state="failed",
+    )
+    failed = repository.release(first)
+    failed_attempt = failed["attempts"][0]
+    assert failed_attempt["terminal_outcome"] == "failed_terminal"
+
+    repository.authorize_recovery(
+        document["outbox_id"],
+        predecessor_attempt_id=failed_attempt["attempt_id"],
+        source="operator",
+        reason="no_mutation_proven",
+        no_mutation_proven=True,
+    )
+    recovered_claim = repository.claim(
+        document["outbox_id"], owner="recovery", execution_id="exec-recovery", lease_seconds=300
+    )
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            recovered_claim,
+            provider=provider,
+            result="externally_verified_public",
+            source=f"{provider}_readback",
+            provider_item_id=f"{provider}-recovered",
+            native_state="public" if provider == "youtube" else "published",
+        )
+    recovered = repository.release(recovered_claim)
+    assert recovered["attempts"][0] == failed_attempt
+    assert recovered["weekly_aggregation"]["state"] == "published_verified_recovered"
+    assert recovered["weekly_aggregation"]["failed_attempt_references"] == [
+        failed_attempt["attempt_id"]
+    ]
+    assert recovered["weekly_aggregation"]["winning_attempt_id"] == recovered_claim.attempt_id
+    assert aggregate_exit_code([recovered]) == 0
+
+
+@pytest.mark.parametrize(
+    "proof,source,native_state",
+    [
+        ({"manifest_sha256": "c" * 64}, "youtube_readback", "public"),
+        ({"artifact_sha256": "d" * 64}, "youtube_readback", "public"),
+        ({"canonical_artifact_selected": False}, "youtube_readback", "public"),
+        ({"duplicate_ambiguity_resolved": False}, "youtube_readback", "public"),
+        ({}, "youtube_upload", "public"),
+    ],
+)
+def test_missing_or_conflicting_green_proof_is_identity_conflict(
+    setup, proof, source, native_state
+):
+    _storage, repository, _clock, document, _created = setup
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="exec-1", lease_seconds=300
+    )
+    verification = repository.record_verification(
+        claim,
+        provider="youtube",
+        result="externally_verified_public",
+        source=source,
+        provider_item_id="youtube-id",
+        native_state=native_state,
+        proof=proof,
+    )
+    assert verification["result"] == "identity_conflict"
+    state = repository.read(document["outbox_id"])
+    assert state["weekly_aggregation"]["state"] == "identity_conflict"
+    assert aggregate_exit_code([state]) == 1
+
+
+def test_unknown_mutation_cannot_authorize_blind_retry(setup):
+    _storage, repository, _clock, document, _created = setup
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="exec-1", lease_seconds=300
+    )
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            claim,
+            provider=provider,
+            result="publication_unknown",
+            source=f"{provider}_identity_unprovable",
+        )
+    state = repository.release(claim)
+    attempt_id = state["attempts"][0]["attempt_id"]
+    with pytest.raises(DistributionOutboxError, match="cannot authorize retry"):
+        repository.authorize_recovery(
+            document["outbox_id"],
+            predecessor_attempt_id=attempt_id,
+            source="automatic",
+            reason="blind_retry",
+            no_mutation_proven=True,
+        )
+
+
+def test_weekly_w38_recovery_candidate_and_w39_missed_fixture():
+    attempts = [
+        {"attempt_id": "failed", "terminal_outcome": "failed_terminal"},
+        {"attempt_id": "recovered", "terminal_outcome": "published_verified"},
+    ]
+    assert weekly_state_from_attempts(attempts) == "published_verified_recovered"
+    assert weekly_state_from_attempts([], missed_not_dispatched=True) == "missed_not_dispatched"
+
+
+def test_weekly_attempt_precedence_is_deterministic():
+    assert (
+        weekly_state_from_attempts(
+            [
+                {"terminal_outcome": "manual_action_required"},
+                {"terminal_outcome": "provider_unknown"},
+                {"terminal_outcome": "identity_conflict"},
+                {"terminal_outcome": "published_verified"},
+            ]
+        )
+        == "identity_conflict"
+    )
+    assert (
+        weekly_state_from_attempts(
+            [
+                {"terminal_outcome": "partial"},
+                {"terminal_outcome": "manual_action_required"},
+            ]
+        )
+        == "manual_action_required"
+    )
+
+
+def test_four_cycle_acceptance_requires_exactly_four_green_weekly_decisions():
+    green = [
+        {"weekly_aggregation": {"state": "published_verified"}},
+        {"weekly_aggregation": {"state": "published_verified_recovered"}},
+        {"weekly_aggregation": {"state": "published_verified"}},
+        {"weekly_aggregation": {"state": "published_verified"}},
+    ]
+    assert four_cycle_acceptance(green) is True
+    green[2] = {"weekly_aggregation": {"state": "provider_unknown"}}
+    assert four_cycle_acceptance(green) is False
+    assert four_cycle_acceptance(green[:3]) is False
+
+
+def test_cleanup_pages_complete_references_before_deleting(setup):
+    storage, repository, clock, document, _created = setup
+    for index in range(5):
+        source = storage.root.parent / f"artifact-{index}.mp4"
+        source.write_bytes(f"artifact-{index}".encode())
+        artifact = commit_immutable_artifact(
+            storage,
+            source,
+            media_kind="video",
+            content_type="video/mp4",
+            suffix=".mp4",
+        )
+        metadata_path = f"{ARTIFACT_METADATA_PREFIX}/{artifact.sha256}.json"
+
+        def age(raw):
+            value = json.loads(raw.decode())
+            value["created_at"] = "2026-09-19T00:00:00Z"
+            return json.dumps(value).encode()
+
+        storage.update_bytes(metadata_path, "application/json", age)
+    clock.advance(2 * 86400)
+    for _ in range(8):
+        repository.cleanup_orphan_artifacts(
+            retention=timedelta(hours=24),
+            limit=2,
+            outbox_scan_limit=1,
+        )
+    assert storage.blob_exists(document["artifact"]["path"])
 
 
 def _artifact(document):
