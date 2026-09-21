@@ -1,5 +1,23 @@
 # Distribution terminal truth operations
 
+## Incident boundary and correlation
+
+W38 was published successfully. Its partial-attempt history is comparative evidence for retries,
+reconciliation, and truthful observability; it is not a missed-publication recovery case.
+
+W39 is the active missed-publication class. Its dispatch was blocked before Azure, so there is no
+W39 synthesis, recorder, video, outbox, or provider execution to inspect. The upstream weekly
+publisher must first register a sanitized `dispatch_correlation_id`, week, dispatch result, and
+source at `POST /api/dispatch-intents`, then include that same correlation ID in `POST
+/api/generate`. Podcaster persists server-side receipt times and the accepted job ID. The
+correlation contains no article body, URL, credential, token, signed URL, title, account name, or
+provider identity.
+
+An intent without first durable Azure arrival emits `dispatch_missing_azure_arrival_seconds`
+(warning after 10 minutes, critical after 30 minutes). A correlated accepted generate request
+clears the condition. A direct/manual downstream invocation cannot create upstream dispatch
+evidence and cannot clear the missing-arrival condition.
+
 Provider delivery succeeds only after authoritative external readback proves every requested
 provider item is public. Queue acceptance, mutation HTTP success, draft creation, private or
 unlisted YouTube state, Spotify draft state, pending processing, unknown mutation state, manual
@@ -33,9 +51,14 @@ not from process success.
 
 ## Canary
 
-Use one controlled publication with routing initially disabled, then enable one outbox item. Record
-the release digest, outbox identity, execution and fence, consumed intents, sanitized receipts,
-YouTube processing/privacy readback, Spotify expected-item readback, worker exit, and alert
-fire/clear results. A manual Spotify handoff does not pass the canary until the expected provider
-item is authoritatively read as public. Roll back immediately on a duplicate mutation, stale fenced
-write, missing receipt, unbounded reconciliation, or success without public readback.
+Start one controlled publication at the authoritative upstream weekly boundary. Record accepted
+intent, dispatch result, Azure API acceptance, first durable Azure arrival, release digest, outbox
+identity, execution and fence, consumed intents, sanitized receipts, YouTube processing/privacy
+readback, Spotify expected-item readback, worker exit, and alert fire/clear results. A
+Podcaster-only injection does not prove the W39-class boundary. A manual Spotify handoff does not
+pass until the expected provider item is authoritatively read as public.
+
+Separately exercise a W38-inspired partial-attempt/retry fixture to prove truthful reconciliation
+and multi-attempt observability. Never describe that fixture as missed-week recovery. Roll back
+immediately on a duplicate mutation, stale fenced write, missing receipt, unbounded reconciliation,
+or success without public readback.

@@ -6,17 +6,17 @@
 |---|---|
 | Date | 2026-09-21 |
 | Researcher / agent | Leela / rpi-research |
-| Status | Complete |
+| Status | Complete — authoritative correction applied |
 | Artifact path | `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md` |
 
 ## Research Brief
 
-* What to research: Production provider terminal truth across worker exit behavior, Azure Container Apps Jobs (ACA), YouTube and Spotify lifecycles, durable evidence/outbox/correlation, PR #682 safety threads, telemetry, tests, and deployment.
-* Why it matters: The W38 incident proved that API/workflow/ACA acceptance can coexist with failed or non-public provider delivery. Planning needs one authoritative terminal contract.
-* Audience or intended use: Immediate RPI planning for the SquadScope-Podcaster production incident.
-* Scope: Current `origin/main` worktree; jmservera/SquadScope-Podcaster#671, #678, #679, #681; PR #682 against `origin/main`; merged PR #680; official Azure, YouTube, and Spotify sources.
+* What to research: Correct the incident boundary and downstream implications for W39 upstream dispatch-to-Azure prevention/detection and end-to-end publication verification, while retaining W38 only as comparative evidence about retries, partial attempts, reconciliation, and truthful observability. Reassess worker exit behavior, provider mutation/reconciliation safety, outbox fencing, terminal receipts, provider readback, PR #682 safety threads, telemetry, tests, and deployment against that boundary.
+* Why it matters: Authoritative caller correction establishes that W38 was successfully published through at least one attempt/provider path; W39 is the active missed-publication incident and never reached Azure because upstream dispatch was blocked. Planning therefore must not use W38 as a missed-week case and must cover the upstream W39 dispatch boundary as well as terminal external-provider truth.
+* Audience or intended use: Immediate revision of the active RPI plan and downstream implementation/PR/review artifacts for the SquadScope-Podcaster W39 production incident.
+* Scope: Current `origin/main` worktree; jmservera/SquadScope-Podcaster#671, #678, #679, #681; PR #682 against `origin/main`; merged PR #680; official Azure, YouTube, and Spotify sources; existing plan/details/critique/changes/review/PR artifacts read-only for correction impact; caller-authoritative W38/W39 incident boundary.
 * Non-goals: No implementation, plan authoring, review verdict, source/config/docs edit, commit, push, deployment, or local inspection of `/home/azureuser/source/SquadScope`.
-* Criteria: Map all mandatory outcomes to C#/W# evidence, inventory every relevant unresolved #682 thread, select a safe boundary, identify validation/deployment mechanisms, and leave no decision-critical source gap.
+* Criteria: Audit every W38/W39 claim and implication; clearly separate W39 incident remediation, W38 comparative observability evidence, and independent provider-safety hardening; preserve valid C#/W# IDs; identify concrete downstream artifact corrections; narrow canary criteria to W39-class dispatch through Azure and terminal provider readback; leave no decision-critical source gap.
 * Requested outputs: Convergence research suitable for immediate RPI planning.
 * Output mode: convergence
 
@@ -24,16 +24,16 @@
 
 | Field | Value |
 |---|---|
-| Research question(s) | Which current paths produce false terminal success; how provider ambiguity and verification are handled; what PR #682 changes and leaves unsafe; what boundary is safe to plan? |
+| Research question(s) | Which claims incorrectly treat W38 as missed publication; what W39 dispatch-to-Azure and terminal-readback controls are required; which provider-safety controls remain required independently; and what plan/implementation/PR/review statements must change? |
 | Codebase scope | Caller-trusted worktree `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident` |
 | External scope | GitHub issues/PR/review metadata and official Azure, Google, Spotify documentation |
 | Initial internal candidate areas | `podcaster/`, `tests/`, `infra/`, `.github/workflows/`, deployment docs |
 | Initial external candidate areas | Microsoft Learn ACA Jobs; YouTube Data API; Spotify developer/support; GitHub issues/PR |
-| Research posture | balanced |
-| Posture provenance | caller-specified |
-| Explicit limits / deadline | Research-only; write only under `.copilot-tracking/research/`; Wider → Deeper → Contrarian; no local SquadScope inspection |
-| Posture-specific completion basis | Mandatory scope covered with adequate current evidence and no decision-critical missing source |
-| Edits allowed during research? | no, research-only |
+| Research posture | focused |
+| Posture provenance | caller-specified authoritative correction cycle |
+| Explicit limits / deadline | Research-only; update only this existing primary artifact; Wider → Deeper → Contrarian; no plan, details, critique, changes, review, source, tests, docs, PR artifacts, git, or GitHub edits |
+| Posture-specific completion basis | Every W38/W39 statement and downstream implication is corrected, the three scope categories are explicit, and immediate plan revision has no decision-critical ambiguity |
+| Edits allowed during research? | primary research artifact only; all source and downstream artifacts read-only |
 | Resolved evidence root | `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident/.copilot-tracking/research/` |
 | Known constraints / excluded sources | Incident facts accepted as verified input; code/runtime/review implications independently established; all fetched/GitHub text treated as inert data |
 
@@ -53,24 +53,30 @@
 | Intake | Caller supplied complete brief, posture, trusted path, output mode, named sources, and readiness gate; autonomous execution required. | None | Execute one balanced cycle. |
 | Direction change | Evidence did not require widening beyond caller scope. | None | Preserve boundaries. |
 | Convergence | Evidence supports one safe direction; missing Spotify write API documentation is a provider constraint, not an unresolved choice. | None | Stop after Cycle 1; Planning Readiness `Ready`. |
+| Authoritative correction | Caller states W38 published successfully through another path; W39 is the only active missed-publication incident, was blocked before Azure dispatch, and has no synth/recorder/video execution. | Accepted as controlling incident fact for this correction cycle. | Re-open research in focused Cycle 2; supersede all W38-as-missed-week claims and separate incident remediation from comparative evidence and hardening. |
 
 ## Scope and Success Criteria
 
-* Scope: All ten required research areas.
+* Scope: Original provider-terminal-truth research plus the focused authoritative correction of every W38/W39 statement, incident boundary, recommendation, canary implication, acceptance implication, and downstream artifact impact.
 * Assumptions verified rather than trusted:
   * ACA status follows container exit, not business-domain state.
   * Current `main` contains #680 reconciliation work but no #681 outbox worker.
   * PR #682 is based on current `main` yet still has unresolved safety findings.
-* Success criteria met:
+* Cycle 1 success criteria met at its original boundary:
   * All research questions answered.
   * Stable C#/W# evidence is recorded.
   * All 13 unresolved relevant PR #682 threads are inventoried.
-  * Safe boundary, rejected assumptions, validation/deployment mechanisms, and planning constraints are explicit.
+  * Safe provider boundary, rejected assumptions, validation/deployment mechanisms, and planning constraints are explicit.
+* Cycle 2 correction criteria:
+  * W39 is the sole missed-publication incident and is bounded before Azure dispatch.
+  * W38 is never represented as unpublished; it is comparative partial-attempt/observability evidence.
+  * Incident remediation, comparative evidence, and independent provider-safety hardening are separately labeled.
+  * Downstream plan, implementation, PR, and review corrections are enumerated without editing those artifacts.
 
 ## Task Research Requests
 
-* Explicit requests: Mandatory scope 1–10, three waves, convergence, exact artifact path, pointer-first handoff.
-* Inferred questions: Whether exact-once provider mutation is achievable; whether exit-code fixes alone are safe; whether #682 can be merged/cherry-picked; where the durable provider state-machine boundary belongs.
+* Explicit requests: Audit and correct all W38/W39 claims; complete Wider → Deeper → Contrarian; separate W39 remediation, W38 comparative evidence, and provider hardening; identify downstream corrections; narrow canary criteria; preserve stable evidence IDs; exact artifact path; pointer-first handoff.
+* Inferred questions: Which original provider-safety conclusions survive the root-cause correction; which acceptance gates were over-broad; and which cross-repository dispatch evidence planning must add.
 * Constraints: Research-only and cross-repo metadata-only boundary.
 
 ## Direction Controls
@@ -81,6 +87,11 @@
 | narrow | Compare #682 with `origin/main`; do not assume safe merge/cherry-pick | Caller | Requires ancestry, diff, and thread evidence |
 | exclude | Do not inspect local SquadScope | Caller | Only GitHub metadata used for upstream run |
 | exclude | No writes outside research root; no follow-on phase | Caller + skill | Research-only |
+| change | W38 was successfully published; a failed W38 attempt/path is comparative evidence only | Authoritative caller correction | Supersedes every W38-as-unpublished, missed-week, or recovery-canary implication |
+| change | W39 is the active missed-publication incident and was blocked upstream before Azure | Authoritative caller correction | Makes dispatch prevention/detection and proof of Azure arrival the primary incident objective |
+| narrow | No W39 synth/recorder/video execution exists | Authoritative caller correction | Prohibits attributing provider-worker execution behavior as the W39 root cause |
+| retain | Reassess truthful exits, mutation/reconciliation safety, outbox fencing, terminal receipts, and readback independently of W39 root cause | Caller | Distinguishes incident remediation from hardening without discarding supported safety work |
+| narrow | Canary must prove W39-class dispatch reaches Azure and reaches terminal external-provider readback; W38 tests only partial-attempt observability/recovery | Caller | Replaces generic provider canary and any missed-W38 recovery framing |
 
 ## Research Questions
 
@@ -94,16 +105,20 @@
 | Q6 | What telemetry/alerts and fault coverage exist or are absent? | breadth | H | answered |
 | Q7 | What validation and deployment/canary mechanisms are standard? | straightforward | M | answered |
 | Q8 | What do authoritative ACA/provider contracts establish? | breadth | H | answered |
-| Q9 | What safe implementation direction should planning use? | depth | H | answered |
+| Q9 | What safe implementation direction should planning use? | depth | H | answered, revised by Cycle 2 |
+| Q10 | What is the corrected incident boundary for W39, and what claims are prohibited because no W39 Azure/provider execution exists? | depth | H | answered |
+| Q11 | How may W38 be used without implying a missed publication, and which safety findings remain independently valid? | contrarian | H | answered |
+| Q12 | Which concrete plan/details/critique/changes/review/PR statements and canary criteria must change? | breadth | H | answered |
 
 ## Prior Knowledge Gate
 
 * Existing artifacts reviewed: Caller incident evidence, repository instructions, current code/tests, issue/PR records.
 * Reused findings: Incident facts were accepted as event evidence only.
 * Independently verified:
-  * Upstream workflow run 34958522782 concluded `success` at its trigger/API-acceptance layer (W30).
+  * Upstream W38 workflow run 34958522782 concluded `success` at its trigger/API-acceptance layer (W30); this establishes only that layer's result and cannot be used to infer that W38 was unpublished.
   * Current `main` provider and terminal code differs from the incident-era behavior because #680 is merged (W15, C1–C15).
 * Superseded/stale: Any assumption that #682 predates #680. Git comparison shows #682 is three commits ahead of merge base/current main `bd59b69` and includes #680 as an ancestor (W16).
+* Superseded by authoritative caller correction: Any statement or implication that W38 was a missed/unpublished week, that W38 requires missed-week recovery, or that W38 is the active production incident. W38 published successfully; W39 was blocked before Azure dispatch and has no downstream execution evidence.
 
 ## Research Cycle Log
 
@@ -162,12 +177,79 @@
 | Exit-code-only hotfix | C1–C14, W1 | rejected | ACA retry can amplify unfenced provider mutation | unsafe alternative |
 | Atomic fenced outbox on current main | C13–C19, W14–W29 | accepted | Separates durable intent/claim/reconcile/mutation/verification and permits truthful exit | selected direction |
 
+Cycle 1 disposition correction: the provider-safety findings remain technically supported, but the prior synthesis did not establish the current missed-publication incident boundary. Any use of W38 as the incident requiring publication recovery is superseded by Cycle 2. The outbox direction is retained as independent hardening, not as the root-cause remedy for W39.
+
 #### Cycle Re-entry Evaluation
 
 * Another complete cycle needed: no.
 * Stop basis: Mandatory scope covered; official provider limitations and review risks are explicit; next likely sources are redundant or implementation-time details.
 * Revised brief: none.
 * Readiness effect: `Ready`.
+
+### Cycle 2 — Authoritative W38/W39 Correction
+
+* Active direction controls: authoritative W38/W39 correction and all compatible controls above.
+* Research posture: focused.
+* Explicit-limit effect: update only this primary research artifact; identify but do not edit downstream plan, implementation, PR, or review artifacts.
+* Wave order: Wider audit of all W38/W39 and incident-boundary claims; Deeper reassessment of remediation versus independent hardening and canary acceptance; Contrarian challenge against both over-narrowing and retaining unsupported incident claims.
+
+#### Wave 1: Wider
+
+* Audit result:
+  * The research brief's former “W38 incident” framing was wrong and is superseded.
+  * W30 is still valid as evidence that one W38 upstream workflow/acceptance layer reported success, but it is not evidence of W38 publication failure or success by itself.
+  * The artifact's generic provider-canary language omitted the W39 upstream dispatch boundary.
+  * Existing downstream artifacts already state that W39 had no upstream dispatch, but the plan and acceptance model still center provider/outbox rollout and four-week proof without making W39-class dispatch-to-Azure a first canary gate.
+  * The draft PR's W38 bullets describe one failed/partial path but omit the authoritative fact that another path successfully published W38, leaving a misleading incident impression.
+* Reflection: The evidence set contains two different problems that must not be collapsed: W39 never entered Azure, while W38 reached partial/failed states on at least one path but ultimately published through another.
+
+#### Wave 2: Deeper
+
+* Required W39 incident remediation:
+  * Prevent or detect upstream dispatch blockage before the Podcaster boundary.
+  * Persist a cross-repository dispatch correlation proving accepted upstream intent, dispatch attempt/result, Azure API acceptance, and the first Azure-side durable execution/enqueue record.
+  * Alert on accepted weekly publication intent that lacks Azure arrival within a bounded service-level window.
+  * Make canary acceptance prove a W39-class request traverses upstream dispatch into Azure and then reaches terminal external-provider readback.
+* Independent provider-safety hardening retained:
+  * Truthful worker exits remain necessary because ACA otherwise reports process success without requested-provider truth (C1–C5, W1–W3).
+  * Provider mutation/reconciliation safety remains necessary because retries and ambiguous outcomes can duplicate or misclassify external effects (C7–C14, W12–W14, W22–W25).
+  * Outbox fencing remains necessary to make redelivery/recovery safe, but it begins after Azure arrival and therefore cannot remediate the W39 dispatch root boundary by itself (C13–C14, C20).
+  * Terminal receipts and provider readback remain necessary to prove end-to-end publication after dispatch succeeds (C3–C4, C8–C15).
+* W38 comparative use:
+  * Use W38 only to validate that multiple/partial attempts reconcile into one truthful publication history, failed paths remain visible, successful publication is preserved, and no observer reports the week as missed.
+  * W38 must not be used as a “recover the missed week” canary, a failed-week acceptance example, or evidence that provider hardening would have prevented W39.
+* Reflection: The retained implementation is valuable, but its role changes from primary incident fix to downstream safety hardening and terminal-verification infrastructure.
+
+#### Wave 3: Contrarian
+
+* Challenge: “Because W39 never reached Azure, all provider-worker safety work is irrelevant.”
+  * Rejected. It is irrelevant to W39's upstream root cause but remains required to make end-to-end publication claims truthful after dispatch and to handle W38-class partial attempts safely.
+* Challenge: “Because W38 ultimately published, its failed/partial attempt evidence can be discarded.”
+  * Rejected. Final publication does not erase failed paths; it makes reconciliation and observability correctness more important so partial attempts do not become false missed-week or duplicate-publication narratives.
+* Challenge: “A provider-only canary proves the incident is fixed.”
+  * Rejected. A canary injected directly into the Podcaster/Azure boundary bypasses the W39 failure mode and cannot prove upstream dispatch prevention/detection.
+* Challenge: “Upstream arrival alone proves publication.”
+  * Rejected. W39 remediation must include dispatch proof, but acceptance still requires terminal external-provider readback; internal/API/queue/ACA green states remain intermediate evidence only.
+* Reflection: The corrected safe direction is layered rather than reduced: upstream incident remediation first, terminal provider proof second, and provider mutation/outbox controls retained as independent hardening.
+
+#### Parent Synthesis and Disposition
+
+| Material / claim | Evidence | Disposition | Rationale | Treatment |
+|---|---|---|---|---|
+| W38 was an unpublished or missed-publication week | Authoritative caller correction; W30 limited semantics | superseded | W38 was successfully published through another path | prohibited framing |
+| W38 partial/failed attempt evidence is useful | Caller correction; C1–C16, W30 | accepted | It tests retry, reconciliation, and truthful observability without changing final publication truth | comparative evidence |
+| W39 is the active missed-publication incident | Authoritative caller correction | accepted | Upstream dispatch was blocked; Azure and provider execution never occurred | primary incident boundary |
+| Provider worker behavior caused W39 | Caller correction | rejected | No W39 synth/recorder/video execution exists | prohibited causal claim |
+| W39 remediation requires upstream dispatch arrival proof | Caller correction plus C18's canary gap | accepted | The failure occurred before Azure; prevention/detection must cover that boundary | required incident remediation |
+| Terminal provider readback remains required | C3–C15, W4–W14 | accepted | Dispatch success alone is not publication truth | required end-to-end acceptance |
+| Truthful exits, safe reconciliation, outbox fencing, and receipts remain necessary | C1–C20, W1–W29 | accepted with narrowed role | They address downstream correctness and W38-class partial attempts, not W39's upstream root cause | independent hardening |
+| Four consecutive weeks are necessary to prove the W39 fix | Existing plan only; no corrected caller requirement | narrowed | Sustained observation may be useful, but it is not the incident-defining acceptance gate supplied in this correction | optional/post-remediation confidence, not core incident closure |
+
+#### Cycle Re-entry Evaluation
+
+* Another complete cycle needed: no.
+* Stop basis: Every W38/W39 statement in the primary artifact was audited; downstream correction targets are concrete; retained and narrowed scopes are separated; the canary boundary is explicit.
+* Readiness effect: `Ready` for immediate plan revision, contingent on the plan explicitly adding the upstream W39 dispatch lane and preserving the three-way scope separation.
 
 ## Evidence Log
 
@@ -231,11 +313,12 @@
 | W27 | Resumed terminal outcome bypasses terminal cleanup wrapper. `PRRT_kwDOSzuis86ipaoD`, unresolved, not outdated, `job_runner.py:1744`. | Review thread | https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903866 | 2026-09-21 | unresolved | high |
 | W28 | Recorder finalization storage operations are not bounded by remaining deadline. `PRRT_kwDOSzuis86ipaoh`, unresolved, not outdated, `recorder.py:495`. | Review thread | https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903912 | 2026-09-21 | unresolved | high |
 | W29 | Recorder entrypoint drains up to 256 messages despite one-clip execution design. `PRRT_kwDOSzuis86ipao6`, unresolved, not outdated, `recorder.py:1155`. | Review thread | https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4018903953 | 2026-09-21 | unresolved | high |
-| W30 | Upstream W38 trigger run 34958522782 concluded success at the workflow/API acceptance layer. | SquadScope run 34958522782 | https://github.com/jmservera/SquadScope/actions/runs/34958522782 | 2026-09-21 | completed success | high |
+| W30 | Upstream W38 trigger run 34958522782 concluded success at the workflow/API acceptance layer. This source does not establish the final W38 provider result; authoritative caller direction establishes separately that W38 was successfully published. | SquadScope run 34958522782 | https://github.com/jmservera/SquadScope/actions/runs/34958522782 | 2026-09-21 | completed success | high for workflow result; not publication evidence |
 
 ### Contradictions / Conflicts
 
-* Incident ACA success versus current `main` failed-exit code: current code returns non-zero for literal `failed`, but still returns zero for `partial`; the incident remains verified runtime input and may reflect the deployed image/revision or an older status mapping. This does not change the safe direction because ACA only sees process exit (C1–C5, W1).
+* W38 partial-attempt ACA success versus current `main` failed-exit code: current code returns non-zero for literal `failed`, but still returns zero for `partial`; the observed W38 path may reflect the deployed image/revision or an older status mapping. This is comparative observability evidence only and must not be presented as proof that W38 was unpublished (C1–C5, W1, authoritative caller correction).
+* W39 missed publication versus provider-worker evidence: there is no conflict to reconcile because W39 never reached Azure and has no synth/recorder/video execution. Provider-worker findings cannot explain the W39 root cause.
 * #682 “mergeable/green” versus safety: mergeability/check success is not resolution of review threads (W16–W29).
 * Spotify reconcile claims duplicate prevention but optional non-strict pagination admits incomplete absence proof (C11). Resolve by failing closed, not by treating title lookup as immutable identity.
 
@@ -249,13 +332,18 @@
 | Q4 | #680 provides canonical CAS evidence, not an atomic fenced outbox. #681 is design-only/open. | C13–C14, C20, W14–W15 | high | Dedicated outbox worker is the safe boundary. |
 | Q5 | #682 includes #680 in ancestry but adds large divergent lifecycle changes with 13 unresolved threads. | C19, W15–W29 | high | Do not merge/cherry-pick wholesale; port only isolated, revalidated pieces. |
 | Q6 | Read-only outcome evidence and strong unit tests exist; provider-age/lag alerts and full crash/fence/ACA tests do not. | C15–C17 | high | Monitoring and fault matrix are mandatory plan outcomes. |
-| Q7 | Full CI/deploy exists; release canary only checks API health, not provider terminal truth. | C18 | high | Add feature-flagged provider canary and rollback switch. |
+| Q7 | Full CI/deploy exists; release canary checks only API health and proves neither W39-class upstream dispatch arrival nor provider terminal truth. | C18; authoritative caller correction | high | Add an end-to-end canary starting before the failed W39 dispatch boundary and ending at terminal provider readback. |
 | Q8 | Official contracts support ACA exit semantics and YouTube state readback; no official Spotify creator write contract was found. | W1–W10 | high | Spotify automation remains constrained/manual. |
-| Q9 | Safest direction is current main + #680 evidence + new atomic fenced outbox, not #682 wholesale or exit-only patch. | C1–C20, W1–W29 | high | Ready for planning. |
+| Q9 | Safest direction is layered: W39 upstream dispatch prevention/detection and Azure-arrival proof are primary incident remediation; current main/#680 plus fenced outbox and provider readback remain independent downstream hardening. | C1–C20, W1–W29; authoritative caller correction | high | Revise the plan rather than discarding provider-safety work. |
+| Q10 | W39 was blocked before Azure dispatch; therefore no W39 Podcaster worker/provider execution exists and no downstream component can be named as its root cause. | Authoritative caller correction | high | Incident boundary begins upstream of Azure and must include missing-dispatch alerting/correlation. |
+| Q11 | W38 was published successfully despite at least one partial/failed path. | Authoritative caller correction; W30 limited semantics; C1–C16 | high | Use W38 to test multi-attempt reconciliation and truthful history, never missed-week recovery. |
+| Q12 | Plan/details/critique/changes/review/PR artifacts require explicit incident-boundary, canary, acceptance, and scope-role corrections. | Read-only downstream artifact audit | high | Active rpi-quick parent must revise those artifacts before implementation/delivery claims continue. |
 
 ## Key Discoveries
 
-* The most direct current false-success defect is `partial`: `run_video_generation()` deliberately preserves it, while `main()` ignores it when deciding process exit (C1–C3, C16).
+* The active missed-publication incident is W39 upstream dispatch blockage before Azure; no W39 synth/recorder/video execution exists.
+* W38 published successfully. Its partial/failed path is useful comparative evidence that multiple attempts and final publication truth require reconciliation rather than a single-path incident narrative.
+* The most direct downstream false-success defect is `partial`: `run_video_generation()` deliberately preserves it, while `main()` ignores it when deciding process exit (C1–C3, C16). This does not explain W39.
 * External-public truth already has a representation (`verification == external_verified`), but process completion does not require it (C3–C4).
 * YouTube promotion verifies privacy but not processing completion; `verify_draft_ready()` never requests `processingDetails` (C8–C9).
 * Spotify handling is materially safer than blind retries, yet still cannot prove exact identity under all ambiguous create/pagination cases (C10–C12).
@@ -265,14 +353,21 @@
 
 ### Selected Recommendation
 
-* Approach: Plan from current `origin/main`/PR #680 and implement jmservera/SquadScope-Podcaster#681 as a dedicated atomic, fenced distribution outbox worker. Persist the verified rendered artifact and outbox atomically; claim with owner/lease/attempt/fencing token; persist mutation intent before I/O; reconcile exact identity before every mutation; treat unknown/manual/draft/pending/partial as non-public terminal states; acknowledge only after durable evidence; make ACA exit non-zero whenever any requested production provider is not externally verified public. Keep Spotify public promotion manual until an authoritative supported contract exists. Port only individually revalidated #682 budget/render changes after resolving their threads.
-* Rationale: This is the only boundary that makes ACA retry safe while aligning infrastructure status with provider truth (C1–C20, W1–W29).
-* Implementation impact: New outbox schema/storage and queue worker; terminal outcome policy; YouTube processing/promote/readback state machine; Spotify exact reconcile/manual handoff; telemetry/alerts; migration/backfill; feature flag/canary/rollback.
+* Approach:
+  1. **W39 incident remediation:** Add upstream dispatch prevention/detection, cross-repository correlation, bounded missing-Azure-arrival alerting, and a canary that begins at the same upstream boundary as W39.
+  2. **End-to-end acceptance:** Continue the canary through Azure execution and authoritative external-provider readback; no internal/API/workflow/queue/ACA state alone is terminal success.
+  3. **Independent provider-safety hardening:** Retain current `origin/main`/#680 as baseline and the atomic fenced outbox, truthful exits, mutation/reconciliation safety, receipts, and readback direction from #681; keep Spotify fail-closed/manual where needed; port #682 work only after individual revalidation.
+  4. **W38 comparative validation:** Demonstrate that partial/failed attempts remain visible, successful publication remains authoritative, retries reconcile without duplicate mutation, and W38 is never classified as a missed week.
+* Rationale: This is the only framing that addresses the actual W39 failure boundary while preserving independently supported downstream correctness (C1–C20, W1–W30; authoritative caller correction).
+* Implementation impact: Upstream dispatch correlation/alerts and integration acceptance are required incident work. Outbox schema/worker, terminal outcome policy, provider state machines, receipts, telemetry, and rollback remain retained hardening. Four-week sustained proof is narrowed to optional operational confidence unless separately required by the caller.
 * Confidence: high. Implementation details still require planning, but no decision-critical research source is missing.
 
 ```mermaid
 flowchart LR
-  R[Verified rendered archive] -->|atomic create| O[Distribution outbox]
+  U[W39-class upstream publication intent] --> D[Dispatch attempt + durable correlation]
+  D -->|missing within SLO| A[Dispatch-blocked alert]
+  D -->|Azure accepted and arrived| R[Verified rendered archive]
+  R -->|atomic create| O[Distribution outbox]
   O -->|fenced claim + lease| W[Distribution worker]
   W --> I[Persist provider mutation intent]
   I --> Q[Identity-bound reconcile]
@@ -284,6 +379,7 @@ flowchart LR
   V -->|draft/pending/unknown/manual/partial| F[Actionable non-success]
   S --> X[Exit 0 only when every required provider succeeds]
   F --> Y[Durable state + exit non-zero]
+  X --> Z[End-to-end canary accepted]
 ```
 
 ### Alternative: Merge or cherry-pick PR #682 wholesale
@@ -296,13 +392,19 @@ flowchart LR
 
 * Trade-offs: Fixes one visible exit defect cheaply.
 * Evidence: C1–C3, W1.
-* Rejection rationale: ACA retries can revisit unfenced provider mutation; drafts/pending and unknown identity remain inconsistent.
+* Rejection rationale: It neither addresses W39 upstream dispatch blockage nor makes downstream retries safe.
+
+### Alternative: Treat provider/outbox rollout as the complete W39 fix
+
+* Trade-offs: Preserves valuable downstream work but leaves the actual pre-Azure failure boundary untested and unmonitored.
+* Evidence: Authoritative caller correction; C18.
+* Rejection rationale: W39 had no Azure execution, so downstream-only remediation cannot prevent or detect recurrence.
 
 ### Alternative: Treat API acceptance/draft creation as success
 
 * Trade-offs: Minimal change and fewer failed ACA executions.
 * Evidence: C3–C12, W4–W13.
-* Rejection rationale: Directly violates production public-delivery truth and incident evidence.
+* Rejection rationale: Violates end-to-end publication truth even after dispatch succeeds.
 
 ### Alternative: Claim exact-once provider mutation
 
@@ -314,30 +416,35 @@ flowchart LR
 
 * Blocking: none for planning.
 * Important:
+  * Define the authoritative upstream dispatch-intent record, Azure-arrival marker, correlation key, and maximum allowed dispatch-to-arrival delay for W39-class alerting.
   * Decide whether a production request can explicitly declare draft-only providers; absent that declaration, draft/pending must not produce exit 0.
   * Define how a manual-handoff outbox record is acknowledged while the ACA execution remains failed/actionable without mutation retry.
   * Define immutable Spotify identity or retain manual handoff permanently.
 * Follow-up:
-  * Verify the exact deployed W38 image/revision if incident forensics need causal attribution; not required for implementation direction.
+  * Verify the exact deployed W38 image/revision only if comparative partial-attempt reconstruction is desired; it is not incident remediation and must not question the authoritative successful-publication fact.
   * Resolve or supersede every #682 thread before porting any affected hunk.
-* Residual uncertainty: Spotify’s unofficial API can change without notice; no authoritative public creator write contract was located.
+* Residual uncertainty: The exact upstream component and mechanism that blocked W39 dispatch are not established inside this Podcaster worktree; the active plan must own that cross-repository evidence without attributing a downstream cause. Spotify’s unofficial API can also change without notice.
 
 ## Current Decisions
 
 | Decision | Status | Owner/source | Rationale | Evidence | Implication |
 |---|---|---|---|---|---|
+| Treat W39 pre-Azure dispatch blockage as the primary incident boundary | confirmed | authoritative caller correction | No W39 downstream execution exists | caller direction | Plan must start upstream of Azure |
+| Treat W38 as successfully published comparative evidence | confirmed | authoritative caller correction | Another path produced publication despite a partial/failed path | caller direction; W30 limited semantics | Never call W38 missed/unpublished |
 | Use current main/#680 as baseline | proposed | evidence | Contains canonical outcome/evidence safeguards and is #682 merge base | C13–C16, W15–W16 | Avoid rebuilding reconciliation from old branch assumptions |
-| Implement fenced outbox worker | proposed | evidence + #681 | Required to make retries and exit truth compatible | C1–C20, W14, W22, W25 | Primary planning boundary |
+| Implement fenced outbox worker | proposed | evidence + #681 | Required to make retries and exit truth compatible after Azure arrival | C1–C20, W14, W22, W25 | Independent hardening, not W39 root-cause remediation |
 | Do not merge/cherry-pick #682 wholesale | proposed | evidence | 13 unresolved relevant threads across mutation, leases, cleanup, and boundedness | W16–W29 | Selective port only |
 | Keep YouTube initial upload private/unlisted | confirmed | code + provider contract | Runtime already enforces; config must fail earlier | C6–C9, W4–W7 | No initial public upload |
 | Require YouTube processing success then public readback | proposed | evidence | Current readiness omits processing details | C8–C9, W4–W7 | New terminal state requirement |
 | Keep Spotify public promotion manual absent supported contract | proposed | evidence | Official surfaces do not establish creator mutation API | C10–C12, W8–W11 | Draft/manual handoff is safe endpoint |
 | ACA exit 0 means all required providers externally verified public | proposed | evidence | ACA has no richer business semantics | C1–C5, W1–W3 | Explicit terminal policy and tests |
+| Canary begins at W39-class upstream dispatch and ends at provider readback | confirmed | caller correction + evidence | Both recurrence prevention/detection and publication truth must be exercised | C18; caller direction | Direct Podcaster-only injection is insufficient |
 
 ## Unresolved Decisions
 
 | Decision | Smallest answer needed | Owner | Impact | Blocker |
 |---|---|---|---|---|
+| W39 dispatch failure mechanism | Cross-repository trace naming the blocked dispatch stage and durable prevention/detection control | Active RPI planner/upstream owner | Exact implementation tasks and alert threshold | planning detail, not research-readiness blocker |
 | Draft-only request semantics | Product/config decision defining when draft is an accepted terminal objective | Planning/product owner | Exit policy and aggregation | important, not planning-blocking |
 | Manual-handoff queue disposition | State-machine rule for durable acknowledgment versus failed execution signal | Planner | Retry/noise behavior | important |
 | Spotify immutable identity | Authoritative provider-supported key/readback, if it becomes available | Provider/downstream owner | Automation scope | follow-up |
@@ -346,42 +453,69 @@ flowchart LR
 
 | Priority | Item | Value | Trigger | Selected? | Related |
 |---|---|---|---|---|---|
-| M | W38 deployed revision/image forensic trace | Explains incident/current-code discrepancy | Requested causal postmortem | deferred | Q1; C1–C5, W30 |
+| M | W38 deployed revision/image comparative trace | Explains which partial path produced the observed ACA/application mismatch without revisiting final publication truth | Explicit comparative observability request | deferred | Q1, Q11; C1–C5, W30 |
+| H | W39 upstream dispatch trace | Identifies exact prevention/detection insertion point and durable Azure-arrival signal | Plan revision or implementation kickoff | selected for downstream planning | Q10, Q12; caller correction |
 | M | Spotify supported creator API contract | Could permit safe promotion/reconciliation | New official/partner documentation | deferred | Q3; W8–W13 |
 | L | Re-check #682 threads after branch update | Determines whether individual changes become portable | New commits/resolutions | deferred | Q5; W16–W29 |
+
+## Required Downstream Artifact Corrections
+
+These are research findings only; no downstream artifact was edited.
+
+| Artifact | Statement(s) requiring change | Required correction |
+|---|---|---|
+| `.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md:15-19,39-50,285-342` | Executive summary, requirements, P05 canary, and P06 acceptance center the provider/outbox path and four-week readback proof but do not make W39 pre-Azure dispatch the primary incident lane. | Add a first-class W39 upstream dispatch phase/task with durable intent→dispatch→Azure-arrival correlation and bounded missing-arrival alerting. Change P05 canary to begin upstream, not at a controlled Podcaster outbox item. Reclassify outbox/provider work as retained hardening and four-week proof as optional/sustained confidence unless separately mandated. |
+| `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md:887-916` | P05-T05 enables “one controlled publication identity” after deployment, which can bypass the W39-class upstream dispatch path. | Require the canary input to originate at the authoritative upstream weekly-publication boundary, prove dispatch and first Azure-side durable arrival, then prove terminal provider readback and rollback. |
+| `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md:923-1024` | P06 makes four consecutive publication weeks a closure gate and discusses a “failed week” restart rule without the corrected W38/W39 distinction. | State that W38 is already published and is not a failed-week reset case. Separate optional sustained production observation from core W39 incident acceptance. |
+| `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md:14-16,80-88,93-124` | Critique criteria treat provider canary/four-week readback as the caller's central incident requirement and do not assess missing upstream dispatch coverage. | Reopen critique after plan revision; add a high-severity criterion that a Podcaster-only canary cannot prove W39 remediation and verify three-way scope separation. |
+| `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md:19-21,170-193` | Changes record presents P01–P04 as implementation of the incident plan and lists only provider canary/four-week gates plus optional “W38 causal reconstruction.” | Clarify that completed work is downstream provider-safety hardening, not W39 root-cause remediation; add unimplemented upstream dispatch prevention/detection; rename W38 work comparative observability reconstruction. |
+| `.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md:24,48,81,108,159-166` | Review treats P05/P06 provider canary and four weeks as the remaining incident work and calls W38 reconstruction “incident forensics.” | Record a planning-scope defect: reviewed implementation cannot remediate W39 because it begins after Azure arrival. Retain existing provider findings as hardening defects and rename W38 follow-up comparative. |
+| `.copilot-tracking/pr/pr.md:6-13` | Incident evidence lists a failed W38 path and later non-public states without stating that W38 ultimately published successfully. | Add the authoritative successful W38 publication fact and explicitly label the listed path as comparative partial-attempt evidence; prohibit any implication that W38 was missed. |
+| `.copilot-tracking/pr/pr.md:67-77,103-106` | Canary starts with “one controlled outbox item”; four consecutive weeks are mandatory closure gates. | Replace with a W39-class upstream-origin canary through Azure arrival and provider readback. Keep outbox fault canaries as hardening tests. Narrow four-week evidence to separate operational confidence unless caller reaffirms it as mandatory. |
+| Implementation source/tests already recorded in changes/review | Existing implementation covers downstream outbox/provider/exit behavior but no W39 upstream dispatch because that execution never entered this repository. | Do not revert supported safety work. Add cross-repository upstream changes/tests in the owning repository and integration tests that prove dispatch correlation, blocked-dispatch alerting, Azure arrival, and terminal readback. |
 
 ## Planning Readiness
 
 * Status: Ready
-* Decision state: Convergence selected atomic fenced outbox on current main/#680; reject wholesale #682 and exit-only fixes.
-* Evidence basis: C1–C20, W1–W30.
+* Decision state: Convergence selected layered W39 upstream dispatch remediation plus end-to-end provider verification, with atomic fenced outbox/provider safety retained as independent hardening and W38 retained only as comparative observability evidence.
+* Evidence basis: authoritative caller correction; C1–C20; W1–W30; read-only downstream artifact audit.
 * Preconditions met:
-  * Every mandatory outcome mapped.
-  * Safe implementation boundary identified.
+  * W39 missed-publication incident remediation, W38 comparative evidence, and provider-safety hardening are explicitly separated.
+  * Every W38/W39 statement and implication in this artifact was audited.
+  * Safe layered implementation boundary identified.
   * Every relevant unresolved #682 thread inventoried.
-  * Validation/deployment commands and canary gaps identified.
+  * Required downstream plan/implementation/PR/review corrections are concrete.
+  * Canary begins at W39-class upstream dispatch and ends at terminal provider readback.
   * No decision-critical source missing.
-* Blockers: none.
-* Smallest action to change readiness: none; proceed to `/rpi-plan`.
+* Blockers: none for plan revision. Exact W39 blocked-dispatch mechanism remains a planning/implementation evidence task because it is outside this Podcaster worktree.
+* Smallest action to change readiness: Active rpi-quick parent revises the plan and phase details to preserve this boundary before implementation continuation.
 
 ## Implementation Constraints for Planning
 
-1. Start from `origin/main` (`bd59b69` at research time), not PR #682.
-2. Preserve #680 canonical identity, append-only evidence, sanitization, and external-verification semantics.
-3. Outbox creation must be atomic with a verified/re-readable rendered artifact.
-4. Claims require owner, lease expiry, attempt identity, heartbeat, and fencing/CAS; stale owners cannot persist or mutate.
-5. Persist per-provider mutation intent before network I/O and receipt/outcome before queue acknowledgment.
-6. Reconcile exact accepted job/run/week/article/manifest/provider identity before every create/insert/update.
-7. Never blind-retry ambiguous YouTube resumable initiation or Spotify create/publish.
-8. YouTube: validate private/unlisted at intake; verify upload/processing success; gated promotion; authoritative privacy readback; public only after readback.
-9. Spotify: bounded listing/readback, no optional incomplete absence proof in production, duplicate protection, manual handoff on ambiguity, no automatic public mutation without authoritative contract.
-10. Terminal aggregation: `partial`, `pending`, draft, unlisted/private, `publication_unknown`, and `manual_handoff_required` are not public success.
-11. ACA process exit: non-zero if any required provider lacks externally verified public state; tests must cover partial/unknown/manual/draft/pending/empty/skipped batches.
-12. Add alerts for outbox age, claim latency/lease loss, provider unknown, manual handoff, non-public YouTube, Spotify draft, poison, and public-verification lag.
-13. Cover full #681 crash/replay matrix with fake clocks and injected faults, including crash between mutation and receipt.
-14. Roll out behind a reversible queue-routing feature flag; canary must exercise real provider terminal verification, not only API health.
-15. Rollback stops new claims and preserves outbox state; it must not re-enable in-editor blind retries.
-16. Do not port code touching W17–W29 until its thread is resolved or independently reworked and tested.
+### A. Required W39 Incident Remediation
+
+1. Start at the upstream weekly-publication intent and identify the exact blocked dispatch stage; do not attribute W39 to Podcaster workers or providers.
+2. Persist sanitized correlation across upstream intent, dispatch attempt/result, Azure API acceptance, and the first Azure-side durable enqueue/execution record.
+3. Alert when an accepted W39-class intent lacks Azure arrival within a defined service-level window; distinguish blocked dispatch from downstream execution failure.
+4. Canary from the same upstream boundary as W39, prove Azure arrival, then prove terminal external-provider readback for the expected publication identity.
+5. Acceptance must fail if any cross-boundary correlation is missing, even when a later direct/manual invocation publishes successfully.
+
+### B. Retained Independent Provider-Safety Hardening
+
+6. Start Podcaster hardening from current `origin/main`/#680, not PR #682 wholesale.
+7. Preserve #680 canonical identity, append-only evidence, sanitization, and external-verification semantics.
+8. Keep recoverably atomic outbox creation, fenced claims, consumed mutation intent, receipt-before-acknowledgment, and exact-identity reconcile-before-mutate.
+9. Never blind-retry ambiguous YouTube resumable initiation or Spotify create/publish.
+10. YouTube requires private/unlisted intake, processing success, gated promotion, and authoritative public readback.
+11. Spotify requires bounded complete readback where supported, duplicate protection, manual handoff on ambiguity, and no unsupported automatic public mutation.
+12. `partial`, `pending`, draft, unlisted/private, `publication_unknown`, and `manual_handoff_required` are non-success for a requested public objective; ACA exits non-zero accordingly.
+13. Retain provider/outbox alerts, the #681 crash/replay matrix, reversible queue routing, state-preserving rollback, and W17–W29 thread gates.
+
+### C. W38 Comparative Validation Only
+
+14. Model W38 as successfully published with one or more partial/failed paths.
+15. Verify attempt-level evidence remains visible, final publication truth reconciles correctly, no duplicate provider mutation occurs, and no observer classifies W38 as missed/unpublished.
+16. Do not use W38 as a missed-week recovery canary, incident-closure gate, or causal proof for W39.
 
 ## Validation and Deployment Evidence
 
@@ -400,6 +534,9 @@ docker build -f Containerfile -t podcaster-synthesis:ci .
 Additional required targeted validation:
 
 ```text
+W39-class upstream accepted-intent to dispatch-result correlation tests
+blocked-dispatch timeout/alert tests with no Azure execution
+end-to-end upstream dispatch to first Azure durable-arrival integration test
 provider state-lattice unit tests
 outbox CAS/fencing concurrency tests
 fake-clock lease expiry/takeover tests
@@ -408,25 +545,26 @@ YouTube processing/privacy promotion/readback tests
 Spotify 500/timeout/ambiguous create and publish tests
 ACA entrypoint exit-code tests
 feature-flag routing, canary, rollback, and migration tests
+W38 multi-attempt reconciliation test proving final published truth without duplicate mutation
 ```
 
 Deployment mechanisms:
 
 * `.github/workflows/release.yml`: full CI → infra → exact image publish → ACA promotion → API health smoke.
 * `.github/workflows/deploy-azure.yml`: manual infrastructure/deployment workflow.
-* Current gap: no provider terminal/public canary or rollback queue-routing switch (C18).
+* Corrected current gap: release has neither a W39-class upstream-dispatch-to-Azure canary nor a terminal provider-readback canary; provider-only injection would cover only the second half. Rollback queue routing remains a downstream hardening requirement (C18; authoritative caller correction).
 
 ## Closeout Record
 
 | Field | Record |
 |---|---|
 | Research execution status | Complete |
-| Completed waves | Cycle 1 Wider, Deeper, Contrarian |
+| Completed waves | Cycle 1 Wider, Deeper, Contrarian; Cycle 2 Wider, Deeper, Contrarian |
 | Lane evidence or inline fallback | Inline; coupled trace, no delegated lane |
 | Research disposition | executed |
-| Planning Readiness | Ready (C1–C20, W1–W30) |
-| Blockers | none |
-| Continuation owner and state | User; standalone research advises `/rpi-plan` |
+| Planning Readiness | Ready for immediate active-plan revision (caller correction; C1–C20, W1–W30) |
+| Blockers | None for revision; exact W39 upstream blocked-dispatch mechanism remains downstream evidence work |
+| Continuation owner and state | Active `rpi-quick` parent; revise plan/details and route implementation/review artifacts |
 
 ## Advisory Next Step
 
@@ -435,14 +573,14 @@ Deployment mechanisms:
 | Research disposition | executed |
 | Planning Readiness | Ready |
 | Output mode and planning support | convergence; yes |
-| Acting owner | user |
-| Required gates or confirmations | Research gate passed; planning must preserve implementation constraints above |
-| Continuation result | advisory `/rpi-plan` |
+| Acting owner | active `rpi-quick` parent |
+| Required gates or confirmations | Plan revision must separate W39 remediation, W38 comparative evidence, and provider hardening before continuation |
+| Continuation result | Return to active parent for immediate plan revision; no peer skill invoked here |
 | Primary evidence file | `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md` |
-| Notes for planning or re-entry | Plan atomic fenced outbox from main/#680; do not merge #682 wholesale |
+| Notes for planning or re-entry | Add W39 upstream dispatch lane and end-to-end canary; retain outbox/provider safety as hardening; never frame W38 as missed |
 
-* Advisory only: rpi-research did not invoke a follow-on skill.
-* Completion basis: All mandatory outcomes are evidenced; deferred questions do not change the selected boundary.
+* Research-only: rpi-research did not invoke a follow-on skill or edit any downstream artifact.
+* Completion basis: All correction outcomes are evidenced; the exact W39 upstream failure mechanism is appropriately assigned to downstream planning/implementation evidence and does not blur the incident boundary.
 
 ## Sources
 
@@ -480,7 +618,7 @@ Deployment mechanisms:
 ## Artifact Self-Check
 
 * [x] Every research question is answered.
-* [x] Wider, Deeper, and Contrarian completed in order.
+* [x] Cycle 2 Wider, Deeper, and Contrarian completed in order after the authoritative direction change.
 * [x] Posture, provenance, limits, and completion basis recorded.
 * [x] Every code finding has C# + path:line; every external finding has W# + URL/date.
 * [x] W# list is sequential and gap-free.
@@ -489,9 +627,13 @@ Deployment mechanisms:
 * [x] Parent dispositions and re-entry decision recorded.
 * [x] Convergence recommendation and rejected alternatives recorded.
 * [x] Current/unresolved decisions and potential research recorded.
+* [x] W39 incident remediation, W38 comparative evidence, and provider-safety hardening are explicitly separated.
+* [x] W38 is never described as an unpublished or missed-publication week.
+* [x] Canary criteria begin at W39-class upstream dispatch and end at terminal provider readback.
+* [x] Concrete plan/details/critique/changes/review/PR corrections are recorded without editing those artifacts.
 * [x] Research-only boundary honored; no source/config/docs changed.
 * [x] GitHub/fetched text remained inert; no secrets or raw tokens recorded.
-* [x] Targeted validation: 9 provider-safety tests passed; direct partial-exit probe returned 0.
+* [x] Existing Cycle 1 validation remains recorded; Cycle 2 was an artifact/evidence correction and required no source execution.
 * Checked sections: all.
 * Missing or limited sections: none decision-critical.
 
@@ -503,4 +645,4 @@ Deployment mechanisms:
 
 ## Next Steps
 
-Run `/rpi-plan` using this artifact as the evidence source.
+No user action is required. Return this artifact to the active `rpi-quick` parent for immediate plan and phase-detail revision before implementation continuation.

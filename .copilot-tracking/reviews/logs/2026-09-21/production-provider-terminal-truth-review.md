@@ -5,218 +5,249 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Review date: 2026-09-21
-* Review scope: Full task, with completed implementation scope P01-P04 and externally gated P05-P06 assessed separately
-* Assessed boundary: Authoritative user outcomes, plan acceptance criteria, critique dispositions, implementation evidence, the complete tracked and untracked `origin/main` worktree delta, tests, infrastructure, operations documentation, and current GitHub evidence
+* Review scope: One corrected full-task review, reassessing the Hermes correction implementation and preserving the prior finding history
+* Assessed boundary: Corrected W38/W39 incident framing; P00 Podcaster receipt/arrival observability; P01-P04 implementation; RV-001-RV-005 dispositions; safety invariants; validation; and residual P00-T01/P05/P06 work
 * Plan: `.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md`
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
 * Changes: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
-* Other evidence considered: `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md`; local source/tests/Bicep/docs; `jmservera/SquadScope-Podcaster#681`; `jmservera/SquadScope-Podcaster#682`; `jmservera/SquadScope-Coordinator#17`; focused fault reproduction and validation commands recorded below
+* Other evidence considered: `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md`; `.copilot-tracking/pr/pr.md`; complete `origin/main` worktree delta; source, tests, Bicep, and operations documentation; independently rerun validation recorded below
 
 ## Opening Review State
 
-* Interpreted review goal: Independently determine whether the partial implementation truthfully and safely satisfies P01-P04 and all currently reviewable authoritative outcomes, while leaving P05-P06 open unless real delivery and production evidence exists.
-* Review scope: Full task boundary, with execution status and outcome separated and with no false completion requirement for externally gated P05-P06.
-* Evidence readiness: One unambiguous artifact set exists and records P01-P04 complete, P05-P06 open, detailed validation claims, implementation-time reconciliations, and two distinct follow-up items. The full local implementation and current external metadata were available for comparison.
-* Acceptance basis: Caller outcomes; plan functional, non-functional, and acceptance criteria; PC-001 through PC-009 dispositions; all current relevant safety concerns from `jmservera/SquadScope-Podcaster#682`; no weakening of quality or safety gates.
-* First comparison boundary: Reconcile plan/detail markers and claimed completed work against the complete `origin/main` worktree delta before validating implementation semantics or external delivery claims.
-* Active read-only boundaries: Source, configuration, documentation, tests, GitHub, and Azure evidence were read-only. This canonical review record was the only writable artifact.
-* Initial blockers: P05 delivery/canary and P06 four-week production verification are externally gated; they do not block review of P01-P04 but prevent complete task execution.
+* Interpreted review goal: Independently determine whether the authoritative W38/W39 correction and RV-001-RV-005 implementation are conformant, while separating local execution from upstream delivery and production outcomes.
+* Review scope: Corrected full-task boundary, without a second review pass.
+* Evidence readiness: One unambiguous artifact set and one canonical review record exist. The correction source, tests, documentation, infrastructure, and validation evidence are available locally.
+* Acceptance basis: Authoritative correction; plan functional/non-functional requirements and acceptance criteria; historical PC-001-PC-009 dispositions; prior RV findings; no unsafe narrowing or weakened quality/security gate.
+* First comparison boundary: Reconcile corrected incident facts and plan/detail/change markers before reassessing each RV finding and validation claim.
+* Active read-only boundaries: Source, tests, docs, plan, details, research, critique, changes, git, GitHub, and deployment state are read-only. This review record is the only writable artifact.
+* Initial blockers: P00-T01 requires an owning `jmservera/SquadScope` prevention change. P05 requires repository/delivery/deployment authority. P06 requires four elapsed production weeks.
 
 ## Execution Status
 
 * Review execution status: Complete
 * Assessed implementation execution status: Partial
-* Review execution evidence: The complete artifact set, tracked and untracked implementation, focused fault behavior, full repository tests, static checks, Bicep, Checkov, container digest, and current GitHub state were assessed.
-* Partial implementation basis: P01-P04 are marked complete; P05-T01 through P06-T02 remain open. This review does not require those external phases to be falsely complete.
+* Review execution evidence: Corrected artifacts and implementation were inspected; targeted/full tests, compile, Ruff, diff safety, Bicep, both Checkov modes, image digest, and container exit were independently checked.
+* Partial implementation basis: Podcaster-side P00-T02/P00-T03 and P01-P04 ran. P00-T01 remains cross-repository work; P05-P06 were not executed and are not defects merely because they remain open.
 
 ## Plan-to-Change Reconciliation
 
 | Current plan scope | Descriptive changes-record summary | Current-state reconciliation | Gap or rationale |
 |---|---|---|---|
-| P01-T01 | Versioned sanitized outbox and correlation schema | Reconciled | Durable publication, artifact, claim, intent, receipt, verification, and aggregate fields exist and reject URL/secret-shaped durable values. |
-| P01-T02 | Atomic enqueue and fenced consumed-intent claims | Partial | Immutable artifact verification, conditional outbox create, claims, fences, lease margin, and consumed intent exist. Required orphan artifact repair/retention is absent; see RV-004. |
-| P01-T03 | Deduplicated bounded reconciliation scheduling | Missing required semantics | A token and due time exist, but the scheduler repeatedly enqueues the same token and scans only the first 100 blob names without continuation; see RV-002. |
-| P01-T04 | #680 compatibility and disabled-by-default routing | Reconciled for local scope | Routing defaults off and historical ambiguous evidence becomes reconciliation-only. Production migration evidence remains P05/P06 work. |
-| P02-T01 | YouTube draft-processing-public lifecycle | Partial | Initial public configuration is rejected before provider I/O, draft upload and processing readback exist, and public success requires privacy readback. Ambiguous identity reconciliation is asserted rather than performed, and promotion takeover does not converge; see RV-001 and RV-005. |
-| P02-T02 | Spotify bounded reconciliation/manual handoff | Reconciled for safe local direction | Unsupported unattended mutation remains fail-closed; manual handoff is non-success and expected-item readback can clear it. Live provider proof remains P05/P06 work. |
-| P02-T03 | Durable intent, receipt, and readback | Reconciled with RV-001 exception | Intent is consumed before I/O and receipts/readback are durable. A consumed ambiguous promotion can remain without a durable bounded terminal/reconciliation result. |
-| P03-T01 | Truthful aggregation and queue disposition | Reconciled | Empty, partial, pending, unknown, manual, failed, skipped, and non-public outcomes are nonzero; queue acknowledgment is separated from business success. |
-| P03-T02 | Bounded execution and cleanup | Partial | One-item video/distribution workers and bounded scoped deletion exist. Orphan outbox artifacts have no repair/retention cleanup, and current #682 thread coverage has advanced beyond the locked matrix. |
-| P03-T03 | Provider telemetry and deployable alerts | Missing required semantics | Low-cardinality signals exist, but the deployed queries ignore warning signals and do not implement missing-data, route, or per-contract window behavior; see RV-003. |
-| P04 | Fault tests and repository validation | Partial | The claimed full suite and static/build evidence are reproducible. Required semantic gaps above are not covered by tests, and the existing tests pass while those defects remain. |
-| P05-P06 | Delivery, supersession, canary, rollback, four weeks | Correctly open | No push, replacement PR, merge-derived release, deployment, canary, rollback drill, or four-week evidence is claimed. |
+| W38/W39 correction | W38 is published comparative evidence; W39 is the missed publication blocked before Azure | Reconciled in research, plan, changes, source-facing docs, tests, and current PR draft | No W39 downstream execution is fabricated. Canary prose starts upstream and ends at provider readback. |
+| P00-T01 | Exact upstream prevention change | Correctly blocked/residual | Owned by `jmservera/SquadScope`, not automatically a Podcaster defect. |
+| P00-T02-P00-T03 | Dispatch intent, Azure arrival, missing-arrival signals, deterministic provider fixture | Reconciled for the Podcaster boundary | Registered intent is required before correlated generation can clear arrival absence. The fixture proves correlation shape, not live cross-repository deployment. |
+| P01-T03 / RV-002 | Deduplicated fair reconciliation scheduler | Partial | Fresh notifications deduplicate and a cursor rotates within the returned set, but storage enumeration is capped at the first 5,000 paths without continuation. Records beyond that set can starve; RV-002 remains open in narrowed form. |
+| P02-T01/P02-T03 / RV-001 | Read-only promotion convergence | Reconciled | A takeover performs authoritative readback, converges public, or records durable identity-bound unknown without issuing a second promotion mutation. |
+| P03-T03 / RV-003 | Deployable warning/critical alerts, missing-data behavior, routes | Partial | Warning/critical query classification and windows are generated, but all logical routes still share one action group and missing-data behavior is description text rather than an executable absence/depth/heartbeat query. RV-003 remains open. |
+| P01-T02/P03-T02 / RV-004 | Reference-safe retained orphan cleanup | Partial | Cleanup is age-bounded and reference-safe for a fully enumerated outbox set, but disables all cleanup at 5,000 returned outbox paths instead of continuing safely. RV-004 remains open in narrowed form. |
+| P02-T01/P02-T03 / RV-005 | Identity-bound reconciliation or accurate fail-closed evidence | Reconciled | Missing provider identity is now accurately recorded as `youtube_identity_unprovable`; known promotion identity uses provider readback. |
+| P04 | Locked validation | Reconciled with one environment variance | Targeted 741 passed. Current full rerun produced 3070 passed/3 skipped/2 deselected because the scale-out integration skipped when Docker Compose startup was unavailable; the changes record preserves the earlier 3071/2/2 run. |
+| P05-P06 | Delivery, merge/image provenance, canary, rollback, four weeks | Correctly open | Residual external work, not proof of a Podcaster implementation defect. |
 
 ## Completed Work Assessment
 
 | Related marker | Files | What changed and why | Completion evidence | Validation | Assessment |
 |---|---|---|---|---|---|
-| P01 | `podcaster/distribution_outbox.py`, `podcaster/queue.py`, `podcaster/storage.py`, `podcaster/video/job_runner.py` | Added immutable artifacts, durable outbox state, CAS claims/fences, queue hints, and routing | Local state-machine tests and direct inspection | Focused tests pass | Partial because scheduler deduplication/starvation and orphan cleanup remain defective. |
-| P02 | `podcaster/distribution_worker.py`, `podcaster/video/distribution.py`, `podcaster/video/youtube_publish.py`, `podcaster/publish.py` | Added draft-first YouTube flow, processing/public readback, and fail-closed Spotify handoff | Provider worker tests and direct fault reproduction | Focused tests pass; takeover reproduction fails closed with `StaleClaimError` | Partial because the takeover does not persist a bounded outcome and ambiguous upload does not perform identity-bound reconciliation. |
-| P03 | `podcaster/video/job_runner.py`, `podcaster/distribution_telemetry.py`, `infra/modules/distribution-alerts.bicep`, `docs/ops/distribution-terminal-truth.md` | Made process exit truthful and added provider-state signals/alerts | Exit lattice is implemented; alert definitions build | Full pytest and Bicep pass | Partial because deployed alert behavior does not match the documented contract. |
-| P04 | New and existing test suites plus repository validation surfaces | Added focused tests and ran repository validation | `3059 passed, 2 skipped, 2 deselected`; static/build checks pass | Independently reproduced as recorded below | Validation is real but does not prove missing scenarios. |
+| P00-T02/P00-T03 | `podcaster/dispatch_receipts.py`, `podcaster/api.py`, `podcaster/distribution_scheduler.py`, tests and alert Bicep | Added sanitized dispatch intent/arrival correlation and missing-arrival classification | Registered-intent requirement, fire/clear test, API correlation, terminal-provider fixture | Targeted suite passed | Conformant for Podcaster receipt/arrival observability; upstream prevention remains P00-T01. |
+| RV-001 | `podcaster/distribution_worker.py`, `tests/test_distribution_worker.py` | Added read-only known-video promotion readback | Public takeover converges; non-public takeover records unknown; duplicate promotion is an assertion failure | Passed | Resolved. |
+| RV-002 | `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, tests | Added notification markers, stale repair, and cursor rotation | 130-record and repeated-notification tests pass | Passed | Improved but not resolved beyond the fixed 5,000-path enumeration boundary. |
+| RV-003 | `infra/modules/distribution-alerts.bicep`, docs, deployment tests | Added separate warning/critical rule definitions and descriptive route/missing-data metadata | Generated-query tests and Bicep build pass | Passed syntactically | Not fully deployable as accepted: route separation and missing-data detection are not executable. |
+| RV-004 | `podcaster/distribution_outbox.py`, scheduler, tests | Added artifact metadata, retention, reference scan, and deletion | Referenced artifact retained; old orphan removed | Passed | Safe for fewer than 5,000 outbox paths, but cleanup stalls at/above the cap. |
+| RV-005 | `podcaster/distribution_worker.py`, tests | Corrected ambiguous-upload evidence naming | `youtube_identity_unprovable` is durable and non-success | Passed | Resolved by the accepted fail-closed alternative. |
+| Truthful terminal execution | worker/outbox/provider code and tests | Preserved non-zero exits, fencing, consumed intent, receipts, manual handoff, and external-readback-only success | State-lattice tests and container smoke | Exit 2 reproduced | Conformant. |
 
 ## Implementation-Time Plan and Detail Update Assessment
 
 | Affected area or marker | What changed and why | Triggering evidence and user decision | Reconciliation performed | Planning and critique state | Assessment |
 |---|---|---|---|---|---|
-| Implementation Status and P01-P06 markers | Opened full plan boundary while preserving delivery restrictions | Caller supplied explicit full scope and read-only delivery boundary | Plan, details, changes, blockers, and remaining work agree | Compatible with approved plan | Reconciled. |
-| P06-T01 Spotify wording | Required authoritative Spotify readback after handoff | Existing PC-004 and caller requirement, not a new decision | Plan/details/worker tests agree | Critique intent preserved | Reconciled. |
-| P04-T03 baseline | Fast-forwarded to `0752d1a` and rebuilt/reran validation | `origin/main` advanced without source conflict | Plan/details/changes identify baseline and stale Compose image diagnosis | No material design divergence | Reconciled. |
-| P03-T03 alert completion | Changes record states the exact alert contract is deployable and tested | Implementation-time assertion | Plan and docs were updated, but Bicep behavior was not reconciled to those claims | PC-007 is not actually satisfied | Gap; RV-003. |
-| PR #682 closure matrix | Plan locks W17-W29 from research | Current GitHub review state now has six unresolved threads not represented by W17-W29 | No current plan/detail update covers the new safety inventory | Material external evidence changed after planning | Gap; RV-006. |
+| W38/W39 incident boundary | Replaced W38 missed-week implications with W39 pre-Azure boundary | Authoritative caller correction | Research, plan, top-level details, changes, runbook, and PR draft updated | Historical critique intentionally unchanged | Reconciled. |
+| P00 | Added upstream-to-Azure correlation lane | W39 had no Azure execution | Podcaster receipt/absence work completed; upstream prevention separately blocked | Compatible material revision | Reconciled. |
+| RV-006 / P05-T03 | Expanded #682 closure inventory | Prior review found newer unresolved threads | Plan matrix includes six RV-006 rows and later rows without claiming GitHub resolution | Planning route completed | Prior RV-006 is resolved at planning level; execution remains P05 residual work. |
+| Detail current-state prose | Some historical sentences still say RV-001-RV-005 or RV-002-RV-004 “remain open” despite completion claims elsewhere | Correction implementation | Not fully reconciled inside phase details | No second critique required | Medium artifact-state inconsistency; see RV-007. |
+| PR narrative | Draft still says RV-001-RV-006 are unimplemented, reports the old image digest/test counts, and says “Do not deploy this draft” based on the superseded review state | Correction implementation and new review | Not updated after correction | P05 not executed | Must be rewritten before PR use; see PR narrative requirements. |
 
 ## Critique and Material Revision Assessment
 
-* Latest critique dispositions: PC-001 through PC-009 are recorded as resolved by the planner. The selected direction remains compatible with confirmed user intent.
-* Material revisions: The Spotify external-readback wording and current-main baseline updates are justified and reconciled. No unauthorized divergent implementation decision was found.
-* Dependent-work pause assessment: P05-P06 remain open as required. However, P01-P04 completion markers were advanced despite unresolved implementation defects in the PC-003 and PC-007 areas.
-* Justification assessment: The changes record accurately discloses external delivery blockers, but overstates reconciliation scheduling, orphan handling, identity-bound reconciliation, and deployable alert completion.
+* Latest critique dispositions: PC-001-PC-009 remain historical and unchanged as required. The corrected plan retains consumed-intent fencing, concrete artifact/outbox ordering, reconciliation scheduling, external Spotify readback, delivery provenance, issue/thread gates, alert contracts, validation coverage, and cross-repository linkage.
+* Material revisions: The W39 upstream lane and W38 comparative-only treatment preserve confirmed user intent and do not justify removal of independent provider safety.
+* Dependent-work pause assessment: P05/P06 remain open. No delivery or production acceptance is falsely claimed.
+* Justification assessment: The incident correction is supported. Completion is overstated for RV-002/RV-003/RV-004 and phase-detail current-state prose is internally stale.
 
 ## Plan Follow-Up Assessment
 
 | Follow-up item | Why outside immediate scope | Owner or next action | Assessment and route |
 |---|---|---|---|
-| Evaluate future authoritative Spotify creator mutation/idempotency support | Provider has not published a supported contract with immutable identity and idempotency | Distinct future provider-capability follow-up | Properly outside current safe automation scope; remains open and is not a defect. |
-| Optional deployed-image/revision W38 forensics | Historical causal reconstruction does not change the accepted implementation boundary | Distinct incident-forensics follow-up if still desired | Properly outside active P01-P06 acceptance; remains optional. |
+| Future authoritative Spotify mutation/idempotency support | Provider contract is unsupported today | Distinct provider-capability follow-up | Properly remains outside active implementation. |
+| Optional W38 deployed-image/revision forensics | Historical reconstruction does not change the authoritative publication fact | Distinct incident-forensics follow-up | Optional; never use it to reclassify W38 as missed. |
 
 ## Findings
 
 <!-- rpi:review id=RV-001 -->
-### RV-001 [High]: Read-only takeover of an ambiguous YouTube promotion cannot converge
+### RV-001 [High, resolved]: Read-only YouTube promotion takeover convergence
 
-* Related scope: P01-T02, P01-T03, P02-T01, P02-T03, P04-T01
-* Evidence: `podcaster/distribution_worker.py` attempts to persist and consume a new `public_promotion` intent whenever a known video is processed but non-public. A takeover after the original promotion intent was consumed is correctly marked read-only by `podcaster/distribution_outbox.py`, so this path raises `StaleClaimError` instead of recording authoritative readback, `publication_unknown`, manual handoff, or a bounded next reconciliation. A direct fault reproduction produced `REPRODUCED: takeover claim is reconciliation-only`.
-* Impact: The safety fence prevents a duplicate promotion, but an ambiguous promotion can cycle through failed ACA executions without the durable actionable convergence required by the plan.
-* Destination: `rpi-implement`
-* Smallest useful next action: Make the read-only YouTube path branch before intent persistence, perform bounded readback only, and persist public, pending-with-deduplicated-schedule, or unknown/manual terminal evidence with tests for lost promotion response and expired takeover.
+* Related scope: P02-T01, P02-T03, P04
+* Evidence: `podcaster/distribution_worker.py` now performs known-identity readback before any promotion branch. `tests/test_distribution_worker.py` proves public convergence and non-public fail-closed behavior while forbidding duplicate mutation.
+* Impact: The former repeated-failure/stale-claim gap is closed.
+* Destination: Resolved in current implementation.
+* Disposition: Resolved; retain historical context and the regression tests.
 
 <!-- rpi:review id=RV-002 -->
-### RV-002 [High]: Reconciliation scheduling is neither deduplicated nor starvation-safe
+### RV-002 [High, remains open]: Scheduler fairness stops at the fixed 5,000-path storage window
 
-* Related scope: P01-T03, P03-T02, P04-T01
-* Evidence: `podcaster/distribution_scheduler.py` enqueues every due outbox ID on every five-minute run while its active token remains present; no durable scheduled/sent marker prevents repeat queue messages. `DistributionOutboxRepository.due_reconciliations()` calls `list_blobs(..., limit=100)` with no continuation or cursor, so due records outside the stable first 100 blob names can be ignored indefinitely as retained records accumulate. The only scheduler test covers one invocation with three returned rows.
-* Impact: A delayed worker can receive unbounded duplicate hints, while valid due reconciliation work can permanently starve. This violates the bounded, deduplicated, restart-safe progression contract.
+* Related scope: P01-T03, P03-T02, P04
+* Evidence: `due_reconciliations_page()` calls `list_blobs(..., limit=5000)` and rotates only that returned list. There is no storage continuation marker that can reach paths beyond the first 5,000. Notification deduplication and 130-record fairness tests pass but do not cover the cap.
+* Impact: Long-retained outbox evidence can permanently starve valid due reconciliation work, despite the accepted starvation-safe contract.
 * Destination: `rpi-implement`
-* Smallest useful next action: Add durable conditional token-notification state and paginated/cursored bounded scanning with fairness, then test repeated scheduler ticks, more than 100 retained records, restart recovery, and stale notification repair.
+* Smallest useful next action: Add backend continuation/pagination or a bounded shard/index contract that eventually visits every retained outbox record, with a test above the boundary.
 
 <!-- rpi:review id=RV-003 -->
-### RV-003 [High]: Deployed alert rules do not implement the required operational contract
+### RV-003 [High, remains open]: Alert routing and missing-data behavior are descriptive, not deployable
 
 * Related scope: P03-T03, P04-T02, P05-T05
-* Evidence: `infra/modules/distribution-alerts.bicep` filters every rule to log rows containing `"severity": "critical"`. Warning conditions documented in `docs/ops/distribution-terminal-truth.md` therefore never alert, including pending age over 15 minutes, manual handoff under 24 hours, YouTube non-public over 15 minutes, Spotify draft over 15 minutes, verification lag over 15 minutes, and claim latency. Every rule also uses the same 10-minute window, no missing-data query exists, and route labels only affect description text while all rules share one optional action group.
-* Impact: Required warning and missing-telemetry conditions are operationally invisible, and configured routes/windows do not match the accepted alert table. Production canary cannot credibly prove alert fire/clear behavior from this infrastructure.
+* Evidence: `infra/modules/distribution-alerts.bicep` now creates warning and critical queries, but every route uses the single `actionGroupResourceId`; route names exist only in descriptions. Missing-data contracts also exist only in descriptions, while queries require an emitted matching log row and cannot detect absence, active outbox depth without telemetry, or missing claim heartbeat.
+* Impact: Operations/upstream/operator/production routing cannot be enforced, and the accepted missing-telemetry failures remain invisible. Canary fire/clear evidence would not prove the documented contract.
 * Destination: `rpi-implement`
-* Smallest useful next action: Encode warning and critical thresholds/windows per signal, authoritative outbox-depth/heartbeat missing-data rules, explicit action-group routing, and Bicep/deployment tests that inspect each generated query and fire/clear contract.
+* Smallest useful next action: Bind logical routes to distinct action-group inputs and add executable absence/depth/heartbeat rules or authoritative scheduled emissions, then assert generated actions and queries.
 
 <!-- rpi:review id=RV-004 -->
-### RV-004 [Medium]: Immutable artifact orphan repair and retention are claimed but not implemented
+### RV-004 [Medium, remains open]: Orphan cleanup is safe but can stop permanently at scale
 
-* Related scope: P01-T01, P01-T02, P03-T02, P04-T01
-* Evidence: `commit_immutable_artifact()` uploads and verifies before outbox creation, but `podcaster/distribution_outbox.py` has no orphan inventory, retention timestamp policy, garbage-collection transition, or deletion path. The test suite covers lost queue notification, not interruption after artifact upload before authoritative outbox creation. The changes record nevertheless claims orphan repair and retention-compatible completion.
-* Impact: Crashes in the required upload-before-outbox window leak artifacts indefinitely and the plan's deterministic interruption/cleanup acceptance is unproven.
+* Related scope: P01-T02, P03-T02, P04
+* Evidence: `cleanup_orphan_artifacts()` returns zero whenever `list_blobs(..., limit=5000)` returns 5,000 paths. This avoids deleting referenced artifacts from an incomplete scan, but provides no continuation or alternate repair path.
+* Impact: Reference safety is preserved, but old orphan artifacts can accumulate indefinitely once the durable outbox reaches the fixed cap.
 * Destination: `rpi-implement`
-* Smallest useful next action: Add bounded orphan discovery keyed by content-addressed artifact reference and retention age, deterministic repair-or-delete behavior, and interruption tests before/after verification and conditional outbox creation.
+* Smallest useful next action: Use complete paginated reference enumeration, a durable artifact-reference index, or another bounded fail-safe design that retains safety while making cleanup progress.
 
 <!-- rpi:review id=RV-005 -->
-### RV-005 [Medium]: Ambiguous YouTube upload is labeled identity-bound without an identity-bound provider read
+### RV-005 [Medium, resolved]: Ambiguous upload evidence no longer claims identity-bound readback
 
-* Related scope: P02-T01, P02-T03, P04-T02
-* Evidence: When a consumed draft upload has no provider item ID, the read-only path in `podcaster/distribution_worker.py` writes `publication_unknown` with source `identity_bound_reconciliation` but performs no YouTube listing/search/readback and stores no provider-supported immutable identity or precondition fingerprint. The worker test verifies only one upload call and the durable unknown result.
-* Impact: The result is safely non-success and does not blindly retry, but the evidence source overstates what was observed and the required bounded reconciliation attempt is absent.
-* Destination: `rpi-implement`
-* Smallest useful next action: Either perform a genuinely bounded provider-supported identity lookup tied to durable canonical metadata, or record that identity is unprovable and transition to accurately named unknown/manual evidence without claiming reconciliation.
+* Related scope: P02-T01, P02-T03, P04
+* Evidence: A consumed upload without provider identity records `youtube_identity_unprovable`; a consumed promotion with known identity records `youtube_promotion_identity_readback`.
+* Impact: Durable evidence is accurate and fail-closed without inventing provider observations.
+* Destination: Resolved in current implementation.
+* Disposition: Resolved by the accepted accurately named unprovable-state alternative.
 
 <!-- rpi:review id=RV-006 -->
-### RV-006 [High]: The current PR #682 safety inventory has advanced beyond the authoritative plan matrix
+### RV-006 [High, resolved at planning level]: Current PR #682 safety inventory
 
-* Related scope: P03-T02, P05-T03, plan PR #682 Thread Closure Matrix
-* Evidence: Current GitHub GraphQL evidence for `jmservera/SquadScope-Podcaster#682` reports 22 review threads, 16 resolved and 6 unresolved. The six unresolved threads concern mutation before lease, swallowed admission exceptions, recorder timeout/visibility mismatch, unbounded fallback storage work, pre-budget storage work, and synchronous full-file hashing. They are not the W17-W29 rows locked from the earlier research inventory.
-* Impact: The plan cannot yet demonstrate that every relevant current safety concern is ported, rejected with evidence, or superseded. P05-T03 has an incomplete authoritative closure set even before delivery starts.
-* Destination: `rpi-plan`
-* Smallest useful next action: Reconcile the six current unresolved thread URLs into the closure matrix, map each to replacement code/test or explicit non-port rationale, and update P05-T03 acceptance without marking the threads resolved prematurely.
+* Related scope: P05-T03
+* Evidence: The plan closure matrix now includes all six prior RV-006 threads and later current rows, with evidence/reply/actual-state requirements.
+* Impact: The planning gap is closed without falsely claiming GitHub thread resolution.
+* Destination: Residual P05-T03 execution.
+* Disposition: Planning finding resolved; thread replies/resolution remain external delivery work.
+
+<!-- rpi:review id=RV-007 -->
+### RV-007 [Medium]: Phase details and PR handoff retain superseded review state
+
+* Related scope: Artifact reconciliation and P05 handoff
+* Evidence: Phase details still contain statements that RV-001-RV-005 or RV-002-RV-004 remain open, conflicting with its completion table. `.copilot-tracking/pr/pr.md` still presents the former six-finding rejection, old `3059`/image-digest evidence, and says the correction findings are unimplemented.
+* Impact: A delivery owner could publish a materially false review and validation narrative even though source behavior changed.
+* Destination: `rpi-plan` for canonical phase-detail reconciliation; P05 PR narrative update before delivery.
+* Smallest useful next action: Reconcile phase-detail status prose and replace the PR review/validation sections with this review’s exact dispositions and current evidence without claiming P05/P06 completion.
 
 ## Defects
 
-* RV-001, RV-002, RV-003, RV-004, and RV-005 are implementation defects routed to `rpi-implement`.
-* No critical-severity defect was found. At-most-once mutation fencing remained fail-closed in the reproduced takeover scenario.
+* RV-002 and RV-003 are high-severity implementation defects routed to `rpi-implement`.
+* RV-004 is a medium-severity implementation defect routed to `rpi-implement`.
+* RV-007 is a medium artifact-state/handoff defect routed to `rpi-plan` and P05 narrative work.
+* RV-001 and RV-005 are resolved. RV-006 is resolved at planning level.
+* No critical-severity defect was found. Fencing, consumed mutation authority, truthful exits, provider readback, manual handoff, and secret/PII protections remain fail-closed.
 
 ## Routed Findings
 
 | Finding | Destination | Owner or next action | Reason for route |
 |---|---|---|---|
-| RV-001 | `rpi-implement` | Implement read-only promotion convergence and fault tests | Accepted design, implementation defect |
-| RV-002 | `rpi-implement` | Implement durable deduplicated fair scheduling | Accepted design, implementation defect |
-| RV-003 | `rpi-implement` | Implement the exact deployable alert contract | Accepted design, implementation defect |
-| RV-004 | `rpi-implement` | Implement bounded orphan retention/cleanup | Accepted design, implementation defect |
-| RV-005 | `rpi-implement` | Implement real bounded identity reconciliation or accurate unprovable evidence | Accepted design, implementation defect |
-| RV-006 | `rpi-plan` | Expand the current #682 closure matrix and P05-T03 gate | Material current-state planning gap |
+| RV-002 | `rpi-implement` | Add complete bounded scheduler enumeration | Accepted design, remaining implementation defect |
+| RV-003 | `rpi-implement` | Implement executable route and missing-data contracts | Accepted design, remaining implementation defect |
+| RV-004 | `rpi-implement` | Make cleanup progress beyond the safe scan cap | Accepted design, remaining implementation defect |
+| RV-007 | `rpi-plan` plus P05 handoff | Reconcile details and PR narrative | Canonical artifact-state inconsistency |
 
 Later implementation of a routed finding does not require another Review.
 
 ## Residual Work
 
-* P05-T01 through P06-T02 remain active plan work, not review defects: push/replacement PR, final-SHA checks, #682 supersession, merge/image provenance, canary/rollback, and four consecutive production weeks.
-* `jmservera/SquadScope-Podcaster#681` remains open and has no replacement PR/canary/four-week closure evidence; this is correctly deferred to P06-T02.
-* `jmservera/SquadScope-Coordinator#17` exists and remains open. The exact upstream SquadScope PR link is not established in the reviewed evidence and remains P05-T01 metadata discovery.
-* The two plan follow-up items remain distinct future work as assessed above.
+* P00-T01 is cross-repository residual work owned by `jmservera/SquadScope`: prevent/classify the blocked dispatch at its exact source and prove it with focused upstream tests.
+* P05 remains external delivery work: commit/push/PR checks, final-SHA independent review, #682 evidence/replies, approval/merge, release provenance, deployment, canary, and rollback.
+* P06 remains elapsed production work: four consecutive weeks with upstream dispatch evidence, Azure correlation, and authoritative provider readback.
+* These residual items are not automatically Podcaster defects.
 
 ## Blockers and Remaining Work
 
-* Blockers: P05 delivery requires repository mutation/approval authority; P05-T05 requires deployment authority and real provider credentials; P06 requires four consecutive elapsed production weeks.
-* Remaining active work: P05-T01 through P06-T02.
-* Review blocker status: None. Evidence was sufficient for a complete review verdict.
+* Blockers: P00-T01 upstream repository ownership; P05 repository/deployment/provider authority; P06 elapsed calendar weeks.
+* Remaining implementation defects: RV-002, RV-003, RV-004.
+* Remaining artifact/handoff correction: RV-007.
+* Remaining active plan work: P00-T01 and P05-T01 through P06-T02.
 
 ## Validation Evidence
 
 | Command | Scope | Status | Summary |
 |---|---|---|---|
-| `pytest -q tests/test_distribution_outbox.py tests/test_distribution_worker.py tests/test_distribution_telemetry.py tests/test_video_job_runner.py::test_outcomes_exit_code_requires_nonempty_all_completed` | Focused outbox/provider/telemetry/exit behavior | Passed | `29 passed in 0.59s`. |
-| Direct Python promotion-takeover fault reproduction | Consumed YouTube promotion, expired lease, read-only takeover | Failed behavior reproduced | Raised `StaleClaimError: takeover claim is reconciliation-only` before a durable convergence result, supporting RV-001. |
-| `pytest tests/ -q` | Full repository | Passed | `3059 passed, 2 skipped, 2 deselected, 1 warning in 103.24s`. |
+| Targeted correction command from changes record | P00/outbox/worker/provider/deploy owners | Passed | Independently reproduced `741 passed, 1 warning in 55.54s`. |
+| `pytest tests/ -q` | Full repository | Passed with environment variance | `3070 passed, 3 skipped, 2 deselected, 1 warning`; scale-out skipped because Docker Compose startup was unavailable. Author record reports `3071 passed, 2 skipped, 2 deselected` when that integration ran. |
 | `python3 -m compileall -q podcaster` | Production Python | Passed | No compile failures. |
 | `ruff check podcaster tests --quiet` | Production and tests | Passed | No lint findings. |
 | `ruff format --check podcaster tests --quiet` | Production and tests | Passed | Formatting check passed. |
-| `git diff --check` and deleted-test query | Worktree safety | Passed | No whitespace errors and no deleted test files. |
-| `az bicep build --file infra/main.bicep --stdout >/dev/null` | Infrastructure | Passed with existing warning | Build passed; existing BCP318 warning remains. |
-| `checkov --directory infra --framework bicep --quiet` | Exact unskipped infrastructure security scan | Failed baseline | 36 passed, 7 failed; failures match the documented pre-existing ACR/storage/OpenAI baseline. No gate was weakened to hide them. |
-| `docker image inspect podcaster-synthesis:ci --format '{{.Id}}'` | Claimed local image | Passed | Exact digest `sha256:02bb1d7b7852cdb748125bbafe3d9572e8732c45fb75e26f39d22b273c62b2a9`. |
-| `git rev-parse origin/main`, `git rev-parse HEAD` | Baseline | Passed | Both resolve to `0752d1a8118027a90172a0af88cf7b51e4d9cfeb`; implementation is an uncommitted worktree delta. |
-| GitHub read-only queries | #681, #682, Coordinator #17 | Available | #681 open; #682 open/blocked with 22 threads, 16 resolved and 6 unresolved; Coordinator #17 open. |
-| Changes-record targeted `571 passed`, expanded `949 passed, 1 skipped, 2 deselected`, and scale-out `1 passed` | Author-recorded validation | Available, not independently rerun in this review | Consistent with the independently reproduced full suite and static/build evidence; retained as implementation evidence rather than re-labeled as independently executed. |
+| `git diff --check` and deleted-test query | Worktree safety | Passed | No whitespace errors and no deleted tests. |
+| `az bicep build --file infra/main.bicep --stdout >/dev/null` | Infrastructure | Passed with existing warning | Existing BCP318 warning only. |
+| Exact unskipped Checkov | Infrastructure security baseline | Baseline retained | `36 passed, 7 failed`; the seven are the documented pre-existing ACR/storage/OpenAI findings. |
+| Repository-standard Checkov skip-list gate | Blocking infrastructure gate | Passed | `34 passed, 0 failed`. |
+| `docker image inspect podcaster-synthesis:ci --format '{{.Id}}'` | Corrected local image | Passed | `sha256:ac60e9065a3ccbdd77f26253b88bb61ae610926424878f2d92eb0a7372fe6b1d`. |
+| Distribution-worker container smoke | Truthful process exit | Passed | Missing required queue configuration exited `2`. |
+
+## Unsafe-Narrowing Assessment
+
+* Truthful exits: Preserved; non-public, partial, pending, unknown, manual, failed, and unexpected empty work remain non-success.
+* Provider safety and fencing: Preserved; consumed intent prevents takeover mutation and stale writes remain rejected.
+* Bounded reconciliation: Preserved in per-operation behavior, but global enumeration defects remain RV-002/RV-004.
+* Terminal receipts and manual handoff: Preserved.
+* External readback: Preserved as the only provider-success basis.
+* CI/security gates: Not weakened; exact baseline and blocking Checkov modes are both disclosed.
+* PII/secrets: Dispatch and outbox durable fields remain allowlisted/sanitized; no body, URL, token, cookie, signed URL, account identity, or provider identity is added to dispatch correlation.
+
+## PR Narrative Changes Required
+
+Before `.copilot-tracking/pr/pr.md` is used as a real PR description:
+
+1. Replace the former “0 Critical / 4 High / 2 Medium” rejection section with this review’s current dispositions: RV-001 and RV-005 resolved, RV-006 resolved at planning level, RV-002/RV-003/RV-004 open, and RV-007 added.
+2. Replace old validation counts and image digest with targeted `741`, author full `3071/2/2` plus the independent environment-variant `3070/3/2`, exact Checkov `36/7`, gate `34/0`, digest `sha256:ac60e9065a3ccbdd77f26253b88bb61ae610926424878f2d92eb0a7372fe6b1d`, and smoke exit `2`.
+3. Keep W38 explicitly published and comparative-only; keep W39 as the pre-Azure incident with no downstream execution.
+4. State that P00-T01 is owned by `jmservera/SquadScope` and that P05/P06 remain residual external work.
+5. Do not claim merge readiness, deployment readiness, #682 supersession, canary acceptance, or four-week completion while open high findings and external gates remain.
 
 ## Outcome
 
 * Outcome: Not accepted
-* Outcome rationale: Implementation execution is correctly Partial, and P05-P06 are legitimately open. However, five implementation defects include three high-severity gaps in provider takeover convergence, reconciliation scheduling, and alert operations, while a high-severity current-state planning gap leaves six current #682 safety threads outside the closure matrix. The full green test suite and valid image digest do not satisfy the authoritative outcomes while these gaps remain.
+* Outcome rationale: Execution is Partial and external P00/P05/P06 work is correctly residual. However, RV-002 and RV-003 are actual high-severity defects in accepted scheduler and alert contracts, RV-004 remains a medium cleanup-liveness defect, and RV-007 leaves canonical detail/PR state inconsistent. The correction is materially safer and resolves RV-001/RV-005, but the high findings require a Not accepted outcome.
 
 ## Closeout Routing Record
 
 | Finding class | Destination | Owner or next action |
 |---|---|---|
-| Implementation defect | `rpi-implement` | Resolve RV-001 through RV-005 in the accepted design direction. |
-| Decision gap or invalid assumption | `rpi-plan` | Resolve RV-006 by updating the current #682 closure inventory and P05-T03 gate. |
-| Material evidence gap | None | No separate `rpi-research` route is required; current code and GitHub evidence are sufficient. |
-| Non-blocking residual work | Existing P05-P06 and plan follow-ups | Active `rpi-quick` parent continues only after routed defects/plan gap are incorporated; external gates remain distinct. |
+| Implementation defect | `rpi-implement` | Resolve RV-002, RV-003, and RV-004. |
+| Decision/artifact gap | `rpi-plan` | Reconcile RV-007 phase-detail status and P05 handoff state. |
+| Material evidence gap | None | Evidence is sufficient for this verdict. |
+| Non-blocking residual work | P00-T01, P05, P06 | Upstream owner, delivery owner, and production verification owner respectively. |
 
 * Review execution status: Complete
 * Assessed implementation execution status: Partial
 * Outcome: Not accepted
-* Severity summary: 0 Critical, 4 High, 2 Medium, 0 Low
-* Validation coverage: Focused tests, direct fault reproduction, full pytest, compile, Ruff, diff safety, Bicep, exact Checkov baseline, image digest, baseline SHA, and current GitHub state
-* Blockers: External P05-P06 dependencies remain; no blocker prevented this review verdict.
+* Severity summary: 0 Critical; 2 High open; 2 Medium open; 2 resolved prior findings; 1 planning-level prior finding resolved
+* Validation coverage: Targeted/full pytest, compile, Ruff, diff safety, Bicep, exact and blocking Checkov, image digest, and truthful container exit
+* Blockers: P00-T01 upstream ownership; P05 delivery/deployment authority; P06 elapsed weeks
 
 ## Relevant Artifacts
 
 | Artifact | Description |
 |---|---|
-| [.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md](.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md) | Authoritative plan, markers, acceptance criteria, matrices, and follow-up items |
-| [.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md](.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md) | Phase/task semantics and completion expectations |
-| [.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md](.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md) | Research inventory and original #682 evidence set |
-| [.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md](.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md) | Single plan critique and required corrections |
-| [.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md](.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md) | Implementation claims, validation record, blockers, and remaining work |
-| [.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md](.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md) | Canonical review result and routed finding set |
+| [.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md](.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md) | Corrected plan, acceptance criteria, closure matrix, and residual phases |
+| [.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md](.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md) | Phase/task semantics and the RV-007 stale-state inconsistency |
+| [.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md](.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md) | Authoritative W38/W39 correction evidence |
+| [.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md](.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md) | Single preserved historical critique |
+| [.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md](.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md) | Hermes implementation and validation evidence |
+| [.copilot-tracking/pr/pr.md](.copilot-tracking/pr/pr.md) | Draft PR narrative requiring the changes listed above |
+| [.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md](.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md) | Canonical corrected review result |
 
 ## Next Steps
 
-Return this record to the active `rpi-quick` parent. Route RV-006 to `rpi-plan`, then RV-001 through RV-005 to `rpi-implement`; preserve P05-P06 as externally gated active work and do not require a second Review by protocol.
+Return this canonical record to the requesting parent. Route RV-002/RV-003/RV-004 to `/rpi-implement` and RV-007 to `/rpi-plan`; separately clear P00-T01 in `jmservera/SquadScope` and retain P05/P06 as external residual work. Do not run another review.

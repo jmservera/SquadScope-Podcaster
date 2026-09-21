@@ -8,6 +8,7 @@ WORKFLOW = ROOT / ".github/workflows/deploy-azure.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 REUSABLE_WORKFLOW = ROOT / ".github/workflows/reusable-deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
+ALERTS_BICEP = ROOT / "infra/modules/distribution-alerts.bicep"
 
 
 def _workflow_text() -> str:
@@ -20,6 +21,39 @@ def _release_workflow_text() -> str:
 
 def _reusable_workflow_text() -> str:
     return REUSABLE_WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_distribution_alert_contract_has_routes_windows_and_missing_data() -> None:
+    alerts = ALERTS_BICEP.read_text(encoding="utf-8")
+    for alert in (
+        "distribution-pending-age-warning",
+        "distribution-pending-age-critical",
+        "dispatch-missing-azure-arrival-warning",
+        "dispatch-missing-azure-arrival-critical",
+        "distribution-provider-unknown",
+        "distribution-manual-handoff-warning",
+        "distribution-manual-handoff-critical",
+        "distribution-youtube-non-public-warning",
+        "distribution-youtube-non-public-critical",
+        "distribution-spotify-draft-warning",
+        "distribution-spotify-draft-critical",
+        "distribution-public-verification-lag-warning",
+        "distribution-public-verification-lag-critical",
+        "distribution-poisoned",
+    ):
+        assert f"name: '{alert}'" in alerts
+    for route in (
+        "upstream-dispatch-owner",
+        "operations",
+        "publication-operator",
+        "production-owner",
+    ):
+        assert f"route: '{route}'" in alerts
+    assert "window: 'PT15M'" in alerts
+    assert "window: 'PT10M'" in alerts
+    assert "window: 'PT5M'" in alerts
+    assert "Missing data: ${alert.missingData}" in alerts
+    assert "dispatch_arrival_state" in alerts
 
 
 def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:

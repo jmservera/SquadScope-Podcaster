@@ -32,7 +32,7 @@ def _setup(tmp_path, providers):
         suffix=".mp4",
     )
     identity = PublicationIdentity(
-        "podcast-2026-W38-worker",
+        "podcast-2026-W38-comparative-worker",
         "2026-W38",
         "99",
         "a" * 64,
@@ -183,16 +183,35 @@ def test_scheduler_enqueues_each_due_outbox_once(monkeypatch):
         def __init__(self, storage):
             pass
 
-        def due_reconciliations(self, limit):
-            return [
-                ("a" * 64, "youtube", "t1"),
-                ("a" * 64, "spotify", "t2"),
-                ("b" * 64, "youtube", "t3"),
-            ]
+        def due_reconciliations_page(self, **kwargs):
+            return (
+                [
+                    ("a" * 64, "youtube", "t1"),
+                    ("a" * 64, "spotify", "t2"),
+                    ("b" * 64, "youtube", "t3"),
+                ],
+                "distribution-outbox/cursor.json",
+            )
+
+        def mark_reconciliation_notified(self, outbox_id, *, provider, token):
+            return None
+
+        def cleanup_orphan_artifacts(self, limit):
+            return 0
+
+    class Storage:
+        def get_bytes(self, path):
+            return None
+
+        def put_bytes(self, path, content, content_type):
+            return None
+
+        def list_blobs(self, prefix, *, limit):
+            return []
 
     sent = []
     monkeypatch.setattr(distribution_scheduler, "DistributionOutboxRepository", Repository)
-    monkeypatch.setattr(distribution_scheduler, "create_storage_backend", lambda: object())
+    monkeypatch.setattr(distribution_scheduler, "create_storage_backend", Storage)
     monkeypatch.setattr(
         distribution_scheduler,
         "enqueue_distribution_job",
@@ -200,3 +219,102 @@ def test_scheduler_enqueues_each_due_outbox_once(monkeypatch):
     )
     assert distribution_scheduler.run_once() == 0
     assert sent == ["a" * 64, "b" * 64]
+
+
+def _prepare_lost_promotion(storage, document):
+    repository = DistributionOutboxRepository(storage)
+    claim = repository.claim(
+        document["outbox_id"],
+        owner="first-worker",
+        execution_id="first-exec",
+        lease_seconds=300,
+    )
+    repository.persist_intent(claim, provider="youtube", operation="draft_upload")
+    repository.consume_intent(
+        claim,
+        provider="youtube",
+        provider_timeout_seconds=30,
+        receipt_margin_seconds=30,
+    )
+    repository.record_receipt(
+        claim,
+        provider="youtube",
+        transport_class="accepted",
+        provider_item_id="video-1",
+        native_state="unlisted",
+    )
+    repository.persist_intent(
+        claim,
+        provider="youtube",
+        operation="public_promotion",
+        expected_provider_item_id="video-1",
+    )
+    repository.consume_intent(
+        claim,
+        provider="youtube",
+        provider_timeout_seconds=30,
+        receipt_margin_seconds=30,
+    )
+
+    def expire(current):
+        current["claim"]["lease_expires_at"] = "2000-01-01T00:00:00Z"
+
+    repository._update(document["outbox_id"], expire)
+
+
+def test_lost_promotion_response_takeover_converges_by_public_readback(tmp_path, monkeypatch):
+    storage, document, message = _setup(tmp_path, {"youtube": "public"})
+    _prepare_lost_promotion(storage, document)
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._get_youtube_access_token",
+        lambda config, transport: "token",
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.get_video_snippet",
+        lambda *args: {
+            "uploadStatus": "processed",
+            "processingStatus": "succeeded",
+            "privacyStatus": "public",
+        },
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.publish_video",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate promotion")),
+    )
+    final = process_message(
+        message,
+        queue=Queue(),
+        storage=storage,
+        config=VideoDistributionConfig(youtube_enabled=True),
+    )
+    assert final["aggregate"]["externally_verified_public"] is True
+
+
+def test_lost_promotion_response_nonpublic_takeover_never_mutates_again(tmp_path, monkeypatch):
+    storage, document, message = _setup(tmp_path, {"youtube": "public"})
+    _prepare_lost_promotion(storage, document)
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._get_youtube_access_token",
+        lambda config, transport: "token",
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.get_video_snippet",
+        lambda *args: {
+            "uploadStatus": "processed",
+            "processingStatus": "succeeded",
+            "privacyStatus": "unlisted",
+        },
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.publish_video",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate promotion")),
+    )
+    final = process_message(
+        message,
+        queue=Queue(),
+        storage=storage,
+        config=VideoDistributionConfig(youtube_enabled=True),
+    )
+    leg = final["providers"]["youtube"]
+    assert leg["result"] == "publication_unknown"
+    assert leg["verification"]["source"] == "youtube_promotion_identity_readback"

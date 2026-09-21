@@ -2,21 +2,69 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
+from podcaster.dispatch_receipts import DispatchReceiptRepository
 from podcaster.distribution_outbox import DistributionOutboxRepository
 from podcaster.queue import enqueue_distribution_job
 from podcaster.storage import create_storage_backend
 
 logger = logging.getLogger(__name__)
+SCHEDULER_STATE_PATH = "distribution-scheduler/state.json"
 
 
 def run_once() -> int:
-    repository = DistributionOutboxRepository(create_storage_backend())
-    due = repository.due_reconciliations(limit=100)
-    outbox_ids = sorted({outbox_id for outbox_id, _provider, _token in due})
-    sent = sum(1 for outbox_id in outbox_ids if enqueue_distribution_job(outbox_id))
-    logger.info("distribution reconciliation scheduler due=%s sent=%s", len(outbox_ids), sent)
+    storage = create_storage_backend()
+    repository = DistributionOutboxRepository(storage)
+    raw_state = storage.get_bytes(SCHEDULER_STATE_PATH)
+    state = json.loads(raw_state.decode("utf-8")) if raw_state else {}
+    due, cursor = repository.due_reconciliations_page(
+        limit=100,
+        scan_limit=5000,
+        after_path=state.get("outbox_cursor"),
+    )
+    by_outbox: dict[str, list[tuple[str, str]]] = {}
+    for outbox_id, provider, token in due:
+        by_outbox.setdefault(outbox_id, []).append((provider, token))
+    sent = 0
+    for outbox_id, notifications in by_outbox.items():
+        if not enqueue_distribution_job(outbox_id):
+            continue
+        sent += 1
+        for provider, token in notifications:
+            repository.mark_reconciliation_notified(
+                outbox_id,
+                provider=provider,
+                token=token,
+            )
+    cleaned = repository.cleanup_orphan_artifacts(limit=100)
+    storage.put_bytes(
+        SCHEDULER_STATE_PATH,
+        json.dumps({"outbox_cursor": cursor}, sort_keys=True).encode("utf-8"),
+        "application/json; charset=utf-8",
+    )
+    dispatch_signals = DispatchReceiptRepository(storage).missing_arrival_signals()
+    for signal in dispatch_signals:
+        logger.info(
+            "dispatch_signal %s",
+            json.dumps(
+                {
+                    "event": "dispatch_arrival_state",
+                    "metric": signal.name,
+                    "value": signal.value,
+                    "severity": signal.severity,
+                    "state": signal.state,
+                },
+                sort_keys=True,
+            ),
+        )
+    logger.info(
+        "distribution reconciliation scheduler due=%s sent=%s orphan_cleanup=%s",
+        len(by_outbox),
+        sent,
+        cleaned,
+    )
     return 0
 
 

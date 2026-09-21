@@ -10,7 +10,9 @@
 
 ## Task-Level Context
 
-Current `origin/main` includes #680 canonical publication identity, append-only provider evidence, sanitization, provider readback, and fail-closed ambiguity handling. It does not include #681’s atomic fenced outbox, and `podcaster.video.job_runner.main()` still treats only literal `failed` as a non-zero exit. The plan therefore establishes durable retry safety before tightening process exit, then proves provider truth through authoritative readback and production verification.
+The authoritative incident boundary is W39's blocked upstream dispatch before Azure. W39 has no synth, recorder, video, outbox, or provider execution. Planning therefore adds durable upstream intent-to-dispatch-to-Azure-arrival correlation and missing-arrival detection as the primary incident lane, then verifies publication through downstream execution and authoritative external-provider readback.
+
+W38 was successfully published. Its failed or partial attempt/provider path remains comparative evidence for retries, reconciliation, multi-attempt history, and truthful observability; it is never a missed-week recovery case. Current `origin/main`/#680 and the locally implemented P01–P04 provider/outbox work remain necessary production hardening after Azure arrival, not the W39 root-cause remedy.
 
 ## Cross-Phase Invariants
 
@@ -64,20 +66,199 @@ The aggregate becomes `completed_public` only when every requested production pr
 
 | Phase ID | Name | Status | Detail sections |
 |---|---|---|---|
-| P01 | Establish the durable outbox contract | Complete | P01, P01-T01–P01-T04 |
-| P02 | Implement reconcile-first provider state machines | Complete | P02, P02-T01–P02-T03 |
-| P03 | Make execution, cleanup, and provider aggregation truthful | Complete | P03, P03-T01–P03-T03 |
-| P04 | Prove safety with focused tests and repository validation | Complete | P04, P04-T01–P04-T03 |
-| P05 | Deliver reviewed, reversible implementation | Ready | P05, P05-T01–P05-T05 |
-| P06 | Verify four consecutive production weeks | Ready | P06, P06-T01–P06-T02 |
+| P00 | Prevent and detect W39-class dispatch blockage | Podcaster receipt/absence boundary implemented; upstream prevention owner blocked | P00, P00-T01–P00-T03 |
+| P01 | Establish the durable outbox contract | Complete, including RV-002/RV-004 | P01, P01-T01–P01-T04 |
+| P02 | Implement reconcile-first provider state machines | Complete, including RV-001/RV-005 | P02, P02-T01–P02-T03 |
+| P03 | Make execution, cleanup, and provider aggregation truthful | Complete, including RV-002/RV-003/RV-004 | P03, P03-T01–P03-T03 |
+| P04 | Prove safety with focused tests and repository validation | Complete for this invocation | P04, P04-T01–P04-T03 |
+| P05 | Deliver reviewed, reversible implementation | Blocked by P00 and reopened P01–P04 markers | P05, P05-T01–P05-T05 |
+| P06 | Verify four consecutive production weeks | Blocked by accepted P05 canary and elapsed weeks | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: Full approved plan, P01-T01 through P06-T02.
-* Current task: P05-T01, ready after complete local P01–P04 validation but blocked from execution in this invocation by the caller's explicit delivery restriction.
-* Source boundary: production source, tests, infrastructure, workflows, and operator documentation in this worktree only.
+* Declared scope: revised P00 plus every reopened dependency-ready marker for RV-001–RV-005 and W38/W39 correction across P01–P04. P05 and P06 are outside this invocation.
+* Current task: Podcaster-side P00-T02/P00-T03 and reopened RV-001–RV-005 markers are complete and validated. P00-T01 remains blocked only on the exact upstream prevention change in the owning `jmservera/SquadScope` component. The implementation owner is Hermes, not original implementer Bender.
+* Source boundary: this Podcaster worktree's narrowly identified downstream owners, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts. Do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, deployment, or production.
 * Validation boundary: focused semantic/fault checks per task, then the complete locked validation contract.
-* Delivery boundary: no push, PR mutation, issue mutation, merge, deployment, or production-week claim during this invocation; those markers remain open until their external evidence exists.
+* Delivery boundary: P05 and P06 are outside scope. This invocation performs no commit, push, PR/issue mutation, deployment, or production-week claim.
+
+## Implementation Marker Reconciliation
+
+| Marker(s) | Current disposition | Completion expectation |
+|---|---|---|
+| P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
+| P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
+| P01-T02, P03-T02, P04-T01 | Complete for RV-004 | Retained metadata, bounded reference-safe orphan cleanup, and interruption tests |
+| P01-T03, P03-T02, P04-T01 | Complete for RV-002 | Durable notification state, fair scan beyond 100 records, stale-notification repair, and scheduler tests |
+| P02-T01, P02-T03, P04-T01–P04-T02 | Complete for RV-001/RV-005 | Read-only promotion convergence plus accurately named unprovable identity/manual evidence |
+| P03-T03, P04-T02 | Complete for RV-003 | Warning/critical windows, missing-data contract, routes, and generated-query assertions |
+| P04-T03 | Complete | Targeted and full repository validation rerun after all additions |
+| P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
+| P01-T01, P01-T04, P02-T02, P03-T01 | Implemented; text-only role correction | Preserve behavior; describe as downstream hardening rather than W39 root-cause remediation |
+| W38 missed-week/recovery claims | Removed | W38 remains successfully published comparative evidence only |
+| Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
+
+All reopened implementation and independent-review work must be assigned to an agent other than Bender.
+
+### Implemented Surface Disposition
+
+* **Text-only correction:** later update `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`, `.copilot-tracking/pr/pr.md`, PR handoff, and production evidence summaries so W38 is published comparative evidence and P01–P04 are downstream hardening. No production-code deletion is justified solely by the former W38-missed framing.
+* **W39 additions:** P00-T01 selects the exact upstream dispatch owner; then extend its workflow/client/status store plus the selected Podcaster/Azure ingress-arrival metadata, monitoring/alert infrastructure, and cross-boundary tests.
+* **Review-driven narrow additions:** restrict code/test changes to RV-001–RV-005 owners (`podcaster/distribution_worker.py`, `podcaster/distribution_outbox.py`, `podcaster/distribution_scheduler.py`, `infra/modules/distribution-alerts.bicep`, and focused owner tests) unless a failing dependency proves another minimal target.
+* **No-change safety surfaces:** preserve publication schema/sanitization, disabled-by-default routing, Spotify fail-closed/manual handoff, and externally-verified-public exit semantics except for compatible P00 correlation.
+* **Removed/narrowed:** no W38 recovery implementation, no W39 downstream-cause claim, no Podcaster-only incident canary, and no acceptance credit for provider hardening without upstream dispatch/Azure evidence.
+
+<!-- rpi:phase id=P00 -->
+## P00: Prevent and detect W39-class dispatch blockage
+
+### Context
+
+W39 was blocked before Azure dispatch and has no synth, recorder, video, outbox, or provider execution. Downstream hardening cannot establish or fix that root boundary.
+
+### Intent
+
+Identify the owning blocked stage, make accepted weekly intent through first Azure durable arrival observable and alertable, and prove the same boundary in integration and production canary evidence.
+
+### Boundaries
+
+* Included: upstream intent, dispatch attempt/result, Azure API acceptance, first Azure-side durable arrival, correlation, missing-arrival alerts, and cross-repository handoff.
+* Excluded: attributing W39 to downstream execution without evidence; direct modification of `/home/azureuser/source/SquadScope`; using a Podcaster-only injection as W39 remediation proof.
+
+### Likely Targets
+
+* The owning upstream repository/worktree and workflow/client that dispatches weekly publication.
+* Podcaster/Azure ingress, queue, execution metadata, monitoring, integration tests, and coordinated PR documentation.
+
+### Dependencies
+
+* Corrected research and read-only production/GitHub/Azure evidence sufficient to identify the blocked stage.
+
+### Validation Expectations
+
+* Accepted intent, successful dispatch, blocked dispatch, duplicate dispatch, delayed Azure arrival, and no-arrival alert fire/clear are independently diagnosable.
+
+### Completion Evidence
+
+* Exact owning component, correlation schema, reviewed arrival SLO, code/test links in the owning repository, and sanitized cross-boundary trace in the changes record.
+
+### Unresolved Items
+
+* Exact W39 blocked stage is intentionally resolved during P00-T01 from durable evidence.
+
+<!-- rpi:task id=P00-T01 -->
+### P00-T01: Trace and control the W39 dispatch boundary
+
+#### Context
+
+The authoritative correction establishes location of failure relative to Azure but not the exact upstream component or mechanism.
+
+#### Intent
+
+Trace the accepted W39-class weekly intent to the blocked stage, implement prevention/fail-closed detection in the owning repository, and preserve evidence when dispatch cannot occur.
+
+#### Boundaries
+
+* Included: metadata/log/workflow trace, ownership, deterministic failure classification, bounded retry only where dispatch absence is provable.
+* Excluded: provider/outbox changes presented as W39 root-cause remediation.
+
+#### Likely Targets
+
+* Upstream scheduled workflow/action, dispatch client, status persistence, and owner tests.
+
+#### Dependencies
+
+* Access to upstream/Azure evidence.
+
+#### Validation Expectations
+
+* Reproduced blocked-dispatch class records terminal dispatch evidence and cannot silently report success.
+
+#### Completion Evidence
+
+* Root boundary evidence, owning PR/task, and focused prevention/detection tests.
+
+#### Unresolved Items
+
+* None after the owning stage is established.
+
+<!-- rpi:task id=P00-T02 -->
+### P00-T02: Persist dispatch-to-Azure correlation and missing-arrival alerts
+
+#### Context
+
+W39 lacked Azure execution, so internal downstream evidence alone cannot distinguish never-dispatched work from downstream failure.
+
+#### Intent
+
+Bind accepted intent, dispatch result, Azure API acceptance, and first durable Azure arrival using one sanitized stable correlation; alert when arrival is absent beyond a reviewed window.
+
+#### Boundaries
+
+* Included: idempotent correlation, duplicate handling, clock/skew-safe timestamps, low-cardinality telemetry, alert route/runbook, fire/clear.
+* Excluded: article bodies, credentials, tokens, signed URLs, provider content, and direct/manual invocation as substitute evidence.
+
+#### Likely Targets
+
+* Upstream dispatch metadata, Podcaster ingress/queue/execution metadata, monitoring and infrastructure.
+
+#### Dependencies
+
+* P00-T01 ownership and correlation key.
+
+#### Validation Expectations
+
+* Missing arrival fires; authoritative first arrival clears; duplicate dispatch does not create duplicate publication identity; downstream failure remains separately classified.
+
+#### Completion Evidence
+
+* Correlation example, rule ID/route/runbook, and deterministic alert tests.
+
+#### Unresolved Items
+
+* Arrival SLO is selected from observed scheduling/dispatch latency and recorded in implementation evidence.
+
+<!-- rpi:task id=P00-T03 -->
+### P00-T03: Prove the upstream-to-provider integration boundary
+
+#### Context
+
+A Podcaster-only injection bypasses the W39 failure mode.
+
+#### Intent
+
+Add an integration scenario beginning at the authoritative upstream weekly-publication boundary and ending in correlated Azure arrival plus a deterministic terminal-provider fixture/readback.
+
+#### Boundaries
+
+* Included: upstream accepted intent, dispatch, first Azure durable arrival, downstream correlation, provider state fixture, and failure localization.
+* Excluded: live provider credentials in ordinary CI and provider-only canary acceptance.
+
+#### Likely Targets
+
+* Cross-repository integration workflow/tests and Podcaster deployment assertions.
+
+#### Dependencies
+
+* P00-T01–P00-T02 and downstream identity schema.
+
+#### Validation Expectations
+
+* The test fails independently for blocked dispatch, missing Azure arrival, downstream execution failure, and missing external terminal readback.
+
+#### Completion Evidence
+
+* Coordinated workflow/test run URLs and correlation evidence.
+
+#### Unresolved Items
+
+* None.
+
+## Revision Governance
+
+* The authoritative correction supersedes every assumption that W38 was unpublished, missed, or awaiting recovery.
+* W39 is the only active missed-publication incident and ends before Azure arrival; no W39 downstream execution may be inferred.
+* The original critique remains unchanged as historical evidence. No second critique was run because this is an authoritative post-implementation user correction.
+* RV-001–RV-005 remain later implementation work for an agent other than Bender. RV-006 is resolved at planning level by the expanded closure matrix, without claiming any GitHub thread resolved.
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish the durable outbox contract
@@ -112,7 +293,7 @@ Create a backward-compatible durable boundary where artifact integrity, enqueue,
 
 ### Completion Evidence
 
-* Changes record contains schema, transition table, compatibility result, targeted tests, and no provider mutation enabled.
+* Existing implementation evidence remains valid for completed surfaces; RV-002 and RV-004 additions plus updated tests are required before phase completion is restored.
 
 ### Unresolved Items
 
@@ -301,7 +482,7 @@ Run every provider operation under a valid fence and sufficient lease budget, at
 
 ### Completion Evidence
 
-* Provider transition tables and semantic tests recorded in changes.
+* Existing provider transition evidence remains valid for completed surfaces; RV-001 and RV-005 corrections and tests are required before phase completion is restored.
 
 ### Unresolved Items
 
@@ -445,7 +626,7 @@ Make process exit authoritative, keep retry paths safe, bound affected operation
 
 ### Completion Evidence
 
-* State-lattice/entrypoint tests and W17–W29 mapping evidence.
+* State-lattice/entrypoint evidence remains valid; RV-002, RV-003, RV-004, and the expanded RV-006 thread mapping remain open.
 
 ### Unresolved Items
 
@@ -589,7 +770,7 @@ Prove semantics under faults and retain the full regression/quality baseline def
 
 ### Completion Evidence
 
-* Changes record contains command/SHA/image digest results.
+* Prior command/SHA/image evidence is historical implementation evidence; final completion requires targeted additions and a full rerun after P00 and RV-001–RV-005.
 
 ### Unresolved Items
 
@@ -712,7 +893,7 @@ Implementation acceptance requires independent review, durable GitHub linkage/th
 
 ### Intent
 
-Push/open the replacement PR, pass required checks, independently review the final pushed SHA, supersede unsafe prior work, merge without content drift, prove merge-SHA image provenance, and deploy through a controlled reversible path.
+Push/open coordinated upstream and Podcaster replacement PRs as required, pass required checks, independently review the final pushed SHAs, supersede unsafe prior work, merge without content drift, prove merge-SHA image provenance, and deploy through a controlled reversible path. Bender is locked out of this revision cycle; implementation/review ownership must be assigned to another agent.
 
 ### Boundaries
 
@@ -737,7 +918,7 @@ Push/open the replacement PR, pass required checks, independently review the fin
 
 ### Unresolved Items
 
-* Metadata-only discovery must identify and link the upstream SquadScope PR when available; verified absence is recorded because the caller explicitly conditioned the link on availability.
+* The coordinated upstream W39 dispatch PR must exist before P05-T01 completes; metadata-only discovery remains acceptable for locating pre-existing related PRs, not as a substitute for required P00 implementation.
 
 <!-- rpi:task id=P05-T01 -->
 ### P05-T01: Push branch and open the implementation PR
@@ -748,11 +929,11 @@ The durable handoff must make validation, operations, and cross-repository relat
 
 #### Intent
 
-Commit the validated implementation, push the incident branch, open a replacement PR against current main, and discover the upstream SquadScope PR using GitHub metadata only.
+Commit and push the validated Podcaster implementation, open the replacement PR against current main, and link the coordinated upstream W39 dispatch PR created from its dedicated owning-repository worktree.
 
 #### Boundaries
 
-* Included: commits, push, PR body/checklist/links, metadata-only upstream discovery.
+* Included: commits, push, coordinated PR bodies/checklists/links, and reciprocal cross-repository traceability.
 * Excluded: force-pushing unrelated shared branches or modifying `/home/azureuser/source/SquadScope`.
 
 #### Likely Targets
@@ -765,7 +946,7 @@ Commit the validated implementation, push the incident branch, open a replacemen
 
 #### Validation Expectations
 
-* PR links Coordinator #17, #681, #680, #682, and the authoritative upstream SquadScope PR when available; if metadata proves none exists, the PR/changes record says so. It includes exact commands/results, schema/state machine, canary, rollback, and changes-record pointer.
+* PR handoff links Coordinator #17, #681, #680, #682, and the coordinated upstream W39 dispatch PR. It states that W38 published successfully, describes W38 only as comparative partial-attempt evidence, separates P00 incident remediation from P01–P04 hardening, identifies RV-001–RV-005 implementation evidence, and includes validation, canary, rollback, and changes-record pointers.
 
 #### Completion Evidence
 
@@ -784,7 +965,7 @@ The caller prohibits accepted critical findings, and production provenance must 
 
 #### Intent
 
-Run all required PR checks and dispatch independent implementation review against the final pushed SHA, covering correctness, concurrency/fencing, provider ambiguity, evidence safety, operations, tests, and docs.
+Run all required PR checks and dispatch independent implementation review by an agent other than Bender against the final pushed SHA, covering correctness, dispatch correlation, concurrency/fencing, provider ambiguity, evidence safety, operations, tests, and docs.
 
 #### Boundaries
 
@@ -812,19 +993,19 @@ Run all required PR checks and dispatch independent implementation review agains
 * None.
 
 <!-- rpi:task id=P05-T03 -->
-### P05-T03: Resolve or supersede every PR #682 safety thread
+### P05-T03: Resolve or supersede every authoritative PR #682 safety thread
 
 #### Context
 
-All W17–W29 findings remain relevant to deciding whether any #682 behavior is portable.
+W17–W29 remain relevant, and RV-006 adds six current unresolved threads that were absent from the historical matrix.
 
 #### Intent
 
-Reply with replacement evidence, resolve each thread where permitted, and close #682 as superseded once the replacement PR exists.
+Reply with replacement evidence, resolve each thread only where evidence permits, and close #682 as superseded once the replacement PR exists.
 
 #### Boundaries
 
-* Included: all 13 rows in the plan matrix.
+* Included: all W17–W29 rows, all six RV-006 rows, and later unresolved rows found in current metadata in the plan matrix.
 * Excluded: resolving without linked code/test/non-port evidence.
 
 #### Likely Targets
@@ -837,11 +1018,11 @@ Reply with replacement evidence, resolve each thread where permitted, and close 
 
 #### Validation Expectations
 
-* Thread IDs, reply URLs, resolution state, and replacement task/test are recorded; outdated W24 still receives explicit disposition.
+* Thread IDs, reply URLs, actual resolution state, and replacement task/test or non-port rationale are recorded; outdated W24 still receives explicit disposition. No unresolved thread is pre-marked resolved.
 
 #### Completion Evidence
 
-* 13/13 rows closed and #682 state/reason recorded in changes.
+* Every authoritative matrix row has evidence and recorded state; unresolved rows remain explicitly open until GitHub evidence shows resolution.
 
 #### Unresolved Items
 
@@ -888,16 +1069,16 @@ Obtain approval, merge without content drift, run post-merge/release checks, and
 
 #### Context
 
-Current release validates API health only and does not prove provider terminal truth.
+Current release validates API health only and proves neither W39-class upstream dispatch arrival nor provider terminal truth.
 
 #### Intent
 
-Deploy the exact merge-derived image with outbox routing disabled, run migration/readiness checks, enable a bounded real-provider canary, verify external state and alert contracts, then stage routing while proving rollback.
+Deploy the exact merge-derived image with routing disabled, run migration/readiness checks, then initiate a bounded canary from the W39-class upstream weekly-publication boundary. Prove dispatch, Azure API acceptance, first durable Azure arrival, downstream execution, external provider state, and alert contracts. Deliberately observe a W38-modeled partial-attempt/retry path while preserving W38 as successfully published, then stage routing while proving rollback.
 
 #### Boundaries
 
-* Included: config flag, queue routing, one controlled publication identity, provider readback, alert fire/clear, rollback drill.
-* Excluded: broad enablement before canary evidence, accepting manual handoff without later external readback, or rollback by deleting outbox state.
+* Included: upstream dispatch control, correlation, config flag, queue routing, one W39-class scheduled publication identity, provider readback, W38-modeled partial/retry observation, alert fire/clear, rollback drill.
+* Excluded: Podcaster-only injection as incident proof, calling W38 missed/recovered, broad enablement before canary evidence, accepting manual handoff without later external readback, or rollback by deleting durable evidence.
 
 #### Likely Targets
 
@@ -909,11 +1090,11 @@ Deploy the exact merge-derived image with outbox routing disabled, run migration
 
 #### Validation Expectations
 
-* Exact merge-derived image digest; YouTube processing/public readback; Spotify externally read expected item/state after automated or manual publication; ACA non-zero for non-public legs; every alert contract has deployed rule ID and controlled fire/clear evidence; disabling routing stops new claims and preserves records.
+* Exact merge-derived image digest; correlated upstream intent/dispatch/Azure arrival; YouTube processing/public readback; Spotify externally read expected item/state after automated or manual publication; ACA non-zero for non-public legs; W38-modeled partial/retry evidence converges to truthful final publication without duplicate mutation; every alert contract has deployed rule ID and controlled fire/clear evidence; disabling dispatch/routing stops new work and preserves records.
 
 #### Completion Evidence
 
-* Sanitized canary correlation, provider readbacks, execution status, alert rule/fire/clear records, flag transitions, and rollback drill in changes/PR.
+* Sanitized end-to-end correlation, provider readbacks, execution status, comparative partial/retry record, alert rule/fire/clear records, flag transitions, and rollback drill in changes/PR.
 
 #### Unresolved Items
 
@@ -924,15 +1105,15 @@ Deploy the exact merge-derived image with outbox routing disabled, run migration
 
 ### Context
 
-A single canary cannot establish sustained provider terminal truth or operational stability.
+A single canary cannot establish sustained dispatch reliability, Azure correlation, provider terminal truth, or operational stability.
 
 ### Intent
 
-Keep the task open through four consecutive publication weeks and verify each using external provider readback and durable correlations.
+Keep the task open through four consecutive scheduled publication weeks and verify each from upstream intent through dispatch, Azure execution correlation, and external provider readback.
 
 ### Boundaries
 
-* Included: weekly readback, alert/lease/reconciliation review, incident handling, final closure.
+* Included: weekly dispatch evidence, Azure arrival/execution correlation, provider readback, alert/lease/reconciliation review, incident handling, final closure.
 * Excluded: counting internal CI/API/ACA green status without provider proof.
 
 ### Likely Targets
@@ -945,7 +1126,7 @@ Keep the task open through four consecutive publication weeks and verify each us
 
 ### Validation Expectations
 
-* Four consecutive weeks have complete evidence; a failed week is remediated and restarts the consecutive count unless the caller explicitly accepts another rule.
+* Four consecutive scheduled weeks have complete dispatch, Azure, and provider evidence. W38 cannot count as a missed-week recovery. A future incomplete week is remediated and restarts the count unless the caller explicitly changes the rule.
 
 ### Completion Evidence
 
@@ -964,7 +1145,7 @@ Each week must prove provider truth independently from internal execution status
 
 #### Intent
 
-Record sanitized canonical/outbox/execution correlation, provider IDs/states, YouTube processing/privacy, Spotify authoritative state after automated or manual publication, ACA exit, pending age, alerts, and reconciliation. Manual-handoff status alone cannot accept a week.
+Record sanitized upstream intent/dispatch result, Azure API acceptance and first durable execution correlation, canonical/outbox/execution correlation, provider IDs/states, YouTube processing/privacy, Spotify authoritative state after automated or manual publication, ACA exit, pending age, alerts, and reconciliation. Manual-handoff status alone cannot accept a week.
 
 #### Boundaries
 
@@ -981,7 +1162,7 @@ Record sanitized canonical/outbox/execution correlation, provider IDs/states, Yo
 
 #### Validation Expectations
 
-* Each row is time-stamped, tied to deployed merge SHA/image digest, and independently confirms provider state. If Spotify requires manual publication, bounded readback must confirm the expected item/state/timestamp; unavailable or unprovable readback fails the week and restarts the consecutive count.
+* Each row is time-stamped, tied to upstream and Podcaster merge SHAs plus deployed image digest, proves dispatch and first Azure arrival, and independently confirms provider state. If Spotify requires manual publication, bounded readback must confirm the expected item/state/timestamp; unavailable correlation or readback fails the week and restarts the consecutive count.
 
 #### Completion Evidence
 
@@ -1005,7 +1186,7 @@ Summarize four-week outcomes, reconciliations/incidents, alert quality, rollback
 #### Boundaries
 
 * Included: completion evidence and closure.
-* Excluded: folding unrelated Spotify contract evolution or W38 forensics into acceptance.
+* Excluded: folding unrelated Spotify contract evolution or W38 missed-week/recovery framing into acceptance.
 
 #### Likely Targets
 
@@ -1017,7 +1198,7 @@ Summarize four-week outcomes, reconciliations/incidents, alert quality, rollback
 
 #### Validation Expectations
 
-* No unresolved critical implementation finding; no missing weekly readback; all acceptance criteria trace to evidence.
+* No unresolved critical implementation finding; no missing weekly dispatch/Azure/readback evidence; W38 remains recorded as published; all acceptance criteria trace to evidence.
 
 #### Completion Evidence
 

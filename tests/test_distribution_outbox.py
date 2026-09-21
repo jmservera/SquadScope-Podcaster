@@ -8,6 +8,7 @@ import pytest
 
 from podcaster.distribution_outbox import (
     ACTIONABLE_RESULTS,
+    ARTIFACT_METADATA_PREFIX,
     OUTBOX_SCHEMA_VERSION,
     DistributionOutboxError,
     DistributionOutboxRepository,
@@ -38,7 +39,7 @@ class Clock:
 @pytest.fixture
 def identity():
     return PublicationIdentity(
-        accepted_job_id="podcast-2026-W38-safe",
+        accepted_job_id="podcast-2026-W38-comparative",
         week="2026-W38",
         publish_run_id="123",
         article_sha256="a" * 64,
@@ -74,7 +75,7 @@ def test_schema_round_trip_is_versioned_correlated_and_sanitized(setup):
     _storage, repository, _clock, document, created = setup
     assert created is True
     assert document["schema_version"] == OUTBOX_SCHEMA_VERSION
-    assert document["publication_identity"]["accepted_job_id"] == "podcast-2026-W38-safe"
+    assert document["publication_identity"]["accepted_job_id"] == "podcast-2026-W38-comparative"
     assert document["artifact"]["sha256"]
     assert document["providers"]["youtube"]["objective"] == "public"
     assert repository.read(document["outbox_id"]) == document
@@ -304,6 +305,108 @@ def test_lost_notification_is_repaired_idempotently(setup):
     assert repository.repair_notifications(sent.append) == 1
     assert sent == [document["outbox_id"]]
     assert repository.repair_notifications(sent.append) == 0
+
+
+def test_reconciliation_scan_is_fair_beyond_one_hundred_records(tmp_path):
+    storage = LocalStorageBackend(tmp_path / "storage", "http://localhost/artifacts")
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"fair-scan")
+    artifact = commit_immutable_artifact(
+        storage,
+        source,
+        media_kind="video",
+        content_type="video/mp4",
+        suffix=".mp4",
+    )
+    clock = Clock()
+    repository = DistributionOutboxRepository(storage, now=clock)
+    for index in range(130):
+        identity = PublicationIdentity(
+            accepted_job_id=f"podcast-2026-W39-{index}",
+            week="2026-W39",
+            publish_run_id=str(index + 1),
+            article_sha256=f"{index:064x}",
+            manifest_sha256=f"{index + 1000:064x}",
+        )
+        document, _ = repository.enqueue(
+            identity,
+            artifact,
+            provider_objectives={"youtube": "public"},
+            enqueue_source="test",
+            enqueue_version="v1",
+        )
+        claim = repository.claim(
+            document["outbox_id"],
+            owner="test",
+            execution_id=f"exec-{index}",
+            lease_seconds=300,
+        )
+        repository.schedule_reconciliation(
+            claim,
+            provider="youtube",
+            due_at=clock() - timedelta(seconds=1),
+        )
+        repository.release(claim)
+
+    first, cursor = repository.due_reconciliations_page(limit=100, scan_limit=5000)
+    second, _ = repository.due_reconciliations_page(
+        limit=100,
+        scan_limit=5000,
+        after_path=cursor,
+    )
+    assert len(first) == 100
+    assert {item[0] for item in first} != {item[0] for item in second}
+    assert len({item[0] for item in first + second}) == 130
+
+
+def test_reconciliation_notification_is_deduplicated_until_stale(setup):
+    _storage, repository, clock, document, _created = setup
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="exec-1", lease_seconds=300
+    )
+    token = repository.schedule_reconciliation(
+        claim,
+        provider="youtube",
+        due_at=clock() - timedelta(seconds=1),
+    )
+    repository.release(claim)
+    assert repository.due_reconciliations()
+    repository.mark_reconciliation_notified(
+        document["outbox_id"],
+        provider="youtube",
+        token=token,
+    )
+    assert repository.due_reconciliations() == []
+    clock.advance(901)
+    assert repository.due_reconciliations()
+
+
+def test_orphan_artifact_cleanup_is_retained_bounded_and_reference_safe(setup):
+    storage, repository, clock, document, _created = setup
+    referenced_digest = document["artifact"]["sha256"]
+    source = storage.root.parent / "orphan.mp4"
+    source.write_bytes(b"orphan")
+    orphan = commit_immutable_artifact(
+        storage,
+        source,
+        media_kind="video",
+        content_type="video/mp4",
+        suffix=".mp4",
+    )
+    for digest in (referenced_digest, orphan.sha256):
+        metadata_path = f"{ARTIFACT_METADATA_PREFIX}/{digest}.json"
+
+        def age(raw):
+            value = json.loads(raw.decode())
+            value["created_at"] = "2026-09-19T00:00:00Z"
+            return json.dumps(value).encode()
+
+        storage.update_bytes(metadata_path, "application/json", age)
+    clock.advance(2 * 86400)
+    assert repository.cleanup_orphan_artifacts(retention=timedelta(hours=24), limit=1) <= 1
+    repository.cleanup_orphan_artifacts(retention=timedelta(hours=24), limit=100)
+    assert storage.blob_exists(document["artifact"]["path"])
+    assert not storage.blob_exists(orphan.path)
 
 
 def test_message_and_durable_fields_reject_secrets_and_urls(setup):
