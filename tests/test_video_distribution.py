@@ -459,6 +459,34 @@ class TestUploadToYouTube:
         assert raised.value.code == "youtube_chunked_network_error"
         assert raised.value.retryable is True
 
+    def test_chunked_session_init_ambiguity_is_not_retryable(
+        self, video_file, youtube_config, monkeypatch
+    ):
+        from podcaster.video.youtube import YouTubeUploadResult
+
+        monkeypatch.setattr(
+            "podcaster.video.youtube.upload_video",
+            lambda *args, **kwargs: YouTubeUploadResult(
+                status="unknown",
+                error="response lost",
+                details={
+                    "retry_blocked": True,
+                    "code": "youtube_resumable_init_ambiguous",
+                },
+            ),
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            _try_chunked_upload(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                tags=None,
+                transport=FakeTransport(),
+            )
+        assert raised.value.code == "youtube_resumable_init_ambiguous"
+        assert raised.value.retryable is False
+
 
 # --- Spotify RSS Tests ---
 
@@ -1090,6 +1118,39 @@ class TestDistributeVideo:
         assert result.youtube_required_failed is True
         assert result.youtube_failure_retryable is True
         assert result.youtube_failure_code == "youtube_oauth_http_503"
+
+    def test_youtube_session_init_ambiguity_persists_unknown_and_blocks_retry(
+        self, video_file, monkeypatch
+    ):
+        recorded: list[tuple[str, dict]] = []
+
+        def fail_youtube(*args, **kwargs):
+            raise YouTubeDeliveryError(
+                "YouTube resumable session initiation outcome is unknown",
+                code="youtube_resumable_init_ambiguous",
+                stage="resumable_session_init",
+                retryable=False,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        result = distribute_video(
+            video_file,
+            "job-init-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(youtube_enabled=True, dry_run=False),
+            storage=FakeStorage(),
+            on_published=lambda platform, record: recorded.append((platform, record)),
+            publish_run_id="7",
+        )
+
+        assert result.provider_outcomes["youtube"] == "publication_unknown"
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert result.provider_records["youtube"]["transport_status"] == "response_lost"
+        assert recorded[0][0] == "youtube"
+        assert recorded[0][1]["outcome"] == "publication_unknown"
+        assert recorded[0][1]["retry_blocked"] is True
 
     def test_required_youtube_but_disabled_is_terminal_config_failure(
         self, video_file, monkeypatch

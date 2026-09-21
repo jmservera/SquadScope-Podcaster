@@ -531,9 +531,10 @@ class IntermediateStore:
             os.replace(temporary, dest)
             return record
         except Exception:
-            temporary.unlink(missing_ok=True)
             dest.unlink(missing_ok=True)
             return None
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _delete_unverified(self, name: str) -> None:
         if self._backend is None:

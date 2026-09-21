@@ -11,6 +11,7 @@ import json
 import multiprocessing
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -380,6 +381,44 @@ class TestValidatedCheckpoint:
             is None
         )
         assert not dest.exists()
+
+    def test_failed_download_removes_partial_and_preserves_existing_destination(
+        self, backend, tmp_path, monkeypatch
+    ):
+        store = IntermediateStore(backend, "job-v")
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"a" * 2048)
+        identity = {"job_id": "job-v"}
+        store.upload_validated(
+            "normalized_000.mp4",
+            source,
+            artifact_kind="normalized_segment",
+            identity=identity,
+            probe=self._probe,
+        )
+        dest = tmp_path / "dest.mp4"
+        dest.write_bytes(b"existing")
+        partials: list[Path] = []
+
+        def fail_download(_name, temporary, **_kwargs):
+            partials.append(temporary)
+            temporary.write_bytes(b"partial")
+            return False
+
+        monkeypatch.setattr(store, "download", fail_download)
+
+        assert (
+            store.download_validated(
+                "normalized_000.mp4",
+                dest,
+                artifact_kind="normalized_segment",
+                identity=identity,
+                probe=self._probe,
+            )
+            is None
+        )
+        assert dest.read_bytes() == b"existing"
+        assert partials and not partials[0].exists()
 
     def test_zero_byte_output_is_rejected(self, backend, tmp_path):
         store = IntermediateStore(backend, "job-v")

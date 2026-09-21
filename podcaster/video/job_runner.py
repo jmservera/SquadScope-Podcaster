@@ -56,6 +56,7 @@ from podcaster.queue import (
     QueueMessage,
     QueueProducer,
     create_clip_queue_backend,
+    encode_video_message,
     parse_job_id,
 )
 from podcaster.sanitization import neutralize
@@ -193,6 +194,10 @@ class QueueDispositionError(TransientVideoError):
 
 class QueueDispositionTimeout(QueueDispositionError):
     """Queue disposition could not complete inside the shared shutdown budget."""
+
+
+class TerminalStatePersistenceError(TransientVideoError):
+    """A terminal video outcome could not be durably persisted."""
 
 
 class PermanentVideoError(RuntimeError):
@@ -534,6 +539,9 @@ def _record_video_state(
     """Record video runner state in the manifest."""
     from podcaster.generation import manifest_bytes
 
+    status = state.get("status")
+    fail_closed = status in {STATUS_COMPLETED, STATUS_FAILED} and not bool(state.get("transient"))
+
     def _apply(content: bytes | None) -> bytes:
         doc = json.loads(content.decode("utf-8")) if content else {}
         if not isinstance(doc, dict):
@@ -558,7 +566,11 @@ def _record_video_state(
                 ),
                 timeout,
             )
-    except Exception:
+    except Exception as exc:
+        if fail_closed:
+            raise TerminalStatePersistenceError(
+                f"failed to persist terminal video state for job_id={job_id}"
+            ) from exc
         logger.warning("failed to record video state for job_id=%s", job_id, exc_info=True)
 
 
@@ -1706,6 +1718,10 @@ def run_video_generation(
             )
 
     def terminal_outcome(outcome: VideoOutcome) -> VideoOutcome:
+        if outcome.status == STATUS_RENDERED_PENDING_DISTRIBUTION:
+            if defer_optional_cleanup:
+                return replace(outcome, _optional_cleanup=optional_cleanup)
+            return outcome
         if defer_optional_cleanup:
             return replace(outcome, _optional_cleanup=optional_cleanup)
         optional_cleanup()
@@ -1731,17 +1747,41 @@ def run_video_generation(
         logger.info("video skipped job_id=%s reason=%s", job_id, REASON_PIPELINE_CONFLICT)
         return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_PIPELINE_CONFLICT)
 
-    resumed = _resume_rendered_pending_distribution(
-        job_id,
-        manifest,
-        storage,
-        dist_config,
-        stage_budget,
-        media_probe=media_probe,
-        storage_operation_runner=storage_operation_runner,
-    )
-    if resumed is not None:
-        return resumed
+    if fanout_enabled and run_id is not None:
+        from podcaster.video.editor import acquire_or_renew_lease
+
+        if not acquire_or_renew_lease(scratch, job_id, run_id, now=current):
+            logger.info("video skipped job_id=%s reason=%s", job_id, REASON_EDITOR_LEASE_HELD)
+            return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_EDITOR_LEASE_HELD)
+        try:
+            resumed = _resume_rendered_pending_distribution(
+                job_id,
+                manifest,
+                storage,
+                dist_config,
+                stage_budget,
+                media_probe=media_probe,
+                storage_operation_runner=storage_operation_runner,
+            )
+        except Exception:
+            release_owned_lease()
+            raise
+        if resumed is not None:
+            release_owned_lease()
+            return terminal_outcome(resumed)
+        release_owned_lease()
+    else:
+        resumed = _resume_rendered_pending_distribution(
+            job_id,
+            manifest,
+            storage,
+            dist_config,
+            stage_budget,
+            media_probe=media_probe,
+            storage_operation_runner=storage_operation_runner,
+        )
+        if resumed is not None:
+            return terminal_outcome(resumed)
 
     # Load script
     raw_script = storage.get_bytes(script_path(job_id))
@@ -2728,6 +2768,7 @@ def run_video_generation(
             {
                 "status": STATUS_FAILED,
                 "reason": type(exc).__name__,
+                "transient": True,
                 "at": _iso(current),
             },
         )
@@ -3008,6 +3049,40 @@ def _delete_queue_message(
         raise QueueDispositionError("queue delete failed; message retained for retry") from exc
 
 
+def _replace_queue_message(
+    queue: QueueBackend,
+    message: QueueMessage,
+    job_id: str,
+    budget: VideoStageBudget,
+    *,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = _run_queue_operation,
+) -> None:
+    sender = getattr(queue, "send_message", None)
+    if not callable(sender):
+        raise QueueDispositionError("queue backend cannot enqueue replacement video messages")
+    timeout = budget.operation_timeout(VideoStage.SHUTDOWN)
+    if timeout <= 0:
+        raise QueueDispositionTimeout("no shutdown budget remains for queue replacement")
+    try:
+        operation_runner(lambda: sender(encode_video_message(job_id)), timeout)
+    except QueueDispositionError:
+        raise
+    except TimeoutError as exc:
+        raise QueueDispositionTimeout(
+            f"queue replacement exceeded {timeout:.3f}s shutdown budget"
+        ) from exc
+    except Exception as exc:
+        raise QueueDispositionError(
+            "queue replacement enqueue failed; current message retained"
+        ) from exc
+    _delete_queue_message(
+        queue,
+        message,
+        budget,
+        operation_runner=operation_runner,
+    )
+
+
 def _run_optional_cleanup(outcome: VideoOutcome, budget: VideoStageBudget) -> None:
     cleanup = outcome._optional_cleanup
     if cleanup is None:
@@ -3150,8 +3225,30 @@ def process_message(
                 operation_runner=queue_operation_runner,
             )
             return outcome
+        if disposition_budget().admit_provider_mutation().allowed:
+            try:
+                _replace_queue_message(
+                    queue,
+                    message,
+                    job_id,
+                    disposition_budget(),
+                    operation_runner=queue_operation_runner,
+                )
+            except QueueDispositionError:
+                logger.warning(
+                    "rendered distribution replacement handoff failed; "
+                    "retaining current message job_id=%s",
+                    job_id,
+                    exc_info=True,
+                )
+                return outcome
+            logger.info(
+                "requeued rendered video for immediate distribution redelivery job_id=%s",
+                job_id,
+            )
+            return outcome
         logger.info(
-            "leaving rendered video message for distribution redelivery job_id=%s reason=%s",
+            "retaining durable rendered-pending state without hot-loop job_id=%s reason=%s",
             job_id,
             outcome.reason or REASON_PROVIDER_ADMISSION_DENIED,
         )

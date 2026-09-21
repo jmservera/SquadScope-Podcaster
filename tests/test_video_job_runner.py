@@ -38,6 +38,7 @@ from podcaster.video.job_runner import (
     PermanentVideoError,
     QueueDispositionError,
     QueueDispositionTimeout,
+    TerminalStatePersistenceError,
     TransientVideoError,
     VideoOutcome,
     _already_processed,
@@ -45,6 +46,7 @@ from podcaster.video.job_runner import (
     _build_section_cards,
     _build_video_description,
     _record_video_publication,
+    _record_video_state,
     _release_editor_lease,
     _resolve_anchor_id,
     _resolve_dog_logo,
@@ -135,6 +137,35 @@ class _P04Clock:
             monotonic=self.monotonic,
             utcnow=self.utcnow,
         )
+
+
+def test_record_video_state_fail_closed_for_terminal_status(monkeypatch):
+    storage = FakeStorage()
+    storage.set_manifest("job-terminal", {"generation": {}})
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr(storage, "update_bytes", _boom)
+
+    with pytest.raises(TerminalStatePersistenceError, match="failed to persist terminal"):
+        _record_video_state(storage, "job-terminal", {"status": STATUS_COMPLETED})
+
+
+def test_record_video_state_nonterminal_logs_without_raising(monkeypatch):
+    storage = FakeStorage()
+    storage.set_manifest("job-nonterminal", {"generation": {}})
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr(storage, "update_bytes", _boom)
+
+    _record_video_state(
+        storage,
+        "job-nonterminal",
+        {"status": STATUS_RENDERED_PENDING_DISTRIBUTION},
+    )
 
 
 def _p04_archive_result(
@@ -395,6 +426,24 @@ class FakeQueue:
 
     def delete_message(self, message: QueueMessage):
         self.deleted.append(message)
+
+
+class HandoffQueue(FakeQueue):
+    def __init__(self, *, fail_delete: bool = False):
+        super().__init__()
+        self.sent: list[str] = []
+        self.events: list[str] = []
+        self.fail_delete = fail_delete
+
+    def send_message(self, body: str):
+        self.events.append("send")
+        self.sent.append(body)
+
+    def delete_message(self, message: QueueMessage):
+        self.events.append("delete")
+        if self.fail_delete:
+            raise RuntimeError("delete response lost")
+        super().delete_message(message)
 
 
 def _make_message(job_id: str, dequeue_count: int = 1) -> QueueMessage:
@@ -2297,6 +2346,87 @@ class TestProcessMessage:
         assert outcome.status == "rendered_pending_distribution"
         assert queue.deleted == []
 
+    def test_rendered_pending_distribution_requeues_before_delete_when_admitted(
+        self, storage, dry_config
+    ):
+        queue = HandoffQueue()
+        msg = _make_message("pending-handoff")
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=VideoOutcome(
+                "pending-handoff",
+                "rendered_pending_distribution",
+                reason="provider_reserve_insufficient",
+            ),
+        ):
+            outcome = process_message(
+                msg,
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                queue_operation_runner=lambda call, timeout: call(),
+            )
+
+        assert outcome.status == "rendered_pending_distribution"
+        assert queue.events == ["send", "delete"]
+        assert len(queue.sent) == 1
+        assert queue.deleted == [msg]
+
+    def test_rendered_pending_distribution_send_delete_ambiguity_is_fail_closed(
+        self, storage, dry_config
+    ):
+        queue = HandoffQueue(fail_delete=True)
+        msg = _make_message("pending-ambiguous-handoff")
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=VideoOutcome(
+                "pending-ambiguous-handoff",
+                "rendered_pending_distribution",
+                reason="provider_reserve_insufficient",
+            ),
+        ):
+            outcome = process_message(
+                msg,
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                queue_operation_runner=lambda call, timeout: call(),
+            )
+
+        assert outcome.status == "rendered_pending_distribution"
+        assert queue.events == ["send", "delete"]
+        assert len(queue.sent) == 1
+        assert queue.deleted == []
+
+    def test_rendered_pending_distribution_does_not_hot_loop_after_admission_closes(
+        self, storage, dry_config
+    ):
+        queue = HandoffQueue()
+        msg = _make_message("pending-exhausted")
+        clock = _P04Clock()
+        clock.elapsed = 3301
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=VideoOutcome(
+                "pending-exhausted",
+                "rendered_pending_distribution",
+                reason="provider_deadline_reached",
+            ),
+        ):
+            outcome = process_message(
+                msg,
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                budget=clock.budget(),
+                queue_operation_runner=lambda call, timeout: call(),
+            )
+
+        assert outcome.status == "rendered_pending_distribution"
+        assert queue.events == []
+        assert queue.sent == []
+        assert queue.deleted == []
+
     def test_rendered_pending_distribution_retains_poison_delete_semantics(
         self, storage, queue, dry_config
     ):
@@ -3280,6 +3410,67 @@ class TestFanoutGating:
         if output_path:
             output_path.write_bytes(b"\x00" * 2048)
         return MagicMock(output_path=output_path, duration_seconds=60.0, segment_count=2)
+
+    def test_resumed_distribution_is_owned_by_editor_lease(self, storage, dry_config, monkeypatch):
+        from podcaster.video.editor import EditorLease, editor_lease_blob_path
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        producer = _RecordingProducer()
+        resumed = MagicMock(
+            return_value=VideoOutcome(job_id, STATUS_COMPLETED, distribution=DistributionResult())
+        )
+        monkeypatch.setattr(
+            "podcaster.video.job_runner._resume_rendered_pending_distribution",
+            resumed,
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            fanout=True,
+            fanout_scratch=scratch,
+            clip_producer=producer,
+            storage_operation_runner=lambda call, timeout: call(),
+        )
+
+        assert outcome.status == STATUS_COMPLETED
+        resumed.assert_called_once()
+        assert EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id))) is None
+
+    def test_foreign_editor_lease_blocks_resumed_distribution(
+        self, storage, dry_config, monkeypatch
+    ):
+        from podcaster.video.editor import acquire_or_renew_lease
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        producer = _RecordingProducer()
+        assert acquire_or_renew_lease(
+            scratch,
+            job_id,
+            "foreign-owner",
+            now=datetime.now(timezone.utc),
+        )
+        resumed = MagicMock()
+        monkeypatch.setattr(
+            "podcaster.video.job_runner._resume_rendered_pending_distribution",
+            resumed,
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            fanout=True,
+            fanout_scratch=scratch,
+            clip_producer=producer,
+        )
+
+        assert outcome.status == STATUS_SKIPPED
+        assert outcome.reason == REASON_EDITOR_LEASE_HELD
+        resumed.assert_not_called()
 
     @patch("podcaster.video.editor.record_via_fanout")
     @patch("podcaster.video.video_gen.record_episode")

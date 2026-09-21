@@ -189,6 +189,20 @@ def test_budgeted_clipset_rejects_malformed_cache_and_recomputes():
     storage = FakeStorage()
     storage.put_bytes("video-jobs/job1/clipset.json", b"{malformed", _JSON)
     storage.put_bytes("video-jobs/job1/clips/000.webm", b"stale", "video/webm")
+    storage.put_bytes("video-jobs/job1/intermediates/segment.mp4", b"reusable", "video/mp4")
+    storage.put_bytes("video-jobs/job1/checkpoint.json", b"keep", _JSON)
+    lease_path = editor_lease_blob_path("job1")
+    storage.put_bytes(
+        lease_path,
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": "run-A",
+                "expires_at": "2026-09-22T00:00:00Z",
+            }
+        ).encode("utf-8"),
+        _JSON,
+    )
 
     clipset = plan_or_load_clipset(
         storage,
@@ -199,6 +213,9 @@ def test_budgeted_clipset_rejects_malformed_cache_and_recomputes():
 
     assert clipset.count == 2
     assert not storage.blob_exists("video-jobs/job1/clips/000.webm")
+    assert storage.blob_exists("video-jobs/job1/intermediates/segment.mp4")
+    assert storage.blob_exists("video-jobs/job1/checkpoint.json")
+    assert storage.blob_exists(lease_path)
 
 
 # --- additive fan-out ---------------------------------------------------------
@@ -285,6 +302,34 @@ def test_wait_for_fanin_times_out_with_partial():
     assert present == {0}
 
 
+def test_wait_for_fanin_stops_after_budgeted_probe_timeout():
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(3))
+    probed: list[str] = []
+    original = storage.blob_exists
+
+    def tracked(path):
+        probed.append(path)
+        return original(path)
+
+    def blocking_runner(call, _timeout):
+        if probed:
+            raise TimeoutError("blocked")
+        return call()
+
+    storage.blob_exists = tracked
+    complete, present = wait_for_fanin(
+        storage,
+        clipset,
+        budget=VideoStageBudget.start(),
+        operation_runner=blocking_runner,
+    )
+
+    assert complete is False
+    assert present == set()
+    assert len(probed) == 1
+
+
 # --- assemble (download + reconstruct) ---------------------------------------
 
 
@@ -302,6 +347,41 @@ def test_assemble_recording_reconstructs_metadata(tmp_path):
     # Both clips were downloaded locally.
     for rec in result.recorded:
         assert rec.video_path.exists()
+
+
+def test_assemble_recording_stops_after_budgeted_probe_timeout(tmp_path):
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(1))
+    _write_manifest(storage, "job1", 0)
+    payload = b"WEBMDATA"
+    manifest_path = clip_manifest_blob_path("job1", 0)
+    manifest = json.loads(storage.get_bytes(manifest_path))
+    manifest["schema_version"] = "1.0"
+    manifest["media"] = MediaEvidence(
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        probe=ProbeEvidence("matroska,webm", 1.0),
+    ).to_dict()
+    storage.put_bytes(manifest_path, json.dumps(manifest).encode(), _JSON)
+    calls = 0
+
+    def blocking_runner(call, _timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise TimeoutError("blocked")
+        return call()
+
+    with pytest.raises(TimeoutError, match="blocked"):
+        assemble_recording(
+            storage,
+            clipset,
+            tmp_path,
+            budget=VideoStageBudget.start(),
+            operation_runner=blocking_runner,
+        )
+
+    assert calls == 2
 
 
 def test_assemble_recording_fills_poison_gap(tmp_path):

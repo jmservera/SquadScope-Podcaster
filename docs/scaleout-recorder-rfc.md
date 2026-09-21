@@ -250,8 +250,9 @@ the earlier of its local monotonic remaining time and the durable UTC projection
 
 A recorder clip becomes terminal at the earliest of 12 minutes from its first
 durable admission, two failed dequeued executions, its browser deadline, or the
-T+20 fan-in cutoff. Recorder ACA timeout/visibility defaults are 840/780 seconds,
-so a child cannot consume the full parent fan-in window.
+T+20 fan-in cutoff. Recorder ACA timeout and visibility both default to 840 seconds,
+covering capture plus validation, uploads, readback, and terminal manifest CAS while
+still preventing a child from consuming the full parent fan-in window.
 
 After fan-in cutoff the editor never starts network or Chromium capture. It renders
 a deterministic card from repository-owned local assets, writes media to a

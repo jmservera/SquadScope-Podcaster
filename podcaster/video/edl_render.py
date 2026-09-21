@@ -560,6 +560,7 @@ def render_edl(
         Path(output_path).unlink(missing_ok=True)
         raise
     if result.returncode != 0:
+        Path(output_path).unlink(missing_ok=True)
         stderr = (result.stderr or "")[-2000:]
         raise EdlRenderError(f"ffmpeg failed (exit {result.returncode}): {stderr}")
     out = Path(output_path)

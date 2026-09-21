@@ -55,11 +55,15 @@ _MAX_TRANSIENT_RETRIES = 5
 _RETRY_BACKOFF_BASE = 2.0
 
 
+class YouTubeSessionInitiationUnknown(RuntimeError):
+    """The session POST may have succeeded but its response was lost."""
+
+
 @dataclass
 class YouTubeUploadResult:
     """Outcome of a resumable upload."""
 
-    status: str  # "completed" | "failed" | "dry_run" | "disabled"
+    status: str  # "completed" | "failed" | "unknown" | "dry_run" | "disabled"
     video_id: str | None = None
     video_url: str | None = None
     bytes_uploaded: int = 0
@@ -171,17 +175,22 @@ def initiate_resumable_session(
             exc.provider = "youtube"
             exc.mutation_started = False
             raise
-    status, resp_headers, _ = http.request_with_headers(
-        init_url,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json; charset=utf-8",
-            "X-Upload-Content-Length": str(file_size),
-            "X-Upload-Content-Type": content_type,
-        },
-        data=json.dumps(metadata).encode("utf-8"),
-    )
+    try:
+        status, resp_headers, _ = http.request_with_headers(
+            init_url,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; charset=utf-8",
+                "X-Upload-Content-Length": str(file_size),
+                "X-Upload-Content-Type": content_type,
+            },
+            data=json.dumps(metadata).encode("utf-8"),
+        )
+    except Exception as exc:
+        raise YouTubeSessionInitiationUnknown(
+            "YouTube resumable session initiation outcome is unknown"
+        ) from exc
     if status not in (200, 308):
         raise RuntimeError(f"YouTube resumable init failed: HTTP {status}")
 
@@ -485,6 +494,13 @@ def upload_video(
         )
     except ProviderMutationAdmissionError:
         raise
+    except YouTubeSessionInitiationUnknown as exc:
+        logger.error("%s", exc)
+        return YouTubeUploadResult(
+            status="unknown",
+            error=str(exc),
+            details={"retry_blocked": True, "code": "youtube_resumable_init_ambiguous"},
+        )
     except RuntimeError as exc:
         logger.error("YouTube resumable init failed: %s", exc)
         return YouTubeUploadResult(status="failed", error=str(exc))

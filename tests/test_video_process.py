@@ -77,6 +77,30 @@ def test_runner_terminates_child_and_grandchild_tree_and_rejects_partial_output(
     assert not partial_output.exists()
 
 
+def test_runner_bounds_final_reap_when_escaped_descendant_keeps_pipes_open(tmp_path):
+    partial_output = tmp_path / "partial.mp4"
+    code = (
+        "import subprocess,sys,time,pathlib;"
+        f"pathlib.Path({str(partial_output)!r}).write_bytes(b'partial');"
+        "subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],"
+        "start_new_session=True);"
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(OwnedProcessTimeout):
+        run_owned_process(
+            [sys.executable, "-c", code],
+            timeout_seconds=0.2,
+            terminate_grace_seconds=0.1,
+            reap_grace_seconds=0.2,
+            output_paths=[partial_output],
+        )
+
+    assert time.monotonic() - started < 2.0
+    assert not partial_output.exists()
+
+
 def test_runner_removes_output_on_checked_failure(tmp_path):
     output = tmp_path / "bad.mp4"
     code = f"from pathlib import Path; Path({str(output)!r}).write_bytes(b'x'); raise SystemExit(3)"

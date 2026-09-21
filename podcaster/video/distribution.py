@@ -1274,6 +1274,13 @@ def _try_chunked_upload(
         return None, None
     if result.succeeded:
         return result.video_id, result.video_url
+    if result.status == "unknown":
+        raise YouTubeDeliveryError(
+            "YouTube resumable session initiation outcome is unknown",
+            code="youtube_resumable_init_ambiguous",
+            stage="resumable_session_init",
+            retryable=False,
+        )
     if raise_on_failure:
         error_text = (result.error or "").strip()
         lowered = error_text.lower()
@@ -1565,6 +1572,32 @@ def distribute_video(
                 )
         except YouTubeDeliveryError as exc:
             result.errors.append(str(exc))
+            if exc.code == "youtube_resumable_init_ambiguous":
+                result.provider_outcomes["youtube"] = PUBLICATION_UNKNOWN
+                result.provider_records["youtube"] = {
+                    "provider": "youtube",
+                    "outcome": PUBLICATION_UNKNOWN,
+                    "status": "unknown",
+                    "provider_id": None,
+                    "native_state": None,
+                    "transport_status": "response_lost",
+                    "verification": "none",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "evidence_source": "youtube_resumable_session_init",
+                    "last_error_code": exc.code,
+                    "retry_blocked": True,
+                }
+                if on_published is not None and not config.dry_run:
+                    on_published(
+                        "youtube",
+                        {
+                            **result.provider_records["youtube"],
+                            "status": "published",
+                            "provider_status": "unknown",
+                            "publish_run_id": publish_run_id,
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
             if config.youtube_required:
                 youtube_required_failure = exc
             logger.error(

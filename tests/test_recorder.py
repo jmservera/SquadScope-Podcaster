@@ -21,6 +21,7 @@ from podcaster.video.clipset import (
     clip_manifest_blob_path,
     clipset_blob_path,
 )
+from podcaster.video.intermediates import StorageOperationTimeout
 from podcaster.video.process import MediaEvidence, ProbeEvidence
 from podcaster.video.recorder import (
     FAILED_EXECUTION_LIMIT,
@@ -134,6 +135,38 @@ def test_record_clip_writes_clip_then_manifest(tmp_path) -> None:
     assert manifest["repo_url"] == "https://github.com/octo/api"
     assert manifest["duration_ms"] == 12345
     assert manifest["media_blob_path"].endswith(f"/{manifest['media']['sha256']}.webm")
+
+
+@pytest.mark.parametrize("stop_at", range(1, 9))
+def test_record_clip_finalization_operations_are_budgeted_and_stop_on_timeout(
+    tmp_path, stop_at
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    record, _ = _recorder()
+    calls = 0
+
+    def operation_runner(call, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 30
+        if calls == stop_at:
+            raise StorageOperationTimeout("blocked")
+        return call()
+
+    with pytest.raises(StorageOperationTimeout, match="blocked"):
+        record_clip(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            record_segment=record,
+            media_validator=_media,
+            admission_check=lambda: 30,
+            operation_runner=operation_runner,
+        )
+
+    assert calls == stop_at
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
 
 
 def test_record_clip_skips_when_manifest_present(tmp_path) -> None:
@@ -321,6 +354,55 @@ def test_process_message_records_and_deletes(tmp_path) -> None:
     assert len(calls) == 1
     manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
     assert manifest["attempts"]["executions"][0]["status"] == "succeeded"
+
+
+def test_process_message_terminal_delete_timeout_retains_message(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+    message = _message(1, dequeue_count=MAX_DEQUEUE_COUNT)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        fallback_renderer=_fallback,
+        queue_operation_runner=lambda _call, _timeout: (_ for _ in ()).throw(
+            TimeoutError("queue hung")
+        ),
+    )
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert queue.deleted == []
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_process_message_existing_terminal_manifest_retains_message_on_delete_failure(
+    tmp_path,
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    _write_manifest_if_missing = recorder._write_manifest_if_absent
+    _write_manifest_if_missing(
+        scratch,
+        clip_manifest_blob_path(JOB_ID, 1),
+        b'{"clip_id":"clip-001","status":"success"}',
+        "application/json",
+    )
+    queue = FakeQueue()
+    message = _message(1)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        queue_operation_runner=lambda _call, _timeout: (_ for _ in ()).throw(
+            RuntimeError("queue unavailable")
+        ),
+    )
+
+    assert outcome.status == OUTCOME_SKIPPED
+    assert queue.deleted == []
 
 
 def test_process_message_poison_writes_fallback_and_deletes(tmp_path) -> None:
@@ -652,6 +734,37 @@ def test_missing_asset_or_renderer_timeout_is_recording_insufficient(tmp_path, r
     assert "media_blob_path" not in manifest
 
 
+@pytest.mark.parametrize("stop_at", range(1, 6))
+def test_fallback_finalization_operations_are_budgeted_and_stop_on_timeout(
+    tmp_path, stop_at
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    calls = 0
+
+    def operation_runner(call, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 30
+        if calls == stop_at:
+            raise StorageOperationTimeout("blocked")
+        return call()
+
+    with pytest.raises(StorageOperationTimeout, match="blocked"):
+        write_fallback_manifest(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            reason="fanin_deadline_reached",
+            renderer=_fallback,
+            admission_check=lambda: 30,
+            operation_runner=operation_runner,
+        )
+
+    assert calls == stop_at
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
 def test_owned_browser_timeout_removes_partial_capture(tmp_path, monkeypatch) -> None:
     output = tmp_path / "owned"
     output.mkdir()
@@ -749,6 +862,26 @@ def test_recorder_infra_preserves_parent_reserve_contract() -> None:
     bicep = Path("infra/modules/aca-recorder.bicep").read_text(encoding="utf-8")
 
     assert "param replicaTimeoutSeconds int = 840" in bicep
-    assert "param clipVisibilityTimeoutSeconds int = 780" in bicep
+    assert "param clipVisibilityTimeoutSeconds int = 840" in bicep
     assert "param maxClipRecordSeconds int = 600" in bicep
     assert "name: 'PODCASTER_RECORDER_TIMEOUT'" in bicep
+
+
+def test_main_consumes_exactly_one_queue_message(monkeypatch, tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    queue = FakeQueue()
+    seen: list[int] = []
+
+    monkeypatch.setattr(recorder, "create_scratch_storage_backend", lambda: scratch)
+    monkeypatch.setattr(recorder, "create_clip_queue_backend", lambda: queue)
+
+    def fake_drain(actual_queue, actual_scratch, *, max_messages=256, env=None):
+        assert actual_queue is queue
+        assert actual_scratch is scratch
+        seen.append(max_messages)
+        return []
+
+    monkeypatch.setattr(recorder, "drain", fake_drain)
+
+    assert recorder.main([]) == 0
+    assert seen == [1]

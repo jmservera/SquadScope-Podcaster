@@ -2567,12 +2567,6 @@ def record_episode(
     if not plan.segments:
         raise ValueError("Episode plan has no segments to record")
 
-    if not _PLAYWRIGHT_AVAILABLE:
-        raise RuntimeError(
-            "Playwright is not installed. Install it with: "
-            "pip install 'podcaster[video]' && playwright install chromium"
-        )
-
     if output_dir is None:
         output_dir = Path(tempfile.mkdtemp(prefix="video_gen_"))
     else:
@@ -2676,6 +2670,12 @@ def record_episode(
             result.recorded.append(recovered)
             _log_reused(index, recovered)
         return result
+
+    if not _PLAYWRIGHT_AVAILABLE:
+        raise RuntimeError(
+            "Playwright is not installed. Install it with: "
+            "pip install 'podcaster[video]' && playwright install chromium"
+        )
 
     pending = [
         (index, segment) for index, segment in enumerate(plan.segments) if index not in resumed

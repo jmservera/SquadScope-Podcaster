@@ -2341,7 +2341,7 @@ class TestRecordEpisodeCheckpointResume:
         )
         return IntermediateStore(backend, "job-rec")
 
-    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
     @patch("podcaster.video.video_gen._record_segment")
     def test_full_resume_skips_browser(self, mock_record, mock_pw, tmp_path):
@@ -2369,6 +2369,22 @@ class TestRecordEpisodeCheckpointResume:
         assert rec.has_pages is True
         assert rec.website_url == "https://x.test"
         assert rec.video_path.exists()
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
+    def test_partial_resume_still_requires_playwright(self, tmp_path):
+        store = self._store(tmp_path)
+        rec_file = tmp_path / "seed.mp4"
+        rec_file.write_bytes(b"\x00\x00\x00\x18ftypmp42seed")
+        store.upload("recording_000.mp4", rec_file, "video/mp4")
+        store.write_text("recording_000.json", '{"suffix": ".mp4", "recovery_path": "direct"}')
+        plan = _make_plan(
+            _make_segment("a", "b", 0, 10),
+            _make_segment("c", "d", 10, 10),
+            total=20.0,
+        )
+
+        with pytest.raises(RuntimeError, match="Playwright is not installed"):
+            record_episode(plan, output_dir=tmp_path / "out", intermediates=store)
 
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)

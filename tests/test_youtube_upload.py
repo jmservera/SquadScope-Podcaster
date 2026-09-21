@@ -147,6 +147,18 @@ def test_initiate_resumable_session_raises_without_location():
         initiate_resumable_session(_NoLoc(), "tok", {}, file_size=10)
 
 
+def test_initiate_resumable_session_transport_loss_is_ambiguous():
+    class _LostResponse:
+        def request_with_headers(self, *args, **kwargs):
+            raise TimeoutError("response lost")
+
+    with pytest.raises(
+        RuntimeError,
+        match="session initiation outcome is unknown",
+    ):
+        initiate_resumable_session(_LostResponse(), "tok", {}, file_size=10)
+
+
 # --- chunked upload happy path ------------------------------------------------
 
 
@@ -352,3 +364,20 @@ def test_upload_video_full_flow(tmp_path, monkeypatch):
     assert res.succeeded
     assert res.video_id == "vid-OK"
     assert res.bytes_uploaded == total
+
+
+def test_upload_video_blocks_retry_when_session_init_response_is_lost(tmp_path, monkeypatch):
+    path = _make_file(tmp_path, 2 * _GRANULE)
+
+    class _LostResponse:
+        def request_with_headers(self, *args, **kwargs):
+            raise TimeoutError("response lost")
+
+    monkeypatch.setattr("podcaster.video.youtube._get_youtube_access_token", lambda c, h: "tok")
+    res = upload_video(path, "Title", "Desc", _config(), transport=_LostResponse())
+
+    assert res.status == "unknown"
+    assert res.details == {
+        "retry_blocked": True,
+        "code": "youtube_resumable_init_ambiguous",
+    }

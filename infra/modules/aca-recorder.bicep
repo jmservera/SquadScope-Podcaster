@@ -61,10 +61,10 @@ param jobMemory string = '4.0Gi'
 @maxValue(172800)
 param replicaTimeoutSeconds int = 840
 
-@description('Clip queue receive visibility timeout (seconds) the recorder applies to each received message. Must be <= replicaTimeout so a slow clip is not double-delivered mid-flight (RFC §8).')
+@description('Clip queue receive visibility timeout (seconds) the recorder applies to each received message. Defaults to the full replica lifetime so validation, uploads, readback, and manifest CAS cannot overlap a redelivery (RFC §8).')
 @minValue(30)
 @maxValue(172800)
-param clipVisibilityTimeoutSeconds int = 780
+param clipVisibilityTimeoutSeconds int = 840
 
 @description('Hard cap (seconds) on a single clip\'s recording/scroll duration. Keeps the capture phase under replicaTimeout for very long pages (e.g. huge READMEs); the partial clip is fit to its planned slot downstream (issue #592). Set 0 to disable.')
 @minValue(0)

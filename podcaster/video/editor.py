@@ -226,7 +226,8 @@ def plan_or_load_clipset(
     except (TypeError, ValueError):
         if budget is None or not budget.admit(VideoStage.PREFLIGHT).allowed:
             raise
-        scratch.delete_prefix(job_prefix(job_id))
+        scratch.delete_blob(path)
+        scratch.delete_prefix(clips_prefix(job_id))
         scratch.update_bytes(path, _JSON_CONTENT_TYPE, lambda _current: written)
         clipset = planned
     if clipset != planned:
@@ -282,6 +283,7 @@ def wait_for_fanin(
     monotonic: Callable[[], float] = time.monotonic,
     on_poll: Callable[[set[int]], None] | None = None,
     budget: VideoStageBudget | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> tuple[bool, set[int]]:
     """Block until every expected index has a terminal manifest, or timeout.
 
@@ -298,11 +300,32 @@ def wait_for_fanin(
     deadline = monotonic() + max(0.0, effective_timeout)
     present: set[int] = set()
     while True:
-        present = {
-            index
-            for index in expected
-            if scratch.blob_exists(clip_manifest_blob_path(clipset.job_id, index))
-        }
+        present = set()
+        for index in expected:
+            path = clip_manifest_blob_path(clipset.job_id, index)
+            if budget is None:
+                exists = scratch.blob_exists(path)
+            else:
+                remaining = min(
+                    deadline - monotonic(),
+                    budget.remaining_seconds(VideoStage.FANIN),
+                )
+                if remaining <= 0:
+                    return False, present
+                try:
+                    exists = operation_runner(
+                        lambda path=path: scratch.blob_exists(path),
+                        remaining,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "fan-in probe timed out job_id=%s clip_index=%d",
+                        clipset.job_id,
+                        index,
+                    )
+                    return False, present
+            if exists:
+                present.add(index)
         logger.info(
             "fan-in barrier job_id=%s present=%d expected=%d",
             clipset.job_id,
@@ -336,6 +359,7 @@ def assemble_recording(
     media_validator: MediaValidator | None = None,
     validation_timeout_seconds: float = 30.0,
     budget: VideoStageBudget | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> RecordingResult:
     """Download terminal clips into *output_dir* as a :class:`RecordingResult`.
 
@@ -393,14 +417,23 @@ def assemble_recording(
         )
         manifest_path = clip_manifest_blob_path(clipset.job_id, index)
         dest = output_dir / f"clip_{index:03d}.webm"
+
         # Only treat a clip as terminal when its manifest sentinel is present
         # (RFC §5). On the normal path the fan-in barrier already waited for it;
         # on a timeout a half-written ``.webm`` may exist without a manifest, in
         # which case we fill the gap rather than compose an unverified clip.
+        def _storage_call(call: Callable[[], Any]) -> Any:
+            if budget is None:
+                return call()
+            timeout = budget.operation_timeout(VideoStage.FALLBACK)
+            if timeout <= 0:
+                raise TimeoutError("fallback deadline reached during recording assembly")
+            return operation_runner(call, timeout)
+
         if (
-            scratch.blob_exists(manifest_path)
-            and scratch.blob_exists(clip_path)
-            and scratch.download_file(clip_path, dest)
+            _storage_call(lambda: scratch.blob_exists(manifest_path))
+            and _storage_call(lambda: scratch.blob_exists(clip_path))
+            and _storage_call(lambda: scratch.download_file(clip_path, dest))
         ):
             try:
                 media_validator(dest, expected_media, validation_timeout_seconds)

@@ -273,7 +273,21 @@ def run_owned_process(
             stdout, stderr = process.communicate(timeout=max(0.0, terminate_grace_seconds))
         except subprocess.TimeoutExpired:
             _signal_process_group(process, signal.SIGKILL)
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=max(0.0, reap_grace_seconds))
+            except subprocess.TimeoutExpired as reap_exc:
+                stdout = reap_exc.stdout
+                stderr = reap_exc.stderr
+                for pipe in (process.stdout, process.stderr, process.stdin):
+                    if pipe is not None:
+                        try:
+                            pipe.close()
+                        except OSError:
+                            pass
+                try:
+                    process.wait(timeout=max(0.0, reap_grace_seconds))
+                except subprocess.TimeoutExpired:
+                    pass
         if subreaper_enabled:
             _reap_adopted_group(process.pid, reap_grace_seconds)
         _remove_outputs(output_paths)

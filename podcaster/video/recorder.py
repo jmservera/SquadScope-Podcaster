@@ -62,9 +62,12 @@ from podcaster.video.clipset import (
     clip_manifest_blob_path,
     clipset_blob_path,
 )
+from podcaster.video.intermediates import StorageOperationTimeout, run_storage_operation
 from podcaster.video.process import (
     MediaEvidence,
+    OwnedCallableTimeout,
     collect_media_evidence,
+    run_owned_callable,
     run_owned_process,
 )
 
@@ -362,6 +365,69 @@ def _remaining_seconds(
     )
 
 
+def _remaining_finalization_seconds(
+    envelope: RecorderTimingEnvelope,
+    parent_budget: VideoStageBudget,
+    *,
+    admitted_at_utc: datetime,
+    admitted_at_monotonic: float,
+    utcnow: Callable[[], datetime],
+    monotonic: Callable[[], float],
+) -> float:
+    deadline = min(
+        envelope.browser_deadline_at_utc + timedelta(seconds=RECORDER_FINALIZATION_RESERVE_SECONDS),
+        envelope.budget.stage_deadline_at_utc(VideoStage.FALLBACK),
+    )
+    durable = (deadline - utcnow()).total_seconds()
+    initial = (deadline - admitted_at_utc).total_seconds()
+    local = initial - (monotonic() - admitted_at_monotonic)
+    return max(
+        0.0,
+        min(durable, local, parent_budget.remaining_seconds(VideoStage.FALLBACK)),
+    )
+
+
+def _run_queue_operation(call: Callable[[], Any], timeout_seconds: float) -> Any:
+    try:
+        return run_owned_callable(
+            call,
+            timeout_seconds,
+            process_name="recorder-queue-disposition",
+        )
+    except OwnedCallableTimeout as exc:
+        raise TimeoutError(
+            f"queue disposition exceeded {timeout_seconds:.3f}s recorder budget"
+        ) from exc
+
+
+def _delete_queue_message(
+    queue: Any,
+    message: QueueMessage,
+    *,
+    remaining_seconds: float,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = _run_queue_operation,
+) -> bool:
+    timeout = max(0.0, remaining_seconds)
+    if timeout <= 0:
+        logger.warning(
+            "retaining clip message with no finalization budget message_id=%s dequeue_count=%d",
+            message.message_id,
+            message.dequeue_count,
+        )
+        return False
+    try:
+        operation_runner(lambda: queue.delete_message(message), timeout)
+        return True
+    except Exception:
+        logger.warning(
+            "clip queue disposition failed; retaining message message_id=%s dequeue_count=%d",
+            message.message_id,
+            message.dequeue_count,
+            exc_info=True,
+        )
+        return False
+
+
 def load_clipset(scratch: StorageBackend, job_id: str) -> Clipset:
     """Load and parse the editor-written ``clipset.json`` for *job_id*."""
     payload = scratch.get_bytes(clipset_blob_path(job_id))
@@ -451,7 +517,9 @@ def record_clip(
     terminal_utcnow: Callable[[], datetime] = _utc_now,
     attempts: Mapping[str, Any] | None = None,
     admission_check: Callable[[], float] | None = None,
+    capture_admission_check: Callable[[], float] | None = None,
     finalize_attempts: Callable[[], Mapping[str, Any]] | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> ClipOutcome:
     """Record exactly one clip ``(job_id, clip_index)`` to ``video-scratch``.
 
@@ -480,6 +548,14 @@ def record_clip(
     if media_validator is None:
         media_validator = _validate_media
 
+    def _finalize(call: Callable[[], Any]) -> Any:
+        if admission_check is None:
+            return call()
+        remaining = admission_check()
+        if remaining <= 0:
+            raise StorageOperationTimeout("recorder deadline reached during clip finalization")
+        return operation_runner(call, remaining)
+
     with tempfile.TemporaryDirectory(prefix=f"clip-{clip_index:03d}-") as tmp:
         output_dir = Path(tmp)
         result = record_segment(segment, output_dir)
@@ -488,8 +564,12 @@ def record_clip(
             raise RuntimeError(
                 f"recorder produced no clip file for job_id={job_id} clip_index={clip_index}"
             )
+        if capture_admission_check is not None and capture_admission_check() <= 0:
+            raise TimeoutError("recorder deadline reached before clip finalization")
 
-        evidence = media_validator(video_path, max(0.001, float(timeout_seconds or 30.0)))
+        evidence = _finalize(
+            lambda: media_validator(video_path, max(0.001, float(timeout_seconds or 30.0)))
+        )
         if admission_check is not None and admission_check() <= 0:
             raise TimeoutError("recorder deadline reached before clip finalization")
         content_path = clip_content_blob_path(job_id, clip_index, evidence.sha256)
@@ -497,7 +577,7 @@ def record_clip(
         # Re-check the sentinel after the (potentially slow) record: a concurrent
         # recorder may have completed this clip while we worked. If so, leave the
         # authoritative clip/manifest pair untouched and skip.
-        if scratch.blob_exists(manifest_path):
+        if _finalize(lambda: scratch.blob_exists(manifest_path)):
             logger.info(
                 "terminal manifest appeared during recording; skipping write "
                 "job_id=%s clip_index=%d",
@@ -506,8 +586,8 @@ def record_clip(
             )
             return ClipOutcome(job_id, clip_index, OUTCOME_SKIPPED)
 
-        scratch.upload_file(content_path, video_path, _WEBM_CONTENT_TYPE)
-        if not _verify_size(scratch, content_path, evidence.size_bytes):
+        _finalize(lambda: scratch.upload_file(content_path, video_path, _WEBM_CONTENT_TYPE))
+        if not _finalize(lambda: _verify_size(scratch, content_path, evidence.size_bytes)):
             # Drop the torn upload so the manifest is never written over an
             # unverified clip; the message is retried (no manifest = not done).
             _best_effort_delete(scratch, content_path)
@@ -515,19 +595,21 @@ def record_clip(
                 f"clip size verification failed for job_id={job_id} clip_index={clip_index}"
             )
         try:
-            _verify_uploaded_content(
-                scratch,
-                content_path,
-                evidence,
-                output_dir / "content-readback.webm",
+            _finalize(
+                lambda: _verify_uploaded_content(
+                    scratch,
+                    content_path,
+                    evidence,
+                    output_dir / "content-readback.webm",
+                )
             )
         except Exception:
             _best_effort_delete(scratch, content_path)
             raise
         # Preserve the legacy raw path for old diagnostics/integration consumers.
         # New manifests bind and editors consume only the immutable content path.
-        scratch.upload_file(legacy_path, video_path, _WEBM_CONTENT_TYPE)
-        if not _verify_size(scratch, legacy_path, evidence.size_bytes):
+        _finalize(lambda: scratch.upload_file(legacy_path, video_path, _WEBM_CONTENT_TYPE))
+        if not _finalize(lambda: _verify_size(scratch, legacy_path, evidence.size_bytes)):
             _best_effort_delete(scratch, legacy_path)
             _best_effort_delete(scratch, content_path)
             raise RuntimeError(
@@ -542,27 +624,29 @@ def record_clip(
         )
         status = STATUS_FALLBACK if result.is_fallback else STATUS_SUCCESS
         if finalize_attempts is not None:
-            attempts = finalize_attempts()
+            attempts = _finalize(finalize_attempts)
         # Conditional create: never overwrite a terminal manifest another worker
         # may have just written (the .webm is content-addressed, so a duplicate
         # upload is harmless / last-write-wins same bytes).
-        wrote = _write_manifest_if_absent(
-            scratch,
-            manifest_path,
-            _clip_manifest_bytes(
-                manifest,
-                status=status,
-                recording=result,
-                media=evidence,
-                media_blob_path=content_path,
-                terminal_at_utc=terminal_at_utc or terminal_utcnow(),
-                attempts=attempts,
-            ),
-            _JSON_CONTENT_TYPE,
+        wrote = _finalize(
+            lambda: _write_manifest_if_absent(
+                scratch,
+                manifest_path,
+                _clip_manifest_bytes(
+                    manifest,
+                    status=status,
+                    recording=result,
+                    media=evidence,
+                    media_blob_path=content_path,
+                    terminal_at_utc=terminal_at_utc or terminal_utcnow(),
+                    attempts=attempts,
+                ),
+                _JSON_CONTENT_TYPE,
+            )
         )
 
     if not wrote:
-        winner = _read_manifest(scratch, manifest_path)
+        winner = _finalize(lambda: _read_manifest(scratch, manifest_path))
         if winner.get("media_blob_path") != content_path:
             _best_effort_delete(scratch, content_path)
         logger.info(
@@ -587,6 +671,8 @@ def write_fallback_manifest(
     terminal_at_utc: datetime | None = None,
     terminal_utcnow: Callable[[], datetime] = _utc_now,
     attempts: Mapping[str, Any] | None = None,
+    admission_check: Callable[[], float] | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> ClipOutcome:
     """Create immutable local fallback media, then CAS its terminal manifest.
 
@@ -611,6 +697,15 @@ def write_fallback_manifest(
         repo_url = None
 
     renderer = renderer or _render_static_fallback
+
+    def _finalize(call: Callable[[], Any]) -> Any:
+        if admission_check is None:
+            return call()
+        remaining = admission_check()
+        if remaining <= 0:
+            raise StorageOperationTimeout("recorder deadline reached during fallback finalization")
+        return operation_runner(call, remaining)
+
     media: MediaEvidence | None = None
     content_path: str | None = None
     render_error: str | None = None
@@ -621,19 +716,26 @@ def write_fallback_manifest(
             output_path = Path(tmp) / "fallback.webm"
             media = renderer(output_path, timeout_seconds)
             content_path = clip_content_blob_path(job_id, clip_index, media.sha256)
-            scratch.upload_file(content_path, output_path, _WEBM_CONTENT_TYPE)
-            if not _verify_size(scratch, content_path, media.size_bytes):
+            _finalize(lambda: scratch.upload_file(content_path, output_path, _WEBM_CONTENT_TYPE))
+            if not _finalize(lambda: _verify_size(scratch, content_path, media.size_bytes)):
                 _best_effort_delete(scratch, content_path)
                 raise RuntimeError("fallback content-addressed upload size mismatch")
-            _verify_uploaded_content(
-                scratch,
-                content_path,
-                media,
-                Path(tmp) / "fallback-readback.webm",
+            _finalize(
+                lambda: _verify_uploaded_content(
+                    scratch,
+                    content_path,
+                    media,
+                    Path(tmp) / "fallback-readback.webm",
+                )
             )
             # Keep the old per-index path readable, but never consume it for a
             # hash-bound terminal manifest.
-            scratch.upload_file(clip_blob_path(job_id, clip_index), output_path, _WEBM_CONTENT_TYPE)
+            legacy_path = clip_blob_path(job_id, clip_index)
+            _finalize(lambda: scratch.upload_file(legacy_path, output_path, _WEBM_CONTENT_TYPE))
+    except StorageOperationTimeout:
+        if content_path is not None:
+            _best_effort_delete(scratch, content_path)
+        raise
     except Exception as exc:  # noqa: BLE001 - fail closed without browser/network
         if content_path is not None:
             _best_effort_delete(scratch, content_path)
@@ -659,19 +761,21 @@ def write_fallback_manifest(
         repo_url=repo_url,
         is_fallback=True,
     )
-    wrote = _write_manifest_if_absent(
-        scratch,
-        manifest_path,
-        _clip_manifest_bytes(
-            manifest,
-            status=status,
-            failure_reason=reason if render_error is None else f"{reason}; {render_error}",
-            media=media,
-            media_blob_path=content_path,
-            terminal_at_utc=terminal_at,
-            attempts=attempts,
-        ),
-        _JSON_CONTENT_TYPE,
+    wrote = _finalize(
+        lambda: _write_manifest_if_absent(
+            scratch,
+            manifest_path,
+            _clip_manifest_bytes(
+                manifest,
+                status=status,
+                failure_reason=reason if render_error is None else f"{reason}; {render_error}",
+                media=media,
+                media_blob_path=content_path,
+                terminal_at_utc=terminal_at,
+                attempts=attempts,
+            ),
+            _JSON_CONTENT_TYPE,
+        )
     )
     if wrote:
         logger.warning(
@@ -682,7 +786,7 @@ def write_fallback_manifest(
             reason,
         )
     else:
-        winner = _read_manifest(scratch, manifest_path)
+        winner = _finalize(lambda: _read_manifest(scratch, manifest_path))
         if content_path is not None and winner.get("media_blob_path") != content_path:
             _best_effort_delete(scratch, content_path)
         logger.info(
@@ -708,13 +812,15 @@ def process_clip_message(
     monotonic: Callable[[], float] | None = None,
     media_validator: MediaValidator | None = None,
     fallback_renderer: FallbackRenderer | None = None,
+    queue_operation_runner: Callable[[Callable[[], Any], float], Any] = _run_queue_operation,
 ) -> ClipOutcome:
     """Process one ``video-clip-jobs`` message end-to-end.
 
-    * ``dequeue_count >= MAX_DEQUEUE_COUNT`` → write fallback manifest, delete msg.
-    * otherwise record the clip; delete the msg only on a terminal disposition
-      (recorded/skipped/fallback). On a transient error the message is **left**
-      on the queue for redelivery.
+    * ``dequeue_count >= MAX_DEQUEUE_COUNT`` → write fallback manifest, then try
+      bounded queue disposition with the remaining finalization budget.
+    * otherwise record the clip; only terminal dispositions
+      (recorded/skipped/fallback) attempt queue deletion. Failed/timed-out queue
+      deletion leaves the message for redelivery.
 
     A body that cannot be parsed into ``(job_id, clip_index)`` is unactionable
     poison: it is logged and **deleted** (mirroring
@@ -736,10 +842,6 @@ def process_clip_message(
 
     now_utc = utcnow()
     execution_key = f"{message.message_id}:{message.dequeue_count}"
-
-    if scratch.blob_exists(clip_manifest_blob_path(job_id, clip_index)):
-        queue.delete_message(message)
-        return ClipOutcome(job_id, clip_index, OUTCOME_SKIPPED)
 
     try:
         clipset = load_clipset(scratch, job_id)
@@ -774,7 +876,12 @@ def process_clip_message(
             renderer=fallback_renderer,
             terminal_utcnow=utcnow,
         )
-        queue.delete_message(message)
+        _delete_queue_message(
+            queue,
+            message,
+            remaining_seconds=30.0,
+            operation_runner=queue_operation_runner,
+        )
         return outcome
 
     remaining = _remaining_seconds(
@@ -785,6 +892,36 @@ def process_clip_message(
         utcnow=utcnow,
         monotonic=monotonic,
     )
+
+    def _remaining_finalization() -> float:
+        return _remaining_finalization_seconds(
+            envelope,
+            parent_budget,
+            admitted_at_utc=now_utc,
+            admitted_at_monotonic=admitted_at_monotonic,
+            utcnow=utcnow,
+            monotonic=monotonic,
+        )
+
+    if scratch.blob_exists(clip_manifest_blob_path(job_id, clip_index)):
+        _delete_queue_message(
+            queue,
+            message,
+            remaining_seconds=_remaining_finalization(),
+            operation_runner=queue_operation_runner,
+        )
+        return ClipOutcome(job_id, clip_index, OUTCOME_SKIPPED)
+
+    def _remaining_capture() -> float:
+        return _remaining_seconds(
+            envelope,
+            parent_budget,
+            admitted_at_utc=now_utc,
+            admitted_at_monotonic=admitted_at_monotonic,
+            utcnow=utcnow,
+            monotonic=monotonic,
+        )
+
     terminal_reason: str | None = None
     if message.dequeue_count >= MAX_DEQUEUE_COUNT:
         terminal_reason = f"poison: dequeue_count={message.dequeue_count} >= {MAX_DEQUEUE_COUNT}"
@@ -803,8 +940,14 @@ def process_clip_message(
             renderer=fallback_renderer,
             terminal_utcnow=utcnow,
             attempts=_load_attempts(scratch, job_id, clip_index),
+            admission_check=_remaining_finalization,
         )
-        queue.delete_message(message)
+        _delete_queue_message(
+            queue,
+            message,
+            remaining_seconds=_remaining_finalization(),
+            operation_runner=queue_operation_runner,
+        )
         return outcome
 
     def _finalize_attempts() -> Mapping[str, Any]:
@@ -830,14 +973,8 @@ def process_clip_message(
             media_validator=media_validator,
             terminal_utcnow=utcnow,
             attempts=_load_attempts(scratch, job_id, clip_index),
-            admission_check=lambda: _remaining_seconds(
-                envelope,
-                parent_budget,
-                admitted_at_utc=now_utc,
-                admitted_at_monotonic=admitted_at_monotonic,
-                utcnow=utcnow,
-                monotonic=monotonic,
-            ),
+            admission_check=_remaining_finalization,
+            capture_admission_check=_remaining_capture,
             finalize_attempts=_finalize_attempts,
         )
     except Exception as exc:  # noqa: BLE001 - retry once, then terminalize
@@ -877,12 +1014,23 @@ def process_clip_message(
                 renderer=fallback_renderer,
                 terminal_utcnow=utcnow,
                 attempts=_load_attempts(scratch, job_id, clip_index),
+                admission_check=_remaining_finalization,
             )
-            queue.delete_message(message)
+            _delete_queue_message(
+                queue,
+                message,
+                remaining_seconds=_remaining_finalization(),
+                operation_runner=queue_operation_runner,
+            )
             return outcome
         return ClipOutcome(job_id, clip_index, OUTCOME_RETRY)
 
-    queue.delete_message(message)
+    _delete_queue_message(
+        queue,
+        message,
+        remaining_seconds=_remaining_finalization(),
+        operation_runner=queue_operation_runner,
+    )
     return outcome
 
 
@@ -1159,7 +1307,7 @@ def main(argv: list[str] | None = None) -> int:
     queue = create_clip_queue_backend()
     if queue is None:
         raise RecorderConfigError("clip queue is not configured (set PODCASTER_STORAGE_QUEUE_URL)")
-    outcomes = drain(queue, scratch)
+    outcomes = drain(queue, scratch, max_messages=1)
     logger.info("recorder drained %d clip message(s)", len(outcomes))
     return 0
 
