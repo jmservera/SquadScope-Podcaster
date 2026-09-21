@@ -10,11 +10,11 @@
 
 ## Execution Status
 
-* Status: Complete — P07 review remediation implemented and validated
+* Status: Complete — P07 review remediation implemented and locally QA-approved
 * Declared invocation scope: Full plan
 * Completed scope markers: P01-P07 and all tasks
 * All remaining active-plan markers: None
-* Status basis: As of this remediation commit, the five correctness findings open at the start of this cycle are implemented and locally validated. Live PR thread state is queried after push rather than copied here as a count that can immediately drift.
+* Status basis: The five correctness findings open at the start of this cycle are implemented and locally validated. Fry's local QA gate approved the repaired branch; hosted CI and operator acceptance have not been observed. Live PR thread state is queried after push rather than copied here as a count that can immediately drift.
 
 ## Execution Summary
 
@@ -178,7 +178,7 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 | `pytest tests/ -q` after P06 | Full repository | Passed | 3142 passed, 2 skipped, 2 deselected; one existing httpx deprecation warning |
 | Full Ruff/format/compile/diff after P06 | Python and complete diff | Passed | All checks passed; 187 files formatted |
 | P07 five-finding focused regressions | ACA config, editor, generation, distribution, YouTube | Passed locally | 8 passed |
-| P07 expanded video suites | Deploy/video runner/editor/video generation/YouTube/distribution | Passed locally | 515 passed, 2 deselected |
+| P07 expanded video suites | Deploy/video runner/editor/video generation/YouTube/distribution plus scale-out and publication integrations | Passed locally | Fry rerun: 522 passed, 2 deselected |
 | `pytest tests/ -q` after P07 | Full repository | Passed locally | 3223 passed, 2 skipped, 2 deselected; one existing httpx deprecation warning |
 | P07 focused Ruff/format | Changed Python and focused tests | Passed locally | All checks passed; 10 files already formatted |
 | P07 Bicep build | `infra/modules/aca-video.bicep` and `infra/main.bicep` | Passed locally | Both compiled; existing nullable-module BCP318 warning in `main.bicep` |
@@ -189,8 +189,8 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P01-P07 implementation complete.
-* Completed-work evidence and handoff prose: Current through this P07 remediation.
+* Plan markers and phase details: P01-P07 implementation complete; Fry's local QA review is approved.
+* Completed-work evidence and handoff prose: Current through pushed remediation commits `234807b` and `e2bb790`.
 * Validation, blockers, remaining work, and follow-up items: Current for the five-finding correction cycle.
 * Review readiness: Source implementation and local validation are complete.
 
@@ -200,14 +200,15 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 
 ## Remaining Work
 
-* Push this remediation commit, reply to and resolve each targeted PR thread after verifying the pushed fix, then re-query PR #682 for newly surfaced correctness findings.
+* Observe hosted CI, complete any remaining independent review, reply to and resolve each targeted PR thread after verifying the pushed fix, then re-query PR #682 for newly surfaced correctness findings.
 * Do not merge or deploy as part of this remediation.
 
 ## Follow-Up Items
 
 * Canonical plan list: .copilot-tracking/plans/2026-09-15/video-stage-budget-redesign-plan.md, `## Follow-Up Items`
 * Separate distribution worker with atomic outbox/claim, reconcile-before-mutate, separate budget/queue/lease/recovery, and provider crash matrix: #681.
-* Implementation commit: `4033df6`.
+* Initial implementation commit: `4033df6`.
+* P07 remediation commits: `234807b`, `e2bb790`.
 * Pushed branch: `origin/squad/video-stage-budget-redesign`.
 * Unmerged pull request: #682.
 * Review-thread source of truth: live PR #682 GraphQL state after push; no unresolved count is duplicated in this record.
@@ -217,7 +218,7 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 
 * Implementation execution status: Complete.
 * Declared scope and markers: Full plan; P01-P07 complete.
-* Validation coverage: P07 passed focused and expanded regressions, full pytest, touched-file Ruff and format, Bicep builds, and changed-module Checkov. Full-infra Checkov retains seven unrelated baseline findings.
+* Validation coverage: P07 passed focused and expanded regressions, full pytest, touched-file Ruff and format, Bicep builds, and changed-module Checkov. Fry independently reran 522 targeted/integration tests. Full-infra Checkov retains seven unrelated baseline findings; hosted CI and operator acceptance have not been observed.
 * Blockers: None.
 * Current plan and detail updates: P07 review-remediation implementation and validation are complete.
 * Planning and critique state: P07 complete.
