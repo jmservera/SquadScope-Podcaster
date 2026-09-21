@@ -222,9 +222,13 @@ def _attempt_document(payload: bytes | None) -> dict[str, Any]:
             "executions": [],
         }
     document = json.loads(payload.decode("utf-8"))
+    try:
+        schema_version = int(document.get("schema_version", 0))
+    except (AttributeError, OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("invalid recorder attempt history") from exc
     if (
         not isinstance(document, dict)
-        or int(document.get("schema_version", 0)) != ATTEMPT_STATE_SCHEMA_VERSION
+        or schema_version != ATTEMPT_STATE_SCHEMA_VERSION
         or not isinstance(document.get("executions"), list)
         or any(not isinstance(execution, Mapping) for execution in document["executions"])
     ):

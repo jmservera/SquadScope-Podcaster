@@ -572,6 +572,30 @@ def test_process_message_malformed_attempt_entry_terminalizes(tmp_path) -> None:
     assert manifest["status"] == recorder.STATUS_RECORDING_INSUFFICIENT
 
 
+def test_process_message_overflow_attempt_schema_terminalizes(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    scratch.put_bytes(
+        recorder.clip_attempts_blob_path(JOB_ID, 1),
+        b'{"schema_version":1e400,"executions":[]}',
+        "application/json",
+    )
+    queue = FakeQueue()
+    message = _message(1)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_INSUFFICIENT
+    assert queue.deleted == [message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["status"] == recorder.STATUS_RECORDING_INSUFFICIENT
+
+
 def test_drain_processes_until_empty(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)

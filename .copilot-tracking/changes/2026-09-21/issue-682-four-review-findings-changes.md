@@ -10,16 +10,18 @@
 
 ## Execution Status
 
-* Status: Partial full plan; implementation, independent revision, final review, and pre-commit validation are complete.
+* Status: Partial full plan; the Fry-rejected recorder numeric schema correction and validation are complete.
 * Declared invocation scope: full plan
-* Completed scope markers: P01, P01-T01, P01-T02, P01-T02-R01, P01-T03, P01-T04
+* Completed scope markers: P01, P01-T01, P01-T02, P01-T02-R01, P01-T02-R02, P01-T03, P01-T04
 * All remaining active-plan markers: none
-* Remaining delivery steps: Commit/push and exact GitHub review-thread replies/resolution are pending.
-* Status basis: All four production remediations and the independent recorder revision are approved and validated; no commit, push, or GitHub thread closure has occurred in this finalization step.
+* Remaining delivery steps: Create and push the single correction commit, reply to the recorder review thread, and re-query PR head/unresolved threads.
+* Status basis: Numeric conversion failures now enter the existing permanent malformed-history taxonomy; focused and expanded validations pass.
 
 ## Execution Summary
 
 All four exact unresolved PR findings are implemented in production code. Hermes initially rejected the recorder artifact because malformed attempt-history entries could escape permanent-failure classification. Under strict reviewer lockout, Farnsworth independently revised that validation and added regression coverage. Hermes subsequently returned final APPROVE for all four fixes. Fry's final pre-commit validation passed; commit/push and the four GitHub thread lifecycle actions remain pending.
+
+Fry later rejected requirement 2 because non-finite numeric schema input still escapes the permanent malformed-state taxonomy. Hermes owns this independent revision; Bender is locked out. The correction is limited to numeric schema parsing in `podcaster/video/recorder.py`, one focused recorder regression, and this plan/changes evidence.
 
 ## Implementation-Time Plan and Detail Updates
 
@@ -69,6 +71,25 @@ All four exact unresolved PR findings are implemented in production code. Hermes
 * Independent revision: Farnsworth owned the correction without Hermes contributing to the implementation.
 * Final approval state: Hermes re-reviewed the revised artifact and returned APPROVE; all four fixes are approved.
 
+### Opened Fry-rejected numeric schema correction
+
+* Related markers: P01-T02, P01-T02-R02
+* Approved write boundary: `podcaster/video/recorder.py`, `tests/test_recorder.py`, and the existing 2026-09-21 plan/changes artifacts.
+* What must change: Attempt-history `schema_version` parsing must reject overflow, non-finite, and malformed values through the existing permanent malformed-history path rather than allowing numeric conversion exceptions to become retries.
+* Triggering evidence: JSON input containing `{"schema_version":1e400,"executions":[]}` decodes the schema value as positive infinity; `int()` raises `OverflowError`, which `_begin_execution` does not classify as permanent.
+* Validation intent: Run the focused regression, full recorder module, the four affected video modules when reasonable, Ruff check/format-check on touched Python, and `git diff --check`.
+* Revision ownership: Hermes independently owns this correction; Bender must not contribute.
+* Blockers: None.
+
+### Corrected numeric schema error taxonomy
+
+* Related markers: P01-T02, P01-T02-R02
+* Files: `podcaster/video/recorder.py`, `tests/test_recorder.py`
+* What changed and why: `_attempt_document` now normalizes schema conversion failures, including `OverflowError` from non-finite JSON numbers, to `ValueError`. `_begin_execution` already maps that parser error to `PermanentRecorderSetupError`, so malformed durable input follows the established terminal fallback and queue-deletion path.
+* Regression evidence: The exact durable payload `{"schema_version":1e400,"executions":[]}` returns `recording_insufficient`, writes the terminal manifest, and deletes the queue message.
+* Scope review: No operation-runner, fake-clock, retry, or unrelated video behavior changed.
+* Full-suite decision: Not repeated because the correction is isolated to attempt-history schema conversion and the focused, full recorder, and complete four-module affected suites passed; the prior 3215-test full-suite evidence remains applicable.
+
 ### Expanded composed checkpoint identity
 
 * Related markers: P01-T03
@@ -94,20 +115,25 @@ All four exact unresolved PR findings are implemented in production code. Hermes
 | Editor module | P01-T01 | Passed | `pytest -q --tb=short tests/test_editor.py` — 36 passed in 1.05s. |
 | Rejected recorder edge case | P01-T02-R01 | Passed | `python3 -m pytest -q --tb=short tests/test_recorder.py::test_process_message_malformed_attempt_entry_terminalizes` — 1 passed in 0.30s. |
 | Recorder module | P01-T02 | Passed | `python3 -m pytest -q --tb=short tests/test_recorder.py` — 59 passed in 9.17s, including preserved transient storage/time-out redelivery coverage. |
+| Numeric schema overflow regression | P01-T02-R02 | Passed | `python3 -m pytest -q --tb=short tests/test_recorder.py::test_process_message_overflow_attempt_schema_terminalizes` — 1 passed in 0.29s. |
+| Recorder module after numeric correction | P01-T02-R02 | Passed | `python3 -m pytest -q --tb=short tests/test_recorder.py` — 60 passed in 9.68s. |
 | Compose module | P01-T03 | Passed | `pytest -q --tb=short tests/test_video_compose.py` — 304 passed in 5.62s. |
 | Intermediates module | P01-T04 | Passed | `pytest -q --tb=short tests/test_video_intermediates.py` — 41 passed in 1.47s. |
 | Ruff | All eight touched Python files | Passed | Fry final run: `ruff check` passed; `ruff format --check` reported 8 files formatted. |
 | Expanded video suite | P01 | Passed | Fry final affected-module grouping: 440 tests passed in 17.64s pytest time (18.24s wall). |
+| Expanded video suite after numeric correction | P01-T02-R02 | Passed | `python3 -m pytest -q --tb=short tests/test_editor.py tests/test_recorder.py tests/test_video_compose.py tests/test_video_intermediates.py` — 441 passed in 17.01s. |
 | Full repository suite | Repository | Passed | `pytest tests/ -q --basetemp=.test-all` — 3215 passed, 2 skipped, 2 deselected in 249.19s (4:10.65 wall). |
+| Full repository suite repeat | Repository | Skipped | Tightly local parser-taxonomy correction is covered by the focused regression, 60-test recorder suite, and 441-test affected video suite; prior full-suite evidence remains applicable. |
 | Diff review | Full shared change | Passed | Final scope review found no scope creep; `git diff --check` passed. |
+| Ruff after numeric correction | P01-T02-R02 | Passed | `ruff check podcaster/video/recorder.py tests/test_recorder.py` and `ruff format --check podcaster/video/recorder.py tests/test_recorder.py` — all checks passed; 2 files already formatted. |
 | Independent security review | P01-T02-R01 and all four fixes | Passed | Hermes' initial rejection was corrected under strict reviewer lockout by Farnsworth; Hermes' final disposition is APPROVE. |
 
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P01, P01-T01, P01-T02, P01-T02-R01, P01-T03, and P01-T04 are complete; no separate phase details required.
+* Plan markers and phase details: P01, P01-T01, P01-T02, P01-T02-R01, P01-T02-R02, P01-T03, and P01-T04 are complete; no separate phase details required.
 * Completed-work evidence and handoff prose: Current.
 * Validation, blockers, remaining work, and follow-up items: Current.
-* Review readiness: Hermes APPROVE and Fry validation are complete; the artifact is ready for commit/push and subsequent GitHub thread closure.
+* Review readiness: The independently owned Hermes correction and required validation are complete; the artifact is ready for commit/push and recorder-thread evidence reply.
 
 ## Blockers
 
@@ -115,8 +141,8 @@ All four exact unresolved PR findings are implemented in production code. Hermes
 
 ## Remaining Work
 
-* Create the conventional commit and push it to `origin/squad/video-stage-budget-redesign`.
-* Reply to and resolve only the exact four identified GitHub review threads, then re-query unresolved threads.
+* Create the conventional correction commit and push it to `origin/squad/video-stage-budget-redesign`.
+* Reply to recorder thread `PRRT_kwDOSzuis86kim9A`, then re-query PR head and all unresolved threads without changing unrelated resolution state.
 
 ## Follow-Up Items
 
@@ -125,12 +151,12 @@ All four exact unresolved PR findings are implemented in production code. Hermes
 
 ## Return-to-Caller State
 
-* Implementation execution status: Partial full plan; the complete production-code scope is implemented, independently revised, approved, and validated.
-* Declared scope and markers: Full plan; P01 and P01-T01 through P01-T04 complete; no active implementation markers remain.
-* Validation coverage: Fry final results are 15 focused tests passed in 0.71s pytest/1.38s wall, 440 affected-module tests passed in 17.64s pytest/18.24s wall, Ruff check passed, Ruff format check reported 8 files formatted, and `git diff --check` passed.
+* Implementation execution status: Partial full plan; the numeric schema correction is implemented and validated, with delivery actions pending.
+* Declared scope and markers: Full plan; P01 and P01-T01, P01-T02, P01-T02-R01, P01-T02-R02, P01-T03, and P01-T04 complete; no active implementation markers remain.
+* Validation coverage: Exact overflow regression 1 passed, recorder module 60 passed, affected four-module video suite 441 passed, Ruff check/format-check passed on the two touched Python files, and `git diff --check` passed.
 * Blockers: None.
-* Current plan and detail updates: P01 and its implementation tasks are complete; focused tests, affected video grouping, Ruff, diff review, and Hermes final approval are complete; commit/push and thread lifecycle remain unchecked.
-* Planning and critique state: Hermes initially rejected the recorder artifact, strict reviewer lockout was observed, Farnsworth independently revised it, and Hermes returned final APPROVE.
+* Current plan and detail updates: P01 and all implementation tasks, including P01-T02-R02, are complete; commit/push and GitHub recorder-thread evidence remain unchecked.
+* Planning and critique state: Fry's numeric overflow rejection was corrected independently by Hermes under the Bender lockout.
 * Follow-up items: None.
-* Review readiness or no-handoff reason: Pre-commit RPI evidence is finalized and ready for delivery continuation; GitHub thread closure must wait for the pending commit/push.
-* Continuation owner: Caller.
+* Review readiness or no-handoff reason: Pre-commit correction evidence is finalized and ready for delivery continuation; the recorder-thread reply must cite the pending commit.
+* Continuation owner: Hermes.
