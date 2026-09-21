@@ -49,6 +49,7 @@ from podcaster.video.budget import VideoStage, VideoStageBudget
 from podcaster.video.clip_manifest import CLIP_MANIFEST_SCHEMA_VERSION
 from podcaster.video.clipset import (
     Clipset,
+    ClipsetJobMismatchError,
     clip_blob_path,
     clip_content_blob_path,
     clip_manifest_blob_path,
@@ -224,7 +225,9 @@ def plan_or_load_clipset(
     # over our freshly-planned one (immutability), our plan wins when absent.
     raw = scratch.get_bytes(path) or written
     try:
-        clipset = Clipset.from_bytes(raw)
+        clipset = Clipset.from_bytes(raw, expected_job_id=job_id)
+    except ClipsetJobMismatchError:
+        raise
     except (TypeError, ValueError):
         if budget is None or not budget.admit(VideoStage.PREFLIGHT).allowed:
             raise

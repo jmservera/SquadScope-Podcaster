@@ -31,6 +31,7 @@ from podcaster.video.recorder import (
     OUTCOME_RECORDED,
     OUTCOME_RETRY,
     OUTCOME_SKIPPED,
+    PermanentRecorderSetupError,
     RecordResult,
     process_clip_message,
     record_clip,
@@ -136,6 +137,63 @@ def test_record_clip_writes_clip_then_manifest(tmp_path) -> None:
     assert manifest["repo_url"] == "https://github.com/octo/api"
     assert manifest["duration_ms"] == 12345
     assert manifest["media_blob_path"].endswith(f"/{manifest['media']['sha256']}.webm")
+
+
+def test_record_clip_rejects_cross_job_clipset_before_recording(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    foreign = Clipset.from_segments(
+        "another-job",
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+        budget=VideoStageBudget.start().projection,
+    )
+    scratch.put_bytes(
+        clipset_blob_path(JOB_ID),
+        foreign.to_json_bytes(),
+        "application/json",
+    )
+    record, calls = _recorder()
+
+    with pytest.raises(PermanentRecorderSetupError, match="invalid recorder clipset"):
+        record_clip(JOB_ID, 0, scratch=scratch, record_segment=record)
+
+    assert calls == []
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+    assert not scratch.blob_exists(clip_blob_path("another-job", 0))
+
+
+def test_process_message_foreign_clipset_terminalizes_expected_job_and_deletes(
+    tmp_path,
+) -> None:
+    scratch = _scratch(tmp_path)
+    foreign_job_id = "another-job"
+    foreign = Clipset.from_segments(
+        foreign_job_id,
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+        budget=VideoStageBudget.start().projection,
+    )
+    scratch.put_bytes(
+        clipset_blob_path(JOB_ID),
+        foreign.to_json_bytes(),
+        "application/json",
+    )
+    record, calls = _recorder()
+    queue = FakeQueue()
+    message = _message(0)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert calls == []
+    assert queue.deleted == [message]
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+    assert not scratch.blob_exists(clip_manifest_blob_path(foreign_job_id, 0))
+    assert not scratch.blob_exists(clip_blob_path(foreign_job_id, 0))
 
 
 @pytest.mark.parametrize("stop_at", range(1, 9))

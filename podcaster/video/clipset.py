@@ -26,6 +26,11 @@ from podcaster.video.sync_plan import RepoReference, VideoSegment
 #: backward-compatible additions, the major for breaking changes.
 CLIPSET_SCHEMA_VERSION = "squadscope-podcaster-clipset-v1"
 
+
+class ClipsetJobMismatchError(ValueError):
+    """Raised when a clipset is loaded from another job's storage path."""
+
+
 #: Root prefix for per-job scratch artifacts (matches
 #: :data:`podcaster.video.intermediates.SCRATCH_ROOT`).
 SCRATCH_ROOT = "video-jobs"
@@ -221,18 +226,29 @@ class Clipset:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Clipset":
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        expected_job_id: str,
+    ) -> "Clipset":
         if not isinstance(data, dict):
             raise ValueError("clipset payload must be a JSON object")
         if data.get("schema_version") != CLIPSET_SCHEMA_VERSION:
             raise ValueError("unknown or legacy clipset schema version")
+        job_id = _clean_job_id(str(data["job_id"]))
+        expected = _clean_job_id(expected_job_id)
+        if job_id != expected:
+            raise ClipsetJobMismatchError(
+                f"clipset job_id {job_id!r} does not match expected job_id {expected!r}"
+            )
         clips = tuple(ClipPlanEntry.from_dict(c) for c in data.get("clips", []))
         declared = data.get("count")
         if declared is not None and int(declared) != len(clips):
             raise ValueError(f"clipset count {declared} does not match {len(clips)} clip entries")
         raw_budget = data.get("video_budget")
         return cls(
-            job_id=_clean_job_id(str(data["job_id"])),
+            job_id=job_id,
             clips=clips,
             budget=(
                 BudgetProjection.from_dict(raw_budget) if isinstance(raw_budget, dict) else None
@@ -244,10 +260,18 @@ class Clipset:
         return json.dumps(self.to_dict(), separators=(",", ":")).encode("utf-8")
 
     @classmethod
-    def from_bytes(cls, payload: bytes | None) -> "Clipset":
+    def from_bytes(
+        cls,
+        payload: bytes | None,
+        *,
+        expected_job_id: str,
+    ) -> "Clipset":
         if not payload:
             raise ValueError("clipset.json was empty or missing")
-        return cls.from_dict(json.loads(payload.decode("utf-8")))
+        return cls.from_dict(
+            json.loads(payload.decode("utf-8")),
+            expected_job_id=expected_job_id,
+        )
 
 
 def _opt_str(value: Any) -> str | None:

@@ -75,6 +75,7 @@ from podcaster.video.budget import (
     VideoStage,
     VideoStageBudget,
 )
+from podcaster.video.clipset import Clipset, ClipsetJobMismatchError, clipset_blob_path
 from podcaster.video.distribution import (
     ArchiveResult,
     DistributionResult,
@@ -128,6 +129,7 @@ REASON_REQUIRED_YOUTUBE_FAILURE = "required_youtube_delivery_failed"
 REASON_INVALID_PUBLICATION_IDENTITY = "invalid_publication_identity"
 REASON_PROVIDER_ADMISSION_DENIED = "provider_admission_denied"
 REASON_EVIDENCE_DEADLINE_REACHED = "evidence_deadline_reached"
+REASON_RENDERED_PENDING_INPUT_MISMATCH = "rendered_pending_input_identity_mismatch"
 
 RENDERED_PENDING_SCHEMA_VERSION = 1
 TIMING_EVIDENCE_MAX_EVENTS = 256
@@ -693,7 +695,10 @@ def _render_source_facts(manifest: dict[str, Any], script: str) -> dict[str, Any
 
 def _render_clipset_facts(plan: Any) -> dict[str, Any]:
     segments = []
-    for segment in getattr(plan, "segments", ()):
+    source_segments = getattr(plan, "segments", None)
+    if source_segments is None:
+        source_segments = tuple(clip.to_segment() for clip in getattr(plan, "clips", ()))
+    for segment in source_segments:
         repo = getattr(segment, "repo", None)
         segments.append(
             {
@@ -710,6 +715,8 @@ def _render_clipset_facts(plan: Any) -> dict[str, Any]:
 def _render_audio_facts(
     audio_path: Path | None,
     audio_duration: float | None,
+    *,
+    blob_path: str | None = None,
 ) -> dict[str, Any]:
     if audio_path is None:
         return {"present": False}
@@ -719,10 +726,150 @@ def _render_audio_facts(
             digest.update(chunk)
     return {
         "present": True,
+        "blob_path": blob_path,
         "size_bytes": audio_path.stat().st_size,
         "sha256": digest.hexdigest(),
         "duration_seconds": audio_duration,
     }
+
+
+def _audio_artifact_identity(
+    manifest: dict[str, Any],
+    job_id: str,
+) -> tuple[str, int, str] | None:
+    artifacts = manifest.get("artifacts")
+    mp3_path = None
+    if isinstance(artifacts, dict):
+        mp3_path = next(
+            (path for path in artifacts if isinstance(path, str) and path.endswith(".mp3")),
+            None,
+        )
+    if mp3_path is None:
+        mp3_path = f"jobs/{job_id}/audio/{job_id}.mp3"
+    artifact = artifacts.get(mp3_path) if isinstance(artifacts, dict) else None
+    if not isinstance(artifact, dict):
+        return None
+    size = artifact.get("size_bytes")
+    sha256 = artifact.get("sha256")
+    if (
+        not isinstance(size, int)
+        or isinstance(size, bool)
+        or size <= 0
+        or not isinstance(sha256, str)
+        or len(sha256) != 64
+        or any(char not in "0123456789abcdef" for char in sha256)
+    ):
+        return None
+    return mp3_path, size, sha256
+
+
+def _require_render_input_identity_evidence(
+    record: dict[str, Any],
+    *,
+    job_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    clipset = record.get("clipset")
+    audio = record.get("audio")
+    if (
+        not isinstance(clipset, dict)
+        or not isinstance(clipset.get("count"), int)
+        or clipset["count"] < 0
+        or not isinstance(clipset.get("sha256"), str)
+        or len(clipset["sha256"]) != 64
+        or any(char not in "0123456789abcdef" for char in clipset["sha256"])
+    ):
+        raise TransientVideoError(
+            f"rendered pending clipset identity is missing for job_id={job_id}"
+        )
+    if not isinstance(audio, dict) or not isinstance(audio.get("present"), bool):
+        raise TransientVideoError(f"rendered pending audio identity is missing for job_id={job_id}")
+    if audio["present"] and (
+        not isinstance(audio.get("size_bytes"), int)
+        or audio["size_bytes"] <= 0
+        or not isinstance(audio.get("blob_path"), str)
+        or not audio["blob_path"]
+        or not isinstance(audio.get("sha256"), str)
+        or len(audio["sha256"]) != 64
+        or any(char not in "0123456789abcdef" for char in audio["sha256"])
+        or not isinstance(audio.get("duration_seconds"), (int, float))
+        or isinstance(audio.get("duration_seconds"), bool)
+        or audio["duration_seconds"] <= 0
+    ):
+        raise TransientVideoError(
+            f"rendered pending audio identity is incomplete for job_id={job_id}"
+        )
+    return clipset, audio
+
+
+def _current_render_input_facts(
+    *,
+    job_id: str,
+    manifest: dict[str, Any],
+    script: str,
+    storage: StorageBackend,
+    budget: VideoStageBudget,
+    recorded_audio: dict[str, Any],
+    clipset_storage: StorageBackend | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        authoritative_audio = _audio_artifact_identity(manifest, job_id)
+        if authoritative_audio is None:
+            current_audio = {"present": False}
+            audio_duration = _get_audio_duration(manifest) or 300.0
+        else:
+            blob_path, size_bytes, sha256 = authoritative_audio
+            duration = recorded_audio.get("duration_seconds")
+            current_audio = {
+                "present": True,
+                "blob_path": blob_path,
+                "size_bytes": size_bytes,
+                "sha256": sha256,
+                "duration_seconds": duration,
+            }
+            audio_duration = float(duration)
+
+        if clipset_storage is not None:
+            payload = clipset_storage.get_bytes(clipset_blob_path(job_id))
+            clipset = Clipset.from_bytes(payload, expected_job_id=job_id)
+            return _render_clipset_facts(clipset), current_audio
+
+        pinned_article = _load_pinned_article(manifest, storage, job_id)
+        realized_metadata = _load_realized_metadata(manifest, job_id, storage)
+        weekly_url = weekly_url_from_job_id(job_id)
+        used_metadata_plan = False
+        if realized_metadata is not None and realized_metadata.topics:
+            plan = plan_from_realized_metadata(
+                realized_metadata,
+                audio_duration,
+                weekly_url=weekly_url,
+                source_url=extract_source_url(script) if pinned_article is None else None,
+            )
+            used_metadata_plan = True
+        else:
+            script_repos = extract_repo_urls(script)
+            pinned_repos = extract_repo_urls(pinned_article) if pinned_article is not None else []
+            if not script_repos and pinned_article is not None:
+                plan = (
+                    generate_episode_plan(pinned_repos, audio_duration)
+                    if pinned_repos
+                    else generate_generic_plan(audio_duration)
+                )
+            else:
+                plan = plan_from_script_timed(script, audio_duration)
+        if not used_metadata_plan:
+            plan = prepend_weekly_segment(plan, job_id, use_live_source=True)
+        if budget.admit(VideoStage.PREFLIGHT).allowed:
+            plan = annotate_removed_repos(
+                plan,
+                remaining_seconds=lambda: budget.remaining_seconds(VideoStage.PREFLIGHT),
+            )
+        return _render_clipset_facts(plan), current_audio
+    except ClipsetJobMismatchError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise TransientVideoError(
+            f"unable to recompute rendered pending input identity for job_id={job_id}"
+        ) from exc
 
 
 def _rendered_pending_payload(
@@ -737,6 +884,12 @@ def _rendered_pending_payload(
     run_id: str | None,
     budget: VideoStageBudget,
 ) -> dict[str, Any]:
+    audio_identity = _audio_artifact_identity(manifest, job_id)
+    if audio_path is not None and audio_identity is None:
+        raise TransientVideoError(
+            f"cannot persist rendered pending audio without authoritative identity "
+            f"for job_id={job_id}"
+        )
     core = {
         "schema_version": RENDERED_PENDING_SCHEMA_VERSION,
         "status": STATUS_RENDERED_PENDING_DISTRIBUTION,
@@ -750,7 +903,11 @@ def _rendered_pending_payload(
         },
         "source": _render_source_facts(manifest, script),
         "clipset": _render_clipset_facts(plan),
-        "audio": _render_audio_facts(audio_path, audio_duration),
+        "audio": _render_audio_facts(
+            audio_path,
+            audio_duration,
+            blob_path=audio_identity[0] if audio_identity is not None else None,
+        ),
         "run": {
             "editor_run_id": run_id or "inline",
             "persisted_at_utc": budget.now_utc().isoformat().replace("+00:00", "Z"),
@@ -1287,6 +1444,7 @@ def _resume_rendered_pending_distribution(
     *,
     media_probe: Callable[[Path, float], ProbeEvidence] | None,
     storage_operation_runner: Callable[[Callable[[], Any], float], Any] | None,
+    clipset_storage: StorageBackend | None = None,
 ) -> VideoOutcome | None:
     generation = manifest.get("generation")
     if not isinstance(generation, dict):
@@ -1315,6 +1473,80 @@ def _resume_rendered_pending_distribution(
     script = raw_script.decode("utf-8")
     if record.get("source") != _render_source_facts(manifest, script):
         raise TransientVideoError(f"rendered pending source identity mismatch for job_id={job_id}")
+    try:
+        recorded_clipset, recorded_audio = _require_render_input_identity_evidence(
+            record,
+            job_id=job_id,
+        )
+    except TransientVideoError as exc:
+        record_state(
+            {
+                "status": STATUS_FAILED,
+                "reason": REASON_RENDERED_PENDING_INPUT_MISMATCH,
+                "details": str(exc),
+                "at": _iso(budget.now_utc()),
+            },
+        )
+        raise PermanentVideoError(
+            str(exc),
+            reason=REASON_RENDERED_PENDING_INPUT_MISMATCH,
+            details={"job_id": job_id},
+        ) from exc
+    try:
+        current_clipset, current_audio = _current_render_input_facts(
+            job_id=job_id,
+            manifest=manifest,
+            script=script,
+            storage=storage,
+            budget=budget,
+            recorded_audio=recorded_audio,
+            clipset_storage=clipset_storage,
+        )
+    except ClipsetJobMismatchError as exc:
+        message = f"rendered pending clipset belongs to another job for job_id={job_id}"
+        record_state(
+            {
+                "status": STATUS_FAILED,
+                "reason": REASON_RENDERED_PENDING_INPUT_MISMATCH,
+                "details": message,
+                "at": _iso(budget.now_utc()),
+            },
+        )
+        raise PermanentVideoError(
+            message,
+            reason=REASON_RENDERED_PENDING_INPUT_MISMATCH,
+            details={"job_id": job_id, "identity": "clipset"},
+        ) from exc
+    if recorded_clipset != current_clipset:
+        message = f"rendered pending clipset identity mismatch for job_id={job_id}"
+        record_state(
+            {
+                "status": STATUS_FAILED,
+                "reason": REASON_RENDERED_PENDING_INPUT_MISMATCH,
+                "details": message,
+                "at": _iso(budget.now_utc()),
+            },
+        )
+        raise PermanentVideoError(
+            message,
+            reason=REASON_RENDERED_PENDING_INPUT_MISMATCH,
+            details={"job_id": job_id, "identity": "clipset"},
+        )
+    if recorded_audio != current_audio:
+        message = f"rendered pending audio identity mismatch for job_id={job_id}"
+        record_state(
+            {
+                "status": STATUS_FAILED,
+                "reason": REASON_RENDERED_PENDING_INPUT_MISMATCH,
+                "details": message,
+                "at": _iso(budget.now_utc()),
+            },
+        )
+        raise PermanentVideoError(
+            message,
+            reason=REASON_RENDERED_PENDING_INPUT_MISMATCH,
+            details={"job_id": job_id, "identity": "audio"},
+        )
     request = manifest.get("request")
     if not isinstance(request, dict):
         request = {}
@@ -1833,6 +2065,7 @@ def run_video_generation(
                 stage_budget,
                 media_probe=media_probe,
                 storage_operation_runner=storage_operation_runner,
+                clipset_storage=scratch if fanout_enabled else None,
             )
         finally:
             release_owned_lease(resume_lease_storage, resume_run_id)
@@ -1845,6 +2078,7 @@ def run_video_generation(
             stage_budget,
             media_probe=media_probe,
             storage_operation_runner=storage_operation_runner,
+            clipset_storage=None,
         )
     if resumed is not None:
         return terminal_outcome(resumed)
@@ -2200,11 +2434,17 @@ def run_video_generation(
                     job_id,
                     **archive_kwargs,
                 )
+                pending_plan: Any = plan
+                if fanout_enabled:
+                    pending_plan = Clipset.from_bytes(
+                        scratch.get_bytes(clipset_blob_path(job_id)),
+                        expected_job_id=job_id,
+                    )
                 pending_payload = _rendered_pending_payload(
                     job_id=job_id,
                     manifest=manifest,
                     script=script,
-                    plan=plan,
+                    plan=pending_plan,
                     audio_path=audio_path,
                     audio_duration=audio_duration,
                     archive_result=archive_result,
@@ -2719,6 +2959,22 @@ def run_video_generation(
     except PermanentVideoError:
         release_owned_lease()
         raise
+    except ClipsetJobMismatchError as exc:
+        message = f"clipset belongs to another job for job_id={job_id}"
+        record_state(
+            {
+                "status": STATUS_FAILED,
+                "reason": REASON_RENDERED_PENDING_INPUT_MISMATCH,
+                "details": message,
+                "at": _iso(stage_budget.now_utc()),
+            },
+        )
+        release_owned_lease()
+        raise PermanentVideoError(
+            message,
+            reason=REASON_RENDERED_PENDING_INPUT_MISMATCH,
+            details={"job_id": job_id, "identity": "clipset"},
+        ) from exc
     except RecordingInsufficientError as exc:
         logger.error(
             "video recording insufficient job_id=%s clip_index=%d reason=%s",

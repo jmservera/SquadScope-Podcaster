@@ -55,6 +55,7 @@ from podcaster.video.clip_manifest import ClipManifest
 from podcaster.video.clipset import (
     ClipPlanEntry,
     Clipset,
+    ClipsetJobMismatchError,
     clip_admission_blob_path,
     clip_attempts_blob_path,
     clip_blob_path,
@@ -452,7 +453,7 @@ def load_clipset(scratch: StorageBackend, job_id: str) -> Clipset:
     if payload is None:
         raise FileNotFoundError(f"clipset.json is unavailable for job {job_id}")
     try:
-        return Clipset.from_bytes(payload)
+        return Clipset.from_bytes(payload, expected_job_id=job_id)
     except (KeyError, TypeError, UnicodeError, ValueError) as exc:
         raise PermanentRecorderSetupError("invalid recorder clipset") from exc
 
@@ -921,7 +922,7 @@ def process_clip_message(
             clip_index,
             scratch=scratch,
             reason=f"recording timing unavailable: {type(exc).__name__}",
-            timeout_seconds=0,
+            timeout_seconds=30 if isinstance(exc.__cause__, ClipsetJobMismatchError) else 0,
             renderer=fallback_renderer,
             terminal_utcnow=utcnow,
         )

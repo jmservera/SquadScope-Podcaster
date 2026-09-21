@@ -229,6 +229,25 @@ def test_budgeted_clipset_rejects_malformed_cache_and_recomputes():
     assert storage.blob_exists(lease_path)
 
 
+def test_plan_or_load_clipset_rejects_cross_job_cache_without_cleanup():
+    storage = FakeStorage()
+    foreign = plan_or_load_clipset(storage, "job2", _segments(2))
+    foreign_bytes = foreign.to_json_bytes()
+    storage.put_bytes("video-jobs/job1/clipset.json", foreign_bytes, _JSON)
+    storage.put_bytes("video-jobs/job1/clips/000.webm", b"expected-job-data", _WEBM)
+    before = dict(storage._data)
+
+    with pytest.raises(ValueError, match="does not match expected"):
+        plan_or_load_clipset(
+            storage,
+            "job1",
+            _segments(2),
+            budget=VideoStageBudget.start(),
+        )
+
+    assert storage._data == before
+
+
 # --- additive fan-out ---------------------------------------------------------
 
 

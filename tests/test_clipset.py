@@ -48,7 +48,7 @@ def test_clipset_round_trips_through_bytes() -> None:
     assert clipset.indices() == [0, 1, 2]
     assert clipset.schema_version == CLIPSET_SCHEMA_VERSION
 
-    restored = Clipset.from_bytes(clipset.to_json_bytes())
+    restored = Clipset.from_bytes(clipset.to_json_bytes(), expected_job_id="job-1")
     assert restored == clipset
 
 
@@ -83,26 +83,35 @@ def test_entry_missing_index_raises_keyerror() -> None:
 
 def test_from_bytes_rejects_empty() -> None:
     with pytest.raises(ValueError):
-        Clipset.from_bytes(None)
+        Clipset.from_bytes(None, expected_job_id="job-1")
     with pytest.raises(ValueError):
-        Clipset.from_bytes(b"")
+        Clipset.from_bytes(b"", expected_job_id="job-1")
 
 
 def test_from_dict_rejects_count_mismatch() -> None:
     data = Clipset.from_segments("job-1", _segments()).to_dict()
     data["count"] = 99
     with pytest.raises(ValueError):
-        Clipset.from_dict(data)
+        Clipset.from_dict(data, expected_job_id="job-1")
+
+
+def test_from_bytes_rejects_cross_job_clipset() -> None:
+    clipset = Clipset.from_segments("job-b", _segments())
+
+    with pytest.raises(ValueError, match="does not match expected"):
+        Clipset.from_dict(clipset.to_dict(), expected_job_id="job-a")
+    with pytest.raises(ValueError, match="does not match expected"):
+        Clipset.from_bytes(clipset.to_json_bytes(), expected_job_id="job-a")
 
 
 def test_from_dict_rejects_legacy_or_unknown_schema() -> None:
     data = Clipset.from_segments("job-1", _segments()).to_dict()
     data.pop("schema_version")
     with pytest.raises(ValueError, match="schema"):
-        Clipset.from_dict(data)
+        Clipset.from_dict(data, expected_job_id="job-1")
     data["schema_version"] = "future-v99"
     with pytest.raises(ValueError, match="schema"):
-        Clipset.from_dict(data)
+        Clipset.from_dict(data, expected_job_id="job-1")
 
 
 def test_plan_entry_round_trip() -> None:
