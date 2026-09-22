@@ -10,17 +10,28 @@
 
 ## Execution Status
 
-* Status: Leela's independent P05-T03 correction is implemented and locally validated after Hermes rejected exact head `071a85a3193957f297d10cda260604435588de8b`; Fry validation support and Hermes corrected-final-SHA review remain pending
-* Declared invocation scope: implement only the three rejected stale-owner findings in `podcaster/video/job_runner.py`, `tests/test_video_ownership.py`, `tests/test_video_job_runner.py`, and these canonical tracking artifacts; validate and commit once without push or GitHub mutation
-* Current revision owner: Leela, independently revising from exact clean rejected head `071a85a3193957f297d10cda260604435588de8b`
+* Status: the bounded P05-T03 stale-ownership correction is complete and independently APPROVED at exact source head `881a9fe64dc06f9f1594e955e66294c2692276db`
+* Declared invocation scope: update only the existing plan/details/changes artifacts with final correction evidence and create one tracking-only commit; do not modify source/tests, push, or mutate GitHub
+* Current revision owner: Leela
 * Locked-out prior author: Bender; no advice, pairing, consultation, contribution, or revision attribution is permitted
-* Validation support: Fry only after the revision is complete
-* Independent fail-closed reviewer: Hermes, reviewer-only and not consulted for implementation
+* Validation support: Fry completed the exact affected and full relevant-module selections
+* Independent fail-closed reviewer: Hermes APPROVED exact source head `881a9fe64dc06f9f1594e955e66294c2692276db`
 * First execution boundary: preserve `OwnershipError` through the outer runner, then fence required-YouTube post-provider durable writes, then exercise the actual notification send interleaving
 * Approved source boundary: `podcaster/video/job_runner.py`, `tests/test_video_ownership.py`, `tests/test_video_job_runner.py`, and the existing plan/details/changes artifacts
-* Planned validation: exact new/affected tests; full `tests/test_video_ownership.py`; full `tests/test_video_job_runner.py`; Ruff check/format on changed Python; compileall; `git diff --check`; clean status and remote-head verification
-* Validation: affected regressions passed `6`; full `tests/test_video_ownership.py` and `tests/test_video_job_runner.py` passed `142`; Ruff check/format, `python3 -m compileall`, and `git diff --check` passed
-* Current blockers: none for implementation; Fry validation support, Hermes corrected-final-SHA review, and a later authorized push remain pending
+* Planned validation: record supplied exact-source review and validation evidence; verify only the three tracking artifacts differ from `881a9fe`, the worktree is clean after commit, and remote remains `2e4372e`
+* Validation: Fry exact affected selection `8 passed`; full relevant modules `439 passed in 422.02s`; Ruff check passed; Ruff format `4 files already formatted`; compileall and `git diff --check` passed
+* Current blockers: none for push. PR #684 remains draft, #682 closure remains operator-only, and P05-T04–P05-T06/P06 remain external gates. No merge, deployment, provider action, or workflow dispatch is authorized.
+
+## 2026-09-22 Final exact-source approval and validation
+
+* Related phase or task: bounded correction evidence within P05-T03; the full P05-T03 marker remains open for operator-owned #682 and delivery state.
+* Exact source head: `881a9fe64dc06f9f1594e955e66294c2692276db`.
+* Hermes verdict: APPROVED the exact source head with all five stale-ownership boundaries closed.
+* Residual disposition: at-most-once queue-hint loss or ambiguous provider completion is intentional and nonblocking. Durable reconciliation handles either condition; replay is never authorized.
+* Fry validation: exact affected selection `8 passed`; full relevant modules `439 passed in 422.02s`.
+* Static and safety validation: Ruff check passed; Ruff format reported `4 files already formatted`; compileall passed; `git diff --check` passed.
+* Delivery state: no blocker remains for push, and remote `origin/squad/incident-provider-terminal-truth` remains `2e4372e34d405aa187ec7aafe4c1537670fe9670`. This invocation does not push or comment.
+* Remaining external gates: PR #684 remains draft; PR #682 remains operator-only; P05-T04–P05-T06 and P06 remain active. No merge, deployment, provider action, or workflow dispatch is authorized.
 
 ## 2026-09-22 Hermes rejection and Leela independent revision
 
@@ -54,7 +65,7 @@
 * Static checks: Ruff check passed; Ruff format check reported `3 files already formatted`.
 * Compile and diff safety: the initial `python -m compileall` invocation was unavailable because no `python` shim exists; the required compile check was rerun successfully with `python3 -m compileall -q podcaster tests`. `git diff --check` passed.
 * Scope reconciliation: the diff contains only `podcaster/video/job_runner.py`, `tests/test_video_ownership.py`, `tests/test_video_job_runner.py`, and the three existing canonical tracking artifacts. No provider, deployment, GitHub, or push action occurred.
-* Review readiness: implementation evidence is current and ready for Fry validation support followed by Hermes's independent corrected-final-SHA review. P05-T03 remains open pending those gates and later authorized delivery.
+* Review readiness: the bounded correction is independently approved and validated at exact source head `881a9fe64dc06f9f1594e955e66294c2692276db`. P05-T03 remains open only for operator-owned #682 and delivery state; no full-plan completion is claimed.
 
 ## 2026-09-22 Concurrent remote reconciliation
 
