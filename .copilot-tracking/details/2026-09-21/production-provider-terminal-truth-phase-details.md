@@ -134,19 +134,19 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
 | P07 | Review-follow-up closure for terminal truth | Complete for the current correction; Basher accepted exact reviewed head `905a890` | P07, P07-T01–P07-T07 |
+| P08 | Close PR #684 provider-terminal independent-review findings | Complete and validated; commit/push delivery pending | P08, P08-T01–P08-T05 |
 | P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01–P05-T02 complete; P05-T03 corrected by Leela and pending Basher acceptance; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted exact-W39 production run and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: P05-T03 final-media integrity correction after Rusty's rejection of exact head `d050d68c3590f9a00b60dee925452f971cbaf0d2`, plus the required validation, #682 evidence replies, tracking, PR narrative, commit, and push.
-* Current task: in progress; add structural ffprobe validation plus a bounded complete ffmpeg decode before atomic promotion, with fail-closed timeout/non-zero/missing-tool handling and real corruption/truncation probes.
-* Revision author: Leela alone.
-* Fresh independent reviewer: Basher is reserved and has not contributed.
-* Excluded contributors: Livingston and Rusty may not author, advise, pair, inspect, suggest, or contribute during this correction. Bender, Hermes, and Amy remain excluded. Basher may perform only the fresh independent final-SHA review after implementation and validation complete.
-* Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
-* Validation boundary: generated real H.264/AAC MP4 acceptance; 99%, 90%, 75%, 50%, and 25% truncation rejection; middle-byte corruption rejection; decode timeout/non-zero/missing-ffmpeg failure; destination preservation and staged-only cleanup; no archive/outbox/provider continuation after failure; existing upload ambiguity, checkpoint verification, P07/RV, W39, locked, full repository, static, infrastructure, container, Compose, and secret/PII gates without weakening.
-* Delivery boundary: commit and push only the existing branch and refresh only PR #684 after validation. P05-T03 remains pending Basher acceptance of the corrected final SHA. Keep #684 open/draft/blocked and #682 open. Do not merge, deploy, dispatch workflows, mutate providers, execute W39, or claim P05-T04–P05-T06/P06 credit.
+* Declared scope: full P08 correction requested on 2026-09-22.
+* Current task: complete. Durable human approval gates YouTube public promotion; Spotify RSS/upload/promotion are reconcile-first durable transitions; queue poison handling is bounded; configured playlist insertion is fenced and externally verified.
+* Revision author: Bender.
+* Source boundary: only `/home/azureuser/source/worktrees/pr-684-incident-provider-terminal-truth`, limited to distribution worker/outbox/provider helpers, directly related tests, and RPI artifacts. The dirty main checkout is read-only.
+* Validation boundary: crash/replay, approval, RSS, Spotify upload/promotion, poison, playlist, ambiguity, protected-ID, upload type, audio/video separation, and existing distribution regressions using mocks/fakes only; focused pytest/Ruff before broader suites.
+* Delivery boundary: commit with required trailers and push only HEAD to `squad/incident-provider-terminal-truth` after re-querying the immutable remote head. Keep #684 draft and #682 open; no comments, merge, deployment, workflow dispatch, provider mutation, or ready action.
+* Validation result: `17` focused worker tests, `325` broader provider tests, `114` video-runner tests, `259` Spotify publish tests, and `3284 passed, 2 skipped, 2 deselected` full repository; Ruff check/format, compileall, and diff check passed.
 
 ## Implementation Marker Reconciliation
 
@@ -1266,6 +1266,52 @@ Publish a truthful current delivery update for PR #684 and have Basher independe
 #### Unresolved Items
 
 * Leela's exact typed-canonical correction and validation completed. Boolean/float authorization-set cardinality and the systematic scalar/numeric/unsupported/duplicate-key matrix fail closed. Basher independently accepted exact reviewed head `905a890`, closing P07-T07 and RV-008. PR #684 remains draft/blocked because P00-T01, P05, P06, and operator-only #682 remain open. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 remain resolved; RV-006 remains planning-resolved.
+
+<!-- rpi:phase id=P08 -->
+## P08: Close PR #684 provider-terminal independent-review findings
+
+P08 preserves the durable outbox/fencing model while completing the provider legs that the
+independent review proved incomplete. Every mutation requires an unconsumed fenced intent,
+identity-bound readback first, and durable sanitized receipt/verification before acknowledgment.
+
+<!-- rpi:task id=P08-T01 -->
+### P08-T01: Durable YouTube promotion approval
+
+Persist and validate a human/operator approval envelope bound to the publication identity,
+artifact digest, expected video ID, approver identity, approval time, and requested public
+transition. Absence, mismatch, automation identity, malformed evidence, or replay cannot create
+or consume public-promotion intent and results in manual handoff.
+
+<!-- rpi:task id=P08-T02 -->
+### P08-T02: Explicit Spotify provider legs
+
+Represent Spotify RSS, video upload, and live promotion as separate outbox legs. Reconcile each
+expected identity before mutation, preserve `uploadType=default` for MP3 processing and existing
+video multipart behavior, protect audio episode IDs from video mutation, enforce configured
+draft/live and operator gates, and fail closed on ambiguous outcomes.
+
+<!-- rpi:task id=P08-T03 -->
+### P08-T03: Bounded queue poison exhaustion
+
+Malformed messages are sanitized and deleted immediately. Retryable pre-mutation failures remain
+for redelivery below the repository dequeue limit; exhaustion persists `poisoned`/manual-handoff
+evidence on the identified outbox when possible and deletes the queue message. Logs and durable
+records contain only safe IDs, counts, and error codes.
+
+<!-- rpi:task id=P08-T04 -->
+### P08-T04: Fenced YouTube playlist transition
+
+Resolve the configured playlist, perform strict identity-bound membership readback, persist and
+consume one playlist insertion intent only after verified absence, and require post-insert
+membership readback before the YouTube leg succeeds. Ambiguous list/insert/readback outcomes are
+terminal unknown/manual and never blindly reinserted.
+
+<!-- rpi:task id=P08-T05 -->
+### P08-T05: Validation and delivery
+
+Run focused then broader applicable pytest and Ruff gates, inspect the exact diff for scope and
+secrets, re-query the immutable remote head, commit with required trailers, push only HEAD to the
+existing branch, and verify PR #684 remains draft with #682 context preserved.
 
 <!-- rpi:phase id=P05 -->
 ## P05: Deliver reviewed, reversible implementation and exact W39 production acceptance

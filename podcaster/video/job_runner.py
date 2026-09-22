@@ -1277,6 +1277,8 @@ def run_video_generation(
                     objectives: dict[str, str] = {}
                     if youtube_enabled_for_language(dist_config, job_language):
                         objectives["youtube"] = "public"
+                    if dist_config.spotify_rss_enabled:
+                        objectives["spotify_rss"] = "public"
                     if dist_config.spotify_upload_enabled:
                         objectives["spotify"] = "public"
                     if not objectives:
