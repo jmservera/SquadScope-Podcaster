@@ -623,6 +623,34 @@ No test, assertion, validation gate, or security gate was weakened.
 
 No issue, PR, review thread, deployment, canary, or production state was resolved, closed, or mutated by this review.
 
+## Basher Final-Media Lifecycle Rejection and Livingston Correction — 2026-09-22
+
+Basher independently rejected exact head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`
+because complete final-media decode always received a fresh 1800-second timeout and timeout
+cleanup used an unbounded post-SIGKILL `wait()`. The queue message had one 5400-second visibility
+window, while the 1800-second editor lease was renewed only during fan-in; a late decode could
+therefore outlive ownership and permit redelivery/takeover while the original worker still
+validated or promoted.
+
+Livingston alone authored source commit `f6b713530947236c04f822289343d3f105cc6dc9`.
+The actual receive-time queue visibility deadline is now authoritative job context. Final
+validation samples that deadline plus a once-renewed fixed editor-lease deadline immediately
+before decode, subtracts bounded cleanup/promotion reserve, caps by the configured maximum, and
+rejects before launch when insufficient. The same fixed deadlines are checked after decode before
+atomic promotion. SIGTERM, SIGKILL, and both reap waits are bounded; unreaped failure is explicit
+and resource closure remains deterministic.
+
+Correction evidence: exact probes `30`; compose/job runner `442`; locked lifecycle/provider
+contract `726`; full repository `3283 passed, 2 skipped, 2 deselected, 1 warning`; Ruff, format,
+compile, diff, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container
+`sha256:a1550c94691e117ce15f54345567cf074000653f5e75ceb9b6d0dcc0224011e1`,
+UID/tool/import/worker-exit smoke, rebuilt Compose integration `3`, and changed-line secret/PII
+scan passed without gate weakening.
+
+P05-T03 remains pending Rusty's fresh independent review of the pushed final SHA. PR #684 and
+#682 remain open; #684 remains draft/blocked. No merge, deployment, W39 execution, provider
+mutation, or production acceptance occurred.
+
 ## Rusty Final-Media Rejection and Leela Revision Pending Basher — 2026-09-22
 
 Rusty independently rejected exact head `d050d68c3590f9a00b60dee925452f971cbaf0d2`

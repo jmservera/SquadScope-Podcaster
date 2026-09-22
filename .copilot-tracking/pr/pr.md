@@ -1,15 +1,46 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Rusty rejected head `d050d68c3590f9a00b60dee925452f971cbaf0d2` because metadata-only final-media validation accepted truncated real MP4 payloads. Leela has completed the bounded complete-decode correction; fresh independent Basher acceptance is pending.** Upstream `jmservera/SquadScope#773` is merged/check-green, completing P00-T01. P05-T03, merge authorization, P05-T04–P05-T06, and P06 remain pending. #682 remains open. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Basher rejected head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1` because complete final-media decode used a fresh fixed timeout and unbounded post-KILL wait instead of the remaining lifecycle/visibility/lease budget. Livingston completed the sole-author lifecycle-budget and bounded-shutdown correction; fresh independent Rusty acceptance is pending.** Upstream `jmservera/SquadScope#773` is merged/check-green, completing P00-T01. P05-T03, merge authorization, P05-T04–P05-T06, and P06 remain pending. #682 remains open. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
 Rejected final-media head: `d050d68c3590f9a00b60dee925452f971cbaf0d2`.
 Current source/tests commit: `8cc5da21b85b0ec73dab0f39293aab06149ac7a7`.
+Lifecycle correction source/tests commit: `f6b713530947236c04f822289343d3f105cc6dc9`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
-Current sole revision author: Leela.
-Fresh independent reviewer: Basher is reserved and pending.
+Current sole revision author: Livingston.
+Fresh independent reviewer: Rusty is reserved and pending.
+
+## Livingston lifecycle-budget and bounded-shutdown correction
+
+The queue receive visibility deadline now flows through the job context into final-media
+validation. Fan-out validation renews the editor lease once immediately before decode and retains
+that fixed lease deadline for the post-decode ownership check. The complete decode timeout is
+`min(configured maximum, remaining ownership budget - cleanup/promotion reserve)`; insufficient,
+invalid, lost, or expired ownership fails before ffmpeg launch or before atomic promotion.
+
+Timeout cleanup targets the ffmpeg process group with SIGTERM and a bounded wait, then SIGKILL and
+a second bounded wait. A still-unreaped process is explicitly logged and reported without an
+unbounded wait; stderr closes on every path and remains capped at 16 KiB. Full-stream decode,
+real truncation/corruption detection, existing-destination preservation, staged-only cleanup, and
+no archive/outbox/provider continuation remain intact.
+
+Validation passed: exact lifecycle/shutdown probes `30`; compose and job runner `442`; locked
+lifecycle/provider contract `726`; full repository `3283 passed, 2 skipped, 2 deselected, 1
+warning`; Ruff/format/compile/diff; Bicep with existing BCP318; exact Checkov `36/7`; CI Checkov
+`34/0`; Dockerfile baseline; container
+`sha256:a1550c94691e117ce15f54345567cf074000653f5e75ceb9b6d0dcc0224011e1`
+with UID `999`, ffmpeg/ffprobe/import smoke and worker exit `2`; rebuilt Compose integration `3`;
+and changed-line secret/PII scan.
+
+During validation the shared remote branch gained unrelated provider-transition commit `a8f4730`.
+Its history was preserved and its out-of-scope net changes were reverted by `2c12655` before the
+authorized correction. The net diff from rejected head `86f96bb` contains only this lifecycle
+correction and required evidence updates.
+
+P05-T03 remains pending Rusty. #684 stays open/draft/blocked and #682 stays open. No merge,
+deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit is authorized.
 
 ## Leela final-media complete-decode correction
 

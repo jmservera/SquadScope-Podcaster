@@ -10,17 +10,65 @@
 
 ## Execution Status
 
-* Status: Leela completed the sole-author final-media integrity correction after Rusty rejected head `d050d68c3590f9a00b60dee925452f971cbaf0d2`; Basher acceptance is pending
-* Declared invocation scope: P05-T03 final-media validation, exact #682 evidence replies, full required validation, delivery reconciliation, commit, and push
-* Sole current revision author: Leela
-* Independent reviewer: Basher is reserved and has not contributed
+* Status: Livingston completed the sole-author lifecycle-budget and bounded-shutdown implementation after Basher rejected exact head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`; commit/push and Rusty acceptance remain
+* Declared invocation scope: P05-T03 final-media validation lifecycle/lease budgeting, bounded ffmpeg shutdown, exact #682/#684 evidence replies, full required validation, delivery reconciliation, commit, and push
+* Sole current revision author: Livingston
+* Independent reviewer: Rusty is reserved and has not contributed
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
 * Completed marker retained for this cycle: P07-T06
 * Review marker: P05-T03 remains open pending implementation evidence and Basher's exact-SHA acceptance
-* Revision base: `d050d68c3590f9a00b60dee925452f971cbaf0d2`
-* Remaining in-scope work: commit/push, corrected #682 replies, PR reconciliation, and Basher review
+* Revision base: `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`
+* Remaining in-scope work: corrected #682/#684 replies, PR reconciliation, tracking commit/push, and Rusty review
 * Outside-scope active-plan markers: P05-T04–P05-T06 and P06-T01–P06-T02; P00-T01 is complete
-* Status basis: Rusty's real-media probe proved `_validate_final_media()` accepted five truncated fast-start H.264/AAC files because it checked only ffprobe metadata/duration. The correction must require successful complete bounded decode before atomic promotion while preserving all prior upload-ambiguity, checkpoint, destination-preservation, and provider-safety behavior. No merge, deployment, workflow dispatch, provider mutation, issue closure, or production action is authorized.
+* Status basis: Basher proved the complete decode receives a fresh fixed 1800-second timeout instead of the authoritative remaining queue/lifecycle/lease budget, and timeout cleanup can block indefinitely after SIGKILL. The correction must admit decode only within the remaining safe ownership window, fail closed before launch when insufficient, and use bounded TERM/KILL/reap stages while preserving full-stream corruption detection, staging safety, and all prior upload/checkpoint/provider protections. No merge, deployment, workflow dispatch, provider mutation, issue closure, or production action is authorized.
+
+## 2026-09-22 Livingston correction after Basher lifecycle-budget rejection
+
+* Related phase or task: P05-T03.
+* Ownership: Livingston is the sole revision author from rejected head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`. Leela and Basher may not author, advise, pair, inspect, or contribute. Rusty is reserved for fresh independent final-SHA review. Bender, Hermes, and Amy remain excluded.
+* Approved source boundary: video job lifecycle context, final-media validation/shutdown, directly owned tests, and only the tracking/review/PR documentation needed to state exact evidence.
+* Required behavior: thread the authoritative remaining queue/lifecycle/media-validation budget into final validation; cap decode at the configured maximum or remaining safe budget minus cleanup reserve, whichever is smaller; reject before ffmpeg launch when the remaining budget or editor lease cannot safely cover validation; renew/verify the lease immediately before the bounded validation window; and keep TERM, KILL, and both waits independently bounded.
+* Safety boundary: lifecycle or lease loss during validation is non-green and cannot reach archive, outbox, provider mutation, or atomic destination promotion. A process that remains unreaped after bounded KILL wait is reported explicitly without an indefinite wait; pipes/resources are closed by bounded local ownership.
+* Validation intent: remaining-budget cap, insufficient-budget pre-launch rejection, TERM-exit, TERM-hang/KILL-exit, KILL-wait-hang bounded return, process-group targeting, pipe cleanup, bounded elapsed time, lifecycle/lease expiry no-downstream behavior, intact/truncated/corrupt media, upload/checkpoint/P07 regressions, full repository and all required static/infrastructure/container/Compose/security gates.
+* Current blockers: none for implementation. P05-T03 remains pending Rusty's fresh independent acceptance after the corrected final SHA is pushed.
+
+### Authoritative lifecycle and lease budget
+
+* Related phase or task: P05-T03.
+* Files: `podcaster/video/job_runner.py`, `podcaster/video/video_compose.py`.
+* What changed and why: `drain()` now creates the authoritative monotonic deadline from the actual queue visibility window and threads it through `process_message()`, `run_video_generation()`, `compose_video()`, `_finalize_output()`, and `_validate_final_media()`. Fan-out validation renews the editor lease exactly once immediately before decode and retains that fixed lease deadline for the post-decode ownership check. Decode receives `min(configured maximum, remaining ownership budget - bounded cleanup/promotion reserve)` and refuses admission before ffmpeg launch when that value is non-positive.
+* Safety behavior: successful decode is rechecked against the same non-renewed lifecycle/lease window before atomic promotion. Queue expiry, lease loss, invalid remaining budget, or expiry during decode fails non-green before archive, outbox, provider calls, or destination replacement.
+* Completion evidence: source/tests commit `f6b713530947236c04f822289343d3f105cc6dc9`.
+
+### Bounded staged ffmpeg shutdown
+
+* Related phase or task: P05-T03.
+* Files: `podcaster/video/video_compose.py`, `tests/test_video_compose.py`.
+* What changed and why: timeout cleanup targets the ffmpeg process group with SIGTERM, waits at most five seconds, targets the group with SIGKILL if needed, then waits at most five more seconds. A still-unreaped process is logged and included in the explicit validation failure without any unbounded `wait()`. The temporary stderr resource closes on every path and diagnostics remain capped at 16 KiB.
+* Completion evidence: probes cover TERM exit, TERM hang followed by KILL exit, KILL wait timeout, exact process-group signals, bounded elapsed return, stderr closure, and no `wait(timeout=None)`.
+
+### Lifecycle correction validation
+
+| Check | Status | Evidence |
+|---|---|---|
+| Exact lifecycle/shutdown probes | Passed | `30 passed`; includes remaining-budget cap, insufficient pre-launch rejection, TERM/KILL/reap branches, process-group targeting, closed stderr, visibility deadline propagation, lease-loss rejection, and no downstream visibility. |
+| Complete compose and job-runner suites | Passed | `442 passed`. |
+| Locked lifecycle/provider contract | Passed | `726 passed` across compose, job runner, YouTube upload ambiguity, checkpoint intermediates, outbox/worker/telemetry, and deployment regressions. |
+| Full repository pytest | Passed | `3283 passed, 2 skipped, 2 deselected, 1 warning in 502.31s`. |
+| Ruff/format/compile/diff | Passed | Ruff check passed; `192 files already formatted`; compileall and diff safety passed. |
+| Bicep | Passed | Build succeeded with the existing BCP318 warning. |
+| Exact Checkov | Baseline retained | `36 passed, 7 failed`; the seven documented ACR/storage/OpenAI baseline findings are unchanged. |
+| CI Bicep Checkov | Passed | `34 passed, 0 failed`. |
+| Dockerfile Checkov | Passed | Baseline-aware repository command passed. |
+| Container build/smoke | Passed | Image `sha256:a1550c94691e117ce15f54345567cf074000653f5e75ceb9b6d0dcc0224011e1`; UID `999`; ffmpeg/ffprobe/import smoke passed; unconfigured distribution worker exited `2`. |
+| Compose integration | Passed | Rebuilt fanout image; scaleout fanout plus video pipeline `3 passed`. |
+| Secret/PII scan | Passed | No suspected private key, access key, token/JWT, signed credential URL, or email-address pattern in added lines. |
+
+### Concurrent branch mutation reconciliation
+
+* Triggering evidence: while validation was running, the remote branch advanced from the mandated rejected head to unrelated provider-transition commit `a8f4730c8680bb3c596b0f38bf3bb88b80753497`.
+* Reconciliation: preserved remote history without force-push, then reverted its out-of-scope net changes in `2c1265508731986a0b9f38f22f793e1becb0251f` before committing the authorized lifecycle correction. The final net diff from `86f96bb03c006bf0b307cd461b15cd18cfab5ed1` contains only lifecycle source/tests and required tracking/PR evidence.
+* Validation effect: exact probes and static checks were rerun after reconciliation; the previously completed locked/full/container/infrastructure evidence applies to the identical final source tree.
 
 ## 2026-09-22 Leela correction after Rusty final-media rejection
 
