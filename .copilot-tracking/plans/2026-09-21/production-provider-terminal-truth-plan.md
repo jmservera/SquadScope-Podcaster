@@ -745,6 +745,6 @@ The existing critique is preserved unchanged as historical evidence. No second c
 
 * Implementation artifact: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
 * Review-follow-up implementation marker range: P07-T01 through P07-T07.
-* Current author/reviewer: Leela is the sole correction author from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`; Basher is reserved for independent final-SHA review and did not contribute. All prior author/reviewer cycles remain historical evidence.
-* Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-006 remains planning-resolved; RV-008 implementation is corrected and awaits independent acceptance.
+* Current author/reviewer: Leela is the sole correction author from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`; Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` without contributing. All prior author/reviewer cycles remain historical evidence.
+* Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are resolved; RV-006 remains planning-resolved.
 * Remaining blockers after revision: P00-T01 upstream ownership; P05 deployment/provider authority and canary; P06 four elapsed future post-fix cycles; and operator-only #682. Basher independently accepted exact reviewed head `905a890`, so P07-T07 is complete. PR #684 remains draft/blocked while any remaining gate is open.
