@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from podcaster.distribution_outbox import (
     UnsafeOutboxValueError,
     aggregate_exit_code,
     commit_immutable_artifact,
+    exact_recovery_authorization_evidence,
     exact_verification_proof,
     four_cycle_acceptance,
     outbox_routing_enabled,
@@ -489,13 +491,42 @@ def test_reconciliation_notification_reservation_is_single_winner_and_fenced(set
         reservation_id=replacement,
     )
     assert repository.due_reconciliations() == []
-    repository.abort_reconciliation_enqueue(
+    clock.advance(31)
+    assert repository.due_reconciliations() == [(document["outbox_id"], "youtube", token)]
+    recovered = repository.reserve_reconciliation_notification(
         document["outbox_id"],
         provider="youtube",
         token=token,
-        reservation_id=replacement,
+        owner="scheduler-final",
+        lease_seconds=30,
     )
-    assert repository.due_reconciliations()
+    with pytest.raises(StaleClaimError):
+        repository.abort_reconciliation_enqueue(
+            document["outbox_id"],
+            provider="youtube",
+            token=token,
+            reservation_id=replacement,
+        )
+    with pytest.raises(StaleClaimError):
+        repository.complete_reconciliation_notification(
+            document["outbox_id"],
+            provider="youtube",
+            token=token,
+            reservation_id=replacement,
+        )
+    repository.begin_reconciliation_enqueue(
+        document["outbox_id"],
+        provider="youtube",
+        token=token,
+        reservation_id=recovered,
+    )
+    repository.complete_reconciliation_notification(
+        document["outbox_id"],
+        provider="youtube",
+        token=token,
+        reservation_id=recovered,
+    )
+    assert repository.due_reconciliations() == []
 
 
 def test_orphan_artifact_cleanup_is_retained_bounded_and_reference_safe(setup):
@@ -604,12 +635,20 @@ def test_failed_attempt_remains_immutable_after_authorized_verified_recovery(set
     failed_attempt = failed["attempts"][0]
     assert failed_attempt["terminal_outcome"] == "failed_terminal"
 
+    recovery_evidence = exact_recovery_authorization_evidence(
+        repository.read(document["outbox_id"]),
+        predecessor_attempt_id=failed_attempt["attempt_id"],
+        expected_provider_item_ids={
+            "youtube": "youtube-recovered",
+            "spotify": "spotify-recovered",
+        },
+    )
     repository.authorize_recovery(
         document["outbox_id"],
         predecessor_attempt_id=failed_attempt["attempt_id"],
         source="operator",
         reason="no_mutation_proven",
-        evidence_reference="incident-W38-provider-audit",
+        evidence=recovery_evidence,
     )
     recovered_claim = repository.claim(
         document["outbox_id"], owner="recovery", execution_id="exec-recovery", lease_seconds=300
@@ -640,6 +679,10 @@ def test_failed_attempt_remains_immutable_after_authorized_verified_recovery(set
         failed_attempt["attempt_id"]
     ]
     assert recovered["weekly_aggregation"]["winning_attempt_id"] == recovered_claim.attempt_id
+    assert (
+        weekly_state_from_attempts(recovered["attempts"], weekly_record=recovered)
+        == "published_verified_recovered"
+    )
     assert aggregate_exit_code([recovered]) == 0
 
 
@@ -695,7 +738,7 @@ def test_unknown_mutation_cannot_authorize_blind_retry(setup):
             predecessor_attempt_id=attempt_id,
             source="automatic",
             reason="blind_retry",
-            evidence_reference="unsafe-blind-retry",
+            evidence={},
         )
 
 
@@ -706,11 +749,9 @@ def test_weekly_w38_recovery_candidate_and_w39_missed_fixture():
             "attempt_id": "recovered",
             "terminal_outcome": "published_verified",
             "proof_complete": True,
-            "recovery_evidence_reference": "incident-W38-provider-audit",
+            "recovery_evidence_reference": "opaque-label-only-token",
         },
     ]
-    assert weekly_state_from_attempts(attempts) == "published_verified_recovered"
-    attempts[-1].pop("recovery_evidence_reference")
     assert weekly_state_from_attempts(attempts) == "identity_conflict"
     assert weekly_state_from_attempts([], missed_not_dispatched=True) == "missed_not_dispatched"
 
@@ -750,6 +791,166 @@ def test_four_cycle_acceptance_requires_complete_authoritative_envelopes():
         )
         is False
     )
+    tampered = [_authoritative_cycle(f"2026-W{week}") for week in range(35, 39)]
+    tampered[2]["publication_identity"]["accepted_job_id"] = "tampered-job"
+    assert four_cycle_acceptance(tampered) is False
+    recovered_without_authorization = [
+        _authoritative_cycle(f"2026-W{week}") for week in range(35, 39)
+    ]
+    recovered_without_authorization[2]["weekly_aggregation"]["state"] = (
+        "published_verified_recovered"
+    )
+    assert four_cycle_acceptance(recovered_without_authorization) is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda cycle: cycle["publication_identity"].__setitem__("week", "2026-W01"),
+        lambda cycle: cycle["publication_identity"].__setitem__("accepted_job_id", "tampered-job"),
+        lambda cycle: cycle["publication_identity"].__setitem__("manifest_sha256", "f" * 64),
+        lambda cycle: cycle["artifact"].__setitem__("sha256", "f" * 64),
+        lambda cycle: cycle["providers"]["youtube"]["verification"].__setitem__(
+            "provider_item_id", "other-video"
+        ),
+        lambda cycle: cycle["providers"]["youtube"]["verification"].__setitem__(
+            "source", "operator_label"
+        ),
+        lambda cycle: cycle["providers"]["youtube"]["verification"]["proof"][
+            "evidence"
+        ].__setitem__("duplicate_ambiguity_resolved", False),
+    ],
+)
+def test_four_cycle_acceptance_rejects_identity_tampering(mutate):
+    cycles = [_authoritative_cycle(f"2026-W{week}") for week in range(35, 39)]
+    mutate(cycles[1])
+    assert four_cycle_acceptance(cycles) is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("week", "2026-W39"),
+        ("accepted_job_id", "wrong-job"),
+        ("manifest_sha256", "f" * 64),
+        ("publication_digest", "e" * 64),
+        ("artifact_sha256", "f" * 64),
+        ("predecessor_attempt_id", "wrong-attempt"),
+        ("safety_readback_source", "operator_label"),
+        ("terminal_authoritative_readback", False),
+    ],
+)
+def test_recovery_authorization_rejects_mismatched_structured_evidence(setup, field, value):
+    _storage, repository, _clock, document, _created = setup
+    first = repository.claim(
+        document["outbox_id"], owner="first", execution_id="exec-first", lease_seconds=300
+    )
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            first,
+            provider=provider,
+            result="failed_terminal",
+            source=f"{provider}_readback",
+            provider_item_id=f"{provider}-failed",
+            native_state="failed",
+        )
+    failed = repository.release(first)
+    predecessor_id = failed["attempts"][0]["attempt_id"]
+    evidence = exact_recovery_authorization_evidence(
+        failed,
+        predecessor_attempt_id=predecessor_id,
+        expected_provider_item_ids={
+            "youtube": "youtube-recovered",
+            "spotify": "spotify-recovered",
+        },
+    )
+    if field in evidence:
+        evidence[field] = value
+    elif field == "terminal_authoritative_readback":
+        evidence["providers"]["youtube"]["mutation_safe"] = value
+    elif field == "safety_readback_source":
+        evidence["providers"]["youtube"]["safety_readback_source"] = value
+    else:
+        evidence["publication_identity"][field] = value
+    with pytest.raises(DistributionOutboxError):
+        repository.authorize_recovery(
+            document["outbox_id"],
+            predecessor_attempt_id=predecessor_id,
+            source="operator",
+            reason="no_mutation_proven",
+            evidence=evidence,
+        )
+
+
+def test_recovery_intent_rejects_provider_identity_outside_authorization(setup):
+    _storage, repository, _clock, document, _created = setup
+    first = repository.claim(
+        document["outbox_id"], owner="first", execution_id="exec-first", lease_seconds=300
+    )
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            first,
+            provider=provider,
+            result="failed_terminal",
+            source=f"{provider}_readback",
+            provider_item_id=f"{provider}-failed",
+            native_state="failed",
+        )
+    failed = repository.release(first)
+    predecessor_id = failed["attempts"][0]["attempt_id"]
+    evidence = exact_recovery_authorization_evidence(
+        failed,
+        predecessor_attempt_id=predecessor_id,
+        expected_provider_item_ids={
+            "youtube": "youtube-recovered",
+            "spotify": "spotify-recovered",
+        },
+    )
+    repository.authorize_recovery(
+        document["outbox_id"],
+        predecessor_attempt_id=predecessor_id,
+        source="operator",
+        reason="no_mutation_proven",
+        evidence=evidence,
+    )
+    claim = repository.claim(
+        document["outbox_id"], owner="recovery", execution_id="exec-recovery", lease_seconds=300
+    )
+    with pytest.raises(
+        DistributionOutboxError,
+        match="recovery intent does not match its authorization",
+    ):
+        repository.persist_intent(
+            claim,
+            provider="youtube",
+            operation="recovery_readback",
+            expected_provider_item_id="wrong-provider-item",
+        )
+
+
+def test_recovery_authorization_rejects_opaque_evidence(setup):
+    _storage, repository, _clock, document, _created = setup
+    claim = repository.claim(
+        document["outbox_id"], owner="first", execution_id="exec-first", lease_seconds=300
+    )
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            claim,
+            provider=provider,
+            result="failed_terminal",
+            source=f"{provider}_readback",
+            provider_item_id=f"{provider}-failed",
+            native_state="failed",
+        )
+    failed = repository.release(claim)
+    with pytest.raises(DistributionOutboxError):
+        repository.authorize_recovery(
+            document["outbox_id"],
+            predecessor_attempt_id=failed["attempts"][0]["attempt_id"],
+            source="operator",
+            reason="no_mutation_proven",
+            evidence={"reference": "opaque-token"},
+        )
 
 
 def test_cleanup_pages_complete_references_before_deleting(setup):
@@ -823,31 +1024,96 @@ def test_cleanup_reference_created_before_delete_prevents_removal(setup, monkeyp
     assert storage.blob_exists(artifact.path)
 
 
+def test_cleanup_backfills_legacy_reference_before_deletion(setup):
+    storage, repository, clock, document, _created = setup
+    digest = document["artifact"]["sha256"]
+    storage.delete_blob(f"distribution-artifact-references/{digest}.json")
+    metadata_path = f"{ARTIFACT_METADATA_PREFIX}/{digest}.json"
+
+    def age(raw):
+        value = json.loads(raw.decode())
+        value["created_at"] = "2026-09-19T00:00:00Z"
+        return json.dumps(value).encode()
+
+    storage.update_bytes(metadata_path, "application/json", age)
+    clock.advance(2 * 86400)
+    assert repository.cleanup_orphan_artifacts(retention=timedelta(hours=24)) == 0
+    assert storage.blob_exists(document["artifact"]["path"])
+    reference = json.loads(
+        storage.get_bytes(f"distribution-artifact-references/{digest}.json").decode()
+    )
+    assert reference["outbox_ids"] == [document["outbox_id"]]
+
+
+def test_cleanup_fails_closed_while_legacy_reference_scan_is_incomplete(tmp_path):
+    storage = LocalStorageBackend(tmp_path / "storage", "http://localhost/artifacts")
+    source = tmp_path / "legacy.mp4"
+    source.write_bytes(b"legacy")
+    artifact = commit_immutable_artifact(
+        storage,
+        source,
+        media_kind="video",
+        content_type="video/mp4",
+        suffix=".mp4",
+    )
+    metadata_path = f"{ARTIFACT_METADATA_PREFIX}/{artifact.sha256}.json"
+    metadata = json.loads(storage.get_bytes(metadata_path).decode())
+    metadata["created_at"] = "2026-09-19T00:00:00Z"
+    storage.put_bytes(metadata_path, json.dumps(metadata).encode(), "application/json")
+    for index in range(2):
+        storage.put_bytes(
+            f"distribution-outbox/{index:064x}.json",
+            json.dumps(
+                {
+                    "outbox_id": f"{index:064x}",
+                    "artifact": {
+                        "sha256": artifact.sha256 if index == 1 else "f" * 64,
+                    },
+                }
+            ).encode(),
+            "application/json",
+        )
+    repository = DistributionOutboxRepository(
+        storage,
+        now=lambda: datetime(2026, 9, 22, tzinfo=timezone.utc),
+    )
+    assert repository.cleanup_orphan_artifacts(outbox_scan_limit=1) == 0
+    assert storage.blob_exists(artifact.path)
+    assert repository.cleanup_orphan_artifacts(outbox_scan_limit=1) == 0
+    assert storage.blob_exists(artifact.path)
+
+
 def _authoritative_cycle(week):
     attempt_id = f"attempt-{week}"
     provider_ids = ["youtube-id", "spotify-id"]
-    proof = {
-        "week_match": True,
-        "publication_identity_match": True,
-        "manifest_match": True,
-        "publication_digest_match": True,
-        "artifact_sha256_match": True,
-        "canonical_artifact_selected": True,
-        "provider_identity_match": True,
-        "terminal_authoritative_readback": True,
-        "duplicate_ambiguity_resolved": True,
-        "green": True,
+    identity = {
+        "week": week,
+        "accepted_job_id": f"job-{week}",
+        "publish_run_id": f"run-{week}",
+        "article_sha256": "b" * 64,
+        "manifest_sha256": "c" * 64,
     }
-    return {
+    artifact = {"sha256": "a" * 64, "media_kind": "video"}
+    publication_digest = hashlib.sha256(
+        "|".join(
+            (
+                identity["accepted_job_id"],
+                identity["week"],
+                identity["publish_run_id"],
+                identity["article_sha256"],
+                identity["manifest_sha256"],
+                artifact["sha256"],
+                artifact["media_kind"],
+            )
+        ).encode()
+    ).hexdigest()
+    document = {
+        "outbox_id": f"outbox-{week}",
         "publication_identity": {
-            "week": week,
-            "accepted_job_id": f"job-{week}",
-            "publish_run_id": f"run-{week}",
-            "article_sha256": "b" * 64,
-            "manifest_sha256": "c" * 64,
+            **identity,
         },
-        "publication_digest": "d" * 64,
-        "artifact": {"sha256": "a" * 64},
+        "publication_digest": publication_digest,
+        "artifact": artifact,
         "canonical_artifact": {
             "artifact_id": "a" * 64,
             "selected": True,
@@ -858,11 +1124,11 @@ def _authoritative_cycle(week):
         "providers": {
             provider: {
                 "result": "externally_verified_public",
+                "intent": {"expected_provider_item_id": provider_id},
                 "verification": {
                     "provider_item_id": provider_id,
                     "source": f"{provider}_readback",
                     "native_state": "public" if provider == "youtube" else "published",
-                    "proof": dict(proof),
                 },
             }
             for provider, provider_id in zip(("youtube", "spotify"), provider_ids, strict=True)
@@ -879,6 +1145,18 @@ def _authoritative_cycle(week):
         },
         "aggregate": {"externally_verified_public": True},
     }
+    for provider, provider_id in zip(("youtube", "spotify"), provider_ids, strict=True):
+        proof_evidence = exact_verification_proof(document, provider_item_id=provider_id)
+        leg = document["providers"][provider]
+        leg["verification"]["proof"] = DistributionOutboxRepository._verification_proof(
+            document,
+            leg,
+            provider_item_id=provider_id,
+            native_state=leg["verification"]["native_state"],
+            source=leg["verification"]["source"],
+            proof=proof_evidence,
+        )
+    return document
 
 
 def _artifact(document):

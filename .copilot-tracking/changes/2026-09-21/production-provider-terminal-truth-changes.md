@@ -10,14 +10,28 @@
 
 ## Execution Status
 
-* Status: P07 final revision independently reviewed and not accepted
+* Status: reopened P07 correction in progress after independent rejection
 * Declared invocation scope: P07-T01–P07-T07 only
-* Sole revision author: Leela
-* Completed scope markers: P07-T04 and P07-T07
-* Active markers: P07-T01, P07-T02, P07-T03, P07-T05, and P07-T06
-* Remaining in-scope markers: P07-T01, P07-T02, P07-T03, P07-T05, and P07-T06
+* Sole current revision author: Farnsworth
+* Reserved independent reviewer: Livingston
+* Completed scope marker retained: P07-T04
+* Active markers: P07-T01, P07-T02, P07-T03, P07-T05, P07-T06, and P07-T07
+* Remaining in-scope markers: P07-T01, P07-T02, P07-T03, P07-T05, P07-T06, and P07-T07
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: Fry independently reviewed final revision `02241a1`. RV-003 and RV-007 are resolved; High RV-002/RV-004/RV-008/RV-009 remain open. No merge, deployment, canary, or production acceptance is claimed.
+* Status basis: Fry independently rejected Leela's final revision `02241a1`. RV-003 and RV-007 remain resolved; High RV-002/RV-004/RV-008/RV-009 are reopened for Farnsworth's surgical correction. No merge, deployment, canary, or production acceptance is claimed.
+
+## P07 Farnsworth Revision Opening
+
+### Reopened the rejected correction under a new independent author
+
+* Affected markers: P07-T01, P07-T02, P07-T03, P07-T05, P07-T06, and P07-T07.
+* Authorship and lockout: Farnsworth is the sole revision author. Livingston is reserved for fresh independent review. Bender, Hermes, Amy, Leela, and Fry are excluded from implementation and advice.
+* Exact source baseline: clean local and remote branch at Fry's review/tracking SHA `2e87d9bf2596df491494a3160b127e79e8f0f301`; rejected source `02241a1707c8a5d2a17120185e988634de188d21` and pre-cycle base `5cd84c4c29f7f597f0a5b03a2c23e5b79b5ed7f7` are ancestors.
+* Write boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`; narrowly scoped outbox/scheduler source, owner tests, current plan/details/changes/PR artifacts, and PR #684 after validation. No branch replacement, new PR, deployment, production mutation, or changes to `/home/azureuser/source/SquadScope-Podcaster`.
+* First execution boundary: make recovery authorization and all green proof identity-bound and fail-closed, then repair expired notification reservations, legacy cleanup safety, and four-cycle envelope rebinding in dependency order.
+* Validation intent: run the required negative probes first, then full pytest, Ruff check/format, compileall, diff safety, Bicep, both documented Checkov forms, container build/smoke, relevant integration/locked suites, and changed-file secret/PII scanning.
+* Retained blockers: P00-T01 upstream W39 prevention/detection, P05 deployment/canary/provenance, and P06 four future elapsed cycles remain open. PR #684 must remain draft and blocked.
+* Historical evidence: Fry's rejection and the Leela-authored revision record are preserved unchanged as history; current sections append and reconcile the new cycle.
 
 ## P07 Review-Follow-Up Opening
 
@@ -30,6 +44,56 @@
 * User answer or decision: explicit caller scope, lockout, validation contract, and no-commit/no-GitHub/no-deployment restrictions.
 * Reconciliation performed: plan implementation status, phase index, changes execution status, write boundary, first task, validation intent, and residual blockers now agree.
 * Planning and critique state: implementation-ready intent is unchanged; no new critique is required.
+
+## P07 Farnsworth Surgical Corrections
+
+### Bound recovery authorization to exact durable evidence
+
+* Related markers: P07-T01; RV-008.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`.
+* Result: recovery authorization now persists a versioned structured evidence object and digest bound to the exact weekly identity, publication/artifact digests, canonical selection, all prior terminal attempt IDs, predecessor provider readbacks, expected succeeding provider item IDs, and the generated succeeding attempt. Recovery intents must match the authorized provider item, and final recovered green revalidates the authorization against the succeeding authoritative readbacks.
+* Negative probes: opaque evidence; wrong week, job, manifest, publication digest, artifact, predecessor attempt, provider item, and readback source/safety evidence all fail closed. Exact structured authorization plus exact authoritative provider readback succeeds while the failed predecessor remains immutable.
+
+### Recovered expired notification reservations without stale-owner authority
+
+* Related markers: P07-T02; RV-002.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`.
+* Result: both `reserved` and `enqueue_started` reservations suppress due work only while their lease is live. After expiry, one CAS replacement increments the fence; the prior owner cannot abort or complete the current reservation.
+* Negative probes: concurrent schedulers retain one winner; expiry before enqueue and after `enqueue_started` is recoverable; stale release/completion fails; current completion suppresses duplicate notification.
+
+### Migrated legacy references before bounded cleanup
+
+* Related markers: P07-T03; RV-004.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`.
+* Result: cleanup now spends a bounded per-run budget backfilling the durable artifact-reference index from retained outbox pages. Deletion is disabled until the complete legacy scan is proven. Migration cursor/state persists across runs, legacy references are materialized, and current-schema enqueue continues to register before outbox creation so concurrent references retain deletion priority.
+* Negative probes: pre-index referenced artifacts survive and are backfilled; incomplete paginated scans return without deletion; a concurrent new reference still defeats the cleanup claim.
+
+### Rebound every accepted cycle to raw proof
+
+* Related markers: P07-T05; RV-009.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`.
+* Result: verification records retain sanitized raw evidence beside derived booleans. Green document evaluation recomputes every proof field against the current identity, publication digest, canonical artifact, expected provider item, readback source/state, and duplicate resolution. The standalone weekly helper requires the authoritative weekly record rather than labels for green or recovered green.
+* Negative probes: four label-only cycles, identity-tampered week/job/manifest/artifact/provider/readback/duplicate evidence, and recovered cycles without exact authorization are rejected; four exact consecutive complete envelopes pass.
+
+## P07 Farnsworth Validation
+
+| Command | Result |
+|---|---|
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py tests/test_distribution_worker.py tests/test_distribution_telemetry.py tests/test_deploy_workflow.py -q` | Passed: `102 passed in 2.46s` |
+| Locked targeted contract command covering dispatch/API/outbox/worker/provider/publication/monitoring/deployment | Passed: `777 passed, 1 warning in 55.81s` |
+| Initial `TMPDIR="$PWD/.test-tmp" pytest tests/ -q` | Expected stale Compose image failure only: `1 failed, 3106 passed, 2 skipped, 2 deselected, 1 warning` |
+| `docker compose -f docker-compose.fanout.yml build --quiet` and focused fanout integration | Passed: `1 passed in 28.76s` |
+| Final `TMPDIR="$PWD/.test-tmp" pytest tests/ -q` | Passed: `3107 passed, 2 skipped, 2 deselected, 1 warning in 82.48s` |
+| `ruff check podcaster tests`; `ruff format --check podcaster tests`; `python3 -m compileall -q podcaster`; `git diff --check` | Passed; `192 files already formatted` |
+| `az bicep build --file infra/main.bicep --stdout` | Passed with the pre-existing BCP318 warning |
+| `checkov --directory infra --framework bicep --quiet` | Documented baseline retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov skip-list command | Passed: `34 passed, 0 failed` |
+| Dockerfile Checkov with `.checkov.baseline` | Passed |
+| `docker build -f Containerfile -t podcaster-synthesis:farnsworth-revision . --quiet` | Passed; image ID `sha256:774f6b9746a53516404ce1cd062314f8ee539b3651550d2ae531a5de034600ee` |
+| Container smoke | Passed: UID `999`, ffmpeg/ffprobe and `podcaster.audio`, `podcaster.episode`, `podcaster.job_runner` imports; unconfigured worker exited `2` |
+| Changed-file credential/secret/PII pattern scan | Passed; no suspected secret, credential value, private key, signed URL, or raw PII found |
+
+No test, assertion, safety gate, or security gate was removed, skipped, weakened, or made non-blocking.
 
 ## P07 Exact Proof and Recovery Authorization
 
