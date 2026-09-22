@@ -26,6 +26,8 @@ Frank now owns the sole-author correction from review head `3529a027d68c38112742
 
 Fry independently reviewed source commit `bfead2572ae7c98bf82122281ac3a26ff3b91edc` at final head `98eae68fe25b429cc59a36fff97a7154979d2bda` and rejected it. Complete predecessor attempt/event mutation, omission, insertion, duplication, reorder, replay, version drift, nested provider evidence drift, and successor reuse fail closed. However, `_recovery_authorization_binding_is_valid()` selects the first matching authorization and validates only its evidence digest plus winner linkage; it does not bind the authorization record's own `source`, `reason`, `authorized_at`, additional fields, or list cardinality. Mutating those fields, duplicating the matching record, or appending an unrelated record still leaves the successor's first claim mutation-capable. RV-008/P07-T01 therefore remains open.
 
+Fry now owns the sole-author correction from review head `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0`; Frank is locked out after the rejected revision. Leela is reserved for fresh independent final-SHA review and may not contribute. Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, and Livingston remain locked out. The correction must retain the complete v3 predecessor/successor binding while introducing a new versioned canonical complete authorization-envelope schema with explicit field types/null handling, exact unknown-field rejection, a bound extensions map if supported, exact authorization-set cardinality and order/identity, and deterministic rejection of duplicate, reordered, conflicting, unrelated, legacy, incomplete, or type-mutated records. Exactly one unchanged envelope may authorize exactly one mutation-capable claim; concurrent use has one winner and all reuse is read-only.
+
 ## Cross-Phase Invariants
 
 1. **Recoverably atomic visibility:** upload an immutable content-addressed artifact, verify integrity/readability, then conditionally create the single authoritative outbox record referencing its hash. Queue notification is an idempotent hint; claim revalidates the artifact; verified orphan artifacts are repaired or garbage-collected without provider mutation.
@@ -109,17 +111,17 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | Fry review complete with rejection; RV-008/P07-T01 remains open | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Fry correction and validation complete; Leela independent review pending | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: Fry's read-only final-SHA review of Frank's P07-T01 correction plus tracking reconciliation. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. RV-008 remains High/open.
-* Current task: preserve source/tests at `bfead2572ae7c98bf82122281ac3a26ff3b91edc`, record the rejection at final reviewed head `98eae68fe25b429cc59a36fff97a7154979d2bda`, and keep #684 draft/blocked.
-* Revision author: Frank only for this correction cycle.
-* Fresh independent reviewer: Fry, review complete and reviewer-only; verdict Not accepted.
-* Excluded contributors: Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, Ralph, and Livingston may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Fry may review only after delivery.
+* Declared scope: Fry's sole-author P07-T01 authorization-envelope/cardinality correction, full validation, and delivery reconciliation. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are implementation-resolved; RV-008 awaits independent acceptance.
+* Current task: commit and push the existing branch, keep #684 draft/blocked, and hand the exact final SHA to Leela for independent review.
+* Revision author: Fry only for this correction cycle.
+* Fresh independent reviewer: Leela, pending and reviewer-only; no contribution permitted.
+* Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, and Frank may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Leela may review only after delivery.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: exact timestamp/execution/fence bypass, parameterized mutation of every semantic attempt/event field, duplicate/omit/reorder/insert attempt or event, nested intent/receipt/provider/readback mutation, recovery-authorization metadata/cardinality, missing/ambiguous sequence/time, unexpected append after authorization, cross-week/publication/attempt replay, canonical round-trip, exact single authorized successor, all prior RV-008 and resolved-RV probes, then the complete locked validation contract without weakening.
 * Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 deployment/canary, and P06 elapsed evidence remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
@@ -130,21 +132,21 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | Open after Fry rejection | Authorization v3 protects predecessor attempts/events and the single successor, but must additionally bind the complete chosen authorization record and require exactly one matching authorization; changed metadata, extra fields, duplicate records, and unrelated records currently remain mutation-capable |
+| P07-T01 | Complete for Fry correction | `distribution-recovery-authz-v4` binds the exact complete envelope and `distribution-recovery-authz-set-v1` binds collection count/order/active identity/digest; legacy, unknown, missing, extra, type/null-mutated, duplicate, reordered, conflicting, and unrelated inputs fail closed |
 | P07-T02 | Complete; RV-002 resolved | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
 | P07-T03 | Complete; RV-004 resolved | Bounded resumable migration backfills pre-index references and cleanup fails closed until completeness is proven |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
-| P07-T06 | Complete for Frank correction | Outbox `126`, focused `171`, locked `846`, final full `3176`, static/infra/Checkov/container/exit/security gates passed; stale Compose image was rebuilt before the final full pass |
-| P07-T07; P05-T01 | Fry review complete with rejection; blocked | Preserve all rejections, keep PR #684 draft/blocked, correct RV-008, and obtain a new independent final-SHA acceptance; P00-T01, P05, and P06 remain open |
+| P07-T06 | Complete for Fry correction | Outbox `182`, focused `227`, locked `902`, full `3232`, Ruff/format/compile/diff, Bicep/Checkov, container/exit, and secret/PII gates passed without weakening |
+| P07-T07; P05-T01 | Awaiting Leela independent review; blocked | Preserve all rejections, keep PR #684 draft/blocked, and obtain Leela's independent final-SHA acceptance; P00-T01, P05, and P06 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
 | W39 classification | Settled | `missed_not_dispatched` |
 | Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
 
-Livingston alone authors the active P07-T01 correction. Frank alone is reserved for fresh independent review after implementation and validation and may not contribute beforehand. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph are excluded entirely from contribution or advice.
+Fry alone authors the active P07-T01 correction. Leela alone is reserved for fresh independent review after implementation and validation and may not contribute beforehand. Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, and Frank are excluded entirely from contribution or advice.
 
 ### Implemented Surface Disposition
 
@@ -1202,7 +1204,7 @@ Run focused negative probes and the complete repository quality/security/contain
 * Frank independently reproduced the same validation posture at final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f`: focused `133 passed`; locked `808 passed, 1 warning`; initial full `1 failed, 3137 passed, 2 skipped, 2 deselected, 1 warning` from the known stale Compose recorder image; rebuild followed by final full `3137 passed, 3 skipped, 2 deselected, 1 warning`. Ruff, format, compile, exact diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, baseline-aware Dockerfile Checkov, container image `sha256:da9825c04e9248453e5925c02367e52d1db62726f50e035c2cd8176f4a37f2a3`, UID/tool/import smoke, worker exit `2`, and exact-diff secret/PII scan passed. Validation does not clear the independently reproduced RV-008 High; P07-T07 remains open.
 
 <!-- rpi:task id=P07-T07 -->
-### P07-T07: Reconcile delivery evidence and obtain Frank's independent final-SHA review
+### P07-T07: Reconcile delivery evidence and obtain Leela's independent final-SHA review
 
 #### Context
 
@@ -1210,16 +1212,16 @@ RV-007 proved current tracking overstates finding closure and contains stale loc
 
 #### Intent
 
-Publish a truthful current delivery update for PR #684 and have Frank independently assess the final validated implementation/evidence.
+Publish a truthful current delivery update for PR #684 and have Leela independently assess the final validated implementation/evidence.
 
 #### Boundaries
 
-* Included: exact current finding count/status, implementation and negative-probe links, validation commands/counts, residual P00/P05/P06 gates, draft/blocked PR state, and Frank's final review.
+* Included: exact current finding count/status, implementation and negative-probe links, validation commands/counts, residual P00/P05/P06 gates, draft/blocked PR state, and Leela's final review.
 * Excluded: editing the historical review conclusion, erasing historical implementation claims, claiming deployment/canary/cycle acceptance, or accepting self-review.
 
 #### Likely Targets
 
-* Implementation-owned changes delivery update, current review-status summary, PR #684 handoff/body during P05, and Frank's independent review artifact/comment.
+* Implementation-owned changes delivery update, current review-status summary, PR #684 handoff/body, and Leela's independent review artifact/comment.
 
 #### Dependencies
 
@@ -1237,7 +1239,7 @@ Publish a truthful current delivery update for PR #684 and have Frank independen
 
 #### Unresolved Items
 
-* Fry completed the exact final-SHA review with rejection. PR #684 remains draft/blocked; RV-008 must be corrected and independently re-reviewed. P00-T01, P05, and P06 remain open; RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved.
+* Fry's correction and validation are complete. PR #684 remains draft/blocked; Leela's independent final-SHA review is pending. P00-T01, P05, and P06 remain open; RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are implementation-resolved.
 
 <!-- rpi:phase id=P05 -->
 ## P05: Deliver reviewed, reversible implementation

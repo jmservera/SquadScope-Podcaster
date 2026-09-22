@@ -1140,6 +1140,183 @@ def test_recovery_authorization_retains_auditable_exact_structured_binding(setup
     assert second_claim.read_only is True
 
 
+_AUTHORIZATION_ENVELOPE_FIELDS = (
+    "schema_version",
+    "authz_id",
+    "authz_version",
+    "source",
+    "reason",
+    "authorized_at",
+    "actor",
+    "owner",
+    "status",
+    "superseded_by_authz_id",
+    "predecessor_attempt_id",
+    "successor_attempt_id",
+    "evidence_schema_version",
+    "evidence_digest",
+    "evidence",
+    "extensions",
+)
+
+
+def _claim_after_authorization_mutation(setup, mutate, *, third_attempt=False):
+    if third_attempt:
+        repository, document, _evidence = _authorize_third_attempt(setup)
+    else:
+        repository, document, _unknown, _evidence = _authorize_latest_unknown_recovery(setup)
+    repository._update(document["outbox_id"], mutate)
+    return repository.claim(
+        document["outbox_id"],
+        owner="authorization-envelope-probe",
+        execution_id="authorization-envelope-probe",
+        lease_seconds=300,
+    )
+
+
+@pytest.mark.parametrize("field", _AUTHORIZATION_ENVELOPE_FIELDS)
+def test_recovery_authorization_rejects_every_removed_envelope_field(setup, field):
+    claim = _claim_after_authorization_mutation(
+        setup,
+        lambda state: state["recovery_authz"][-1].pop(field),
+    )
+    assert claim.read_only is True
+
+
+@pytest.mark.parametrize("field", _AUTHORIZATION_ENVELOPE_FIELDS)
+def test_recovery_authorization_rejects_every_envelope_field_type_or_null_mutation(setup, field):
+    def _mutate(state):
+        authorization = state["recovery_authz"][-1]
+        current = authorization[field]
+        authorization[field] = "wrong-type" if current is None else None
+
+    claim = _claim_after_authorization_mutation(setup, _mutate)
+    assert claim.read_only is True
+
+
+@pytest.mark.parametrize(
+    ("case", "mutate"),
+    [
+        (
+            "unknown-version",
+            lambda authz: authz.__setitem__("schema_version", "distribution-recovery-authz-v999"),
+        ),
+        (
+            "legacy-version",
+            lambda authz: authz.__setitem__(
+                "schema_version", "distribution-recovery-authorization-v3"
+            ),
+        ),
+        ("source", lambda authz: authz.__setitem__("source", "bounded_reconciliation")),
+        ("reason", lambda authz: authz.__setitem__("reason", "changed-reason")),
+        (
+            "authorized-at",
+            lambda authz: authz.__setitem__("authorized_at", "1999-01-01T00:00:00Z"),
+        ),
+        ("actor", lambda authz: authz.__setitem__("actor", "unexpected-actor")),
+        ("owner", lambda authz: authz.__setitem__("owner", "unexpected-owner")),
+        ("status", lambda authz: authz.__setitem__("status", "revoked")),
+        (
+            "predecessor",
+            lambda authz: authz.__setitem__("predecessor_attempt_id", "wrong-predecessor"),
+        ),
+        (
+            "successor",
+            lambda authz: authz.__setitem__("successor_attempt_id", "wrong-successor"),
+        ),
+        (
+            "evidence-version",
+            lambda authz: authz.__setitem__(
+                "evidence_schema_version", "distribution-recovery-authorization-v3"
+            ),
+        ),
+        ("evidence-digest", lambda authz: authz.__setitem__("evidence_digest", "0" * 64)),
+        (
+            "evidence-content",
+            lambda authz: authz["evidence"].__setitem__("unexpected_evidence", "changed"),
+        ),
+        (
+            "extensions-content",
+            lambda authz: authz["extensions"].__setitem__("audit", "changed"),
+        ),
+        (
+            "unknown-field",
+            lambda authz: authz.__setitem__("unexpected_audit_field", "changed"),
+        ),
+    ],
+)
+def test_recovery_authorization_rejects_complete_envelope_mutation(setup, case, mutate):
+    def _mutate(state):
+        mutate(state["recovery_authz"][-1])
+
+    claim = _claim_after_authorization_mutation(setup, _mutate)
+    assert claim.read_only is True
+
+
+@pytest.mark.parametrize(
+    ("case", "mutate"),
+    [
+        (
+            "duplicate-matching",
+            lambda state: state["recovery_authz"].append(
+                copy.deepcopy(state["recovery_authz"][-1])
+            ),
+        ),
+        (
+            "unrelated-extra",
+            lambda state: state["recovery_authz"].append(
+                {
+                    **copy.deepcopy(state["recovery_authz"][-1]),
+                    "authz_id": "unrelated-authz",
+                    "successor_attempt_id": "unrelated-successor",
+                }
+            ),
+        ),
+        (
+            "conflicting-extra",
+            lambda state: state["recovery_authz"].append(
+                {
+                    **copy.deepcopy(state["recovery_authz"][-1]),
+                    "authz_id": "conflicting-authz",
+                }
+            ),
+        ),
+    ],
+)
+def test_recovery_authorization_rejects_duplicate_unrelated_or_conflicting_extra(
+    setup, case, mutate
+):
+    claim = _claim_after_authorization_mutation(setup, mutate)
+    assert claim.read_only is True
+
+
+def test_recovery_authorization_rejects_reordered_collection(setup):
+    claim = _claim_after_authorization_mutation(
+        setup,
+        lambda state: state["recovery_authz"].reverse(),
+        third_attempt=True,
+    )
+    assert claim.read_only is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", "distribution-recovery-authz-set-v999"),
+        ("authz_count", 99),
+        ("ordered_authz_ids", []),
+        ("active_authz_id", "wrong-active-authz"),
+        ("digest", "0" * 64),
+    ],
+)
+def test_recovery_authorization_rejects_set_identity_mutation(setup, field, value):
+    claim = _claim_after_authorization_mutation(
+        setup,
+        lambda state: state["recovery_authz_set"].__setitem__(field, value),
+    )
+    assert claim.read_only is True
+
+
 def test_latest_unknown_readback_for_different_provider_item_fails_closed(setup):
     _storage, repository, _clock, document, _created = setup
     failed = _failed_attempt(
