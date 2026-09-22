@@ -134,19 +134,20 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
 | P07 | Review-follow-up closure for terminal truth | Complete for the current correction; Basher accepted exact reviewed head `905a890` | P07, P07-T01–P07-T07 |
-| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01–P05-T02 complete; P05-T03 corrected by Leela and pending Basher acceptance; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
+| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01–P05-T02 complete; P05-T03 rejected by Basher at `86f96bb` and under Livingston lifecycle-budget correction; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted exact-W39 production run and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: P05-T03 final-media integrity correction after Rusty's rejection of exact head `d050d68c3590f9a00b60dee925452f971cbaf0d2`, plus the required validation, #682 evidence replies, tracking, PR narrative, commit, and push.
-* Current task: in progress; add structural ffprobe validation plus a bounded complete ffmpeg decode before atomic promotion, with fail-closed timeout/non-zero/missing-tool handling and real corruption/truncation probes.
-* Revision author: Leela alone.
-* Fresh independent reviewer: Basher is reserved and has not contributed.
-* Excluded contributors: Livingston and Rusty may not author, advise, pair, inspect, suggest, or contribute during this correction. Bender, Hermes, and Amy remain excluded. Basher may perform only the fresh independent final-SHA review after implementation and validation complete.
+* Declared scope: P05-T03 lifecycle-budget and process-shutdown correction after Basher rejected exact head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`, plus required validation, #682/#684 evidence, tracking, PR narrative, commit, and push.
+* Current task: implementation and validation complete in source commit `f6b713530947236c04f822289343d3f105cc6dc9`; corrected GitHub evidence, final push, and Rusty review remain.
+* Revision author: Livingston alone.
+* Fresh independent reviewer: Rusty is reserved and has not contributed.
+* Excluded contributors: Leela and Basher may not author, advise, pair, inspect, suggest, or contribute during this correction. Bender, Hermes, and Amy remain excluded. Rusty may perform only the fresh independent final-SHA review after implementation and validation complete.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
-* Validation boundary: generated real H.264/AAC MP4 acceptance; 99%, 90%, 75%, 50%, and 25% truncation rejection; middle-byte corruption rejection; decode timeout/non-zero/missing-ffmpeg failure; destination preservation and staged-only cleanup; no archive/outbox/provider continuation after failure; existing upload ambiguity, checkpoint verification, P07/RV, W39, locked, full repository, static, infrastructure, container, Compose, and secret/PII gates without weakening.
-* Delivery boundary: commit and push only the existing branch and refresh only PR #684 after validation. P05-T03 remains pending Basher acceptance of the corrected final SHA. Keep #684 open/draft/blocked and #682 open. Do not merge, deploy, dispatch workflows, mutate providers, execute W39, or claim P05-T04–P05-T06/P06 credit.
+* Validation boundary: remaining-budget cap, insufficient-budget pre-launch rejection, bounded TERM/KILL/reap branches, process-group targeting, pipe closure, queue visibility deadline propagation, fixed renewed lease ownership, lifecycle/lease expiry no-downstream behavior, generated/truncated/corrupt media, upload ambiguity, checkpoint verification, P07/RV, W39, locked, full repository, static, infrastructure, container, Compose, and secret/PII gates without weakening.
+* Delivery boundary: commit and push only the existing branch and refresh only PR #684 after validation. P05-T03 remains pending Rusty acceptance of the corrected final SHA. Keep #684 open/draft/blocked and #682 open. Do not merge, deploy, dispatch workflows, mutate providers, execute W39, or claim P05-T04–P05-T06/P06 credit.
+* Validation result: exact probes `30`; compose/job runner `442`; locked lifecycle/provider contract `726`; full repository `3283 passed, 2 skipped, 2 deselected, 1 warning`; all static, Bicep, exact/CI Checkov, Dockerfile, container, worker-exit, Compose, and secret/PII gates passed or retained their documented baseline without weakening.
 
 ## Implementation Marker Reconciliation
 
@@ -163,7 +164,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, Ruff/format/compile/diff, Bicep/Checkov, container/exit, and secret/PII gates passed without weakening |
 | P07-T07; P05-T01 | Complete | Basher accepted exact executable head `905a890`; all later commits through `da84b6b` changed tracking/PR narrative only; #684 is linked to #773 |
 | P05-T02 | Complete | Final-SHA review found no executable drift or High/Critical issue; all 13 hosted checks on the final pushed tracking head succeeded |
-| P05-T03 | Pending Basher acceptance | All 67 #682 threads remain resolved; Leela's correction now requires structural ffprobe expectations plus successful complete bounded ffmpeg decode before promotion. Corrected final-media replies must cite the pushed SHA and Basher must independently accept it before this marker closes. |
+| P05-T03 | Livingston implementation complete; Rusty acceptance pending | All 67 #682 threads remain resolved. Structural ffprobe plus complete ffmpeg decode now derives admission and timeout from the authoritative queue visibility deadline and fixed renewed editor-lease window, reserves bounded cleanup/promotion time, and uses bounded TERM/KILL/reap stages. Source commit `f6b713530947236c04f822289343d3f105cc6dc9`; corrected evidence and Rusty's independent acceptance remain required before this marker closes. |
 | P05-T05 | Expanded prerequisite gate | Exact merge-SHA-derived upstream and Podcaster artifacts must be deployed and every review/deployment/readiness/rollback gate cleared before real W39 execution |
 | P05-T06 | New authoritative gate | Reconcile all W39 history/provider candidates before mutation, then prove exact GitHub-to-provider execution and authoritative terminal external readback; ambiguity fails closed/manual-action |
 | P06-T01–P06-T02 | Preserved | Four future qualifying cycles remain required; exact W39 does not automatically count |
