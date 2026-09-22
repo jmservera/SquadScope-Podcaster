@@ -1266,6 +1266,11 @@ def distribute_video(
                 result.youtube_id,
                 playlist_token,
                 transport=transport,
+                before_mutation=(
+                    (lambda: before_mutation("youtube", "playlist_insert"))
+                    if before_mutation is not None
+                    else None
+                ),
             )
             result.youtube_playlist_id = playlist_result.playlist_id
             result.youtube_playlist_succeeded = playlist_result.succeeded

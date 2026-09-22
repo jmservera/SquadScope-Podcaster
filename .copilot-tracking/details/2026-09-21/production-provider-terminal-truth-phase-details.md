@@ -335,6 +335,72 @@ Add an integration scenario beginning at the authoritative upstream weekly-publi
 
 * None.
 
+<!-- rpi:phase id=P09 -->
+## P09: Hermes final stale-exhaustion and playlist-fence correction
+
+### P09-T01: Reclaim safely before exhausted terminal evidence
+
+#### Context
+
+The final-delivery exception path reuses the original claim when writing
+`poisoned`. If the lease expired during provider work, the fenced write raises
+`StaleClaimError`, the queue message is not deleted, and redelivery is unbounded.
+
+#### Intent
+
+Treat the expired claim as invalid, acquire a new repository claim with a new
+fencing token, record only sanitized terminal evidence under that fresh
+authority, release it, and delete the exhausted message.
+
+#### Boundaries
+
+* Preserve every ownership comparison and stale-claim rejection.
+* Never use the stale claim for a protected provider write.
+* Preserve externally verified provider legs and existing poison aggregation.
+* Keep non-final deliveries retryable.
+
+#### Validation Expectations
+
+* A fake clock expires the original claim on dequeue count five.
+* The stale poison write is rejected, a fresh fence owns the terminal write,
+  durable exhaustion evidence is readable, and the queue message is deleted.
+
+### P09-T02: Fence playlist insertion at the mutation boundary
+
+#### Context
+
+Direct `distribute_video()` playlist reconciliation calls
+`_add_to_show_playlist()` without forwarding the ownership callback, leaving
+the actual playlist insert outside the direct-provider fence.
+
+#### Intent
+
+Forward a callback into the idempotent playlist helper, run membership readback
+first, and invoke ownership authorization exactly once immediately before an
+actual insert.
+
+#### Boundaries
+
+* Existing membership readback and retry-safe skip behavior remains unchanged.
+* No callback runs when no playlist is configured or membership already exists.
+* Token acquisition/readback does not duplicate mutation authorization.
+
+#### Validation Expectations
+
+* Exact event ordering is membership readback, ownership callback, insert.
+* Existing membership produces readback only and no callback or insert.
+* Direct distribution forwards the `youtube/playlist_insert` boundary.
+
+### P09-T03: Validate and deliver without changing rollout posture
+
+Run focused worker and playlist regressions; affected distribution worker,
+video ownership, video job-runner, queue, playlist, publish, upload, and
+integration suites; full pytest; Ruff check and format; compileall; diff check;
+and changed-line secret scanning. Immediately before push, require
+`origin/squad/incident-provider-terminal-truth` to remain exactly
+`ddaada1e8ca9d9203cd258f314be52dfee721898`. Push normally to the existing
+branch, keep PR #684 open/draft/stacked, and verify every hosted check.
+
 <!-- rpi:phase id=P08 -->
 ## P08: Independent provider terminal-truth correction
 

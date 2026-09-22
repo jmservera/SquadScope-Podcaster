@@ -14,7 +14,9 @@ from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request
 
 from podcaster.distribution_outbox import (
+    Claim,
     DistributionOutboxRepository,
+    StaleClaimError,
     aggregate_exit_code,
     exact_verification_proof,
     provider_approval_is_valid,
@@ -1071,25 +1073,46 @@ def process_message(
             outbox_id,
             message.dequeue_count,
         )
-        current = repository.read(outbox_id)
-        if current is None:
-            raise
-        for provider, leg in current["providers"].items():
-            if leg.get("result") == "externally_verified_public":
-                continue
-            repository.record_verification(
-                claim,
-                provider=str(provider),
-                result="poisoned",
-                source="distribution_worker_poison",
-                provider_item_id=_provider_item_id(leg),
-                exhaustion_reason="maximum_dequeue_count_exhausted",
+        exhaustion_claim = claim
+        try:
+            final = _record_poisoned_exhaustion(repository, exhaustion_claim)
+        except StaleClaimError:
+            logger.warning(
+                "distribution exhaustion claim expired; acquiring fresh fence outbox_id=%s",
+                outbox_id,
             )
-        final = repository.release(claim)
+            exhaustion_claim = repository.claim(
+                outbox_id,
+                owner="distribution-worker-exhaustion",
+                execution_id=uuid.uuid4().hex,
+                lease_seconds=900,
+            )
+            final = _record_poisoned_exhaustion(repository, exhaustion_claim)
     for row in signal_rows([final]):
         logger.info("distribution_signal %s", json.dumps(row, sort_keys=True))
     queue.delete_message(message)
     return final
+
+
+def _record_poisoned_exhaustion(
+    repository: DistributionOutboxRepository,
+    claim: Claim,
+) -> dict[str, Any]:
+    current = repository.read(claim.outbox_id)
+    if current is None:
+        raise RuntimeError("distribution outbox item is missing")
+    for provider, leg in current["providers"].items():
+        if leg.get("result") == "externally_verified_public":
+            continue
+        repository.record_verification(
+            claim,
+            provider=str(provider),
+            result="poisoned",
+            source="distribution_worker_poison",
+            provider_item_id=_provider_item_id(leg),
+            exhaustion_reason="maximum_dequeue_count_exhausted",
+        )
+    return repository.release(claim)
 
 
 class _DefaultTransportProxy:

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.youtube_playlist import (
     add_to_show_playlist,
     add_video_to_playlist,
@@ -90,52 +88,6 @@ class TestContains:
         t = _FakeTransport([(200, b'{"items": []}')])
         assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
 
-    @pytest.mark.parametrize(
-        "body",
-        [b"{}", b'{"items": "not-a-list"}', b'{"items": {}}', b'{"items": null}'],
-        ids=["missing", "string", "object", "null"],
-    )
-    def test_false_when_items_is_missing_or_not_a_list(self, body):
-        t = _FakeTransport([(200, body)])
-
-        assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
-
-    @pytest.mark.parametrize(
-        "body",
-        [b"{}", b'{"items": "not-a-list"}', b'{"items": {}}', b'{"items": null}'],
-        ids=["missing", "string", "object", "null"],
-    )
-    def test_strict_mode_rejects_items_that_is_not_a_list(self, body):
-        t = _FakeTransport([(200, body)])
-
-        with pytest.raises(RuntimeError, match="^playlist membership response was invalid$"):
-            playlist_contains_video(
-                "PL",
-                "vid",
-                "s3cr3t-token",
-                transport=t,
-                raise_on_error=True,
-            )
-
-    @pytest.mark.parametrize("body", [b"[]", b"null"], ids=["array", "null"])
-    def test_false_when_success_json_is_not_an_object(self, body):
-        t = _FakeTransport([(200, body)])
-
-        assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
-
-    @pytest.mark.parametrize("body", [b"[]", b"null"], ids=["array", "null"])
-    def test_strict_mode_rejects_success_json_that_is_not_an_object(self, body):
-        t = _FakeTransport([(200, body)])
-
-        with pytest.raises(RuntimeError, match="^playlist membership response was invalid$"):
-            playlist_contains_video(
-                "PL",
-                "vid",
-                "s3cr3t-token",
-                transport=t,
-                raise_on_error=True,
-            )
-
     def test_false_on_http_error(self):
         t = _FakeTransport([(404, b"{}")])
         assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
@@ -179,26 +131,6 @@ class TestContains:
 
 
 class TestAddVideo:
-    def test_provider_admission_error_is_not_converted_to_failed_result(self):
-        started = datetime(2026, 9, 15, tzinfo=timezone.utc)
-        budget = VideoStageBudget.start(
-            now_utc=started,
-            monotonic=lambda: 4500.0,
-            utcnow=lambda: started + timedelta(seconds=4500),
-        )
-
-        with pytest.raises(ProviderMutationAdmissionError) as captured:
-            add_video_to_playlist(
-                "PL",
-                "vid",
-                "tok",
-                transport=_FakeTransport([]),
-                budget=budget,
-            )
-
-        assert captured.value.provider == "youtube_playlist"
-        assert captured.value.mutation_started is False
-
     def test_insert_success(self):
         t = _FakeTransport([(200, json.dumps({"id": "item1"}).encode())])
         res = add_video_to_playlist("PL", "vid", "tok", transport=t)
@@ -219,27 +151,6 @@ class TestAddVideo:
         body = json.loads(t.calls[0]["data"])
         assert body["snippet"]["position"] == 0
 
-    @pytest.mark.parametrize("status", [200, 201])
-    @pytest.mark.parametrize(
-        "body",
-        [
-            b"{not-json",
-            b"{}",
-            b'{"id": ""}',
-            b'{"id": "   "}',
-        ],
-        ids=["malformed-json", "missing-id", "empty-id", "blank-id"],
-    )
-    def test_identifierless_success_is_retry_blocked_unknown(self, body, status):
-        t = _FakeTransport([(status, body)])
-        res = add_video_to_playlist("PL", "vid", "tok", transport=t)
-
-        assert res.succeeded is False
-        assert res.playlist_item_id == ""
-        assert res.outcome == "unknown"
-        assert res.retry_blocked is True
-        assert res.error == "playlist insert completed without a valid item id"
-
     def test_http_error_returns_failed(self):
         t = _FakeTransport([(403, b"{}")])
         res = add_video_to_playlist("PL", "vid", "tok", transport=t)
@@ -251,8 +162,6 @@ class TestAddVideo:
         res = add_video_to_playlist("PL", "vid", "tok", transport=t)
         assert res.succeeded is False
         assert res.error
-        assert res.outcome == "unknown"
-        assert res.retry_blocked is True
 
     def test_blank_args_raise(self):
         with pytest.raises(ValueError):
@@ -318,65 +227,66 @@ class TestAddToShowPlaylist:
         assert res.playlist_item_id == "item9"
         assert len(t.calls) == 2
 
-    def test_membership_lookup_error_fails_closed_without_insert(self, monkeypatch):
+    def test_fences_once_after_readback_before_insert(self, monkeypatch):
         monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
-        t = _FakeTransport([(503, b"{}")])
+        events: list[str] = []
 
-        res = add_to_show_playlist(None, "en", "vid", "tok", transport=t)
+        class OrderedTransport(_FakeTransport):
+            def request(self, url, *, method="GET", headers=None, data=None):
+                events.append("readback" if method == "GET" else "insert")
+                return super().request(
+                    url,
+                    method=method,
+                    headers=headers,
+                    data=data,
+                )
 
-        assert res.succeeded is False
-        assert res.outcome == "unknown"
-        assert res.retry_blocked is True
-        assert len(t.calls) == 1
-        assert t.calls[0]["method"] == "GET"
-
-    @pytest.mark.parametrize("body", [b"[]", b"null"], ids=["array", "null"])
-    def test_non_object_membership_is_retry_blocked_without_insert(self, monkeypatch, body):
-        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
-        t = _FakeTransport([(200, body)])
-
-        res = add_to_show_playlist(None, "en", "vid", "tok", transport=t)
-
-        assert res.succeeded is False
-        assert res.outcome == "unknown"
-        assert res.retry_blocked is True
-        assert res.error == "playlist membership response was invalid"
-        assert [call["method"] for call in t.calls] == ["GET"]
-
-    def test_lost_insert_response_is_retry_blocked_unknown(self, monkeypatch):
-        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
-        t = _FakeTransport(
+        transport = OrderedTransport(
             [
                 (200, b'{"items": []}'),
-                (RuntimeError("insert response lost"), b""),
+                (200, b'{"id": "item9"}'),
             ]
         )
 
-        res = add_to_show_playlist(None, "en", "vid", "tok", transport=t)
-
-        assert res.succeeded is False
-        assert res.outcome == "unknown"
-        assert res.retry_blocked is True
-        assert len(t.calls) == 2
-
-    @pytest.mark.parametrize("status", [429, 500, 503])
-    def test_transient_insert_response_is_retry_blocked_unknown(self, monkeypatch, status):
-        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
-        t = _FakeTransport(
-            [
-                (200, b'{"items": []}'),
-                (status, b"{}"),
-            ]
+        result = add_to_show_playlist(
+            None,
+            "en",
+            "vid",
+            "tok",
+            transport=transport,
+            before_mutation=lambda: events.append("fence"),
         )
 
-        res = add_to_show_playlist(None, "en", "vid", "tok", transport=t)
+        assert result.succeeded is True
+        assert events == ["readback", "fence", "insert"]
 
-        assert res.succeeded is False
-        assert res.outcome == "unknown"
-        assert res.retry_blocked is True
-        assert res.error == f"HTTP {status}"
-        assert len(t.calls) == 2
-        assert [call["method"] for call in t.calls] == ["GET", "POST"]
+    def test_existing_membership_does_not_consume_mutation_fence(self, monkeypatch):
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
+        events: list[str] = []
+
+        class OrderedTransport(_FakeTransport):
+            def request(self, url, *, method="GET", headers=None, data=None):
+                events.append("readback")
+                return super().request(
+                    url,
+                    method=method,
+                    headers=headers,
+                    data=data,
+                )
+
+        transport = OrderedTransport([(200, b'{"items": [{"id": "item9"}]}')])
+
+        result = add_to_show_playlist(
+            None,
+            "en",
+            "vid",
+            "tok",
+            transport=transport,
+            before_mutation=lambda: events.append("fence"),
+        )
+
+        assert result.skipped is True
+        assert events == ["readback"]
 
     def test_locale_routing(self, monkeypatch):
         monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")

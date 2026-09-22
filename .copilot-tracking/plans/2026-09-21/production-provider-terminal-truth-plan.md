@@ -867,3 +867,27 @@ at the approved base.
 P08-T01 through P08-T06 have source and focused/affected-suite evidence. P08-T07 remains the only
 active implementation marker; its first boundary is intent-level reconciliation of Amy's source
 commit onto the ownership-fenced base before rerunning all provider and ownership validation.
+
+## 2026-09-22 Hermes Final Blocking Correction
+
+This user-directed correction starts from exact remote head
+`ddaada1e8ca9d9203cd258f314be52dfee721898`. Bender, Leela, and Amy are locked
+out from contribution. Existing provider terminal truth, approval, lifecycle,
+ownership, and idempotent reconciliation behavior remains authoritative.
+
+<!-- rpi:phase id=P09 -->
+### P09: Close stale exhaustion and direct playlist fencing
+
+* [x] <!-- rpi:task id=P09-T01 --> On final queue delivery, recover from an
+  expired worker claim by acquiring fresh fenced ownership before recording
+  sanitized poison/manual-handoff evidence, then discard the exhausted message.
+* [x] <!-- rpi:task id=P09-T02 --> Fence direct-distribution playlist insertion
+  after idempotent membership readback and immediately before the external
+  insert, with exactly one callback for an actual mutation.
+* [ ] <!-- rpi:task id=P09-T03 --> Run focused, affected, full, static, diff,
+  compile, and changed-line secret validation; require the exact remote-head
+  gate before a normal push and verify the draft stacked PR checks.
+
+P09 is the active implementation scope. P08 history remains intact; P09 corrects
+the two final blocking cases without reopening unrelated provider behavior or
+claiming deployment, merge, production mutation, or P05/P06 completion.
