@@ -238,8 +238,14 @@ def _descendant_pids(root_pid: int) -> list[int]:
     return descendants
 
 
-def _signal_process_tree(process: subprocess.Popen[Any], sig: signal.Signals) -> None:
-    for pid in reversed(_descendant_pids(process.pid)):
+def _signal_process_tree(
+    process: subprocess.Popen[Any],
+    sig: signal.Signals,
+    descendant_pids: set[int],
+) -> None:
+    for root_pid in (process.pid, *tuple(descendant_pids)):
+        descendant_pids.update(_descendant_pids(root_pid))
+    for pid in reversed(tuple(descendant_pids)):
         try:
             os.kill(pid, sig)
         except ProcessLookupError:
@@ -250,21 +256,38 @@ def _signal_process_tree(process: subprocess.Popen[Any], sig: signal.Signals) ->
         pass
 
 
-def _reap_adopted_group(process_group: int, grace_seconds: float) -> None:
+def _reap_adopted_processes(
+    process_group: int,
+    descendant_pids: set[int],
+    grace_seconds: float,
+) -> None:
     if not sys.platform.startswith("linux"):
         return
     deadline = time.monotonic() + max(0.0, grace_seconds)
     while True:
         reaped_any = False
+        group_has_children = False
         try:
             while True:
                 pid, _ = os.waitpid(-process_group, os.WNOHANG)
-                if pid <= 0:
+                if pid == 0:
+                    group_has_children = True
                     break
+                if pid < 0:
+                    break
+                descendant_pids.discard(pid)
                 reaped_any = True
         except ChildProcessError:
-            return
-        if time.monotonic() >= deadline:
+            pass
+        for pid in tuple(descendant_pids):
+            try:
+                reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                continue
+            if reaped_pid > 0:
+                descendant_pids.discard(pid)
+                reaped_any = True
+        if (not group_has_children and not descendant_pids) or time.monotonic() >= deadline:
             return
         if not reaped_any:
             time.sleep(0.01)
@@ -310,12 +333,16 @@ def run_owned_process(
     try:
         stdout, stderr = process.communicate(input=input_text, timeout=effective_timeout)
     except subprocess.TimeoutExpired as exc:
-        signal_process = _signal_process_tree if nested_in_owned_callable else _signal_process_group
-        signal_process(process, signal.SIGTERM)
+        descendant_pids: set[int] = set()
+        _signal_process_tree(process, signal.SIGTERM, descendant_pids)
+        if not nested_in_owned_callable:
+            _signal_process_group(process, signal.SIGTERM)
         try:
             stdout, stderr = process.communicate(timeout=max(0.0, terminate_grace_seconds))
         except subprocess.TimeoutExpired:
-            signal_process(process, signal.SIGKILL)
+            _signal_process_tree(process, signal.SIGKILL, descendant_pids)
+            if not nested_in_owned_callable:
+                _signal_process_group(process, signal.SIGKILL)
             try:
                 stdout, stderr = process.communicate(timeout=max(0.0, reap_grace_seconds))
             except subprocess.TimeoutExpired as reap_exc:
@@ -332,7 +359,7 @@ def run_owned_process(
                 except subprocess.TimeoutExpired:
                     pass
         if subreaper_enabled:
-            _reap_adopted_group(process.pid, reap_grace_seconds)
+            _reap_adopted_processes(process.pid, descendant_pids, reap_grace_seconds)
         _remove_outputs(output_paths)
         captured_stdout = _bounded_text(stdout) or _bounded_text(exc.stdout)
         captured_stderr = _bounded_text(stderr) or _bounded_text(exc.stderr)
@@ -486,7 +513,7 @@ def _stop_owned_callable(
         worker.kill()
     worker.join()
     if subreaper_enabled:
-        _reap_adopted_group(worker.pid, DEFAULT_REAP_GRACE_SECONDS)
+        _reap_adopted_processes(worker.pid, set(), DEFAULT_REAP_GRACE_SECONDS)
 
 
 def run_owned_callable(

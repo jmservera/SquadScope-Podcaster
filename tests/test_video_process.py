@@ -80,12 +80,15 @@ def test_runner_terminates_child_and_grandchild_tree_and_rejects_partial_output(
 
 
 def test_runner_bounds_final_reap_when_escaped_descendant_keeps_pipes_open(tmp_path):
+    escaped_pid_path = tmp_path / "escaped.pid"
     partial_output = tmp_path / "partial.mp4"
     code = (
         "import subprocess,sys,time,pathlib;"
         f"pathlib.Path({str(partial_output)!r}).write_bytes(b'partial');"
-        "subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],"
+        "p=subprocess.Popen([sys.executable,'-c',"
+        "'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)'],"
         "start_new_session=True);"
+        f"pathlib.Path({str(escaped_pid_path)!r}).write_text(str(p.pid));"
         "time.sleep(30)"
     )
     started = time.monotonic()
@@ -99,7 +102,9 @@ def test_runner_bounds_final_reap_when_escaped_descendant_keeps_pipes_open(tmp_p
             output_paths=[partial_output],
         )
 
+    escaped_pid = int(escaped_pid_path.read_text())
     assert time.monotonic() - started < 2.0
+    assert not Path(f"/proc/{escaped_pid}").exists()
     assert not partial_output.exists()
 
 
