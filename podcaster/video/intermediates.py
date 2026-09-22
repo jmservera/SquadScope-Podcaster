@@ -362,7 +362,7 @@ class IntermediateStore:
             return False
         if type(actual) is not int:
             return False
-        return actual == expected
+        return type(actual) is int and actual == expected
 
     def read_text(
         self,

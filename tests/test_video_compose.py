@@ -4480,6 +4480,7 @@ class TestFinalOutputValidation:
             "{}",
             '{"streams":[],"format":{"duration":"5.0"}}',
             '{"streams":[{"codec_type":"video"}],"format":{"duration":"0"}}',
+            '{"streams":[{"codec_type":"video"}],"format":{"duration":"Infinity"}}',
             "not-json",
         ],
     )
