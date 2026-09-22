@@ -1318,6 +1318,15 @@ def test_recovery_authorization_rejects_set_identity_mutation(setup, field, valu
     assert claim.read_only is True
 
 
+@pytest.mark.parametrize("value", [True, 1.0])
+def test_recovery_authorization_rejects_authz_count_type_bypass(setup, value):
+    claim = _claim_after_authorization_mutation(
+        setup,
+        lambda state: state["recovery_authz_set"].__setitem__("authz_count", value),
+    )
+    assert claim.read_only is True
+
+
 def _scalar_paths(value, prefix=()):
     if type(value) is dict:
         for key, item in value.items():
