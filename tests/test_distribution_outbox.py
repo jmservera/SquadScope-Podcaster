@@ -911,6 +911,219 @@ def test_exact_terminal_readback_of_latest_unknown_allows_new_safe_recovery(setu
     assert state["attempts"][2]["predecessor_attempt_id"] == unknown["attempt_id"]
 
 
+def _authorize_latest_unknown_recovery(setup):
+    _storage, repository, _clock, document, _created = setup
+    failed = _failed_attempt(
+        repository,
+        document["outbox_id"],
+        owner="failed",
+        execution_id="failed",
+    )
+    _authorize_recovery(repository, document["outbox_id"], failed, suffix="unknown")
+    unknown = _terminate_current_attempt_unknown(
+        repository,
+        document["outbox_id"],
+        suffix="unknown",
+    )
+    reconciliation = repository.claim(
+        document["outbox_id"],
+        owner="authoritative-readback",
+        execution_id="authoritative-readback",
+        lease_seconds=300,
+    )
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            reconciliation,
+            provider=provider,
+            result="failed_terminal",
+            source=f"{provider}_terminal_readback",
+            provider_item_id=f"{provider}-unknown",
+            native_state="failed",
+        )
+    repository.release(reconciliation)
+    evidence = _authorize_recovery(
+        repository,
+        document["outbox_id"],
+        unknown,
+        suffix="resolved",
+    )
+    return repository, document, unknown, evidence
+
+
+def test_latest_unknown_wrong_operation_cannot_create_recovery_evidence(setup):
+    _storage, repository, _clock, document, _created = setup
+    failed = _failed_attempt(
+        repository,
+        document["outbox_id"],
+        owner="failed",
+        execution_id="failed",
+    )
+    _authorize_recovery(repository, document["outbox_id"], failed, suffix="unknown")
+    unknown = _terminate_current_attempt_unknown(
+        repository,
+        document["outbox_id"],
+        suffix="unknown",
+    )
+
+    def _replace_operation(state):
+        state["attempts"][-1]["provider_evidence"]["youtube"]["intent"]["operation"] = (
+            "unrelated_read_only_probe"
+        )
+
+    repository._update(document["outbox_id"], _replace_operation)
+    reconciliation = repository.claim(
+        document["outbox_id"],
+        owner="wrong-operation-readback",
+        execution_id="wrong-operation-readback",
+        lease_seconds=300,
+    )
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            reconciliation,
+            provider=provider,
+            result="failed_terminal",
+            source=f"{provider}_terminal_readback",
+            provider_item_id=f"{provider}-unknown",
+            native_state="failed",
+        )
+    repository.release(reconciliation)
+
+    with pytest.raises(DistributionOutboxError, match="operation is invalid"):
+        exact_recovery_authorization_evidence(
+            repository.read(document["outbox_id"]),
+            predecessor_attempt_id=unknown["attempt_id"],
+            expected_provider_item_ids={
+                "youtube": "youtube-resolved",
+                "spotify": "spotify-resolved",
+            },
+        )
+    assert len(repository.read(document["outbox_id"])["attempts"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("case", "mutate"),
+    [
+        (
+            "intent-id",
+            lambda state: state["attempts"][1]["provider_evidence"]["youtube"][
+                "intent"
+            ].__setitem__("intent_id", "mutated-intent"),
+        ),
+        (
+            "receipt-id",
+            lambda state: state["attempts"][1]["provider_evidence"]["youtube"]["receipts"][
+                0
+            ].__setitem__("receipt_id", "mutated-receipt"),
+        ),
+        (
+            "consumed-owner",
+            lambda state: state["attempts"][1]["provider_evidence"]["youtube"][
+                "intent"
+            ].__setitem__("consumed_owner", "other-owner"),
+        ),
+        (
+            "consumed-fence",
+            lambda state: state["attempts"][1]["provider_evidence"]["youtube"][
+                "intent"
+            ].__setitem__("consumed_fence", 999),
+        ),
+        (
+            "consumed-time",
+            lambda state: state["attempts"][1]["provider_evidence"]["youtube"][
+                "intent"
+            ].__setitem__("consumed_at", "2026-09-21T20:00:00Z"),
+        ),
+        (
+            "provider-item",
+            lambda state: state["attempts"][1]["provider_evidence"]["youtube"]["receipts"][
+                0
+            ].__setitem__("provider_item_id", "youtube-other"),
+        ),
+        (
+            "readback-state",
+            lambda state: state["attempts"][1]["post_terminal_readbacks"][0][
+                "verification"
+            ].__setitem__("native_state", "pending"),
+        ),
+        (
+            "authorization-binding",
+            lambda state: state["recovery_authz"][-1]["evidence"]["providers"]["youtube"][
+                "predecessor"
+            ]["terminal_readback"].__setitem__("native_state", "tampered"),
+        ),
+        (
+            "legacy-schema",
+            lambda state: state["recovery_authz"][-1]["evidence"].__setitem__(
+                "schema_version", "distribution-recovery-authorization-v1"
+            ),
+        ),
+        (
+            "wrong-successor",
+            lambda state: state["attempts"][-1].__setitem__("attempt_id", "other-successor"),
+        ),
+    ],
+)
+def test_authorized_recovery_recomputes_exact_durable_binding(setup, case, mutate):
+    repository, document, _unknown, _evidence = _authorize_latest_unknown_recovery(setup)
+    repository._update(document["outbox_id"], mutate)
+
+    claim = repository.claim(
+        document["outbox_id"],
+        owner=f"{case}-claim",
+        execution_id=f"{case}-claim",
+        lease_seconds=300,
+    )
+    assert claim.read_only is True
+
+
+def test_authorized_recovery_rejects_receipt_swapped_between_providers(setup):
+    repository, document, _unknown, _evidence = _authorize_latest_unknown_recovery(setup)
+
+    def _swap_receipts(state):
+        evidence = state["attempts"][1]["provider_evidence"]
+        evidence["youtube"]["receipts"], evidence["spotify"]["receipts"] = (
+            evidence["spotify"]["receipts"],
+            evidence["youtube"]["receipts"],
+        )
+
+    repository._update(document["outbox_id"], _swap_receipts)
+    claim = repository.claim(
+        document["outbox_id"],
+        owner="swapped-receipt",
+        execution_id="swapped-receipt",
+        lease_seconds=300,
+    )
+    assert claim.read_only is True
+
+
+def test_recovery_authorization_retains_auditable_exact_structured_binding(setup):
+    repository, document, unknown, evidence = _authorize_latest_unknown_recovery(setup)
+    state = repository.read(document["outbox_id"])
+    authorization = state["recovery_authz"][-1]
+    successor = state["attempts"][-1]
+    youtube = authorization["evidence"]["providers"]["youtube"]
+
+    assert evidence["providers"]["youtube"]["predecessor"]["attempt_id"] == unknown["attempt_id"]
+    assert youtube["predecessor"]["intent"]["operation"] == "recovery_mutation"
+    assert youtube["predecessor"]["intent"]["operation_type"] == "recovery_fixture"
+    assert youtube["predecessor"]["intent"]["intent_id"]
+    assert youtube["predecessor"]["receipt"]["receipt_id"]
+    assert youtube["predecessor"]["receipt"]["provider"] == "youtube"
+    assert youtube["predecessor"]["terminal_readback"]["native_state"] == "failed"
+    assert authorization["evidence"]["succeeding_attempt"]["attempt_id"] == successor["attempt_id"]
+    assert (
+        authorization["evidence"]["succeeding_attempt"]["providers"]["youtube"]
+        == youtube["succeeding_provider"]
+    )
+    claim = repository.claim(
+        document["outbox_id"],
+        owner="exact-successor",
+        execution_id="exact-successor",
+        lease_seconds=300,
+    )
+    assert claim.read_only is False
+
+
 def test_latest_unknown_readback_for_different_provider_item_fails_closed(setup):
     _storage, repository, _clock, document, _created = setup
     failed = _failed_attempt(

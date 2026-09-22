@@ -10,16 +10,57 @@
 
 ## Execution Status
 
-* Status: Livingston independently reviewed Ralph's final source SHA `e16963243973707ea2557f75f925d3c6935d49ee` and rejected it. Receipt cardinality and item/fence/time checks pass, but RV-008 remains High because a wrong consumed operation can still authorize a mutation-capable successor. P07-T01 remains open; P07-T07 records rejection rather than acceptance
+* Status: Livingston completed the sole RV-008 source/test correction and full validation from `fa3426fa030193e89a58cdb927c81a360df24a03`; Frank's independent final-SHA review is pending
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
-* Sole current revision author: Ralph
-* Independent reviewer: Livingston, complete without source/test contribution; verdict Not accepted
+* Sole current revision author: Livingston
+* Independent reviewer: Frank, pending and reviewer-only
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed marker for reviewed revision: P07-T06; rerun required after any executable correction
-* Open markers: P07-T01 and P07-T07
-* Remaining in-scope work: correct exact operation and durable intent/receipt authorization binding, rerun validation, and obtain a new independent final-SHA review
+* Completed markers for this cycle: P07-T01 and P07-T06
+* Open marker: P07-T07
+* Remaining in-scope work: commit/push the existing branch, update the existing draft PR narrative with exact SHAs, and obtain Frank's independent final-SHA review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: clean local, remote, and PR head `e16963243973707ea2557f75f925d3c6935d49ee`, exact comparison `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e..e16963243973707ea2557f75f925d3c6935d49ee`, divergence `0/0`. Zero, duplicate, partial-provider, conflicting, wrong-item/kind/fence, malformed, stale-authorization, different-item, and history-order probes pass. Livingston reproduced `RV008_WRONG_OPERATION_BYPASS read_only=False attempts=3 operation=unrelated_read_only_probe`. RV-008 remains High. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+* Status basis: exact structured recovery binding and all requested denial probes pass; focused, locked, full, static, infrastructure, Checkov, container, exit, and secret/PII gates pass without weakening. Existing branch and draft PR #684 are retained. Ralph's rejected source `e16963243973707ea2557f75f925d3c6935d49ee` remains historical evidence. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+
+## P07 Livingston Exact Structured Recovery Binding Opening
+
+* Related markers: P07-T01, P07-T06, P07-T07; RV-008.
+* Authorship and lockout: Livingston is sole author. Frank is reserved for independent final-SHA review and may not author, advise, pair, or contribute. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph are locked out from authoring, advice, pairing, or contribution.
+* Exact baseline: clean local/remote/PR head `fa3426fa030193e89a58cdb927c81a360df24a03`; rejected source `e16963243973707ea2557f75f925d3c6935d49ee`; divergence `0/0`.
+* Write boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, the existing branch `squad/incident-provider-terminal-truth`, current plan/details/changes/PR artifacts, source/tests required for RV-008, and existing draft PR #684 after validation.
+* Contract: retain auditable structured fields and deterministically bind provider kind/item, allowed operation name/type, consumed intent ID, exact receipt ID, predecessor attempt, consumption owner/fence/time, receipt timestamp/order, week/publication/manifest/digests/artifact, terminal readback identity/state/time, and the specifically authorized succeeding attempt/provider expectation. Recompute the exact binding at authorization creation and mutation-capable use. Missing, extra, duplicate, reordered, stale, conflicting, swapped, mutated, or legacy-incomplete evidence fails closed.
+* Validation intent: add exact wrong-operation, mutated intent/receipt ID, swapped provider/attempt receipt, extra/missing receipt, owner/fence/time/operation/item/readback/binding mutation, legacy schema, and successor-only probes; preserve all earlier RV-008 and RV-002/RV-003/RV-004/RV-007/RV-009 probes; run focused/locked/full pytest and every static, infrastructure, Checkov, container, exit, and secret/PII gate without weakening.
+* Blockers retained: Frank's independent final-SHA review, P00-T01, P05, and P06. PR #684 remains open, draft, and blocked. No issue/thread/deployment/canary mutation is in scope.
+
+## P07 Livingston Exact Structured Recovery Binding
+
+* Related markers: P07-T01; RV-008.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`.
+* Structured schema: recovery authorization is versioned as `distribution-recovery-authorization-v2` and retains auditable publication identity, publication digest, full artifact/canonical selection, ordered predecessor history, exact predecessor attempt, provider objective, operation name/type, intent identity and timestamps/fences/owner, exact receipt identity/order/provider/operation/attempt/owner, terminal readback identity/state/time/fence, and succeeding attempt/provider expectation.
+* Durable recomputation: authorization creation compares caller evidence to a freshly derived exact structure. The stored successor-enriched structure and digest are revalidated from immutable predecessor records when the successor is claimed; an invalid or legacy authorization yields a reconciliation-only claim.
+* Operation boundary: only explicit known provider operation names map to auditable operation types. Readback-only operations cannot prove a mutation-safe unknown predecessor, and `unrelated_read_only_probe` is rejected before authorization creation.
+* Provider isolation: each provider retains its own intent and receipt snapshot. Provider/attempt receipt swaps, changed intent/receipt IDs, owner/fence/time/item/readback fields, extra or missing receipts, and successor aliasing fail closed.
+* Compatibility: failed-terminal predecessors without consumed mutations remain recoverable through exact null intent/receipt fields plus authoritative failed readback. Legacy v1 recovery authorizations are not upgraded and fail closed.
+* Preserved state: predecessor attempts and ordered history remain immutable; all previously resolved findings retain their behavior.
+
+## P07 Livingston Validation
+
+| Command | Result |
+|---|---|
+| Required RV-008 focused selection | Passed: `20 passed, 68 deselected in 4.21s` |
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py -q` | Passed: `88 passed in 3.63s` |
+| Focused correction suite | Passed: `133 passed in 4.00s` |
+| Locked dispatch/API/outbox/worker/provider/publication/monitoring/deployment command | Passed: `808 passed, 1 warning in 58.43s` |
+| Full repository suite | First run reproduced the known stale Compose recorder image (`1 failed, 3137 passed, 2 skipped, 2 deselected, 1 warning`); Compose image rebuild completed, and final full suite passed `3137 passed, 3 skipped, 2 deselected, 1 warning in 74.89s` |
+| Ruff, format, compile, diff safety | Passed across `podcaster` and `tests`; `192 files already formatted` |
+| Bicep build | Passed with the documented pre-existing BCP318 warning |
+| Exact Checkov baseline | Retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov | Passed: `34 passed, 0 failed` |
+| Dockerfile Checkov baseline | Passed |
+| Container image | `sha256:c427f35291962193a83890f94549485745830d2008ea9d7231caf7931a4ae9fc`; UID `999`, ffmpeg/ffprobe, and pipeline imports passed |
+| Unconfigured distribution worker | Exited `2` as required |
+| Changed-diff suspected secret/PII scan | No private key, access key, JWT, signed credential URL, or email-address pattern found |
+
+No test, assertion, safety gate, security gate, or baseline was removed, skipped, weakened, or made non-blocking. P07-T01 and P07-T06 are complete for Livingston's revision. P07-T07 remains pending Frank's independent review of the final pushed SHA.
 
 ## P07 Ralph Exact Receipt Revision Opening
 
