@@ -6,7 +6,7 @@
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Review date: 2026-09-21
 * Final-revision review date: 2026-09-22
-* Final revision reviewed: pending exact-head gate for `da84b6b2c50f0226b2abb3b469a01c2158d41ef3`
+* Final revision reviewed: Leela-authored tracking head `da84b6b2c50f0226b2abb3b469a01c2158d41ef3`, followed only by Basher-owned review and delivery reconciliation recorded in the final pushed head
 * Final-revision reviewer: Basher, independent of latest tracking-only author Leela; Bender, Hermes, Amy, and Leela are excluded from this review
 * Review scope: Final-SHA P05 delivery gate for PR #684, including ancestry from accepted implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` and executable source revision `9204e139be485cb916ccd6e70b6fce355b656136`, upstream prerequisite PR #773, exact-W39 tracking requirements, hosted checks, and PR #682 disposition evidence
 * Assessed boundary: Immutable attempt truth; deterministic weekly aggregation; exact provider proof; controlled recovery; unknown-mutation safety; RV-002 scheduler fairness/deduplication; RV-003 alert deployment; RV-004 cleanup; RV-007 terminology/tracking consistency; W38/W39 fixtures; four-cycle evaluation; validation; and residual P00-T01/P05/P06 work
