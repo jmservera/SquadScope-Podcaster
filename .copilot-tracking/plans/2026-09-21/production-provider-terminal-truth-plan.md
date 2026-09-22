@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Basher rejected exact head `df473dc0c059680b9c454ddab263c5c454e2ef2b` because ownership can transfer after the post-compose check and before final promotion, immutable archive, outbox/notification handoff, direct provider mutation, or terminal success. Frank completed the sole-author implementation and required validation. One fail-closed persisted video execution claim now binds owner, claim/execution identity, monotonic fence, authoritative visibility/lease expiry, CAS/readback, and durable boundary permits. Every downstream mutation or handoff consumes the current permit; takeover reconciles existing durable artifacts without granting a duplicate provider mutation. Exact probes `13`, focused `416`, locked `940`, and full `3302` passed with all required static, infrastructure, container, Compose, and security gates. Commit, push, GitHub evidence, and Rusty final-SHA review remain. Basher and jmservera's prior implementation context did not advise or pair; Bender, Hermes, and Amy remain excluded. P00-T01 is complete through upstream PR `jmservera/SquadScope#773`, reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merged as `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3` with all 18 checks successful. P05-T03 remains pending Rusty acceptance of the corrected final SHA. PR #682 remains open. P05-T04–P05-T06 and P06 remain future.
+* Planning status: jmservera's review of exact head `c8a4922a78af09ebc6c28cc69d795f035793cbcd` found two remaining High stale-owner windows in P05-T03. The current user-assigned correction is committed locally as source/tests commit `8ac549deefff08cb17f43735d31f26742f729234`: notification delivery persists reservation/fence identity and uses CAS `reserved -> enqueue_started -> completed/aborted`, with the queue send callback consuming the sole physical-send authority before broker I/O. Once `enqueue_started` is durable, the authority is non-replayable; send failure or ambiguity remains reconciliation/idempotency-only, and only a definitely unsent `reserved` notification may abort. Direct provider retains non-takeover intent; manifest publication CAS, evidence append CAS, unknown fallback CAS, and publication-signal write each reauthorize at the persistence boundary, and `OwnershipError` propagates rather than becoming provider evidence. Fry's deterministic tests are complete. Exact takeover probes passed `5`; the full relevant module set passed `434` in `460.703s`; Ruff check/format, compileall, and diff safety passed. P00-T01 remains complete through upstream PR `jmservera/SquadScope#773`. P05-T03 stays open pending Hermes's independent review of the exact final local SHA and a later authorized push. PR #684 remains draft/open, PR #682 remains unchanged/operator-only, and P05-T04–P05-T06/P06 remain future gates with no deployment or provider authorization.
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -268,16 +268,15 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 
 ## Implementation Status
 
-* Execution status: Leela's sole-author RV-008 typed-canonical correction is complete and fully validated; Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`
-* Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
-* Revision author: Leela only for the current correction
-* Fresh independent reviewer: Basher completed a read-only review without contributing
-* Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank did not author, advise, pair, or contribute. Basher was excluded from authoring/advice/implementation contribution and completed the independent final-SHA review. Leela is the correction author, not a reviewer, for this cycle.
-* Delivery restrictions: commit and push only the existing branch and update existing draft PR #684; no deployment, issue mutation, replacement branch/PR, or changes to `/home/azureuser/source/SquadScope`
-* Active implementation boundary: P07 review-follow-up defects only; P00-T01, P05, and P06 remain outside P07 and block final acceptance
-* Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
-* Validation intent: deterministic P07 negative probes, locked owner suites, full suite, Ruff check/format, compileall, Bicep, Checkov, diff check, container build, and applicable container/exit smoke without weakening
-* Current blockers: P00-T01 upstream prevention and exact deployed-artifact evidence, P05 delivery/merge/deployment/provider authority plus P05-T06 exact-W39 execution, P06 four elapsed production cycles, and operator-only #682 remain blockers; P07-T07 is complete
+* Execution status: P05-T03 local correction is implemented and validated in source/tests commit `8ac549deefff08cb17f43735d31f26742f729234`; tracking reconciliation is complete locally
+* Declared scope: the two stale-owner windows reported against exact base `c8a4922a78af09ebc6c28cc69d795f035793cbcd`, plus current plan/details/changes reconciliation and two detached-HEAD commits
+* Revision ownership: Bender owns source implementation; Fry owns the deterministic tests; Hermes is reserved for independent exact-final-SHA fail-closed review
+* Historical ownership: all earlier author/reviewer cycles remain immutable evidence and do not override this user-assigned correction
+* Delivery restrictions: local detached-HEAD commits only; do not push, update GitHub, merge, deploy, dispatch workflows, mutate providers, or change #682
+* Active implementation boundary: P05-T03 notification physical-send authority and direct-provider post-return persistence only; P05-T04–P05-T06 and P06 remain future gates
+* Approved implementation write boundary: four downstream production modules, two Fry-owned test modules, and the three existing canonical RPI artifacts in this worktree
+* Validation result: exact takeover probes `5 passed`; full relevant modules `434 passed in 460.703s`; Ruff check and format on six changed Python files, compileall, and diff safety passed
+* Current blockers: Hermes exact-final-SHA review and a later authorized push; exact merge-SHA deployment, P05-T06 exact-W39 execution, P06 elapsed cycles, and operator-only #682 remain blockers
 
 ## Sources
 
@@ -512,7 +511,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 #### [ ] P05-T02: Pass required checks and independent final-SHA review
 
 * Requirement and evidence: caller requirement 8 and repository required checks.
-* Expected result: required PR checks pass; the designated fresh independent reviewer assesses each final pushed SHA for dispatch correctness, concurrency/idempotency, provider safety, evidence security, operations, and tests; no critical finding is accepted or unresolved, and any post-review content change triggers revalidation/re-review. Bender, Hermes, and Amy remain excluded from implementation.
+* Expected result: required PR checks pass; the designated fresh independent reviewer assesses each final pushed SHA for dispatch correctness, concurrency/idempotency, provider safety, evidence security, operations, and tests; no critical finding is accepted or unresolved, and any post-review content change triggers revalidation/re-review. For this P05-T03 follow-up, Bender owns source implementation, Fry owns tests, and Hermes is excluded from implementation so he can perform the independent fail-closed review.
 * Detail section: P05-T02 in phase details.
 
 <!-- rpi:task id=P05-T03 -->
@@ -589,7 +588,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, static/infra/Checkov/container/exit/security gates passed without weakening |
 | P07-T07; P05-T01 | Complete | Basher independently accepted exact executable head `905a890`; exact final drift through `da84b6b` is tracking-only; PR #684 now links upstream #773 and preserves W38/W39 and exact-W39 requirements |
 | P05-T02 | Complete | No executable drift after `9204e139`; final-SHA review found no High/Critical issue; all 13 hosted checks on the final pushed tracking head succeeded |
-| P05-T03 | Frank implementation and validation complete; Rusty acceptance pending | All 67 #682 threads remain resolved with durable dispositions. Complete decode remains lifecycle-bounded, and one persisted fenced execution claim now guards promotion, archive, outbox, notification, direct-provider intent/mutation, and terminal success. Exact `13`, focused `416`, locked `940`, full `3302`, and all delivery gates passed; commit/push evidence and Rusty's independent final-SHA acceptance remain required. |
+| P05-T03 | Local source/tests correction committed as `8ac549deefff08cb17f43735d31f26742f729234`; Hermes exact-final-SHA review and push pending | Notification reserve/begin/complete/abort state is persisted and fenced; begin authorization executes inside the CAS consumed by queue send, no abort/re-reserve is permitted after `enqueue_started`, and completion is bound to the same durable reservation/fence even if source ownership transfers after the physical send begins. Direct-provider publication snapshot/evidence/unknown-fallback/signal boundaries fail closed on ownership transfer and propagate `OwnershipError`. Fry's exact regressions passed `5`; the full relevant modules passed `434` in `460.703s`; Ruff check/format, compileall, and diff safety passed. |
 | P05-T05 | Expanded prerequisite gate | Deploy exact reviewed/merged upstream and Podcaster artifacts with merge-SHA provenance; clear review, deployment, readiness, alert, authority, and rollback gates before any real W39 mutation |
 | P05-T06 | New authoritative acceptance gate | Reconcile all W39 history/provider candidates, then execute exact W39 with complete GitHub→upstream→Podcaster→Azure→provider correlation and authoritative external readback; ambiguity fails closed/manual-action |
 | P06-T01–P06-T02 | Preserved without credit reduction | Four future qualifying cycles remain required; P05-T06 W39 counts only if it independently meets future scheduled-cycle timing and proof criteria |
@@ -599,7 +598,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Original PC-001–PC-009 dispositions | Historical, no change | Preserve existing critique artifact and disposition record; no second critique |
 | P05/P06 | Residual gates | PR #684 stays draft/blocked pending exact merge-SHA deployment, reconcile-first exact-W39 production acceptance, and four fully proven elapsed cycles |
 
-Leela alone authored the current P07-T01 correction. Basher completed the fresh independent review after implementation/validation without contributing. Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, Frank, and Fry were excluded from authoring, advice, pairing, or contribution.
+Historical P07 authorship and review remain unchanged. For the active P05-T03 review follow-up, Bender is the source implementation owner, Fry is the test owner, and Hermes is reserved for independent fail-closed review.
 
 ## Review-Follow-Up Finding Map
 
@@ -830,10 +829,10 @@ The existing critique is preserved unchanged as historical evidence. No second c
 ## Handoff
 
 * Implementation artifact: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
-* Review-follow-up implementation marker range: P07-T01 through P07-T07.
-* Current author/reviewer: Leela is the sole correction author from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`; Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` without contributing. All prior author/reviewer cycles remain historical evidence.
-* Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are resolved; RV-006 remains planning-resolved.
-* Remaining blockers after revision: proof that all required upstream and Podcaster fixes are reviewed/merged; exact merge-SHA artifact deployment and cleared review/deployment gates; P05-T06 reconcile-first exact W39 production execution with authoritative external provider readback; P06 four elapsed future post-fix cycles; and operator-only #682. Basher independently accepted exact reviewed implementation head `905a890`, so P07-T07 is complete. PR #684 remains draft/blocked while any remaining gate is open.
+* Current implementation marker: P05-T03.
+* Current author/reviewer: Bender source and Fry tests are complete in local source/tests commit `8ac549deefff08cb17f43735d31f26742f729234`; Hermes exact-final-SHA review is pending. All prior author/reviewer cycles remain historical evidence.
+* Current correction state: durable notification physical-send authority and every direct-provider post-return persistence boundary are implemented and validated; P05-T03 remains open until Hermes review and an authorized push.
+* Remaining blockers after revision: exact-final-SHA review and push; exact merge-SHA artifact deployment and cleared review/deployment gates; P05-T06 reconcile-first exact W39 production execution with authoritative external provider readback; P06 four elapsed future post-fix cycles; and operator-only #682. PR #684 remains draft/blocked while any remaining gate is open.
 
 ## 2026-09-22 Independent Amy Terminal-Truth Correction
 

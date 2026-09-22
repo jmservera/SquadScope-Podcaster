@@ -134,10 +134,20 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
 | P07 | Review-follow-up closure for terminal truth | Complete for the current correction; Basher accepted exact reviewed head `905a890` | P07, P07-T01–P07-T07 |
-| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01–P05-T02 complete; P05-T03 rejected by Basher at `86f96bb` and under Livingston lifecycle-budget correction; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
+| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01–P05-T02 historical delivery evidence retained; P05-T03 local correction committed from exact base `c8a4922` with Bender source and Fry tests complete, pending Hermes exact-final-SHA review and authorized push; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted exact-W39 production run and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
+
+* Declared scope: P05-T03 review follow-up for the two High stale-owner windows reported against exact base `c8a4922a78af09ebc6c28cc69d795f035793cbcd`.
+* Current task: the user-assigned source/tests correction is committed locally as `8ac549deefff08cb17f43735d31f26742f729234`. Notification enqueue consumes durable physical-send authority through the reservation CAS invoked by the queue send boundary. `enqueue_started` is non-replayable; completion is authorized by the same persisted reservation/fence rather than stale source ownership after send. Direct-provider post-return manifest/evidence/unknown-fallback/signal mutations are ownership-bound and propagate `OwnershipError`. Fry's deterministic tests are complete; Hermes exact-final-SHA review and push remain.
+* Assignment: Bender owns source implementation only; Fry owns tests; Hermes is reserved for independent fail-closed review and does not contribute to implementation.
+* Source boundary: `podcaster/video/job_runner.py`, `podcaster/distribution_outbox.py`, `podcaster/queue.py`, and `podcaster/video/distribution.py`; Fry-owned regressions in `tests/test_video_job_runner.py` and `tests/test_video_ownership.py`; canonical RPI artifacts.
+* Notification invariant: persist reservation/fence identity and transition by CAS from `reserved` to `enqueue_started` before queue I/O. That transition consumes the unique send authority. A successor observing `enqueue_started` cannot send; after-send ambiguity is handled only by reconciliation/idempotency. A check immediately before send is insufficient.
+* Direct-provider invariant: retain `direct_provider_intent` with `allow_idempotent_takeover=False`. Authorize inside every publication manifest CAS, evidence append, unknown fallback CAS, and publication-signal write. `OwnershipError` propagates. After provider return, a stale worker writes nothing; successors perform readback/reconciliation only and never replay the provider mutation. Missing or ambiguous proof remains publication unknown/manual/retry-blocked.
+* Validation result: exact takeover probes `5 passed`; `test_video_job_runner`, `test_video_ownership`, `test_distribution_outbox`, `test_distribution_worker`, and `test_video_distribution` passed `434` in `460.703s`; Ruff check passed on the six changed Python files; Ruff format reported all six formatted; compileall and `git diff --check` passed.
+* Delivery boundary: two focused local commits on detached HEAD only. No push, GitHub comment, merge, deployment, workflow dispatch, provider access/mutation, or change to #682 is authorized.
+* Current blockers: Hermes must independently review the exact final local SHA. A later authorized push remains pending. P05-T03 stays open, and P05-T04–P05-T06/P06 receive no credit.
 
 * Declared scope: P05-T03 stale-owner downstream mutation correction after Basher rejected exact head `df473dc0c059680b9c454ddab263c5c454e2ef2b`, plus focused/full validation, #682/#684 evidence, tracking, commit, and push.
 * Current task: Frank completed one authoritative persisted video execution claim and claim-bound boundary permits spanning final promotion, immutable archive, outbox creation, queue notification/sent marking, direct-provider durable intent/mutation, and terminal success in source/evidence commit `6bba12719ac5bf13b3c757bda9d56eff12732632`. Final narrative commit, push, GitHub evidence, and Rusty final-SHA review remain.
@@ -171,7 +181,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, Ruff/format/compile/diff, Bicep/Checkov, container/exit, and secret/PII gates passed without weakening |
 | P07-T07; P05-T01 | Complete | Basher accepted exact executable head `905a890`; all later commits through `da84b6b` changed tracking/PR narrative only; #684 is linked to #773 |
 | P05-T02 | Complete | Final-SHA review found no executable drift or High/Critical issue; all 13 hosted checks on the final pushed tracking head succeeded |
-| P05-T03 | Livingston implementation complete; Rusty acceptance pending | All 67 #682 threads remain resolved. Structural ffprobe plus complete ffmpeg decode now derives admission and timeout from the authoritative queue visibility deadline and fixed renewed editor-lease window, reserves bounded cleanup/promotion time, and uses bounded TERM/KILL/reap stages. Source commit `f6b713530947236c04f822289343d3f105cc6dc9`; corrected evidence and Rusty's independent acceptance remain required before this marker closes. |
+| P05-T03 | Local source/tests correction committed as `8ac549deefff08cb17f43735d31f26742f729234`; Hermes exact-final-SHA review and push pending | All 67 #682 threads remain resolved and unchanged. Notification physical-send authority is durably consumed by the `reserved -> enqueue_started` CAS immediately before broker I/O; `enqueue_started` cannot be replayed or aborted, while completion remains bound to the same reservation/fence. Direct-provider manifest/evidence/unknown-fallback/signal persistence reauthorizes at each storage boundary and propagates `OwnershipError`. Fry's exact probes passed `5`; the full relevant modules passed `434` in `460.703s`; static gates passed. |
 | P05-T05 | Expanded prerequisite gate | Exact merge-SHA-derived upstream and Podcaster artifacts must be deployed and every review/deployment/readiness/rollback gate cleared before real W39 execution |
 | P05-T06 | New authoritative gate | Reconcile all W39 history/provider candidates before mutation, then prove exact GitHub-to-provider execution and authoritative terminal external readback; ambiguity fails closed/manual-action |
 | P06-T01–P06-T02 | Preserved | Four future qualifying cycles remain required; exact W39 does not automatically count |
@@ -180,7 +190,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | W39 classification | Settled | `missed_not_dispatched` |
 | Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
 
-Leela alone authored the active P07-T01 correction. Basher completed the fresh independent review after implementation and validation without contributing. Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, Frank, and Fry were excluded entirely from contribution or advice.
+Historical P07 ownership remains unchanged: Leela authored that correction and Basher reviewed it independently. The current P05-T03 assignment supersedes stale exclusion prose only for this correction: Bender owns source, Fry owns tests, and Hermes is reserved for independent exact-final-SHA review.
 
 ### Implemented Surface Disposition
 
@@ -1502,16 +1512,16 @@ W17–W29 remain relevant, and RV-006 adds six current unresolved threads that w
 
 #### Intent
 
-Reply with replacement evidence, resolve each thread only where evidence permits, and close #682 as superseded once the replacement PR exists.
+Preserve the completed #682 disposition ledger while repairing the two remaining PR #684 stale-owner windows: consume notification physical-send authority durably before enqueue, and fail closed on every direct-provider post-return persistence boundary.
 
 #### Boundaries
 
-* Included: all W17–W29 rows, all six RV-006 rows, and later unresolved rows found in current metadata in the plan matrix.
-* Excluded: resolving without linked code/test/non-port evidence.
+* Included: all prior P05-T03 evidence plus the exact notification and direct-provider ownership repairs at base `c8a4922`, Fry's deterministic race regressions, and Hermes's independent fail-closed review.
+* Excluded: check-then-send authorization, provider replay after consumed direct intent, test edits by Bender, #682 mutation, merge/deploy/workflow/provider operations, and later production gates.
 
 #### Likely Targets
 
-* PR #682 discussions and replacement PR description.
+* `podcaster/video/job_runner.py`; only if required, `podcaster/distribution_outbox.py`, `podcaster/queue.py`, or `podcaster/video/distribution.py`; Fry-owned tests; canonical delivery evidence.
 
 #### Dependencies
 
@@ -1519,7 +1529,10 @@ Reply with replacement evidence, resolve each thread only where evidence permits
 
 #### Validation Expectations
 
-* Thread IDs, reply URLs, actual resolution state, and replacement task/test or non-port rationale are recorded; outdated W24 still receives explicit disposition. No unresolved thread is pre-marked resolved.
+* A deterministic transfer after reservation but before queue send yields no stale or successor duplicate send.
+* A deterministic transfer after provider return but before persistence yields no stale manifest, evidence, or signal write and no successor provider replay.
+* `OwnershipError` is not converted to publication evidence failure or signal-warning continuation.
+* Existing provider unknown/manual/retry-blocked semantics and all later delivery/production gates remain intact.
 
 #### Completion Evidence
 
@@ -1537,9 +1550,7 @@ Reply with replacement evidence, resolve each thread only where evidence permits
 
 #### Unresolved Items
 
-* P05-T03 has no remaining evidence blocker. PR #682 remains open because operator closure as
-  superseded is deferred until #684 is finally accepted and merge-ready. P05-T04–P05-T06 and
-  P06 remain future and are not implied complete by thread disposition.
+* Bender's source repair and Fry's deterministic tests are complete in local source/tests commit `8ac549deefff08cb17f43735d31f26742f729234`. Exact takeover probes passed `5`; the full relevant modules passed `434` in `460.703s`; Ruff check/format, compileall, and diff safety passed. P05-T03 remains open for Hermes's independent exact-final-SHA fail-closed review and a later authorized push. PR #682 remains unchanged/operator-only. P05-T04–P05-T06 and P06 remain future and are not implied complete.
 
 <!-- rpi:task id=P05-T04 -->
 ### P05-T04: Approve, merge, and prove release image provenance

@@ -10,6 +10,44 @@
 
 ## Execution Status
 
+* Status: local P05-T03 source/tests correction committed as `8ac549deefff08cb17f43735d31f26742f729234`; tracking reconciliation complete locally
+* Declared invocation scope: inspect the complete diff from `c8a4922a78af09ebc6c28cc69d795f035793cbcd`, remove only generated `uv.lock`, preserve the durable notification-send and post-provider-persistence correction, reconcile canonical evidence, and create two focused detached-HEAD commits without push or GitHub mutation
+* Current source owner: Bender
+* Test owner: Fry
+* Independent fail-closed reviewer: Hermes
+* First execution boundary: notification reservation/fence state machine, then direct-provider publication snapshot/evidence/signal authorization
+* Approved source boundary: `podcaster/video/job_runner.py`, `podcaster/distribution_outbox.py`, `podcaster/queue.py`, and `podcaster/video/distribution.py`; Fry-owned tests in `tests/test_video_job_runner.py` and `tests/test_video_ownership.py`; canonical RPI artifacts
+* Validation: exact takeover probes `5 passed`; full relevant modules `434 passed in 460.703s`; Ruff check passed on six changed Python files; Ruff format reported six already formatted; compileall and `git diff --check` passed
+* Current blockers: Hermes exact-final-SHA fail-closed review and a later authorized push; P05-T03 remains open
+
+## 2026-09-22 Bender blocking repair after exact-head review
+
+* Related phase or task: P05-T03.
+* Triggering evidence: jmservera's review comment `issuecomment-5784550039` found that reservation authorization can become stale before the physical queue send, and direct-provider callbacks can persist manifest/evidence/signals after ownership transfer.
+* Current-state update: the user assignment supersedes stale active owner/exclusion prose. Bender owns source implementation, Fry owns tests, and Hermes owns independent fail-closed review. Historical author/reviewer cycles remain evidence only.
+* Notification design: minimally extend the outbox notification model to persist reservation/fence identity and CAS `reserved -> enqueue_started -> completed/aborted`. The `enqueue_started` transition consumes unique physical-send authority; successors cannot send. Post-send uncertainty remains reconciliation/idempotency-only.
+* Direct-provider design: retain non-takeover `direct_provider_intent`; thread its authorization into `_record_video_publish()` and `_record_video_publication()` so authorization occurs inside every manifest CAS, immediately before evidence append, and immediately before signal write. `OwnershipError` must propagate and stale workers write nothing after provider return.
+* Preserved gates: no provider replay, no check-then-send race, publication ambiguity remains unknown/manual/retry-blocked, #682 is unchanged, and P05-T04–P05-T06/P06 remain blocked.
+
+### Bender source implementation
+
+* Related phase or task: P05-T03.
+* Files: `podcaster/distribution_outbox.py`, `podcaster/queue.py`, `podcaster/video/job_runner.py`, `podcaster/video/distribution.py`.
+* Notification authority: new outbox documents persist `notification_fence` and `notification_reservation`. Reservation records carry reservation identity, source ownership, fence, stage, and transition timestamps. The queue producer invokes the CAS-authorized transition to `enqueue_started` immediately before broker I/O; this transition consumes the sole physical-send authority. Completion requires the same reservation/fence. A known no-backend path may abort only while still `reserved`; send exceptions leave `enqueue_started` for reconciliation and cannot be aborted/re-reserved.
+* Notification recovery: generic repair now reserves, begins, sends, and completes through the same durable state machine. Existing `reserved` or `enqueue_started` authority blocks a successor repair send.
+* Direct-provider persistence: `_record_video_publish()` authorizes inside the manifest CAS. `_record_video_publication()` authorizes before and inside evidence and signal writes through an ownership-aware storage wrapper, authorizes the unknown fallback manifest CAS, and re-raises `OwnershipError`. `distribute_video()` no longer converts callback `OwnershipError` into a provider error result.
+* No-replay behavior: `direct_provider_intent` remains `allow_idempotent_takeover=False`; successors cannot gain provider mutation authority. Ownership transfer before a post-provider boundary produces no write at that boundary or later boundaries.
+
+### Bender validation and remaining evidence
+
+* Source/tests commit: `8ac549deefff08cb17f43735d31f26742f729234`.
+* Notification semantics: `reserve_notification()` persists reservation identity, source ownership, and a monotonic notification fence. The queue producer invokes `begin_notification_enqueue()` inside the callback immediately before broker I/O; that CAS changes `reserved` to `enqueue_started` and consumes the sole physical-send authority. Only a definitely unsent `reserved` attempt may abort. Send failure or ambiguity leaves `enqueue_started` non-replayable. `complete_notification()` is bound to the same reservation/fence and may durably record the physical send after ownership transfers; it does not grant another send.
+* Post-provider persistence semantics: `direct_provider_intent` remains non-takeover. The manifest publication CAS, evidence append CAS, unknown fallback CAS, and publication-signal write each authorize at their storage boundary. Ownership transfer raises `OwnershipError`, writes nothing at that boundary or later boundaries, and is never converted to provider failure evidence or a warning-only continuation. A successor is reconciliation-only and cannot replay provider mutation.
+* Fry validation passed: exact takeover probes `5 passed`; the full relevant modules (`test_video_job_runner`, `test_video_ownership`, `test_distribution_outbox`, `test_distribution_worker`, and `test_video_distribution`) reported `434 passed in 460.703s`.
+* Static validation passed: Ruff check on all six changed Python files; Ruff format `6 files already formatted`; compileall; `git diff --check`.
+* Diff audit: the complete diff from `c8a4922` contains only the four scoped production modules, two Fry-owned test modules, and the three existing RPI artifacts. The untracked `uv.lock` generated by `uv` was removed; no tracked lockfile was touched.
+* Remaining acceptance: Hermes must independently review the exact final local SHA, then a later authorized push may deliver it. P05-T03 remains unchecked; PR #684 stays draft/open, PR #682 stays unchanged/operator-only, and P05-T04–P05-T06/P06 remain unchanged.
+
 * Status: Frank completed the stale-owner downstream-boundary implementation and required validation after Basher rejected exact head `df473dc0c059680b9c454ddab263c5c454e2ef2b`; source/evidence commit `6bba12719ac5bf13b3c757bda9d56eff12732632` is complete, and final narrative commit, push, GitHub evidence, and Rusty review remain
 * Declared invocation scope: P05-T03 authoritative ownership guard, fenced downstream permits, exact race probes, full required validation, evidence reconciliation, commit, and push
 * Sole current revision author: Frank
