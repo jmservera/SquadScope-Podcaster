@@ -59,6 +59,10 @@ class YouTubeSessionInitiationUnknown(RuntimeError):
     """The session POST may have succeeded but its response was lost."""
 
 
+class YouTubeCompletionAmbiguous(RuntimeError):
+    """YouTube reported success without a usable provider video id."""
+
+
 @dataclass
 class YouTubeUploadResult:
     """Outcome of a resumable upload."""
@@ -237,12 +241,12 @@ def _query_resume_offset(
         data=b"",
     )
     if status in (200, 201):
-        video_id = ""
-        try:
-            video_id = json.loads(body).get("id", "")
-        except (ValueError, AttributeError):
-            pass
-        return total_size, video_id or None
+        video_id = _parse_video_id(body)
+        if video_id is None:
+            raise YouTubeCompletionAmbiguous(
+                "YouTube reported resumable completion without a valid video id"
+            )
+        return total_size, video_id
     if status == 308:
         end = parse_range_end(headers.get("range"))
         return (end + 1 if end is not None else 0), None
@@ -317,15 +321,18 @@ def upload_chunked(
                         error=f"network error after {max_retries} retries: {exc}",
                     )
                 sleep(_RETRY_BACKOFF_BASE ** (transient_retries - 1))
-                start = _resume_after_failure(
-                    http,
-                    session_uri,
-                    access_token,
-                    total_size,
-                    fallback=start,
-                    budget=budget,
-                    mutation_started=mutation_started,
-                )
+                try:
+                    start = _resume_after_failure(
+                        http,
+                        session_uri,
+                        access_token,
+                        total_size,
+                        fallback=start,
+                        budget=budget,
+                        mutation_started=mutation_started,
+                    )
+                except YouTubeCompletionAmbiguous as exc:
+                    return _ambiguous_completion_result(start, exc)
                 continue
 
             if status in (200, 201):
@@ -338,15 +345,18 @@ def upload_chunked(
                     # No Range header means the server's acknowledged offset is
                     # unknown (could be 0).  Query the real offset rather than
                     # blindly advancing past the chunk we just sent.
-                    start = _resume_after_failure(
-                        http,
-                        session_uri,
-                        access_token,
-                        total_size,
-                        fallback=start,
-                        budget=budget,
-                        mutation_started=mutation_started,
-                    )
+                    try:
+                        start = _resume_after_failure(
+                            http,
+                            session_uri,
+                            access_token,
+                            total_size,
+                            fallback=start,
+                            budget=budget,
+                            mutation_started=mutation_started,
+                        )
+                    except YouTubeCompletionAmbiguous as exc:
+                        return _ambiguous_completion_result(start, exc)
                 transient_retries = 0
                 continue
             if status in _TRANSIENT_STATUSES:
@@ -397,6 +407,9 @@ def upload_chunked(
         )
     except ProviderMutationAdmissionError:
         raise
+    except YouTubeCompletionAmbiguous as exc:
+        logger.error("Final YouTube resumable status is ambiguous: %s", exc)
+        return _ambiguous_completion_result(start, exc)
     except Exception as exc:  # noqa: BLE001 - provider outcome is ambiguous after mutation
         logger.error("Final YouTube resumable status query outcome is unknown: %s", exc)
         return YouTubeUploadResult(
@@ -439,21 +452,47 @@ def _resume_after_failure(
         return offset
     except ProviderMutationAdmissionError:
         raise
+    except YouTubeCompletionAmbiguous:
+        raise
     except Exception as exc:  # noqa: BLE001 - keep retrying from last offset
         logger.warning("Resume-offset query failed, retrying from %d: %s", fallback, exc)
         return fallback
 
 
-def _finalize(body: bytes, total_size: int) -> YouTubeUploadResult:
+def _parse_video_id(body: bytes) -> str | None:
     try:
-        video_id = json.loads(body).get("id", "")
-    except (ValueError, AttributeError):
-        video_id = ""
-    if not video_id:
-        return YouTubeUploadResult(
-            status="failed",
-            bytes_uploaded=total_size,
-            error="upload completed but response had no video id",
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    video_id = payload.get("id")
+    if not isinstance(video_id, str) or not video_id.strip():
+        return None
+    return video_id.strip()
+
+
+def _ambiguous_completion_result(
+    bytes_uploaded: int,
+    error: BaseException | str,
+) -> YouTubeUploadResult:
+    return YouTubeUploadResult(
+        status="unknown",
+        bytes_uploaded=bytes_uploaded,
+        error=f"resumable completion outcome is ambiguous: {error}",
+        details={
+            "retry_blocked": True,
+            "code": "youtube_resumable_completion_ambiguous",
+        },
+    )
+
+
+def _finalize(body: bytes, total_size: int) -> YouTubeUploadResult:
+    video_id = _parse_video_id(body)
+    if video_id is None:
+        return _ambiguous_completion_result(
+            total_size,
+            "YouTube reported upload completion without a valid video id",
         )
     return _success_result(video_id, total_size)
 

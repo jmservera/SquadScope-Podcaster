@@ -393,6 +393,48 @@ def test_upload_chunked_blocks_retry_when_final_status_response_is_lost(tmp_path
     assert "final resumable status query outcome is unknown" in result.error
 
 
+@pytest.mark.parametrize(
+    "completion_body",
+    [
+        b"",
+        b"{not-json",
+        b'{"kind":"youtube#video"}',
+    ],
+    ids=["empty", "malformed-json", "missing-id"],
+)
+def test_upload_chunked_identifierless_success_is_retry_blocked_unknown(tmp_path, completion_body):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+
+    class _IdentifierlessCompletion:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            content_range = (headers or {}).get("Content-Range")
+            if content_range == f"bytes 0-{total - 1}/{total}":
+                return 308, {"range": f"bytes=0-{total - 1}"}, b""
+            if content_range == f"bytes */{total}":
+                return 200, {}, completion_body
+            raise AssertionError(f"unexpected request: {method} {content_range}")
+
+    result = upload_chunked(
+        _IdentifierlessCompletion(),
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda _seconds: None,
+        mutation_started=True,
+    )
+
+    assert result.status == "unknown"
+    assert result.bytes_uploaded == total
+    assert result.details == {
+        "retry_blocked": True,
+        "code": "youtube_resumable_completion_ambiguous",
+    }
+    assert "valid video id" in result.error
+
+
 # --- upload_video top-level ---------------------------------------------------
 
 

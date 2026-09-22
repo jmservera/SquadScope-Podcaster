@@ -3497,6 +3497,53 @@ class TestComposeVideoCheckpointResume:
         commands = [[str(arg) for arg in call.args[0]] for call in runner.call_args_list]
         assert any("-vf" in command and "scale=" in " ".join(command) for command in commands)
 
+    @pytest.mark.parametrize("initial_logo_url", [None, "https://example.test/logo-a.png"])
+    def test_dog_logo_change_invalidates_composed_checkpoint(
+        self, tmp_path, monkeypatch, initial_logo_url
+    ):
+        store = self._store(tmp_path)
+        clip = tmp_path / "seg.webm"
+        clip.write_bytes(b"\x00" * 2048)
+        logo_a = tmp_path / "logo-a.png"
+        logo_b = tmp_path / "logo-b.png"
+        logo_a.write_bytes(b"logo-a")
+        logo_b.write_bytes(b"logo-b")
+        logos = {
+            "https://example.test/logo-a.png": logo_a,
+            "https://example.test/logo-b.png": logo_b,
+        }
+        monkeypatch.setattr(vc, "_fetch_dog_logo", lambda url, _cache: logos[url])
+
+        def _probe(_path, _timeout):
+            return vc.ProbeEvidence(format_name="matroska,webm", duration_seconds=10.0)
+
+        seg = _make_recorded_segment(duration=10.0, video_path=clip)
+        initial_logo = DogLogoConfig(url=initial_logo_url) if initial_logo_url is not None else None
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "initial",
+            runner=_touch_output_runner(),
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=_probe,
+            dog_logo=initial_logo,
+        )
+
+        runner = MagicMock(side_effect=_touch_output_runner())
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "changed",
+            runner=runner,
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=_probe,
+            dog_logo=DogLogoConfig(url="https://example.test/logo-b.png"),
+        )
+
+        commands = [[str(arg) for arg in call.args[0]] for call in runner.call_args_list]
+        assert any(str(logo_b) in command for command in commands)
+        assert any("overlay=" in " ".join(command) for command in commands)
+
     def test_resumes_normalized_segment(self, tmp_path):
         store = self._store(tmp_path)
         # Pre-seed a normalized clip checkpoint.

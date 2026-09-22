@@ -43,3 +43,19 @@ Implement only the four approved PR #682 review remediations, add focused regres
 ## Follow-Up Items
 
 * None.
+
+<!-- rpi:phase id=P02 -->
+### [x] P02 — Independent post-review revision
+
+- [x] <!-- rpi:task id=P02-T01 --> Bind normalized DOG configuration and resolved logo content SHA-256 into composed-checkpoint identity before resume admission.
+- [x] <!-- rpi:task id=P02-T02 --> Classify identifier-less YouTube resumable success responses as retry-blocked unknown outcomes.
+- [x] <!-- rpi:task id=P02-T03 --> Classify transient playlist insert responses as retry-blocked unknown outcomes without a second insert.
+- [x] <!-- rpi:task id=P02-T04 --> Validate the three fixes with focused regression coverage.
+
+<!-- rpi:phase id=P03 -->
+### [x] P03 — Final lifecycle safety findings
+
+- [x] <!-- rpi:task id=P03-T01 --> Keep subprocesses launched inside an owned callable in the callable session so the outer deadline kills the complete nested process tree.
+- [x] <!-- rpi:task id=P03-T02 --> Propagate fallback storage/finalization failures for retry instead of writing a permanent `recording_insufficient` manifest.
+- [x] <!-- rpi:task id=P03-T03 --> Stop recording retries immediately on owned timeout and reject backoff that would cross the FANIN deadline.
+- [x] <!-- rpi:task id=P03-T04 --> Run focused, affected-suite, Ruff, formatting, and diff validation; deliver one conventional commit and resolve only proven threads.

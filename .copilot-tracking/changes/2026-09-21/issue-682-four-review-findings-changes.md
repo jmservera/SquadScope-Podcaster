@@ -160,3 +160,18 @@ Fry later rejected requirement 2 because non-finite numeric schema input still e
 * Follow-up items: None.
 * Review readiness or no-handoff reason: Pre-commit correction evidence is finalized and ready for delivery continuation; the recorder-thread reply must cite the pending commit.
 * Continuation owner: Hermes.
+
+## Independent Post-Review Revision
+
+* Revision owner: Amy; original author Bender remains locked out.
+* Approved scope: composed-checkpoint DOG identity, YouTube resumable completion ambiguity, and playlist insert ambiguity.
+* Implementation state: P02-T01 through P02-T03 are implemented with focused regressions.
+
+## Final Lifecycle Safety Revision
+
+* Nested owned-process safety: subprocesses launched from an owned callable now inherit its session, while their own timeout path terminates the bounded descendant tree. The outer callable timeout therefore cannot leave a nested ffmpeg/ffprobe process running.
+* Recorder finalization taxonomy: only renderer or asset failures become terminal fallback insufficiency. Upload, readback, legacy upload, and storage-integrity failures clean partial content and propagate for queue retry.
+* FANIN retry boundary: an owned recording timeout is never retried, and retry backoff is rejected before sleeping when it would cross the remaining FANIN deadline.
+* Focused validation: `pytest -q tests/test_video_process.py tests/test_recorder.py tests/test_video_gen.py tests/test_video_compose.py tests/test_youtube_upload.py tests/test_youtube_playlist.py` — 641 passed, 2 deselected.
+* Full lint validation: `ruff check podcaster tests` and `ruff format --check podcaster tests` passed; all 187 Python files are formatted.
+* Full test validation: the first repository run passed 3271 tests, with three environment/state failures (a stale Docker Compose stack and two dirty local artifact races). Each failed test passed independently after the stale stack was removed; no production or test gate was weakened.

@@ -2653,9 +2653,18 @@ def record_episode(
                 brand_name=brand_name,
             )
 
+        def _retry_sleep(delay: float) -> None:
+            if budget is not None:
+                remaining = budget.remaining_seconds(VideoStage.FANIN)
+                if remaining <= delay:
+                    raise TimeoutError("fan-in deadline reached before recording retry")
+            time.sleep(delay)
+
         recorded = retry_call(
             _record,
             attempts=RECORD_TASK_RETRIES,
+            give_up_on=(TimeoutError,) if budget is not None else (),
+            sleep=_retry_sleep,
             description=f"record segment {index} ({segment.label})",
         )
         with checkpoint_lock:

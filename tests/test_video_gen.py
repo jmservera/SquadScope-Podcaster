@@ -2699,3 +2699,24 @@ class TestRecordEpisodeTaskRetry:
         with pytest.raises(RuntimeError, match="persistent failure"):
             record_episode(plan, output_dir=tmp_path / "out")
         assert calls["n"] == 2
+
+    @patch("podcaster.video.video_gen.RECORD_TASK_RETRIES", 3)
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    def test_owned_recording_timeout_is_not_retried_past_fanin_deadline(self, tmp_path):
+        calls = 0
+
+        def timed_out_recording(_segment, _output_dir, _timeout):
+            nonlocal calls
+            calls += 1
+            raise TimeoutError("owned recording consumed the fan-in budget")
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        with pytest.raises(TimeoutError, match="consumed the fan-in budget"):
+            record_episode(
+                plan,
+                output_dir=tmp_path / "out",
+                budget=VideoStageBudget.start(),
+                owned_record_segment=timed_out_recording,
+            )
+
+        assert calls == 1

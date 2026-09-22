@@ -760,48 +760,51 @@ def write_fallback_manifest(
     media: MediaEvidence | None = None
     content_path: str | None = None
     render_error: str | None = None
-    try:
-        if timeout_seconds <= 0:
-            raise TimeoutError("no fallback rendering budget remains")
-        with tempfile.TemporaryDirectory(prefix=f"fallback-{clip_index:03d}-") as tmp:
-            output_path = Path(tmp) / "fallback.webm"
+    if timeout_seconds <= 0:
+        raise TimeoutError("no fallback rendering budget remains")
+    with tempfile.TemporaryDirectory(prefix=f"fallback-{clip_index:03d}-") as tmp:
+        output_path = Path(tmp) / "fallback.webm"
+        try:
             media = _finalize(
                 lambda: renderer(output_path, timeout_seconds),
                 timeout_seconds,
             )
-            content_path = clip_content_blob_path(job_id, clip_index, media.sha256)
-            _finalize(lambda: scratch.upload_file(content_path, output_path, _WEBM_CONTENT_TYPE))
-            if not _finalize(lambda: _verify_size(scratch, content_path, media.size_bytes)):
-                _best_effort_delete(scratch, content_path)
-                raise RuntimeError("fallback content-addressed upload size mismatch")
-            _finalize(
-                lambda: _verify_uploaded_content(
-                    scratch,
-                    content_path,
-                    media,
-                    Path(tmp) / "fallback-readback.webm",
-                )
-            )
-            # Keep the old per-index path readable, but never consume it for a
-            # hash-bound terminal manifest.
-            legacy_path = clip_blob_path(job_id, clip_index)
-            _finalize(lambda: scratch.upload_file(legacy_path, output_path, _WEBM_CONTENT_TYPE))
-    except StorageOperationTimeout:
-        if content_path is not None:
-            _best_effort_delete(scratch, content_path)
-        raise
-    except Exception as exc:  # noqa: BLE001 - fail closed without browser/network
-        if content_path is not None:
-            _best_effort_delete(scratch, content_path)
-            content_path = None
+        except StorageOperationTimeout:
+            raise
+        except Exception as exc:  # noqa: BLE001 - renderer/asset failure is terminal
             media = None
-        render_error = f"{type(exc).__name__}: {exc}"[:256]
-        logger.warning(
-            "static fallback unavailable job_id=%s clip_index=%d error=%s",
-            job_id,
-            clip_index,
-            render_error,
-        )
+            render_error = f"{type(exc).__name__}: {exc}"[:256]
+            logger.warning(
+                "static fallback unavailable job_id=%s clip_index=%d error=%s",
+                job_id,
+                clip_index,
+                render_error,
+            )
+
+        if media is not None:
+            output_path = Path(tmp) / "fallback.webm"
+            content_path = clip_content_blob_path(job_id, clip_index, media.sha256)
+            try:
+                _finalize(
+                    lambda: scratch.upload_file(content_path, output_path, _WEBM_CONTENT_TYPE)
+                )
+                if not _finalize(lambda: _verify_size(scratch, content_path, media.size_bytes)):
+                    raise RuntimeError("fallback content-addressed upload size mismatch")
+                _finalize(
+                    lambda: _verify_uploaded_content(
+                        scratch,
+                        content_path,
+                        media,
+                        Path(tmp) / "fallback-readback.webm",
+                    )
+                )
+                # Keep the old per-index path readable, but never consume it for a
+                # hash-bound terminal manifest.
+                legacy_path = clip_blob_path(job_id, clip_index)
+                _finalize(lambda: scratch.upload_file(legacy_path, output_path, _WEBM_CONTENT_TYPE))
+            except Exception:
+                _best_effort_delete(scratch, content_path)
+                raise
 
     status = (
         STATUS_FALLBACK

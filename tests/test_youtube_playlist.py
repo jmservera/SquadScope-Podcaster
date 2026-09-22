@@ -279,6 +279,25 @@ class TestAddToShowPlaylist:
         assert res.retry_blocked is True
         assert len(t.calls) == 2
 
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    def test_transient_insert_response_is_retry_blocked_unknown(self, monkeypatch, status):
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
+        t = _FakeTransport(
+            [
+                (200, b'{"items": []}'),
+                (status, b"{}"),
+            ]
+        )
+
+        res = add_to_show_playlist(None, "en", "vid", "tok", transport=t)
+
+        assert res.succeeded is False
+        assert res.outcome == "unknown"
+        assert res.retry_blocked is True
+        assert res.error == f"HTTP {status}"
+        assert len(t.calls) == 2
+        assert [call["method"] for call in t.calls] == ["GET", "POST"]
+
     def test_locale_routing(self, monkeypatch):
         monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
         monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID_ES", "PLes")

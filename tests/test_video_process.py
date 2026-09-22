@@ -13,9 +13,11 @@ from podcaster.video.process import (
     MediaEvidence,
     MediaValidationError,
     MediaValidationReason,
+    OwnedCallableTimeout,
     OwnedProcessTimeout,
     ProbeEvidence,
     collect_media_evidence,
+    run_owned_callable,
     run_owned_process,
 )
 
@@ -99,6 +101,43 @@ def test_runner_bounds_final_reap_when_escaped_descendant_keeps_pipes_open(tmp_p
 
     assert time.monotonic() - started < 2.0
     assert not partial_output.exists()
+
+
+def test_owned_callable_timeout_kills_nested_owned_process_tree(tmp_path):
+    child_pid_path = tmp_path / "nested-child.pid"
+    grandchild_pid_path = tmp_path / "nested-grandchild.pid"
+    child_code = (
+        "import subprocess,sys,time,pathlib;"
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']);"
+        f"pathlib.Path({str(grandchild_pid_path)!r}).write_text(str(p.pid));"
+        "time.sleep(60)"
+    )
+
+    def nested_process() -> None:
+        run_owned_process(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import subprocess,sys,time,pathlib;"
+                    f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}]);"
+                    f"pathlib.Path({str(child_pid_path)!r}).write_text(str(p.pid));"
+                    "time.sleep(60)"
+                ),
+            ],
+            timeout_seconds=30,
+        )
+
+    with pytest.raises(OwnedCallableTimeout):
+        run_owned_callable(nested_process, 0.8)
+
+    child_pid = int(child_pid_path.read_text())
+    grandchild_pid = int(grandchild_pid_path.read_text())
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and (_is_running(child_pid) or _is_running(grandchild_pid)):
+        time.sleep(0.02)
+    assert not _is_running(child_pid)
+    assert not _is_running(grandchild_pid)
 
 
 def test_runner_removes_output_on_checked_failure(tmp_path):

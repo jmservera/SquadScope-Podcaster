@@ -26,6 +26,7 @@ MAX_CAPTURE_CHARS = 16_384
 DEFAULT_TERMINATE_GRACE_SECONDS = 2.0
 DEFAULT_REAP_GRACE_SECONDS = 1.0
 MEDIA_VALIDATION_SCHEMA_VERSION = 1
+_OWNED_CALLABLE_SESSION_ENV = "PODCASTER_OWNED_CALLABLE_SESSION"
 
 
 class MediaValidationReason(str, Enum):
@@ -212,6 +213,43 @@ def _signal_process_group(process: subprocess.Popen[Any], sig: signal.Signals) -
         return
 
 
+def _descendant_pids(root_pid: int) -> list[int]:
+    if not sys.platform.startswith("linux"):
+        return []
+    children: dict[int, list[int]] = {}
+    for stat_path in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            pid = int(stat_path.parent.name)
+            _, separator, suffix = stat_path.read_text(encoding="utf-8").rpartition(")")
+            fields = suffix.split()
+            if not separator:
+                continue
+            parent_pid = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        children.setdefault(parent_pid, []).append(pid)
+
+    descendants: list[int] = []
+    pending = list(children.get(root_pid, ()))
+    while pending:
+        pid = pending.pop()
+        descendants.append(pid)
+        pending.extend(children.get(pid, ()))
+    return descendants
+
+
+def _signal_process_tree(process: subprocess.Popen[Any], sig: signal.Signals) -> None:
+    for pid in reversed(_descendant_pids(process.pid)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+    try:
+        os.kill(process.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
 def _reap_adopted_group(process_group: int, grace_seconds: float) -> None:
     if not sys.platform.startswith("linux"):
         return
@@ -258,6 +296,7 @@ def run_owned_process(
         raise OwnedProcessTimeout(command, 0.0, reason=TimeoutReason.STAGE_DEADLINE)
 
     subreaper_enabled = _enable_child_subreaper()
+    nested_in_owned_callable = os.environ.get(_OWNED_CALLABLE_SESSION_ENV) == "1"
     process = subprocess.Popen(
         list(command),
         cwd=str(cwd) if cwd is not None else None,
@@ -266,16 +305,17 @@ def run_owned_process(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        start_new_session=True,
+        start_new_session=not nested_in_owned_callable,
     )
     try:
         stdout, stderr = process.communicate(input=input_text, timeout=effective_timeout)
     except subprocess.TimeoutExpired as exc:
-        _signal_process_group(process, signal.SIGTERM)
+        signal_process = _signal_process_tree if nested_in_owned_callable else _signal_process_group
+        signal_process(process, signal.SIGTERM)
         try:
             stdout, stderr = process.communicate(timeout=max(0.0, terminate_grace_seconds))
         except subprocess.TimeoutExpired:
-            _signal_process_group(process, signal.SIGKILL)
+            signal_process(process, signal.SIGKILL)
             try:
                 stdout, stderr = process.communicate(timeout=max(0.0, reap_grace_seconds))
             except subprocess.TimeoutExpired as reap_exc:
@@ -403,6 +443,7 @@ def _owned_callable_child(
 ) -> None:
     try:
         os.setsid()
+        os.environ[_OWNED_CALLABLE_SESSION_ENV] = "1"
         connection.send(("ready", None))
         try:
             result = call()

@@ -3242,6 +3242,13 @@ def compose_video(
         )
         intermission_path = None
 
+    dog_logo_path: Path | None = None
+    if dog_logo is not None:
+        dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
+        # Resolve configured branding before checkpoint admission so a stale
+        # unbranded or differently branded composition can never be resumed.
+        dog_logo_path = _fetch_dog_logo(dog_logo.url, dog_cache)
+
     # The content is always composed **video-only**; the podcast MP3 (if any)
     # is overlaid as the sole audio track on the FINAL joined video so it spans
     # the entire output (intro + content + outro) without double audio.
@@ -3290,6 +3297,21 @@ def compose_video(
                 (card.before_index, card.duration_seconds, str(card.clip_path))
                 for card in (section_cards or [])
             ],
+            "dog_logo": (
+                {
+                    "url": dog_logo.url,
+                    "position": dog_logo.position,
+                    "size": dog_logo.size,
+                    "opacity": dog_logo.opacity,
+                }
+                if dog_logo is not None
+                else None
+            ),
+            "dog_logo_sha256": (
+                sha256(dog_logo_path.read_bytes()).hexdigest()
+                if dog_logo_path is not None
+                else None
+            ),
         }
         for label, path in (("intro", intro_path), ("outro", outro_path)):
             if path is not None:
@@ -3669,17 +3691,6 @@ def compose_video(
     # Step 3.5: DOG (Digital On-Screen Graphic) watermark — overlaid on the main
     # content here, before intro/outro are joined.  It is additionally overlaid
     # on the intro tail during the join so it appears before the intro ends (#361).
-    dog_logo_path: Path | None = None
-    if dog_logo is not None:
-        dog_cache = dog_logo_cache_dir or _default_dog_cache_dir()
-        # Raises WatermarkUnavailableError (permanent) or WatermarkTransientError
-        # (retryable) when a configured watermark cannot be resolved.  Failing
-        # here is deliberate: silently composing an unbranded episode produced a
-        # "successful" but unusable W36 video, and silently substituting Claracle
-        # branding for an unreachable third-party logo would misbrand the episode
-        # instead.
-        dog_logo_path = _fetch_dog_logo(dog_logo.url, dog_cache)
-
     # Step 3.6: Splice section title cards into the content stream (#377).  Cards
     # are normalized to the canonical layout (so the xfade copy path stays valid)
     # and inserted at their section boundaries with fade transitions.  They play

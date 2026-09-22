@@ -1054,6 +1054,35 @@ def test_fallback_finalization_operations_are_budgeted_and_stop_on_timeout(
     assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
 
 
+def test_fallback_storage_failure_is_retryable_and_does_not_write_terminal_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    original_upload = scratch.upload_file
+    uploads = 0
+
+    def fail_content_upload(path, source, content_type):
+        nonlocal uploads
+        uploads += 1
+        if uploads == 1:
+            raise OSError("blob service unavailable")
+        return original_upload(path, source, content_type)
+
+    monkeypatch.setattr(scratch, "upload_file", fail_content_upload)
+
+    with pytest.raises(OSError, match="blob service unavailable"):
+        write_fallback_manifest(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            reason="fanin_deadline_reached",
+            renderer=_fallback,
+        )
+
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
 def test_fallback_pre_finalization_work_stops_at_shared_deadline(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)

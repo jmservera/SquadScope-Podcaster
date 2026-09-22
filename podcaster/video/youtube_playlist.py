@@ -44,6 +44,7 @@ PLAYLIST_ITEMS_LIST_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 _PLAYLIST_ENV_BASE = "VIDEO_YOUTUBE_PLAYLIST_ID"
 _DEFAULT_LOCALE = "en"
 _SUPPORTED_LOCALES = ("en", "es", "fr")
+_TRANSIENT_INSERT_STATUSES = {429, 500, 502, 503, 504}
 
 
 def _normalize_locale(locale: str | None) -> str:
@@ -243,6 +244,21 @@ def add_video_to_playlist(
             succeeded=True,
             playlist_item_id=item_id,
             outcome="completed",
+        )
+    if status in _TRANSIENT_INSERT_STATUSES:
+        logger.warning(
+            "playlistItems.insert outcome is ambiguous for %s -> %s: HTTP %s",
+            video_id,
+            playlist_id,
+            status,
+        )
+        return PlaylistAddResult(
+            video_id=video_id,
+            playlist_id=playlist_id,
+            succeeded=False,
+            error=f"HTTP {status}",
+            outcome="unknown",
+            retry_blocked=True,
         )
     logger.warning(
         "playlistItems.insert failed for %s -> %s: HTTP %s",
