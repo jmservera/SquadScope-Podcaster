@@ -20,7 +20,8 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from email.utils import formatdate
+from datetime import datetime, timezone
+from email.utils import formatdate, parsedate_to_datetime
 from typing import Protocol
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -69,6 +70,7 @@ class QueueMessage:
     pop_receipt: str
     body: str
     dequeue_count: int
+    next_visible_on: datetime | None = None
 
 
 class QueueBackend(Protocol):
@@ -330,9 +332,30 @@ def _parse_messages(payload: bytes) -> list[QueueMessage]:
                 pop_receipt=(element.findtext("PopReceipt") or "").strip(),
                 body=(element.findtext("MessageText") or ""),
                 dequeue_count=int((element.findtext("DequeueCount") or "0").strip() or "0"),
+                next_visible_on=_parse_queue_timestamp(element.findtext("NextVisibleTime")),
             )
         )
     return messages
+
+
+def _parse_queue_timestamp(value: object) -> datetime | None:
+    """Parse an Azure queue timestamp as an aware UTC datetime."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 class ConnectionStringQueueBackend:
@@ -374,6 +397,7 @@ class ConnectionStringQueueBackend:
                     pop_receipt=msg.pop_receipt,
                     body=msg.content,
                     dequeue_count=int(msg.dequeue_count or 0),
+                    next_visible_on=_parse_queue_timestamp(getattr(msg, "next_visible_on", None)),
                 )
             )
             if len(messages) >= max_messages:
