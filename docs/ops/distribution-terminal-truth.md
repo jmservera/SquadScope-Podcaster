@@ -77,6 +77,12 @@ Rollback disables new outbox routing and claims; it must not delete outbox recor
 intents, receipts, provider identifiers, or reconciliation schedules. Never restore blind inline
 mutation for an item with a consumed intent.
 
+The deployed distribution scheduler advances separate bounded cursors for notification repair and
+due reconciliation. Repair durably adds missing provider schedules before dispatch, may replay only
+a still-reserved initial notification, and never replays a `sending`, ambiguous, or accepted send.
+Queue unavailability or durable repair failure fails the scheduler run instead of advancing its
+cursor or reporting a successful heartbeat.
+
 ## Alert contract
 
 | Signal | Warning | Critical | Owner / action |

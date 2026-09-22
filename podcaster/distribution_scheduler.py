@@ -6,15 +6,37 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Callable
 
 from podcaster.dispatch_receipts import DispatchReceiptRepository
-from podcaster.distribution_outbox import DistributionOutboxRepository
+from podcaster.distribution_outbox import (
+    DistributionOutboxError,
+    DistributionOutboxRepository,
+    StaleClaimError,
+)
 from podcaster.distribution_telemetry import signal_rows
 from podcaster.queue import enqueue_distribution_job
 from podcaster.storage import create_storage_backend
 
 logger = logging.getLogger(__name__)
 SCHEDULER_STATE_PATH = "distribution-scheduler/state.json"
+NOTIFICATION_REPAIR_PAGE_LIMIT = 100
+RECONCILIATION_PAGE_LIMIT = 100
+RECONCILIATION_SCAN_LIMIT = 5000
+
+
+def _enqueue_repaired_notification(
+    outbox_id: str,
+    authorize_send: Callable[[], bool],
+    mark_accepted: Callable[[], bool],
+) -> bool:
+    if not enqueue_distribution_job(
+        outbox_id,
+        authorize_send=authorize_send,
+        mark_accepted=mark_accepted,
+    ):
+        raise DistributionOutboxError("distribution notification repair queue is unavailable")
+    return True
 
 
 def run_once() -> int:
@@ -22,9 +44,14 @@ def run_once() -> int:
     repository = DistributionOutboxRepository(storage)
     raw_state = storage.get_bytes(SCHEDULER_STATE_PATH)
     state = json.loads(raw_state.decode("utf-8")) if raw_state else {}
+    repaired, repair_cursor = repository.repair_notifications_page(
+        _enqueue_repaired_notification,
+        limit=NOTIFICATION_REPAIR_PAGE_LIMIT,
+        after_path=state.get("repair_cursor"),
+    )
     due, cursor = repository.due_reconciliations_page(
-        limit=100,
-        scan_limit=5000,
+        limit=RECONCILIATION_PAGE_LIMIT,
+        scan_limit=RECONCILIATION_SCAN_LIMIT,
         after_path=state.get("outbox_cursor"),
     )
     by_outbox: dict[str, list[tuple[str, str]]] = {}
@@ -42,7 +69,7 @@ def run_once() -> int:
                     token=token,
                     owner=owner,
                 )
-            except Exception:
+            except StaleClaimError:
                 logger.info(
                     "reconciliation notification reservation lost outbox=%s provider=%s",
                     outbox_id,
@@ -67,7 +94,7 @@ def run_once() -> int:
                     token=token,
                     reservation_id=reservation_id,
                 )
-            continue
+            raise DistributionOutboxError("distribution reconciliation queue is unavailable")
         sent += 1
         for provider, token, reservation_id in reservations:
             repository.complete_reconciliation_notification(
@@ -79,7 +106,13 @@ def run_once() -> int:
     cleaned = repository.cleanup_orphan_artifacts(limit=100)
     storage.put_bytes(
         SCHEDULER_STATE_PATH,
-        json.dumps({"outbox_cursor": cursor}, sort_keys=True).encode("utf-8"),
+        json.dumps(
+            {
+                "outbox_cursor": cursor,
+                "repair_cursor": repair_cursor,
+            },
+            sort_keys=True,
+        ).encode("utf-8"),
         "application/json; charset=utf-8",
     )
     dispatch_signals = DispatchReceiptRepository(storage).missing_arrival_signals()
@@ -144,7 +177,8 @@ def run_once() -> int:
             ),
         )
     logger.info(
-        "distribution reconciliation scheduler due=%s sent=%s orphan_cleanup=%s",
+        "distribution reconciliation scheduler repaired=%s due=%s sent=%s orphan_cleanup=%s",
+        repaired,
         len(by_outbox),
         sent,
         cleaned,
