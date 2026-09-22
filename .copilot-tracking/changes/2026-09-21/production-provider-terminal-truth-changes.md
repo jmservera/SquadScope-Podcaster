@@ -17,7 +17,7 @@
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
 * Completed markers for this cycle: P07-T01 and P07-T06
 * Open marker: P07-T07
-* Source/tests/artifacts commit: `bfead2572ae7c98bf82122281ac3a26ff3b91edc`
+* Source/tests/artifacts commit: `7f00b5795117f144cb23615d59f92029246162fe`
 * Remaining in-scope work: commit/push the existing branch and obtain Leela's independent final-SHA acceptance
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
 * Status basis: `distribution-recovery-authz-v4` now binds every allowed envelope field with exact type/null handling, immutable metadata, structured evidence/digest, explicit empty extensions, predecessor/successor identity, and active/superseded linkage. `distribution-recovery-authz-set-v1` binds exact count, order, active ID, and a typed digest of the complete collection. Legacy/incomplete/unknown/extra/type-mutated envelopes and duplicate/reordered/conflicting/unrelated collections fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are implementation-resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
