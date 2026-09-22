@@ -1,13 +1,13 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Frank independently rejected Livingston's exact final head.** RV-008 remains High because authorization v2 binds prior attempt IDs but does not rebind the complete durable content of earlier attempts; mutating an earlier event's timestamp, execution identity, and fence still leaves the successor mutation-capable. All earlier rejection cycles remain historical evidence. P07-T01/P07-T07, P00-T01, P05, and P06 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Frank's correction is implemented and validated; Fry review is pending.** Authorization v3 now binds and recomputes the complete canonical ordered durable attempt/event history plus the exact single-use successor expectation. P07-T07, P00-T01, P05, and P06 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
-Current source/tests/artifacts commit: `829fae69c4f20da18d34bae15f53c1cb21794808`.
+Current source/tests/artifacts commit: recorded after the Frank source commit.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
-Fresh independent reviewer: Frank, complete and reviewer-only; verdict Not accepted.
+Fresh independent reviewer: Fry, reserved and review-only; verdict pending.
 
 ## Incident and acceptance truth
 
@@ -38,6 +38,18 @@ The branch contains the Podcaster-side P00 receipt/absence boundary and Amy's de
 - Truthful worker/ACA exits, telemetry, alert infrastructure, runbook updates, and fault/concurrency/lifecycle coverage.
 
 Completion of the declared implementation scope does not imply acceptance. Fry's final review resolved the alert and tracking findings but rejected `02241a1` for scheduler lease recovery, legacy cleanup safety, recovery authorization, and four-cycle identity binding.
+
+## Frank correction after rejecting Livingston
+
+Frank is the sole author of this correction. Livingston is locked out for this cycle. Fry is reserved for fresh independent final-SHA review. Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, and Ralph did not author, advise, pair, or contribute.
+
+Recovery authorization now uses `distribution-recovery-authorization-v3` with a nested `distribution-attempt-history-evidence-v1` envelope. The envelope records exact publication/outbox/provider context, predecessor boundary ID/index and counts, a deterministic typed canonical representation of every complete durable predecessor attempt/event in order, and its SHA-256 digest. New attempts carry `distribution-attempt-record-v1`; missing/unknown versions and malformed or ambiguous attempt/event order fail closed.
+
+The complete durable attempt mapping is bound, so identity, sequence, status/classification, provider evidence and mutation possibility, event type/state, owner/execution/claim, fence/lease/time, intent/receipt/readback, proof references, recovery linkage/authorization, and future durable fields cannot change undetected. The exact pending successor record is separately bound before claim, while its recovery-proof digest is independently checked to avoid circular hashing. Only the first exact authorized successor claim can be mutation-capable; any later claim or unexpected appended event is read-only.
+
+The exact Frank bypass is denied, as are parameterized semantic field mutations, duplicate/omit/reorder/insert attempt/event changes, unexpected post-authorization events, legacy schema, and cross-week/publication replay. Canonical round-trip is stable and exact unmodified history is accepted once. All prior RV-008 and RV-002/RV-003/RV-004/RV-007/RV-009 probes remain green.
+
+Validation passed: outbox `126`, focused correction `171`, locked contract `846` with one warning, and final full repository `3176 passed, 2 skipped, 2 deselected, 1 warning`. The first full run reproduced only the documented stale Compose recorder image; rebuilding it made the focused fanout and final full suite pass. Ruff, format, compile, diff safety, Bicep, exact Checkov baseline `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container smoke, worker exit `2`, and changed-diff secret scan passed. Validation image: `sha256:cb3630ceb8910c65a65f82e93fbe4f4a08eafa34cebdf0d2b15ead1e2b9a005c`.
 
 ## Livingston correction after rejecting Ralph
 

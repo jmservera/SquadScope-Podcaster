@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import threading
@@ -1102,8 +1103,14 @@ def test_recovery_authorization_retains_auditable_exact_structured_binding(setup
     authorization = state["recovery_authz"][-1]
     successor = state["attempts"][-1]
     youtube = authorization["evidence"]["providers"]["youtube"]
+    history = authorization["evidence"]["attempt_history"]
 
     assert evidence["providers"]["youtube"]["predecessor"]["attempt_id"] == unknown["attempt_id"]
+    assert history["schema_version"] == "distribution-attempt-history-evidence-v1"
+    assert history["boundary"]["predecessor_attempt_id"] == unknown["attempt_id"]
+    assert history["boundary"]["bound_attempt_count"] == 2
+    assert len(history["records"]) == 2
+    assert len(history["digest"]) == 64
     assert youtube["predecessor"]["intent"]["operation"] == "recovery_mutation"
     assert youtube["predecessor"]["intent"]["operation_type"] == "recovery_fixture"
     assert youtube["predecessor"]["intent"]["intent_id"]
@@ -1122,6 +1129,15 @@ def test_recovery_authorization_retains_auditable_exact_structured_binding(setup
         lease_seconds=300,
     )
     assert claim.read_only is False
+    _clock = setup[2]
+    _clock.advance(301)
+    second_claim = repository.claim(
+        document["outbox_id"],
+        owner="exact-successor-replay",
+        execution_id="exact-successor-replay",
+        lease_seconds=300,
+    )
+    assert second_claim.read_only is True
 
 
 def test_latest_unknown_readback_for_different_provider_item_fails_closed(setup):
@@ -1492,9 +1508,11 @@ def test_stale_authorization_referencing_non_latest_predecessor_is_rejected(setu
 @pytest.mark.parametrize(
     "mutate_history",
     [
-        lambda attempt_ids: attempt_ids[:-1],
-        lambda attempt_ids: list(reversed(attempt_ids)),
+        lambda history: history["records"].pop(),
+        lambda history: history["records"].reverse(),
+        lambda history: history["records"].append(copy.deepcopy(history["records"][0])),
     ],
+    ids=["omit", "reorder", "duplicate"],
 )
 def test_recovery_authorization_rejects_omitted_or_reordered_attempt_history(setup, mutate_history):
     _storage, repository, _clock, document, _created = setup
@@ -1519,7 +1537,7 @@ def test_recovery_authorization_rejects_omitted_or_reordered_attempt_history(set
             "spotify": "spotify-third",
         },
     )
-    evidence["prior_attempt_ids"] = mutate_history(evidence["prior_attempt_ids"])
+    mutate_history(evidence["attempt_history"])
 
     with pytest.raises(
         DistributionOutboxError,
@@ -1532,6 +1550,310 @@ def test_recovery_authorization_rejects_omitted_or_reordered_attempt_history(set
             reason="tampered_history",
             evidence=evidence,
         )
+
+
+def _authorize_third_attempt(setup):
+    _storage, repository, _clock, document, _created = setup
+    first = _failed_attempt(
+        repository,
+        document["outbox_id"],
+        owner="first-history",
+        execution_id="first-history",
+    )
+    _authorize_recovery(repository, document["outbox_id"], first, suffix="second-history")
+    second = _failed_attempt(
+        repository,
+        document["outbox_id"],
+        owner="second-history",
+        execution_id="second-history",
+    )
+    evidence = _authorize_recovery(
+        repository,
+        document["outbox_id"],
+        second,
+        suffix="third-history",
+    )
+    return repository, document, evidence
+
+
+@pytest.mark.parametrize(
+    ("case", "mutate"),
+    [
+        (
+            "attempt-record-version",
+            lambda attempt: attempt.__setitem__(
+                "record_version", "distribution-attempt-record-v999"
+            ),
+        ),
+        ("attempt-id", lambda attempt: attempt.__setitem__("attempt_id", "forged-attempt")),
+        ("authorization-id", lambda attempt: attempt.__setitem__("authz_id", "forged-authz")),
+        (
+            "authorization-source",
+            lambda attempt: attempt.__setitem__("authz_source", "forged-source"),
+        ),
+        (
+            "authorization-reason",
+            lambda attempt: attempt.__setitem__("authz_reason", "forged-reason"),
+        ),
+        (
+            "authorization-time",
+            lambda attempt: attempt.__setitem__("authorized_at", "1999-01-01T00:00:00Z"),
+        ),
+        (
+            "predecessor-linkage",
+            lambda attempt: attempt.__setitem__("predecessor_attempt_id", "forged-predecessor"),
+        ),
+        ("attempt-state", lambda attempt: attempt.__setitem__("state", "forged-state")),
+        (
+            "terminal-classification",
+            lambda attempt: attempt.__setitem__("terminal_outcome", "provider_unknown"),
+        ),
+        (
+            "proof-reference",
+            lambda attempt: attempt["proof_references"].append("forged-proof"),
+        ),
+        (
+            "provider-result",
+            lambda attempt: attempt["provider_evidence"]["youtube"].__setitem__(
+                "result", "provider_unknown"
+            ),
+        ),
+        (
+            "provider-readback-source",
+            lambda attempt: attempt["provider_evidence"]["youtube"]["verification"].__setitem__(
+                "source", "forged-readback"
+            ),
+        ),
+        (
+            "provider-readback-item",
+            lambda attempt: attempt["provider_evidence"]["youtube"]["verification"].__setitem__(
+                "provider_item_id", "forged-item"
+            ),
+        ),
+        (
+            "provider-readback-state",
+            lambda attempt: attempt["provider_evidence"]["youtube"]["verification"].__setitem__(
+                "native_state", "pending"
+            ),
+        ),
+        (
+            "provider-readback-result",
+            lambda attempt: attempt["provider_evidence"]["youtube"]["verification"].__setitem__(
+                "result", "publication_unknown"
+            ),
+        ),
+        (
+            "provider-readback-fence",
+            lambda attempt: attempt["provider_evidence"]["youtube"]["verification"].__setitem__(
+                "fencing_token", 999999
+            ),
+        ),
+        (
+            "provider-readback-time",
+            lambda attempt: attempt["provider_evidence"]["youtube"]["verification"].__setitem__(
+                "at", "1999-01-01T00:00:00Z"
+            ),
+        ),
+        (
+            "event-type",
+            lambda attempt: attempt["events"][1].__setitem__("event_type", "forged-event"),
+        ),
+        (
+            "event-state",
+            lambda attempt: attempt["events"][1].__setitem__("state", "forged-state"),
+        ),
+        (
+            "event-sequence",
+            lambda attempt: attempt["events"][1].__setitem__("sequence", 99),
+        ),
+        (
+            "event-time",
+            lambda attempt: attempt["events"][1].__setitem__("at", "1999-01-01T00:00:00Z"),
+        ),
+        (
+            "event-owner",
+            lambda attempt: attempt["events"][1].__setitem__("owner", "forged-owner"),
+        ),
+        (
+            "event-claim-id",
+            lambda attempt: attempt["events"][1].__setitem__("claim_id", "forged-claim"),
+        ),
+        (
+            "event-execution-id",
+            lambda attempt: attempt["events"][1].__setitem__("execution_id", "forged-execution"),
+        ),
+        (
+            "event-fence",
+            lambda attempt: attempt["events"][1].__setitem__("fencing_token", 999999),
+        ),
+        (
+            "event-lease",
+            lambda attempt: attempt["events"][1].__setitem__(
+                "lease_expires_at", "2099-01-01T00:00:00Z"
+            ),
+        ),
+    ],
+)
+def test_authorized_recovery_denies_every_semantic_prior_attempt_or_event_mutation(
+    setup, case, mutate
+):
+    repository, document, _evidence = _authorize_third_attempt(setup)
+
+    def _mutate(state):
+        mutate(state["attempts"][0])
+
+    repository._update(document["outbox_id"], _mutate)
+    claim = repository.claim(
+        document["outbox_id"],
+        owner=f"{case}-owner",
+        execution_id=f"{case}-execution",
+        lease_seconds=300,
+    )
+    assert claim.read_only is True
+
+
+@pytest.mark.parametrize(
+    ("case", "mutate"),
+    [
+        (
+            "reorder-attempts",
+            lambda state: state["attempts"].__setitem__(
+                slice(0, 2), reversed(state["attempts"][:2])
+            ),
+        ),
+        (
+            "duplicate-attempt",
+            lambda state: state["attempts"].insert(1, copy.deepcopy(state["attempts"][0])),
+        ),
+        ("omit-attempt", lambda state: state["attempts"].pop(0)),
+        (
+            "insert-extra-attempt",
+            lambda state: state["attempts"].insert(
+                2,
+                {
+                    **copy.deepcopy(state["attempts"][1]),
+                    "attempt_id": "inserted-extra-attempt",
+                },
+            ),
+        ),
+        (
+            "duplicate-event",
+            lambda state: state["attempts"][0]["events"].insert(
+                2, copy.deepcopy(state["attempts"][0]["events"][1])
+            ),
+        ),
+        ("omit-event", lambda state: state["attempts"][0]["events"].pop(1)),
+        (
+            "reorder-events",
+            lambda state: state["attempts"][0]["events"].__setitem__(
+                slice(1, 3), reversed(state["attempts"][0]["events"][1:3])
+            ),
+        ),
+        (
+            "insert-extra-event",
+            lambda state: state["attempts"][0]["events"].append(
+                {
+                    "sequence": len(state["attempts"][0]["events"]) + 1,
+                    "event_type": "forged",
+                    "at": state["attempts"][0]["events"][-1]["at"],
+                    "state": "forged",
+                }
+            ),
+        ),
+    ],
+)
+def test_authorized_recovery_denies_attempt_or_event_structure_mutation(setup, case, mutate):
+    repository, document, _evidence = _authorize_third_attempt(setup)
+    repository._update(document["outbox_id"], mutate)
+    claim = repository.claim(
+        document["outbox_id"],
+        owner=f"{case}-owner",
+        execution_id=f"{case}-execution",
+        lease_seconds=300,
+    )
+    assert claim.read_only is True
+
+
+def test_authorized_recovery_denies_unexpected_successor_event_append(setup):
+    repository, document, _evidence = _authorize_third_attempt(setup)
+
+    def _append(state):
+        state["attempts"][-1]["events"].append(
+            {
+                "sequence": 2,
+                "event_type": "unexpected",
+                "at": state["attempts"][-1]["authorized_at"],
+                "state": "unexpected",
+            }
+        )
+
+    repository._update(document["outbox_id"], _append)
+    claim = repository.claim(
+        document["outbox_id"],
+        owner="unexpected-successor-event",
+        execution_id="unexpected-successor-event",
+        lease_seconds=300,
+    )
+    assert claim.read_only is True
+
+
+def test_authorized_recovery_denies_cross_week_publication_replay(setup):
+    repository, document, _evidence = _authorize_third_attempt(setup)
+
+    def _replay(state):
+        state["publication_identity"]["week"] = "2026-W39"
+        state["publication_identity"]["accepted_job_id"] = "podcast-2026-W39-replay"
+
+    repository._update(document["outbox_id"], _replay)
+    claim = repository.claim(
+        document["outbox_id"],
+        owner="cross-week-replay",
+        execution_id="cross-week-replay",
+        lease_seconds=300,
+    )
+    assert claim.read_only is True
+
+
+def test_canonical_attempt_history_round_trip_is_stable(setup):
+    _storage, repository, _clock, document, _created = setup
+    first = _failed_attempt(
+        repository,
+        document["outbox_id"],
+        owner="round-trip",
+        execution_id="round-trip",
+    )
+    state = repository.read(document["outbox_id"])
+    evidence = exact_recovery_authorization_evidence(
+        state,
+        predecessor_attempt_id=first["attempt_id"],
+        expected_provider_item_ids={
+            "youtube": "youtube-round-trip",
+            "spotify": "spotify-round-trip",
+        },
+    )
+    serialized = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+    assert json.loads(serialized) == evidence
+    recomputed = exact_recovery_authorization_evidence(
+        repository.read(document["outbox_id"]),
+        predecessor_attempt_id=first["attempt_id"],
+        expected_provider_item_ids={
+            "youtube": "youtube-round-trip",
+            "spotify": "spotify-round-trip",
+        },
+    )
+    assert recomputed == evidence
+    history_without_digest = dict(evidence["attempt_history"])
+    digest = history_without_digest.pop("digest")
+    assert (
+        hashlib.sha256(
+            json.dumps(
+                history_without_digest,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        == digest
+    )
 
 
 def test_weekly_w38_recovery_candidate_and_w39_missed_fixture():

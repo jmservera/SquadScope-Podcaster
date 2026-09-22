@@ -22,6 +22,8 @@ Ralph's rejected revision requires exactly one usable receipt per provider, but 
 
 Frank independently reviewed exact final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f` and rejected it. The v2 authorization recomputes `prior_attempt_ids`, but not the complete durable content of earlier attempts. After authorization, mutating the first attempt's claimed event timestamp, execution identity, and fencing token left the specifically authorized successor mutation-capable (`read_only=False`). RV-008 and P07-T01 therefore remain open; P07-T06 validation remains complete and P07-T07 cannot close.
 
+Frank now owns the sole-author correction from review head `3529a027d68c3811274237a49202dafc87d33c70`. Livingston is locked out for this cycle, Fry is reserved for fresh independent final-SHA review, and Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, and Ralph may not contribute. The correction must define a versioned canonical attempt-history evidence schema derived from authoritative durable records, persist structured evidence plus digest/version, recompute both at use, bind a precise predecessor boundary and successor expectation, and reject every semantic mutation, duplicate, omission, insertion, reorder, unexpected append, legacy/unknown version, or cross-publication replay.
+
 ## Cross-Phase Invariants
 
 1. **Recoverably atomic visibility:** upload an immutable content-addressed artifact, verify integrity/readability, then conditionally create the single authoritative outbox record referencing its hash. Queue notification is an idempotent hint; claim revalidates the artifact; verified orphan artifacts are repaired or garbage-collected without provider mutation.
@@ -105,19 +107,19 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | Frank review complete with rejection; RV-008/P07-T01 remains open | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Frank correction and validation complete; P07-T07 awaits Fry review | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: Frank's review of Livingston's P07-T01/P07-T06 revision and delivery reconciliation is complete. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-008 remains High.
-* Current task: bind and recompute complete ordered durable attempt history on a new final SHA, rerun the full validation contract, and obtain a new independent review while preserving #684 as draft/blocked.
-* Revision author: Livingston only for the reopened correction cycle.
-* Fresh independent reviewer: Frank completed this cycle reviewer-only and rejected it; the corrected final SHA requires a new independent reviewer.
-* Excluded contributors: Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Frank is reviewer-only.
+* Declared scope: Frank's P07-T01 correction plus P07-T06 validation and delivery reconciliation. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. The authored RV-008 correction is complete locally and awaits Fry's independent final-SHA acceptance.
+* Current task: commit and push the validated correction on the existing branch, refresh #684 without changing its draft/blocked posture, and hand the final SHA to Fry.
+* Revision author: Frank only for this correction cycle.
+* Fresh independent reviewer: Fry, review-only after the final pushed SHA.
+* Excluded contributors: Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, Ralph, and Livingston may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Fry may review only after delivery.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
-* Validation boundary: wrong-operation, mutated intent/receipt, swapped-provider receipt, extra/missing receipt, changed owner/fence/time/item/readback/binding, stale/latest/reordered/omitted/history-resolution negative probes; exact successor-only positive proof; all resolved-RV probes; then the complete locked validation contract without weakening.
+* Validation boundary: exact timestamp/execution/fence bypass, parameterized mutation of every semantic attempt/event field, duplicate/omit/reorder/insert attempt or event, missing/ambiguous sequence/time, unexpected append after authorization, cross-week/publication/attempt replay, canonical round-trip, exact single authorized successor, all prior RV-008 and resolved-RV probes, then the complete locked validation contract without weakening.
 * Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 deployment/canary, and P06 elapsed evidence remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
 
 ## Implementation Marker Reconciliation
@@ -126,14 +128,14 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | Open; Frank rejected final head | Bind and recompute complete ordered durable attempt records, including event owner/execution/fence/timestamp/order; preserve current exact provider/operation/intent/receipt/publication/artifact/readback/successor evidence |
+| P07-T01 | Complete for Frank correction; review pending | Authorization v3 stores and recomputes a canonical typed/digested exact ordered snapshot of every predecessor attempt/event and a single-use successor expectation; semantic mutation, duplicate/omit/reorder/insert, unexpected append, legacy schema, and replay probes fail closed |
 | P07-T02 | Complete; RV-002 resolved | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
 | P07-T03 | Complete; RV-004 resolved | Bounded resumable migration backfills pre-index references and cleanup fails closed until completeness is proven |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
-| P07-T06 | Complete for Livingston correction | Required `20/68`, outbox `88`, focused `133`, locked `808`, full `3137`, static/infra/Checkov/container/exit/security gates passed |
-| P07-T07; P05-T01 | Frank review complete with rejection; blocked | Preserve all rejections, keep PR #684 draft/blocked, correct RV-008, and obtain a new independent final-SHA acceptance; P00-T01, P05, and P06 remain open |
+| P07-T06 | Complete for Frank correction | Outbox `126`, focused `171`, locked `846`, final full `3176`, static/infra/Checkov/container/exit/security gates passed; stale Compose image was rebuilt before the final full pass |
+| P07-T07; P05-T01 | Blocked pending Fry review | Preserve all rejections, keep PR #684 draft/blocked, and obtain Fry's independent final-SHA acceptance; P00-T01, P05, and P06 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |

@@ -10,17 +10,56 @@
 
 ## Execution Status
 
-* Status: Frank independently reviewed and rejected Livingston's exact final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f`; RV-008 remains High because complete earlier attempt evidence is not durably rebound
+* Status: Frank sole-author correction implemented and fully validated from review head `3529a027d68c3811274237a49202dafc87d33c70`; delivery is pending and final acceptance remains blocked on Fry's independent final-SHA review
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
-* Sole current revision author: Livingston
-* Independent reviewer: Frank, complete and reviewer-only; verdict Not accepted
+* Sole current revision author: Frank
+* Independent reviewer: Fry, reserved and review-only after the final pushed SHA
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed marker for this cycle: P07-T06
-* Open markers: P07-T01 and P07-T07
+* Completed markers for this cycle: P07-T01 and P07-T06
+* Open marker: P07-T07
 * Source/tests/artifacts commit: `829fae69c4f20da18d34bae15f53c1cb21794808`
-* Remaining in-scope work: bind and recompute complete ordered durable attempt history, rerun validation, and obtain a new independent final-SHA acceptance
+* Remaining in-scope work: commit/push, refresh the draft PR narrative, and obtain Fry's independent final-SHA review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: validation passes without weakening and the operation/intent/receipt/provider/readback bindings reject the requested direct mutations. Frank's independent probe nevertheless changed an earlier attempt event's timestamp, execution identity, and fence after authorization; because v2 records only `prior_attempt_ids` for prior history, the successor claim remained mutation-capable. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+* Status basis: Frank's independent probe changed an earlier attempt event's timestamp, execution identity, and fence after authorization; because v2 records only `prior_attempt_ids` for prior history, the successor claim remained mutation-capable. The approved correction replaces that list with a versioned canonical structured history envelope plus digest, recomputed from current durable records at authorization use and bound to a precise predecessor boundary and successor expectation. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+
+## P07 Frank Canonical Attempt-History Binding Opening
+
+* Related markers: P07-T01, P07-T06, P07-T07; RV-008.
+* Authorship and lockout: Frank is the sole revision author. Livingston is locked out after the rejected revision. Fry is reserved for fresh independent final-SHA review and may not contribute before review. Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, and Ralph remain locked out.
+* Exact baseline: clean incident worktree on existing branch `squad/incident-provider-terminal-truth` at review head `3529a027d68c3811274237a49202dafc87d33c70`; rejected source `829fae69c4f20da18d34bae15f53c1cb21794808`; local, origin, and PR head aligned before source edits.
+* Write boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`; existing branch and draft PR #684; source/tests and current plan/details/changes/PR artifacts required for RV-008. No new branch/PR, issue/thread mutation, deployment, canary, merge, or production action.
+* Contract: derive a versioned, deterministic, explicitly typed/null-preserving canonical history envelope from authoritative durable attempts/events. Bind every semantic identity/state/mutation/evidence/recovery field in exact attempt/event order, persist structured evidence plus schema/digest, recompute it at authorization use, and allow only the specifically expected successor transition beyond the exact predecessor boundary.
+* Validation intent: deny exact timestamp/execution/fence mutation and parameterized mutations of every semantic attempt/event field; deny duplicate, omitted, reordered, inserted, or unexpectedly appended attempts/events; deny missing sequence, ambiguous time/order, and cross-week/publication/attempt replay; prove canonical round-trip stability and exact unmodified history accepted once; preserve every earlier RV-008 and RV-002/RV-003/RV-004/RV-007/RV-009 probe; run focused, locked, full, lint, infrastructure, container, exit, and security gates without weakening.
+* Blockers retained: Fry's independent final-SHA review, P00-T01, P05, and P06. PR #684 remains open, draft, and blocked.
+
+## P07 Frank Canonical Attempt-History Binding
+
+* Related marker: P07-T01; RV-008.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`.
+* Authorization schema: recovery authorization is now `distribution-recovery-authorization-v3`. It rejects legacy v1/v2, missing, extra, and unknown structures through exact recomputation and equality.
+* Attempt-history schema: `distribution-attempt-history-evidence-v1` stores publication/outbox/provider context, exact predecessor ID/index, bound attempt/event counts, every predecessor attempt record in durable order, and a SHA-256 digest of the canonical envelope. Every scalar is explicitly tagged as null, boolean, integer, number, or string; objects use sorted key entries and arrays preserve exact order.
+* Record schema: new attempts use `distribution-attempt-record-v1`. Missing or unknown record versions, duplicate/missing attempt IDs, invalid predecessor linkage, non-terminal records inside the predecessor boundary, missing/invalid authorization times, missing events, nonconsecutive event sequences, mismatched event type/state, invalid times, and backward time order fail closed.
+* Complete semantic binding: the whole durable attempt mapping is canonicalized rather than a selected field list, so attempt identity/order/state/classification, provider mutation possibility and evidence, event details, owner/execution/claim identity, fence/lease/time, intent/receipt/readback records, proof references, recovery linkage, authorization, and future added fields are automatically bound.
+* Successor boundary: the authorization binds the exact pending successor record and provider expectations before claim. The separately stored recovery proof digest is checked independently to avoid a circular digest. The first valid claim appends the authorized transition; a later claim or any unexpected pre-claim successor event is reconciliation-only.
+* Preserved evidence: every predecessor attempt remains unchanged, provider-specific operation/intent/receipt/readback binding remains exact, and all previously resolved findings retain their behavior.
+
+## P07 Frank Validation
+
+| Command | Result |
+|---|---|
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py -q` | Passed: `126 passed in 6.59s` |
+| Focused correction suite | Passed: `171 passed in 6.92s` |
+| Locked dispatch/API/outbox/worker/provider/publication/monitoring/deployment command | Passed: `846 passed, 1 warning in 60.59s` |
+| Full repository suite | First run reproduced only the documented stale Compose recorder image (`1 failed, 3175 passed, 2 skipped, 2 deselected, 1 warning`); Compose rebuild and focused fanout passed `1`, and final full suite passed `3176 passed, 2 skipped, 2 deselected, 1 warning in 89.08s` |
+| Ruff, format, compile, diff safety | Passed across `podcaster` and `tests`; `192 files already formatted` |
+| Bicep build | Passed with the documented pre-existing BCP318 warning |
+| Exact Checkov baseline | Retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov | Passed: `34 passed, 0 failed`; Dockerfile baseline gate passed |
+| Container image | `sha256:cb3630ceb8910c65a65f82e93fbe4f4a08eafa34cebdf0d2b15ead1e2b9a005c`; UID `999`, ffmpeg/ffprobe, and pipeline/outbox imports passed |
+| Unconfigured distribution worker | Exited `2` as required |
+| Changed-diff suspected secret scan | No private key, access key, JWT, or signed credential URL pattern found |
+
+The RV-008 probes deny the exact timestamp/execution/fence bypass; parameterized mutation of attempt version/identity/authorization/linkage/state/classification/proof/provider readback and every claim-event security field; duplicate, omitted, reordered, or inserted attempts/events; an unexpected successor event; and cross-week/publication replay. Canonical JSON round-trip and recomputation are stable. Exact unmodified history grants mutation authority once to the bound successor, and a later claim is read-only. Prior RV-008 and RV-002/RV-003/RV-004/RV-007/RV-009 probes remain green. No assertion, safety gate, security gate, or baseline was weakened.
 
 ## P07 Frank Fresh Independent Final-SHA Review
 
