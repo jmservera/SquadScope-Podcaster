@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835` and rejected Basher's sole-author correction. Rusty's different-item bypass is closed, but RV-008 remains High because recovery from the latest `provider_unknown` accepts exact-item readback when the immutable attempt has no durable provider receipt. P07-T01 and P07-T07 remain open; P07-T06 validation is complete; P00-T01, P05, and P06 remain blocked
+* Planning status: Ralph's sole-author post-rejection RV-008 correction and validation are complete from review/tracking head `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e`. Recovery now requires exactly one usable durable receipt for each implicated consumed provider intent before authoritative post-terminal readback can authorize a bound successor. Livingston is reserved for fresh independent final-SHA review. P07-T01 and P07-T06 are implementation-complete pending P07-T07; P00-T01, P05, and P06 remain blocked
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -31,7 +31,7 @@ P07 requires atomic scheduler notification ownership, one telemetry vocabulary s
 * Four future post-fix cycles must each be `published_verified` or controlled `published_verified_recovered`; internal status is never sufficient.
 * PR #682 is superseded or selectively reworked only after the historical W17–W29 set, all six RV-006 threads, and later current unresolved safety threads have explicit closure evidence.
 * Existing CI, tests, idempotency, provider safety, and security gates remain intact.
-* Leela's revision at `02241a1` was rejected by Fry, Farnsworth's source candidate `601d36a` was rejected by Livingston, and Frank's revision at `1efa749` was rejected by Rusty. Basher is the sole author of the current RV-008 revision. Ralph is reserved as the fresh independent reviewer after implementation and validation. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, Frank, and Rusty are excluded from contribution or advice.
+* Leela's revision at `02241a1` was rejected by Fry, Farnsworth's source candidate `601d36a` was rejected by Livingston, Frank's revision at `1efa749` was rejected by Rusty, and Basher's revision at `eaaac57` was rejected by Ralph at review/tracking head `21a3fa0`. Ralph is the sole author of the new correction cycle. Livingston is reserved for fresh independent final-SHA review and may not contribute. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Frank, Rusty, and Basher are excluded from contribution or advice.
 
 ### What You May Not Know
 
@@ -743,6 +743,6 @@ The existing critique is preserved unchanged as historical evidence. No second c
 
 * Implementation artifact: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
 * Review-follow-up implementation marker range: P07-T01 through P07-T07.
-* Current author/reviewer: Basher is the sole correction author from Rusty's rejected head `97c9520`; Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835` without source/test contribution and rejected it. Leela/Fry, Farnsworth/Livingston, and Frank/Rusty remain historical rejected author/reviewer pairs.
-* Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-008 remains High because exact-item readback can authorize recovery when the latest unknown attempt has no durable provider receipts.
-* Remaining blockers after revision: RV-008 receipt binding and a subsequent independent final-SHA review; P00-T01 upstream ownership; P05 deployment/provider authority and canary; P06 four elapsed future post-fix cycles. PR #684 remains draft/blocked while any remain.
+* Current author/reviewer: Ralph is the sole correction author from his rejected review/tracking head `21a3fa0`; Livingston is reserved for fresh independent final-SHA review and did not contribute. Basher/Ralph, Leela/Fry, Farnsworth/Livingston, and Frank/Rusty remain historical rejected author/reviewer pairs.
+* Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; Ralph's RV-008 receipt-cardinality correction is locally validated but cannot be accepted until Livingston independently reviews the final pushed SHA.
+* Remaining blockers after revision: Livingston's independent final-SHA review; P00-T01 upstream ownership; P05 deployment/provider authority and canary; P06 four elapsed future post-fix cycles. PR #684 remains draft/blocked while any remain.

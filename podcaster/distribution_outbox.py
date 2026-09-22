@@ -126,6 +126,17 @@ def _parse_time(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
+def _receipt_follows_consumed_intent(receipt_at: Any, consumed_at: Any) -> bool:
+    if not isinstance(receipt_at, str) or not isinstance(consumed_at, str):
+        return False
+    try:
+        receipt_time = _parse_time(receipt_at)
+        consumed_time = _parse_time(consumed_at)
+    except ValueError:
+        return False
+    return receipt_time is not None and consumed_time is not None and receipt_time >= consumed_time
+
+
 def _require_token(name: str, value: str) -> str:
     normalized = str(value or "").strip()
     if not _SAFE_TOKEN.fullmatch(normalized):
@@ -412,24 +423,31 @@ def _recovery_predecessor_provider_evidence(
         if (
             not isinstance(intent, Mapping)
             or intent.get("provider") != provider
+            or not intent.get("operation")
             or not intent.get("consumed_at")
+            or intent.get("consumed_fence") is None
             or not intent.get("intent_id")
             or not intent.get("expected_provider_item_id")
             or not isinstance(receipts, list)
+            or len(receipts) != 1
         ):
             raise DistributionOutboxError(unresolved_message)
         expected_item = str(intent["expected_provider_item_id"])
-        candidates = {expected_item}
-        for receipt in receipts:
-            if not isinstance(receipt, Mapping):
-                raise DistributionOutboxError(unresolved_message)
-            if (
-                receipt.get("intent_id") != intent.get("intent_id")
-                or receipt.get("ambiguous") is True
-            ):
-                raise DistributionOutboxError(unresolved_message)
-            if receipt.get("provider_item_id"):
-                candidates.add(str(receipt["provider_item_id"]))
+        receipt = receipts[0]
+        if (
+            not isinstance(receipt, Mapping)
+            or not receipt.get("receipt_id")
+            or receipt.get("intent_id") != intent.get("intent_id")
+            or receipt.get("transport_class") != "accepted"
+            or receipt.get("ambiguous") is not False
+            or receipt.get("provider_item_id") != expected_item
+            or not receipt.get("native_state")
+            or not receipt.get("at")
+            or not _receipt_follows_consumed_intent(receipt.get("at"), intent.get("consumed_at"))
+            or receipt.get("fencing_token") != intent.get("consumed_fence")
+        ):
+            raise DistributionOutboxError(unresolved_message)
+        candidates = {expected_item, str(receipt["provider_item_id"])}
         if isinstance(verification, Mapping) and verification.get("provider_item_id"):
             candidates.add(str(verification["provider_item_id"]))
         if candidates != {expected_item}:
@@ -457,8 +475,8 @@ def _recovery_predecessor_provider_evidence(
         ):
             raise DistributionOutboxError(unresolved_message)
         resolved[provider] = {
-            "intent": None,
-            "receipts": [],
+            "intent": intent,
+            "receipts": [receipt],
             "verification": verification,
             "result": "failed_terminal",
         }
@@ -905,7 +923,7 @@ class DistributionOutboxRepository:
                 if expiry is not None and expiry > now:
                     raise StaleClaimError("outbox item already has an active claim")
             token = int(document.get("fencing_token") or 0) + 1
-            consumed = False
+            consumed = bool(_active_attempt(document).get("terminal_outcome"))
             for provider in document["providers"].values():
                 if not isinstance(provider, Mapping):
                     continue
