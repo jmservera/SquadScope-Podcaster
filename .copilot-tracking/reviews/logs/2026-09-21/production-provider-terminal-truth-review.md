@@ -396,3 +396,109 @@ Route RV-002, RV-003, RV-004, RV-008, and RV-009 to `/rpi-implement`; route RV-0
 | P06 | Production verification owner | Four consecutive future post-fix cycles with complete authoritative external proof |
 
 No GitHub thread, issue, or related PR was resolved or closed by this review.
+
+---
+
+## Fresh Independent Farnsworth-Revision Review — Livingston — 2026-09-22
+
+### Reviewer Identity, Independence, and Exact Boundary
+
+* Reviewer: **Livingston, QA / Verification**.
+* Independence: Livingston did not author the revision. Farnsworth was the sole revision author. Bender, Hermes, Amy, Leela, Fry, and Farnsworth did not advise, pair, or contribute during review.
+* Exact comparison: `2e87d9bf2596df491494a3160b127e79e8f0f301..601d36afc62d745c6a67d917b63bcd89e8c18737`.
+* Source focus: Farnsworth commit `0f489b12ae93b8e5f479fb9278f369f99e89190f`.
+* Opening repository state: clean worktree; local and `origin/squad/incident-provider-terminal-truth` both at `601d36a`; comparison base is an ancestor; remote divergence `0/0`.
+* PR state at opening: #684 open, draft, merge state `CLEAN`, 13 successful checks, no reviews, and no review threads.
+* Incident truth retained: W39 is `missed_not_dispatched`. W38 was published, but `published_verified_recovered` remains evidence-conditional on exact weekly identity-bound authoritative provider proof.
+
+### Livingston Final Verdict
+
+**Not accepted (`request_changes`).** The Farnsworth revision resolves RV-002, RV-004, and RV-009, while RV-003 and RV-007 remain resolved. RV-008 remains **High** because recovery authorization can branch around a later `provider_unknown` attempt and restore mutation authority. Severity: 0 Critical, 1 High, 0 Medium, 0 Low.
+
+### Finding Dispositions
+
+<!-- rpi:review-livingston id=RV-002 -->
+#### RV-002 [High, resolved]: expired notification reservations recover with one fenced owner
+
+* Evidence: the two-thread barrier produced one winner and one stale loser; both expired `reserved` and `enqueue_started` stages became due; replacement incremented the fence; stale owners could neither abort nor complete the replacement.
+* Disposition: Resolved. Retain exact fake-clock, concurrent-winner, and stale-owner coverage.
+
+<!-- rpi:review-livingston id=RV-003 -->
+#### RV-003 [High, remains resolved]: emitted and deployed alert contracts stay aligned
+
+* Evidence: no source change in the Farnsworth revision reopened the previously verified event/query and active-depth absence semantics; focused telemetry/deployment tests passed.
+* Disposition: Remains resolved.
+
+<!-- rpi:review-livingston id=RV-004 -->
+#### RV-004 [High, resolved]: legacy reference migration is bounded, resumable, fail-closed, and fenced
+
+* Evidence: cleanup backfilled a removed legacy reference before deletion; incomplete one-record pages returned without deleting; persisted cursor resumed; current-schema concurrent references defeated the CAS cleanup claim.
+* Disposition: Resolved. The migration completion gate prevents pre-index referenced deletion.
+
+<!-- rpi:review-livingston id=RV-007 -->
+#### RV-007 [Medium, remains resolved]: canonical tracking preserves history and current ownership
+
+* Evidence: Fry/Leela rejection history remains intact; Farnsworth/Livingston ownership is explicit; this cycle reconciles exact final-head findings and validation without rewriting prior cycles.
+* Disposition: Remains resolved by review-only tracking reconciliation.
+
+<!-- rpi:review-livingston id=RV-008 -->
+#### RV-008 [High, open]: an older predecessor can authorize mutation after a later `provider_unknown`
+
+* Evidence: a first attempt terminated `failed_terminal` and received valid structured recovery evidence. Its succeeding attempt then terminated `provider_unknown`. Reusing the older predecessor and its evidence was accepted, appended a third attempt, and `claim()` returned `read_only=False`.
+* Root cause: `_validated_recovery_authorization_evidence()` compares `prior_attempt_ids` only through the selected predecessor. `authorize_recovery()` rejects unknown state only on that selected predecessor and does not require it to be the latest terminal attempt or reject later unresolved/unknown attempts.
+* Impact: the branch can regain provider mutation authority after an unknown mutation, violating the authoritative no-blind-retry invariant and the exact complete-attempt-history binding required for controlled recovery.
+* Required clearing evidence: authorization rejects any non-latest predecessor and any history containing a later `provider_unknown`, ambiguous receipt, identity conflict, or unresolved mutation; a succeeding claim remains reconciliation-only or is not created; focused concurrent/history-tamper probes and full validation pass.
+
+<!-- rpi:review-livingston id=RV-009 -->
+#### RV-009 [High, resolved]: proof envelopes rebind identity and require four exact cycles
+
+* Evidence: label-only, tampered week/job/manifest/artifact/provider/readback/duplicate, and unauthorized-recovery cycles were rejected; four consecutive exact complete envelopes passed.
+* Disposition: Resolved. Retain raw-evidence rebinding and exact four-cycle positive coverage.
+
+### Independent Negative Probes
+
+| Target | Command or probe | Result |
+|---|---|---|
+| RV-002/RV-004/RV-008/RV-009 owner matrix | `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py -q -k 'reconciliation_notification_reservation_is_single_winner_and_fenced or cleanup_backfills_legacy_reference_before_deletion or cleanup_fails_closed_while_legacy_reference_scan_is_incomplete or recovery_authorization_rejects_mismatched_structured_evidence or recovery_intent_rejects_provider_identity_outside_authorization or recovery_authorization_rejects_opaque_evidence or four_cycle_acceptance_requires_complete_authoritative_envelopes or four_cycle_acceptance_rejects_identity_tampering or weekly_w38_recovery_candidate_and_w39_missed_fixture'` | `22 passed, 35 deselected` |
+| RV-008 history-order bypass | Create failed predecessor, authorize recovery, terminate successor `provider_unknown`, then reuse older predecessor evidence | **Failed safety:** `RV008_BYPASS ... read_only=False attempts=3` |
+| Changed executable diff secret/PII scan | Private-key, token, connection-string, JWT, and email patterns | `NO_SUSPECTED_SECRETS_OR_PII` |
+
+### Independent Full Validation
+
+| Command | Result |
+|---|---|
+| Focused outbox suite | `57 passed in 1.88s` |
+| Focused correction suite | `102 passed in 5.62s` |
+| Locked targeted contract | `777 passed, 1 warning in 60.48s` |
+| Initial full `pytest tests/ -q` | `1 failed, 3106 passed, 2 skipped, 2 deselected, 1 warning`; only stale Compose recorder image |
+| Compose rebuild plus focused fanout integration | `1 passed in 16.08s` |
+| Final full `pytest tests/ -q` | `3107 passed, 2 skipped, 2 deselected, 1 warning in 85.77s` |
+| Ruff, format, compile, exact diff safety, deleted-file check | Passed |
+| Bicep build | Passed with pre-existing BCP318 warning |
+| Exact Checkov | Documented baseline retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov | `34 passed, 0 failed` |
+| Dockerfile Checkov baseline | Passed |
+| Container build | `sha256:826e759f3685a781d185a334f86014b71238ab84fda4896776b5f396392622f6` |
+| Container smoke | UID `999`; ffmpeg/ffprobe and pipeline imports passed; unconfigured distribution worker exited `2` |
+
+No test, assertion, validation gate, or security gate was weakened.
+
+### GitHub and External Relationships
+
+* #684: open, draft, merge state `CLEAN`; 13 checks successful at review opening; no reviews or review threads. It remains draft/blocked and is not approved by this review.
+* #682: open, non-draft, not superseded or mutated; its separate stage-budget work and review history remain unchanged.
+* #671: open; Spotify video publication contract/manual-handoff dependency remains unchanged.
+* #678: open; YouTube ambiguous-create identity reconciliation dependency remains unchanged.
+* #679: open; Spotify audio exact-reconciliation dependency remains unchanged.
+* #681: open; atomic outbox worker remains the parent implementation relationship.
+
+### Blockers and Clearing Evidence
+
+| Blocker | Owner | Evidence required to clear |
+|---|---|---|
+| RV-008 | Podcaster revision owner | Bind authorization to the complete current attempt history and latest eligible predecessor; reject later unknown/ambiguous/conflicting attempts; prove no mutation-capable claim can follow `provider_unknown` |
+| P00-T01 | `jmservera/SquadScope` owner | Exact W39 upstream blocked-stage fix and durable dispatch-to-Azure evidence |
+| P05 | Delivery/deployment owners | Accepted final-SHA review, all checks, approval/merge provenance, authorized deployment, provider canary, alert fire/clear, and rollback evidence |
+| P06 | Production verification owner | Four consecutive future post-fix cycles with complete authoritative external proof |
+
+No issue, PR, review thread, deployment, canary, or production state was resolved, closed, or mutated by this review.

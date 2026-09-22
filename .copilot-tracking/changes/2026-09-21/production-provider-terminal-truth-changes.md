@@ -10,15 +10,15 @@
 
 ## Execution Status
 
-* Status: reopened P07 correction in progress after independent rejection
+* Status: Livingston independent review complete; exact final head not accepted because High RV-008 remains
 * Declared invocation scope: P07-T01–P07-T07 only
 * Sole current revision author: Farnsworth
-* Reserved independent reviewer: Livingston
-* Completed scope marker retained: P07-T04
-* Active markers: P07-T01, P07-T02, P07-T03, P07-T05, P07-T06, and P07-T07
-* Remaining in-scope markers: P07-T01, P07-T02, P07-T03, P07-T05, P07-T06, and P07-T07
+* Independent reviewer: Livingston
+* Completed markers: P07-T02–P07-T07
+* Active marker: P07-T01
+* Remaining in-scope marker: P07-T01 for the RV-008 branch-around-unknown defect
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: Fry independently rejected Leela's final revision `02241a1`. RV-003 and RV-007 remain resolved; High RV-002/RV-004/RV-008/RV-009 are reopened for Farnsworth's surgical correction. No merge, deployment, canary, or production acceptance is claimed.
+* Status basis: Livingston independently reviewed final head `601d36a`. RV-002, RV-003, RV-004, RV-007, and RV-009 are resolved. RV-008 remains High because authorization can select an older failed predecessor, ignore a later `provider_unknown` attempt, and restore mutation authority. No merge, deployment, canary, or production acceptance is claimed.
 
 ## P07 Farnsworth Revision Opening
 
@@ -37,7 +37,20 @@
 
 * Source/tests/artifacts commit: `0f489b12ae93b8e5f479fb9278f369f99e89190f`.
 * Push result: existing branch `squad/incident-provider-terminal-truth` advanced from `2e87d9b` to `0f489b1`; no branch or PR replacement was created.
-* Review state: Livingston's independent review is still pending, so P07-T07 and P05 remain open.
+* Review state: Livingston's independent review is complete with verdict **Not accepted**. P07-T01 remains open for RV-008; P05 remains blocked.
+
+## P07 Livingston Fresh Independent Review
+
+* Reviewer and independence: Livingston, QA / Verification, did not author the Farnsworth revision and received no contribution from Bender, Hermes, Amy, Leela, Fry, or Farnsworth during review.
+* Exact boundary: comparison `2e87d9bf2596df491494a3160b127e79e8f0f301..601d36afc62d745c6a67d917b63bcd89e8c18737`, with source focus on Farnsworth commit `0f489b12ae93b8e5f479fb9278f369f99e89190f`.
+* Verdict: **Not accepted** with 0 Critical, 1 High, 0 Medium, and 0 Low current in-repository findings.
+* Resolved dispositions: RV-002 expired `enqueue_started` recovery is one-winner and stale-owner fenced; RV-004 migration is bounded/resumable and cleanup fails closed until reference completeness; RV-009 proof envelopes are rebound to current identity and exactly four complete consecutive cycles pass. RV-003 and RV-007 remain resolved.
+* Open disposition: RV-008 remains High. After a valid failed-terminal predecessor is authorized, a later attempt can terminate `provider_unknown`; reusing the older predecessor's still-valid evidence nevertheless creates a third authorization and a claim with `read_only=False`. This branches around the later unknown mutation and violates the no-blind-retry invariant.
+* Focused negative matrix: `22 passed, 35 deselected`; standalone branch-around-unknown probe printed `RV008_BYPASS ... read_only=False attempts=3`.
+* Validation: focused `102 passed`; locked `777 passed, 1 warning`; initial full run reproduced only the stale Compose image failure (`1 failed, 3106 passed, 2 skipped, 2 deselected, 1 warning`); rebuilt integration `1 passed`; final full `3107 passed, 2 skipped, 2 deselected, 1 warning`.
+* Other gates: Ruff, format, compile, diff safety, Bicep, CI-equivalent Checkov `34/0`, Dockerfile Checkov baseline, and container smoke passed. Exact Checkov retained the documented `36 passed, 7 failed` baseline. Review image `sha256:826e759f3685a781d185a334f86014b71238ab84fda4896776b5f396392622f6`; unconfigured worker exited `2`.
+* Secret/PII scan: no suspected secret, credential value, private key, signed URL, JWT, email address, or raw PII found in the changed executable diff.
+* Delivery posture: PR #684 remains open, draft, and blocked. P00-T01, P05, and P06 remain open; no related issue, PR, or review thread was resolved or closed.
 
 ## P07 Review-Follow-Up Opening
 

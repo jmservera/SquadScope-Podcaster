@@ -1,9 +1,10 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Farnsworth correction validated; Livingston review pending.** Fry's rejection of Leela's revision `02241a1` remains historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Livingston review complete; High RV-008 remains.** Fry's rejection of Leela's revision `02241a1` remains historical evidence. Livingston independently rejected final head `601d36a`. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Current corrected source commit: `0f489b12ae93b8e5f479fb9278f369f99e89190f`.
+Exact reviewed final head: `601d36afc62d745c6a67d917b63bcd89e8c18737`.
 
 ## Incident and acceptance truth
 
@@ -37,21 +38,21 @@ Completion of the declared implementation scope does not imply acceptance. Fry's
 
 ## Farnsworth correction after independent rejection
 
-Farnsworth is the sole author of the current correction. Livingston is reserved as the fresh independent reviewer. Bender, Hermes, Amy, Leela, and Fry did not contribute.
+Farnsworth is the sole author of the current correction. Livingston completed the fresh independent review without source/test contribution. Bender, Hermes, Amy, Leela, and Fry did not contribute.
 
 | Finding | State | Review result |
 |---|---|---|
 | RV-001 | Resolved | Read-only YouTube promotion takeover converges through authoritative readback without a duplicate mutation. |
-| RV-002 | Corrected; review pending | Expired `reserved`/`enqueue_started` leases become recoverable by one fenced owner; stale owners cannot release or complete the replacement. |
+| RV-002 | Resolved | Expired `reserved`/`enqueue_started` leases become recoverable by one fenced owner; stale owners cannot release or complete the replacement. |
 | RV-003 | Resolved | Emitted weekly rows, deployed rules, and active-depth absence semantics remain aligned. |
-| RV-004 | Corrected; review pending | A bounded resumable migration backfills legacy references, and cleanup refuses deletion until reference completeness is proven. |
+| RV-004 | Resolved | A bounded resumable migration backfills legacy references, and cleanup refuses deletion until reference completeness is proven. |
 | RV-005 | Resolved | Missing provider identity remains accurately fail-closed rather than inventing identity-bound readback. |
 | RV-006 | Planning-resolved | The closure inventory is present; P05 execution remains outstanding, and no issue or review thread is treated as resolved by this delivery. |
 | RV-007 | Resolved | Current tracking and PR narrative preserve Fry's rejection and identify Farnsworth/Livingston as the new author/reviewer pair. |
-| RV-008 | Corrected; review pending | Recovery authorization is structured and bound to exact identity, prior attempts, successor/provider identities, digests, and authoritative readback. |
-| RV-009 | Corrected; review pending | Every cycle recomputes proof from raw evidence and rejects label-only, tampered, mismatched, or unauthorized recovered envelopes. |
+| RV-008 | **High, open** | Structured evidence is exact for the selected predecessor, but authorization can branch around a later `provider_unknown` attempt and restore a mutation-capable claim. |
+| RV-009 | Resolved | Every cycle recomputes proof from raw evidence and rejects label-only, tampered, mismatched, or unauthorized recovered envelopes. |
 
-Fry's historical verdict remains **Not accepted**. The four corrected findings remain pending Livingston's independent final-SHA assessment.
+Livingston's final verdict is **Not accepted**: 0 Critical, 1 High, 0 Medium, 0 Low current in-repository findings. RV-008 must be corrected and independently revalidated before in-repository P07 acceptance.
 
 ## Independent validation evidence
 
@@ -66,11 +67,14 @@ The initial full run failed only against the stale Compose image; rebuilding tha
 
 ## Negative probes
 
-The focused suite now proves expired reservation recovery with one fenced winner, fail-closed cleanup until legacy reference migration completes, rejection of opaque or mismatched recovery authorization, rejection of label-only/tampered/mismatched proof envelopes, and acceptance of exact complete proof only.
+The focused suite proves expired reservation recovery with one fenced winner, fail-closed cleanup until legacy reference migration completes, rejection of opaque or mismatched selected-predecessor evidence, rejection of label-only/tampered/mismatched proof envelopes, and acceptance of exact complete proof only.
+
+Livingston's independent branch-order probe found the remaining defect: after a later attempt terminates `provider_unknown`, the system accepts a new authorization against an older `failed_terminal` predecessor and creates a succeeding claim with `read_only=False`. This bypasses the later unknown mutation and violates the no-blind-retry invariant.
 
 ## Residual external gates
 
 - **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
+- **RV-008 — Podcaster revision owner:** require recovery authorization to bind the complete current attempt history/latest eligible predecessor and reject any authorization when a later `provider_unknown`, ambiguous, conflicting, or otherwise unresolved attempt exists.
 - **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 
@@ -101,9 +105,10 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] W38 retained as evidence-conditional and W39 retained as `missed_not_dispatched`.
 - [x] Positive validation and independent negative probes recorded exactly.
 - [x] Existing PR retained OPEN, DRAFT, and BLOCKED.
-- [x] RV-002, RV-004, RV-008, and RV-009 corrected with focused negative probes.
+- [x] RV-002, RV-004, and RV-009 independently resolved.
 - [x] RV-003 and RV-007 preserved as resolved.
-- [ ] Livingston independently reviews the final pushed SHA.
+- [x] Livingston independently reviewed final pushed SHA `601d36a`.
+- [ ] RV-008 branch-around-unknown recovery defect corrected and independently revalidated.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
 - [ ] P05 deployment/canary gates completed.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.
