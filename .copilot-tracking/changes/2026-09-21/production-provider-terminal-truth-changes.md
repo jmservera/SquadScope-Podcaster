@@ -10,16 +10,28 @@
 
 ## Execution Status
 
-* Status: Frank RV-008 implementation and validation complete from review/tracking head `1b057c0`; commit/push and Rusty's fresh independent review remain
+* Status: Rusty's fresh independent review of exact head `1efa749` is complete and **Not accepted**; RV-008 remains High because latest-unknown failed readback is not bound to the unknown attempt's exact provider item
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
 * Sole current revision author: Frank
-* Independent reviewer: Rusty, reserved and non-contributing until final-SHA review
+* Independent reviewer: Rusty, completed without source/test contribution
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed markers for current revision: P07-T01 and P07-T06
-* Active marker: P07-T07
-* Remaining in-scope work: existing-branch commit/push, PR reconciliation, and Rusty's independent review
+* Completed markers for current revision: P07-T06 and P07-T07 review execution
+* Active marker: P07-T01 reopened
+* Remaining in-scope work: exact provider-item readback binding, revalidation, and a new fresh final-SHA review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: the clean local/remote branch started at `1b057c0ea9073fb195c56cc884625216e18e49a7`, which records Livingston's rejection of `601d36afc62d745c6a67d917b63bcd89e8c18737`. Frank's source and tests now bind authorization to the complete ordered history/latest relevant state and pass the complete validation contract. RV-008 remains pending independent disposition until Rusty reviews the exact pushed SHA. RV-002, RV-003, RV-004, RV-007, and RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+* Status basis: the clean local/remote/PR head was `1efa74956e23b51512b7eff1ded4e809b79566e1`; Frank's source commit is `502807d562996ecf6c8cd4213afd4cdf454aa5c3`, with only tracking narrative after it. Complete-history/latest-attempt checks pass, but Rusty reproduced authorization from failed readback of a different provider item than the latest unknown mutation. RV-008 remains High. RV-002, RV-003, RV-004, RV-007, and RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+
+## P07 Rusty Fresh Independent Review
+
+* Reviewer and independence: Rusty did not author Frank's revision and received no contribution from Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, or Frank during review.
+* Exact boundary: `1b057c0ea9073fb195c56cc884625216e18e49a7..1efa74956e23b51512b7eff1ded4e809b79566e1`, source focus `502807d562996ecf6c8cd4213afd4cdf454aa5c3`.
+* Verdict: **Not accepted** with 0 Critical, 1 High, 0 Medium, and 0 Low current in-repository findings.
+* Resolved dispositions: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-006 remains planning-resolved with P05 execution open.
+* Open disposition: RV-008 remains High. A latest unknown attempt expected `youtube-unknown`/`spotify-unknown`; failed readback for `youtube-DIFFERENT-ITEM`/`spotify-DIFFERENT-ITEM` nevertheless generated a fresh authorization and a third claim with `read_only=False`.
+* Validation: focused `107 passed`; locked `782 passed, 1 warning`; initial full reproduced only a stale Compose image (`1 failed, 3111 passed, 2 skipped, 2 deselected, 1 warning`); rebuilt fanout `1 passed`; final full `3112 passed, 2 skipped, 2 deselected, 1 warning`.
+* Other gates: Ruff, format, compile, diff safety, Bicep, CI-equivalent Checkov `34/0`, Dockerfile Checkov baseline, and container smoke passed. Exact Checkov retained `36 passed, 7 failed`. Review image `sha256:72257821fdc2c45de68d98857a35d8d2f72fced688c829d75dccfe651d38d37b`; unconfigured worker exited `2`.
+* Secret/PII scan: no suspected secret, credential value, private key, signed URL, JWT, email address, or raw PII was identified in the changed diff.
+* Delivery posture: PR #684 remains open, draft, and blocked. P07-T01, P00-T01, P05, and P06 remain open; no related issue, PR, or review thread was resolved or closed.
 
 ## P07 Frank Ordered-History Revision Opening
 

@@ -1,10 +1,11 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Frank's RV-008 correction is validated; Rusty review is required.** Fry's rejection of Leela's revision `02241a1` and Livingston's rejection of Farnsworth source candidate `601d36a` remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Rusty's independent review rejected Frank's exact head.** Fry's rejection of Leela's revision `02241a1` and Livingston's rejection of Farnsworth source candidate `601d36a` remain historical evidence. RV-008 remains High. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Current Frank source/tests/artifacts commit: `502807d562996ecf6c8cd4213afd4cdf454aa5c3`.
-Fresh independent reviewer: Rusty, pending exact pushed-SHA review.
+Exact reviewed head: `1efa74956e23b51512b7eff1ded4e809b79566e1`.
+Fresh independent reviewer: Rusty, verdict **Not accepted**.
 
 ## Incident and acceptance truth
 
@@ -49,10 +50,10 @@ Frank is the sole author of the current correction. Rusty is reserved for fresh 
 | RV-005 | Resolved | Missing provider identity remains accurately fail-closed rather than inventing identity-bound readback. |
 | RV-006 | Planning-resolved | The closure inventory is present; P05 execution remains outstanding, and no issue or review thread is treated as resolved by this delivery. |
 | RV-007 | Resolved | Current tracking and PR narrative preserve Fry's rejection and identify Farnsworth/Livingston as the new author/reviewer pair. |
-| RV-008 | **Corrected; Rusty review pending** | Authorization is bound to the complete ordered attempt history and latest relevant state. Later unknown/manual/conflicting/unresolved attempts dominate older failures; only exact authoritative failed-terminal readback of the latest attempt permits a newly bound safe continuation. |
+| RV-008 | **High, open** | Complete-history/latest-attempt checks pass, but failed-terminal readback of the latest unknown attempt is not bound to that attempt's exact provider item. Readback for a different item can authorize a mutation-capable continuation. |
 | RV-009 | Resolved | Every cycle recomputes proof from raw evidence and rejects label-only, tampered, mismatched, or unauthorized recovered envelopes. |
 
-Livingston's historical verdict remains **Not accepted**: 0 Critical, 1 High, 0 Medium, 0 Low at `601d36a`. Frank's correction is validated locally but cannot receive an accepted in-repository P07 disposition until Rusty independently reviews the exact pushed SHA.
+Rusty's current verdict is **Not accepted**: 0 Critical, 1 High, 0 Medium, 0 Low at `1efa749`. Livingston's earlier rejection at `601d36a` remains historical evidence.
 
 ## Independent validation evidence
 
@@ -64,18 +65,18 @@ Livingston's historical verdict remains **Not accepted**: 0 Critical, 1 High, 0 
 - Exact Checkov baseline: **36 passed, 7 failed**, matching the documented pre-existing baseline.
 - CI-equivalent Checkov gate: **34 passed, 0 failed**.
 
-The full suite passed directly, so no stale Compose image rebuild was needed. Container image `sha256:17b865ed4401a534367a8e15f45abf80ebbcc813342d0337b04ba4aef6d6c4b9` passed the standard non-root/dependency/import smoke, and the unconfigured distribution worker exited `2`. No validation or security gate was weakened.
+Rusty's initial full suite reproduced only a stale Compose recorder image; after rebuilding, the focused fanout test passed and the final full suite returned **3112 passed, 2 skipped, 2 deselected, 1 warning**. Review image `sha256:72257821fdc2c45de68d98857a35d8d2f72fced688c829d75dccfe651d38d37b` passed the standard non-root/dependency/import smoke, and the unconfigured distribution worker exited `2`. No validation or security gate was weakened.
 
 ## Negative probes
 
 The focused suite proves expired reservation recovery with one fenced winner, fail-closed cleanup until legacy reference migration completes, rejection of opaque or mismatched selected-predecessor evidence, rejection of label-only/tampered/mismatched proof envelopes, and acceptance of exact complete proof only.
 
-Frank's negative probes now prove that a later `provider_unknown` blocks reuse of the older failed predecessor, no third attempt is created, and reconciliation remains read-only. Exact authoritative failed-terminal readback is appended to the immutable latest unknown attempt; only then may a new authorization over the complete current ordered history create the specifically authorized continuation. Stale predecessor, omitted-history, and reordered-history evidence all fail closed.
+Frank's probes prove that a later `provider_unknown` blocks reuse of the older failed predecessor and that stale, omitted, and reordered history fail closed. Rusty's independent probe found the remaining gap: an unknown attempt expecting `youtube-unknown`/`spotify-unknown` accepted failed readback for `youtube-DIFFERENT-ITEM`/`spotify-DIFFERENT-ITEM`, appended a third attempt, and returned a mutation-capable claim. Latest-unknown readback must be bound to the exact provider item implicated by that attempt.
 
 ## Residual external gates
 
 - **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
-- **Rusty independent review:** review the exact pushed Frank revision and issue the fresh RV-008/P07 disposition without contributing to source or tests.
+- **RV-008 / P07-T01:** bind post-terminal readback of the latest unknown attempt to its exact persisted provider item/intent/receipt identity and obtain a new accepted final-SHA review.
 - **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 
@@ -109,8 +110,9 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] RV-002, RV-004, and RV-009 independently resolved.
 - [x] RV-003 and RV-007 preserved as resolved.
 - [x] Livingston's rejection of source candidate `601d36a` preserved.
-- [x] RV-008 branch-around-unknown recovery defect corrected and fully validated by Frank.
-- [ ] Rusty independently reviews the exact pushed Frank revision.
+- [x] RV-008 branch-around-older-unknown recovery defect corrected and validated by Frank.
+- [x] Rusty independently reviewed exact head `1efa749`; verdict Not accepted.
+- [ ] RV-008 exact latest-unknown provider-item readback binding corrected and accepted.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
 - [ ] P05 deployment/canary gates completed.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.

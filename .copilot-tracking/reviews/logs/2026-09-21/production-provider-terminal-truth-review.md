@@ -502,3 +502,137 @@ No test, assertion, validation gate, or security gate was weakened.
 | P06 | Production verification owner | Four consecutive future post-fix cycles with complete authoritative external proof |
 
 No issue, PR, review thread, deployment, canary, or production state was resolved, closed, or mutated by this review.
+
+---
+
+## Fresh Independent Frank-Revision Review — Rusty — 2026-09-22
+
+### Reviewer Identity, Independence, and Exact Boundary
+
+* Reviewer: **Rusty, Lead / Orchestration**.
+* Independence: Rusty did not author the revision. Frank was the sole current revision author. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, and Frank did not advise, pair, or contribute during this review.
+* Exact comparison: `1b057c0ea9073fb195c56cc884625216e18e49a7..1efa74956e23b51512b7eff1ded4e809b79566e1`.
+* Source focus: Frank commit `502807d562996ecf6c8cd4213afd4cdf454aa5c3`.
+* Opening repository state: clean worktree; local branch, remote branch, and PR head all at `1efa74956e23b51512b7eff1ded4e809b79566e1`; both comparison base and source commit are ancestors; remote divergence `0/0`.
+* Post-source scope: `502807d..1efa749` changes only the changes record and PR narrative; no source or test changed after Frank's source commit.
+* PR state at opening: #684 open, draft, merge state `CLEAN`, mergeable, 13 successful checks, no reviews, and no review threads.
+* Incident truth retained: W39 is `missed_not_dispatched`. W38 was published, but `published_verified_recovered` remains conditional on exact identity-bound authoritative provider readback and safe recovery authorization.
+
+### Rusty Final Verdict
+
+**Not accepted (`request_changes`).** Frank's revision resolves Livingston's branch-around-later-attempt defect, and RV-002, RV-003, RV-004, RV-007, and RV-009 remain resolved. RV-008 remains **High** because the latest-unknown readback is not bound to the provider item identity implicated by that unknown attempt. A failed readback for a different provider item authorizes a new mutation-capable attempt. Severity: 0 Critical, 1 High, 0 Medium, 0 Low.
+
+### Finding Dispositions
+
+<!-- rpi:review-rusty id=RV-001 -->
+#### RV-001 [High, remains resolved]: read-only YouTube promotion takeover convergence
+
+* Evidence: no source change reopens the previously verified authoritative-readback convergence path; focused and full regression suites pass.
+* Disposition: Remains resolved.
+
+<!-- rpi:review-rusty id=RV-002 -->
+#### RV-002 [High, remains resolved]: expired reconciliation reservations recover with one fenced owner
+
+* Evidence: owner regression coverage remains present and the locked suite passes.
+* Disposition: Remains resolved.
+
+<!-- rpi:review-rusty id=RV-003 -->
+#### RV-003 [High, remains resolved]: emitted and deployed alert contracts remain aligned
+
+* Evidence: no source change affects telemetry or Bicep alert semantics; telemetry/deployment regressions, Bicep build, and CI-equivalent Checkov pass.
+* Disposition: Remains resolved.
+
+<!-- rpi:review-rusty id=RV-004 -->
+#### RV-004 [High, remains resolved]: legacy reference migration and cleanup remain fail-closed and fenced
+
+* Evidence: no source change affects cleanup; locked and full regressions pass.
+* Disposition: Remains resolved.
+
+<!-- rpi:review-rusty id=RV-005 -->
+#### RV-005 [Medium, remains resolved]: missing provider identity remains fail-closed
+
+* Evidence: unknown provider identity remains non-green and reconciliation-only.
+* Disposition: Remains resolved.
+
+<!-- rpi:review-rusty id=RV-006 -->
+#### RV-006 [High, remains resolved at planning level]: closure inventory retained
+
+* Evidence: historical issue/thread inventory remains present; no issue or thread is represented as resolved by this review.
+* Disposition: Planning-level resolution remains; P05 execution is open.
+
+<!-- rpi:review-rusty id=RV-007 -->
+#### RV-007 [Medium, remains resolved]: rejection history and current ownership remain explicit
+
+* Evidence: Leela/Fry and Farnsworth/Livingston rejection history is preserved; this section appends Frank/Rusty evidence without rewriting prior cycles.
+* Disposition: Remains resolved by tracking-only reconciliation.
+
+<!-- rpi:review-rusty id=RV-008 -->
+#### RV-008 [High, open]: latest-unknown readback is not bound to the unknown attempt's provider item
+
+* Evidence: the latest attempt consumed mutation intents for `youtube-unknown` and `spotify-unknown`, then terminated `provider_unknown`. Read-only reconciliation recorded authoritative-looking `failed_terminal` readbacks for different item identities, `youtube-DIFFERENT-ITEM` and `spotify-DIFFERENT-ITEM`. `exact_recovery_authorization_evidence()` accepted those readbacks, `authorize_recovery()` appended a third attempt, and `claim()` returned `read_only=False`.
+* Root cause: `_recovery_predecessor_provider_evidence()` requires a non-empty provider item, native state, failed result, and source containing `readback`, but does not require the post-terminal readback item to equal the unknown attempt's persisted expected provider item, mutation receipt identity, or prior observed identity. `_validated_recovery_authorization_evidence()` then self-consistently validates the mismatched readback rather than rebinding it to the unknown mutation.
+* Impact: authoritative readback about an unrelated failed provider item can be used to declare the actual unknown mutation safe and restore mutation authority. This violates the exact readback-binding and no-new-mutation contract.
+* Required clearing evidence: bind each post-terminal failed readback to the latest unknown attempt's exact persisted provider identity/intent/receipt; reject missing, conflicting, duplicate, or different item identities; prove the mismatched-item reproduction cannot append or claim a succeeding attempt while exact matching readback still permits only the specifically authorized continuation.
+
+<!-- rpi:review-rusty id=RV-009 -->
+#### RV-009 [High, remains resolved]: four-cycle proof envelopes remain rebound and exact
+
+* Evidence: focused and full regressions pass; no source change affects the four-cycle evaluator.
+* Disposition: Remains resolved.
+
+### Independent Probes
+
+| Target | Probe | Result |
+|---|---|---|
+| RV-008 older authorization | Failed terminal, authorized successor becomes `provider_unknown`, reuse older predecessor | Passed: stale older predecessor is rejected and takeover remains read-only |
+| RV-008 latest exact readback owner test | Matching failed-terminal readback of latest unknown, fresh authorization, succeeding claim | Passed |
+| RV-008 stale/non-latest authorization | Select a non-latest predecessor | Passed: rejected |
+| RV-008 omitted/reordered history | Remove or reorder terminal attempt IDs | Passed: rejected |
+| RV-008 exact safe recovery | Failed predecessor plus exact authorized succeeding provider identities | Passed: immutable failed attempt retained and recovered state accepted |
+| RV-008 readback identity binding | Unknown intent for `*-unknown`, then failed readback for `*-DIFFERENT-ITEM` | **Failed safety:** `RV008_READBACK_BINDING_BYPASS read_only=False attempts=3` |
+| RV-002/RV-003/RV-004/RV-007/RV-009 regressions | Focused, locked, and full suites | Passed |
+
+The ordered list and latest-predecessor checks reject stale, omitted, and reordered histories. Atomic storage updates fence concurrent authorization writers. Attempt timestamps are descriptive rather than the ordering authority. Generated attempt IDs are unique in normal repository operations, but the safe readback decision still fails because it is not bound to the exact provider item of the latest unknown attempt.
+
+### Independent Full Validation
+
+| Command | Result |
+|---|---|
+| Required RV-008 focused selection | `15 passed, 47 deselected` |
+| Focused correction suite | `107 passed in 3.18s` |
+| Locked targeted contract | `782 passed, 1 warning in 56.02s` |
+| Initial full `pytest tests/ -q` | `1 failed, 3111 passed, 2 skipped, 2 deselected, 1 warning`; stale Compose recorder image only |
+| Compose rebuild plus focused fanout integration | `1 passed in 13.39s` |
+| Final full `pytest tests/ -q` | `3112 passed, 2 skipped, 2 deselected, 1 warning in 82.67s` |
+| Ruff, format, compile, and exact diff safety | Passed; `192 files already formatted` |
+| Bicep build | Passed with pre-existing BCP318 warning |
+| Exact Checkov | Documented baseline retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov | `34 passed, 0 failed` |
+| Dockerfile Checkov baseline | Passed |
+| Container build | `sha256:72257821fdc2c45de68d98857a35d8d2f72fced688c829d75dccfe651d38d37b` |
+| Container smoke | UID `999`; ffmpeg/ffprobe and pipeline imports passed; unconfigured distribution worker exited `2` |
+| Changed diff secret/PII scan | No suspected secret, credential value, private key, signed credential URL, JWT, email address, or raw PII identified |
+
+No test, assertion, validation gate, security gate, or baseline was weakened.
+
+### GitHub and External Relationships
+
+* #684: open, draft, merge state `CLEAN`, mergeable; 13 successful checks; no reviews or review threads. It remains draft/blocked and is not approved by this review.
+* jmservera/SquadScope-Podcaster#682: open, non-draft; not superseded, closed, merged, approved, or otherwise mutated by this review.
+* jmservera/SquadScope-Podcaster#671: open; Spotify/manual-handoff dependency remains.
+* jmservera/SquadScope-Podcaster#678: open; YouTube ambiguous-create identity reconciliation remains.
+* jmservera/SquadScope-Podcaster#679: open; Spotify exact reconciliation remains.
+* jmservera/SquadScope-Podcaster#681: open; atomic outbox worker remains the parent implementation relationship.
+* jmservera/SquadScope#770: merged; it does not clear the still-open P00-T01 evidence requirement recorded by this plan.
+* jmservera/SquadScope-Coordinator#17: open.
+
+### Blockers and Clearing Evidence
+
+| Blocker | Owner | Evidence required to clear |
+|---|---|---|
+| RV-008 / P07-T01 | Podcaster revision owner | Exact latest-unknown provider-item binding for post-terminal readback; mismatched-item rejection; exact-match safe continuation; focused and full validation |
+| P00-T01 | `jmservera/SquadScope` owner | Durable evidence that the W39 blocked dispatch stage and recurrence controls are implemented and verified |
+| P05 | Delivery/deployment owners | Accepted final-SHA review, approval/merge provenance, authorized deployment, provider canary, alert fire/clear, and rollback evidence |
+| P06 | Production verification owner | Four consecutive future post-fix cycles with complete authoritative external proof |
+
+No issue, PR, review thread, deployment, canary, or production state was resolved, closed, or mutated by this review.
