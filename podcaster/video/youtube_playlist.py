@@ -108,6 +108,8 @@ class PlaylistAddResult:
     skipped: bool = False
     playlist_item_id: str = ""
     error: str = ""
+    outcome: str = "failed"
+    retry_blocked: bool = False
 
 
 # --- API calls ---------------------------------------------------------------
@@ -177,10 +179,10 @@ def add_video_to_playlist(
 ) -> PlaylistAddResult:
     """Insert ``video_id`` into ``playlist_id`` via ``playlistItems.insert``.
 
-    Never raises on an HTTP/transport error — returns a failed
-    :class:`PlaylistAddResult` so a playlist failure cannot abort the rest of
-    distribution (the video itself is already uploaded). The token is only sent
-    in the ``Authorization`` header and never logged.
+    Never raises on an HTTP/transport error. A lost insert response is returned
+    as retry-blocked ``unknown`` because the provider may have committed the
+    mutation. The token is only sent in the ``Authorization`` header and never
+    logged.
     """
     if not playlist_id:
         raise ValueError("playlist_id is required")
@@ -219,7 +221,12 @@ def add_video_to_playlist(
     except Exception as exc:
         logger.warning("playlistItems.insert error for %s: %s", video_id, exc)
         return PlaylistAddResult(
-            video_id=video_id, playlist_id=playlist_id, succeeded=False, error=str(exc)
+            video_id=video_id,
+            playlist_id=playlist_id,
+            succeeded=False,
+            error=str(exc),
+            outcome="unknown",
+            retry_blocked=True,
         )
 
     if status in (200, 201):
@@ -235,6 +242,7 @@ def add_video_to_playlist(
             playlist_id=playlist_id,
             succeeded=True,
             playlist_item_id=item_id,
+            outcome="completed",
         )
     logger.warning(
         "playlistItems.insert failed for %s -> %s: HTTP %s",
@@ -276,9 +284,34 @@ def add_to_show_playlist(
             "No YouTube playlist configured for locale %s; skipping",
             _normalize_locale(locale),
         )
-        return PlaylistAddResult(video_id=video_id, playlist_id="", succeeded=True, skipped=True)
+        return PlaylistAddResult(
+            video_id=video_id,
+            playlist_id="",
+            succeeded=True,
+            skipped=True,
+            outcome="completed",
+        )
 
-    if playlist_contains_video(playlist_id, video_id, access_token, transport=transport):
+    try:
+        already_present = playlist_contains_video(
+            playlist_id,
+            video_id,
+            access_token,
+            transport=transport,
+            raise_on_error=True,
+        )
+    except RuntimeError as exc:
+        logger.warning("Playlist membership reconciliation failed for %s: %s", video_id, exc)
+        return PlaylistAddResult(
+            video_id=video_id,
+            playlist_id=playlist_id,
+            succeeded=False,
+            error=str(exc),
+            outcome="unknown",
+            retry_blocked=True,
+        )
+
+    if already_present:
         logger.info(
             "Video %s already in playlist %s; skipping (idempotent)",
             video_id,
@@ -289,6 +322,7 @@ def add_to_show_playlist(
             playlist_id=playlist_id,
             succeeded=True,
             skipped=True,
+            outcome="completed",
         )
 
     return add_video_to_playlist(

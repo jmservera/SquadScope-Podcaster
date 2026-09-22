@@ -812,7 +812,11 @@ def _resume_recorded_segment(
 
     if intermediates is None or not intermediates.enabled:
         return None
-    meta_text = intermediates.read_text(_recording_meta_name(index))
+    meta_text = intermediates.read_text(
+        _recording_meta_name(index),
+        budget=budget,
+        stage=VideoStage.FANIN,
+    )
     if not meta_text:
         return None
     try:
@@ -1260,6 +1264,7 @@ def _compose_screenshot_segment(
         output_path.unlink(missing_ok=True)
         raise RuntimeError(f"ffmpeg timed out composing screenshot segment: {exc}") from exc
     if result.returncode != 0:
+        output_path.unlink(missing_ok=True)
         raise RuntimeError(
             f"ffmpeg failed composing screenshot segment "
             f"(exit {result.returncode}): {result.stderr.strip()}"

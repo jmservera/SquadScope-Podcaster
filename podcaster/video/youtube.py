@@ -297,6 +297,16 @@ def upload_chunked(
             except Exception as exc:  # noqa: BLE001 - network error → resume
                 transient_retries += 1
                 if transient_retries > max_retries:
+                    if mutation_started:
+                        return YouTubeUploadResult(
+                            status="unknown",
+                            bytes_uploaded=start,
+                            error=f"network error after {max_retries} retries: {exc}",
+                            details={
+                                "retry_blocked": True,
+                                "code": "youtube_resumable_chunk_outcome_ambiguous",
+                            },
+                        )
                     return YouTubeUploadResult(
                         status="failed",
                         bytes_uploaded=start,
@@ -338,6 +348,16 @@ def upload_chunked(
             if status in _TRANSIENT_STATUSES:
                 transient_retries += 1
                 if transient_retries > max_retries:
+                    if mutation_started:
+                        return YouTubeUploadResult(
+                            status="unknown",
+                            bytes_uploaded=start,
+                            error=f"HTTP {status} after {max_retries} retries",
+                            details={
+                                "retry_blocked": True,
+                                "code": "youtube_resumable_chunk_outcome_ambiguous",
+                            },
+                        )
                     return YouTubeUploadResult(
                         status="failed",
                         bytes_uploaded=start,

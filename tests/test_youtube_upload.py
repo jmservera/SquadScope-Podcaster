@@ -314,6 +314,34 @@ def test_upload_chunked_non_retryable_fails(tmp_path):
     assert "403" in result.error
 
 
+@pytest.mark.parametrize("failure", [TimeoutError("response lost"), 503])
+def test_upload_chunked_exhausted_post_mutation_retry_is_unknown(tmp_path, failure):
+    class _Exhausted:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            if isinstance(failure, BaseException):
+                raise failure
+            return failure, {}, b""
+
+    path = _make_file(tmp_path, _GRANULE)
+    result = upload_chunked(
+        _Exhausted(),
+        "https://upload.example/session",
+        "tok",
+        path,
+        _GRANULE,
+        chunk_size=_GRANULE,
+        max_retries=0,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result.status == "unknown"
+    assert result.bytes_uploaded == 0
+    assert result.details == {
+        "retry_blocked": True,
+        "code": "youtube_resumable_chunk_outcome_ambiguous",
+    }
+
+
 def test_upload_chunked_blocks_retry_when_final_status_response_is_lost(tmp_path):
     total = _GRANULE
     path = _make_file(tmp_path, total)

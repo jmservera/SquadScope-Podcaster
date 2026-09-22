@@ -10,17 +10,50 @@
 
 ## Execution Status
 
-* Status: Complete — P07 review remediation implemented and locally QA-approved
+* Status: In progress — P08 focused PR gate remediation
 * Declared invocation scope: Full plan
 * Completed scope markers: P01-P07 and all tasks
-* All remaining active-plan markers: None
-* Status basis: The five correctness findings open at the start of this cycle are implemented and locally validated. Fry's local QA gate approved the repaired branch; hosted CI and operator acceptance have not been observed. Live PR thread state is queried after push rather than copied here as a count that can immediately drift.
+* All remaining active-plan markers: P08, P08-T01, P08-T02, P08-T03
+* Status basis: Head `6acad97` has one failing hosted test and six unresolved Copilot threads. The approved pass is limited to those gates and directly related regression coverage.
 
 ## Execution Summary
 
 The shared budget, recorder convergence, browser-free fallback, owned cancellation, validated resume, verified archive/readback, per-mutation provider admission, bounded shutdown/queue disposition, fail-closed audio publication gate, and P07 production/doc/infra corrections are complete. Production/W38/provider operations remain prohibited.
 
 ## Completed Work
+
+### P08 focused pass opening
+
+* Related phase or task: P08, P08-T01 through P08-T03.
+* Approved write boundary: Provider upload/playlist reconciliation, intermediate verification, section-card/video-generation budget and cleanup paths, the directly related recorder correction already present, focused tests, and canonical tracking.
+* First execution boundary: Implement and prove P08-T01 before completing P08-T02, then run focused/full validation and perform PR delivery operations under P08-T03.
+* Validation intent: Focused pytest for YouTube upload/playlist, intermediates, section cards, video generation, and recorder; touched-file Ruff first; then full `pytest tests/ -q`, repository Ruff checks, compile/diff checks, and hosted checks.
+* Current blockers: None.
+
+### Provider and storage outcomes fail closed
+
+* Related phase or task: P08-T01.
+* Files: `podcaster/video/youtube.py`, `youtube_playlist.py`, `distribution.py`, `intermediates.py`, and focused tests.
+* What changed and why: Exhausted resumable chunk retries after a mutation now return retry-blocked unknown; playlist membership errors suppress insert, lost insert responses return retry-blocked unknown and are retained in distribution evidence; storage size-verification timeouts reject and delete the unverified upload before any validation sidecar.
+* Completion evidence: Focused regressions prove transport and HTTP retry exhaustion, lookup failure without POST, insert-response ambiguity, persisted playlist unknown evidence, and no sidecar after size-probe timeout.
+* Validation: Focused combined suite passed, 490 tests with 2 deselected.
+
+### Stage budgets, ffmpeg selection, and artifact cleanup preserved
+
+* Related phase or task: P08-T02.
+* Files: `podcaster/video/section_cards.py`, `video_gen.py`, `recorder.py`, and focused tests.
+* What changed and why: Budgeted section-card rendering uses the drawtext-capable selector; recording metadata reads use the same FANIN budget/stage as validated media download; failed screenshot rendering removes partial output; the existing foreign-clipset correction preserves fallback time by retaining the typed setup error.
+* Completion evidence: Focused regressions cover selected ffmpeg path, metadata/download budget parity, non-zero ffmpeg cleanup, and the hosted recorder failure.
+* Validation: Focused combined suite passed, 490 tests with 2 deselected; touched-file Ruff lint/format passed after formatting.
+
+### P08 repository validation
+
+* Related phase or task: P08-T03.
+* Focused pytest: 490 passed, 2 deselected.
+* Focused Ruff: changed Python files passed lint and format checks.
+* Full pytest: 3247 passed, 2 skipped, 2 deselected; one existing HTTPX deprecation warning.
+* Repository checks: `ruff check podcaster tests`, `ruff format --check podcaster tests`, `python3 -m compileall -q podcaster tests`, and `git diff --check` passed.
+* Hosted failure root cause: The foreign-clipset mismatch was wrapped as the generic setup error, so fallback received zero rendering budget and terminalized as `recording_insufficient`. The typed `ForeignClipsetRecorderSetupError` preserves the intended 30-second fallback budget.
 
 ### Fail-closed audio staging
 

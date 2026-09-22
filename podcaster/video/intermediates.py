@@ -346,6 +346,13 @@ class IntermediateStore:
                 stage=stage,
                 timeout_seconds=timeout_seconds,
             )
+        except StorageOperationTimeout:
+            logger.warning(
+                "blob size probe timed out job_id=%s name=%s",
+                self._job_id,
+                name,
+            )
+            return False
         except Exception:
             logger.debug(
                 "blob size probe failed job_id=%s name=%s",

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from podcaster.video.budget import VideoStageBudget
 from podcaster.video.section_cards import (
     DEFAULT_ACCENT,
     KNOWN_SECTIONS,
@@ -294,6 +295,28 @@ class TestGenerateSectionCard:
         marker = _marker_from_name("blind spots")
         assert marker.name == "Blind Spots"
         assert marker.emoji == "🫣"
+
+    def test_budgeted_render_uses_drawtext_capable_ffmpeg(self, tmp_path, monkeypatch):
+        selected = "/opt/ffmpeg-drawtext"
+        monkeypatch.setattr(
+            "podcaster.video.section_cards._get_drawtext_ffmpeg",
+            lambda: selected,
+        )
+        commands: list[list[str]] = []
+
+        def runner(cmd):
+            commands.append(cmd)
+            Path(cmd[-1]).write_bytes(b"rendered")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        generate_section_card(
+            "Trends",
+            tmp_path / "card.mp4",
+            runner=runner,
+            budget=VideoStageBudget.start(),
+        )
+
+        assert commands[0][0] == selected
 
 
 # --- build_section_card_inserts ---

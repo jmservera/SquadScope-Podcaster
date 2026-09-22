@@ -18,7 +18,8 @@
 | P04 | Persist render boundary and bound distribution/shutdown | Complete | P04, P04-T01, P04-T02, P04-T03 |
 | P05 | Validate, review, follow up, and deliver | Complete | P05, P05-T01, P05-T02, P05-T03 |
 | P06 | Fail closed audio-only publication | Complete | P06, P06-T01, P06-T02 |
-| P07 | Remediate unresolved PR review findings | Active: P07-T01-P07-T04 ready | P07, P07-T01, P07-T02, P07-T03, P07-T04, P07-T05 |
+| P07 | Remediate unresolved PR review findings | Complete | P07, P07-T01, P07-T02, P07-T03, P07-T04, P07-T05 |
+| P08 | Complete focused PR gate remediation | Active: P08-T01-P08-T02 ready | P08, P08-T01, P08-T02, P08-T03 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish shared budget and evidence contracts
@@ -561,6 +562,67 @@ Apply the narrowest backward-compatible corrections, preserve completed P01-P06 
 #### Unresolved Items
 
 * None. The separate distribution worker remains `jmservera/SquadScope-Podcaster#681` and is not a P07 blocker.
+
+<!-- rpi:phase id=P08 -->
+## P08: Complete focused PR gate remediation
+
+### Context
+
+Hosted CI at head `6acad97` fails the foreign-clipset fallback test, and six Copilot review threads remain unresolved.
+
+### Intent
+
+Perform one narrow correction pass that preserves provider no-repeat, storage verification, stage-budget, ffmpeg selection, and artifact-cleanup semantics.
+
+### Boundaries
+
+* Included: `youtube.py`, `youtube_playlist.py`, `intermediates.py`, `section_cards.py`, `video_gen.py`, the directly related recorder correction already present in the worktree, focused tests, tracking, and PR operations.
+* Excluded: Issues `#681`, `#678`, `#679`, merge/auto-merge, deployment, and unrelated refactoring.
+
+### Validation Expectations
+
+* Focused regressions cover every applicable review behavior and the hosted recorder failure.
+* Repository-standard full pytest and Ruff checks pass before push.
+* Threads are resolved only after the corresponding focused proof passes.
+
+<!-- rpi:task id=P08-T01 -->
+### P08-T01: Fail closed on ambiguous provider and storage outcomes
+
+#### Dependencies
+
+* P07 complete.
+
+#### Completion Evidence
+
+* YouTube post-mutation retry exhaustion returns retry-blocked unknown.
+* Playlist lookup errors and ambiguous insert outcomes remain fail closed under regression tests.
+* Storage size-verification timeout raises and emits no validation sidecar.
+
+<!-- rpi:task id=P08-T02 -->
+### P08-T02: Preserve stage budgets and failed-render cleanup
+
+#### Dependencies
+
+* P07 complete.
+
+#### Completion Evidence
+
+* Direct section-card generation selects a drawtext-capable ffmpeg binary under a budget.
+* Both recording metadata sidecar reads receive FANIN budget/stage.
+* Non-zero screenshot ffmpeg results remove partial output.
+* Foreign clipset terminalization retains fallback-rendering budget and passes the hosted failing test.
+
+<!-- rpi:task id=P08-T03 -->
+### P08-T03: Validate, resolve proven threads, and deliver
+
+#### Dependencies
+
+* P08-T01 and P08-T02 complete.
+
+#### Completion Evidence
+
+* Focused/full validation, commit SHA, push result, resolved thread IDs, and remote check states are recorded.
+* PR remains open, operator-only, and unmerged.
 
 <!-- rpi:phase id=P04 -->
 ## P04: Persist render boundary and bound distribution/shutdown

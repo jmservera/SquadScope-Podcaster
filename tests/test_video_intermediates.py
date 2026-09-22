@@ -431,6 +431,34 @@ class TestValidatedCheckpoint:
         )
         assert replay.read_bytes() == source.read_bytes()
 
+    def test_size_verification_timeout_emits_no_validation_sidecar(self, backend, tmp_path):
+        calls = 0
+
+        def timeout_size_probe(call, timeout):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise StorageOperationTimeout("size verification timed out")
+            return call()
+
+        store = IntermediateStore(backend, "job-v", operation_runner=timeout_size_probe)
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"a" * 2048)
+        name = "normalized_000.mp4"
+
+        record = store.upload_validated(
+            name,
+            source,
+            artifact_kind="normalized_segment",
+            identity={"job_id": "job-v"},
+            budget=VideoStageBudget.start(),
+            probe=self._probe,
+        )
+
+        assert record is None
+        assert not backend.blob_exists(store.blob_path(name))
+        assert not backend.blob_exists(store.blob_path(store.validation_name(name)))
+
     @pytest.mark.parametrize(
         "sidecar",
         [

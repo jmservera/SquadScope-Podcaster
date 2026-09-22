@@ -11,6 +11,7 @@ from urllib.error import URLError
 
 import pytest
 
+from podcaster.publication_state import PUBLICATION_UNKNOWN
 from podcaster.storage import LocalStorageBackend
 from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import (
@@ -2170,6 +2171,55 @@ class TestPlaylistIntegration:
         # Playlist audit fields must be captured in the distribution result (#649)
         assert result.youtube_playlist_id == "PLes"
         assert result.youtube_playlist_succeeded is True
+
+    def test_playlist_ambiguous_outcome_is_persisted_retry_blocked(self, video_file, monkeypatch):
+        from podcaster.video.youtube_playlist import PlaylistAddResult
+
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: ("yt-vid-001", "https://youtube.com/watch?v=yt-vid-001"),
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token",
+            lambda cfg, http: "fake-access-token",
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution._add_to_show_playlist",
+            lambda *args, **kwargs: PlaylistAddResult(
+                video_id="yt-vid-001",
+                playlist_id="PLshow",
+                succeeded=False,
+                error="insert response lost",
+                outcome="unknown",
+                retry_blocked=True,
+            ),
+        )
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_client_id="id",
+            youtube_client_secret="sec",
+            youtube_refresh_token="ref",
+            youtube_playlist_id="PLshow",
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+        )
+
+        assert result.youtube_playlist_succeeded is False
+        assert result.provider_outcomes["youtube_playlist"] == PUBLICATION_UNKNOWN
+        assert result.provider_records["youtube_playlist"]["retry_blocked"] is True
+        assert (
+            result.provider_records["youtube_playlist"]["last_error_code"]
+            == "youtube_playlist_outcome_ambiguous"
+        )
 
     def test_playlist_skipped_on_dry_run(self, video_file, monkeypatch):
         """Playlist add is not called when dry_run=True."""

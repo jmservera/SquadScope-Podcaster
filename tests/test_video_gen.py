@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -16,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from podcaster.video.budget import VideoStageBudget
+from podcaster.video.budget import VideoStage, VideoStageBudget
 from podcaster.video.sync_plan import (
     EpisodePlan,
     RepoReference,
@@ -68,6 +69,7 @@ from podcaster.video.video_gen import (
     _render_fallback_page,
     _render_removed_card,
     _render_url_card,
+    _resume_recorded_segment,
     _scroll_github_readme,
     _scroll_positions,
     _smooth_scroll,
@@ -2329,6 +2331,21 @@ class TestComposeScreenshotSegment:
         assert out.exists()
         assert out.stat().st_size > 0
 
+    def test_failed_ffmpeg_removes_partial_screenshot_output(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+        cap.still(page)
+        out = tmp_path / "partial.mp4"
+
+        def failed_runner(cmd):
+            out.write_bytes(b"partial")
+            return subprocess.CompletedProcess(cmd, 1, "", "encode failed")
+
+        with pytest.raises(RuntimeError, match="ffmpeg failed"):
+            _compose_screenshot_segment(cap, 1.0, out, runner=failed_runner)
+
+        assert not out.exists()
+
 
 # --- Per-segment checkpoint/resume against blob (issue #410) ------------------
 
@@ -2342,6 +2359,38 @@ class TestRecordEpisodeCheckpointResume:
             root=tmp_path / "scratch", base_url="https://example.test/scratch"
         )
         return IntermediateStore(backend, "job-rec")
+
+    def test_budgeted_resume_applies_fanin_budget_to_metadata_and_media(self, tmp_path):
+        budget = VideoStageBudget.start()
+        segment = _make_segment(duration=2.0)
+        calls: list[tuple[str, dict]] = []
+
+        class Store:
+            enabled = True
+
+            def read_text(self, name, **kwargs):
+                calls.append(("read_text", kwargs))
+                return '{"suffix": ".mp4", "recovery_path": "direct"}'
+
+            def download_validated(self, name, dest, **kwargs):
+                calls.append(("download_validated", kwargs))
+                return None
+
+        assert (
+            _resume_recorded_segment(
+                0,
+                segment,
+                tmp_path,
+                Store(),
+                budget=budget,
+            )
+            is None
+        )
+        assert calls[0] == ("read_text", {"budget": budget, "stage": VideoStage.FANIN})
+        assert calls[1][0] == "download_validated"
+        assert calls[1][1]["budget"] is budget
+        assert calls[1][1]["stage"] is VideoStage.FANIN
+        assert calls[1][1]["artifact_kind"] == "recorded_segment"
 
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)

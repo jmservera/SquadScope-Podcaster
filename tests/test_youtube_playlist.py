@@ -184,6 +184,8 @@ class TestAddVideo:
         res = add_video_to_playlist("PL", "vid", "tok", transport=t)
         assert res.succeeded is False
         assert res.error
+        assert res.outcome == "unknown"
+        assert res.retry_blocked is True
 
     def test_blank_args_raise(self):
         with pytest.raises(ValueError):
@@ -247,6 +249,34 @@ class TestAddToShowPlaylist:
         assert res.succeeded is True
         assert res.skipped is False
         assert res.playlist_item_id == "item9"
+        assert len(t.calls) == 2
+
+    def test_membership_lookup_error_fails_closed_without_insert(self, monkeypatch):
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
+        t = _FakeTransport([(503, b"{}")])
+
+        res = add_to_show_playlist(None, "en", "vid", "tok", transport=t)
+
+        assert res.succeeded is False
+        assert res.outcome == "unknown"
+        assert res.retry_blocked is True
+        assert len(t.calls) == 1
+        assert t.calls[0]["method"] == "GET"
+
+    def test_lost_insert_response_is_retry_blocked_unknown(self, monkeypatch):
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
+        t = _FakeTransport(
+            [
+                (200, b'{"items": []}'),
+                (RuntimeError("insert response lost"), b""),
+            ]
+        )
+
+        res = add_to_show_playlist(None, "en", "vid", "tok", transport=t)
+
+        assert res.succeeded is False
+        assert res.outcome == "unknown"
+        assert res.retry_blocked is True
         assert len(t.calls) == 2
 
     def test_locale_routing(self, monkeypatch):

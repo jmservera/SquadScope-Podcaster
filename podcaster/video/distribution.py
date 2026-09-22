@@ -1276,11 +1276,10 @@ def _try_chunked_upload(
         return result.video_id, result.video_url
     if result.status == "unknown":
         code = str(result.details.get("code", "youtube_resumable_outcome_ambiguous"))
-        stage = (
-            "resumable_session_init"
-            if code == "youtube_resumable_init_ambiguous"
-            else "resumable_final_status"
-        )
+        stage = {
+            "youtube_resumable_init_ambiguous": "resumable_session_init",
+            "youtube_resumable_chunk_outcome_ambiguous": "resumable_chunk_upload",
+        }.get(code, "resumable_final_status")
         raise YouTubeDeliveryError(
             result.error or "YouTube resumable upload outcome is unknown",
             code=code,
@@ -1580,6 +1579,7 @@ def distribute_video(
             result.errors.append(str(exc))
             if exc.code in {
                 "youtube_resumable_init_ambiguous",
+                "youtube_resumable_chunk_outcome_ambiguous",
                 "youtube_resumable_final_status_ambiguous",
             }:
                 result.provider_outcomes["youtube"] = PUBLICATION_UNKNOWN
@@ -1649,6 +1649,22 @@ def distribute_video(
             )
             result.youtube_playlist_id = playlist_result.playlist_id
             result.youtube_playlist_succeeded = playlist_result.succeeded
+            if playlist_result.outcome == "unknown":
+                result.errors.append(f"YouTube playlist outcome unknown: {playlist_result.error}")
+                result.provider_outcomes["youtube_playlist"] = PUBLICATION_UNKNOWN
+                result.provider_records["youtube_playlist"] = {
+                    "provider": "youtube_playlist",
+                    "outcome": PUBLICATION_UNKNOWN,
+                    "status": "unknown",
+                    "provider_id": playlist_result.playlist_id,
+                    "native_state": None,
+                    "transport_status": "response_lost",
+                    "verification": "none",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "evidence_source": "playlist_reconciliation",
+                    "last_error_code": "youtube_playlist_outcome_ambiguous",
+                    "retry_blocked": playlist_result.retry_blocked,
+                }
         except ProviderMutationAdmissionError:
             raise
         except Exception as exc:

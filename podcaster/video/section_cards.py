@@ -515,9 +515,7 @@ def generate_section_card(
             0.0,
             reason=TimeoutReason.STAGE_DEADLINE,
         )
-    if ffmpeg_bin is None and budget is not None:
-        ffmpeg_bin = "ffmpeg"
-    elif ffmpeg_bin is None:
+    if ffmpeg_bin is None:
         ffmpeg_bin = _get_drawtext_ffmpeg() or "ffmpeg"
 
     cmd = _build_section_card_cmd(marker, output_path, config, ffmpeg_bin)

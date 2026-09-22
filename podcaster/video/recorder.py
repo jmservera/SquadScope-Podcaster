@@ -159,6 +159,10 @@ class PermanentRecorderSetupError(ValueError):
     """Malformed durable recorder state that cannot succeed on redelivery."""
 
 
+class ForeignClipsetRecorderSetupError(PermanentRecorderSetupError):
+    """The clipset stored for a recorder message belongs to another job."""
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -454,6 +458,8 @@ def load_clipset(scratch: StorageBackend, job_id: str) -> Clipset:
         raise FileNotFoundError(f"clipset.json is unavailable for job {job_id}")
     try:
         return Clipset.from_bytes(payload, expected_job_id=job_id)
+    except ClipsetJobMismatchError as exc:
+        raise ForeignClipsetRecorderSetupError("invalid recorder clipset") from exc
     except (KeyError, TypeError, UnicodeError, ValueError) as exc:
         raise PermanentRecorderSetupError("invalid recorder clipset") from exc
 
@@ -922,7 +928,7 @@ def process_clip_message(
             clip_index,
             scratch=scratch,
             reason=f"recording timing unavailable: {type(exc).__name__}",
-            timeout_seconds=30 if isinstance(exc.__cause__, ClipsetJobMismatchError) else 0,
+            timeout_seconds=30 if isinstance(exc, ForeignClipsetRecorderSetupError) else 0,
             renderer=fallback_renderer,
             terminal_utcnow=utcnow,
         )
