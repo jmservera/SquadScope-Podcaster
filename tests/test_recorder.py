@@ -753,6 +753,62 @@ def test_two_failed_dequeued_executions_terminalize_without_waiting_for_poison(t
     assert len([e for e in manifest["attempts"]["executions"] if e["status"] == "failed"]) == 2
 
 
+def test_cumulative_failures_survive_bounded_execution_log_rotation(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+
+    def _crash(_segment, _output_dir):
+        raise RuntimeError("browser crashed")
+
+    first = process_clip_message(
+        _message(1, dequeue_count=1),
+        scratch=scratch,
+        queue=queue,
+        record_segment=_crash,
+        fallback_renderer=_fallback,
+    )
+    assert first.status == OUTCOME_RETRY
+
+    now = datetime(2026, 9, 22, tzinfo=timezone.utc)
+    for index in range(8):
+        execution_key = f"completed-{index}"
+        recorder._begin_execution(
+            scratch,
+            JOB_ID,
+            1,
+            execution_key,
+            now_utc=now,
+        )
+        recorder._finish_execution(
+            scratch,
+            JOB_ID,
+            1,
+            execution_key,
+            status="succeeded",
+            reason=None,
+            now_utc=now,
+        )
+
+    rotated = recorder._load_attempts(scratch, JOB_ID, 1)
+    assert rotated["failure_count"] == 1
+    assert all(item["status"] == "succeeded" for item in rotated["executions"])
+
+    second_message = _message(1, dequeue_count=2)
+    second = process_clip_message(
+        second_message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=_crash,
+        fallback_renderer=_fallback,
+    )
+
+    assert second.status == OUTCOME_FALLBACK
+    assert queue.deleted == [second_message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["attempts"]["failure_count"] == 2
+
+
 def test_overlapping_delivery_does_not_displace_active_successful_recorder(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)

@@ -944,6 +944,10 @@ def _validate_rendered_pending_record(
     artifact = record.get("artifact")
     if not isinstance(artifact, dict) or not isinstance(artifact.get("validation"), dict):
         raise TransientVideoError(f"rendered pending artifact is missing for job_id={job_id}")
+    if artifact.get("blob_path") != video_artifact_path(job_id):
+        raise TransientVideoError(
+            f"rendered pending blob path is not canonical for job_id={job_id}"
+        )
     try:
         validation = MediaValidationRecord.from_dict(artifact["validation"])
         validation.require_identity(

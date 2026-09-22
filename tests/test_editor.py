@@ -271,6 +271,69 @@ def test_enqueue_missing_clips_is_additive():
     assert missing_indices(storage, clipset) == [0, 2]
 
 
+def test_enqueue_missing_clips_bounds_probe_and_blocked_send_with_shared_clock():
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(3))
+    producer = FakeProducer()
+    clock = {"t": 0.0}
+    timeouts: list[float] = []
+
+    def _remaining() -> float:
+        return max(0.0, 1.0 - clock["t"])
+
+    def _runner(call, timeout):
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            result = call()
+            clock["t"] += 0.6
+            return result
+        clock["t"] += timeout
+        raise StorageOperationTimeout("blocked queue send")
+
+    enqueued = enqueue_missing_clips(
+        storage,
+        clipset,
+        producer=producer,
+        admission_check=_remaining,
+        operation_runner=_runner,
+    )
+
+    assert enqueued == []
+    assert producer.sent == []
+    assert timeouts == pytest.approx([1.0, 0.4])
+    assert clock["t"] == pytest.approx(1.0)
+
+
+def test_enqueue_missing_clips_stops_before_probe_or_send_at_cutoff():
+    storage = FakeStorage()
+    clipset = plan_or_load_clipset(storage, "job1", _segments(3))
+    producer = FakeProducer()
+    clock = {"t": 0.0}
+    calls = {"count": 0}
+
+    def _remaining() -> float:
+        return max(0.0, 1.0 - clock["t"])
+
+    def _runner(call, _timeout):
+        calls["count"] += 1
+        result = call()
+        clock["t"] += 0.5
+        return result
+
+    enqueued = enqueue_missing_clips(
+        storage,
+        clipset,
+        producer=producer,
+        admission_check=_remaining,
+        operation_runner=_runner,
+    )
+
+    assert enqueued == [0]
+    assert len(producer.sent) == 1
+    assert calls["count"] == 2
+    assert clock["t"] == pytest.approx(1.0)
+
+
 # --- fan-in barrier -----------------------------------------------------------
 
 

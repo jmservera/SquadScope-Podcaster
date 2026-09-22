@@ -399,6 +399,35 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Expected result: Focused/full tests pass; final commit/push, thread resolution, and hosted checks are recorded.
 * Detail section: P11-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
+<!-- rpi:phase id=P12 -->
+### [ ] P12: Correct three independently rejected safety blockers
+
+* Intent: Bound fan-out probes and queue sends by the shared FANIN deadline, bind rendered-pending archives to the current job's canonical path, and preserve recorder failure counts across bounded diagnostic rotation.
+
+<!-- rpi:task id=P12-T01 -->
+#### [x] P12-T01: Enforce owned FANIN operations through cutoff
+
+* Expected result: Every missing-manifest probe and queue send receives the current remaining FANIN budget, blocked calls are bounded, and no later operation starts at or after cutoff.
+* Detail section: P12-T01 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P12-T02 -->
+#### [x] P12-T02: Reject cross-job rendered-pending archives
+
+* Expected result: A hash-valid current-job pending record whose artifact path is not `video_artifact_path(job_id)` fails transient validation before download or distribution.
+* Detail section: P12-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P12-T03 -->
+#### [x] P12-T03: Persist monotonic recorder failure count
+
+* Expected result: The two-failure terminal bound remains effective after older failed diagnostics rotate out of the bounded execution list.
+* Detail section: P12-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P12-T04 -->
+#### [ ] P12-T04: Deliver and close only the assigned review threads
+
+* Expected result: The correction is committed and pushed, only the three assigned threads are resolved after proof, hosted checks are re-queried, and unrelated Amy blockers remain untouched.
+* Detail section: P12-T04 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
 ## Dependencies
 
 * Baseline provider evidence and distribution state machine: must remain additive and fail closed.
@@ -426,5 +455,5 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 ## Handoff
 
 * Implementation artifact: .copilot-tracking/changes/2026-09-15/video-stage-budget-redesign-changes.md
-* Ready phase or task: None; P01-P11 implementation and local validation are complete.
-* Remaining provisional question or blocker: Hosted checks and thread resolution follow the final push.
+* Ready phase or task: P12-T04 delivery only; P12-T01 through P12-T03 implementation and local validation are complete.
+* Remaining provisional question or blocker: Push, exact assigned-thread resolution, hosted check state, and unrelated Amy blockers.

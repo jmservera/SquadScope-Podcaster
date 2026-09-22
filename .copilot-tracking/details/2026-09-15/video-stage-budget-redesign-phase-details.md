@@ -1013,3 +1013,41 @@ Leave exact follow-up, operational documentation, and GitHub delivery evidence.
 #### Unresolved Items
 
 * None.
+
+<!-- rpi:phase id=P12 -->
+## P12: Correct three independently rejected safety blockers
+
+### P12-T01: Enforce owned FANIN operations through cutoff
+
+#### Completion Evidence
+
+* `enqueue_missing_clips` checks remaining FANIN budget immediately before each manifest probe and each queue send, routes both through the owned operation runner, and stops after cutoff or timeout.
+* Fake-clock regressions prove a blocked send is bounded by the remaining time and that no subsequent probe or send starts at cutoff.
+
+### P12-T02: Reject cross-job rendered-pending archives
+
+#### Completion Evidence
+
+* `_validate_rendered_pending_record` requires the artifact path to equal `video_artifact_path(job_id)` before any archive download.
+* The regression stages a correctly record-hashed current-job pending state pointing to another job's valid archive and proves transient rejection with no download or distribution.
+
+### P12-T03: Persist monotonic recorder failure count
+
+#### Completion Evidence
+
+* Recorder attempt state now carries a cumulative `failure_count` independent of the bounded eight-entry diagnostic list while remaining compatible with legacy state that lacks the field.
+* The regression records one failure, rotates it out with eight successful executions, and proves the second failure immediately writes fallback with cumulative count two.
+
+### P12-T04: Deliver and close only the assigned review threads
+
+#### Validation Evidence
+
+* Focused regressions: 4 passed.
+* Touched suites: 259 passed.
+* Full repository: 3262 passed, 3 skipped, 2 deselected; one existing httpx deprecation warning.
+* `ruff check podcaster tests`: passed.
+* `ruff format --check podcaster tests`: 187 files already formatted.
+
+#### Unresolved Items
+
+* Commit/push, exact three-thread resolution, hosted check re-query, and factual PR evidence remain delivery actions.

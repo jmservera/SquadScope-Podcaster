@@ -231,6 +231,64 @@ def _pending_manifest(job_id: str, budget: VideoStageBudget) -> tuple[dict, str]
     return {"generation": {STATUS_RENDERED_PENDING_DISTRIBUTION: pending}}, script
 
 
+def test_rendered_pending_rejects_cross_job_archive_path_before_effects(
+    storage,
+    monkeypatch,
+):
+    job_id = "pending-current-job"
+    foreign_job_id = "pending-foreign-job"
+    budget = _P04Clock().budget()
+    script = "A script without repositories"
+    content = b"v" * 2048
+    plan = prepend_weekly_segment(
+        generate_generic_plan(300.0),
+        job_id,
+        use_live_source=True,
+    )
+    pending = _rendered_pending_payload(
+        job_id=job_id,
+        manifest={"generation": {}},
+        script=script,
+        plan=plan,
+        audio_path=None,
+        audio_duration=300.0,
+        archive_result=_p04_archive_result(
+            job_id,
+            elapsed=100,
+            pending_only=True,
+            content=content,
+        ),
+        run_id="test-run",
+        budget=budget,
+    )
+    foreign_path = video_artifact_path(foreign_job_id)
+    pending["artifact"]["blob_path"] = foreign_path
+    core = {key: value for key, value in pending.items() if key != "record_sha256"}
+    pending["record_sha256"] = _stable_sha256(core)
+    manifest = {"generation": {STATUS_RENDERED_PENDING_DISTRIBUTION: pending}}
+    storage.set_manifest(job_id, manifest)
+    storage.set_script(job_id, script)
+    storage.put_bytes(foreign_path, content, "video/mp4")
+    download = MagicMock(side_effect=AssertionError("pending archive download attempted"))
+    distribute = MagicMock(side_effect=AssertionError("distribution attempted"))
+    monkeypatch.setattr("podcaster.video.job_runner._download_rendered_pending", download)
+    monkeypatch.setattr("podcaster.video.job_runner.distribute_video", distribute)
+
+    with pytest.raises(TransientVideoError, match="blob path is not canonical"):
+        _resume_rendered_pending_distribution(
+            job_id,
+            manifest,
+            storage,
+            VideoDistributionConfig(blob_archive_enabled=True, dry_run=True),
+            budget,
+            media_probe=None,
+            storage_operation_runner=None,
+        )
+
+    download.assert_not_called()
+    distribute.assert_not_called()
+
+
 def test_pending_replay_after_preflight_cutoff_reuses_persisted_clipset(storage):
     job_id = "pending-removed-repo"
     script = "Ada: https://github.com/octo/removed"

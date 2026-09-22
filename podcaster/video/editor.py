@@ -275,6 +275,8 @@ def enqueue_missing_clips(
     clipset: Clipset,
     *,
     producer: QueueProducer | None = None,
+    admission_check: Callable[[], float] | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> list[int]:
     """Enqueue ``video-clip-jobs`` messages **additively** for pending indices.
 
@@ -282,16 +284,59 @@ def enqueue_missing_clips(
     idempotency (manifest sentinel + content-addressed paths) makes a duplicate
     in-flight recorder harmless (RFC §6.3).
     """
-    pending = missing_indices(scratch, clipset)
-    for index in pending:
-        enqueue_clip_job(clipset.job_id, index, producer=producer)
+    enqueued: list[int] = []
+    for index in clipset.indices():
+        path = clip_manifest_blob_path(clipset.job_id, index)
+        if admission_check is None:
+            exists = scratch.blob_exists(path)
+        else:
+            remaining = admission_check()
+            if remaining <= 0:
+                break
+            try:
+                exists = operation_runner(
+                    lambda path=path: scratch.blob_exists(path),
+                    remaining,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "fan-out manifest probe timed out job_id=%s clip_index=%d",
+                    clipset.job_id,
+                    index,
+                )
+                break
+        if exists:
+            continue
+        if admission_check is None:
+            enqueue_clip_job(clipset.job_id, index, producer=producer)
+        else:
+            remaining = admission_check()
+            if remaining <= 0:
+                break
+            try:
+                operation_runner(
+                    lambda index=index: enqueue_clip_job(
+                        clipset.job_id,
+                        index,
+                        producer=producer,
+                    ),
+                    remaining,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "fan-out queue send timed out job_id=%s clip_index=%d",
+                    clipset.job_id,
+                    index,
+                )
+                break
+        enqueued.append(index)
     logger.info(
         "fan-out job_id=%s enqueued=%d total=%d",
         clipset.job_id,
-        len(pending),
+        len(enqueued),
         clipset.count,
     )
-    return pending
+    return enqueued
 
 
 def wait_for_fanin(
@@ -633,7 +678,15 @@ def record_via_fanout(
     """
     clipset = plan_or_load_clipset(scratch, job_id, segments, budget=budget)
     if budget is None or budget.admit(VideoStage.FANIN).allowed:
-        enqueue_missing_clips(scratch, clipset, producer=producer)
+        enqueue_missing_clips(
+            scratch,
+            clipset,
+            producer=producer,
+            admission_check=(
+                None if budget is None else lambda: budget.remaining_seconds(VideoStage.FANIN)
+            ),
+            operation_runner=operation_runner,
+        )
     else:
         logger.warning("fan-out cutoff reached; no clip jobs enqueued job_id=%s", job_id)
 

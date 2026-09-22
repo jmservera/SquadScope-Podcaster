@@ -224,6 +224,7 @@ def _attempt_document(payload: bytes | None) -> dict[str, Any]:
     if not payload:
         return {
             "schema_version": ATTEMPT_STATE_SCHEMA_VERSION,
+            "failure_count": 0,
             "executions": [],
         }
     document = json.loads(payload.decode("utf-8"))
@@ -238,6 +239,17 @@ def _attempt_document(payload: bytes | None) -> dict[str, Any]:
         or any(not isinstance(execution, Mapping) for execution in document["executions"])
     ):
         raise ValueError("invalid recorder attempt history")
+    visible_failures = sum(
+        1 for execution in document["executions"] if execution.get("status") == "failed"
+    )
+    failure_count = document.get("failure_count", visible_failures)
+    if (
+        isinstance(failure_count, bool)
+        or not isinstance(failure_count, int)
+        or failure_count < visible_failures
+    ):
+        raise ValueError("invalid recorder attempt history")
+    document["failure_count"] = failure_count
     return document
 
 
@@ -272,7 +284,7 @@ def _begin_execution(
                     "status": "started",
                 }
             )
-        failed_count = sum(1 for execution in executions if execution.get("status") == "failed")
+        failed_count = document["failure_count"]
         document["executions"] = executions[-8:]
         return json.dumps(document, separators=(",", ":")).encode("utf-8")
 
@@ -304,11 +316,15 @@ def _finish_execution(
         if execution is None:
             execution = {"key": execution_key, "started_at_utc": _iso(now_utc)}
             executions.append(execution)
+        was_failed = execution.get("status") == "failed"
         execution["status"] = status
         execution["finished_at_utc"] = _iso(now_utc)
         if reason:
             execution["reason"] = str(reason)[:256]
-        failed_count = sum(1 for item in executions if item.get("status") == "failed")
+        failed_count = document["failure_count"]
+        if status == "failed" and not was_failed:
+            failed_count += 1
+        document["failure_count"] = failed_count
         document["executions"] = executions[-8:]
         return json.dumps(document, separators=(",", ":")).encode("utf-8")
 

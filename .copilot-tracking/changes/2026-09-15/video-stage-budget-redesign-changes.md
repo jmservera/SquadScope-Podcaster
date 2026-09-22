@@ -260,21 +260,27 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 | P07 full infra Checkov | `infra/` | Baseline findings | 36 passed, 7 pre-existing failures outside the changed module |
 | P07 deploy contract tests | `tests/test_deploy_workflow.py` | Passed locally | 33 passed |
 | P07 Zizmor workflow scan | `.github/workflows/` | Baseline findings | Completed with 98 findings (77 suppressed); no finding points to the added process-contract step |
+| P12 assigned regressions | FANIN probe/send ownership, pending archive path binding, cumulative recorder failures | Passed locally | 4 passed |
+| P12 touched suites | `tests/test_editor.py`, `tests/test_recorder.py`, `tests/test_video_job_runner.py` | Passed locally | 259 passed |
+| `pytest tests/ -q` after P12 | Full repository | Passed locally | 3262 passed, 3 skipped, 2 deselected; one existing httpx deprecation warning |
+| Full Ruff/format after P12 | `podcaster`, `tests` | Passed locally | All checks passed; 187 files already formatted |
 
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P01-P08 implementation complete.
-* Completed-work evidence and handoff prose: Current through pushed remediation commit `88ffd73`.
-* Validation, blockers, remaining work, and follow-up items: Current for the focused six-thread/CI correction cycle.
-* Review readiness: Local and hosted validation passed; zero unresolved threads remain.
+* Plan markers and phase details: P12-T01 through P12-T03 implementation and local validation are complete; P12-T04 delivery remains active.
+* Completed-work evidence and handoff prose: Current through the three independently assigned rejection fixes.
+* Validation, blockers, remaining work, and follow-up items: Current for the three-thread correction cycle.
+* Review readiness: Local validation passed; push, assigned-thread resolution, hosted checks, and unrelated Amy blockers remain.
 
 ## Blockers
 
-* None. The separate distribution worker remains a non-blocking follow-up in `jmservera/SquadScope-Podcaster#681`.
+* The three assigned reviewer blockers are corrected locally. Unrelated Amy blockers remain and are outside this revision's resolution scope.
+* The separate distribution worker remains a non-blocking follow-up in `jmservera/SquadScope-Podcaster#681`.
 
 ## Remaining Work
 
-* Operator review and merge decision only.
+* Commit and push the P12 correction.
+* Resolve only `PRRT_kwDOSzuis86kp4rE`, `PRRT_kwDOSzuis86kp4ro`, and `PRRT_kwDOSzuis86kp4so` after push, then re-query hosted checks and unresolved threads.
 * Do not merge or deploy as part of this remediation.
 
 ## Follow-Up Items
@@ -290,12 +296,12 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 
 ## Return-to-Caller State
 
-* Implementation execution status: Complete.
-* Declared scope and markers: Full plan; P01-P07 complete.
-* Validation coverage: P07 passed focused and expanded regressions, full pytest, touched-file Ruff and format, Bicep builds, and changed-module Checkov. Fry independently reran 522 targeted/integration tests. Full-infra Checkov retains seven unrelated baseline findings; hosted CI and operator acceptance have not been observed.
-* Blockers: None.
-* Current plan and detail updates: P07 review-remediation implementation and validation are complete.
-* Planning and critique state: P07 complete.
+* Implementation execution status: P12 implementation and local validation complete; delivery active.
+* Declared scope and markers: P12-T01 through P12-T03 complete; P12-T04 active.
+* Validation coverage: P12 focused regressions, 259 touched-suite tests, full repository pytest, and full Ruff/format checks passed.
+* Blockers: Unrelated Amy blockers remain outside this revision.
+* Current plan and detail updates: P12 implementation and local evidence are current.
+* Planning and critique state: Leela's three assigned rejection findings are corrected under Bender lockout.
 * Follow-up items: Distribution worker tracked in #681.
-* Review readiness or no-handoff reason: Implementation is validated; live PR thread resolution and post-push re-query are operational follow-through.
-* Continuation owner: Bender for thread replies/resolution; PR owner for merge decision.
+* Review readiness or no-handoff reason: The assigned revision is validated locally; commit/push, exact thread resolution, and hosted-state re-query remain.
+* Continuation owner: Hermes for P12-T04; PR owner retains merge decision.
