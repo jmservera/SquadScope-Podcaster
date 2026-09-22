@@ -1540,9 +1540,19 @@ class TestPlaylistIntegration:
         calls: list[dict] = []
         monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID_ES", "PLes")
 
-        def fake_add(config, locale, video_id, token, *, transport=None, position=None):
+        def fake_add(
+            config,
+            locale,
+            video_id,
+            token,
+            *,
+            transport=None,
+            position=None,
+            before_mutation=None,
+        ):
             calls.append({"locale": locale, "video_id": video_id})
             assert getattr(config, "youtube_playlist_id", "") == "PLes"
+            assert before_mutation is None
             from podcaster.video.youtube_playlist import PlaylistAddResult
 
             return PlaylistAddResult(video_id=video_id, playlist_id="PLes", succeeded=True)
@@ -1660,11 +1670,21 @@ class TestPlaylistIntegration:
             lambda config, transport: "playlist-token",
         )
 
-        def fake_add(config, locale, video_id, token, *, transport=None, position=None):
+        def fake_add(
+            config,
+            locale,
+            video_id,
+            token,
+            *,
+            transport=None,
+            position=None,
+            before_mutation=None,
+        ):
             from podcaster.video.youtube_playlist import PlaylistAddResult
 
             calls.append(video_id)
             assert token == "playlist-token"
+            assert before_mutation is None
             return PlaylistAddResult(
                 video_id=video_id,
                 playlist_id="PLshow",
@@ -1693,3 +1713,56 @@ class TestPlaylistIntegration:
         assert result.youtube_id == "yt-prior"
         assert result.youtube_playlist_id == "PLshow"
         assert result.youtube_playlist_succeeded is True
+
+    def test_playlist_insert_forwards_single_ownership_fence(self, video_file, monkeypatch):
+        events: list[str] = []
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token",
+            lambda config, transport: "playlist-token",
+        )
+
+        def fake_add(
+            config,
+            locale,
+            video_id,
+            token,
+            *,
+            transport=None,
+            position=None,
+            before_mutation=None,
+        ):
+            from podcaster.video.youtube_playlist import PlaylistAddResult
+
+            events.append("readback")
+            assert before_mutation is not None
+            before_mutation()
+            events.append("insert")
+            return PlaylistAddResult(
+                video_id=video_id,
+                playlist_id="PLshow",
+                succeeded=True,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution._add_to_show_playlist", fake_add)
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_playlist_id="PLshow",
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            published={"youtube": {"status": "published", "video_id": "yt-prior"}},
+            before_mutation=lambda provider, operation: events.append(
+                f"fence:{provider}:{operation}"
+            ),
+        )
+
+        assert result.youtube_playlist_succeeded is True
+        assert events == ["readback", "fence:youtube:playlist_insert", "insert"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from podcaster.distribution_outbox import (
@@ -742,4 +743,51 @@ def test_distribution_poison_exhaustion_is_durable_and_deleted(tmp_path, monkeyp
     assert final["providers"]["youtube"]["verification"]["exhaustion_reason"] == (
         "maximum_dequeue_count_exhausted"
     )
+    assert queue.deleted == [poison]
+
+
+def test_distribution_poison_exhaustion_reclaims_after_lease_loss(tmp_path, monkeypatch):
+    storage, document, message = _setup(tmp_path, {"youtube": "public"})
+    poison = QueueMessage(message.message_id, message.pop_receipt, message.body, 5)
+    clock = [datetime(2026, 9, 22, 17, 0, tzinfo=timezone.utc)]
+    repository_type = DistributionOutboxRepository
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.DistributionOutboxRepository",
+        lambda storage: repository_type(storage, now=lambda: clock[0]),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._get_youtube_access_token",
+        lambda config, transport: "token",
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._youtube_reconcile_create",
+        lambda *args, **kwargs: ("absent", None),
+    )
+
+    def fail_after_lease_loss(*args, **kwargs):
+        clock[0] += timedelta(seconds=901)
+        raise RuntimeError("provider failed")
+
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.upload_to_youtube",
+        fail_after_lease_loss,
+    )
+    queue = Queue()
+
+    final = process_message(
+        poison,
+        queue=queue,
+        storage=storage,
+        config=VideoDistributionConfig(youtube_enabled=True),
+    )
+
+    persisted = repository_type(storage).read(document["outbox_id"])
+    assert persisted is not None
+    assert final["providers"]["youtube"]["result"] == "poisoned"
+    assert final["providers"]["youtube"]["verification"]["fencing_token"] == 2
+    assert final["providers"]["youtube"]["verification"]["exhaustion_reason"] == (
+        "maximum_dequeue_count_exhausted"
+    )
+    assert final["attempt_count"] == 2
+    assert final["claim"] is None
     assert queue.deleted == [poison]

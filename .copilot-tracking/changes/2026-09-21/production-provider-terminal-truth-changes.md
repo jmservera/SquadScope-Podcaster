@@ -1207,3 +1207,75 @@ This historical return is not the current delivery state. The current revision h
 | Diff hygiene | exact diff from `19706f4` | Passed | `git diff --check`. |
 | Changed-line secret scan | non-tracking added lines | Passed | No suspected credentials or email addresses; two explicit `.example` `sig=ephemeral` negative-test fixtures were allowlisted. |
 | Delivery and hosted proof | branch/PR | Pending | Final remote equality, commit, normal push, and hosted draft/stack/check verification remain P08-T07. |
+
+## 2026-09-22 Hermes final blocking correction
+
+### Reconciliation opening state
+
+* Related phase or task: P09-T01 through P09-T03.
+* Approved base: exact remote head
+  `ddaada1e8ca9d9203cd258f314be52dfee721898`.
+* Active scope: final-attempt lease-loss terminalization and direct playlist
+  mutation fencing only.
+* Sole revision owner: Hermes. Bender, Leela, and Amy are locked out and did not
+  contribute, advise, pair, or co-author.
+* Approved write boundary: distribution worker, playlist helper/direct
+  distribution wiring, focused tests, and append-only current RPI evidence.
+* Retained behavior: provider terminal truth, approval, lifecycle, ownership,
+  immutable intent/receipt evidence, idempotent reconciliation/readback, and
+  protected-state fencing.
+* Planned validation: focused regressions; affected worker/video
+  ownership/job-runner/queue/provider suites; full pytest; Ruff check and
+  format; compileall; diff check; changed-line secret scan; exact remote gate;
+  normal push; and hosted draft/stack/check verification.
+* Current blockers: none.
+
+### Fresh fenced ownership for exhausted delivery
+
+* Related phase or task: P09-T01.
+* Files: `podcaster/distribution_worker.py`,
+  `tests/test_distribution_worker.py`.
+* What changed and why: the final-delivery exception path first attempts the
+  existing claim, but on `StaleClaimError` acquires a new repository claim and
+  fencing token before writing any provider terminal evidence. The stale claim
+  never mutates protected provider state. The fresh owner records sanitized
+  `poisoned` evidence for unresolved legs, preserves externally verified legs,
+  releases the claim, and allows the exhausted queue delivery to be deleted.
+* Completion evidence: a fake clock expires the original 900-second lease
+  during provider work. The regression proves the durable verification uses
+  fencing token `2`, attempt count is `2`, the claim is released, exhaustion
+  reason is `maximum_dequeue_count_exhausted`, and the message is deleted.
+* Validation: passed in the exact focused regression, `131` focused
+  worker/playlist tests, `611` affected ownership/provider tests, and the full
+  repository suite.
+
+### Playlist mutation fence after idempotent readback
+
+* Related phase or task: P09-T02.
+* Files: `podcaster/video/distribution.py`,
+  `podcaster/video/youtube_playlist.py`,
+  `tests/test_video_distribution.py`, `tests/test_youtube_playlist.py`.
+* What changed and why: direct distribution forwards the
+  `youtube/playlist_insert` ownership callback into the idempotent playlist
+  helper. The helper performs membership readback first and consumes the
+  callback exactly once immediately before an actual insert. Missing playlist
+  configuration or existing membership consumes no mutation callback.
+* Completion evidence: exact ordering is asserted as
+  `readback -> fence -> insert`; the existing-membership case is readback only;
+  direct distribution forwards exactly one `youtube/playlist_insert` fence.
+* Validation: passed in the exact focused regressions, `131` focused
+  worker/playlist tests, `611` affected ownership/provider tests, and the full
+  repository suite.
+
+## P09 Validation Record
+
+| Check | Scope | Status | Evidence or reason |
+|---|---|---|---|
+| Exact new regressions | stale final lease; callback/mutation order | Passed | `4 passed in 0.50s`. |
+| Focused worker/playlist suites | distribution worker, direct distribution, playlist helper | Passed | `131 passed in 0.90s`. |
+| Affected ownership/provider suites | outbox, telemetry, worker, distribution, ownership, video and synthesis job runners, queues, YouTube publish/upload/integration | Passed | `611 passed in 457.35s`. |
+| Full repository | `pytest tests/ -q` | Passed | `3319 passed, 2 skipped, 2 deselected, 1 warning in 545.10s`. |
+| Ruff check and format | `podcaster tests` | Passed | `All checks passed!`; `195 files already formatted`. |
+| Compileall and diff hygiene | `podcaster`; exact worktree diff | Passed | `python3 -m compileall -q podcaster`; `git diff --check`. |
+| Changed-line secret scan | all added lines from `ddaada1` | Passed | `342` added lines scanned; `0` suspected secrets. |
+| Delivery and hosted proof | branch/PR | Pending | Exact remote gate, commit, normal push, and hosted check completion remain P09-T03. |
