@@ -140,10 +140,15 @@ def test_initiate_resumable_session_returns_uri():
 
 
 @pytest.mark.parametrize("status", [200, 308])
-def test_initiate_resumable_session_is_ambiguous_without_location(status):
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"location": ""}, {"location": " \t "}],
+    ids=["missing", "empty", "whitespace"],
+)
+def test_initiate_resumable_session_blank_location_is_ambiguous(status, headers):
     class _NoLoc:
         def request_with_headers(self, *a, **k):
-            return status, {}, b""
+            return status, headers, b""
 
     with pytest.raises(
         YouTubeSessionInitiationUnknown,

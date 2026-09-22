@@ -2251,9 +2251,15 @@ class TestPlaylistIntegration:
         assert result.youtube_playlist_id == "PLes"
         assert result.youtube_playlist_succeeded is True
 
-    def test_playlist_ambiguous_outcome_is_persisted_retry_blocked(self, video_file, monkeypatch):
-        from podcaster.video.youtube_playlist import PlaylistAddResult
-
+    @pytest.mark.parametrize("status", [200, 201])
+    @pytest.mark.parametrize(
+        "body",
+        [b"{not-json", b"{}", b'{"id": "   "}'],
+        ids=["malformed-json", "missing-id", "blank-id"],
+    )
+    def test_playlist_ambiguous_outcome_is_persisted_and_blocks_redelivery(
+        self, video_file, monkeypatch, status, body
+    ):
         monkeypatch.setattr(
             "podcaster.video.distribution.upload_to_youtube",
             lambda *args, **kwargs: ("yt-vid-001", "https://youtube.com/watch?v=yt-vid-001"),
@@ -2262,16 +2268,11 @@ class TestPlaylistIntegration:
             "podcaster.video.distribution._get_youtube_access_token",
             lambda cfg, http: "fake-access-token",
         )
-        monkeypatch.setattr(
-            "podcaster.video.distribution._add_to_show_playlist",
-            lambda *args, **kwargs: PlaylistAddResult(
-                video_id="yt-vid-001",
-                playlist_id="PLshow",
-                succeeded=False,
-                error="insert response lost",
-                outcome="unknown",
-                retry_blocked=True,
-            ),
+        transport = FakeTransport(
+            responses=[
+                (200, b'{"items": []}'),
+                (status, body),
+            ]
         )
         config = VideoDistributionConfig(
             youtube_enabled=True,
@@ -2282,6 +2283,7 @@ class TestPlaylistIntegration:
             blob_archive_enabled=False,
             dry_run=False,
         )
+        snapshots: list[tuple[str, dict]] = []
 
         result = distribute_video(
             video_file,
@@ -2290,6 +2292,9 @@ class TestPlaylistIntegration:
             "desc",
             120.0,
             config,
+            transport=transport,
+            on_published=lambda platform, record: snapshots.append((platform, record)),
+            publish_run_id="playlist-ambiguous",
         )
 
         assert result.youtube_playlist_succeeded is False
@@ -2299,6 +2304,35 @@ class TestPlaylistIntegration:
             result.provider_records["youtube_playlist"]["last_error_code"]
             == "youtube_playlist_outcome_ambiguous"
         )
+        playlist_snapshot = next(
+            record for platform, record in snapshots if platform == "youtube_playlist"
+        )
+        youtube_snapshot = next(record for platform, record in snapshots if platform == "youtube")
+        assert playlist_snapshot["outcome"] == PUBLICATION_UNKNOWN
+        assert playlist_snapshot["retry_blocked"] is True
+        assert playlist_snapshot["provider_id"] == "PLshow"
+        assert [request["method"] for request in transport.requests].count("POST") == 1
+
+        redelivery = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            transport=transport,
+            published={
+                "youtube": youtube_snapshot,
+                "youtube_playlist": playlist_snapshot,
+            },
+            publish_run_id="playlist-ambiguous",
+        )
+
+        assert [request["method"] for request in transport.requests].count("POST") == 1
+        assert redelivery.provider_outcomes["youtube_playlist"] == PUBLICATION_UNKNOWN
+        assert redelivery.provider_records["youtube_playlist"]["retry_blocked"] is True
+        assert redelivery.youtube_playlist_id == "PLshow"
+        assert redelivery.youtube_playlist_succeeded is False
 
     def test_playlist_skipped_on_dry_run(self, video_file, monkeypatch):
         """Playlist add is not called when dry_run=True."""

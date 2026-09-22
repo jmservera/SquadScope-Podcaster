@@ -1628,13 +1628,20 @@ def distribute_video(
                     retryable=False,
                 )
 
-    # Reconcile playlist membership independently from upload state. The playlist
-    # API is idempotent, so a retry can repair an upload that was persisted before
-    # its playlist insertion completed.
+    # Reconcile playlist membership independently from upload state. A confirmed
+    # prior upload can repair playlist membership, but an ambiguous insert is
+    # durably retry-blocked because repeating it could create a duplicate item.
+    playlist_record = prior_published.get("youtube_playlist")
+    playlist_retry_blocked = (
+        isinstance(playlist_record, Mapping)
+        and playlist_record.get("outcome") == PUBLICATION_UNKNOWN
+        and bool(playlist_record.get("retry_blocked"))
+    )
     if (
         result.youtube_id is not None
         and not config.dry_run
         and _resolve_playlist_id(config, locale)
+        and not playlist_retry_blocked
     ):
         try:
             playlist_http = provider_transport or _DefaultTransport()
@@ -1667,10 +1674,38 @@ def distribute_video(
                     "last_error_code": "youtube_playlist_outcome_ambiguous",
                     "retry_blocked": playlist_result.retry_blocked,
                 }
+                if on_published is not None:
+                    on_published(
+                        "youtube_playlist",
+                        {
+                            **result.provider_records["youtube_playlist"],
+                            "status": "published",
+                            "provider_status": "unknown",
+                            "publish_run_id": publish_run_id,
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
         except ProviderMutationAdmissionError:
             raise
         except Exception as exc:
             logger.warning("Playlist add skipped for %s: %s", result.youtube_id, exc)
+    elif playlist_retry_blocked:
+        result.youtube_playlist_id = str(
+            playlist_record.get("provider_id")
+            or playlist_record.get("playlist_id")
+            or _resolve_playlist_id(config, locale)
+        )
+        result.youtube_playlist_succeeded = False
+        result.provider_outcomes["youtube_playlist"] = PUBLICATION_UNKNOWN
+        result.provider_records["youtube_playlist"] = _record_from_snapshot(
+            playlist_record,
+            provider="youtube_playlist",
+            provider_id_field="playlist_id",
+        )
+        logger.info(
+            "YouTube playlist mutation skipped for job_id=%s: prior outcome is retry-blocked",
+            job_id,
+        )
 
     if config.youtube_required and result.youtube_id is None:
         result.youtube_required_failed = True
