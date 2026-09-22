@@ -423,11 +423,11 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Detail section: P04-T03 in phase details.
 
 <!-- rpi:phase id=P07 -->
-### [ ] P07: Review-follow-up closure for terminal truth
+### [x] P07: Review-follow-up closure for terminal truth
 
 * Intent: Resolve only RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009 with fail-closed implementation, deterministic negative probes, truthful delivery evidence, and fresh independent review.
 * Dependencies: canonical review complete; historical P01–P04 implementation available as the correction baseline.
-* Ownership: Fry alone authored the correction from review head `d7eb7ba`; Leela is reserved for independent review and may not contribute. Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, and Frank are locked out for this cycle. Every prior cycle remains immutable historical evidence.
+* Ownership: Leela alone authored the current correction from review head `c596694`; Basher independently reviewed exact head `905a890` without contributing. Every prior author/reviewer cycle remains immutable historical evidence.
 
 <!-- rpi:task id=P07-T01 -->
 #### [x] P07-T01: Enforce exact proof and durable recovery authorization
@@ -478,12 +478,12 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: exact commands, counts, exit statuses, SHA/image digest where applicable, and any generated-artifact cleanup are recorded in the implementation delivery update.
 
 <!-- rpi:task id=P07-T07 -->
-#### [ ] P07-T07: Reconcile delivery evidence and obtain a fresh independent review
+#### [x] P07-T07: Reconcile delivery evidence and obtain a fresh independent review
 
 * Finding: RV-007 and cross-finding closure.
 * Dependencies: P07-T06.
-* Expected result: plan/details remain current; delivery records Fry's revision SHA, exact counts, validation commands, and residual gates without rewriting any historical rejection cycle.
-* Closure evidence: Leela's rejection is recorded against exact head `273f94e0d1fa773e108661f908aca6f34be132c4`; after the set-type correction, the existing branch remains open/draft/blocked and a new eligible reviewer independently assesses the corrected final validated head. This acceptance marker remains open. All prior rejection cycles remain immutable historical evidence.
+* Expected result: plan/details remain current; delivery records Leela's correction SHA, exact counts, validation commands, and residual gates without rewriting any historical rejection cycle.
+* Closure evidence: Leela's historical rejection remains recorded against exact head `273f94e0d1fa773e108661f908aca6f34be132c4`; Basher independently accepted corrected exact head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` with no blocking findings. The existing branch remains open/draft/blocked by P00-T01, P05, P06, and operator-only #682. All prior rejection cycles remain immutable historical evidence.
 
 <!-- rpi:phase id=P05 -->
 ### [ ] P05: Deliver reviewed, reversible implementation
