@@ -5,6 +5,9 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Review date: 2026-09-21
+* Final-revision review date: 2026-09-22
+* Final revision reviewed: `02241a1707c8a5d2a17120185e988634de188d21`
+* Final-revision reviewer: Fry (QA / Tester), independent of sole revision author Leela; Bender, Hermes, and Amy did not participate
 * Review scope: One independent full-task review of Amy's current revision, including committed and uncommitted worktree state
 * Assessed boundary: Immutable attempt truth; deterministic weekly aggregation; exact provider proof; controlled recovery; unknown-mutation safety; RV-002 scheduler fairness/deduplication; RV-003 alert deployment; RV-004 cleanup; RV-007 terminology/tracking consistency; W38/W39 fixtures; four-cycle evaluation; validation; and residual P00-T01/P05/P06 work
 * Plan: `.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md`
@@ -280,3 +283,116 @@ Before `.copilot-tracking/pr/pr.md` is used:
 ## Next Steps
 
 Route RV-002, RV-003, RV-004, RV-008, and RV-009 to `/rpi-implement`; route RV-007 tracking reconciliation to `/rpi-plan` after those corrections. Separately clear P00-T01 in `jmservera/SquadScope` and retain P05/P06 as external residual work. Do not run another review.
+
+---
+
+## Fresh Independent Final-Revision Review — 2026-09-22
+
+### Identity, Boundary, and Repository State
+
+* Reviewer: **Fry, QA / Tester**.
+* Independence: Fry did not author revision `02241a1`; Leela was the sole revision author. Bender, Hermes, Amy, and Leela did not advise, pair, or contribute to this review.
+* Review boundary: exact committed delta `5cd84c4c29f7f597f0a5b03a2c23e5b79b5ed7f7..02241a1707c8a5d2a17120185e988634de188d21`.
+* Ancestry: both `5cd84c4` and implementation commit `dd7b265` are ancestors of `02241a1`.
+* Opening state: clean worktree; local branch and `origin/squad/incident-provider-terminal-truth` both at `02241a1`.
+* PR state inspected: `jmservera/SquadScope-Podcaster#684` open, draft, mergeable, no reviews, no review threads, and checks still running at review start.
+* Scope truth retained: W39 is `missed_not_dispatched`; W38 was published, but recovered-green requires exact identity-bound authoritative provider readback and durable recovery authorization.
+
+### Final Verdict
+
+**Not accepted (`request_changes`).** RV-003 is resolved and RV-007 is reconciled by this review-only update. RV-002, RV-004, RV-008, and RV-009 remain implementation findings. RV-002, RV-008, and RV-009 remain High; RV-004 is escalated from Medium to High because the new reference index can delete an artifact still referenced by a pre-index outbox record. PR #684 must remain draft and blocked.
+
+### Final Finding Dispositions
+
+<!-- rpi:review-final id=RV-002 -->
+#### RV-002 [High, remains open]: an expired `enqueue_started` reservation is permanently hidden from scheduler recovery
+
+* Evidence: `due_reconciliations_page()` treats every `notification_reservation.stage == "enqueue_started"` as fresh without considering `lease_expires_at`. The independent fake-clock probe advanced beyond the lease and still returned no due reconciliation.
+* Impact: a crash or ambiguous exception after `begin_reconciliation_enqueue()` but before completion can strand the reconciliation token indefinitely. Concurrent initial reservation is single-winner, but the required bounded abandoned-reservation recovery is not satisfied.
+
+<!-- rpi:review-final id=RV-003 -->
+#### RV-003 [High, resolved]: emitted weekly events and deployed alert queries now agree
+
+* Evidence: representative identity-conflict and weekly-non-green rows emitted `distribution_provider_state`; both Bicep rules query that event; the stale `distribution_weekly_state` literal is absent. The active-depth rule now requires active depth and zero provider-state rows in the same window.
+* Disposition: Resolved in `02241a1`; retain executable row/query and fire/clear regression coverage.
+
+<!-- rpi:review-final id=RV-004 -->
+#### RV-004 [High, remains open; escalated]: cleanup can delete artifacts referenced by pre-index outbox records
+
+* Evidence: cleanup now trusts only `distribution-artifact-references/<digest>.json`. There is no migration or fallback that registers artifacts already referenced by outbox records created before this index existed. The independent probe retained an outbox record, removed only its reference-index document to model the deployed pre-index state, aged the metadata, and cleanup reported `removed=1` with `artifact_exists=False`.
+* Impact: rollout against existing durable records can delete a live referenced artifact. Per-run budgets and the new-reference CAS fence work for records created under the new schema, but backward-compatible reference safety is not satisfied.
+
+<!-- rpi:review-final id=RV-007 -->
+#### RV-007 [Medium, resolved by review reconciliation]: canonical review state and counts are current
+
+* Evidence: this artifact, plan, phase details, changes record, and PR #684 now report the same final-SHA verdict, dispositions, `83` focused tests, final `3088 passed, 2 skipped, 2 deselected, 1 warning`, and retained P00-T01/P05/P06 blockers.
+* Disposition: Resolved as a tracking-only review update; no source or test was altered.
+
+<!-- rpi:review-final id=RV-008 -->
+#### RV-008 [High, remains open]: recovery classification still accepts label-only/opaque authorization evidence
+
+* Evidence: exact `record_verification()` proof now fails closed, and unknown/ambiguous predecessor evidence is rejected. However, public `weekly_state_from_attempts()` still returns `published_verified_recovered` from only `terminal_outcome="published_verified"`, `proof_complete=True`, and an arbitrary non-empty `recovery_evidence_reference`. `authorize_recovery()` likewise validates an opaque token and a source enum rather than a durable evidence object bound to the predecessor/provider identity.
+* Impact: W38-style data can still become recovered green without the exact provider identity/readback and authorization proof required by the authoritative gate.
+
+<!-- rpi:review-final id=RV-009 -->
+#### RV-009 [High, remains open]: four-cycle evaluation trusts persisted proof booleans after identity mutation
+
+* Evidence: four label-only rows are now correctly rejected. However, `_authoritative_green_document()` trusts stored proof booleans and does not rebind them to raw proof values. Four complete synthetic envelopes passed; changing one cycle's `accepted_job_id` after proof creation still returned `True`.
+* Impact: contradictory or corrupted persisted identity/proof envelopes can satisfy the four-cycle gate. The evaluator does not independently establish exact identity-bound external proof for each cycle.
+
+### Independent Negative Probes
+
+| Finding | Probe | Result |
+|---|---|---|
+| RV-002 | Two-thread reservation barrier from the owner suite | Passed: one reservation winner and one stale loser |
+| RV-002 | Begin enqueue, advance fake clock beyond lease, query due work | **Failed closed-loop recovery:** returned `[]`; token remained stranded |
+| RV-003 | Emit identity-conflict rows and compare event/metric to Bicep; check stale event absence and active-depth absence query | Passed |
+| RV-004 | Bounded/page/restart/concurrent-new-reference owner tests | Passed for new-schema records |
+| RV-004 | Model a retained pre-index outbox by removing only its reference-index row, age metadata, run cleanup | **Failed:** `removed=1`, referenced artifact deleted |
+| RV-007 | Compare plan/details/changes/review/PR statuses and current command counts | Initially stale; reconciled in this review-only update |
+| RV-008 | Parameterized missing/contradictory exact-verification owner tests | Passed: `identity_conflict` |
+| RV-008 | Two attempts with only labels, `proof_complete=True`, and opaque evidence token | **Failed:** returned `published_verified_recovered` |
+| RV-009 | Four label-only weekly rows | Passed: rejected |
+| RV-009 | Four complete envelopes, then mutate one `accepted_job_id` without recomputing proof | **Failed:** still accepted |
+
+### Independent Validation
+
+| Command | Result |
+|---|---|
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py tests/test_distribution_worker.py tests/test_distribution_telemetry.py tests/test_deploy_workflow.py -q` | `83 passed in 2.15s` |
+| Initial `TMPDIR="$PWD/.test-tmp" pytest tests/ -q` | `1 failed, 3087 passed, 2 skipped, 2 deselected, 1 warning`; stale Compose recorder image reproduced |
+| `docker compose -f docker-compose.fanout.yml build --quiet` then focused fanout test | `1 passed in 14.74s` |
+| Final `TMPDIR="$PWD/.test-tmp" pytest tests/ -q` | `3088 passed, 2 skipped, 2 deselected, 1 warning in 82.22s` |
+| `ruff check podcaster tests` | Passed |
+| `ruff format --check podcaster tests` | Passed; `192 files already formatted` |
+| `python3 -m compileall -q podcaster` | Passed |
+| `git diff --check 5cd84c4..02241a1` | Passed |
+| `az bicep build --file infra/main.bicep --stdout >/dev/null` | Passed with pre-existing BCP318 warning |
+| `checkov --directory infra --framework bicep --quiet` | Baseline reproduced: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov skip-list command | `34 passed, 0 failed` |
+| `docker build -f Containerfile -t podcaster-synthesis:fry-review . --quiet` | Passed; image ID `sha256:d35b69747463d706227b30dedeaf1ecc22bac8248c6fb45a30f45d7de2ee6291` |
+| Container smoke | Passed: ffmpeg/ffprobe present, UID `999`, pipeline imports pass, unconfigured worker exits `2` |
+| Changed-diff credential/secret pattern scan | No suspected secret, credential value, private key, signed URL, or raw PII found; matches were documentation/identifier terms and image hashes |
+
+### GitHub and External Relationships
+
+* `jmservera/SquadScope-Podcaster#684`: open and draft; no review threads; keep draft/blocked because High implementation findings and external gates remain.
+* `jmservera/SquadScope-Podcaster#682`: open and non-draft; not superseded, closed, merged, or approved by this review. Its separate review history remains intact.
+* `jmservera/SquadScope-Podcaster#671`: open; Spotify/manual-handoff provider dependency remains.
+* `jmservera/SquadScope-Podcaster#678`: open; YouTube ambiguous-create identity reconciliation relationship remains.
+* `jmservera/SquadScope-Podcaster#679`: open; Spotify exact reconciliation relationship remains.
+* `jmservera/SquadScope-Podcaster#681`: open; atomic outbox work item remains the parent implementation relationship.
+
+### Blockers and Clearing Evidence
+
+| Blocker | Owner | Evidence required to clear |
+|---|---|---|
+| RV-002 | Podcaster revision owner | Expired/abandoned `enqueue_started` recovery that preserves single-winner semantics, with crash-before-send, ambiguous-send, stale-fence, and restart probes |
+| RV-004 | Podcaster revision owner | Safe migration/backfill or fallback proof for every pre-index retained outbox artifact, plus rollout regression proving no referenced deletion |
+| RV-008 | Podcaster revision owner | Recovery authorization bound to durable, validated predecessor/provider safety evidence; label-only helper path removed or made exact-proof aware |
+| RV-009 | Podcaster revision owner | Four-cycle revalidation against immutable raw proof values/references so post-proof identity contradiction fails |
+| P00-T01 | `jmservera/SquadScope` owner | Exact W39 upstream blocked-stage fix and durable dispatch-to-Azure evidence |
+| P05 | Delivery/deployment owners | Accepted final-SHA review, all checks, approval/merge provenance, authorized deployment, provider canary, alert fire/clear, and rollback evidence |
+| P06 | Production verification owner | Four consecutive future post-fix cycles with complete authoritative external proof |
+
+No GitHub thread, issue, or related PR was resolved or closed by this review.
