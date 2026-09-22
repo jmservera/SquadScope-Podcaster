@@ -145,6 +145,28 @@ def test_owned_callable_timeout_kills_nested_owned_process_tree(tmp_path):
     assert not _is_running(grandchild_pid)
 
 
+def test_owned_callable_timeout_kills_escaped_descendant(tmp_path):
+    escaped_pid_path = tmp_path / "callable-escaped.pid"
+
+    def spawn_escaped_descendant() -> None:
+        escaped = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                ("import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)"),
+            ],
+            start_new_session=True,
+        )
+        escaped_pid_path.write_text(str(escaped.pid))
+        time.sleep(60)
+
+    with pytest.raises(OwnedCallableTimeout):
+        run_owned_callable(spawn_escaped_descendant, 0.8)
+
+    escaped_pid = int(escaped_pid_path.read_text())
+    assert not Path(f"/proc/{escaped_pid}").exists()
+
+
 def test_runner_removes_output_on_checked_failure(tmp_path):
     output = tmp_path / "bad.mp4"
     code = f"from pathlib import Path; Path({str(output)!r}).write_bytes(b'x'); raise SystemExit(3)"

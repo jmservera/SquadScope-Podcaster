@@ -213,43 +213,107 @@ def _signal_process_group(process: subprocess.Popen[Any], sig: signal.Signals) -
         return
 
 
-def _descendant_pids(root_pid: int) -> list[int]:
+@dataclass
+class _TrackedProcess:
+    pid: int
+    start_time: int
+    pidfd: int | None
+
+    def close(self) -> None:
+        if self.pidfd is not None:
+            os.close(self.pidfd)
+            self.pidfd = None
+
+
+def _process_stat(pid: int) -> tuple[int, int] | None:
+    try:
+        _, separator, suffix = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rpartition(")")
+        fields = suffix.split()
+        if not separator:
+            return None
+        return int(fields[1]), int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _descendant_identities(root_pid: int) -> dict[int, int]:
     if not sys.platform.startswith("linux"):
-        return []
+        return {}
     children: dict[int, list[int]] = {}
+    start_times: dict[int, int] = {}
     for stat_path in Path("/proc").glob("[0-9]*/stat"):
         try:
             pid = int(stat_path.parent.name)
-            _, separator, suffix = stat_path.read_text(encoding="utf-8").rpartition(")")
-            fields = suffix.split()
-            if not separator:
+            process_stat = _process_stat(pid)
+            if process_stat is None:
                 continue
-            parent_pid = int(fields[1])
-        except (OSError, ValueError, IndexError):
+            parent_pid, start_time = process_stat
+        except ValueError:
             continue
         children.setdefault(parent_pid, []).append(pid)
+        start_times[pid] = start_time
 
-    descendants: list[int] = []
+    descendants: dict[int, int] = {}
     pending = list(children.get(root_pid, ()))
     while pending:
         pid = pending.pop()
-        descendants.append(pid)
+        start_time = start_times.get(pid)
+        if start_time is None:
+            continue
+        descendants[pid] = start_time
         pending.extend(children.get(pid, ()))
     return descendants
+
+
+def _open_tracked_process(pid: int, start_time: int) -> _TrackedProcess | None:
+    pidfd: int | None = None
+    pidfd_open = getattr(os, "pidfd_open", None)
+    if pidfd_open is not None:
+        try:
+            pidfd = pidfd_open(pid)
+        except OSError:
+            pidfd = None
+    process_stat = _process_stat(pid)
+    if process_stat is None or process_stat[1] != start_time:
+        if pidfd is not None:
+            os.close(pidfd)
+        return None
+    return _TrackedProcess(pid=pid, start_time=start_time, pidfd=pidfd)
+
+
+def _capture_descendants(
+    root_pids: Sequence[int],
+    descendants: dict[int, _TrackedProcess],
+) -> None:
+    for root_pid in root_pids:
+        for pid, start_time in _descendant_identities(root_pid).items():
+            if pid in descendants:
+                continue
+            tracked = _open_tracked_process(pid, start_time)
+            if tracked is not None:
+                descendants[pid] = tracked
+
+
+def _signal_tracked_process(tracked: _TrackedProcess, sig: signal.Signals) -> None:
+    try:
+        if tracked.pidfd is not None and hasattr(signal, "pidfd_send_signal"):
+            signal.pidfd_send_signal(tracked.pidfd, sig)
+        else:
+            process_stat = _process_stat(tracked.pid)
+            if process_stat is not None and process_stat[1] == tracked.start_time:
+                os.kill(tracked.pid, sig)
+    except ProcessLookupError:
+        pass
 
 
 def _signal_process_tree(
     process: subprocess.Popen[Any],
     sig: signal.Signals,
-    descendant_pids: set[int],
+    descendants: dict[int, _TrackedProcess],
 ) -> None:
-    for root_pid in (process.pid, *tuple(descendant_pids)):
-        descendant_pids.update(_descendant_pids(root_pid))
-    for pid in reversed(tuple(descendant_pids)):
-        try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
-            pass
+    _capture_descendants((process.pid, *tuple(descendants)), descendants)
+    for tracked in reversed(tuple(descendants.values())):
+        _signal_tracked_process(tracked, sig)
     try:
         os.kill(process.pid, sig)
     except ProcessLookupError:
@@ -258,7 +322,7 @@ def _signal_process_tree(
 
 def _reap_adopted_processes(
     process_group: int,
-    descendant_pids: set[int],
+    descendants: dict[int, _TrackedProcess],
     grace_seconds: float,
 ) -> None:
     if not sys.platform.startswith("linux"):
@@ -275,22 +339,33 @@ def _reap_adopted_processes(
                     break
                 if pid < 0:
                     break
-                descendant_pids.discard(pid)
+                tracked = descendants.pop(pid, None)
+                if tracked is not None:
+                    tracked.close()
                 reaped_any = True
         except ChildProcessError:
             pass
-        for pid in tuple(descendant_pids):
+        for pid, tracked in tuple(descendants.items()):
             try:
                 reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
             except ChildProcessError:
+                process_stat = _process_stat(pid)
+                if process_stat is None or process_stat[1] != tracked.start_time:
+                    descendants.pop(pid).close()
                 continue
             if reaped_pid > 0:
-                descendant_pids.discard(pid)
+                descendants.pop(pid).close()
                 reaped_any = True
-        if (not group_has_children and not descendant_pids) or time.monotonic() >= deadline:
+        if (not group_has_children and not descendants) or time.monotonic() >= deadline:
             return
         if not reaped_any:
             time.sleep(0.01)
+
+
+def _close_tracked_processes(descendants: dict[int, _TrackedProcess]) -> None:
+    for tracked in descendants.values():
+        tracked.close()
+    descendants.clear()
 
 
 def run_owned_process(
@@ -333,14 +408,14 @@ def run_owned_process(
     try:
         stdout, stderr = process.communicate(input=input_text, timeout=effective_timeout)
     except subprocess.TimeoutExpired as exc:
-        descendant_pids: set[int] = set()
-        _signal_process_tree(process, signal.SIGTERM, descendant_pids)
+        descendants: dict[int, _TrackedProcess] = {}
+        _signal_process_tree(process, signal.SIGTERM, descendants)
         if not nested_in_owned_callable:
             _signal_process_group(process, signal.SIGTERM)
         try:
             stdout, stderr = process.communicate(timeout=max(0.0, terminate_grace_seconds))
         except subprocess.TimeoutExpired:
-            _signal_process_tree(process, signal.SIGKILL, descendant_pids)
+            _signal_process_tree(process, signal.SIGKILL, descendants)
             if not nested_in_owned_callable:
                 _signal_process_group(process, signal.SIGKILL)
             try:
@@ -359,7 +434,8 @@ def run_owned_process(
                 except subprocess.TimeoutExpired:
                     pass
         if subreaper_enabled:
-            _reap_adopted_processes(process.pid, descendant_pids, reap_grace_seconds)
+            _reap_adopted_processes(process.pid, descendants, reap_grace_seconds)
+        _close_tracked_processes(descendants)
         _remove_outputs(output_paths)
         captured_stdout = _bounded_text(stdout) or _bounded_text(exc.stdout)
         captured_stderr = _bounded_text(stderr) or _bounded_text(exc.stderr)
@@ -504,16 +580,24 @@ def _stop_owned_callable(
     session_ready: bool,
     subreaper_enabled: bool,
 ) -> None:
+    worker_pid = worker.pid
+    descendants: dict[int, _TrackedProcess] = {}
+    if worker_pid is not None:
+        _capture_descendants((worker_pid,), descendants)
+        for tracked in reversed(tuple(descendants.values())):
+            _signal_tracked_process(tracked, signal.SIGKILL)
     if session_ready:
         try:
-            os.killpg(worker.pid, signal.SIGKILL)
+            if worker_pid is not None:
+                os.killpg(worker_pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
     elif worker.is_alive():
         worker.kill()
     worker.join()
-    if subreaper_enabled:
-        _reap_adopted_processes(worker.pid, set(), DEFAULT_REAP_GRACE_SECONDS)
+    if subreaper_enabled and worker_pid is not None:
+        _reap_adopted_processes(worker_pid, descendants, DEFAULT_REAP_GRACE_SECONDS)
+    _close_tracked_processes(descendants)
 
 
 def run_owned_callable(
