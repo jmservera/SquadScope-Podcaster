@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Hermes rejected exact head `071a85a3193957f297d10cda260604435588de8b` because the outer video runner reclassified stale ownership, the required-YouTube failure path could persist provider/failure state without fresh target-write authorization, and the notification race test transferred ownership before rather than after durable send-authority consumption. Bender authored the rejected artifact and is locked out from this correction. Leela independently completed the bounded P05-T03 revision: `OwnershipError` now bypasses the generic retry/state handler, required-YouTube failure persistence uses a fresh target permit authorized inside the manifest mutation, and the deterministic notification test transfers ownership after durable intent consumption at the actual physical send boundary while preserving crash/ambiguity behavior. Affected regressions passed `6`; full ownership/job-runner modules passed `142`; Ruff check/format, compileall, and diff safety passed. Fry validation support and Hermes corrected-final-SHA review remain pending. Remote PR head advanced only by `requirements.lock` to `2e4372e34d405aa187ec7aafe4c1537670fe9670`; the complete local repair stack is rebased onto that tip without modifying the lockfile. No push or GitHub mutation is authorized. P00-T01 remains complete through upstream PR `jmservera/SquadScope#773`; P05-T04–P05-T06/P06 remain future gates.
+* Planning status: Leela's bounded P05-T03 correction is complete at exact source head `881a9fe64dc06f9f1594e955e66294c2692276db`. Hermes independently APPROVED that exact head with all five stale-ownership boundaries closed. The intentional nonblocking residual is at-most-once queue-hint loss or ambiguous provider completion; durable reconciliation handles either condition and never authorizes replay. Fry's exact affected selection passed `8`; the full relevant modules passed `439` in `422.02s`; Ruff check passed, Ruff format confirmed `4 files already formatted`, compileall passed, and diff safety passed. The remote PR head remains `2e4372e34d405aa187ec7aafe4c1537670fe9670`. The correction has no blocker for push, but this tracking-only update does not push or mutate GitHub. PR #684 remains draft; #682 closure remains operator-only; P05-T04–P05-T06 and P06 remain external gates. No merge, deployment, provider action, or workflow dispatch is authorized.
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -268,15 +268,15 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 
 ## Implementation Status
 
-* Execution status: P05-T03 concurrent-history reconciliation is implemented and validated in source/tests commit `a6b3bc08b90957b5c6f2794b941b272930385921` atop exact remote base `328fbffec00eefbcf351cb8e7fcdf83315eb3885`
-* Declared scope: compare the two stale-owner repairs, preserve remote history, retain only meaningful additional source/tests behavior, reconcile current plan/details/changes state, rerun required validation, and leave focused detached-HEAD commits
-* Revision ownership: Bender owns the user-requested semantic and history reconciliation; Hermes remains reserved for independent exact-final-SHA fail-closed review
+* Execution status: the bounded stale-ownership correction is complete and independently approved at exact source head `881a9fe64dc06f9f1594e955e66294c2692276db`
+* Declared scope: reconcile only the current P05-T03 correction evidence, validation, and delivery readiness without changing source/tests or claiming later plan completion
+* Revision ownership: Leela owns the correction; Bender remains locked out; Hermes completed independent exact-final-SHA fail-closed review
 * Historical ownership: all earlier author/reviewer cycles remain immutable evidence and do not override this user-assigned correction
-* Delivery restrictions: local detached-HEAD commits only; do not push, update GitHub, merge, deploy, dispatch workflows, mutate providers, or change #682
+* Delivery restrictions: this invocation is tracking-only and must not push, update GitHub, merge, deploy, dispatch workflows, mutate providers, or change #682
 * Active implementation boundary: P05-T03 notification physical-send authority and direct-provider post-return persistence only; P05-T04–P05-T06 and P06 remain future gates
 * Approved implementation write boundary: the exact source/tests/tracking scope changed by the concurrent commits; final additional source/tests changes are limited to direct ownership propagation and its deterministic provider-boundary assertions
-* Validation result: exact post-reconciliation race probes `5 passed`; full ownership/job-runner modules `140 passed`; Ruff check/format, compileall, and diff checks passed
-* Current blockers: final remote-head equality, Hermes exact-final-SHA review, and a later authorized push; exact merge-SHA deployment, P05-T06 exact-W39 execution, P06 elapsed cycles, and operator-only #682 remain blockers
+* Validation result: Fry exact affected selection `8 passed`; full relevant modules `439 passed in 422.02s`; Ruff check passed; Ruff format reported `4 files already formatted`; compileall and `git diff --check` passed
+* Current blockers: none for push. PR #684 draft state, operator-only #682 closure, P05-T04–P05-T06, and P06 remain external gates; no merge, deployment, provider action, or workflow dispatch is authorized
 
 ## Sources
 
@@ -588,7 +588,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, static/infra/Checkov/container/exit/security gates passed without weakening |
 | P07-T07; P05-T01 | Complete | Basher independently accepted exact executable head `905a890`; exact final drift through `da84b6b` is tracking-only; PR #684 now links upstream #773 and preserves W38/W39 and exact-W39 requirements |
 | P05-T02 | Complete | No executable drift after `9204e139`; final-SHA review found no High/Critical issue; all 13 hosted checks on the final pushed tracking head succeeded |
-| P05-T03 | Concurrent-history reconciliation implemented and validated atop `328fbff`; final remote equality, independent review, and push pending | Remote durable notification-intent consumption remains authoritative and suppresses replay after broker ambiguity. Manifest/evidence/signal writes authorize inside target updates. Reconciled commit `a6b3bc0` additionally propagates `OwnershipError` through direct distribution and evidence persistence. Exact race probes passed `5`; full ownership/job-runner modules passed `140`; Ruff check/format, compileall, and diff safety passed. |
+| P05-T03 | In-scope stale-ownership correction complete at exact source head `881a9fe`; broader task remains open for operator/delivery gates | Hermes APPROVED all five correction boundaries. Fry passed the exact affected selection (`8`) and full relevant modules (`439` in `422.02s`); Ruff check/format, compileall, and diff safety passed. At-most-once queue-hint loss or ambiguous provider completion remains intentional and is handled only by durable reconciliation, never replay. Remote remains `2e4372e`; no blocker remains for push. |
 | P05-T05 | Expanded prerequisite gate | Deploy exact reviewed/merged upstream and Podcaster artifacts with merge-SHA provenance; clear review, deployment, readiness, alert, authority, and rollback gates before any real W39 mutation |
 | P05-T06 | New authoritative acceptance gate | Reconcile all W39 history/provider candidates, then execute exact W39 with complete GitHub→upstream→Podcaster→Azure→provider correlation and authoritative external readback; ambiguity fails closed/manual-action |
 | P06-T01–P06-T02 | Preserved without credit reduction | Four future qualifying cycles remain required; P05-T06 W39 counts only if it independently meets future scheduled-cycle timing and proof criteria |
@@ -598,7 +598,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Original PC-001–PC-009 dispositions | Historical, no change | Preserve existing critique artifact and disposition record; no second critique |
 | P05/P06 | Residual gates | PR #684 stays draft/blocked pending exact merge-SHA deployment, reconcile-first exact-W39 production acceptance, and four fully proven elapsed cycles |
 
-Historical P07 authorship and review remain unchanged. For the active P05-T03 review follow-up, Bender is the source implementation owner, Fry is the test owner, and Hermes is reserved for independent fail-closed review.
+Historical P07 authorship and review remain unchanged. For this bounded P05-T03 correction, Leela is the revision owner, Bender remains locked out, Fry completed validation, and Hermes completed independent fail-closed review.
 
 ## Review-Follow-Up Finding Map
 
@@ -830,9 +830,9 @@ The existing critique is preserved unchanged as historical evidence. No second c
 
 * Implementation artifact: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
 * Current implementation marker: P05-T03.
-* Current author/reviewer: Bender source and Fry tests are complete in local source/tests commit `8ac549deefff08cb17f43735d31f26742f729234`; Hermes exact-final-SHA review is pending. All prior author/reviewer cycles remain historical evidence.
-* Current correction state: durable notification physical-send authority and every direct-provider post-return persistence boundary are implemented and validated; P05-T03 remains open until Hermes review and an authorized push.
-* Remaining blockers after revision: exact-final-SHA review and push; exact merge-SHA artifact deployment and cleared review/deployment gates; P05-T06 reconcile-first exact W39 production execution with authoritative external provider readback; P06 four elapsed future post-fix cycles; and operator-only #682. PR #684 remains draft/blocked while any remaining gate is open.
+* Current author/reviewer: Leela's exact source head `881a9fe64dc06f9f1594e955e66294c2692276db` is independently APPROVED by Hermes; Bender remains locked out. All prior author/reviewer cycles remain historical evidence.
+* Current correction state: all five bounded stale-ownership boundaries and their validation evidence are complete. Intentional at-most-once queue-hint loss or ambiguous provider completion is reconciled durably and never replayed. P05-T03 remains unchecked only because operator-owned #682 closure and delivery state are outside this correction scope.
+* Remaining external gates: push is unblocked, but PR #684 remains draft; #682 remains operator-only; P05-T04–P05-T06 and P06 remain active. No merge, deployment, provider action, or workflow dispatch is authorized.
 
 ## 2026-09-22 Independent Amy Terminal-Truth Correction
 
