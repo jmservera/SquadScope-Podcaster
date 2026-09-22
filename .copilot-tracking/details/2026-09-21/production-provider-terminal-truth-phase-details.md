@@ -28,6 +28,8 @@ Fry independently reviewed source commit `bfead2572ae7c98bf82122281ac3a26ff3b91e
 
 Fry now owns the sole-author correction from review head `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0`; Frank is locked out after the rejected revision. Leela is reserved for fresh independent final-SHA review and may not contribute. Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, and Livingston remain locked out. The correction must retain the complete v3 predecessor/successor binding while introducing a new versioned canonical complete authorization-envelope schema with explicit field types/null handling, exact unknown-field rejection, a bound extensions map if supported, exact authorization-set cardinality and order/identity, and deterministic rejection of duplicate, reordered, conflicting, unrelated, legacy, incomplete, or type-mutated records. Exactly one unchanged envelope may authorize exactly one mutation-capable claim; concurrent use has one winner and all reuse is read-only.
 
+Leela independently reviewed Fry's exact final head `273f94e0d1fa773e108661f908aca6f34be132c4` and rejected it. The envelope, history, ordering, supersession, concurrency, and replay cases pass, but the v1 set manifest is compared with ordinary Python equality without exact field types. For a one-authorization set, mutating only `authz_count` from integer `1` to boolean `true` or float `1.0` still yields a mutation-capable claim. RV-008/P07-T01 therefore remain High/open. The next sole author must add exact set field/type validation and typed comparison while retaining all current behavior; Leela is locked out after this review and a new eligible independent reviewer is required for the corrected final SHA.
+
 ## Cross-Phase Invariants
 
 1. **Recoverably atomic visibility:** upload an immutable content-addressed artifact, verify integrity/readability, then conditionally create the single authoritative outbox record referencing its hash. Queue notification is an idempotent hint; claim revalidates the artifact; verified orphan artifacts are repaired or garbage-collected without provider mutation.
@@ -111,16 +113,16 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | Fry correction and validation complete; Leela independent review pending | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Rejected by Leela; RV-008/P07-T01 set-type correction required; P07-T06 complete; new final-SHA review pending | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: Fry's sole-author P07-T01 authorization-envelope/cardinality correction, full validation, and delivery reconciliation. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are implementation-resolved; RV-008 awaits independent acceptance.
-* Current task: commit and push the existing branch, keep #684 draft/blocked, and hand the exact final SHA to Leela for independent review.
-* Revision author: Fry only for this correction cycle.
-* Fresh independent reviewer: Leela, pending and reviewer-only; no contribution permitted.
+* Declared scope: Leela's review-only assessment of Fry's P07-T01 authorization-envelope/cardinality correction and full validation.
+* Current task: correct exact authorization-set scalar types without weakening the accepted v4 envelope/history/supersession/concurrency behavior, then obtain a new eligible independent final-SHA review.
+* Revision author: Fry was sole author of the rejected correction; next author is unassigned.
+* Fresh independent reviewer: Leela completed the rejection and is now locked out from the next correction/review cycle.
 * Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, and Frank may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Leela may review only after delivery.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: exact timestamp/execution/fence bypass, parameterized mutation of every semantic attempt/event field, duplicate/omit/reorder/insert attempt or event, nested intent/receipt/provider/readback mutation, recovery-authorization metadata/cardinality, missing/ambiguous sequence/time, unexpected append after authorization, cross-week/publication/attempt replay, canonical round-trip, exact single authorized successor, all prior RV-008 and resolved-RV probes, then the complete locked validation contract without weakening.
@@ -132,14 +134,14 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | Complete for Fry correction | `distribution-recovery-authz-v4` binds the exact complete envelope and `distribution-recovery-authz-set-v1` binds collection count/order/active identity/digest; legacy, unknown, missing, extra, type/null-mutated, duplicate, reordered, conflicting, and unrelated inputs fail closed |
+| P07-T01 | Reopened High after Leela review | Preserve v4 envelope/history behavior and add exact v1 set field/type validation so boolean/float cardinality mutations fail closed |
 | P07-T02 | Complete; RV-002 resolved | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
 | P07-T03 | Complete; RV-004 resolved | Bounded resumable migration backfills pre-index references and cleanup fails closed until completeness is proven |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
 | P07-T06 | Complete for Fry correction | Outbox `182`, focused `227`, locked `902`, full `3232`, Ruff/format/compile/diff, Bicep/Checkov, container/exit, and secret/PII gates passed without weakening |
-| P07-T07; P05-T01 | Awaiting Leela independent review; blocked | Preserve all rejections, keep PR #684 draft/blocked, and obtain Leela's independent final-SHA acceptance; P00-T01, P05, and P06 remain open |
+| P07-T07; P05-T01 | Leela rejection recorded; blocked | Preserve all rejections, keep PR #684 draft/blocked, correct RV-008, and obtain a new eligible independent final-SHA acceptance; P00-T01, P05, and P06 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
@@ -1239,7 +1241,7 @@ Publish a truthful current delivery update for PR #684 and have Leela independen
 
 #### Unresolved Items
 
-* Fry's correction and validation are complete. PR #684 remains draft/blocked; Leela's independent final-SHA review is pending. P00-T01, P05, and P06 remain open; RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are implementation-resolved.
+* Fry's correction and validation completed, but Leela rejected exact head `273f94e0d1fa773e108661f908aca6f34be132c4` because boolean/float authorization-set cardinality values remain mutation-capable. PR #684 remains draft/blocked. RV-008/P07-T01 and P07-T07 remain open; P00-T01, P05, and P06 remain open. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-006 remains planning-resolved.
 
 <!-- rpi:phase id=P05 -->
 ## P05: Deliver reviewed, reversible implementation
