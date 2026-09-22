@@ -1,7 +1,7 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`; exact head `da84b6b2c50f0226b2abb3b469a01c2158d41ef3` adds tracking only.** Upstream prerequisite `jmservera/SquadScope#773` is merged and green, completing P00-T01. P05-T03 remains blocked because #682's 67 threads are marked resolved but 17 end without author disposition and no final thread reply links #684. P05-T04–P05-T06 and P06 remain future, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`; all later branch changes are tracking/review narrative only.** Upstream prerequisite `jmservera/SquadScope#773` is merged and green, completing P00-T01. P05-T03 remains blocked because #682's 67 threads are marked resolved but 17 end without author disposition and no final thread reply links #684. P05-T04–P05-T06 and P06 remain future, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
