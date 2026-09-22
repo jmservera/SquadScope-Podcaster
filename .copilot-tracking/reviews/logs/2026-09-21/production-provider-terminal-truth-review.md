@@ -651,6 +651,12 @@ P05-T03 remains pending Basher's exact-final-SHA acceptance. PR #684 and PR #682
 remains draft/blocked. No merge, deployment, workflow dispatch, provider mutation, W39 execution,
 or production acceptance occurred.
 
+Source/tests commit: `8cc5da21b85b0ec73dab0f39293aab06149ac7a7`. Corrected #682
+evidence reply:
+[r4074434076](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4074434076).
+The reply preserves the resolved thread state and explicitly supersedes the earlier metadata-only
+claim.
+
 ---
 
 ## Frank Canonical-History Revision Review — Fry — 2026-09-22
