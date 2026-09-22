@@ -345,9 +345,7 @@ def exact_recovery_authorization_evidence(
     )
     if not isinstance(predecessor, Mapping):
         raise DistributionOutboxError("recovery predecessor is missing")
-    provider_evidence = predecessor.get("provider_evidence")
-    if not isinstance(provider_evidence, Mapping):
-        raise DistributionOutboxError("recovery predecessor evidence is missing")
+    provider_evidence = _recovery_predecessor_provider_evidence(document, predecessor)
     providers: dict[str, Any] = {}
     for provider in sorted(document.get("provider_objectives", {})):
         leg = provider_evidence.get(provider)
@@ -383,10 +381,57 @@ def exact_recovery_authorization_evidence(
     }
 
 
+def _recovery_predecessor_provider_evidence(
+    document: Mapping[str, Any],
+    predecessor: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if predecessor.get("terminal_outcome") == "failed_terminal":
+        provider_evidence = predecessor.get("provider_evidence")
+        if isinstance(provider_evidence, Mapping):
+            return provider_evidence
+        raise DistributionOutboxError("recovery predecessor evidence is missing")
+
+    readbacks = predecessor.get("post_terminal_readbacks")
+    objectives = document.get("provider_objectives")
+    unresolved_message = (
+        "unknown provider mutation cannot authorize retry"
+        if predecessor.get("terminal_outcome") == "provider_unknown"
+        else "recovery predecessor remains unresolved"
+    )
+    if not isinstance(readbacks, list) or not isinstance(objectives, Mapping):
+        raise DistributionOutboxError(unresolved_message)
+    latest: dict[str, Mapping[str, Any]] = {}
+    for readback in readbacks:
+        if isinstance(readback, Mapping) and readback.get("provider") in objectives:
+            latest[str(readback["provider"])] = readback
+    if set(latest) != set(objectives):
+        raise DistributionOutboxError(unresolved_message)
+    resolved: dict[str, Any] = {}
+    for provider in objectives:
+        verification = latest[provider].get("verification")
+        if (
+            not isinstance(verification, Mapping)
+            or verification.get("result") != "failed_terminal"
+            or "readback" not in str(verification.get("source") or "")
+            or not verification.get("provider_item_id")
+            or not verification.get("native_state")
+        ):
+            raise DistributionOutboxError(unresolved_message)
+        resolved[provider] = {
+            "intent": None,
+            "receipts": [],
+            "verification": verification,
+            "result": "failed_terminal",
+        }
+    return resolved
+
+
 def _validated_recovery_authorization_evidence(
     document: Mapping[str, Any],
     predecessor: Mapping[str, Any],
     evidence: Mapping[str, Any],
+    *,
+    succeeding_attempt_id: str | None = None,
 ) -> dict[str, Any]:
     value = _safe_value(dict(evidence), key="recovery_evidence")
     identity = document["publication_identity"]
@@ -402,6 +447,17 @@ def _validated_recovery_authorization_evidence(
         ),
         -1,
     )
+    later_attempts = attempts[predecessor_index + 1 :]
+    if succeeding_attempt_id is None:
+        if later_attempts:
+            raise DistributionOutboxError("recovery predecessor is not the latest attempt")
+    elif (
+        len(later_attempts) != 1
+        or not isinstance(later_attempts[0], Mapping)
+        or later_attempts[0].get("attempt_id") != succeeding_attempt_id
+        or later_attempts[0].get("predecessor_attempt_id") != predecessor.get("attempt_id")
+    ):
+        raise DistributionOutboxError("recovery authorization attempt history is invalid")
     expected_attempt_ids = [
         str(attempt["attempt_id"])
         for attempt in attempts[: predecessor_index + 1]
@@ -419,7 +475,7 @@ def _validated_recovery_authorization_evidence(
         or value.get("predecessor_attempt_id") != predecessor.get("attempt_id")
     ):
         raise DistributionOutboxError("recovery authorization identity evidence is invalid")
-    provider_evidence = predecessor.get("provider_evidence")
+    provider_evidence = _recovery_predecessor_provider_evidence(document, predecessor)
     providers = value.get("providers")
     objectives = document.get("provider_objectives")
     if (
@@ -487,6 +543,7 @@ def _recovery_authorization_is_valid(
             document,
             predecessor,
             evidence,
+            succeeding_attempt_id=str(winner.get("attempt_id") or ""),
         )
     except (DistributionOutboxError, UnsafeOutboxValueError):
         return False
@@ -890,13 +947,9 @@ class DistributionOutboxRepository:
             )
             if not isinstance(predecessor, Mapping) or not predecessor.get("terminal_outcome"):
                 raise DistributionOutboxError("recovery predecessor is not terminal")
-            if predecessor.get("terminal_outcome") == "provider_unknown":
-                raise DistributionOutboxError("unknown provider mutation cannot authorize retry")
+            provider_evidence = _recovery_predecessor_provider_evidence(document, predecessor)
             if source not in ("operator", "bounded_reconciliation"):
                 raise DistributionOutboxError("recovery requires an explicit trusted authorizer")
-            provider_evidence = predecessor.get("provider_evidence")
-            if not isinstance(provider_evidence, Mapping):
-                raise DistributionOutboxError("recovery predecessor evidence is missing")
             for leg in provider_evidence.values():
                 if not isinstance(leg, Mapping):
                     raise DistributionOutboxError("recovery predecessor evidence is malformed")
@@ -1204,6 +1257,14 @@ class DistributionOutboxRepository:
             }
             leg["verification"] = verification
             leg["result"] = effective_result
+            attempt = _active_attempt(document)
+            if attempt.get("terminal_outcome"):
+                attempt.setdefault("post_terminal_readbacks", []).append(
+                    {
+                        "provider": provider,
+                        "verification": dict(verification),
+                    }
+                )
             leg["verification_attempt"] = int(leg.get("verification_attempt") or 0) + 1
             leg["next_reconcile_at"] = _iso(next_reconcile_at) if next_reconcile_at else None
             if effective_result != "pending_provider":
