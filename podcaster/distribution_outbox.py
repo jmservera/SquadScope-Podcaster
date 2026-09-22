@@ -182,6 +182,33 @@ def _safe_value(value: Any, *, key: str = "") -> Any:
     raise UnsafeOutboxValueError(f"unsupported durable value for {key or 'field'}")
 
 
+def _load_outbox_document(raw: bytes) -> dict[str, Any]:
+    def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise DistributionOutboxError("outbox record contains duplicate fields")
+            result[key] = value
+        return result
+
+    def _reject_non_finite_number(value: str) -> None:
+        raise DistributionOutboxError(f"outbox record contains non-finite number: {value}")
+
+    try:
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_object_without_duplicates,
+            parse_constant=_reject_non_finite_number,
+        )
+    except DistributionOutboxError:
+        raise
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise DistributionOutboxError("outbox record is corrupt") from exc
+    if type(document) is not dict:
+        raise DistributionOutboxError("outbox record is malformed")
+    return document
+
+
 def _sha256_file(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -428,33 +455,62 @@ def exact_recovery_authorization_evidence(
 def _canonical_typed_value(value: Any) -> dict[str, Any]:
     if value is None:
         return {"type": "null", "value": None}
-    if isinstance(value, bool):
+    if type(value) is bool:
         return {"type": "boolean", "value": value}
-    if isinstance(value, int):
+    if type(value) is int:
         return {"type": "integer", "value": value}
-    if isinstance(value, float):
-        if not (-float("inf") < value < float("inf")):
-            raise DistributionOutboxError("attempt history contains a non-finite number")
-        return {"type": "number", "value": value}
-    if isinstance(value, str):
+    if type(value) is float:
+        raise DistributionOutboxError("canonical recovery data contains an unsupported number")
+    if type(value) is str:
         return {"type": "string", "value": value}
-    if isinstance(value, Mapping):
+    if type(value) is dict:
+        if not all(type(key) is str for key in value):
+            raise DistributionOutboxError("canonical recovery data contains a non-string field")
         entries = []
         for key in sorted(value):
-            if not isinstance(key, str):
-                raise DistributionOutboxError("attempt history contains a non-string field")
             entries.append({"key": key, "value": _canonical_typed_value(value[key])})
         return {"type": "object", "entries": entries}
-    if isinstance(value, (list, tuple)):
+    if type(value) is list:
         return {
             "type": "array",
             "items": [_canonical_typed_value(item) for item in value],
         }
-    raise DistributionOutboxError("attempt history contains an unsupported value")
+    raise DistributionOutboxError("canonical recovery data contains an unsupported value")
 
 
-def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+def _canonical_json_bytes(value: Any) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise DistributionOutboxError("canonical recovery data is not valid JSON") from exc
+
+
+def _exact_canonical_equal(actual: Any, expected: Any) -> bool:
+    return _canonical_json_bytes(_canonical_typed_value(actual)) == _canonical_json_bytes(
+        _canonical_typed_value(expected)
+    )
+
+
+def _require_versioned_canonical_contract(
+    actual: Any,
+    expected: dict[str, Any],
+    *,
+    schema_version: str,
+    label: str,
+) -> None:
+    if (
+        type(actual) is not dict
+        or set(actual) != set(expected)
+        or type(actual.get("schema_version")) is not str
+        or actual.get("schema_version") != schema_version
+        or not _exact_canonical_equal(actual, expected)
+    ):
+        raise DistributionOutboxError(f"{label} is invalid")
 
 
 def _validated_attempt_history_records(
@@ -470,18 +526,21 @@ def _validated_attempt_history_records(
     attempt_ids: set[str] = set()
     previous_authorized_at: datetime | None = None
     for attempt_order, attempt in enumerate(records):
-        if not isinstance(attempt, Mapping):
+        if type(attempt) is not dict:
             raise DistributionOutboxError("recovery attempt history is malformed")
-        if attempt.get("record_version") != ATTEMPT_RECORD_VERSION:
+        if (
+            type(attempt.get("record_version")) is not str
+            or attempt.get("record_version") != ATTEMPT_RECORD_VERSION
+        ):
             raise DistributionOutboxError("recovery attempt record version is unsupported")
         attempt_id = attempt.get("attempt_id")
-        if not isinstance(attempt_id, str) or not attempt_id or attempt_id in attempt_ids:
+        if type(attempt_id) is not str or not attempt_id or attempt_id in attempt_ids:
             raise DistributionOutboxError("recovery attempt identity is duplicate or missing")
         attempt_ids.add(attempt_id)
-        if not attempt.get("terminal_outcome"):
+        if type(attempt.get("terminal_outcome")) is not str or not attempt["terminal_outcome"]:
             raise DistributionOutboxError("recovery attempt history contains a non-terminal record")
         authorized_at = attempt.get("authorized_at")
-        if not isinstance(authorized_at, str):
+        if type(authorized_at) is not str:
             raise DistributionOutboxError("recovery attempt authorization time is missing")
         try:
             parsed_authorized_at = _parse_time(authorized_at)
@@ -496,22 +555,29 @@ def _validated_attempt_history_records(
         if attempt_order == 0:
             if predecessor_attempt_id is not None:
                 raise DistributionOutboxError("initial attempt predecessor is invalid")
-        elif predecessor_attempt_id != records[attempt_order - 1].get("attempt_id"):
+        elif type(predecessor_attempt_id) is not str or predecessor_attempt_id != records[
+            attempt_order - 1
+        ].get("attempt_id"):
             raise DistributionOutboxError("recovery attempt linkage is invalid")
         events = attempt.get("events")
-        if not isinstance(events, list) or not events:
+        if type(events) is not list or not events:
             raise DistributionOutboxError("recovery attempt events are missing")
         previous_event_at: datetime | None = None
         for event_order, event in enumerate(events, start=1):
-            if not isinstance(event, Mapping):
+            if type(event) is not dict:
                 raise DistributionOutboxError("recovery attempt event is malformed")
             sequence = event.get("sequence")
-            if isinstance(sequence, bool) or sequence != event_order:
+            if type(sequence) is not int or sequence != event_order:
                 raise DistributionOutboxError("recovery attempt event sequence is invalid")
-            if event.get("event_type") != event.get("state") or not event.get("state"):
+            if (
+                type(event.get("event_type")) is not str
+                or type(event.get("state")) is not str
+                or event.get("event_type") != event.get("state")
+                or not event.get("state")
+            ):
                 raise DistributionOutboxError("recovery attempt event type is invalid")
             event_at = event.get("at")
-            if not isinstance(event_at, str):
+            if type(event_at) is not str:
                 raise DistributionOutboxError("recovery attempt event time is missing")
             try:
                 parsed_event_at = _parse_time(event_at)
@@ -840,10 +906,15 @@ def _validated_recovery_authorization_evidence(
         )
         if successor_may_progress:
             if (
-                not isinstance(stored_expectation, Mapping)
-                or stored_expectation.get("immutable_identity")
-                != current_expectation["immutable_identity"]
-                or stored_expectation.get("separately_bound_fields") != ["recovery_proof_digest"]
+                type(stored_expectation) is not dict
+                or not _exact_canonical_equal(
+                    stored_expectation.get("immutable_identity"),
+                    current_expectation["immutable_identity"],
+                )
+                or not _exact_canonical_equal(
+                    stored_expectation.get("separately_bound_fields"),
+                    ["recovery_proof_digest"],
+                )
             ):
                 raise DistributionOutboxError("recovery authorization successor is invalid")
             succeeding_expectation = dict(stored_expectation)
@@ -858,8 +929,12 @@ def _validated_recovery_authorization_evidence(
             },
             "expectation": succeeding_expectation,
         }
-    if value != expected_value:
-        raise DistributionOutboxError("recovery authorization identity evidence is invalid")
+    _require_versioned_canonical_contract(
+        value,
+        expected_value,
+        schema_version=RECOVERY_AUTHORIZATION_SCHEMA_VERSION,
+        label="recovery authorization identity evidence",
+    )
     return value
 
 
@@ -905,6 +980,32 @@ def _authorization_set_document(authorizations: list[Mapping[str, Any]]) -> dict
         _canonical_json_bytes(_canonical_typed_value(digest_input))
     ).hexdigest()
     return envelope
+
+
+def _validate_recovery_authorization_set(
+    actual: Any,
+    expected: dict[str, Any],
+) -> None:
+    if (
+        type(actual) is not dict
+        or set(actual) != set(expected)
+        or type(actual.get("schema_version")) is not str
+        or type(actual.get("authz_count")) is not int
+        or type(actual.get("ordered_authz_ids")) is not list
+        or not all(type(item) is str for item in actual.get("ordered_authz_ids", []))
+        or (
+            actual.get("active_authz_id") is not None
+            and type(actual.get("active_authz_id")) is not str
+        )
+        or type(actual.get("digest")) is not str
+    ):
+        raise DistributionOutboxError("recovery authorization set schema is invalid")
+    _require_versioned_canonical_contract(
+        actual,
+        expected,
+        schema_version=RECOVERY_AUTHORIZATION_SET_SCHEMA_VERSION,
+        label="recovery authorization set binding",
+    )
 
 
 def _refresh_recovery_authorization_set(document: dict[str, Any]) -> None:
@@ -974,7 +1075,7 @@ def _validated_recovery_authorization_collection(
         raise DistributionOutboxError("recovery authorization cardinality is invalid")
     validated: list[Mapping[str, Any]] = []
     for index, authorization in enumerate(authorizations):
-        if not isinstance(authorization, Mapping) or set(authorization) != (
+        if type(authorization) is not dict or set(authorization) != (
             _RECOVERY_AUTHORIZATION_FIELDS
         ):
             raise DistributionOutboxError("recovery authorization envelope is invalid")
@@ -996,7 +1097,7 @@ def _validated_recovery_authorization_collection(
             or not _exact_type(authorization.get("successor_attempt_id"), str)
             or not _exact_type(authorization.get("evidence_schema_version"), str)
             or not _exact_type(authorization.get("evidence_digest"), str)
-            or not isinstance(authorization.get("evidence"), Mapping)
+            or type(authorization.get("evidence")) is not dict
             or not _exact_type(authorization.get("extensions"), dict)
         ):
             raise DistributionOutboxError("recovery authorization envelope type is invalid")
@@ -1021,13 +1122,12 @@ def _validated_recovery_authorization_collection(
                 True if next_authorization_id else active_successor_may_progress
             ),
         )
-        if dict(authorization) != expected:
+        if not _exact_canonical_equal(authorization, expected):
             raise DistributionOutboxError("recovery authorization envelope binding is invalid")
         validated.append(authorization)
     set_document = document.get("recovery_authz_set")
     expected_set = _authorization_set_document(validated)
-    if not isinstance(set_document, Mapping) or dict(set_document) != expected_set:
-        raise DistributionOutboxError("recovery authorization set binding is invalid")
+    _validate_recovery_authorization_set(set_document, expected_set)
     return validated
 
 
@@ -1247,12 +1347,7 @@ class DistributionOutboxRepository:
         raw = self.storage.get_bytes(outbox_path(outbox_id))
         if raw is None:
             return None
-        try:
-            document = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise DistributionOutboxError("outbox record is corrupt") from exc
-        if not isinstance(document, dict):
-            raise DistributionOutboxError("outbox record is malformed")
+        document = _load_outbox_document(raw)
         _ensure_truth_fields(document)
         _validate_document(document, outbox_id)
         return document
@@ -1553,13 +1648,7 @@ class DistributionOutboxRepository:
                 },
                 "expectation": _successor_authorization_expectation(succeeding_attempt),
             }
-            evidence_digest = hashlib.sha256(
-                json.dumps(
-                    validated_evidence,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
+            evidence_digest = hashlib.sha256(_canonical_json_bytes(validated_evidence)).hexdigest()
             previous_authorizations = document["recovery_authz"]
             if previous_authorizations:
                 _validated_recovery_authorization_collection(
@@ -2515,14 +2604,22 @@ class DistributionOutboxRepository:
         def _apply(raw: bytes | None) -> bytes:
             if raw is None:
                 raise DistributionOutboxError("outbox item does not exist")
-            document = json.loads(raw.decode("utf-8"))
+            document = _load_outbox_document(raw)
             _ensure_truth_fields(document)
             _validate_document(document, outbox_id)
             mutation(document)
             document["updated_at"] = _iso(self.now())
             _validate_document(document, outbox_id)
             captured.update(document)
-            return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            try:
+                return json.dumps(
+                    document,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            except (TypeError, ValueError) as exc:
+                raise DistributionOutboxError("outbox record is not valid JSON") from exc
 
         self.storage.update_bytes(
             outbox_path(outbox_id),

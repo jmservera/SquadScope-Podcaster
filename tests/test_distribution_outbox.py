@@ -23,6 +23,7 @@ from podcaster.distribution_outbox import (
     exact_recovery_authorization_evidence,
     exact_verification_proof,
     four_cycle_acceptance,
+    outbox_path,
     outbox_routing_enabled,
     reconciliation_message,
     weekly_state_from_attempts,
@@ -1315,6 +1316,144 @@ def test_recovery_authorization_rejects_set_identity_mutation(setup, field, valu
         lambda state: state["recovery_authz_set"].__setitem__(field, value),
     )
     assert claim.read_only is True
+
+
+def _scalar_paths(value, prefix=()):
+    if type(value) is dict:
+        for key, item in value.items():
+            yield from _scalar_paths(item, (*prefix, key))
+    elif type(value) is list:
+        for index, item in enumerate(value):
+            yield from _scalar_paths(item, (*prefix, index))
+    elif value is None or type(value) in (bool, int, float, str):
+        yield prefix
+
+
+def _value_at_path(value, path):
+    for part in path:
+        value = value[part]
+    return value
+
+
+def _set_value_at_path(value, path, replacement):
+    for part in path[:-1]:
+        value = value[part]
+    value[path[-1]] = replacement
+
+
+_NO_SCALAR_REPLACEMENT = object()
+
+
+def _typed_scalar_replacement(current, replacement_kind):
+    replacements = {
+        "bool": not current if type(current) is bool else True,
+        "int": current + 97 if type(current) is int else 97,
+        "float": 1.0,
+        "string": f"{current}-changed" if type(current) is str else "typed-substitution",
+        "null": None,
+    }
+    replacement = replacements[replacement_kind]
+    if type(replacement) is type(current) and replacement == current:
+        return _NO_SCALAR_REPLACEMENT
+    return replacement
+
+
+@pytest.mark.parametrize("replacement_kind", ["bool", "int", "float", "string", "null"])
+def test_recovery_canonical_contract_rejects_scalar_substitutions_everywhere(
+    setup, replacement_kind
+):
+    storage, repository, _clock, document, _created = setup
+    repository, document, _evidence = _authorize_third_attempt(setup)
+    path = outbox_path(document["outbox_id"])
+    baseline = storage.get_bytes(path)
+    assert baseline is not None
+    baseline_state = repository.read(document["outbox_id"])
+    surfaces = {
+        "authorization-set": ("recovery_authz_set",),
+        "authorization-envelope": ("recovery_authz", -1),
+        "authorization-evidence": ("recovery_authz", -1, "evidence"),
+        "attempt-history": ("recovery_authz", -1, "evidence", "attempt_history"),
+        "attempt-record": ("attempts", 0),
+        "attempt-events": ("attempts", 0, "events"),
+        "successor": ("recovery_authz", -1, "evidence", "succeeding_attempt"),
+    }
+
+    exercised = 0
+    for surface, root_path in surfaces.items():
+        root = _value_at_path(baseline_state, root_path)
+        for relative_path in _scalar_paths(root):
+            current = _value_at_path(root, relative_path)
+            replacement = _typed_scalar_replacement(current, replacement_kind)
+            if replacement is _NO_SCALAR_REPLACEMENT:
+                continue
+            storage.update_bytes(
+                path,
+                "application/json; charset=utf-8",
+                lambda _raw, snapshot=baseline: snapshot,
+            )
+
+            def _mutate(state, target=(*root_path, *relative_path), value=replacement):
+                _set_value_at_path(state, target, value)
+
+            denied = False
+            try:
+                repository._update(document["outbox_id"], _mutate)
+                claim = repository.claim(
+                    document["outbox_id"],
+                    owner=f"typed-{replacement_kind}",
+                    execution_id=f"typed-{replacement_kind}",
+                    lease_seconds=300,
+                )
+                denied = claim.read_only
+            except DistributionOutboxError:
+                denied = True
+            assert denied, (
+                f"{surface} path {relative_path!r} accepted {replacement_kind} "
+                f"for {type(current).__name__}"
+            )
+            exercised += 1
+
+    assert exercised > 0
+
+
+@pytest.mark.parametrize("replacement", [float("nan"), float("inf"), float("-inf"), -0.0])
+def test_recovery_canonical_contract_rejects_unsupported_float_forms(setup, replacement):
+    claim = None
+    try:
+        claim = _claim_after_authorization_mutation(
+            setup,
+            lambda state: state["recovery_authz_set"].__setitem__("authz_count", replacement),
+        )
+    except DistributionOutboxError:
+        pass
+    assert claim is None or claim.read_only is True
+
+
+def test_recovery_canonical_contract_rejects_unsupported_container_value(setup):
+    with pytest.raises(DistributionOutboxError):
+        _claim_after_authorization_mutation(
+            setup,
+            lambda state: state["recovery_authz"][-1]["evidence"].__setitem__(
+                "unsupported", {"not-json"}
+            ),
+        )
+
+
+def test_outbox_json_rejects_duplicate_recovery_fields(setup):
+    storage, repository, _clock, document, _created = setup
+    repository, document, _evidence = _authorize_third_attempt(setup)
+    path = outbox_path(document["outbox_id"])
+    raw = storage.get_bytes(path)
+    assert raw is not None
+    duplicated = raw.replace(b'"authz_count":2', b'"authz_count":2,"authz_count":2', 1)
+    assert duplicated != raw
+    storage.update_bytes(
+        path,
+        "application/json; charset=utf-8",
+        lambda _raw: duplicated,
+    )
+    with pytest.raises(DistributionOutboxError, match="duplicate fields"):
+        repository.read(document["outbox_id"])
 
 
 def test_latest_unknown_readback_for_different_provider_item_fails_closed(setup):
