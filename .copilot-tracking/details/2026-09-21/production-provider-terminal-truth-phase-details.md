@@ -127,7 +127,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Corrected; pending Livingston review | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
 | P07-T06 | Complete for Farnsworth revision | Focused, locked, full, static, Bicep, Checkov, container, and secret/PII validation passed or matched the documented baseline |
-| P07-T07; P05-T01 | In progress | Commit/push and PR #684 refresh are current-revision delivery work; Livingston review remains pending and external delivery remains blocked |
+| P07-T07; P05-T01 | In progress | Farnsworth source commit `0f489b1` is pushed and PR #684 is refreshed; Livingston review remains pending and external delivery remains blocked |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
