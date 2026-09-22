@@ -170,7 +170,12 @@ def playlist_contains_video(
         if raise_on_error:
             raise RuntimeError("playlist membership response was invalid")
         return False
-    return bool(data.get("items"))
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        if raise_on_error:
+            raise RuntimeError("playlist membership response was invalid")
+        return False
+    return bool(items)
 
 
 def add_video_to_playlist(

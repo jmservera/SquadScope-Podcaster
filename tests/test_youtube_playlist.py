@@ -90,6 +90,33 @@ class TestContains:
         t = _FakeTransport([(200, b'{"items": []}')])
         assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
 
+    @pytest.mark.parametrize(
+        "body",
+        [b"{}", b'{"items": "not-a-list"}', b'{"items": {}}', b'{"items": null}'],
+        ids=["missing", "string", "object", "null"],
+    )
+    def test_false_when_items_is_missing_or_not_a_list(self, body):
+        t = _FakeTransport([(200, body)])
+
+        assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
+
+    @pytest.mark.parametrize(
+        "body",
+        [b'{"items": "not-a-list"}', b'{"items": {}}', b'{"items": null}'],
+        ids=["string", "object", "null"],
+    )
+    def test_strict_mode_rejects_items_that_is_not_a_list(self, body):
+        t = _FakeTransport([(200, body)])
+
+        with pytest.raises(RuntimeError, match="^playlist membership response was invalid$"):
+            playlist_contains_video(
+                "PL",
+                "vid",
+                "s3cr3t-token",
+                transport=t,
+                raise_on_error=True,
+            )
+
     @pytest.mark.parametrize("body", [b"[]", b"null"], ids=["array", "null"])
     def test_false_when_success_json_is_not_an_object(self, body):
         t = _FakeTransport([(200, body)])
