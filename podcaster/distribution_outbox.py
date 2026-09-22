@@ -400,10 +400,49 @@ def _recovery_predecessor_provider_evidence(
     )
     if not isinstance(readbacks, list) or not isinstance(objectives, Mapping):
         raise DistributionOutboxError(unresolved_message)
+    provider_evidence = predecessor.get("provider_evidence")
+    if not isinstance(provider_evidence, Mapping) or set(provider_evidence) != set(objectives):
+        raise DistributionOutboxError(unresolved_message)
+    expected_provider_items: dict[str, str] = {}
+    for provider in objectives:
+        leg = provider_evidence.get(provider)
+        intent = leg.get("intent") if isinstance(leg, Mapping) else None
+        receipts = leg.get("receipts") if isinstance(leg, Mapping) else None
+        verification = leg.get("verification") if isinstance(leg, Mapping) else None
+        if (
+            not isinstance(intent, Mapping)
+            or intent.get("provider") != provider
+            or not intent.get("consumed_at")
+            or not intent.get("intent_id")
+            or not intent.get("expected_provider_item_id")
+            or not isinstance(receipts, list)
+        ):
+            raise DistributionOutboxError(unresolved_message)
+        expected_item = str(intent["expected_provider_item_id"])
+        candidates = {expected_item}
+        for receipt in receipts:
+            if not isinstance(receipt, Mapping):
+                raise DistributionOutboxError(unresolved_message)
+            if (
+                receipt.get("intent_id") != intent.get("intent_id")
+                or receipt.get("ambiguous") is True
+            ):
+                raise DistributionOutboxError(unresolved_message)
+            if receipt.get("provider_item_id"):
+                candidates.add(str(receipt["provider_item_id"]))
+        if isinstance(verification, Mapping) and verification.get("provider_item_id"):
+            candidates.add(str(verification["provider_item_id"]))
+        if candidates != {expected_item}:
+            raise DistributionOutboxError(unresolved_message)
+        expected_provider_items[provider] = expected_item
     latest: dict[str, Mapping[str, Any]] = {}
     for readback in readbacks:
-        if isinstance(readback, Mapping) and readback.get("provider") in objectives:
-            latest[str(readback["provider"])] = readback
+        if not isinstance(readback, Mapping):
+            raise DistributionOutboxError(unresolved_message)
+        provider = str(readback.get("provider") or "")
+        if provider not in objectives or provider in latest:
+            raise DistributionOutboxError(unresolved_message)
+        latest[provider] = readback
     if set(latest) != set(objectives):
         raise DistributionOutboxError(unresolved_message)
     resolved: dict[str, Any] = {}
@@ -413,7 +452,7 @@ def _recovery_predecessor_provider_evidence(
             not isinstance(verification, Mapping)
             or verification.get("result") != "failed_terminal"
             or "readback" not in str(verification.get("source") or "")
-            or not verification.get("provider_item_id")
+            or verification.get("provider_item_id") != expected_provider_items[provider]
             or not verification.get("native_state")
         ):
             raise DistributionOutboxError(unresolved_message)

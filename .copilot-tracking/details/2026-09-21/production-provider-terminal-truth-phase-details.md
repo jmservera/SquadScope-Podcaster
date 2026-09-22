@@ -16,7 +16,7 @@ W39 remains `missed_not_dispatched`: it has no synth, recorder, video, outbox, o
 
 The canonical review subsequently proved six active defects: RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009. P07 is a distinct review-follow-up lifecycle phase and is the only current in-repository implementation boundary. Historical P01–P04 completion is retained as context, not accepted as closure for those findings.
 
-Rusty's 2026-09-22 exact-head review of Frank's revision preserves RV-002/RV-003/RV-004/RV-007/RV-009 as resolved but rejects P07 because RV-008 remains High: failed-terminal post-readback of a latest `provider_unknown` attempt is not bound to that attempt's exact persisted provider item identity. A different failed item can currently authorize a new mutation-capable attempt.
+Rusty's 2026-09-22 exact-head review of Frank's revision preserves RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 as resolved but rejects P07 because RV-008 remains High: failed-terminal post-readback of a latest `provider_unknown` attempt is not bound to that attempt's exact persisted provider item identity. Basher is the sole author of the active correction from head `97c9520b7c365b078a50df113154bb1e66b1ecbb`; Ralph is reserved for fresh independent final-SHA review.
 
 ## Cross-Phase Invariants
 
@@ -101,17 +101,17 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | Rusty review complete: Not accepted; High RV-008 exact readback-binding defect remains, all other reviewed RVs resolved | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Basher correction and validation complete; P07-T07 pending Ralph final-SHA review | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: P07-T01 plus validation and delivery reconciliation. Rusty completed independent review of exact head `1efa749`; RV-002/RV-003/RV-004/RV-007/RV-009 remain resolved and RV-008 remains High.
-* Current task: Frank alone must bind recovery authorization to the complete ordered attempt history and latest relevant state. Any later possibly mutated, unknown, manual-action, identity-conflict, unresolved, omitted, or reordered attempt withholds mutation authority until exact authoritative terminal readback resolves that attempt into the specifically authorized safe continuation.
-* Revision author: Farnsworth only for the reopened correction cycle.
-* Fresh independent reviewer: Rusty is reserved and may not contribute before final-SHA review. Livingston's completed rejection remains historical evidence.
-* Excluded contributors: Bender, Hermes, Amy, Leela, and Fry may not author, advise, pair, inspect, suggest, review, or otherwise contribute.
+* Declared scope: P07-T01 plus P07-T06 validation and delivery reconciliation, with P07-T07 pending Ralph review. Basher's correction and validation are complete from Rusty's tracking head `97c9520`. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are locally resolved.
+* Current task: commit and push Basher's validated exact-identity correction on the existing branch, refresh PR #684, and preserve the draft/blocked posture pending Ralph review and the external/elapsed gates.
+* Revision author: Basher only for the reopened correction cycle.
+* Fresh independent reviewer: Ralph is reserved and may not contribute before final-SHA review. Rusty's completed rejection remains historical evidence.
+* Excluded contributors: Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, Frank, and Rusty may not author, advise, pair, inspect, suggest, review, or otherwise contribute.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: deterministic stale/latest/reordered/omitted/history-resolution negative probes, the existing safe-recovery positive probe, all resolved-RV probes, then the complete locked validation contract without weakening.
 * Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 deployment/canary, and P06 elapsed evidence remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
@@ -122,21 +122,21 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | Reopened after Rusty rejection | Complete ordered-history/latest-state checks pass, but latest-unknown failed readback must additionally match the exact provider item implicated by the unknown mutation |
+| P07-T01 | Active Basher correction after Rusty rejection | Complete ordered-history/latest-state checks remain; latest-unknown recovery additionally requires one exact, non-conflicting provider item candidate per provider from durable intent/receipt/evidence and an exact provider-kind/item readback match |
 | P07-T02 | Complete; RV-002 resolved | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
 | P07-T03 | Complete; RV-004 resolved | Bounded resumable migration backfills pre-index references and cleanup fails closed until completeness is proven |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
-| P07-T06 | Complete for Frank revision | Focused 107, locked 782, and full 3112 tests passed with all static, Bicep, Checkov, container, exit, diff, and secret/PII gates preserved |
-| P07-T07; P05-T01 | Rusty review complete; blocked | Record Rusty's rejection on the existing branch and PR #684; P07-T01, P00-T01, P05, and P06 remain open |
+| P07-T06 | Active for Basher revision | Rerun focused, locked, and complete tests plus static, Bicep, exact/CI Checkov, container, exit, diff, and secret/PII gates after the source correction |
+| P07-T07; P05-T01 | Pending Ralph review; blocked | Record Basher's validated revision on the existing branch and PR #684, then require Ralph's fresh independent final-SHA review; P00-T01, P05, and P06 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
 | W39 classification | Settled | `missed_not_dispatched` |
 | Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
 
-Frank alone authored the reviewed P07-T01 correction. Rusty alone performed the fresh independent review after implementation and validation. Bender, Hermes, Amy, Leela, Fry, Farnsworth, and Livingston were excluded entirely from contribution or advice.
+Basher alone authors the active P07-T01 correction. Ralph alone is reserved for fresh independent review after implementation and validation. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, Frank, and Rusty are excluded entirely from contribution or advice.
 
 ### Implemented Surface Disposition
 
@@ -1002,7 +1002,7 @@ Require persisted, exact, identity-bound proof for every green outcome and evide
 
 #### Unresolved Items
 
-* Frank correction complete: authorization requires the selected predecessor to be the latest relevant attempt, validates the exact ordered terminal-attempt IDs, records post-terminal authoritative readbacks without changing immutable outcomes, and permits a new mutation-capable attempt only from a newly generated authorization over the exactly resolved latest history. Rusty's independent final-SHA review remains pending.
+* Basher correction complete: latest complete ordered-history validation is preserved. Recovery from `provider_unknown` now derives identity only from the latest attempt's durable provider evidence, requires a consumed provider-matching intent with one expected item, rejects stale/ambiguous/conflicting receipt evidence and duplicate post-terminal readbacks, and requires the resolving readback to match that exact item. Exact readback may resolve only the matching latest attempt and authorize only its specifically bound successor. P07-T07 remains pending Ralph review.
 
 <!-- rpi:task id=P07-T02 -->
 ### P07-T02: Make scheduler notification enqueue single-winner
@@ -1189,10 +1189,10 @@ Run focused negative probes and the complete repository quality/security/contain
 
 #### Unresolved Items
 
-* Repository-standard commands pass after rebuilding the stale Compose image. Livingston's RV-002/RV-004/RV-009 negative probes pass, but the RV-008 branch-around-unknown probe succeeds unexpectedly and restores a mutation-capable claim; P07 is therefore not accepted.
+* Basher validation passes without a Compose rebuild: focused `113`, locked `788`, and complete `3118` tests, with Ruff, format, compile, diff safety, Bicep, Checkov, container build/smoke, non-zero unconfigured worker exit, and secret/PII checks preserved. P07-T07 remains pending Ralph review.
 
 <!-- rpi:task id=P07-T07 -->
-### P07-T07: Reconcile delivery evidence and obtain Fry's independent review
+### P07-T07: Reconcile delivery evidence and obtain Ralph's independent review
 
 #### Context
 
@@ -1227,7 +1227,7 @@ Publish a truthful current delivery update for PR #684 and have Fry independentl
 
 #### Unresolved Items
 
-* Livingston review completed with verdict Not accepted. PR #684 remains draft/blocked for High RV-008 and for P00-T01, P05, and P06. RV-002, RV-004, and RV-009 are resolved by the Farnsworth revision; RV-003 and RV-007 remain resolved.
+* Basher's correction and validation are complete and PR #684 remains draft/blocked. Ralph's fresh independent final-SHA review is pending. P00-T01, P05, and P06 remain open; RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved.
 
 <!-- rpi:phase id=P05 -->
 ## P05: Deliver reviewed, reversible implementation

@@ -897,6 +897,180 @@ def test_exact_terminal_readback_of_latest_unknown_allows_new_safe_recovery(setu
     assert state["attempts"][2]["predecessor_attempt_id"] == unknown["attempt_id"]
 
 
+def test_latest_unknown_readback_for_different_provider_item_fails_closed(setup):
+    _storage, repository, _clock, document, _created = setup
+    failed = _failed_attempt(
+        repository,
+        document["outbox_id"],
+        owner="failed",
+        execution_id="failed",
+    )
+    _authorize_recovery(repository, document["outbox_id"], failed, suffix="unknown")
+    unknown = _terminate_current_attempt_unknown(
+        repository,
+        document["outbox_id"],
+        suffix="unknown",
+    )
+
+    reconciliation = repository.claim(
+        document["outbox_id"],
+        owner="different-item-readback",
+        execution_id="different-item-readback",
+        lease_seconds=300,
+    )
+    assert reconciliation.read_only is True
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            reconciliation,
+            provider=provider,
+            result="failed_terminal",
+            source=f"{provider}_terminal_readback",
+            provider_item_id=f"{provider}-DIFFERENT-ITEM",
+            native_state="failed",
+        )
+    repository.release(reconciliation)
+
+    with pytest.raises(DistributionOutboxError, match="cannot authorize retry"):
+        exact_recovery_authorization_evidence(
+            repository.read(document["outbox_id"]),
+            predecessor_attempt_id=unknown["attempt_id"],
+            expected_provider_item_ids={
+                "youtube": "youtube-resolved",
+                "spotify": "spotify-resolved",
+            },
+        )
+    state = repository.read(document["outbox_id"])
+    assert len(state["attempts"]) == 2
+    takeover = repository.claim(
+        document["outbox_id"],
+        owner="still-read-only",
+        execution_id="still-read-only",
+        lease_seconds=300,
+    )
+    assert takeover.read_only is True
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda evidence: evidence["youtube"]["intent"].__setitem__(
+            "expected_provider_item_id", None
+        ),
+        lambda evidence: evidence["youtube"]["intent"].__setitem__("provider", "spotify"),
+        lambda evidence: evidence["youtube"]["receipts"].append(
+            {
+                "intent_id": "stale-intent",
+                "provider_item_id": "youtube-unknown",
+                "ambiguous": False,
+            }
+        ),
+        lambda evidence: evidence["youtube"]["receipts"].append(
+            {
+                "intent_id": evidence["youtube"]["intent"]["intent_id"],
+                "provider_item_id": "youtube-conflict",
+                "ambiguous": False,
+            }
+        ),
+    ],
+    ids=[
+        "missing-item-identity",
+        "provider-kind-mismatch",
+        "stale-receipt",
+        "conflicting-item-candidate",
+    ],
+)
+def test_latest_unknown_provider_identity_candidates_fail_closed(setup, mutation):
+    _storage, repository, _clock, document, _created = setup
+    failed = _failed_attempt(
+        repository,
+        document["outbox_id"],
+        owner="failed",
+        execution_id="failed",
+    )
+    _authorize_recovery(repository, document["outbox_id"], failed, suffix="unknown")
+    unknown = _terminate_current_attempt_unknown(
+        repository,
+        document["outbox_id"],
+        suffix="unknown",
+    )
+
+    def _mutate(state):
+        mutation(state["attempts"][-1]["provider_evidence"])
+
+    repository._update(document["outbox_id"], _mutate)
+    reconciliation = repository.claim(
+        document["outbox_id"],
+        owner="identity-readback",
+        execution_id="identity-readback",
+        lease_seconds=300,
+    )
+    for provider in ("youtube", "spotify"):
+        repository.record_verification(
+            reconciliation,
+            provider=provider,
+            result="failed_terminal",
+            source=f"{provider}_terminal_readback",
+            provider_item_id=f"{provider}-unknown",
+            native_state="failed",
+        )
+    repository.release(reconciliation)
+
+    with pytest.raises(DistributionOutboxError, match="cannot authorize retry"):
+        exact_recovery_authorization_evidence(
+            repository.read(document["outbox_id"]),
+            predecessor_attempt_id=unknown["attempt_id"],
+            expected_provider_item_ids={
+                "youtube": "youtube-resolved",
+                "spotify": "spotify-resolved",
+            },
+        )
+    assert len(repository.read(document["outbox_id"])["attempts"]) == 2
+
+
+def test_duplicate_latest_unknown_provider_readback_fails_closed(setup):
+    _storage, repository, _clock, document, _created = setup
+    failed = _failed_attempt(
+        repository,
+        document["outbox_id"],
+        owner="failed",
+        execution_id="failed",
+    )
+    _authorize_recovery(repository, document["outbox_id"], failed, suffix="unknown")
+    unknown = _terminate_current_attempt_unknown(
+        repository,
+        document["outbox_id"],
+        suffix="unknown",
+    )
+
+    reconciliation = repository.claim(
+        document["outbox_id"],
+        owner="duplicate-readback",
+        execution_id="duplicate-readback",
+        lease_seconds=300,
+    )
+    for provider in ("youtube", "youtube", "spotify"):
+        repository.record_verification(
+            reconciliation,
+            provider=provider,
+            result="failed_terminal",
+            source=f"{provider}_terminal_readback",
+            provider_item_id=f"{provider}-unknown",
+            native_state="failed",
+        )
+    repository.release(reconciliation)
+
+    with pytest.raises(DistributionOutboxError, match="cannot authorize retry"):
+        exact_recovery_authorization_evidence(
+            repository.read(document["outbox_id"]),
+            predecessor_attempt_id=unknown["attempt_id"],
+            expected_provider_item_ids={
+                "youtube": "youtube-resolved",
+                "spotify": "spotify-resolved",
+            },
+        )
+    assert len(repository.read(document["outbox_id"])["attempts"]) == 2
+
+
 def test_stale_authorization_referencing_non_latest_predecessor_is_rejected(setup):
     _storage, repository, _clock, document, _created = setup
     first = _failed_attempt(

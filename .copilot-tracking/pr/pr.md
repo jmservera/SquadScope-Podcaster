@@ -1,11 +1,11 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Rusty's independent review rejected Frank's exact head.** Fry's rejection of Leela's revision `02241a1` and Livingston's rejection of Farnsworth source candidate `601d36a` remain historical evidence. RV-008 remains High. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Basher corrected Rusty's RV-008 rejection; Ralph's fresh independent final-SHA review is pending.** Fry's rejection of Leela's revision `02241a1`, Livingston's rejection of Farnsworth source candidate `601d36a`, and Rusty's rejection of Frank's `1efa749` remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
-Current Frank source/tests/artifacts commit: `502807d562996ecf6c8cd4213afd4cdf454aa5c3`.
-Exact reviewed head: `1efa74956e23b51512b7eff1ded4e809b79566e1`.
-Fresh independent reviewer: Rusty, verdict **Not accepted**.
+Basher revision base: `97c9520b7c365b078a50df113154bb1e66b1ecbb`.
+Current revision: exact final SHA will be recorded after commit/push.
+Fresh independent reviewer: Ralph, pending.
 
 ## Incident and acceptance truth
 
@@ -37,9 +37,17 @@ The branch contains the Podcaster-side P00 receipt/absence boundary and Amy's de
 
 Completion of the declared implementation scope does not imply acceptance. Fry's final review resolved the alert and tracking findings but rejected `02241a1` for scheduler lease recovery, legacy cleanup safety, recovery authorization, and four-cycle identity binding.
 
-## Frank correction after Livingston rejection
+## Basher correction after Rusty rejection
 
-Frank is the sole author of the current correction. Rusty is reserved for fresh independent review without source/test contribution. Bender, Hermes, Amy, Leela, Fry, Farnsworth, and Livingston did not contribute or advise.
+Basher is the sole author of the current correction. Ralph is reserved for fresh independent review without source/test contribution. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, Frank, and Rusty did not contribute or advise.
+
+The latest `provider_unknown` attempt now supplies recovery identity only through its immutable provider-evidence snapshot. Each provider must have a consumed, provider-matching intent with one expected item; receipts must belong to that intent, be non-ambiguous, and not conflict with the expected identity. Each provider must then have exactly one failed-terminal post-readback for that same item. Missing identity, provider-kind mismatch, stale receipt, conflicting item evidence, duplicate readback, or a different readback item fails closed.
+
+Rusty's exact bypass using intents for `youtube-unknown`/`spotify-unknown` and failed readbacks for `youtube-DIFFERENT-ITEM`/`spotify-DIFFERENT-ITEM` can no longer create authorization or a third mutation-capable attempt. Exact matching readback still resolves only the matching latest attempt under the existing attempt/week/publication/digest/artifact and ordered-history contract.
+
+## Historical Frank correction and Rusty rejection
+
+Frank was the sole author of that correction. Rusty performed its fresh independent review without source/test contribution. Bender, Hermes, Amy, Leela, Fry, Farnsworth, and Livingston did not contribute or advise.
 
 | Finding | State | Review result |
 |---|---|---|
@@ -53,9 +61,24 @@ Frank is the sole author of the current correction. Rusty is reserved for fresh 
 | RV-008 | **High, open** | Complete-history/latest-attempt checks pass, but failed-terminal readback of the latest unknown attempt is not bound to that attempt's exact provider item. Readback for a different item can authorize a mutation-capable continuation. |
 | RV-009 | Resolved | Every cycle recomputes proof from raw evidence and rejects label-only, tampered, mismatched, or unauthorized recovered envelopes. |
 
-Rusty's current verdict is **Not accepted**: 0 Critical, 1 High, 0 Medium, 0 Low at `1efa749`. Livingston's earlier rejection at `601d36a` remains historical evidence.
+Rusty's verdict on Frank's revision remains **Not accepted**: 0 Critical, 1 High, 0 Medium, 0 Low at `1efa749`. Livingston's earlier rejection at `601d36a` remains historical evidence.
 
-## Independent validation evidence
+## Basher validation evidence
+
+- Required RV-008 probes: **19 passed, 49 deselected**.
+- Focused correction suite: **113 passed**.
+- Locked contract suite: **788 passed, 1 warning**.
+- Full repository suite: **3118 passed, 2 skipped, 2 deselected, 1 warning**.
+- Python compile, Ruff check, Ruff format check, Bicep build, and diff safety: **passed**.
+- Exact Checkov baseline: **36 passed, 7 failed**, matching the documented pre-existing baseline.
+- CI-equivalent Checkov gate: **34 passed, 0 failed**.
+- Dockerfile Checkov baseline: **passed**.
+- Container image `sha256:0e4d101baaca7f4b4ebc2b84f78f103c8451aff4710ea9bb1d239897a34bdfff` passed UID `999`, ffmpeg/ffprobe, and pipeline import smoke; the unconfigured distribution worker exited `2`.
+- Changed-file suspected secret/PII scan found no private key, access key, JWT, signed credential URL, or email-address pattern.
+
+No Compose rebuild was required. No validation or security gate was weakened. Ralph review remains pending.
+
+## Historical independent validation evidence
 
 - Required RV-008 probes: **17 passed, 45 deselected**.
 - Focused correction suite: **107 passed**.
@@ -71,12 +94,12 @@ Rusty's initial full suite reproduced only a stale Compose recorder image; after
 
 The focused suite proves expired reservation recovery with one fenced winner, fail-closed cleanup until legacy reference migration completes, rejection of opaque or mismatched selected-predecessor evidence, rejection of label-only/tampered/mismatched proof envelopes, and acceptance of exact complete proof only.
 
-Frank's probes prove that a later `provider_unknown` blocks reuse of the older failed predecessor and that stale, omitted, and reordered history fail closed. Rusty's independent probe found the remaining gap: an unknown attempt expecting `youtube-unknown`/`spotify-unknown` accepted failed readback for `youtube-DIFFERENT-ITEM`/`spotify-DIFFERENT-ITEM`, appended a third attempt, and returned a mutation-capable claim. Latest-unknown readback must be bound to the exact provider item implicated by that attempt.
+Frank's probes prove that a later `provider_unknown` blocks reuse of the older failed predecessor and that stale, omitted, and reordered history fail closed. Basher's probes close Rusty's remaining gap: different-item readback, missing item identity, provider-kind mismatch, stale receipt, conflicting item candidate, and duplicate post-terminal readback all fail closed; exact matching readback remains the only path to a specifically authorized successor.
 
 ## Residual external gates
 
 - **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
-- **RV-008 / P07-T01:** bind post-terminal readback of the latest unknown attempt to its exact persisted provider item/intent/receipt identity and obtain a new accepted final-SHA review.
+- **P07-T07:** obtain Ralph's fresh independent review of Basher's final pushed SHA.
 - **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 
@@ -112,7 +135,8 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] Livingston's rejection of source candidate `601d36a` preserved.
 - [x] RV-008 branch-around-older-unknown recovery defect corrected and validated by Frank.
 - [x] Rusty independently reviewed exact head `1efa749`; verdict Not accepted.
-- [ ] RV-008 exact latest-unknown provider-item readback binding corrected and accepted.
+- [x] RV-008 exact latest-unknown provider-item readback binding corrected and fully validated by Basher.
+- [ ] Ralph independently reviews the final pushed SHA.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
 - [ ] P05 deployment/canary gates completed.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.
