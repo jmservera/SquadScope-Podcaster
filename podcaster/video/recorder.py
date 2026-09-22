@@ -56,6 +56,7 @@ from podcaster.video.clipset import (
     ClipPlanEntry,
     Clipset,
     ClipsetJobMismatchError,
+    ClipsetMigrationRequiredError,
     clip_admission_blob_path,
     clip_attempts_blob_path,
     clip_blob_path,
@@ -161,6 +162,10 @@ class PermanentRecorderSetupError(ValueError):
 
 class ForeignClipsetRecorderSetupError(PermanentRecorderSetupError):
     """The clipset stored for a recorder message belongs to another job."""
+
+
+class RetryableClipsetMigrationError(RuntimeError):
+    """A recorder delivery must wait for the editor to migrate its clipset."""
 
 
 def _utc_now() -> datetime:
@@ -474,6 +479,8 @@ def load_clipset(scratch: StorageBackend, job_id: str) -> Clipset:
         raise FileNotFoundError(f"clipset.json is unavailable for job {job_id}")
     try:
         return Clipset.from_bytes(payload, expected_job_id=job_id)
+    except ClipsetMigrationRequiredError as exc:
+        raise RetryableClipsetMigrationError("recorder clipset migration is pending") from exc
     except ClipsetJobMismatchError as exc:
         raise ForeignClipsetRecorderSetupError("invalid recorder clipset") from exc
     except (KeyError, TypeError, UnicodeError, ValueError) as exc:
@@ -941,6 +948,13 @@ def process_clip_message(
             ),
             30.0,
         )
+    except RetryableClipsetMigrationError:
+        logger.warning(
+            "recorder clipset migration pending job_id=%s clip_index=%d (left for retry)",
+            job_id,
+            clip_index,
+        )
+        return ClipOutcome(job_id, clip_index, OUTCOME_RETRY)
     except PermanentRecorderSetupError as exc:
         renderer = fallback_renderer
         if not isinstance(exc, ForeignClipsetRecorderSetupError):

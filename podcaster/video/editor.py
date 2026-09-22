@@ -50,6 +50,7 @@ from podcaster.video.clip_manifest import CLIP_MANIFEST_SCHEMA_VERSION
 from podcaster.video.clipset import (
     Clipset,
     ClipsetJobMismatchError,
+    UnknownClipsetSchemaError,
     clip_blob_path,
     clip_content_blob_path,
     clip_manifest_blob_path,
@@ -210,10 +211,11 @@ def plan_or_load_clipset(
     can't drift (RFC §6.3).
     """
     path = clipset_blob_path(job_id)
+    effective_budget = budget or VideoStageBudget.start()
     planned = Clipset.from_segments(
         job_id,
         segments,
-        budget=budget.projection if budget is not None else None,
+        budget=effective_budget.projection,
     )
     written = planned.to_json_bytes()
 
@@ -226,7 +228,7 @@ def plan_or_load_clipset(
     raw = scratch.get_bytes(path) or written
     try:
         clipset = Clipset.from_bytes(raw, expected_job_id=job_id)
-    except ClipsetJobMismatchError:
+    except (ClipsetJobMismatchError, UnknownClipsetSchemaError):
         raise
     except (TypeError, ValueError):
         if budget is None or not budget.admit(VideoStage.PREFLIGHT).allowed:

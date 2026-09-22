@@ -572,6 +572,7 @@ def test_rendered_pending_foreign_fanout_clipset_is_permanent_before_effects(
     foreign = Clipset.from_segments(
         "foreign-job",
         [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+        budget=budget.projection,
     )
     scratch.put_bytes(
         clipset_blob_path(job_id),
@@ -3975,6 +3976,7 @@ class TestFanoutGating:
         selected = Clipset.from_segments(
             job_id,
             [VideoSegment(start_seconds=17.0, duration_seconds=43.0)],
+            budget=_P04Clock().budget().projection,
         )
         scratch.put_bytes(
             clipset_blob_path(job_id),

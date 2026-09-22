@@ -15,6 +15,8 @@ from podcaster.storage import LocalStorageBackend
 from podcaster.video import recorder
 from podcaster.video.budget import VideoStageBudget
 from podcaster.video.clipset import (
+    CLIPSET_SCHEMA_VERSION,
+    LEGACY_CLIPSET_SCHEMA_VERSION,
     Clipset,
     clip_blob_path,
     clip_content_blob_path,
@@ -215,6 +217,56 @@ def test_process_message_malformed_clipset_terminalizes_and_deletes(tmp_path) ->
     assert calls == []
     assert queue.deleted == [message]
     assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "budget_value", "include_budget"),
+    [
+        (LEGACY_CLIPSET_SCHEMA_VERSION, None, False),
+        (CLIPSET_SCHEMA_VERSION, None, False),
+        (CLIPSET_SCHEMA_VERSION, None, True),
+        (CLIPSET_SCHEMA_VERSION, "not-an-object", True),
+    ],
+    ids=["legacy-v1", "missing-budget", "null-budget", "non-object-budget"],
+)
+def test_process_message_budget_migration_preserves_delivery(
+    tmp_path,
+    schema_version,
+    budget_value,
+    include_budget,
+) -> None:
+    scratch = _scratch(tmp_path)
+    current = Clipset.from_segments(
+        JOB_ID,
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+        budget=VideoStageBudget.start().projection,
+    ).to_dict()
+    current["schema_version"] = schema_version
+    if include_budget:
+        current["video_budget"] = budget_value
+    else:
+        current.pop("video_budget")
+    scratch.put_bytes(
+        clipset_blob_path(JOB_ID),
+        json.dumps(current).encode("utf-8"),
+        "application/json",
+    )
+    record, calls = _recorder()
+    queue = FakeQueue()
+    message = _message(0)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_RETRY
+    assert calls == []
+    assert queue.deleted == []
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
 
 
 @pytest.mark.parametrize("stop_at", range(1, 9))

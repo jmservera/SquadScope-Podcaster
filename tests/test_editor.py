@@ -13,6 +13,9 @@ import pytest
 
 from podcaster.video.budget import VideoStageBudget
 from podcaster.video.clipset import (
+    CLIPSET_SCHEMA_VERSION,
+    LEGACY_CLIPSET_SCHEMA_VERSION,
+    Clipset,
     clip_blob_path,
     clip_content_blob_path,
     clip_manifest_blob_path,
@@ -229,6 +232,31 @@ def test_budgeted_clipset_rejects_malformed_cache_and_recomputes():
     assert storage.blob_exists(lease_path)
 
 
+def test_legacy_clipset_without_budget_is_rebuilt_and_refanned_out():
+    storage = FakeStorage()
+    producer = FakeProducer()
+    budget = VideoStageBudget.start()
+    legacy = Clipset.from_segments("job1", _segments(2), budget=budget.projection).to_dict()
+    legacy["schema_version"] = LEGACY_CLIPSET_SCHEMA_VERSION
+    legacy.pop("video_budget")
+    storage.put_bytes(
+        "video-jobs/job1/clipset.json",
+        json.dumps(legacy).encode("utf-8"),
+        _JSON,
+    )
+    storage.put_bytes("video-jobs/job1/clips/000.webm", b"stale", _WEBM)
+
+    clipset = plan_or_load_clipset(storage, "job1", _segments(2), budget=budget)
+    enqueued = enqueue_missing_clips(storage, clipset, producer=producer)
+
+    persisted = json.loads(storage.get_bytes("video-jobs/job1/clipset.json"))
+    assert persisted["schema_version"] == CLIPSET_SCHEMA_VERSION
+    assert persisted["video_budget"] == budget.projection.to_dict()
+    assert not storage.blob_exists("video-jobs/job1/clips/000.webm")
+    assert enqueued == [0, 1]
+    assert len(producer.sent) == 2
+
+
 def test_plan_or_load_clipset_rejects_cross_job_cache_without_cleanup():
     storage = FakeStorage()
     foreign = plan_or_load_clipset(storage, "job2", _segments(2))
@@ -244,6 +272,25 @@ def test_plan_or_load_clipset_rejects_cross_job_cache_without_cleanup():
             _segments(2),
             budget=VideoStageBudget.start(),
         )
+
+    assert storage._data == before
+
+
+def test_plan_or_load_clipset_rejects_future_schema_without_cleanup():
+    storage = FakeStorage()
+    budget = VideoStageBudget.start()
+    future = Clipset.from_segments("job1", _segments(2), budget=budget.projection).to_dict()
+    future["schema_version"] = "squadscope-podcaster-clipset-v99"
+    storage.put_bytes(
+        "video-jobs/job1/clipset.json",
+        json.dumps(future).encode("utf-8"),
+        _JSON,
+    )
+    storage.put_bytes("video-jobs/job1/clips/000.webm", b"keep", _WEBM)
+    before = dict(storage._data)
+
+    with pytest.raises(ValueError, match="unknown clipset schema"):
+        plan_or_load_clipset(storage, "job1", _segments(2), budget=budget)
 
     assert storage._data == before
 
