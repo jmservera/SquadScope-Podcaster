@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: P07 implementation in progress; delivery remains blocked by P00-T01, P05, and P06
+* Planning status: P07 independently reviewed and not accepted; RV-002/RV-004/RV-008/RV-009 require correction, and delivery remains blocked by P00-T01, P05, and P06
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -258,7 +258,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 
 ## Implementation Status
 
-* Execution status: P07-T01–P07-T06 complete; P07-T07 delivery reconciliation is active with Fry's independent review explicitly pending after the final pushed commit
+* Execution status: Fry independently reviewed final revision `02241a1`; RV-003 and RV-007 are resolved, while RV-002/RV-004/RV-008/RV-009 remain open and P07 is not accepted
 * Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
 * Revision author: Leela only
 * Fresh independent reviewer: Fry, after implementation and locked validation; Fry contributes nothing during planning or implementation
@@ -267,7 +267,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Active implementation boundary: P07 review-follow-up defects only; P00-T01, P05, and P06 remain outside P07 and block final acceptance
 * Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
 * Validation intent: deterministic P07 negative probes, locked owner suites, full suite, Ruff check/format, compileall, Bicep, Checkov, diff check, container build, and applicable container/exit smoke without weakening
-* Current blockers: P00-T01 upstream prevention, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles
+* Current blockers: High RV-002/RV-004/RV-008/RV-009 implementation findings, P00-T01 upstream prevention, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles
 
 ## Sources
 
@@ -275,7 +275,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * `jmservera/SquadScope-Podcaster#681`: required atomic/fenced outbox boundary.
 * `jmservera/SquadScope-Podcaster#680`: merged canonical publication identity, evidence, and reconciliation baseline.
 * `jmservera/SquadScope-Podcaster#682`: replacement/supersession target with W17–W29, six RV-006, and later current unresolved safety threads.
-* `.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md`: canonical active findings RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009; RV-001/RV-005 resolved; RV-006 planning-level disposition.
+* `.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md`: canonical final-revision dispositions are RV-002/RV-004/RV-008/RV-009 open, RV-003/RV-007 resolved, RV-001/RV-005 previously resolved, and RV-006 resolved at planning level.
 * Authoritative QA correction dated 2026-09-21: immutable attempt truth; deterministic weekly aggregation; evidence-conditional W38 recovery classification; W39 missed/not-dispatched; exact external-readback and four-cycle gates.
 
 ## Phase Checklist
@@ -430,14 +430,14 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Ownership: Leela is sole revision author. Fry is reserved for P07-T07 independent review. Bender, Hermes, and Amy are excluded entirely.
 
 <!-- rpi:task id=P07-T01 -->
-#### [x] P07-T01: Enforce exact proof and durable recovery authorization
+#### [ ] P07-T01: Enforce exact proof and durable recovery authorization
 
 * Finding: RV-008.
 * Expected result: green requires exact week, publication, manifest, publication digest, canonical artifact digest/selection, expected provider identity, authoritative terminal readback source/state, and explicit duplicate resolution. Recovery authorization is durable, evidence-referenced, and cannot arise from an unknown mutation or caller boolean alone.
 * Closure evidence: label-only/omitted/mismatched/ambiguous proof probes are non-green; immutable failed/unknown attempts remain; no blind retry occurs; exact authorized recovery alone can produce recovered green.
 
 <!-- rpi:task id=P07-T02 -->
-#### [x] P07-T02: Make scheduler notification enqueue single-winner
+#### [ ] P07-T02: Make scheduler notification enqueue single-winner
 
 * Finding: RV-002.
 * Dependencies: P07-T01 schema compatibility.
@@ -445,7 +445,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: deterministic two-scheduler barriers prove one enqueue winner; stale worker completion is rejected; lease expiry/recovery cannot duplicate a notification.
 
 <!-- rpi:task id=P07-T03 -->
-#### [x] P07-T03: Bound and fence resumable cleanup
+#### [ ] P07-T03: Bound and fence resumable cleanup
 
 * Finding: RV-004.
 * Dependencies: P07-T01 identity/reference invariants.
@@ -460,7 +460,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: representative emitted rows satisfy generated queries; renamed/mismatched event probes fail validation; fire/clear and missing-data cases pass for every affected rule.
 
 <!-- rpi:task id=P07-T05 -->
-#### [x] P07-T05: Require authoritative proof for four-cycle acceptance
+#### [ ] P07-T05: Require authoritative proof for four-cycle acceptance
 
 * Finding: RV-009.
 * Dependencies: P07-T01.
@@ -468,7 +468,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: a parameterized negative matrix rejects label-only, missing, mismatched, ambiguous, partial, unknown, manual, identity-conflict, duplicate-unresolved, and no-readback cycles; exactly four consecutive fully proven cycles are required.
 
 <!-- rpi:task id=P07-T06 -->
-#### [x] P07-T06: Run the locked review-follow-up validation contract
+#### [ ] P07-T06: Run the locked review-follow-up validation contract
 
 * Findings: RV-002, RV-003, RV-004, RV-008, RV-009.
 * Dependencies: P07-T01–P07-T05.
@@ -476,12 +476,12 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: exact commands, counts, exit statuses, SHA/image digest where applicable, and any generated-artifact cleanup are recorded in the implementation delivery update.
 
 <!-- rpi:task id=P07-T07 -->
-#### [ ] P07-T07: Reconcile delivery evidence and obtain Fry's independent review
+#### [x] P07-T07: Reconcile delivery evidence and obtain Fry's independent review
 
 * Finding: RV-007 and cross-finding closure.
 * Dependencies: P07-T06.
 * Expected result: plan/details remain prospective; implementation updates changes/review-status summary/PR #684 with exact counts, finding dispositions, validation commands, and residual gates without rewriting historical review conclusions. Fry independently reviews the final validated diff and evidence.
-* Closure evidence: all artifacts report the same six-finding disposition/counts; stale locked-test evidence is removed from current delivery claims; Fry records no unresolved accepted critical finding and maps every RV to implementation, negative probes, and validation.
+* Closure evidence: Fry reviewed `02241a1` and recorded no Critical finding, but High RV-002/RV-004/RV-008/RV-009 remain. Current artifacts and PR #684 report the same rejected disposition, exact validation, and residual gates.
 
 <!-- rpi:phase id=P05 -->
 ### [ ] P05: Deliver reviewed, reversible implementation
@@ -561,13 +561,13 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Marker(s) | Revised disposition | Required next evidence |
 |---|---|---|
 | P00-T01 | Preserved external gate | Exact W39 blocked-stage evidence and upstream prevention/detection remain owned by `jmservera/SquadScope`; W39 stays `missed_not_dispatched` |
-| P07-T01 | Implemented for RV-008; validation pending | Exact persisted proof and durable recovery authorization; label-only and omitted-proof probes fail closed |
-| P07-T02 | Implemented for RV-002; validation pending | Atomic scheduler reservation/enqueue idempotency with deterministic concurrent-worker and lease-race probes |
-| P07-T03 | Implemented for RV-004; validation pending | Explicit run budgets, durable continuation, fencing/conditional deletion, and concurrent-reference protection |
-| P07-T04 | Implemented for RV-003; validation pending | Canonical emitted/query/test/runbook vocabulary with validation that fails on drift |
-| P07-T05 | Implemented for RV-009; validation pending | Four-cycle evaluation from persisted authoritative receipts/readbacks, never labels alone |
-| P07-T06 | Complete | Focused negative probes and full locked quality/security/container validation passed; exact baseline distinction recorded |
-| P07-T07; P05-T01 | Active for RV-007 | Reconcile current delivery evidence and PR #684 without editing historical review conclusions; retain residual gates and Fry review pending |
+| P07-T01 | Reopened; RV-008 High remains | Exact `record_verification` proof is fail-closed, but label-only recovery and opaque authorization evidence remain accepted |
+| P07-T02 | Reopened; RV-002 High remains | Concurrent reservation is single-winner, but expired `enqueue_started` reservations are hidden indefinitely |
+| P07-T03 | Reopened; RV-004 High remains | New-schema cleanup is bounded/fenced, but pre-index retained outbox artifacts can be deleted |
+| P07-T04 | Complete; RV-003 resolved | Canonical emitted/query vocabulary and active-depth absence semantics independently passed |
+| P07-T05 | Reopened; RV-009 High remains | Label-only rows fail, but identity-tampered envelopes with stale proof booleans still pass |
+| P07-T06 | Reopened | Repository validation passed after Compose refresh, but required independent negative probes found four implementation failures |
+| P07-T07; P05-T01 | Review complete; RV-007 resolved | Fry verdict, exact counts, and PR #684 narrative reconciled; PR remains draft/blocked |
 | P05-T03 | Expanded by RV-006 and refreshed current metadata | Closure evidence for W17–W29, the six RV-006 threads, and four later unresolved threads found during revision; do not claim resolution without GitHub evidence |
 | P01-T04, P02-T01–P02-T02 | Implemented surfaces; dependency verification | Preserve safe behavior unless the new receipt/attempt schema requires minimal compatible updates |
 | Existing W38 references in plan/PR handoff | Evidence-conditional correction | Use `published_verified_recovered` only with full exact proof; otherwise label it an allowed candidate and retain all attempt history |

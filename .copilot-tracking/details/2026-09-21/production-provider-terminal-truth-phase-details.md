@@ -99,13 +99,13 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | P07-T01–P07-T06 complete; P07-T07 delivery reconciliation active; Fry review pending | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Independently reviewed at `02241a1`; not accepted; RV-002/RV-004/RV-008/RV-009 reopened | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: P07-T01–P07-T07 only, covering RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009. P07-T01–P07-T06 have completion evidence; P07-T07 is active and Fry review remains pending.
+* Declared scope: P07-T01–P07-T07 only, covering RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009. Fry completed the independent review of `02241a1`; RV-003/RV-007 are resolved, while RV-002/RV-004/RV-008/RV-009 remain open.
 * Current task: implement exact proof/recovery authorization, atomic scheduler notification ownership, bounded fenced cleanup, canonical telemetry vocabulary, proof-backed four-cycle evaluation, locked validation, and truthful delivery evidence.
 * Revision author: Leela only.
 * Fresh independent reviewer: Fry after implementation and validation; Fry may not contribute during planning or implementation.
@@ -120,14 +120,14 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | Open for RV-008 | Exact proof fields, persisted expected provider identity, authoritative readback, duplicate resolution, durable authorization references, immutable failed attempts |
-| P07-T02 | Open for RV-002 | Atomic reservation/claim or enqueue idempotency prevents duplicate selection/enqueue under concurrent workers and lease races |
-| P07-T03 | Open for RV-004 | Explicit per-run/page/item/time budgets, durable continuation, fencing/conditional deletion, and concurrent-reference protection |
+| P07-T01 | Reopened for RV-008 | Replace label-only recovery and opaque evidence-token authorization with exact durable predecessor/provider proof |
+| P07-T02 | Reopened for RV-002 | Recover expired/abandoned `enqueue_started` reservations without duplicate enqueue |
+| P07-T03 | Reopened for RV-004 | Migrate/backfill or safely fall back for pre-reference-index retained outbox artifacts |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
-| P07-T04 | Open for RV-003 | One emitted/query/test/runbook vocabulary; generated validation fails on drift; missing-state semantics are executable |
-| P07-T05 | Open for RV-009 | Four-cycle evaluator consumes authoritative persisted proof envelopes, never labels alone |
-| P07-T06 | Open validation gate | Focused negative probes plus full suite, compile, Ruff, Bicep, Checkov, diff, container, and exit smoke |
-| P07-T07; P05-T01 | Open for RV-007 | Reconcile exact current evidence/status/counts and PR #684 delivery narrative without changing historical review conclusions |
+| P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
+| P07-T05 | Reopened for RV-009 | Rebind stored proof to immutable raw identity/readback evidence during four-cycle evaluation |
+| P07-T06 | Reopened | Standard validation passed after Compose refresh, but independent negative probes failed for four findings |
+| P07-T07; P05-T01 | Review complete; RV-007 resolved | Exact Fry verdict/counts/status and PR #684 narrative reconciled; external delivery remains blocked |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
@@ -294,7 +294,7 @@ Add an integration scenario beginning at the authoritative upstream weekly-publi
 * The authoritative correction supersedes every assumption that W38 was unpublished, missed, or awaiting recovery.
 * W39 is the only active missed-publication incident and ends before Azure arrival; no W39 downstream execution may be inferred.
 * The original critique remains unchanged as historical evidence. No second critique was run because this is an authoritative post-implementation user correction.
-* Historical note: Amy's correction cycle claimed RV-002, RV-003, and RV-004 complete, but the canonical independent review rejected those claims. Leela's P07 implementation now supplies replacement correction and validation evidence; RV-002, RV-003, RV-004, and RV-007 remain pending Fry's independent final-commit disposition. RV-001/RV-005 remain resolved; RV-006 remains resolved at planning level without claiming any GitHub thread resolved.
+* Historical note: Amy's correction cycle claimed RV-002, RV-003, and RV-004 complete, but the canonical independent review rejected those claims. Fry's review of Leela's P07 final revision resolved RV-003/RV-007 and left RV-002/RV-004/RV-008/RV-009 open. RV-001/RV-005 remain resolved; RV-006 remains resolved at planning level without claiming any GitHub thread resolved.
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish the durable outbox contract
@@ -662,7 +662,7 @@ Make process exit authoritative from deterministic weekly aggregation, keep retr
 
 ### Completion Evidence
 
-* Historical P03 evidence was later rejected for RV-002, RV-003, and RV-004. Current closure evidence belongs to P07-T02–P07-T04 and remains pending Fry's independent disposition. Expanded RV-006 thread closure evidence remains P05 delivery work.
+* Historical P03 evidence was later rejected for RV-002, RV-003, and RV-004. Fry's P07 review resolved RV-003 but left RV-002 and RV-004 open. Expanded RV-006 thread closure evidence remains P05 delivery work.
 
 ### Unresolved Items
 
@@ -959,7 +959,7 @@ Correct the six active findings in dependency order, prove fail-closed behavior 
 
 ### Unresolved Items
 
-* None. P00-T01, P05, and P06 remain explicit residual acceptance gates after this phase.
+* RV-002, RV-004, RV-008, and RV-009 remain open after Fry's final-SHA review. P00-T01, P05, and P06 remain explicit residual acceptance gates.
 
 <!-- rpi:task id=P07-T01 -->
 ### P07-T01: Enforce exact proof and durable recovery authorization
@@ -998,7 +998,7 @@ Require persisted, exact, identity-bound proof for every green outcome and evide
 
 #### Unresolved Items
 
-* None.
+* RV-008 remains open: `weekly_state_from_attempts()` still accepts label-only `proof_complete` plus an opaque evidence token, and recovery authorization is not bound to a validated durable proof object.
 
 <!-- rpi:task id=P07-T02 -->
 ### P07-T02: Make scheduler notification enqueue single-winner
@@ -1036,7 +1036,7 @@ Move ownership/idempotency before enqueue so one durable winner may notify while
 
 #### Unresolved Items
 
-* None.
+* RV-002 remains open: an expired reservation in `enqueue_started` remains excluded from due scans indefinitely.
 
 <!-- rpi:task id=P07-T03 -->
 ### P07-T03: Bound and fence resumable cleanup
@@ -1074,7 +1074,7 @@ Make cleanup explicitly bounded per execution, resumable across executions, and 
 
 #### Unresolved Items
 
-* None.
+* RV-004 remains open and is escalated to High: existing pre-reference-index outbox records can lose referenced artifacts during cleanup because no migration/fallback populates the new index.
 
 <!-- rpi:task id=P07-T04 -->
 ### P07-T04: Unify emitted telemetry and deployable alert vocabulary
@@ -1149,7 +1149,7 @@ Evaluate each cycle from persisted authoritative proof receipts/readbacks and th
 
 #### Unresolved Items
 
-* P06 still requires four real elapsed production cycles; a fixture validates the evaluator only.
+* RV-009 remains open: persisted proof booleans are not rebound to immutable raw identity values, so an identity-tampered envelope can pass. P06 also still requires four real elapsed production cycles.
 
 <!-- rpi:task id=P07-T06 -->
 ### P07-T06: Run the locked review-follow-up validation contract
@@ -1185,7 +1185,7 @@ Run focused negative probes and the complete repository quality/security/contain
 
 #### Unresolved Items
 
-* None.
+* Repository-standard commands pass after rebuilding the stale Compose image, but the review-specific negative probes for RV-002/RV-004/RV-008/RV-009 fail; P07 validation is therefore not accepted.
 
 <!-- rpi:task id=P07-T07 -->
 ### P07-T07: Reconcile delivery evidence and obtain Fry's independent review
@@ -1223,7 +1223,7 @@ Publish a truthful current delivery update for PR #684 and have Fry independentl
 
 #### Unresolved Items
 
-* PR #684 remains draft/blocked until P00-T01, P05, and P06 are satisfied.
+* Review completed with verdict Not accepted. PR #684 remains draft/blocked for High RV-002/RV-004/RV-008/RV-009 and for P00-T01, P05, and P06.
 
 <!-- rpi:phase id=P05 -->
 ## P05: Deliver reviewed, reversible implementation
