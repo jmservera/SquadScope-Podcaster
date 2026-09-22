@@ -503,6 +503,93 @@ No test, assertion, validation gate, or security gate was weakened.
 
 No issue, PR, review thread, deployment, canary, or production state was resolved, closed, or mutated by this review.
 
+## Ralph Fresh Independent Final-SHA Review — 2026-09-22
+
+### Independence and Exact Boundary
+
+* Reviewer: Ralph.
+* Independence: Ralph did not author Basher's revision and received no contribution or advice from Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, Frank, Rusty, or Basher.
+* Comparison: `97c9520b7c365b078a50df113154bb1e66b1ecbb..fcfa40015ed68d9e38d8432425b7cbd15171e835`.
+* Source commit: `eaaac5706985d0df4058f46d25e4aa4d9217f41e`.
+* Final reviewed head: `fcfa40015ed68d9e38d8432425b7cbd15171e835`.
+* Ancestry and divergence: comparison base is the merge base; local, origin, and PR head matched with divergence `0/0`; the worktree was clean before review tracking updates.
+* Post-source changes: `cef1aab` and `fcfa400` changed tracking/PR narrative only; no executable source or tests changed after `eaaac570`.
+
+### Ralph Verdict
+
+**Not accepted (`request_changes`).** Basher closes Rusty's different-item bypass, but RV-008 remains **High** because exact-item failed-terminal readback can authorize a new mutation-capable attempt when the latest `provider_unknown` attempt has no durable provider receipt. Severity: 0 Critical, 1 High, 0 Medium, 0 Low.
+
+### Finding Dispositions
+
+| Finding | Ralph disposition |
+|---|---|
+| RV-002 | Remains resolved; atomic reservation, stale-owner fencing, and race probes pass. |
+| RV-003 | Remains resolved; telemetry/deployment regressions, Bicep, and CI Checkov pass. |
+| RV-004 | Remains resolved; bounded cleanup and reference-fencing regressions pass. |
+| RV-007 | Remains resolved at tracking level; all rejection cycles and exact author/reviewer identities are preserved. |
+| RV-008 | **High, open.** Different-item, missing identity, duplicate, conflict, wrong-kind, stale receipt, stale authorization, wrong binding, and history tampering fail closed, but missing receipt does not. |
+| RV-009 | Remains resolved; four-cycle proof-envelope regressions pass. |
+
+### High Finding: Missing Provider Receipt Authorizes Recovery
+
+`_recovery_predecessor_provider_evidence()` requires `receipts` to be a list but does not require it to contain an exact provider receipt. The repository's accepted exact-match fixture consumes each mutation intent, records no receipt, terminates `provider_unknown`, and later accepts an exact-item failed-terminal readback. Authorization then appends a third attempt and `claim()` returns mutation authority.
+
+Exact reproduction:
+
+```text
+RV008_MISSING_RECEIPT_BYPASS receipts={'youtube': 0, 'spotify': 0} attempts=3 read_only=False
+```
+
+This violates the authoritative requirement that resolution be bound to durable consumed intent, receipt, and provider evidence. An expected item in intent is not evidence that the provider accepted, rejected, or identified the mutation. Required correction: each provider must have exactly one usable, non-ambiguous receipt bound to the consumed intent, provider kind, and expected provider item before exact failed-terminal readback can authorize the specifically bound successor. Missing or duplicate receipts must fail closed.
+
+### Independent Probes
+
+| Probe | Result |
+|---|---|
+| Rusty different-item reproduction | Denied; no successor authorization |
+| Exact matching item | Accepted only under existing history/item bindings, but exposes the missing-receipt High finding |
+| Missing identity | Denied |
+| Duplicate readback identity | Denied |
+| Conflicting provider items | Denied |
+| Provider-kind mismatch | Denied |
+| Stale receipt / wrong intent | Denied |
+| Wrong week/publication/digest/artifact/binding fields | Denied by structured authorization regressions |
+| Stale authorization / non-latest predecessor | Denied |
+| Reordered or omitted terminal history | Denied |
+| Scheduler race and fencing | Passed; one fenced winner and stale-owner rejection |
+| Missing provider receipt | **Failed safety:** successor created with `read_only=False` |
+
+### Independent Validation
+
+| Command or gate | Result |
+|---|---|
+| Focused RV regression selection | `29 passed, 39 deselected` |
+| Focused correction suite | `113 passed` |
+| Locked contract suite | `788 passed, 1 warning` |
+| Initial full suite | `1 failed, 3117 passed, 2 skipped, 2 deselected, 1 warning`; stale Compose recorder image only |
+| Rebuilt Compose recorder and fanout probe | `1 passed` |
+| Final full suite | `3118 passed, 2 skipped, 2 deselected, 1 warning` |
+| Ruff, format, compile, diff safety, deleted-test check | Passed; `192 files already formatted` |
+| Bicep build | Passed with existing BCP318 warning |
+| Exact Checkov | Existing baseline reproduced: `36 passed, 7 failed` |
+| CI-equivalent Checkov | `34 passed, 0 failed` |
+| Dockerfile Checkov baseline | Passed |
+| Review container | `sha256:5baa9f5828ab055362ba8e5b25d3fae388ab5cb85c5029c335cce4d79f2ccf10` |
+| Container smoke | UID `999`; ffmpeg/ffprobe and pipeline imports passed; unconfigured distribution worker exited `2` |
+| Suspected secret/PII scan | No private key, access key, JWT, signed credential URL, email-address pattern, or raw PII found |
+
+No test, assertion, quality gate, or security gate was weakened.
+
+### GitHub and Residual Gates
+
+* #684: open, draft, PR head matched reviewed head, mergeable/CLEAN, 13 successful checks, no reviews, and zero review threads before this tracking-only update. It remains blocked and is not approved.
+* jmservera/SquadScope-Podcaster#682, jmservera/SquadScope-Podcaster#671, jmservera/SquadScope-Podcaster#678, jmservera/SquadScope-Podcaster#679, jmservera/SquadScope-Podcaster#681, and jmservera/SquadScope-Coordinator#17 remain open.
+* jmservera/SquadScope#770 remains merged but does not clear P00-T01.
+* RV-008/P07-T01 remains owned by the Podcaster revision owner and requires exact durable receipt binding plus fresh independent final-SHA review.
+* P00-T01 remains owned by `jmservera/SquadScope`; P05 remains owned by delivery/deployment; P06 remains owned by production verification after four elapsed cycles.
+
+No issue, review thread, deployment, canary, or production state was mutated.
+
 ---
 
 ## Fresh Independent Frank-Revision Review — Rusty — 2026-09-22

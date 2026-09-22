@@ -16,7 +16,7 @@ W39 remains `missed_not_dispatched`: it has no synth, recorder, video, outbox, o
 
 The canonical review subsequently proved six active defects: RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009. P07 is a distinct review-follow-up lifecycle phase and is the only current in-repository implementation boundary. Historical P01–P04 completion is retained as context, not accepted as closure for those findings.
 
-Rusty's 2026-09-22 exact-head review of Frank's revision preserves RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 as resolved but rejects P07 because RV-008 remains High: failed-terminal post-readback of a latest `provider_unknown` attempt is not bound to that attempt's exact persisted provider item identity. Basher is the sole author of the active correction from head `97c9520b7c365b078a50df113154bb1e66b1ecbb`; Ralph is reserved for fresh independent final-SHA review.
+Rusty's 2026-09-22 exact-head review of Frank's revision preserved RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 as resolved but rejected P07 because RV-008 remained High. Basher then closed the different-item readback bypass. Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835` and rejected it because exact-item failed readback still authorizes recovery when the latest `provider_unknown` attempt has no durable provider receipts.
 
 ## Cross-Phase Invariants
 
@@ -1002,7 +1002,7 @@ Require persisted, exact, identity-bound proof for every green outcome and evide
 
 #### Unresolved Items
 
-* Basher correction complete: latest complete ordered-history validation is preserved. Recovery from `provider_unknown` now derives identity only from the latest attempt's durable provider evidence, requires a consumed provider-matching intent with one expected item, rejects stale/ambiguous/conflicting receipt evidence and duplicate post-terminal readbacks, and requires the resolving readback to match that exact item. Exact readback may resolve only the matching latest attempt and authorize only its specifically bound successor. P07-T07 remains pending Ralph review.
+* Ralph rejection: Basher's correction preserves latest complete ordered-history validation and rejects different-item, stale, ambiguous, conflicting, and duplicate readback evidence, but it accepts `receipts=[]`. The exact reproduction consumed provider intents for `youtube-unknown` and `spotify-unknown`, persisted no receipts, recorded exact-item failed-terminal readbacks, and produced `RV008_MISSING_RECEIPT_BYPASS receipts={'youtube': 0, 'spotify': 0} attempts=3 read_only=False`. Require one exact, non-ambiguous, intent-bound durable receipt per provider before authorization; then rerun validation and obtain a new independent final-SHA review.
 
 <!-- rpi:task id=P07-T02 -->
 ### P07-T02: Make scheduler notification enqueue single-winner
@@ -1219,15 +1219,15 @@ Publish a truthful current delivery update for PR #684 and have Fry independentl
 
 * Plan/details/current delivery evidence/PR report identical counts and dispositions.
 * Every RV maps to implementation, focused negative probes, and full validation.
-* Fry reviews the final validated diff and reports no unresolved accepted critical finding; later content change requires revalidation and re-review.
+* The designated fresh independent reviewer assesses the final validated diff; later executable content change requires revalidation and re-review.
 
 #### Completion Evidence
 
-* Six-row closure matrix, exact validation record, Fry verdict/finding dispositions, and explicit statement that P00-T01/P05/P06 still block final acceptance.
+* Six-row closure matrix, exact validation record, independent verdict/finding dispositions, and explicit statement that P00-T01/P05/P06 still block final acceptance.
 
 #### Unresolved Items
 
-* Basher's correction and validation are complete and PR #684 remains draft/blocked. Ralph's fresh independent final-SHA review is pending. P00-T01, P05, and P06 remain open; RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved.
+* Ralph's final-SHA review is complete with verdict Not accepted. RV-008/P07-T01 remains open for exact durable receipt binding and a subsequent independent final-SHA review. PR #684 remains draft/blocked; P00-T01, P05, and P06 remain open; RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved.
 
 <!-- rpi:phase id=P05 -->
 ## P05: Deliver reviewed, reversible implementation
