@@ -42,6 +42,12 @@ correction and required evidence updates.
 P05-T03 remains pending Rusty. #684 stays open/draft/blocked and #682 stays open. No merge,
 deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit is authorized.
 
+Corrected evidence:
+[r4074996598](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4074996598)
+on the relevant #682 final-media thread and
+[issuecomment-5781771685](https://github.com/jmservera/SquadScope-Podcaster/pull/684#issuecomment-5781771685)
+in response to Basher's #684 rejection.
+
 ## Leela final-media complete-decode correction
 
 Final promotion now requires both the existing exact ffprobe stream/duration contract and a
