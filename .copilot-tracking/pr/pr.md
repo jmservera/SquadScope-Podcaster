@@ -1,13 +1,35 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Fry independently rejected the final head.** Authorization v3 binds and recomputes the complete canonical ordered durable attempt/event history plus the exact single-use successor expectation, but the containing recovery-authorization record is not fully bound or unique. RV-008/P07-T01 and P07-T07 remain open; P00-T01, P05, and P06 also remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Fry correction complete; Leela review pending.** Authorization v4 binds the complete canonical authorization envelope and the ordered authorization set, including exact metadata, types/nulls, evidence/digest, extensions, predecessor/successor identity, cardinality, active selection, and historical supersession. RV-008 is implementation-resolved, but P07-T07 awaits Leela's independent final-SHA review; P00-T01, P05, and P06 also remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
 Current source/tests/artifacts commit: `bfead2572ae7c98bf82122281ac3a26ff3b91edc`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
-Fresh independent reviewer: Fry, review complete and reviewer-only; verdict Not accepted.
+Current sole revision author: Fry.
+Fresh independent reviewer: Leela, pending and reviewer-only; no contribution permitted.
+
+## Fry RV-008 complete-envelope correction
+
+The correction introduces `distribution-recovery-authz-v4` and
+`distribution-recovery-authz-set-v1`. Every authorization field is exact and type checked,
+explicit-null actor/owner fields and the extensions map are bound, structured evidence and digest
+are recomputed, predecessor/successor expectations are exact, and the complete ordered collection
+is bound by count, IDs, active ID, and digest. Historical authorizations are deterministically
+superseded and linked; exactly one final active authorization may match the boundary.
+
+All six reported bypasses now fail closed: source, reason, and authorization-time mutation; unknown
+field insertion; duplicate matching authorization; and unrelated appended authorization. Every
+envelope field removal and type/null mutation, unknown/legacy version, non-empty extensions,
+duplicate/reordered/extra/conflicting collection, and set-manifest mutation is denied. Exact
+unchanged evidence grants one mutation-capable claim; concurrent authorization and claim each have
+one winner; reuse is read-only; post-claim tampering is rejected.
+
+Validation passes: outbox `182`, focused `227`, locked `902`, full `3232 passed, 2 skipped, 2
+deselected, 1 warning`; Ruff/format/compile/diff, Bicep, exact Checkov `36/7`, CI Checkov `34/0`,
+Dockerfile Checkov, container smoke, worker exit `2`, and changed-diff secret/PII scan. Container:
+`sha256:fb1af564ee7386379fa700886b2d26367c4857d1743a4bca8053953b3ab7ba8a`.
 
 ## Fry final-SHA rejection
 
@@ -183,7 +205,7 @@ Frank's probes prove that a later `provider_unknown` blocks reuse of the older f
 ## Residual external gates
 
 - **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
-- **P07-T01/P07-T07:** correct the complete-history binding defect and obtain a new independent acceptance of the corrected final pushed SHA; local implementation and validation do not self-accept.
+- **P07-T07:** obtain Leela's independent acceptance of Fry's corrected final pushed SHA; local implementation and validation do not self-accept.
 - **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 

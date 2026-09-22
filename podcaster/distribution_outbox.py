@@ -35,7 +35,8 @@ VERIFICATION_PROOF_FIELDS = (
     "terminal_authoritative_readback",
     "duplicate_ambiguity_resolved",
 )
-RECOVERY_AUTHORIZATION_SCHEMA_VERSION = "distribution-recovery-authorization-v3"
+RECOVERY_AUTHORIZATION_SCHEMA_VERSION = "distribution-recovery-authz-v4"
+RECOVERY_AUTHORIZATION_SET_SCHEMA_VERSION = "distribution-recovery-authz-set-v1"
 ATTEMPT_HISTORY_EVIDENCE_SCHEMA_VERSION = "distribution-attempt-history-evidence-v1"
 ATTEMPT_RECORD_VERSION = "distribution-attempt-record-v1"
 
@@ -777,6 +778,7 @@ def _validated_recovery_authorization_evidence(
     *,
     succeeding_attempt_id: str | None = None,
     successor_may_progress: bool = False,
+    allow_following_attempts: bool = False,
 ) -> dict[str, Any]:
     value = _safe_value(dict(evidence), key="recovery_evidence")
     attempts = document.get("attempts", [])
@@ -794,7 +796,8 @@ def _validated_recovery_authorization_evidence(
         if later_attempts:
             raise DistributionOutboxError("recovery predecessor is not the latest attempt")
     elif (
-        len(later_attempts) != 1
+        (not allow_following_attempts and len(later_attempts) != 1)
+        or not later_attempts
         or not isinstance(later_attempts[0], Mapping)
         or later_attempts[0].get("attempt_id") != succeeding_attempt_id
         or later_attempts[0].get("predecessor_attempt_id") != predecessor.get("attempt_id")
@@ -860,6 +863,174 @@ def _validated_recovery_authorization_evidence(
     return value
 
 
+_RECOVERY_AUTHORIZATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "authz_id",
+        "authz_version",
+        "source",
+        "reason",
+        "authorized_at",
+        "actor",
+        "owner",
+        "status",
+        "superseded_by_authz_id",
+        "predecessor_attempt_id",
+        "successor_attempt_id",
+        "evidence_schema_version",
+        "evidence_digest",
+        "evidence",
+        "extensions",
+    }
+)
+
+
+def _exact_type(value: Any, expected: type) -> bool:
+    return type(value) is expected
+
+
+def _authorization_set_document(authorizations: list[Mapping[str, Any]]) -> dict[str, Any]:
+    ordered_ids = [authorization["authz_id"] for authorization in authorizations]
+    envelope = {
+        "schema_version": RECOVERY_AUTHORIZATION_SET_SCHEMA_VERSION,
+        "authz_count": len(authorizations),
+        "ordered_authz_ids": ordered_ids,
+        "active_authz_id": ordered_ids[-1] if ordered_ids else None,
+    }
+    digest_input = {
+        "set": envelope,
+        "authorizations": [dict(authorization) for authorization in authorizations],
+    }
+    envelope["digest"] = hashlib.sha256(
+        _canonical_json_bytes(_canonical_typed_value(digest_input))
+    ).hexdigest()
+    return envelope
+
+
+def _refresh_recovery_authorization_set(document: dict[str, Any]) -> None:
+    authorizations = document.get("recovery_authz")
+    if not isinstance(authorizations, list) or not all(
+        isinstance(item, Mapping) for item in authorizations
+    ):
+        raise DistributionOutboxError("recovery authorization collection is malformed")
+    document["recovery_authz_set"] = _authorization_set_document(authorizations)
+
+
+def _expected_recovery_authorization(
+    document: Mapping[str, Any],
+    authorization: Mapping[str, Any],
+    predecessor: Mapping[str, Any],
+    successor: Mapping[str, Any],
+    *,
+    status: str,
+    superseded_by_authz_id: str | None,
+    successor_may_progress: bool,
+) -> dict[str, Any]:
+    evidence = authorization.get("evidence")
+    if not isinstance(evidence, Mapping):
+        raise DistributionOutboxError("recovery authorization evidence is missing")
+    validated = _validated_recovery_authorization_evidence(
+        document,
+        predecessor,
+        evidence,
+        succeeding_attempt_id=str(successor.get("attempt_id") or ""),
+        successor_may_progress=successor_may_progress,
+        allow_following_attempts=True,
+    )
+    digest = hashlib.sha256(_canonical_json_bytes(validated)).hexdigest()
+    return {
+        "schema_version": RECOVERY_AUTHORIZATION_SCHEMA_VERSION,
+        "authz_id": successor.get("authz_id"),
+        "authz_version": 4,
+        "source": successor.get("authz_source"),
+        "reason": successor.get("authz_reason"),
+        "authorized_at": successor.get("authorized_at"),
+        "actor": None,
+        "owner": None,
+        "status": status,
+        "superseded_by_authz_id": superseded_by_authz_id,
+        "predecessor_attempt_id": predecessor.get("attempt_id"),
+        "successor_attempt_id": successor.get("attempt_id"),
+        "evidence_schema_version": validated.get("schema_version"),
+        "evidence_digest": digest,
+        "evidence": validated,
+        "extensions": {},
+    }
+
+
+def _validated_recovery_authorization_collection(
+    document: Mapping[str, Any],
+    authorizations: Iterable[Mapping[str, Any]],
+    *,
+    active_successor_may_progress: bool,
+) -> list[Mapping[str, Any]]:
+    if not isinstance(authorizations, list):
+        raise DistributionOutboxError("recovery authorization collection is malformed")
+    attempts = document.get("attempts")
+    if not isinstance(attempts, list):
+        raise DistributionOutboxError("recovery authorization attempts are missing")
+    recovery_attempts = attempts[1:]
+    if len(authorizations) != len(recovery_attempts):
+        raise DistributionOutboxError("recovery authorization cardinality is invalid")
+    validated: list[Mapping[str, Any]] = []
+    for index, authorization in enumerate(authorizations):
+        if not isinstance(authorization, Mapping) or set(authorization) != (
+            _RECOVERY_AUTHORIZATION_FIELDS
+        ):
+            raise DistributionOutboxError("recovery authorization envelope is invalid")
+        if (
+            not _exact_type(authorization.get("schema_version"), str)
+            or not _exact_type(authorization.get("authz_id"), str)
+            or not _exact_type(authorization.get("authz_version"), int)
+            or not _exact_type(authorization.get("source"), str)
+            or not _exact_type(authorization.get("reason"), str)
+            or not _exact_type(authorization.get("authorized_at"), str)
+            or authorization.get("actor") is not None
+            or authorization.get("owner") is not None
+            or not _exact_type(authorization.get("status"), str)
+            or (
+                authorization.get("superseded_by_authz_id") is not None
+                and not _exact_type(authorization.get("superseded_by_authz_id"), str)
+            )
+            or not _exact_type(authorization.get("predecessor_attempt_id"), str)
+            or not _exact_type(authorization.get("successor_attempt_id"), str)
+            or not _exact_type(authorization.get("evidence_schema_version"), str)
+            or not _exact_type(authorization.get("evidence_digest"), str)
+            or not isinstance(authorization.get("evidence"), Mapping)
+            or not _exact_type(authorization.get("extensions"), dict)
+        ):
+            raise DistributionOutboxError("recovery authorization envelope type is invalid")
+        successor = recovery_attempts[index]
+        predecessor = attempts[index]
+        if not isinstance(successor, Mapping) or not isinstance(predecessor, Mapping):
+            raise DistributionOutboxError("recovery authorization attempt boundary is invalid")
+        next_authorization_id = (
+            recovery_attempts[index + 1].get("authz_id")
+            if index + 1 < len(recovery_attempts)
+            and isinstance(recovery_attempts[index + 1], Mapping)
+            else None
+        )
+        expected = _expected_recovery_authorization(
+            document,
+            authorization,
+            predecessor,
+            successor,
+            status="superseded" if next_authorization_id else "active",
+            superseded_by_authz_id=(str(next_authorization_id) if next_authorization_id else None),
+            successor_may_progress=(
+                True if next_authorization_id else active_successor_may_progress
+            ),
+        )
+        if dict(authorization) != expected:
+            raise DistributionOutboxError("recovery authorization envelope binding is invalid")
+        validated.append(authorization)
+    set_document = document.get("recovery_authz_set")
+    expected_set = _authorization_set_document(validated)
+    if not isinstance(set_document, Mapping) or dict(set_document) != expected_set:
+        raise DistributionOutboxError("recovery authorization set binding is invalid")
+    return validated
+
+
 def _recovery_authorization_binding_is_valid(
     document: Mapping[str, Any],
     winner: Mapping[str, Any],
@@ -867,50 +1038,29 @@ def _recovery_authorization_binding_is_valid(
     *,
     successor_may_progress: bool = False,
 ) -> bool:
-    authorization = next(
-        (
-            item
-            for item in authorizations
-            if isinstance(item, Mapping)
-            and item.get("authz_id") == winner.get("authz_id")
-            and item.get("attempt_id") == winner.get("attempt_id")
-            and item.get("predecessor_attempt_id") == winner.get("predecessor_attempt_id")
-        ),
-        None,
-    )
-    if not isinstance(authorization, Mapping):
-        return False
-    predecessor = next(
-        (
-            attempt
-            for attempt in document.get("attempts", [])
-            if isinstance(attempt, Mapping)
-            and attempt.get("attempt_id") == winner.get("predecessor_attempt_id")
-        ),
-        None,
-    )
-    evidence = authorization.get("evidence")
-    if not isinstance(predecessor, Mapping) or not isinstance(evidence, Mapping):
-        return False
     try:
-        validated = _validated_recovery_authorization_evidence(
+        validated = _validated_recovery_authorization_collection(
             document,
-            predecessor,
-            evidence,
-            succeeding_attempt_id=str(winner.get("attempt_id") or ""),
-            successor_may_progress=successor_may_progress,
+            authorizations,
+            active_successor_may_progress=successor_may_progress,
         )
     except (DistributionOutboxError, UnsafeOutboxValueError):
         return False
-    digest = hashlib.sha256(
-        json.dumps(validated, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    if (
-        authorization.get("evidence_digest") != digest
-        or winner.get("recovery_proof_digest") != digest
-    ):
+    matching = [
+        authorization
+        for authorization in validated
+        if authorization.get("authz_id") == winner.get("authz_id")
+        and authorization.get("successor_attempt_id") == winner.get("attempt_id")
+        and authorization.get("predecessor_attempt_id") == winner.get("predecessor_attempt_id")
+        and authorization.get("status") == "active"
+    ]
+    if len(matching) != 1:
         return False
-    return True
+    authorization = matching[0]
+    return (
+        authorization.get("evidence_digest") == winner.get("recovery_proof_digest")
+        and authorization.get("evidence_schema_version") == RECOVERY_AUTHORIZATION_SCHEMA_VERSION
+    )
 
 
 def _recovery_authorization_is_valid(
@@ -1024,6 +1174,8 @@ def _ensure_truth_fields(document: dict[str, Any]) -> None:
             }
         )
     document.setdefault("recovery_authz", [])
+    if not document["recovery_authz"] and "recovery_authz_set" not in document:
+        _refresh_recovery_authorization_set(document)
     document.setdefault(
         "weekly_aggregation",
         {
@@ -1408,19 +1560,37 @@ class DistributionOutboxRepository:
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()
+            previous_authorizations = document["recovery_authz"]
+            if previous_authorizations:
+                _validated_recovery_authorization_collection(
+                    document,
+                    previous_authorizations,
+                    active_successor_may_progress=True,
+                )
+                previous_authorizations[-1]["status"] = "superseded"
+                previous_authorizations[-1]["superseded_by_authz_id"] = authorization_id
             authorization = {
+                "schema_version": RECOVERY_AUTHORIZATION_SCHEMA_VERSION,
                 "authz_id": authorization_id,
+                "authz_version": 4,
                 "source": _require_token("authorization_source", source),
                 "reason": _require_token("authorization_reason", reason),
                 "authorized_at": at,
+                "actor": None,
+                "owner": None,
+                "status": "active",
+                "superseded_by_authz_id": None,
                 "predecessor_attempt_id": predecessor_attempt_id,
+                "successor_attempt_id": attempt_id,
+                "evidence_schema_version": validated_evidence["schema_version"],
                 "evidence_digest": evidence_digest,
                 "evidence": validated_evidence,
-                "attempt_id": attempt_id,
+                "extensions": {},
             }
             document["recovery_authz"].append(authorization)
             succeeding_attempt["recovery_proof_digest"] = evidence_digest
             attempts.append(succeeding_attempt)
+            _refresh_recovery_authorization_set(document)
             for leg in document["providers"].values():
                 leg["result"] = "pending_provider"
                 leg["verification"] = None
@@ -2384,6 +2554,17 @@ class DistributionOutboxRepository:
             raise StaleClaimError("outbox claim lease has expired")
         if mutation and (claim.read_only or current.get("read_only")):
             raise StaleClaimError("takeover claim is reconciliation-only")
+        if mutation:
+            attempt = _active_attempt(document)
+            if attempt.get("authz_source") != "initial_enqueue" and not (
+                _recovery_authorization_binding_is_valid(
+                    document,
+                    attempt,
+                    document.get("recovery_authz", []),
+                    successor_may_progress=True,
+                )
+            ):
+                raise StaleClaimError("recovery authorization is no longer valid")
 
     @staticmethod
     def _provider(document: Mapping[str, Any], provider: str) -> dict[str, Any]:

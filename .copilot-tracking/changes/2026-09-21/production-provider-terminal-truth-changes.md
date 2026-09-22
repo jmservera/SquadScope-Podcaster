@@ -10,17 +10,56 @@
 
 ## Execution Status
 
-* Status: Frank sole-author correction delivered and fully validated; Fry independently reviewed final head `98eae68fe25b429cc59a36fff97a7154979d2bda` and rejected it because the recovery-authorization record remains mutable and non-unique
+* Status: Fry sole-author RV-008 correction implemented and fully validated; Leela independent final-SHA review pending
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
-* Sole current revision author: Frank
-* Independent reviewer: Fry, review complete and reviewer-only; verdict Not accepted
+* Sole current revision author: Fry
+* Independent reviewer: Leela, reserved and pending; no contribution permitted
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed marker for this cycle: P07-T06
-* Open markers: P07-T01 and P07-T07
+* Completed markers for this cycle: P07-T01 and P07-T06
+* Open marker: P07-T07
 * Source/tests/artifacts commit: `bfead2572ae7c98bf82122281ac3a26ff3b91edc`
-* Remaining in-scope work: bind and cardinality-check the complete durable authorization record, revalidate, and obtain a new independent final-SHA acceptance
+* Remaining in-scope work: commit/push the existing branch and obtain Leela's independent final-SHA acceptance
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: Frank's v3 correction replaces the incomplete ID list with a versioned canonical structured history envelope plus digest and correctly rejects predecessor/history/successor mutation. Fry's independent matrix then proved `_recovery_authorization_binding_is_valid()` does not bind the selected authorization record's `source`, `reason`, `authorized_at`, additional fields, or list cardinality. Those changes, a duplicate matching authorization, and an unrelated additional authorization still permit the first successor claim with `read_only=False`. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+* Status basis: `distribution-recovery-authz-v4` now binds every allowed envelope field with exact type/null handling, immutable metadata, structured evidence/digest, explicit empty extensions, predecessor/successor identity, and active/superseded linkage. `distribution-recovery-authz-set-v1` binds exact count, order, active ID, and a typed digest of the complete collection. Legacy/incomplete/unknown/extra/type-mutated envelopes and duplicate/reordered/conflicting/unrelated collections fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are implementation-resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+
+## P07 Fry Complete Authorization Envelope Opening
+
+* Related markers: P07-T01, P07-T06, P07-T07; RV-008.
+* Authorship and lockout: Fry is the sole revision author. Frank is locked out after the rejected revision. Leela is reserved for fresh independent final-SHA review and may not contribute. Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, and Livingston remain locked out.
+* Exact baseline: incident worktree on existing branch `squad/incident-provider-terminal-truth` at review head `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0`; rejected source `bfead2572ae7c98bf82122281ac3a26ff3b91edc`.
+* Write boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, existing branch and draft PR #684, source/tests/docs and current plan/details/changes/PR artifacts required for RV-008. No replacement branch/PR, issue/thread mutation, deployment, canary, merge, or production action.
+* Contract: define a versioned canonical complete authorization envelope with exact allowed keys, explicit scalar/container types and null policy, fully bound structured evidence and digests, predecessor/successor expectations, and exact collection order/identity. Legacy/incomplete/unknown/extra/type-mutated envelopes fail closed. Exactly one active authorization may match the boundary; duplicates, conflicts, reorders, and unrelated extras fail closed.
+* Validation intent: deny source/reason/authorized_at mutation, unknown fields, duplicate matching authorization, unrelated append, every envelope field/type/null mutation, removed fields, unknown/legacy versions, and duplicate/reordered/extra/conflicting collections; prove one exact envelope succeeds once, concurrent use has one winner, and reuse is read-only; preserve all earlier RV-008 and RV-002/RV-003/RV-004/RV-007/RV-009 probes and run all repository gates.
+* Blockers retained: Leela's independent final-SHA review, P00-T01, P05, and P06. PR #684 remains open, draft, and blocked.
+
+## P07 Fry Complete Authorization Envelope
+
+* Related marker: P07-T01; RV-008.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`, `docs/ops/distribution-terminal-truth.md`.
+* Envelope schema: `distribution-recovery-authz-v4` has an exact key set and binds `authz_id`, integer `authz_version`, source, reason, authorization time, explicit-null actor/owner, active/superseded status and successor linkage, predecessor/successor attempt IDs, evidence version/content/digest, and an exact extensions map.
+* Collection schema: `distribution-recovery-authz-set-v1` binds exact authorization count, ordered authorization IDs, active authorization ID, and SHA-256 over a typed canonical representation of the complete ordered envelope collection.
+* Selection/cardinality: recovery attempts and authorization envelopes are one-to-one in durable order. Historical entries are deterministically `superseded` and linked to the next authorization; exactly the final entry is `active`. Missing, duplicate, reordered, conflicting, unrelated, or extra entries fail closed.
+* Mutation fencing: the collection is revalidated before a mutation-capable claim and again before mutation writes. Exactly one unchanged active envelope can grant the successor's first claim; concurrent claims have one winner, and any replay or post-claim authorization tamper is read-only or rejected.
+* Compatibility: v1-v3, missing set manifests, unknown versions, incomplete envelopes, unknown top-level fields, non-empty extensions, and field type/null drift are intentionally not upgraded and fail closed.
+
+## P07 Fry Validation
+
+| Command | Result |
+|---|---|
+| Fry six-bypass and concurrency conformance script | Passed: `mutation_capable_bypasses=[]`; `22` mutations rejected; concurrent authorization `authorized/rejected`; concurrent claim one mutation-capable winner; replay read-only |
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py -q` | Passed: `182 passed in 15.64s` |
+| Focused correction suite | Passed: `227 passed in 15.68s` |
+| Locked dispatch/API/outbox/worker/provider/publication/monitoring/deployment command | Passed: `902 passed, 1 warning in 69.17s` |
+| Full repository suite | Passed first run: `3232 passed, 2 skipped, 2 deselected, 1 warning in 96.73s`; no Compose rebuild required |
+| Ruff, format, compile, diff safety | Passed across `podcaster` and `tests`; two changed files formatted |
+| Bicep build | Passed with the documented pre-existing BCP318 warning |
+| Exact Checkov baseline | Retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov | Passed: `34 passed, 0 failed`; Dockerfile baseline gate passed |
+| Container image | `sha256:fb1af564ee7386379fa700886b2d26367c4857d1743a4bca8053953b3ab7ba8a`; UID `999`, ffmpeg/ffprobe, and pipeline/outbox imports passed |
+| Unconfigured distribution worker | Exited `2` as required |
+| Changed-diff suspected secret/PII scan | No suspected private key, access key, JWT, credential query, email, or SSN pattern found |
+
+The required probes mutate or remove every envelope field, replace each field with an invalid type/null, use unknown and legacy versions, add unknown fields or extensions, duplicate the active authorization, append unrelated/conflicting authorizations, reorder historical authorizations, and mutate every set-manifest field. All fail closed. The exact single envelope succeeds once. Complete predecessor history, resolved RV findings, and immutable failed attempts remain preserved.
 
 ## P07 Frank Canonical Attempt-History Binding Opening
 

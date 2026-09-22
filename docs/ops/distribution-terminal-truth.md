@@ -33,6 +33,16 @@ a separate deterministic record. Its precedence is `identity_conflict`, `provide
 attempt. An unknown possible mutation permits read-only reconciliation only and cannot authorize a
 blind retry.
 
+Recovery authorization uses the exact `distribution-recovery-authz-v4` envelope and
+`distribution-recovery-authz-set-v1` collection manifest. Every envelope has an exact field set,
+explicit version and null policy, immutable source/reason/time and predecessor/successor identity,
+structured evidence plus digest, an empty bound extensions map, and active/superseded linkage.
+The ordered collection count, IDs, active ID, and digest must match the attempt chain exactly.
+Missing, legacy, unknown-version, type-mutated, extra-field, duplicate, reordered, conflicting, or
+unrelated authorizations fail closed. Exactly one active authorization may grant the successor's
+first mutation-capable claim; concurrent claims have one winner and all later claims are
+reconciliation-only.
+
 ## Rollout and rollback
 
 `DISTRIBUTION_OUTBOX_ENABLED` is disabled by default. Enable it only after the dedicated
