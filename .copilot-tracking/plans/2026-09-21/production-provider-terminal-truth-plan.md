@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Livingston is the sole author of the new RV-008 correction cycle from review/tracking head `fa3426fa030193e89a58cdb927c81a360df24a03`; Frank is reserved for independent final-SHA review and may not contribute. Ralph's rejected source `e16963243973707ea2557f75f925d3c6935d49ee` remains historical evidence. P07-T01 is active; P07-T06 must be rerun; P07-T07 remains pending. P00-T01, P05, and P06 remain blocked
+* Planning status: Frank independently rejected Livingston's exact final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f` because RV-008 remains High: the v2 authorization binds only prior attempt IDs, so mutation of an earlier attempt's durable owner/fence/timestamp event evidence still permits a mutation-capable successor. Livingston remains the sole revision author; Frank remained reviewer-only. P07-T01 and P07-T07 are open; P07-T06 validation remains complete. P00-T01, P05, and P06 remain blocked
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -258,16 +258,16 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 
 ## Implementation Status
 
-* Execution status: Livingston's sole-author RV-008 source/test correction and complete validation are committed at `829fae69c4f20da18d34bae15f53c1cb21794808`; delivery reconciliation/push and Frank's independent final-SHA review remain
+* Execution status: Livingston's sole-author RV-008 source/test correction is committed at `829fae69c4f20da18d34bae15f53c1cb21794808`; Frank independently rejected final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f`
 * Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
 * Revision author: Livingston only
-* Fresh independent reviewer: Frank, pending and prohibited from contribution before final-SHA review
+* Fresh independent reviewer: Frank, complete and reviewer-only; verdict Not accepted
 * Excluded contributors: Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph may not author, advise, pair, or contribute; Frank is reviewer-only
 * Delivery restrictions: commit and push only the existing branch and update existing draft PR #684; no deployment, issue mutation, replacement branch/PR, or changes to `/home/azureuser/source/SquadScope`
 * Active implementation boundary: P07 review-follow-up defects only; P00-T01, P05, and P06 remain outside P07 and block final acceptance
 * Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
 * Validation intent: deterministic P07 negative probes, locked owner suites, full suite, Ruff check/format, compileall, Bicep, Checkov, diff check, container build, and applicable container/exit smoke without weakening
-* Current blockers: RV-008/P07-T01 exact structured authorization binding is in implementation; Frank's independent final-SHA review, P00-T01 upstream prevention evidence, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles remain blockers
+* Current blockers: RV-008/P07-T01 complete ordered attempt-history binding requires correction and new independent review; P00-T01 upstream prevention evidence, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles remain blockers
 
 ## Sources
 
@@ -430,11 +430,11 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Ownership: Livingston alone authors the active correction from `fa3426f`; Frank is reserved for independent review and may not contribute. Every prior cycle remains immutable historical evidence.
 
 <!-- rpi:task id=P07-T01 -->
-#### [x] P07-T01: Enforce exact proof and durable recovery authorization
+#### [ ] P07-T01: Enforce exact proof and durable recovery authorization
 
 * Finding: RV-008.
 * Expected result: green requires exact week, publication, manifest, publication digest, canonical artifact digest/selection, expected provider identity, authoritative terminal readback source/state, and explicit duplicate resolution. Recovery authorization is durable, evidence-referenced, bound to the complete ordered attempt history/latest relevant state, and cannot arise from an unresolved unknown mutation or caller boolean alone.
-* Closure evidence: label-only/omitted/mismatched/ambiguous proof probes are non-green; stale predecessor and omitted/reordered-history probes fail closed; a later unknown leaves reconciliation read-only. Authorization retains an auditable exact structured binding for provider kind/item, operation name/type, consumed intent ID, exact receipt ID, predecessor attempt, consumption owner/fence/time, receipt time/order, week/publication/manifest/digest/artifact identity, terminal readback identity/state/time, and the specifically authorized succeeding attempt/provider expectation. Authorization use recomputes this binding from current durable records; mutated, missing, duplicate, reordered, stale, conflicting, swapped, extra, or legacy-incomplete evidence fails closed.
+* Closure evidence required: label-only/omitted/mismatched/ambiguous proof probes are non-green; stale predecessor and omitted/reordered-history probes fail closed; a later unknown leaves reconciliation read-only. Authorization must retain and recompute the complete ordered durable attempt history, not only prior attempt IDs, including attempt events and their owner/execution/fence/timestamp/order fields, together with the existing provider/operation/intent/receipt/publication/artifact/readback/successor binding. Frank's exact probe mutated an earlier attempt's claimed timestamp, execution identity, and fence after authorization; the successor claim still returned `read_only=False`.
 
 <!-- rpi:task id=P07-T02 -->
 #### [x] P07-T02: Make scheduler notification enqueue single-winner
@@ -561,13 +561,13 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Marker(s) | Revised disposition | Required next evidence |
 |---|---|---|
 | P00-T01 | Preserved external gate | Exact W39 blocked-stage evidence and upstream prevention/detection remain owned by `jmservera/SquadScope`; W39 stays `missed_not_dispatched` |
-| P07-T01 | Complete for Livingston revision; Frank review pending | Recovery authorization v2 retains and recomputes the exact provider/operation/intent/receipt/predecessor/owner/fence/time/publication/artifact/readback/successor binding; substituted operations, provider-leg aliasing, legacy evidence, and durable-field mutation fail closed |
+| P07-T01 | Open; Frank rejected final head | Bind and recompute complete ordered durable attempt records, including event owner/execution/fence/timestamp/order; retain the current exact provider/operation/intent/receipt/publication/artifact/readback/successor binding |
 | P07-T02 | Complete; RV-002 resolved | Expired `reserved` and `enqueue_started` leases become due; CAS fencing preserves a single current owner and rejects stale completion/release |
 | P07-T03 | Complete; RV-004 resolved | Cleanup completes a bounded resumable pre-index outbox migration before deletion; incomplete scans fail closed and current references retain CAS priority |
 | P07-T04 | Complete; RV-003 resolved | Canonical emitted/query vocabulary and active-depth absence semantics independently passed |
 | P07-T05 | Complete; RV-009 resolved | Stored proof booleans are rebound to raw exact evidence and the current weekly record; label-only, tampered, mismatched, and unauthorized recovered cycles fail closed |
 | P07-T06 | Complete for Livingston revision | Required `20/68`, outbox `88`, focused `133`, locked `808`, full `3137`, static, infrastructure, Checkov, container, exit, and secret/PII gates passed without weakening |
-| P07-T07; P05-T01 | Pending Frank independent review; delivery blocked | Preserve every rejection cycle; keep PR #684 draft/blocked, push only the existing branch, and require Frank to review the final validated SHA without contribution |
+| P07-T07; P05-T01 | Frank review complete with rejection; delivery blocked | Preserve every rejection cycle; keep PR #684 draft/blocked, correct RV-008, and require a new independent final-SHA acceptance without reviewer contribution |
 | P05-T03 | Expanded by RV-006 and refreshed current metadata | Closure evidence for W17–W29, the six RV-006 threads, and four later unresolved threads found during revision; do not claim resolution without GitHub evidence |
 | P01-T04, P02-T01–P02-T02 | Implemented surfaces; dependency verification | Preserve safe behavior unless the new receipt/attempt schema requires minimal compatible updates |
 | Existing W38 references in plan/PR handoff | Evidence-conditional correction | Use `published_verified_recovered` only with full exact proof; otherwise label it an allowed candidate and retain all attempt history |
@@ -585,7 +585,7 @@ Livingston alone authors the current P07-T01 correction. Frank alone performs th
 | RV-003 High | P07-T04, P07-T06, P07-T07 | Remains resolved by canonical emitted/query/test/runbook vocabulary and representative query fire/clear proof |
 | RV-004 High | P07-T03, P07-T06, P07-T07 | Explicit run/page/item/time budgets, durable legacy-reference migration, fenced/conditional deletion, concurrent-reference negative probe; validation and Livingston disposition |
 | RV-007 Medium | P07-T07, P05-T01 | Exact current counts/statuses/commands in delivery update and PR #684; historical review unchanged; residual gates explicit |
-| RV-008 High | P07-T01, P07-T06, P07-T07 | Preserve latest/complete history, exact item/cardinality binding, and require exact expected operation plus durable provider/intent/receipt/attempt/fence/time/publication/artifact binding; substituted operations or aliased provider legs must remain read-only |
+| RV-008 High | P07-T01, P07-T06, P07-T07 | Bind and recompute complete ordered durable attempt records, including earlier event owner/execution/fence/timestamp/order, while preserving exact item/cardinality/operation/provider/intent/receipt/publication/artifact/readback/successor binding |
 | RV-009 High | P07-T05, P07-T06, P07-T07 | Resolved by authoritative proof-envelope reload/rebinding, label-only and incomplete proof rejection, and Livingston disposition |
 
 ### Implemented Surface Disposition
