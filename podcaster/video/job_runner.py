@@ -25,6 +25,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -787,6 +788,7 @@ def run_video_generation(
     fanout: bool | None = None,
     fanout_scratch: StorageBackend | None = None,
     clip_producer: QueueProducer | None = None,
+    lifecycle_deadline_monotonic: float | None = None,
 ) -> VideoOutcome:
     """Generate video for a staged job_id and distribute to configured targets.
 
@@ -817,6 +819,32 @@ def run_video_generation(
     producer = clip_producer if clip_producer is not None else create_clip_queue_backend()
     fanout_enabled = _resolve_fanout(fanout, scratch, producer)
     run_id = uuid.uuid4().hex if fanout_enabled else None
+    media_validation_lease_deadline: float | None = None
+
+    def _remaining_media_validation_budget() -> float:
+        nonlocal media_validation_lease_deadline
+
+        current_monotonic = time.monotonic()
+        remaining: list[float] = []
+        if lifecycle_deadline_monotonic is not None:
+            remaining.append(lifecycle_deadline_monotonic - current_monotonic)
+        if fanout_enabled and run_id is not None:
+            from podcaster.video.editor import (
+                DEFAULT_LEASE_TTL_SECONDS,
+                acquire_or_renew_lease,
+            )
+
+            if media_validation_lease_deadline is None:
+                if not acquire_or_renew_lease(scratch, job_id, run_id):
+                    raise RuntimeError(
+                        f"final media validation failed: editor lease lost for job_id={job_id}"
+                    )
+                current_monotonic = time.monotonic()
+                media_validation_lease_deadline = current_monotonic + DEFAULT_LEASE_TTL_SECONDS
+            remaining.append(media_validation_lease_deadline - current_monotonic)
+        if not remaining:
+            return float("inf")
+        return min(remaining)
 
     # Load manifest
     raw_manifest = storage.get_bytes(manifest_path(job_id))
@@ -1109,6 +1137,11 @@ def run_video_generation(
                     section_cards=section_cards,
                     intermediates=intermediates,
                     task_reporter=normalize_reporter,
+                    media_validation_budget=(
+                        _remaining_media_validation_budget
+                        if lifecycle_deadline_monotonic is not None or fanout_enabled
+                        else None
+                    ),
                 )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
@@ -1743,6 +1776,7 @@ def process_message(
     queue: QueueBackend,
     config: VideoDistributionConfig | None = None,
     now: datetime | None = None,
+    lifecycle_deadline_monotonic: float | None = None,
 ) -> VideoOutcome:
     """Process one video queue message: generate, then delete on terminal outcome."""
     try:
@@ -1763,7 +1797,13 @@ def process_message(
     )
 
     try:
-        outcome = run_video_generation(job_id, storage, config=config, now=now)
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=config,
+            now=now,
+            lifecycle_deadline_monotonic=lifecycle_deadline_monotonic,
+        )
     except PermanentVideoError as exc:
         logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)
         details: dict[str, Any] = {"job_id": job_id, "reason": exc.reason}
@@ -1831,7 +1871,16 @@ def drain(
         if not messages:
             break
         for message in messages:
-            outcomes.append(process_message(message, storage=storage, queue=queue, config=config))
+            lifecycle_deadline = time.monotonic() + visibility_timeout
+            outcomes.append(
+                process_message(
+                    message,
+                    storage=storage,
+                    queue=queue,
+                    config=config,
+                    lifecycle_deadline_monotonic=lifecycle_deadline,
+                )
+            )
     return outcomes
 
 

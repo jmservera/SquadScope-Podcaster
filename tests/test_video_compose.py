@@ -96,7 +96,7 @@ def _stub_drawtext_probe(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _stub_final_media_decode(monkeypatch):
-    monkeypatch.setattr(vc, "_decode_final_media", lambda _path: None)
+    monkeypatch.setattr(vc, "_decode_final_media", lambda _path, **_kwargs: None)
 
 
 # --- Helpers ---
@@ -4542,6 +4542,72 @@ class TestFinalOutputValidation:
         assert kwargs["start_new_session"] is True
         assert calls[1] == ("wait", vc.FINAL_MEDIA_DECODE_TIMEOUT_SECONDS)
 
+    def test_remaining_budget_caps_decode_timeout(self, tmp_path, monkeypatch):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+        timeouts = []
+
+        def decode(_path, *, timeout_seconds=None):
+            timeouts.append(timeout_seconds)
+
+        monkeypatch.setattr(vc, "_decode_final_media", decode)
+
+        vc._validate_final_media(
+            candidate,
+            lambda _cmd: subprocess.CompletedProcess(
+                _cmd,
+                0,
+                json.dumps(
+                    {
+                        "streams": [{"codec_type": "video"}],
+                        "format": {"duration": "1"},
+                    }
+                ),
+                "",
+            ),
+            require_audio=False,
+            media_validation_budget=lambda: 100.0,
+        )
+
+        assert timeouts == [100.0 - vc.FINAL_MEDIA_DECODE_CLEANUP_RESERVE_SECONDS]
+
+    def test_insufficient_remaining_budget_rejects_before_ffmpeg_launch(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+        launched = False
+
+        def popen(*_args, **_kwargs):
+            nonlocal launched
+            launched = True
+            raise AssertionError("ffmpeg must not launch")
+
+        monkeypatch.setattr(vc.subprocess, "Popen", popen)
+        monkeypatch.setattr(vc.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+        with pytest.raises(RuntimeError, match="insufficient remaining lifecycle budget"):
+            vc._validate_final_media(
+                candidate,
+                lambda _cmd: subprocess.CompletedProcess(
+                    _cmd,
+                    0,
+                    json.dumps(
+                        {
+                            "streams": [{"codec_type": "video"}],
+                            "format": {"duration": "1"},
+                        }
+                    ),
+                    "",
+                ),
+                require_audio=False,
+                media_validation_budget=lambda: vc.FINAL_MEDIA_DECODE_CLEANUP_RESERVE_SECONDS,
+            )
+
+        assert launched is False
+
     def test_decode_enforces_timeout(self, tmp_path, monkeypatch):
         candidate = tmp_path / "candidate.mp4"
         candidate.write_bytes(b"candidate")
@@ -4580,8 +4646,101 @@ class TestFinalOutputValidation:
         with pytest.raises(RuntimeError, match=r"complete decode timed out after 0\.05s"):
             _REAL_DECODE_FINAL_MEDIA(candidate)
 
-        assert waits == [0.05, vc.FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS, None]
+        assert waits == [
+            0.05,
+            vc.FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS,
+            vc.FINAL_MEDIA_DECODE_KILL_GRACE_SECONDS,
+        ]
         assert signals == [(321, signal.SIGTERM), (321, signal.SIGKILL)]
+
+    def test_decode_timeout_terminate_exit_skips_kill(self, tmp_path, monkeypatch):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+        waits = []
+        signals = []
+
+        class Process:
+            pid = 654
+
+            def wait(self, *, timeout=None):
+                waits.append(timeout)
+                if len(waits) == 1:
+                    raise subprocess.TimeoutExpired(["ffmpeg"], timeout)
+                return -signal.SIGTERM
+
+        monkeypatch.setattr(vc.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+        monkeypatch.setattr(vc.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+        monkeypatch.setattr(vc.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+        with pytest.raises(RuntimeError, match="complete decode timed out"):
+            _REAL_DECODE_FINAL_MEDIA(candidate, timeout_seconds=0.05)
+
+        assert waits == [0.05, vc.FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS]
+        assert signals == [(654, signal.SIGTERM)]
+
+    def test_decode_kill_wait_timeout_is_bounded_and_closes_stderr(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+        waits = []
+        signals = []
+        stderr_streams = []
+
+        class Process:
+            pid = 987
+
+            def wait(self, *, timeout=None):
+                waits.append(timeout)
+                raise subprocess.TimeoutExpired(["ffmpeg"], timeout)
+
+        def popen(*_args, **kwargs):
+            stderr_streams.append(kwargs["stderr"])
+            return Process()
+
+        monkeypatch.setattr(vc.subprocess, "Popen", popen)
+        monkeypatch.setattr(vc.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+        monkeypatch.setattr(vc.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="remained unreaped after SIGKILL"):
+            _REAL_DECODE_FINAL_MEDIA(candidate, timeout_seconds=0.05)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.5
+        assert waits == [
+            0.05,
+            vc.FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS,
+            vc.FINAL_MEDIA_DECODE_KILL_GRACE_SECONDS,
+        ]
+        assert signals == [(987, signal.SIGTERM), (987, signal.SIGKILL)]
+        assert stderr_streams[0].closed is True
+
+    def test_lifecycle_expiry_during_decode_fails_before_promotion(self, tmp_path):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+        budgets = iter([100.0, 0.0])
+
+        with pytest.raises(RuntimeError, match="expired during complete decode"):
+            vc._validate_final_media(
+                candidate,
+                lambda _cmd: subprocess.CompletedProcess(
+                    _cmd,
+                    0,
+                    json.dumps(
+                        {
+                            "streams": [{"codec_type": "video"}],
+                            "format": {"duration": "1"},
+                        }
+                    ),
+                    "",
+                ),
+                require_audio=False,
+                decode=lambda _path: None,
+                media_validation_budget=lambda: next(budgets),
+            )
 
     def test_decode_nonzero_has_bounded_diagnostics(self, tmp_path, monkeypatch):
         candidate = tmp_path / "candidate.mp4"

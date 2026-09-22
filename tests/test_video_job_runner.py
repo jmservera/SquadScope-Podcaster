@@ -650,6 +650,52 @@ class TestRunVideoGeneration:
         mock_enqueue.assert_not_called()
         mock_distribute.assert_not_called()
 
+    @patch("podcaster.video.job_runner.enqueue_distribution_job")
+    @patch("podcaster.video.job_runner.commit_immutable_artifact")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_expired_lifecycle_budget_prevents_archive_outbox_and_provider_visibility(
+        self,
+        mock_compose,
+        mock_record,
+        mock_distribute,
+        mock_commit,
+        mock_enqueue,
+        storage,
+        dry_config,
+    ):
+        job_id = "expired-media-validation-budget"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Expired Final Media Budget"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+
+        def fail_from_budget(*_args, **kwargs):
+            assert kwargs["media_validation_budget"]() <= 0
+            raise RuntimeError(
+                "final media validation failed: insufficient remaining lifecycle budget"
+            )
+
+        mock_compose.side_effect = fail_from_budget
+
+        with pytest.raises(TransientVideoError, match="video generation failed"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=dry_config,
+                lifecycle_deadline_monotonic=0.0,
+            )
+
+        mock_commit.assert_not_called()
+        mock_enqueue.assert_not_called()
+        mock_distribute.assert_not_called()
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_no_repos_generates_generic_video(self, mock_compose, mock_record, storage, dry_config):
@@ -2809,6 +2855,53 @@ class TestFanoutGating:
 
         assert EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id))) is None
 
+    @patch("podcaster.video.job_runner.enqueue_distribution_job")
+    @patch("podcaster.video.job_runner.commit_immutable_artifact")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.editor.acquire_or_renew_lease")
+    @patch("podcaster.video.editor.record_via_fanout")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_media_validation_lease_loss_fails_before_distribution(
+        self,
+        mock_compose,
+        mock_record_episode,
+        mock_fanout,
+        mock_acquire,
+        mock_distribute,
+        mock_commit,
+        mock_enqueue,
+        storage,
+        dry_config,
+    ):
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        mock_acquire.side_effect = [True, False]
+        mock_fanout.return_value = MagicMock(recorded=[], output_dir=Path("."))
+
+        def compose(*_args, **kwargs):
+            kwargs["media_validation_budget"]()
+            raise AssertionError("lost lease must reject the validation admission")
+
+        mock_compose.side_effect = compose
+
+        with pytest.raises(TransientVideoError, match="video generation failed"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=dry_config,
+                fanout=True,
+                fanout_scratch=scratch,
+                clip_producer=_RecordingProducer(),
+                lifecycle_deadline_monotonic=__import__("time").monotonic() + 300,
+            )
+
+        assert mock_acquire.call_count == 2
+        mock_record_episode.assert_not_called()
+        mock_commit.assert_not_called()
+        mock_enqueue.assert_not_called()
+        mock_distribute.assert_not_called()
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_legacy_path_when_fanout_unconfigured(
@@ -2860,6 +2953,28 @@ class TestEditorVisibilityTimeout:
         queue = _VisibilityQueue([_make_message("j1")])
         drain(queue, storage, dry_config)
         assert queue.visibility_timeouts[0] == 1234
+
+    def test_drain_passes_visibility_deadline_to_job_context(
+        self,
+        storage,
+        dry_config,
+        monkeypatch,
+    ):
+        deadlines = []
+        queue = _VisibilityQueue([_make_message("j1")])
+
+        def process(_message, **kwargs):
+            deadlines.append(kwargs["lifecycle_deadline_monotonic"])
+            return VideoOutcome("j1", STATUS_COMPLETED)
+
+        monkeypatch.setenv("PODCASTER_VIDEO_VISIBILITY_TIMEOUT", "1234")
+        monkeypatch.setattr("podcaster.video.job_runner.process_message", process)
+        before = __import__("time").monotonic()
+        drain(queue, storage, dry_config)
+        after = __import__("time").monotonic()
+
+        assert len(deadlines) == 1
+        assert before + 1234 <= deadlines[0] <= after + 1234
 
 
 class TestWatermarkDnsLifecycle:

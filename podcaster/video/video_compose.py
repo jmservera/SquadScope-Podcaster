@@ -115,6 +115,13 @@ LOWER_THIRD_Y_POSITION = "h-h/6"
 LOWER_THIRD_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FINAL_MEDIA_DECODE_TIMEOUT_SECONDS = 1800
 FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS = 5
+FINAL_MEDIA_DECODE_KILL_GRACE_SECONDS = 5
+FINAL_MEDIA_PROMOTION_RESERVE_SECONDS = 1
+FINAL_MEDIA_DECODE_CLEANUP_RESERVE_SECONDS = (
+    FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS
+    + FINAL_MEDIA_DECODE_KILL_GRACE_SECONDS
+    + FINAL_MEDIA_PROMOTION_RESERVE_SECONDS
+)
 FINAL_MEDIA_DECODE_STDERR_BYTES = 16 * 1024
 
 # --- Final encode settings (YouTube/Spotify-ready) -------------------------
@@ -2942,6 +2949,7 @@ def _finalize_output(
     segment_count: int,
     run: "CommandRunner",
     decode: "Callable[[Path], None] | None" = None,
+    media_validation_budget: "Callable[[], float] | None" = None,
 ) -> ComposeResult:
     """Mux the podcast audio (if any) over the composed video and finalise.
 
@@ -2996,7 +3004,13 @@ def _finalize_output(
     staged_output = output_path.with_name(f".{output_path.stem}.{uuid.uuid4().hex}.staged.mp4")
     try:
         run(_build_h264_metadata_cmd(pre_final_path, staged_output))
-        _validate_final_media(staged_output, run, require_audio=needs_audio, decode=decode)
+        _validate_final_media(
+            staged_output,
+            run,
+            require_audio=needs_audio,
+            decode=decode,
+            media_validation_budget=media_validation_budget,
+        )
         os.replace(staged_output, output_path)
     finally:
         try:
@@ -3018,6 +3032,7 @@ def _validate_final_media(
     *,
     require_audio: bool,
     decode: "Callable[[Path], None] | None" = None,
+    media_validation_budget: "Callable[[], float] | None" = None,
 ) -> None:
     """Require exact metadata and a complete media decode before publication."""
     if not path.is_file() or path.stat().st_size <= 0:
@@ -3051,7 +3066,31 @@ def _validate_final_media(
         raise RuntimeError("final media validation failed: audio stream is missing")
     if not math.isfinite(duration) or duration <= 0:
         raise RuntimeError("final media validation failed: duration is not positive")
-    (decode or _decode_final_media)(path)
+    decode_timeout = float(FINAL_MEDIA_DECODE_TIMEOUT_SECONDS)
+    if media_validation_budget is not None:
+        remaining = media_validation_budget()
+        if not math.isfinite(remaining):
+            raise RuntimeError("final media validation failed: remaining budget is invalid")
+        decode_timeout = min(
+            decode_timeout,
+            remaining - FINAL_MEDIA_DECODE_CLEANUP_RESERVE_SECONDS,
+        )
+        if decode_timeout <= 0:
+            raise RuntimeError(
+                "final media validation failed: insufficient remaining lifecycle budget "
+                "for complete decode and bounded cleanup"
+            )
+    if decode is None:
+        _decode_final_media(path, timeout_seconds=decode_timeout)
+    else:
+        decode(path)
+    if media_validation_budget is not None:
+        remaining = media_validation_budget()
+        if remaining < FINAL_MEDIA_PROMOTION_RESERVE_SECONDS:
+            raise RuntimeError(
+                "final media validation failed: lifecycle or editor lease expired "
+                "during complete decode"
+            )
 
 
 def _bounded_stderr_tail(stream: Any) -> str:
@@ -3062,8 +3101,15 @@ def _bounded_stderr_tail(stream: Any) -> str:
     return stream.read(FINAL_MEDIA_DECODE_STDERR_BYTES).decode("utf-8", errors="replace").strip()
 
 
-def _decode_final_media(path: Path) -> None:
+def _decode_final_media(path: Path, *, timeout_seconds: float | None = None) -> None:
     """Decode every audio/video stream completely and fail on the first corruption."""
+    timeout = (
+        float(FINAL_MEDIA_DECODE_TIMEOUT_SECONDS)
+        if timeout_seconds is None
+        else float(timeout_seconds)
+    )
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise RuntimeError("final media validation failed: decode timeout is invalid")
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("final media validation failed: ffmpeg is unavailable")
@@ -3099,8 +3145,9 @@ def _decode_final_media(path: Path) -> None:
                 start_new_session=True,
             )
             try:
-                returncode = process.wait(timeout=FINAL_MEDIA_DECODE_TIMEOUT_SECONDS)
+                returncode = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired as exc:
+                unreaped = False
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
                 except ProcessLookupError:
@@ -3112,12 +3159,21 @@ def _decode_final_media(path: Path) -> None:
                         os.killpg(process.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
-                    process.wait()
+                    try:
+                        process.wait(timeout=FINAL_MEDIA_DECODE_KILL_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        unreaped = True
+                        logger.error(
+                            "final media validation ffmpeg process group could not be "
+                            "reaped after bounded SIGKILL wait pid=%s",
+                            process.pid,
+                        )
                 detail = _bounded_stderr_tail(stderr)
                 suffix = f": {detail}" if detail else ""
+                reap_suffix = "; process remained unreaped after SIGKILL" if unreaped else ""
                 raise RuntimeError(
                     "final media validation failed: complete decode timed out "
-                    f"after {FINAL_MEDIA_DECODE_TIMEOUT_SECONDS}s{suffix}"
+                    f"after {timeout:g}s{reap_suffix}{suffix}"
                 ) from exc
         except OSError as exc:
             raise RuntimeError("final media validation failed: ffmpeg could not run") from exc
@@ -3152,6 +3208,7 @@ def compose_video(
     section_cards: "list[SectionCardInsert] | None" = None,
     intermediates=None,
     task_reporter: "Callable[..., None] | None" = None,
+    media_validation_budget: "Callable[[], float] | None" = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -3223,6 +3280,9 @@ def compose_video(
             ``running`` → ``done`` / ``failed`` so overlapping workers stay
             individually observable.  Defaults to a no-op when omitted, so the
             composition path is unchanged when no reporter is supplied.
+        media_validation_budget: Optional callback returning the authoritative
+            seconds remaining in the queue lifecycle and editor lease. It is
+            sampled immediately before and after complete final-media decode.
 
     Returns:
         ComposeResult with path to the final MP4.
@@ -3327,6 +3387,7 @@ def compose_video(
                 output_path=output_path,
                 segment_count=len(segments),
                 run=run,
+                media_validation_budget=media_validation_budget,
             )
 
     # Fit-to-window planning (issue #355): when the audio duration is known we
@@ -3693,6 +3754,7 @@ def compose_video(
         output_path=output_path,
         segment_count=len(segments),
         run=run,
+        media_validation_budget=media_validation_budget,
     )
 
 
