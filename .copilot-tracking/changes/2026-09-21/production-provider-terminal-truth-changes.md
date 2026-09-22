@@ -19,8 +19,31 @@
 * Completed marker: P07-T07 closed by Basher's independent final-SHA acceptance
 * Source/tests commit: `9204e139be485cb916ccd6e70b6fce355b656136`
 * Remaining in-scope work: none for RV-008/P07-T01/P07-T07
-* Outside-scope active-plan markers: P05-T03–P05-T06 and P06-T01–P06-T02; P00-T01 and P05-T01–P05-T02 are now complete
-* Status basis: all versioned recovery authorization set/envelope/evidence/history/successor structures now use exact recursive typed canonical validation before digest/equality checks. Boolean/float `authz_count`, scalar substitutions across every canonical surface, exponent-overflow/non-finite and negative-zero floats, unsupported values, duplicate JSON fields, coercions, and legacy/unknown structures fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are resolved; RV-006 remains planning-resolved. Basher independently accepted exact reviewed implementation head `905a890`; P00-T01 and P05-T01–P05-T02 are complete, including all 13 successful final-head checks. P05-T03 lacks durable #682 disposition/replacement evidence, and P05-T04–P05-T06 plus P06 remain future. No merge, deployment, workflow dispatch, provider mutation, issue/thread mutation, or production action is authorized by this update.
+* Outside-scope active-plan markers: P05-T04–P05-T06 and P06-T01–P06-T02; P00-T01 and P05-T01–P05-T03 are now complete
+* Status basis: all versioned recovery authorization set/envelope/evidence/history/successor structures now use exact recursive typed canonical validation before digest/equality checks. Boolean/float `authz_count`, scalar substitutions across every canonical surface, exponent-overflow/non-finite and negative-zero floats, unsupported values, duplicate JSON fields, coercions, and legacy/unknown structures fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-006/RV-007/RV-008/RV-009 are resolved. Basher independently accepted exact reviewed implementation head `905a890`; P00-T01 through P05-T03 are complete. P05-T03 added evidence replies only and preserved all 67 existing resolved states. P05-T04–P05-T06 plus P06 remain future. No merge, deployment, workflow dispatch, provider mutation, issue closure, or production action is authorized by this update.
+
+## 2026-09-22 P05-T03 PR #682 evidence disposition
+
+* Scope: tracking/evidence and reviewer-facing replies only. No executable source/tests changed.
+* Inventory: all 67 #682 review threads were inspected. GitHub reported 67 resolved and zero
+  unresolved before replies.
+* Gap closed: the 17 threads whose last comment was an undispositioned Copilot finding received
+  concise replies linking #684, accepted executable boundary
+  `9204e139be485cb916ccd6e70b6fce355b656136`, exact replacement source/tests, or an explicit
+  non-port rationale. Reply IDs are `r4072863167`, `r4072863344`, `r4072863563`,
+  `r4072863767`, `r4072863985`, `r4072864217`, `r4072864494`, `r4072864723`,
+  `r4072864920`, `r4072865106`, `r4072865276`, `r4072865450`, `r4072865681`,
+  `r4072865926`, `r4072866127`, `r4072866389`, and `r4072866652`.
+* Authoritative matrix: every W17–W29, RV-006, and later-current row now records its GraphQL
+  thread ID, durable author reply, #684 evidence/non-port rationale, and actual resolved/outdated
+  state in the plan.
+* State preservation: replies did not resolve, reopen, or re-resolve any thread. Post-reply
+  GraphQL verification remains required after this tracking commit is pushed.
+* Recommendation: P05-T03 is complete, but #682 is not yet eligible for closure under the
+  accepted delivery gate. Close it as superseded only after #684 is finally accepted,
+  non-draft/merge-ready, unchanged at the accepted executable boundary, and required checks are
+  green. This recommendation does not authorize merge, deployment, provider mutation, W39, or
+  P06 credit.
 
 ## 2026-09-22 Authoritative Exact-W39 Production Acceptance Directive
 
@@ -45,7 +68,7 @@
 * P00-T01: complete. The merged contract supplies exact canonical publication identity, append-only trusted dispatch receipts, accepted/missing/terminal monitoring, immutable prior-attempt evidence, fail-closed non-green weekly states, and authoritative provider readback requirements.
 * P05-T01: complete after cross-linking #684 to #773 and reconciling the exact-W39 narrative.
 * P05-T02: complete. Final-SHA review found no High/Critical issue and no executable drift; all 13 hosted checks on the final pushed tracking head succeeded.
-* P05-T03: blocked. GitHub reports 67/67 #682 review threads resolved, but 17 have a reviewer finding as their final comment without an author disposition, and zero final thread replies link replacement PR #684. PR #682 remains open and must not be closed until replacement evidence is durable and #684 is accepted/merge-ready.
+* P05-T03 at Basher review time: blocked. GitHub reported 67/67 #682 review threads resolved, but 17 had a reviewer finding as their final comment without an author disposition, and zero final thread replies linked replacement PR #684. The later P05-T03 evidence-disposition section preserves the closure of this gap; PR #682 remains open until #684 is accepted/merge-ready.
 * Exact-W39 gate assessment: conformant. It requires reconcile-before-mutate across all W39 identities/jobs/receipts/executions/provider candidates, fails closed on existing/conflicting/unknown/incomplete state, correlates GitHub → upstream → Podcaster → Azure → immutable attempts → provider readback, limits persisted evidence to safe identifiers/URLs/state, preserves historical W39=`missed_not_dispatched`, and grants no automatic P06 cycle credit.
 * Production boundary: no merge, deployment, W39 dispatch, provider mutation, canary, issue closure, or review-thread mutation occurred.
 

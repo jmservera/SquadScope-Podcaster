@@ -37,25 +37,35 @@
 * Exact-W39 gate assessment: conformant. P05-T06 is dependency-ordered after review/merge/provenance/deployment/readiness/rollback/provider-authority gates; reconciles all W39 intent, dispatch, receipt, Podcaster, Azure, immutable-attempt, and provider-candidate evidence before mutation; fails closed on existing/conflicting/unknown/incomplete state; requires one sanitized GitHub-to-provider correlation chain and authoritative terminal readback; preserves historical W39=`missed_not_dispatched`; and grants no automatic P06 credit.
 * P05-T01 disposition: complete after durable #773 cross-link and PR narrative reconciliation.
 * P05-T02 disposition: complete. The reviewed executable/tracking boundary is conformant, no High/Critical issue remains, and all 13 hosted checks on the final pushed tracking head succeeded.
-* P05-T03 disposition: blocked. GitHub reports 67/67 #682 threads resolved, but 17 have a Copilot reviewer finding as the final comment without an author disposition, and zero final thread replies link replacement PR #684. PR #682 remains open. Resolved UI state alone is insufficient replacement evidence.
+* P05-T03 disposition at review time: blocked. GitHub reported 67/67 #682 threads resolved, but 17 had a Copilot reviewer finding as the final comment without an author disposition, and zero final thread replies linked replacement PR #684. The P05-T03 follow-up below closes this evidence gap; PR #682 remains open pending #684 final acceptance and merge readiness.
 * Draft/merge posture: retain draft. #684 is not merge-authorized while P05-T02 or P05-T03 is incomplete. Do not close #682 until durable disposition/replacement links exist and #684 is otherwise accepted and merge-ready.
 * Production boundary: no merge, deployment, W39 dispatch, provider mutation, canary, issue closure, or review-thread mutation occurred.
 
 <!-- rpi:review id=RV-010 -->
-### RV-010 [Medium, open]: PR #682 resolution state lacks complete durable replacement disposition
+### RV-010 [Medium, resolved by follow-up]: PR #682 resolution state lacked complete durable replacement disposition
 
 * Related scope: P05-T03.
-* Evidence: GitHub GraphQL reports 67 total and 67 resolved review threads, but 17 final comments are still reviewer findings without an author disposition; no final thread reply references #684.
-* Impact: The replacement relationship cannot be audited, and closing #682 or authorizing #684 merge would prematurely treat UI resolution as evidence-backed supersession.
-* Destination: `rpi-research`.
-* Smallest useful next action: For each of the 17 threads, record a code/test/non-port disposition and durable #684 replacement link; then verify all authoritative rows and only close #682 after #684 is accepted/merge-ready.
+* Opening evidence: GitHub GraphQL reported 67 total and 67 resolved review threads, but 17 final
+  comments were reviewer findings without an author disposition and no final reply linked #684.
+* Opening impact: The replacement relationship could not be audited, and closing #682 or
+  authorizing #684 merge would have treated UI resolution as evidence-backed supersession.
+* Follow-up evidence: the 17 findings now end in author replies `r4072863167` through
+  `r4072866652` as enumerated in the plan ledger; each links #684 and direct source/test evidence
+  or an explicit non-port rationale. The authoritative matrix also records all historical
+  W17–W29, RV-006, and later-current thread IDs and states.
+* Disposition: Resolved for P05-T03. #682 closure remains deferred until #684 is finally accepted
+  and merge-ready.
 
 ### Current Review Outcome
 
 * Review execution status: Complete. Exact executable history and all tracking-only drift were reviewed, and all 13 hosted checks on the final pushed head succeeded.
-* Outcome: Not accepted for merge authorization because P05-T03 has a material evidence gap. The exact executable and exact-W39 tracking boundary is otherwise conformant with no High/Critical finding.
-* Severity summary: 0 Critical, 0 High, 1 Medium open (`RV-010`).
-* Remaining work: P05-T03 durable dispositions; P05-T04 merge/provenance; P05-T05 deployment/readiness/rollback/provider authority; P05-T06 exact real-W39 reconciliation/execution/readback; P06 four qualifying future cycles.
+* Outcome at Basher review time: not accepted for merge authorization because P05-T03 had a
+  material evidence gap. Follow-up disposition evidence now resolves P05-T03; #684 remains not
+  accepted for merge authorization because P05-T04–P05-T06 and P06 remain future.
+* Severity summary after follow-up: 0 Critical, 0 High, 0 Medium open; `RV-010` is resolved.
+* Remaining work: operator closure of #682 only after #684 final acceptance/merge readiness;
+  P05-T04 merge/provenance; P05-T05 deployment/readiness/rollback/provider authority; P05-T06
+  exact real-W39 reconciliation/execution/readback; P06 four qualifying future cycles.
 
 ## P07 Leela Fresh Independent Final-SHA Review
 
