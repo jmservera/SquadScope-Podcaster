@@ -10,17 +10,17 @@
 
 ## Execution Status
 
-* Status: Frank sole-author correction implemented and fully validated from review head `3529a027d68c3811274237a49202dafc87d33c70`; delivery is pending and final acceptance remains blocked on Fry's independent final-SHA review
+* Status: Frank sole-author correction delivered and fully validated; Fry independently reviewed final head `98eae68fe25b429cc59a36fff97a7154979d2bda` and rejected it because the recovery-authorization record remains mutable and non-unique
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
 * Sole current revision author: Frank
-* Independent reviewer: Fry, reserved and review-only after the final pushed SHA
+* Independent reviewer: Fry, review complete and reviewer-only; verdict Not accepted
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed markers for this cycle: P07-T01 and P07-T06
-* Open marker: P07-T07
+* Completed marker for this cycle: P07-T06
+* Open markers: P07-T01 and P07-T07
 * Source/tests/artifacts commit: `bfead2572ae7c98bf82122281ac3a26ff3b91edc`
-* Remaining in-scope work: commit/push, refresh the draft PR narrative, and obtain Fry's independent final-SHA review
+* Remaining in-scope work: bind and cardinality-check the complete durable authorization record, revalidate, and obtain a new independent final-SHA acceptance
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: Frank's independent probe changed an earlier attempt event's timestamp, execution identity, and fence after authorization; because v2 records only `prior_attempt_ids` for prior history, the successor claim remained mutation-capable. The approved correction replaces that list with a versioned canonical structured history envelope plus digest, recomputed from current durable records at authorization use and bound to a precise predecessor boundary and successor expectation. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+* Status basis: Frank's v3 correction replaces the incomplete ID list with a versioned canonical structured history envelope plus digest and correctly rejects predecessor/history/successor mutation. Fry's independent matrix then proved `_recovery_authorization_binding_is_valid()` does not bind the selected authorization record's `source`, `reason`, `authorized_at`, additional fields, or list cardinality. Those changes, a duplicate matching authorization, and an unrelated additional authorization still permit the first successor claim with `read_only=False`. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
 
 ## P07 Frank Canonical Attempt-History Binding Opening
 
@@ -68,6 +68,21 @@ The RV-008 probes deny the exact timestamp/execution/fence bypass; parameterized
 * PR posture: remains open, draft, and blocked pending Fry's independent final-SHA review plus P00-T01, P05, and P06.
 * Preserved history: Livingston's rejected source `829fae69c4f20da18d34bae15f53c1cb21794808`, Frank's rejection at review head `3529a027d68c3811274237a49202dafc87d33c70`, and every earlier author/reviewer cycle remain recorded below.
 * Prohibited mutations: no issue, review thread, deployment, canary, merge, or production state was changed.
+
+## P07 Fry Fresh Independent Final-SHA Review
+
+* Reviewer and independence: Fry did not author, advise, pair, or contribute to Frank's revision. Frank was the sole revision author. Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, Ralph, and Livingston provided no input.
+* Exact boundary: comparison base `3529a027d68c3811274237a49202dafc87d33c70`; source commit `bfead2572ae7c98bf82122281ac3a26ff3b91edc`; final reviewed head `98eae68fe25b429cc59a36fff97a7154979d2bda`. The final commit after source changed only plan/details/changes/PR narrative.
+* Opening repository state: clean worktree; local, origin, and PR head matched; divergence `0/0`; PR #684 was open, draft, mergeable/CLEAN, with 13 successful checks, no submitted reviews, and zero review threads.
+* Verdict: **Not accepted (`request_changes`)** — 0 Critical, 1 High, 0 Medium, 0 Low.
+* Resolved behavior: deterministic typed/null-preserving serialization; complete ordered predecessor attempt/event binding; exact predecessor boundary; record-version enforcement; provider intent/receipt/readback and publication binding; semantic mutation, missing/additional/duplicate/reordered attempt/event rejection; stale and cross-publication replay rejection; one exact successor; single mutation-capable claim; later replay read-only; concurrent authorization single-winner; concurrent claim one winner; failed predecessors immutable.
+* RV-008 High/open: the selected durable authorization record is not itself exact or unique. Mutating `recovery_authz[-1].source`, `reason`, or `authorized_at`, adding `unexpected_audit_field`, duplicating the matching authorization, or appending an unrelated authorization record still produced `read_only=False` for the successor's first claim. Six authorization-envelope/cardinality mutations bypassed while 16 attempt/event/nested/publication/version/successor mutations failed closed.
+* Root cause: `_recovery_authorization_binding_is_valid()` chooses the first record matching three IDs and validates the nested evidence digest plus successor digest. It neither compares top-level authorization metadata with the immutable successor identity nor requires exactly one matching/total applicable authorization record.
+* Required correction: canonicalize and bind the complete authorization record, require exactly one authorization matching the successor/predecessor/authz identity, reject any missing/additional/duplicate/unrelated record under the bound recovery set, and prove every top-level metadata or cardinality change makes the claim read-only. Preserve the current complete predecessor history and single-use successor behavior.
+* Independent conformance artifact: `/home/azureuser/.copilot/session-state/22fb1c6e-0d30-4860-be00-bd605f2908c8/files/fry_rv008_conformance.py`.
+* Validation: owner conformance `54 passed, 72 deselected`; focused `171 passed`; locked `846 passed, 1 warning`; initial full reproduced only the documented stale Compose recorder image (`1 failed, 3175 passed, 2 skipped, 2 deselected, 1 warning`); Compose rebuild plus focused fanout passed; final full `3176 passed, 2 skipped, 2 deselected, 1 warning`. Ruff, format, compile, exact diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, Dockerfile Checkov, and exact added-line secret/PII scan passed.
+* Review container: `sha256:5fe2fd6ee70a30882635e98eab2fcd62c99b1c5a4ba739e328fb96ec1c765049`; non-root UID `999`, ffmpeg/ffprobe, pipeline/outbox imports passed; unconfigured distribution worker exited `2`.
+* Delivery posture: P07 is not accepted. P00-T01, P05, and P06 remain open. PR #684 remains open/draft/blocked. No related issue, review thread, deployment, canary, or production state was mutated.
 
 ## P07 Frank Fresh Independent Final-SHA Review
 

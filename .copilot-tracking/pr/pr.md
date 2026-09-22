@@ -1,13 +1,27 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Frank's correction is implemented and validated; Fry review is pending.** Authorization v3 now binds and recomputes the complete canonical ordered durable attempt/event history plus the exact single-use successor expectation. P07-T07, P00-T01, P05, and P06 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Fry independently rejected the final head.** Authorization v3 binds and recomputes the complete canonical ordered durable attempt/event history plus the exact single-use successor expectation, but the containing recovery-authorization record is not fully bound or unique. RV-008/P07-T01 and P07-T07 remain open; P00-T01, P05, and P06 also remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
 Current source/tests/artifacts commit: `bfead2572ae7c98bf82122281ac3a26ff3b91edc`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
-Fresh independent reviewer: Fry, reserved and review-only; verdict pending.
+Fresh independent reviewer: Fry, review complete and reviewer-only; verdict Not accepted.
+
+## Fry final-SHA rejection
+
+Fry independently reviewed exact comparison `3529a027d68c3811274237a49202dafc87d33c70..98eae68fe25b429cc59a36fff97a7154979d2bda`, focused on Frank source commit `bfead2572ae7c98bf82122281ac3a26ff3b91edc`. The later final-head commit changed tracking and PR narrative only. Local, origin, and PR head matched with divergence `0/0`; the PR was open/draft/CLEAN with 13 successful checks, no reviews, and zero review threads.
+
+RV-008 remains **High**. The complete predecessor attempt/event history, nested provider evidence, publication identity, record versions, and exact successor now fail closed under mutation, omission, insertion, duplication, reorder, replay, and reuse. Exact unchanged evidence grants one mutation-capable claim; concurrent claim has one winner; later reuse is read-only; failed predecessors remain immutable.
+
+However, the durable `recovery_authz` record itself is not exact or unique. Changing its `source`, `reason`, or `authorized_at`, adding an unbound audit field, duplicating the matching authorization, or appending an unrelated authorization record still leaves the successor's first claim mutation-capable:
+
+`RV008_AUTHORIZATION_ENVELOPE_BYPASS cases=6 read_only=False`
+
+Required correction: bind and recompute the complete authorization record, require exactly one matching authorization for the bound successor, and reject changed, missing, additional, duplicated, reordered, or unrelated authorization records while preserving the complete predecessor-history and single-use successor behavior.
+
+Independent validation passed: owner conformance `54/72`, focused `171`, locked `846` with one warning, and final full repository `3176 passed, 2 skipped, 2 deselected, 1 warning` after rebuilding the documented stale Compose recorder image. Ruff, format, compile, diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container smoke, worker exit `2`, and changed-diff secret/PII scan passed. Review image: `sha256:5fe2fd6ee70a30882635e98eab2fcd62c99b1c5a4ba739e328fb96ec1c765049`.
 
 ## Incident and acceptance truth
 

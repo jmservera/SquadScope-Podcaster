@@ -505,6 +505,114 @@ No issue, PR, review thread, deployment, canary, or production state was resolve
 
 ---
 
+## Frank Canonical-History Revision Review — Fry — 2026-09-22
+
+### Reviewer Independence and Exact Boundary
+
+* Reviewer: **Fry, independent QA reviewer**.
+* Independence: Fry did not author, advise, pair, or contribute to Frank's revision. Frank was the sole author. Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, Ralph, Livingston, and the remaining named agents provided no input.
+* Exact comparison: `3529a027d68c3811274237a49202dafc87d33c70..98eae68fe25b429cc59a36fff97a7154979d2bda`.
+* Source commit: `bfead2572ae7c98bf82122281ac3a26ff3b91edc`.
+* Final reviewed head: `98eae68fe25b429cc59a36fff97a7154979d2bda`.
+* Post-source scope: `bfead25..98eae68` changes only plan/details/changes/PR narrative.
+* Opening state: clean incident worktree; local, origin, and PR head matched; comparison base was the merge base; source was an ancestor; branch divergence was `0/0`.
+* PR state: #684 open, draft, merge state `CLEAN`, 13 successful checks, no submitted reviews, and zero review threads.
+
+### Fry Verdict
+
+**Not accepted (`request_changes`).** Severity: 0 Critical, 1 High, 0 Medium, 0 Low. Frank resolves the complete predecessor attempt/event history defect, but RV-008 remains High because the durable recovery-authorization record is not itself exact or unique.
+
+### RV Dispositions
+
+| Finding | Fry disposition |
+|---|---|
+| RV-002 | Remains resolved; focused, locked, and full reservation/fencing regressions pass. |
+| RV-003 | Remains resolved; telemetry/deployment regressions, Bicep, and CI Checkov pass. |
+| RV-004 | Remains resolved; migration/cleanup regressions pass in the locked/full suites. |
+| RV-007 | Remains resolved at tracking level after this append-only reconciliation; every prior cycle remains intact. |
+| RV-008 | **High, open.** Predecessor history and successor are bound, but authorization-record metadata and cardinality are not. |
+| RV-009 | Remains resolved; authoritative four-cycle regressions pass. |
+
+### RV-008 High: Authorization Envelope Is Mutable and Non-Unique
+
+`_recovery_authorization_binding_is_valid()` locates the first authorization whose `authz_id`, successor `attempt_id`, and `predecessor_attempt_id` match the winner. It recomputes the nested evidence and digest, but does not compare the authorization record's top-level `source`, `reason`, or `authorized_at` with the successor's immutable authorization identity. It also does not reject extra fields, multiple matching authorizations, or unrelated additional authorization records.
+
+Independent exact reproduction kept the complete evidence and successor unchanged, then applied each of these durable-state mutations before the first claim:
+
+1. Change authorization `source`.
+2. Change authorization `reason`.
+3. Change authorization `authorized_at`.
+4. Add an unbound authorization audit field.
+5. Duplicate the matching authorization record.
+6. Append an unrelated authorization record.
+
+Every case still returned `read_only=False`. This violates the requested exact evidence consistency, duplicate/additional evidence rejection, and one-bound-successor authorization contract.
+
+Required correction: canonicalize and bind the complete selected authorization record, require exactly one matching authorization for the successor/predecessor/authz identity, define and enforce the permitted authorization set cardinality/order, and make every changed, missing, additional, duplicated, reordered, or unrelated authorization record fail closed before mutation authority is granted.
+
+### Independent Conformance Results
+
+| Boundary | Result |
+|---|---|
+| Deterministic typed serialization and JSON round trip | Passed |
+| Complete ordered predecessor attempts/events | Passed |
+| Precise predecessor ID/index/count boundary | Passed |
+| Attempt record version and legacy/unknown version rejection | Passed |
+| Attempt identity/state/classification/proof/provider fields | Passed; mutation denied |
+| Event type/state/sequence/time/owner/claim/execution/fence/lease | Passed; mutation denied |
+| Nested intent and receipt identity/additional fields | Passed; mutation denied |
+| Provider evidence and terminal/post-terminal readback | Passed; mutation denied |
+| Publication identity/objective and cross-week replay | Passed; mutation denied |
+| Missing/additional/duplicate/reordered attempts/events | Passed; mutation denied |
+| Successor additional field/unexpected event/reuse | Passed; first exact use only, later read-only |
+| Concurrent authorization | Passed; one authorization appended, one rejected |
+| Concurrent claim | Passed; one mutation-capable claim, one stale loser |
+| Failed predecessors | Passed; remained immutable before and after claim/replay |
+| Authorization source/reason/time/additional field | **Failed:** mutation-capable successor remained |
+| Duplicate/additional authorization records | **Failed:** mutation-capable successor remained |
+
+Owner regression selection: `54 passed, 72 deselected`. Independent artifact: `/home/azureuser/.copilot/session-state/22fb1c6e-0d30-4860-be00-bd605f2908c8/files/fry_rv008_conformance.py`.
+
+### Full Validation
+
+| Command or gate | Result |
+|---|---|
+| Focused correction suite | `171 passed in 9.41s` |
+| Locked contract suite | `846 passed, 1 warning in 61.73s` |
+| Initial full suite | `1 failed, 3175 passed, 2 skipped, 2 deselected, 1 warning`; documented stale Compose recorder image only |
+| Compose rebuild and focused fanout | `1 passed in 14.46s` |
+| Final full suite | `3176 passed, 2 skipped, 2 deselected, 1 warning in 87.86s` |
+| Ruff, format, compile, exact diff safety, deleted-test check | Passed; `192 files already formatted` |
+| Bicep build | Passed with the existing BCP318 warning |
+| Exact Bicep Checkov | Documented baseline retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov | `34 passed, 0 failed` |
+| Dockerfile Checkov baseline | Passed |
+| Review container | `sha256:5fe2fd6ee70a30882635e98eab2fcd62c99b1c5a4ba739e328fb96ec1c765049` |
+| Container smoke | UID `999`; ffmpeg/ffprobe and pipeline/outbox imports passed; unconfigured distribution worker exited `2` |
+| Exact added-line secret/PII scan | `NO_SUSPECTED_SECRETS_OR_PII` |
+
+No implementation, test, assertion, quality gate, security gate, issue, review thread, deployment, canary, or production state was changed.
+
+### GitHub and Residual State
+
+* #684 remains open, draft, mergeable/CLEAN, and blocked. It is not approved.
+* jmservera/SquadScope-Podcaster#671, jmservera/SquadScope-Podcaster#678, jmservera/SquadScope-Podcaster#679, jmservera/SquadScope-Podcaster#681, and jmservera/SquadScope-Podcaster#682 remain open and unmodified.
+* jmservera/SquadScope-Coordinator#17 remains open and unmodified.
+* jmservera/SquadScope#770 remains merged but does not clear P00-T01.
+* P07 is not accepted. P00-T01, P05, and P06 remain open.
+
+### Blockers and Clearing Evidence
+
+| Blocker | Required evidence |
+|---|---|
+| RV-008 / P07-T01 | Complete authorization-record canonical binding; exactly one matching authorization; changed/missing/additional/duplicate/reordered/unrelated authorization rejection; preserved exact predecessor/successor positive path |
+| P07-T07 | Fresh independent acceptance of the corrected final pushed SHA |
+| P00-T01 | Exact W39 upstream blocked-stage prevention/detection and durable dispatch-to-Azure evidence |
+| P05 | Accepted final-SHA review, merge/release provenance, authorized deployment, provider canary, alert fire/clear, and rollback evidence |
+| P06 | Four consecutive future post-fix cycles with complete authoritative external proof |
+
+---
+
 ## Fresh Independent Livingston-Revision Review — Frank — 2026-09-22
 
 ### Reviewer Identity, Independence, and Exact Boundary

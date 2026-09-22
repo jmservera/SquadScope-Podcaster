@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Frank's sole-author RV-008 correction is implemented, fully validated, and committed as source/tests/artifacts SHA `bfead2572ae7c98bf82122281ac3a26ff3b91edc` from review head `3529a027d68c3811274237a49202dafc87d33c70`. Authorization v3 now binds a versioned canonical typed snapshot and digest of every predecessor attempt/event through an exact history boundary plus the single expected successor. P07-T01 and P07-T06 are complete for this revision; P07-T07 remains open pending Fry's fresh independent final-SHA review. P00-T01, P05, and P06 remain blocked
+* Planning status: Frank's sole-author source revision `bfead2572ae7c98bf82122281ac3a26ff3b91edc` was delivered at final head `98eae68fe25b429cc59a36fff97a7154979d2bda` and independently reviewed by Fry. Authorization v3 correctly binds the complete ordered predecessor attempt/event history and exact successor, but Fry proved the durable `recovery_authz` envelope remains mutable and non-unique: changing its `source`, `reason`, `authorized_at`, or adding an unbound field, duplicate record, or unrelated record still permits the successor's first mutation-capable claim. RV-008 and P07-T01 remain open; P07-T06 remains complete; P07-T07 records a completed rejection rather than acceptance. P00-T01, P05, and P06 remain blocked
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -43,7 +43,7 @@ P07 requires atomic scheduler notification ownership, one telemetry vocabulary s
 
 ### Unresolved Decisions or Blockers
 
-* No planning decision is open. Ralph's revision now requires one exact receipt per provider and closes the receiptless path, but Livingston's exact-head review proves `_recovery_predecessor_provider_evidence()` accepts any non-empty consumed operation and the recovery authorization does not bind intent/receipt identity. P07-T01 must require the exact expected operation and durably bind provider, operation, intent, receipt, attempt, fence/time, publication/week/digests, and artifact before safe continuation. P00-T01, P05 deployment/canary, and P06 elapsed cycles remain acceptance blockers. No second critique was run; the original critique and its dispositions remain historical evidence.
+* No planning decision is open. Fry's exact-head review proves the complete predecessor history correction is effective, but the authorization record surrounding that evidence is not itself fully bound or cardinality-checked. P07-T01 must bind and recompute the complete selected `recovery_authz` record, require exactly one matching authorization for the successor, and reject changed, missing, additional, duplicated, reordered, or unrelated authorization records before mutation authority is granted. P00-T01, P05 deployment/canary, and P06 elapsed cycles remain acceptance blockers. No second critique was run; the original critique and its dispositions remain historical evidence.
 
 ## User Decisions and Requirements
 
@@ -258,16 +258,16 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 
 ## Implementation Status
 
-* Execution status: Livingston's sole-author RV-008 source/test correction is committed at `829fae69c4f20da18d34bae15f53c1cb21794808`; Frank independently rejected final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f`
+* Execution status: Frank's sole-author RV-008 source/test correction is committed at `bfead2572ae7c98bf82122281ac3a26ff3b91edc`; Fry independently rejected final head `98eae68fe25b429cc59a36fff97a7154979d2bda`
 * Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
-* Revision author: Livingston only
-* Fresh independent reviewer: Frank, complete and reviewer-only; verdict Not accepted
-* Excluded contributors: Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph may not author, advise, pair, or contribute; Frank is reviewer-only
+* Revision author: Frank only
+* Fresh independent reviewer: Fry, complete and reviewer-only; verdict Not accepted
+* Excluded contributors: Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, Ralph, and Livingston did not author, advise, pair, or contribute; Fry remained reviewer-only
 * Delivery restrictions: commit and push only the existing branch and update existing draft PR #684; no deployment, issue mutation, replacement branch/PR, or changes to `/home/azureuser/source/SquadScope`
 * Active implementation boundary: P07 review-follow-up defects only; P00-T01, P05, and P06 remain outside P07 and block final acceptance
 * Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
 * Validation intent: deterministic P07 negative probes, locked owner suites, full suite, Ruff check/format, compileall, Bicep, Checkov, diff check, container build, and applicable container/exit smoke without weakening
-* Current blockers: RV-008/P07-T01 complete ordered attempt-history binding requires correction and new independent review; P00-T01 upstream prevention evidence, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles remain blockers
+* Current blockers: RV-008/P07-T01 requires exact binding and uniqueness of the durable recovery-authorization record plus a new independent review; P00-T01 upstream prevention evidence, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles remain blockers
 
 ## Sources
 
@@ -430,11 +430,12 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Ownership: Frank alone authors the active correction from review head `3529a02`; Fry is reserved for independent review and may not contribute. Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, Ralph, and Livingston are locked out for this cycle. Every prior cycle remains immutable historical evidence.
 
 <!-- rpi:task id=P07-T01 -->
-#### [x] P07-T01: Enforce exact proof and durable recovery authorization
+#### [ ] P07-T01: Enforce exact proof and durable recovery authorization
 
 * Finding: RV-008.
 * Expected result: green requires exact week, publication, manifest, publication digest, canonical artifact digest/selection, expected provider identity, authoritative terminal readback source/state, and explicit duplicate resolution. Recovery authorization is durable, evidence-referenced, bound to the complete ordered attempt history/latest relevant state, and cannot arise from an unresolved unknown mutation or caller boolean alone.
 * Closure evidence required: label-only/omitted/mismatched/ambiguous proof probes are non-green; stale predecessor and omitted/reordered-history probes fail closed; a later unknown leaves reconciliation read-only. Authorization must retain and recompute a versioned canonical, typed, exact ordered representation of every relevant durable attempt and event through a precise predecessor boundary, not only prior attempt IDs. The binding includes attempt identity/order/status/classification, mutation possibility, event type/state/sequence/time/owner/execution/fence/lease, provider intent/receipt/evidence/readback identity and references, week/publication/manifest/digests/artifact, recovery linkage/authorization, and record version. Duplicate IDs/events, missing or ambiguous sequence/time, any semantic mutation, insertion/omission/reorder, cross-week replay, unexpected post-authorization append, legacy/unknown schema, and successor mismatch fail closed. Exactly the authorized successor transition may extend the bound history.
+* Fry disposition: predecessor attempts/events and the expected successor satisfy this contract, but the containing `recovery_authz` record does not. Mutated `source`, `reason`, or `authorized_at`, an extra field, a duplicate matching authorization, or an unrelated additional authorization record leaves the successor mutation-capable. Completion additionally requires exactly one fully recomputed authorization envelope whose metadata and evidence digest agree with the successor.
 
 <!-- rpi:task id=P07-T02 -->
 #### [x] P07-T02: Make scheduler notification enqueue single-winner
@@ -476,12 +477,12 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: exact commands, counts, exit statuses, SHA/image digest where applicable, and any generated-artifact cleanup are recorded in the implementation delivery update.
 
 <!-- rpi:task id=P07-T07 -->
-#### [ ] P07-T07: Reconcile delivery evidence and obtain Frank's independent review
+#### [ ] P07-T07: Reconcile delivery evidence and obtain Fry's independent review
 
 * Finding: RV-007 and cross-finding closure.
 * Dependencies: P07-T06.
-* Expected result: plan/details remain current; delivery records Livingston's revision SHA, exact counts, validation commands, and residual gates without rewriting any historical rejection cycle.
-* Closure evidence: the existing branch is committed and pushed, PR #684 remains open/draft/blocked, and Frank independently reviews the final validated head without prior contribution. All prior rejection cycles remain immutable historical evidence.
+* Expected result: plan/details remain current; delivery records Frank's revision SHA, exact counts, validation commands, and residual gates without rewriting any historical rejection cycle.
+* Closure evidence: the existing branch is committed and pushed, PR #684 remains open/draft/blocked, and Fry independently reviews the final validated head without prior contribution. Fry's review is complete with rejection, so this acceptance marker remains open. All prior rejection cycles remain immutable historical evidence.
 
 <!-- rpi:phase id=P05 -->
 ### [ ] P05: Deliver reviewed, reversible implementation
@@ -561,13 +562,13 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Marker(s) | Revised disposition | Required next evidence |
 |---|---|---|
 | P00-T01 | Preserved external gate | Exact W39 blocked-stage evidence and upstream prevention/detection remain owned by `jmservera/SquadScope`; W39 stays `missed_not_dispatched` |
-| P07-T01 | Open; Frank rejected final head | Bind and recompute complete ordered durable attempt records, including event owner/execution/fence/timestamp/order; retain the current exact provider/operation/intent/receipt/publication/artifact/readback/successor binding |
+| P07-T01 | Open; Fry rejected final head | Preserve the complete predecessor/successor binding and additionally bind the selected authorization record's source/reason/time/all fields, require exactly one matching record, and reject additional/duplicate/unrelated authorization entries |
 | P07-T02 | Complete; RV-002 resolved | Expired `reserved` and `enqueue_started` leases become due; CAS fencing preserves a single current owner and rejects stale completion/release |
 | P07-T03 | Complete; RV-004 resolved | Cleanup completes a bounded resumable pre-index outbox migration before deletion; incomplete scans fail closed and current references retain CAS priority |
 | P07-T04 | Complete; RV-003 resolved | Canonical emitted/query vocabulary and active-depth absence semantics independently passed |
 | P07-T05 | Complete; RV-009 resolved | Stored proof booleans are rebound to raw exact evidence and the current weekly record; label-only, tampered, mismatched, and unauthorized recovered cycles fail closed |
-| P07-T06 | Complete for Livingston revision | Required `20/68`, outbox `88`, focused `133`, locked `808`, full `3137`, static, infrastructure, Checkov, container, exit, and secret/PII gates passed without weakening |
-| P07-T07; P05-T01 | Frank review complete with rejection; delivery blocked | Preserve every rejection cycle; keep PR #684 draft/blocked, correct RV-008, and require a new independent final-SHA acceptance without reviewer contribution |
+| P07-T06 | Complete for Frank revision | Outbox `126`, focused `171`, locked `846`, final full `3176`, static, infrastructure, Checkov, container, exit, and secret/PII gates passed without weakening |
+| P07-T07; P05-T01 | Fry review complete with rejection; delivery blocked | Preserve every rejection cycle; keep PR #684 draft/blocked, correct RV-008, and require a new independent final-SHA acceptance without reviewer contribution |
 | P05-T03 | Expanded by RV-006 and refreshed current metadata | Closure evidence for W17–W29, the six RV-006 threads, and four later unresolved threads found during revision; do not claim resolution without GitHub evidence |
 | P01-T04, P02-T01–P02-T02 | Implemented surfaces; dependency verification | Preserve safe behavior unless the new receipt/attempt schema requires minimal compatible updates |
 | Existing W38 references in plan/PR handoff | Evidence-conditional correction | Use `published_verified_recovered` only with full exact proof; otherwise label it an allowed candidate and retain all attempt history |
@@ -585,7 +586,7 @@ Livingston alone authors the current P07-T01 correction. Frank alone performs th
 | RV-003 High | P07-T04, P07-T06, P07-T07 | Remains resolved by canonical emitted/query/test/runbook vocabulary and representative query fire/clear proof |
 | RV-004 High | P07-T03, P07-T06, P07-T07 | Explicit run/page/item/time budgets, durable legacy-reference migration, fenced/conditional deletion, concurrent-reference negative probe; validation and Livingston disposition |
 | RV-007 Medium | P07-T07, P05-T01 | Exact current counts/statuses/commands in delivery update and PR #684; historical review unchanged; residual gates explicit |
-| RV-008 High | P07-T01, P07-T06, P07-T07 | Bind and recompute complete ordered durable attempt records, including earlier event owner/execution/fence/timestamp/order, while preserving exact item/cardinality/operation/provider/intent/receipt/publication/artifact/readback/successor binding |
+| RV-008 High | P07-T01, P07-T06, P07-T07 | Preserve complete ordered attempt/event and successor binding; bind the complete selected authorization record and enforce exactly one matching authorization so metadata mutation, extra fields, duplicates, and unrelated records fail closed |
 | RV-009 High | P07-T05, P07-T06, P07-T07 | Resolved by authoritative proof-envelope reload/rebinding, label-only and incomplete proof rejection, and Livingston disposition |
 
 ### Implemented Surface Disposition
@@ -743,6 +744,6 @@ The existing critique is preserved unchanged as historical evidence. No second c
 
 * Implementation artifact: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
 * Review-follow-up implementation marker range: P07-T01 through P07-T07.
-* Current author/reviewer: Frank is the sole correction author from review head `3529a027d68c3811274237a49202dafc87d33c70`; Fry is reserved as fresh independent final-SHA reviewer. Livingston is locked out after the rejected revision. All prior author/reviewer cycles remain historical evidence.
-* Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. Frank's implementation closes the authored RV-008 gap locally; final acceptance remains pending Fry's independent review.
-* Remaining blockers after revision: P07-T07 independent final-SHA review by Fry; P00-T01 upstream ownership; P05 deployment/provider authority and canary; P06 four elapsed future post-fix cycles. PR #684 remains draft/blocked while any remain.
+* Current author/reviewer: Frank is the sole correction author from review head `3529a027d68c3811274237a49202dafc87d33c70`; Fry completed the independent final-SHA review without prior contribution. Livingston remained locked out. All prior author/reviewer cycles remain historical evidence.
+* Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. RV-008 remains High/open because authorization-record metadata and cardinality are not bound even though predecessor history is.
+* Remaining blockers after revision: correct RV-008 and obtain a new independent final-SHA acceptance; P00-T01 upstream ownership; P05 deployment/provider authority and canary; P06 four elapsed future post-fix cycles. PR #684 remains draft/blocked while any remain.
