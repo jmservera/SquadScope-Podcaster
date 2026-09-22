@@ -258,7 +258,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 
 ## Implementation Status
 
-* Execution status: Livingston's sole-author RV-008 source/test correction and complete validation are finished from `fa3426fa030193e89a58cdb927c81a360df24a03`; commit/push and Frank's independent final-SHA review remain
+* Execution status: Livingston's sole-author RV-008 source/test correction and complete validation are committed at `829fae69c4f20da18d34bae15f53c1cb21794808`; delivery reconciliation/push and Frank's independent final-SHA review remain
 * Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
 * Revision author: Livingston only
 * Fresh independent reviewer: Frank, pending and prohibited from contribution before final-SHA review

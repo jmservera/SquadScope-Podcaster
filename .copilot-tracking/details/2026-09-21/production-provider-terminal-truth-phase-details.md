@@ -1193,7 +1193,7 @@ Run focused negative probes and the complete repository quality/security/contain
 
 #### Unresolved Items
 
-* Livingston validation complete: required RV-008 `20 passed, 68 deselected`; outbox `88 passed`; focused `133 passed`; locked `808 passed, 1 warning`; final full `3137 passed, 3 skipped, 2 deselected, 1 warning`. Ruff, format, compile, diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container image `sha256:c427f35291962193a83890f94549485745830d2008ea9d7231caf7931a4ae9fc`, UID/tool/import smoke, worker exit `2`, and changed-diff secret/PII scan passed. The first full run reproduced only the known stale Compose recorder image; rebuilding it made the final suite pass. P07-T07 remains pending Frank review.
+* Livingston validation complete for source SHA `829fae69c4f20da18d34bae15f53c1cb21794808`: required RV-008 `20 passed, 68 deselected`; outbox `88 passed`; focused `133 passed`; locked `808 passed, 1 warning`; final full `3137 passed, 3 skipped, 2 deselected, 1 warning`. Ruff, format, compile, diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container image `sha256:c427f35291962193a83890f94549485745830d2008ea9d7231caf7931a4ae9fc`, UID/tool/import smoke, worker exit `2`, and changed-diff secret/PII scan passed. The first full run reproduced only the known stale Compose recorder image; rebuilding it made the final suite pass. P07-T07 remains pending Frank review.
 
 <!-- rpi:task id=P07-T07 -->
 ### P07-T07: Reconcile delivery evidence and obtain Frank's independent final-SHA review

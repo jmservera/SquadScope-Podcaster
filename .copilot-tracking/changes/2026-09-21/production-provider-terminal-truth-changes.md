@@ -17,7 +17,8 @@
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
 * Completed markers for this cycle: P07-T01 and P07-T06
 * Open marker: P07-T07
-* Remaining in-scope work: commit/push the existing branch, update the existing draft PR narrative with exact SHAs, and obtain Frank's independent final-SHA review
+* Source/tests/artifacts commit: `829fae69c4f20da18d34bae15f53c1cb21794808`
+* Remaining in-scope work: commit this delivery reconciliation, push the existing branch, update the existing draft PR narrative, and obtain Frank's independent final-SHA review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
 * Status basis: exact structured recovery binding and all requested denial probes pass; focused, locked, full, static, infrastructure, Checkov, container, exit, and secret/PII gates pass without weakening. Existing branch and draft PR #684 are retained. Ralph's rejected source `e16963243973707ea2557f75f925d3c6935d49ee` remains historical evidence. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
 
@@ -41,6 +42,7 @@
 * Provider isolation: each provider retains its own intent and receipt snapshot. Provider/attempt receipt swaps, changed intent/receipt IDs, owner/fence/time/item/readback fields, extra or missing receipts, and successor aliasing fail closed.
 * Compatibility: failed-terminal predecessors without consumed mutations remain recoverable through exact null intent/receipt fields plus authoritative failed readback. Legacy v1 recovery authorizations are not upgraded and fail closed.
 * Preserved state: predecessor attempts and ordered history remain immutable; all previously resolved findings retain their behavior.
+* Source/tests/artifacts commit: `829fae69c4f20da18d34bae15f53c1cb21794808`.
 
 ## P07 Livingston Validation
 

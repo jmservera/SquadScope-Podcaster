@@ -5,7 +5,8 @@
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
-Current source/tests/artifacts commit: pending commit/push; exact source and final SHA will be recorded after delivery.
+Current source/tests/artifacts commit: `829fae69c4f20da18d34bae15f53c1cb21794808`.
+Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
 Fresh independent reviewer: Frank, pending and prohibited from source/test contribution.
 
 ## Incident and acceptance truth
