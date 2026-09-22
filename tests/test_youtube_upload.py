@@ -140,14 +140,14 @@ def test_initiate_resumable_session_returns_uri():
 
 
 @pytest.mark.parametrize("status", [200, 308])
-def test_initiate_resumable_session_missing_location_is_ambiguous(status):
+def test_initiate_resumable_session_is_ambiguous_without_location(status):
     class _NoLoc:
         def request_with_headers(self, *a, **k):
             return status, {}, b""
 
     with pytest.raises(
         YouTubeSessionInitiationUnknown,
-        match="session initiation outcome is unknown: no session URI",
+        match="no valid session URI",
     ):
         initiate_resumable_session(_NoLoc(), "tok", {}, file_size=10)
 
@@ -553,18 +553,25 @@ def test_upload_video_blocks_retry_when_session_init_response_is_lost(tmp_path, 
     }
 
 
-def test_upload_video_blocks_retry_when_session_init_location_is_missing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("status", [200, 308])
+def test_upload_video_blocks_retry_when_session_init_has_no_location(tmp_path, monkeypatch, status):
     path = _make_file(tmp_path, 2 * _GRANULE)
 
-    class _MissingLocation:
-        def request_with_headers(self, *args, **kwargs):
-            return 200, {}, b""
+    class _NoLocation:
+        def __init__(self):
+            self.methods = []
 
+        def request_with_headers(self, *args, method="GET", **kwargs):
+            self.methods.append(method)
+            return status, {}, b""
+
+    transport = _NoLocation()
     monkeypatch.setattr("podcaster.video.youtube._get_youtube_access_token", lambda c, h: "tok")
-    res = upload_video(path, "Title", "Desc", _config(), transport=_MissingLocation())
+    res = upload_video(path, "Title", "Desc", _config(), transport=transport)
 
     assert res.status == "unknown"
     assert res.details == {
         "retry_blocked": True,
         "code": "youtube_resumable_init_ambiguous",
     }
+    assert transport.methods == ["POST"]

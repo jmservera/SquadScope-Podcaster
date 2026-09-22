@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import (
@@ -56,7 +56,7 @@ _RETRY_BACKOFF_BASE = 2.0
 
 
 class YouTubeSessionInitiationUnknown(RuntimeError):
-    """The session POST may have succeeded but its response was lost."""
+    """The session POST may have succeeded without a usable session URI."""
 
 
 class YouTubeCompletionAmbiguous(RuntimeError):
@@ -167,8 +167,8 @@ def initiate_resumable_session(
 ) -> str:
     """Start a resumable session and return the session URI.
 
-    Raises YouTubeSessionInitiationUnknown if the API may have created a session
-    but does not return its URI.
+    Raises YouTubeSessionInitiationUnknown when the mutating request may have
+    succeeded but no usable session URI is available.
     """
 
     params = urlencode({"uploadType": "resumable", "part": "snippet,status"})
@@ -203,10 +203,12 @@ def initiate_resumable_session(
     if status not in (200, 308):
         raise RuntimeError(f"YouTube resumable init failed: HTTP {status}")
 
-    session_uri = resp_headers.get("location")
-    if not session_uri:
+    session_uri = resp_headers.get("location", "").strip()
+    parsed_session_uri = urlparse(session_uri)
+    if parsed_session_uri.scheme not in {"http", "https"} or not parsed_session_uri.netloc:
         raise YouTubeSessionInitiationUnknown(
-            "YouTube resumable session initiation outcome is unknown: no session URI"
+            f"YouTube resumable session initiation outcome is unknown: "
+            f"HTTP {status} returned no valid session URI"
         )
     return session_uri
 
