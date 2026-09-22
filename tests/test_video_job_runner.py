@@ -702,6 +702,135 @@ class TestRunVideoGeneration:
         mock_enqueue.assert_not_called()
         mock_distribute.assert_not_called()
 
+    @pytest.mark.parametrize("outbox_enabled", [False, True])
+    def test_post_compose_takeover_blocks_every_irreversible_boundary(
+        self,
+        outbox_enabled,
+        storage,
+        dry_config,
+        monkeypatch,
+    ):
+        from podcaster.video import distribution, job_runner
+        from podcaster.video.ownership import VideoOwnershipGuard, ownership_path
+
+        job_id = f"post-compose-takeover-{'outbox' if outbox_enabled else 'direct'}"
+        request = {"article_title": "Post-compose takeover"}
+        config = dry_config
+        if outbox_enabled:
+            request.update(
+                {
+                    "week": "2026-W39",
+                    "publish_run_id": "123",
+                    "article_sha256": "a" * 64,
+                    "manifest_sha256": "b" * 64,
+                    "publication_identity_mode": "canonical",
+                }
+            )
+            config = VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+                dry_run=False,
+            )
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": request,
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+
+        monkeypatch.setattr(
+            "podcaster.video.video_gen.record_episode",
+            MagicMock(return_value=MagicMock(recorded=[])),
+        )
+
+        def compose(*_args, output_path, **_kwargs):
+            output_path.write_bytes(b"\x00" * 2048)
+            return MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            )
+
+        monkeypatch.setattr("podcaster.video.video_compose.compose_video", compose)
+        monkeypatch.setattr(job_runner, "outbox_routing_enabled", lambda: outbox_enabled)
+
+        original_resolve_title = job_runner._resolve_video_title
+
+        def transfer_after_post_compose_check(*args, **kwargs):
+            document = json.loads(storage.get_bytes(ownership_path(job_id)).decode("utf-8"))
+            expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+            document["claim"]["visibility_expires_at"] = expired
+            document["claim"]["lease_expires_at"] = expired
+            storage.put_bytes(
+                ownership_path(job_id),
+                json.dumps(document).encode("utf-8"),
+                "application/json",
+            )
+            successor = VideoOwnershipGuard.acquire(
+                storage,
+                job_id,
+                owner="video-runner:successor-pop",
+                execution_id="successor-pop",
+                visibility_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
+            assert successor.claim.fencing_token > document["claim"]["fencing_token"]
+            return original_resolve_title(*args, **kwargs)
+
+        monkeypatch.setattr(
+            job_runner,
+            "_resolve_video_title",
+            transfer_after_post_compose_check,
+        )
+
+        archive = MagicMock()
+        outbox_enqueue = MagicMock()
+        queue_notify = MagicMock()
+        mark_notification = MagicMock()
+        direct_distribute = MagicMock()
+        youtube_provider = MagicMock()
+        spotify_provider = MagicMock()
+        rss_provider = MagicMock()
+        monkeypatch.setattr(job_runner, "commit_immutable_artifact", archive)
+        monkeypatch.setattr(
+            job_runner.DistributionOutboxRepository,
+            "enqueue",
+            outbox_enqueue,
+        )
+        monkeypatch.setattr(job_runner, "enqueue_distribution_job", queue_notify)
+        monkeypatch.setattr(
+            job_runner.DistributionOutboxRepository,
+            "mark_notification_sent",
+            mark_notification,
+        )
+        monkeypatch.setattr(job_runner, "distribute_video", direct_distribute)
+        monkeypatch.setattr(distribution, "upload_to_youtube", youtube_provider)
+        monkeypatch.setattr(distribution, "upload_to_spotify_episode", spotify_provider)
+        monkeypatch.setattr(distribution, "update_spotify_rss", rss_provider)
+
+        with pytest.raises(TransientVideoError, match="video generation failed"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=config,
+                lifecycle_deadline_monotonic=time.monotonic() + 300,
+                ownership_execution_id="stale-pop",
+                ownership_visibility_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
+
+        archive.assert_not_called()
+        outbox_enqueue.assert_not_called()
+        queue_notify.assert_not_called()
+        mark_notification.assert_not_called()
+        direct_distribute.assert_not_called()
+        youtube_provider.assert_not_called()
+        spotify_provider.assert_not_called()
+        rss_provider.assert_not_called()
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_no_repos_generates_generic_video(self, mock_compose, mock_record, storage, dry_config):
@@ -2182,7 +2311,10 @@ class TestProcessMessageWatermarkFailure:
             )
 
         mock_compose.side_effect = fake_compose
-        msg = _make_message(job_id)
+        msg = replace(
+            _make_message(job_id),
+            next_visible_on=datetime.now(timezone.utc) + timedelta(minutes=90),
+        )
         outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
         assert outcome.status == STATUS_COMPLETED
         assert len(queue.deleted) == 1
@@ -2299,7 +2431,10 @@ class TestWatermarkTransientLifecycle:
         mock_compose.side_effect = [self._transient_error(), fake_compose]
 
         first = process_message(
-            _make_message(job_id, dequeue_count=1),
+            replace(
+                _make_message(job_id, dequeue_count=1),
+                next_visible_on=datetime.now(timezone.utc) + timedelta(minutes=90),
+            ),
             storage=storage,
             queue=queue,
             config=dry_config,
@@ -2310,7 +2445,10 @@ class TestWatermarkTransientLifecycle:
         # Redelivery: compose_video now works, and the job completes normally.
         mock_compose.side_effect = fake_compose
         second = process_message(
-            _make_message(job_id, dequeue_count=2),
+            replace(
+                _make_message(job_id, dequeue_count=2),
+                next_visible_on=datetime.now(timezone.utc) + timedelta(minutes=90),
+            ),
             storage=storage,
             queue=queue,
             config=dry_config,
@@ -3236,7 +3374,10 @@ class TestWatermarkDnsLifecycle:
 
         mock_compose.side_effect = self._compose_from_the_real_resolver(tmp_path, self._dns_outage)
         first = process_message(
-            _make_message(job_id, dequeue_count=1),
+            replace(
+                _make_message(job_id, dequeue_count=1),
+                next_visible_on=datetime.now(timezone.utc) + timedelta(minutes=90),
+            ),
             storage=storage,
             queue=queue,
             config=dry_config,
@@ -3246,7 +3387,10 @@ class TestWatermarkDnsLifecycle:
 
         mock_compose.side_effect = fake_compose
         second = process_message(
-            _make_message(job_id, dequeue_count=2),
+            replace(
+                _make_message(job_id, dequeue_count=2),
+                next_visible_on=datetime.now(timezone.utc) + timedelta(minutes=90),
+            ),
             storage=storage,
             queue=queue,
             config=dry_config,

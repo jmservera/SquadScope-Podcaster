@@ -79,6 +79,7 @@ from podcaster.video.distribution import (
     youtube_enabled_for_language,
 )
 from podcaster.video.intermediates import create_intermediate_store
+from podcaster.video.ownership import OwnershipError, VideoOwnershipGuard
 from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
@@ -806,6 +807,8 @@ def run_video_generation(
     fanout_scratch: StorageBackend | None = None,
     clip_producer: QueueProducer | None = None,
     lifecycle_deadline_monotonic: float | None = None,
+    ownership_execution_id: str | None = None,
+    ownership_visibility_expires_at: datetime | None = None,
 ) -> VideoOutcome:
     """Generate video for a staged job_id and distribute to configured targets.
 
@@ -838,6 +841,16 @@ def run_video_generation(
     run_id = uuid.uuid4().hex if fanout_enabled else None
     media_validation_lease = None
     media_validation_admitted = False
+    ownership_guard: VideoOwnershipGuard | None = None
+
+    def _assert_downstream_authority() -> None:
+        if (
+            lifecycle_deadline_monotonic is not None
+            and time.monotonic() >= lifecycle_deadline_monotonic
+        ):
+            raise OwnershipError("authoritative queue visibility deadline has expired")
+        if ownership_guard is not None:
+            ownership_guard.assert_current()
 
     def _remaining_media_validation_budget() -> float:
         nonlocal media_validation_admitted, media_validation_lease
@@ -1183,6 +1196,23 @@ def run_video_generation(
                         "final media validation failed: lifecycle or editor lease expired "
                         "before distribution"
                     )
+            if ownership_execution_id is not None:
+                if ownership_visibility_expires_at is None:
+                    raise RuntimeError(
+                        "downstream ownership requires the authoritative queue visibility expiry"
+                    )
+                ownership_guard = VideoOwnershipGuard.acquire(
+                    storage,
+                    job_id,
+                    owner=f"video-runner:{ownership_execution_id}",
+                    execution_id=ownership_execution_id,
+                    visibility_expires_at=ownership_visibility_expires_at,
+                    lease_expires_at=(
+                        media_validation_lease.expires_at
+                        if media_validation_lease is not None
+                        else None
+                    ),
+                )
 
             # Distribute
             request = manifest.get("request")
@@ -1355,6 +1385,7 @@ def run_video_generation(
                             reason="distribution_provider_not_requested",
                             details={"job_id": job_id},
                         )
+                    _assert_downstream_authority()
                     artifact = commit_immutable_artifact(
                         storage,
                         output_path,
@@ -1363,6 +1394,7 @@ def run_video_generation(
                         suffix=output_path.suffix,
                     )
                     repository = DistributionOutboxRepository(storage)
+                    _assert_downstream_authority()
                     outbox_document, _created = repository.enqueue(
                         publication_context,
                         artifact,
@@ -1370,7 +1402,9 @@ def run_video_generation(
                         enqueue_source="video_runner",
                         enqueue_version="v1",
                     )
+                    _assert_downstream_authority()
                     if enqueue_distribution_job(outbox_document["outbox_id"]):
+                        _assert_downstream_authority()
                         repository.mark_notification_sent(outbox_document["outbox_id"])
                     dist_result = DistributionResult(
                         status="partial",
@@ -1393,6 +1427,7 @@ def run_video_generation(
                         },
                     )
                 else:
+                    _assert_downstream_authority()
                     dist_result = distribute_video(
                         output_path,
                         job_id,
@@ -1469,6 +1504,7 @@ def run_video_generation(
                     "youtube_oauth_error": dist_result.youtube_oauth_error,
                     "youtube_oauth_error_subtype": dist_result.youtube_oauth_error_subtype,
                 }
+                _assert_downstream_authority()
                 _record_video_state(
                     storage,
                     job_id,
@@ -1505,6 +1541,7 @@ def run_video_generation(
             timings.log_summary(logger)
 
             # Record the aggregate terminal state in the manifest.
+            _assert_downstream_authority()
             _record_video_state(
                 storage,
                 job_id,
@@ -1840,6 +1877,8 @@ def process_message(
             config=config,
             now=now,
             lifecycle_deadline_monotonic=lifecycle_deadline_monotonic,
+            ownership_execution_id=message.pop_receipt,
+            ownership_visibility_expires_at=message.next_visible_on,
         )
     except PermanentVideoError as exc:
         logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)
