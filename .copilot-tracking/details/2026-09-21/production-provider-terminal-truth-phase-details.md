@@ -32,6 +32,24 @@ Leela independently reviewed Fry's exact final head `273f94e0d1fa773e108661f908a
 
 The new cycle assigns Leela as sole revision author from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`; Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` without contributing. The correction replaces loose Python equality with exact type-tagged canonical byte comparison across the set, envelope, evidence, history, attempt/event records, and successor expectations; validates exact versioned schemas before digest/equality checks; and rejects floats, exponent-overflow/non-finite values, negative zero, non-string keys, unsupported containers, duplicate JSON fields, coercions, and legacy/unknown structures. Focused `241`, locked `916`, and full `3246` tests pass with all static, infrastructure, Checkov, container, exit, and secret-scan gates. P07-T01/P07-T06/P07-T07 are complete for this revision.
 
+Basher's later final-head review rejected `5fdd69f5210053daa742f3690d0fa34c5795f1bc`.
+Three #682 disposition claims were not supported by the executable boundary: exhausted chunk
+transport/status ambiguity was recorded as terminal failure, checkpoint size verification passed
+open when unavailable, and final output was not media-probed before success. Livingston is the
+sole revision author for the correction; Frank and Basher are excluded from contribution, Rusty
+is reserved for fresh independent review, and Bender, Hermes, and Amy remain excluded.
+
+Source commit `d6e85efa33816430f9141cc4dfed8379c9502ad8` closes the three implementation
+gaps. Chunk exhaustion that may follow provider mutation is non-retryable
+`mutation_ambiguous` and persists `provider_unknown`; redelivery is read-only. Checkpoint upload
+trust now requires an exact size result and otherwise retains local source for recomputation while
+removing only the unverified checkpoint. Final output is written to a unique sibling staged MP4,
+validated for a positive-duration video stream and requested audio stream, then atomically
+promoted; failure preserves any existing destination and cleans the staged candidate. P00-T01 is
+complete at upstream reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2` and merge SHA
+`7a6d8811bf82507cbdd0b01ba1135bc42e5942f3`, with 18 successful checks. P05-T03,
+P05-T04–P05-T06, P06, and merge authorization remain pending Rusty and later gates.
+
 ## Cross-Phase Invariants
 
 1. **Recoverably atomic visibility:** upload an immutable content-addressed artifact, verify integrity/readability, then conditionally create the single authoritative outbox record referencing its hash. Queue notification is an idempotent hint; claim revalidates the artifact; verified orphan artifacts are repaired or garbage-collected without provider mutation.

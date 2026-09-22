@@ -1,6 +1,29 @@
 <!-- markdownlint-disable-file -->
 # Review: Production Provider Terminal Truth
 
+## Basher Rejection and Livingston Revision Pending Rusty
+
+Basher independently rejected exact head `5fdd69f5210053daa742f3690d0fa34c5795f1bc`
+in [PR #684 comment 5778693736](https://github.com/jmservera/SquadScope-Podcaster/pull/684#issuecomment-5778693736).
+The rejection identified three High-risk evidence/implementation gaps: ambiguous exhausted chunk
+uploads were misclassified as failed terminal, unavailable checkpoint size probes passed open, and
+final output lacked a post-write media validity probe. The stale P00-T01 checklist state was also
+identified.
+
+Livingston alone authored source commit `d6e85efa33816430f9141cc4dfed8379c9502ad8`.
+The correction maps possibly-mutated chunk exhaustion to durable `provider_unknown` and
+reconcile-only redelivery, makes checkpoint size verification fail closed, and stages plus
+strictly probes final media before atomic destination replacement. Focused tests passed `418`;
+the locked terminal-truth contract passed `920` with one warning; rebuilt Compose integration
+passed `3`; full pytest passed `3257` with 2 skipped, 2 deselected, and one existing warning.
+Ruff, format, compile, diff safety, Bicep, Checkov baselines, container build/smoke, worker exit,
+and secret/PII scan passed. Corrected #682 replies are
+[r4073299493](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299493),
+[r4073299679](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299679),
+and [r4073299841](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299841).
+This is implementation evidence, not acceptance: Rusty's fresh independent exact-SHA review is
+pending, so P05-T03 and merge authorization remain open.
+
 ## Scope and Evidence
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
