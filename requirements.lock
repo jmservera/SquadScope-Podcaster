@@ -16,7 +16,7 @@ azure-core==1.41.0
     #   azure-storage-queue
 azure-identity==1.25.3
     # via squadscope-podcaster (pyproject.toml)
-azure-storage-blob==12.30.2
+azure-storage-blob==12.30.3
     # via squadscope-podcaster (pyproject.toml)
 azure-storage-queue==12.17.0
     # via squadscope-podcaster (pyproject.toml)
