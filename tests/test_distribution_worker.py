@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+
+import pytest
 
 from podcaster.distribution_outbox import (
     DistributionOutboxRepository,
     commit_immutable_artifact,
+    outbox_path,
 )
 from podcaster.distribution_worker import process_message
 from podcaster.publication_state import PublicationIdentity
@@ -247,9 +251,15 @@ def test_spotify_post_handoff_expected_item_readback_can_clear(tmp_path, monkeyp
 def test_scheduler_enqueues_each_due_outbox_once(monkeypatch):
     from podcaster import distribution_scheduler
 
+    repair_pages = []
+
     class Repository:
         def __init__(self, storage):
             pass
+
+        def repair_notifications_page(self, notify, **kwargs):
+            repair_pages.append(kwargs)
+            return 0, "repair-cursor"
 
         def due_reconciliations_page(self, **kwargs):
             return (
@@ -283,12 +293,14 @@ def test_scheduler_enqueues_each_due_outbox_once(monkeypatch):
         def cleanup_orphan_artifacts(self, limit):
             return 0
 
+    state = {}
+
     class Storage:
         def get_bytes(self, path):
-            return None
+            return state.get(path)
 
         def put_bytes(self, path, content, content_type):
-            return None
+            state[path] = content
 
         def list_blobs(self, prefix, *, limit):
             return []
@@ -303,6 +315,158 @@ def test_scheduler_enqueues_each_due_outbox_once(monkeypatch):
     )
     assert distribution_scheduler.run_once() == 0
     assert sent == ["a" * 64, "b" * 64]
+    assert repair_pages == [{"limit": 100, "after_path": None}]
+    assert json.loads(state[distribution_scheduler.SCHEDULER_STATE_PATH]) == {
+        "outbox_cursor": "distribution-outbox/cursor.json",
+        "repair_cursor": "repair-cursor",
+    }
+
+
+def test_scheduler_repairs_legacy_notifications_and_reconciles_without_replay(
+    tmp_path, monkeypatch
+):
+    from podcaster import distribution_scheduler
+
+    storage = LocalStorageBackend(tmp_path / "storage", "http://localhost/artifacts")
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"scheduler-repair")
+    artifact = commit_immutable_artifact(
+        storage,
+        source,
+        media_kind="video",
+        content_type="video/mp4",
+        suffix=".mp4",
+    )
+    current = [datetime(2026, 9, 22, 20, 0, tzinfo=timezone.utc)]
+    repository = DistributionOutboxRepository(storage, now=lambda: current[0])
+
+    def enqueue(index):
+        document, _created = repository.enqueue(
+            PublicationIdentity(
+                accepted_job_id=f"podcast-2026-W39-scheduler-{index}",
+                week="2026-W39",
+                publish_run_id=str(index),
+                article_sha256=f"{index:064x}",
+                manifest_sha256=f"{index + 100:064x}",
+            ),
+            artifact,
+            provider_objectives={"youtube": "public"},
+            enqueue_source="test",
+            enqueue_version="v1",
+        )
+        return document
+
+    fresh = enqueue(1)
+    legacy = enqueue(2)
+    accepted = enqueue(3)
+
+    def make_legacy(raw):
+        document = json.loads(raw.decode("utf-8"))
+        for leg in document["providers"].values():
+            leg["next_reconcile_at"] = None
+            leg["active_schedule_token"] = None
+            leg["active_schedule_source"] = None
+        document["enqueue"]["notification_intent"] = {
+            "intent_id": "legacy-intent",
+            "source_ownership": {"owner": "legacy"},
+            "reserved_at": "2026-09-22T19:59:00Z",
+            "consumed_at": "2026-09-22T20:00:00Z",
+        }
+        document["enqueue"]["notification_sent_at"] = "2026-09-22T20:00:00Z"
+        return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    storage.update_bytes(
+        outbox_path(legacy["outbox_id"]),
+        "application/json; charset=utf-8",
+        make_legacy,
+    )
+    accepted_owner = {"owner": "accepted"}
+    repository.reserve_notification(
+        accepted["outbox_id"],
+        source_ownership=accepted_owner,
+        authorize=lambda: None,
+    )
+    assert repository.authorize_notification_send(
+        accepted["outbox_id"],
+        source_ownership=accepted_owner,
+        authorize=lambda: None,
+    )
+    assert repository.accept_notification_send(
+        accepted["outbox_id"],
+        source_ownership=accepted_owner,
+        authorize=lambda: None,
+    )
+
+    monkeypatch.setattr(
+        distribution_scheduler,
+        "DistributionOutboxRepository",
+        lambda backend: DistributionOutboxRepository(backend, now=lambda: current[0]),
+    )
+    monkeypatch.setattr(distribution_scheduler, "create_storage_backend", lambda: storage)
+    enqueued = []
+
+    def record_enqueue(outbox_id, *, authorize_send=None, mark_accepted=None):
+        if authorize_send is not None:
+            if not authorize_send():
+                return True
+            enqueued.append(("initial", outbox_id))
+            assert mark_accepted is not None
+            assert mark_accepted()
+            return True
+        enqueued.append(("reconciliation", outbox_id))
+        return True
+
+    monkeypatch.setattr(distribution_scheduler, "enqueue_distribution_job", record_enqueue)
+
+    assert distribution_scheduler.run_once() == 0
+    assert enqueued == [("initial", fresh["outbox_id"])]
+    repaired_legacy = repository.read(legacy["outbox_id"])
+    assert repaired_legacy["enqueue"]["notification_intent"]["state"] == "ambiguous"
+    assert repaired_legacy["providers"]["youtube"]["active_schedule_token"]
+    assert repaired_legacy["providers"]["youtube"]["next_reconcile_at"]
+    assert (
+        repository.read(accepted["outbox_id"])["enqueue"]["notification_intent"]["state"]
+        == "accepted"
+    )
+
+    current[0] += timedelta(seconds=301)
+    enqueued.clear()
+    assert distribution_scheduler.run_once() == 0
+    assert set(enqueued) == {
+        ("reconciliation", fresh["outbox_id"]),
+        ("reconciliation", legacy["outbox_id"]),
+        ("reconciliation", accepted["outbox_id"]),
+    }
+
+
+def test_scheduler_fails_when_repair_queue_is_unavailable(monkeypatch):
+    from podcaster import distribution_scheduler
+
+    class Repository:
+        def __init__(self, storage):
+            pass
+
+        def repair_notifications_page(self, notify, **kwargs):
+            notify("a" * 64, lambda: True, lambda: True)
+            raise AssertionError("repair callback must fail closed")
+
+    class Storage:
+        def get_bytes(self, path):
+            return None
+
+        def put_bytes(self, path, content, content_type):
+            raise AssertionError("failed repair must not advance scheduler state")
+
+    monkeypatch.setattr(distribution_scheduler, "DistributionOutboxRepository", Repository)
+    monkeypatch.setattr(distribution_scheduler, "create_storage_backend", Storage)
+    monkeypatch.setattr(
+        distribution_scheduler,
+        "enqueue_distribution_job",
+        lambda *args, **kwargs: False,
+    )
+
+    with pytest.raises(RuntimeError, match="repair queue is unavailable"):
+        distribution_scheduler.run_once()
 
 
 def _prepare_lost_promotion(storage, document):

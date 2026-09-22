@@ -450,6 +450,63 @@ def test_legacy_consumed_notification_is_migrated_to_reconciliation(setup):
     )
 
 
+def test_notification_repair_pages_reach_legacy_records_beyond_first_hundred(setup):
+    storage, repository, _clock, document, _created = setup
+    for index in range(100):
+        item_id = f"{index + 1:064x}"
+        copy = json.loads(json.dumps(document))
+        copy["outbox_id"] = item_id
+        storage.put_bytes(
+            outbox_path(item_id),
+            json.dumps(copy, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
+
+    legacy_id = "f" * 64
+    legacy = json.loads(json.dumps(document))
+    legacy["outbox_id"] = legacy_id
+    for leg in legacy["providers"].values():
+        leg["next_reconcile_at"] = None
+        leg["active_schedule_token"] = None
+        leg["active_schedule_source"] = None
+    legacy["enqueue"]["notification_intent"] = {
+        "intent_id": "legacy-intent",
+        "source_ownership": {"owner": "legacy"},
+        "reserved_at": "2026-09-21T20:59:00Z",
+        "consumed_at": "2026-09-21T21:00:00Z",
+    }
+    legacy["enqueue"]["notification_sent_at"] = "2026-09-21T21:00:00Z"
+    storage.put_bytes(
+        outbox_path(legacy_id),
+        json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        "application/json; charset=utf-8",
+    )
+
+    sent = []
+
+    def notify(item_id, authorize_send, mark_accepted):
+        if not authorize_send():
+            return False
+        sent.append(item_id)
+        assert mark_accepted()
+        return True
+
+    _repaired, cursor = repository.repair_notifications_page(notify, limit=100)
+    assert cursor is not None
+    assert repository.read(legacy_id)["providers"]["youtube"]["active_schedule_token"] is None
+
+    _repaired, cursor = repository.repair_notifications_page(
+        notify,
+        limit=100,
+        after_path=cursor,
+    )
+    assert cursor is None
+    repaired = repository.read(legacy_id)
+    assert repaired["enqueue"]["notification_intent"]["state"] == "ambiguous"
+    assert repaired["providers"]["youtube"]["active_schedule_token"]
+    assert legacy_id not in sent
+
+
 def test_reconciliation_scan_is_fair_beyond_one_hundred_records(tmp_path):
     storage = LocalStorageBackend(tmp_path / "storage", "http://localhost/artifacts")
     source = tmp_path / "video.mp4"

@@ -41,6 +41,10 @@ RECOVERY_AUTHORIZATION_SCHEMA_VERSION = "distribution-recovery-authz-v4"
 RECOVERY_AUTHORIZATION_SET_SCHEMA_VERSION = "distribution-recovery-authz-set-v1"
 ATTEMPT_HISTORY_EVIDENCE_SCHEMA_VERSION = "distribution-attempt-history-evidence-v1"
 ATTEMPT_RECORD_VERSION = "distribution-attempt-record-v1"
+NotificationRepairSender = Callable[
+    [str, Callable[[], bool], Callable[[], bool]],
+    bool,
+]
 
 PROVIDER_RESULTS = frozenset(
     {
@@ -2814,13 +2818,26 @@ class DistributionOutboxRepository:
             paths = [path for path in paths if path > continuation]
         return paths[:limit], paths[-1] if len(paths) >= limit else None
 
-    def repair_notifications(self, notify: Callable[[str], None], *, limit: int = 100) -> int:
+    def repair_notifications_page(
+        self,
+        notify: NotificationRepairSender,
+        *,
+        limit: int = 100,
+        after_path: str | None = None,
+    ) -> tuple[int, str | None]:
+        if limit <= 0:
+            return 0, after_path
         repaired = 0
-        for path in self.storage.list_blobs(f"{OUTBOX_PREFIX}/", limit=limit):
+        paths, cursor = self._list_page(
+            f"{OUTBOX_PREFIX}/",
+            limit=limit,
+            continuation=after_path,
+        )
+        for path in paths:
             raw = self.storage.get_bytes(path)
             if raw is None:
                 continue
-            document = json.loads(raw.decode("utf-8"))
+            document = _load_outbox_document(raw)
             item_id = str(document["outbox_id"])
             document = self._update(
                 item_id,
@@ -2838,27 +2855,52 @@ class DistributionOutboxRepository:
                 continue
             repair_ownership = {"repair_id": uuid.uuid4().hex}
             try:
-                self.reserve_notification(
-                    item_id,
-                    source_ownership=repair_ownership,
-                    authorize=lambda: None,
-                )
-                won_intent = self.authorize_notification_send(
+                document = self.reserve_notification(
                     item_id,
                     source_ownership=repair_ownership,
                     authorize=lambda: None,
                 )
             except StaleClaimError:
                 continue
-            if not won_intent:
+            intent = document.get("enqueue", {}).get("notification_intent")
+            if (
+                not isinstance(intent, Mapping)
+                or intent.get("state") != "reserved"
+                or intent.get("source_ownership") != repair_ownership
+            ):
                 continue
+
+            def authorize_send() -> bool:
+                return self.authorize_notification_send(
+                    item_id,
+                    source_ownership=repair_ownership,
+                    authorize=lambda: None,
+                )
+
+            def mark_accepted() -> bool:
+                return self.accept_notification_send(
+                    item_id,
+                    source_ownership=repair_ownership,
+                    authorize=lambda: None,
+                )
+
+            if notify(item_id, authorize_send, mark_accepted):
+                repaired += 1
+        return repaired, cursor
+
+    def repair_notifications(self, notify: Callable[[str], None], *, limit: int = 100) -> int:
+        def _notify(
+            item_id: str,
+            authorize_send: Callable[[], bool],
+            mark_accepted: Callable[[], bool],
+        ) -> bool:
+            if not authorize_send():
+                return False
             notify(item_id)
-            self.accept_notification_send(
-                item_id,
-                source_ownership=repair_ownership,
-                authorize=lambda: None,
-            )
-            repaired += 1
+            mark_accepted()
+            return True
+
+        repaired, _cursor = self.repair_notifications_page(_notify, limit=limit)
         return repaired
 
     def operational_documents(self, *, page_size: int = 1000) -> Iterable[dict[str, Any]]:
