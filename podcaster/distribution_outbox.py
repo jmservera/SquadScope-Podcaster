@@ -177,7 +177,12 @@ def _safe_value(value: Any, *, key: str = "") -> Any:
             raise UnsafeOutboxValueError(f"unsafe durable value for {key or 'field'}")
         return value
     if isinstance(value, Mapping):
-        return {str(k)[:64]: _safe_value(v, key=str(k)) for k, v in value.items()}
+        if not all(type(item_key) is str for item_key in value):
+            raise UnsafeOutboxValueError(f"non-string durable field in {key or 'value'}")
+        return {
+            item_key[:64]: _safe_value(item_value, key=item_key)
+            for item_key, item_value in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return [_safe_value(item, key=key) for item in value]
     raise UnsafeOutboxValueError(f"unsupported durable value for {key or 'field'}")
@@ -854,7 +859,8 @@ def _validated_recovery_authorization_evidence(
     successor_may_progress: bool = False,
     allow_following_attempts: bool = False,
 ) -> dict[str, Any]:
-    value = _safe_value(dict(evidence), key="recovery_evidence")
+    _canonical_typed_value(evidence)
+    value = _safe_value(evidence, key="recovery_evidence")
     attempts = document.get("attempts", [])
     predecessor_index = next(
         (
