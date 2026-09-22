@@ -10,17 +10,28 @@
 
 ## Execution Status
 
-* Status: Fry sole-author RV-008 correction implemented and fully validated; Leela independent final-SHA review pending
+* Status: Leela independently rejected Fry's exact final head; RV-008/P07-T01 remains High due authorization-set cardinality type equivalence
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
 * Sole current revision author: Fry
-* Independent reviewer: Leela, reserved and pending; no contribution permitted
+* Independent reviewer: Leela completed review-only rejection; no source/test contribution
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed markers for this cycle: P07-T01 and P07-T06
-* Open marker: P07-T07
+* Completed marker retained for this cycle: P07-T06
+* Open markers: P07-T01 and P07-T07
 * Source/tests/artifacts commit: `7f00b5795117f144cb23615d59f92029246162fe`
-* Remaining in-scope work: commit/push the existing branch and obtain Leela's independent final-SHA acceptance
+* Remaining in-scope work: enforce exact authorization-set field/types, rerun validation, and obtain a new eligible independent final-SHA acceptance
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: `distribution-recovery-authz-v4` now binds every allowed envelope field with exact type/null handling, immutable metadata, structured evidence/digest, explicit empty extensions, predecessor/successor identity, and active/superseded linkage. `distribution-recovery-authz-set-v1` binds exact count, order, active ID, and a typed digest of the complete collection. Legacy/incomplete/unknown/extra/type-mutated envelopes and duplicate/reordered/conflicting/unrelated collections fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are implementation-resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+* Status basis: `distribution-recovery-authz-v4` envelope/history behavior passes, as do collection ordering, supersession, concurrency, and replay. However, `distribution-recovery-authz-set-v1` compares the persisted manifest using ordinary Python equality, so one-authorization `authz_count=true` and `authz_count=1.0` equal expected integer `1` and leave the successor mutation-capable. RV-008/P07-T01 remains High/open. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-006 remains planning-resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+
+## P07 Leela Fresh Independent Final-SHA Rejection
+
+* Independence and boundary: Leela reviewed only, independent of sole author Fry. Comparison base `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0`; source commit `7f00b5795117f144cb23615d59f92029246162fe`; exact reviewed head `273f94e0d1fa773e108661f908aca6f34be132c4`.
+* Verdict: **Not accepted (`request_changes`)** — 0 Critical, 1 High, 0 Medium, 0 Low.
+* Exact failure: after one authorized recovery, mutate only `recovery_authz_set.authz_count` from integer `1` to boolean `true` or float `1.0`. Both claims returned `read_only=False`. Root cause is ordinary mapping equality at `podcaster/distribution_outbox.py:1027-1030`, where Python numeric equality collapses the types.
+* Required correction: exact set field/type validation plus canonical typed comparison; preserve all current v4 envelope/history/supersession/concurrency/replay behavior.
+* Independent conformance: 57 cases; 55 failed closed; two mutation-capable bypasses (`set:bool-count`, `set:float-count`). Fry's six bypasses, every envelope field removal/type-null mutation, version/extensions, collection order, orphan/cycle/two-active supersession, history/timestamp/unknown JSON, concurrency, and reuse otherwise passed.
+* Validation: outbox `182`; locked `902` with one warning; full `3232 passed, 2 skipped, 2 deselected, 1 warning`; Ruff/format/compile/diff passed; Bicep passed with existing BCP318; exact Checkov retained `36/7`; CI Checkov `34/0`; Dockerfile gate passed; container `sha256:001405ef2dee42fdb29d85ad91edc0ffb816b3e7671a4165b01808e8895bc1ad` passed non-root/ffmpeg/ffprobe/import smoke; unconfigured worker exited `2`; changed-diff secret/PII scan was clear.
+* GitHub state: PR #684 open/draft/CLEAN with 13 successful checks and zero review threads. Related issues/PRs remain unchanged.
+* Blockers: RV-008/P07-T01 and P07-T07, plus P00-T01, P05, and P06. No merge, deployment, canary, production, issue, or thread mutation occurred.
 
 ## P07 Fry Complete Authorization Envelope Opening
 

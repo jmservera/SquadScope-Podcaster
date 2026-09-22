@@ -1,14 +1,28 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Fry correction complete; Leela review pending.** Authorization v4 binds the complete canonical authorization envelope and the ordered authorization set, including exact metadata, types/nulls, evidence/digest, extensions, predecessor/successor identity, cardinality, active selection, and historical supersession. RV-008 is implementation-resolved, but P07-T07 awaits Leela's independent final-SHA review; P00-T01, P05, and P06 also remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Leela rejected the final authorization-set revision.** Authorization v4 envelope/history, ordering, supersession, concurrency, and replay behavior pass, but a one-record v1 authorization set accepts `authz_count=true` or `authz_count=1.0` as equal to integer `1` and still grants mutation authority. RV-008/P07-T01 and P07-T07 remain open; P00-T01, P05, and P06 also remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
 Current source/tests/artifacts commit: `7f00b5795117f144cb23615d59f92029246162fe`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
 Current sole revision author: Fry.
-Fresh independent reviewer: Leela, pending and reviewer-only; no contribution permitted.
+Fresh independent reviewer: Leela completed review-only rejection; no contribution occurred.
+
+## Leela final-SHA rejection
+
+Leela independently reviewed comparison base `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0`, Fry source commit `7f00b5795117f144cb23615d59f92029246162fe`, and exact final head `273f94e0d1fa773e108661f908aca6f34be132c4`.
+
+Verdict: **Not accepted (`request_changes`)** — 0 Critical, 1 High, 0 Medium, 0 Low.
+
+Fry's six bypasses and the full envelope/history/supersession/concurrency/replay matrix otherwise fail closed. The remaining High is exact authorization-set scalar typing: `_validated_recovery_authorization_collection()` compares the persisted set with ordinary Python equality, so `True == 1` and `1.0 == 1`. With exactly one recovery authorization, mutating only `recovery_authz_set.authz_count` to boolean `true` or float `1.0` returned `read_only=False`.
+
+Required correction: enforce the exact v1 set field schema and scalar/container types before comparison, and compare canonically typed values so boolean/float cardinality values cannot satisfy integer count. Preserve every current v4 envelope/history, active/superseded chain, concurrency, and single-use guarantee.
+
+Independent validation: conformance `57` cases with `55` fail-closed and two exact type bypasses; outbox `182`; locked `902`; full `3232 passed, 2 skipped, 2 deselected, 1 warning`; Ruff/format/compile/diff, Bicep, CI Checkov `34/0`, Dockerfile Checkov, container smoke, worker exit `2`, and secret/PII scan passed. Exact Checkov retained the documented `36/7` baseline. Review image: `sha256:001405ef2dee42fdb29d85ad91edc0ffb816b3e7671a4165b01808e8895bc1ad`.
+
+PR #684 remains open/draft/CLEAN with 13 successful checks and zero review threads. No related issue, thread, deployment, canary, merge, or production state was mutated.
 
 ## Fry RV-008 complete-envelope correction
 

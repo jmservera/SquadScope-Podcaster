@@ -6,9 +6,9 @@
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Review date: 2026-09-21
 * Final-revision review date: 2026-09-22
-* Final revision reviewed: `02241a1707c8a5d2a17120185e988634de188d21`
-* Final-revision reviewer: Fry (QA / Tester), independent of sole revision author Leela; Bender, Hermes, and Amy did not participate
-* Review scope: One independent full-task review of Amy's current revision, including committed and uncommitted worktree state
+* Final revision reviewed: `273f94e0d1fa773e108661f908aca6f34be132c4`
+* Final-revision reviewer: Leela, independent of sole revision author Fry; Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, Frank, and Fry did not contribute to this review
+* Review scope: Fry's final authorization-envelope revision from comparison base `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0`, source commit `7f00b5795117f144cb23615d59f92029246162fe`, and exact final head `273f94e0d1fa773e108661f908aca6f34be132c4`
 * Assessed boundary: Immutable attempt truth; deterministic weekly aggregation; exact provider proof; controlled recovery; unknown-mutation safety; RV-002 scheduler fairness/deduplication; RV-003 alert deployment; RV-004 cleanup; RV-007 terminology/tracking consistency; W38/W39 fixtures; four-cycle evaluation; validation; and residual P00-T01/P05/P06 work
 * Plan: `.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md`
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
@@ -25,6 +25,62 @@
 * First comparison boundary: Inspect the actual `origin/main` implementation delta and current uncommitted author corrections for immutable attempts, weekly aggregation, exact proof, controlled recovery, and mutation safety before reassessing RV-002/RV-003/RV-004/RV-007 and validation.
 * Active read-only boundaries: Source, tests, docs, plan, details, research, critique, changes, git, GitHub, and deployment state are read-only. This review record is the only writable artifact.
 * Initial blockers: P00-T01 requires an owning `jmservera/SquadScope` change. P05 requires repository/delivery/deployment authority. P06 requires four elapsed production cycles.
+
+## P07 Leela Fresh Independent Final-SHA Review
+
+* Independence: Leela did not author, advise, pair on, or contribute to Fry's revision. Fry was the sole revision author. Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, and Frank did not contribute.
+* Exact boundary: comparison base `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0`; Fry source commit `7f00b5795117f144cb23615d59f92029246162fe`; exact reviewed head `273f94e0d1fa773e108661f908aca6f34be132c4`. The final commit after source changed only the changes record and PR narrative.
+* Opening state: clean incident worktree; local, origin, and PR head matched; base was the merge base; divergence was `0/0`; PR #684 was open, draft, mergeable/CLEAN, with 13 successful checks, no submitted reviews, and zero review threads.
+* Verdict: **Not accepted (`request_changes`)** — 0 Critical, 1 High, 0 Medium, 0 Low.
+* Resolved behavior: Fry's six authorization-envelope/cardinality bypasses fail closed. Every v4 envelope field removal and tested type/null mutation fails closed; legacy/unknown versions, non-empty extensions, duplicate/unrelated/conflicting records, reordered/missing records, orphan/cyclic supersession links, two-active chains, set field/value mutations, attempt/history mutation, timestamp spelling changes, and unknown nested JSON values fail closed. Exactly one final active authorization is selected for the exact predecessor/successor boundary. Full nested evidence and complete history binding remain intact. Concurrent authorization has one winner, concurrent claim has one mutation-capable winner, predecessors remain immutable, and replay is read-only.
+
+<!-- rpi:review-leela id=RV-008 -->
+### RV-008 [High, open]: authorization-set cardinality accepts boolean and float type mutations
+
+* Evidence: `_authorization_set_document()` persists integer `authz_count` at `podcaster/distribution_outbox.py:892-906`, but `_validated_recovery_authorization_collection()` compares the persisted set with ordinary Python mapping equality at `podcaster/distribution_outbox.py:1027-1030`. Python considers `True == 1` and `1.0 == 1`.
+* Exact failing case: create one failed predecessor and one authorized successor, mutate only `recovery_authz_set.authz_count` from integer `1` to boolean `true` or float `1.0`, leave the stored set digest unchanged, then call `claim()`. Both mutations returned `read_only=False`.
+* Independent output: `mutation_capable_bypasses=["set:bool-count","set:float-count"]`; the persisted boolean case was `{"authz_count": true, "authz_count_type": "bool", "read_only": false, "attempts": 2}`.
+* Impact: a type-mutated v1 authorization set remains mutation-authorizing, violating the exact field/type/cardinality and fail-closed contract. The digest does not cover the mutated persisted set value during validation because it is recomputed from the expected integer set and the final mapping comparison collapses numeric types.
+* Required correction: validate the authorization-set field set and exact types before value comparison (`schema_version: str`, `authz_count: int` excluding `bool`, `ordered_authz_ids: list[str]`, `active_authz_id: str | None`, `digest: str`), then compare a canonical typed representation or otherwise ensure boolean/float numeric equivalents cannot satisfy the integer cardinality field. Add explicit boolean and float mutation tests for every integer-bearing set field.
+* Disposition: RV-008 and P07-T01 remain open; P07 is rejected. P07-T07 remains open for a new corrected final-SHA review. RV-001, RV-002, RV-003, RV-004, RV-005, RV-007, and RV-009 remain resolved; RV-006 remains planning-resolved with P05 execution open.
+
+### Leela Independent Probes
+
+| Probe group | Result |
+|---|---|
+| Fry's six bypasses | All denied: source, reason, authorization time, unknown field, duplicate matching record, and unrelated appended record |
+| Complete envelope | All 16 field removals and all 16 tested type/null mutations denied |
+| Version/extensions | Legacy v3, unknown v999, and non-empty nested extension denied |
+| Collection/supersession | Missing/reordered records, missing/extra/wrong set values, orphan/cyclic supersession, and two-active chain denied |
+| Set exact type | **Failed:** integer count `1` changed to `true` or `1.0` remained mutation-capable |
+| History/evidence | Timestamp spelling change and unknown nested JSON insertion denied; prior attempt/provider/receipt/readback bindings retained |
+| Concurrency/reuse | Concurrent authorization `authorized/rejected`; concurrent claim one `read_only=False` winner and one stale loser; replay `read_only=True` |
+
+Independent conformance artifact: `/home/azureuser/.copilot/session-state/22fb1c6e-0d30-4860-be00-bd605f2908c8/files/leela_rv008_conformance.py`.
+
+### Leela Validation
+
+| Command or gate | Result |
+|---|---|
+| Independent conformance matrix | 57 cases; 55 failed closed; 2 mutation-capable type bypasses |
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py -q` | `182 passed in 17.60s` |
+| Locked terminal-truth command | `902 passed, 1 warning in 71.34s` |
+| Full repository suite | `3232 passed, 2 skipped, 2 deselected, 1 warning in 97.53s`; no stale Compose failure and no rebuild required |
+| Ruff, format, compile, diff | Passed |
+| Bicep | Passed with the documented pre-existing BCP318 warning |
+| Exact Checkov | Documented baseline retained: `36 passed, 7 failed` |
+| CI Checkov | `34 passed, 0 failed`; Dockerfile baseline gate passed |
+| Container | `sha256:001405ef2dee42fdb29d85ad91edc0ffb816b3e7671a4165b01808e8895bc1ad`; non-root user `synth`, ffmpeg/ffprobe, job-runner/outbox imports passed |
+| Unconfigured distribution worker | Exited `2` with explicit queue-not-configured error |
+| Changed-diff secret/PII scan | No private key, access key, JWT, credential URL, email, or SSN pattern |
+| Remote state | 13 successful checks; no review threads; PR open/draft/CLEAN |
+
+### Leela Blockers and Related State
+
+* RV-008/P07-T01 remains the active in-repository High. P07-T07 requires a new corrected exact-head review.
+* P00-T01 remains an upstream evidence blocker despite merged `jmservera/SquadScope#770`.
+* P05 remains delivery/deployment/canary/rollback work. P06 remains four future elapsed production cycles.
+* jmservera/SquadScope-Podcaster#682, jmservera/SquadScope-Podcaster#671, jmservera/SquadScope-Podcaster#678, jmservera/SquadScope-Podcaster#679, jmservera/SquadScope-Podcaster#681, and jmservera/SquadScope-Coordinator#17 remain open. No issue, thread, deployment, canary, merge, or production state was mutated.
 
 ## Execution Status
 
