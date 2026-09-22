@@ -132,6 +132,18 @@ def test_from_dict_rejects_legacy_or_unknown_schema() -> None:
         Clipset.from_dict(data, expected_job_id="job-1")
 
 
+def test_from_dict_rejects_unhashable_schema_version() -> None:
+    data = Clipset.from_segments(
+        "job-1",
+        _segments(),
+        budget=VideoStageBudget.start().projection,
+    ).to_dict()
+    data["schema_version"] = []
+
+    with pytest.raises(ClipsetSchemaVersionError, match="schema"):
+        Clipset.from_dict(data, expected_job_id="job-1")
+
+
 @pytest.mark.parametrize("bad_budget", [None, "invalid", [], 42])
 def test_current_schema_rejects_non_object_budget(bad_budget) -> None:
     data = Clipset.from_segments(

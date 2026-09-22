@@ -19,6 +19,7 @@ from podcaster.video.clipset import (
     LEGACY_CLIPSET_SCHEMA_VERSION,
     Clipset,
     ClipsetBudgetError,
+    ClipsetSchemaVersionError,
     clip_blob_path,
     clip_content_blob_path,
     clip_manifest_blob_path,
@@ -302,6 +303,33 @@ def test_budgeted_clipset_rejects_malformed_budget_without_cleanup(bad_budget):
     before = dict(storage._data)
 
     with pytest.raises(ClipsetBudgetError):
+        plan_or_load_clipset(
+            storage,
+            "job1",
+            _segments(2),
+            budget=VideoStageBudget.start(),
+        )
+
+    assert storage._data == before
+
+
+def test_budgeted_clipset_rejects_unhashable_schema_without_cleanup():
+    storage = FakeStorage()
+    persisted = Clipset.from_segments(
+        "job1",
+        _segments(3),
+        budget=VideoStageBudget.start().projection,
+    ).to_dict()
+    persisted["schema_version"] = []
+    storage.put_bytes(
+        "video-jobs/job1/clipset.json",
+        json.dumps(persisted).encode("utf-8"),
+        _JSON,
+    )
+    _write_manifest(storage, "job1", 0)
+    before = dict(storage._data)
+
+    with pytest.raises(ClipsetSchemaVersionError):
         plan_or_load_clipset(
             storage,
             "job1",
