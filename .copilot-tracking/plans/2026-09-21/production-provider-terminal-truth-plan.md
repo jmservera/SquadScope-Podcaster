@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: P08 is complete for the 2026-09-22 independent-review findings on PR #684. Bender implemented the bounded correction from immutable remote head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`: durable identity-bound human approval before YouTube public promotion, explicit Spotify RSS/upload/promotion transitions, bounded poison/manual handoff, and fenced idempotent playlist insertion. Focused, provider, video-runner, Spotify-publish, full pytest, Ruff, format, compile, and diff gates pass. P00-T01 is complete through upstream PR `jmservera/SquadScope#773`; P05-T04–P05-T06 and P06 remain future. PR #684 must remain draft and preserve its existing #682 context.
+* Planning status: Rusty rejected final head `d050d68c3590f9a00b60dee925452f971cbaf0d2` because metadata-only final-media validation accepts truncated H.264/AAC MP4 payloads. Leela is the sole revision author for the bounded full-decode correction; Basher is reserved as the fresh independent reviewer and may not contribute before final-SHA review. Livingston and Rusty are locked out from authoring, advice, pairing, or contribution for this cycle; Bender, Hermes, and Amy remain excluded. P00-T01 is complete through upstream PR `jmservera/SquadScope#773`, reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merged as `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3` with all 18 checks successful. P05-T03 remains pending Basher acceptance of the corrected final SHA. PR #682 remains open. P05-T04–P05-T06 and P06 remain future.
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -268,14 +268,16 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 
 ## Implementation Status
 
-* Execution status: P08 implementation complete and validated from immutable remote/worktree head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`; delivery awaits commit/push gate
-* Declared scope: full P08 correction, validation, tracking reconciliation, commit, immutable push gate, and push to the existing PR #684 branch
-* Revision author: Bender
-* Delivery restrictions: commit and push only HEAD to `squad/incident-provider-terminal-truth`; keep PR #684 draft; preserve existing #682 stack/context; no comments, merge, deployment, workflow dispatch, provider mutation, ready action, replacement branch/PR, or changes to the dirty main checkout
-* Active implementation boundary: distribution worker/outbox/provider adapters and directly related tests plus this plan/details/changes record
-* Approved implementation write boundary: `podcaster/distribution_worker.py`, narrowly required durable outbox/provider helpers, directly related distribution tests, and `.copilot-tracking` plan/details/changes artifacts
-* Validation intent: focused distribution worker/outbox/provider tests and Ruff first; then broader applicable distribution/provider tests and full pytest if focused gates pass; all calls mocked/faked with no live providers
-* Current blockers: none for P08 implementation; production/deployment/P05/P06 gates remain outside this scope
+* Execution status: Leela's sole-author RV-008 typed-canonical correction is complete and fully validated; Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`
+* Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
+* Revision author: Leela only for the current correction
+* Fresh independent reviewer: Basher completed a read-only review without contributing
+* Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank did not author, advise, pair, or contribute. Basher was excluded from authoring/advice/implementation contribution and completed the independent final-SHA review. Leela is the correction author, not a reviewer, for this cycle.
+* Delivery restrictions: commit and push only the existing branch and update existing draft PR #684; no deployment, issue mutation, replacement branch/PR, or changes to `/home/azureuser/source/SquadScope`
+* Active implementation boundary: P07 review-follow-up defects only; P00-T01, P05, and P06 remain outside P07 and block final acceptance
+* Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
+* Validation intent: deterministic P07 negative probes, locked owner suites, full suite, Ruff check/format, compileall, Bicep, Checkov, diff check, container build, and applicable container/exit smoke without weakening
+* Current blockers: P00-T01 upstream prevention and exact deployed-artifact evidence, P05 delivery/merge/deployment/provider authority plus P05-T06 exact-W39 execution, P06 four elapsed production cycles, and operator-only #682 remain blockers; P07-T07 is complete
 
 ## Sources
 
@@ -287,36 +289,6 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Authoritative QA correction dated 2026-09-21: immutable attempt truth; deterministic weekly aggregation; evidence-conditional W38 recovery classification; W39 missed/not-dispatched; exact external-readback and four-cycle gates.
 
 ## Phase Checklist
-
-<!-- rpi:phase id=P08 -->
-### P08: Close PR #684 provider-terminal independent-review findings
-
-- [x] P08 complete
-
-<!-- rpi:task id=P08-T01 -->
-#### P08-T01: Require durable identity-bound operator approval before YouTube public promotion
-
-- [x] P08-T01 complete
-
-<!-- rpi:task id=P08-T02 -->
-#### P08-T02: Implement explicit Spotify RSS, upload, and promotion legs
-
-- [x] P08-T02 complete
-
-<!-- rpi:task id=P08-T03 -->
-#### P08-T03: Bound queue poison exhaustion and persist sanitized manual handoff
-
-- [x] P08-T03 complete
-
-<!-- rpi:task id=P08-T04 -->
-#### P08-T04: Preserve fenced idempotent YouTube playlist insertion
-
-- [x] P08-T04 complete
-
-<!-- rpi:task id=P08-T05 -->
-#### P08-T05: Validate, reconcile evidence, commit, and push through immutable gates
-
-- [x] P08-T05 complete
 
 <!-- rpi:phase id=P00 -->
 ### [ ] P00: Prevent and detect W39-class upstream dispatch blockage
