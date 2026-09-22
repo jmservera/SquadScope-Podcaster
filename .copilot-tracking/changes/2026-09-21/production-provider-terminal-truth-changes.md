@@ -10,17 +10,27 @@
 
 ## Execution Status
 
-* Status: local P05-T03 source/tests correction committed as `8ac549deefff08cb17f43735d31f26742f729234`; tracking reconciliation complete locally
-* Declared invocation scope: inspect the complete diff from `c8a4922a78af09ebc6c28cc69d795f035793cbcd`, remove only generated `uv.lock`, preserve the durable notification-send and post-provider-persistence correction, reconcile canonical evidence, and create two focused detached-HEAD commits without push or GitHub mutation
+* Status: P05-T03 concurrent-history reconciliation is implemented and validated locally atop remote commit `328fbffec00eefbcf351cb8e7fcdf83315eb3885`; source/tests reconciliation commit `a6b3bc08b90957b5c6f2794b941b272930385921` is complete
+* Declared invocation scope: compare concurrent remote commit `328fbff` with local source/tests commit `8ac549d`, preserve remote ancestry, retain only meaningful additional fail-closed source/tests behavior, reconcile the three canonical RPI artifacts, rerun the exact requested validation, and create focused detached-HEAD commits without push or GitHub mutation
 * Current source owner: Bender
-* Test owner: Fry
+* Test reconciliation owner: Bender under jmservera's explicit concurrent-history repair request
 * Independent fail-closed reviewer: Hermes
-* First execution boundary: notification reservation/fence state machine, then direct-provider publication snapshot/evidence/signal authorization
-* Approved source boundary: `podcaster/video/job_runner.py`, `podcaster/distribution_outbox.py`, `podcaster/queue.py`, and `podcaster/video/distribution.py`; Fry-owned tests in `tests/test_video_job_runner.py` and `tests/test_video_ownership.py`; canonical RPI artifacts
-* Validation: exact takeover probes `5 passed`; full relevant modules `434 passed in 460.703s`; Ruff check passed on six changed Python files; Ruff format reported six already formatted; compileall and `git diff --check` passed
-* Current blockers: Hermes exact-final-SHA fail-closed review and a later authorized push; P05-T03 remains open
+* First execution boundary: compare durable queue-send authority and every post-provider write boundary, then rebase the two local commits onto the exact remote head
+* Approved source boundary: the source/tests/tracking files already changed by `328fbff`, `8ac549d`, and `0f2286a`; the final additional source/tests delta is limited to `podcaster/video/distribution.py`, `podcaster/video/job_runner.py`, and `tests/test_video_ownership.py`
+* Validation: post-reconciliation exact race probes passed `5`; full `tests/test_video_ownership.py` and `tests/test_video_job_runner.py` passed `140`; Ruff check and format, compileall, and `git diff --check` passed
+* Current blockers: final remote-head equality gate, independent exact-final-SHA review, and a later authorized push; P05-T03 remains open and no push is authorized
 
-## 2026-09-22 Bender blocking repair after exact-head review
+## 2026-09-22 Concurrent remote reconciliation
+
+* Related phase or task: P05-T03.
+* Concurrent base: remote advanced from `c8a4922` to `328fbffec00eefbcf351cb8e7fcdf83315eb3885` with durable notification-intent consumption and target-write authorization for publication evidence/signals.
+* Semantic comparison: the remote notification design is stronger and simpler than the local reservation-stage design because `consume_notification_intent()` atomically authorizes and durably consumes the sole send authority before broker I/O; a crash after consumption is non-replayable and fail-closed. The remote manifest, evidence, and signal implementations authorize inside each target storage update and retain provider non-replay through non-takeover `direct_provider_intent`.
+* Retained local repair: direct YouTube distribution now re-raises `OwnershipError` instead of converting a stale post-provider callback into a provider error result, and `_record_video_publication()` explicitly re-raises `OwnershipError` from evidence persistence rather than entering the publication-unknown fallback.
+* Test reconciliation: retained the remote takeover-before-send and crash-after-consumption probes and changed the three provider-return boundary cases to require direct `OwnershipError` propagation while preserving boundary-specific no-write assertions and one provider call.
+* History reconciliation: rebased `8ac549d` and `0f2286a` onto `328fbff` without force-push. The reconciled source/tests commit is `a6b3bc08b90957b5c6f2794b941b272930385921`; the rebased tracking commit is being updated with current validation truth.
+* Validation after reconciliation: exact five deterministic probes passed; full ownership/job-runner modules passed `140`; Ruff check and format reported clean/`195 files already formatted`; compileall and diff checks passed.
+
+## 2026-09-22 Superseded pre-reconciliation Bender blocking repair history
 
 * Related phase or task: P05-T03.
 * Triggering evidence: jmservera's review comment `issuecomment-5784550039` found that reservation authorization can become stale before the physical queue send, and direct-provider callbacks can persist manifest/evidence/signals after ownership transfer.

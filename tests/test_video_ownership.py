@@ -472,21 +472,20 @@ def test_provider_mutation_consumes_durable_permit_and_takeover_is_read_only(tmp
     upload.assert_called_once()
 
     _force_takeover(storage, "job")
-    stale_result = distribute_video(
-        media,
-        "job",
-        "title",
-        "description",
-        60,
-        VideoDistributionConfig(
-            youtube_enabled=True,
-            blob_archive_enabled=False,
-            dry_run=False,
-        ),
-        before_mutation=lambda _provider, _operation: guard.assert_permit(permit),
-    )
-    assert stale_result.status == "failed"
-    assert stale_result.youtube_id is None
+    with pytest.raises(OwnershipError, match="stale"):
+        distribute_video(
+            media,
+            "job",
+            "title",
+            "description",
+            60,
+            VideoDistributionConfig(
+                youtube_enabled=True,
+                blob_archive_enabled=False,
+                dry_run=False,
+            ),
+            before_mutation=lambda _provider, _operation: guard.assert_permit(permit),
+        )
     upload.assert_called_once()
 
 
