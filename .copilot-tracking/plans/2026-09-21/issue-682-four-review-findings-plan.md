@@ -59,3 +59,9 @@ Implement only the four approved PR #682 review remediations, add focused regres
 - [x] <!-- rpi:task id=P03-T02 --> Propagate fallback storage/finalization failures for retry instead of writing a permanent `recording_insufficient` manifest.
 - [x] <!-- rpi:task id=P03-T03 --> Stop recording retries immediately on owned timeout and reject backoff that would cross the FANIN deadline.
 - [x] <!-- rpi:task id=P03-T04 --> Run focused, affected-suite, Ruff, formatting, and diff validation; deliver one conventional commit and resolve only proven threads.
+
+<!-- rpi:phase id=P04 -->
+### [x] P04 — Terminal-state persistence recovery
+
+- [x] <!-- rpi:task id=P04-T01 --> Handle `TerminalStatePersistenceError` before generic transient retry exhaustion so terminal persistence failures never delete or acknowledge the queue message, including at or above `MAX_DEQUEUE_COUNT`; add focused regression coverage while preserving all other poison and retry semantics.
+- [x] <!-- rpi:task id=P04-T02 --> Run focused and immediately affected tests plus Ruff checks for every changed Python file, review the final diff for scope creep, and confirm PR #684 remains untouched.

@@ -3505,6 +3505,13 @@ def process_message(
             operation_runner=queue_operation_runner,
         )
         return VideoOutcome(job_id, STATUS_FAILED, reason=exc.reason)
+    except TerminalStatePersistenceError:
+        logger.exception(
+            "terminal video state persistence failed; retaining message job_id=%s dequeue_count=%s",
+            job_id,
+            message.dequeue_count,
+        )
+        raise
     except TransientVideoError:
         if message.dequeue_count >= MAX_DEQUEUE_COUNT:
             logger.error("video retry exhausted job_id=%s", job_id)

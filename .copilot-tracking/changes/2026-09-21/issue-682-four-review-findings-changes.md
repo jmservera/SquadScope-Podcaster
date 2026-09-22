@@ -10,12 +10,12 @@
 
 ## Execution Status
 
-* Status: Partial full plan; the Fry-rejected recorder numeric schema correction and validation are complete.
-* Declared invocation scope: full plan
-* Completed scope markers: P01, P01-T01, P01-T02, P01-T02-R01, P01-T02-R02, P01-T03, P01-T04
+* Status: Complete for bounded P04 implementation.
+* Declared invocation scope: P04
+* Completed scope markers: P04, P04-T01, P04-T02
 * All remaining active-plan markers: none
-* Remaining delivery steps: Create and push the single correction commit, reply to the recorder review thread, and re-query PR head/unresolved threads.
-* Status basis: Numeric conversion failures now enter the existing permanent malformed-history taxonomy; focused and expanded validations pass.
+* Remaining delivery steps: Commit and push, then reply to and resolve only the exact new review thread.
+* Status basis: Terminal-state persistence failures now propagate before generic retry exhaustion; focused, affected-suite, Ruff, formatting, and diff checks pass.
 
 ## Execution Summary
 
@@ -127,13 +127,18 @@ Fry later rejected requirement 2 because non-finite numeric schema input still e
 | Diff review | Full shared change | Passed | Final scope review found no scope creep; `git diff --check` passed. |
 | Ruff after numeric correction | P01-T02-R02 | Passed | `ruff check podcaster/video/recorder.py tests/test_recorder.py` and `ruff format --check podcaster/video/recorder.py tests/test_recorder.py` — all checks passed; 2 files already formatted. |
 | Independent security review | P01-T02-R01 and all four fixes | Passed | Hermes' initial rejection was corrected under strict reviewer lockout by Farnsworth; Hermes' final disposition is APPROVE. |
+| Terminal persistence focused regressions | P04-T01 | Passed | `python3 -m pytest -q --tb=short tests/test_video_job_runner.py::TestProcessMessage::test_terminal_state_persistence_failure_never_deletes_at_retry_limit tests/test_video_job_runner.py::TestProcessMessage::test_retry_exhausted_deletes` — 3 passed in 0.53s. |
+| Process-message grouping | P04-T01 | Passed | `python3 -m pytest -q --tb=short tests/test_video_job_runner.py::TestProcessMessage` — 19 passed in 1.11s. |
+| Video job runner module | P04-T02 | Passed | `python3 -m pytest -q --tb=short tests/test_video_job_runner.py` — 154 passed in 4.10s. |
+| P04 Ruff | P04-T02 changed Python files | Passed | `ruff check podcaster/video/job_runner.py tests/test_video_job_runner.py` and `ruff format --check podcaster/video/job_runner.py tests/test_video_job_runner.py` — all checks passed; 2 files already formatted. |
+| P04 diff and PR isolation | P04-T02 | Passed | `git diff --check` passed; final diff is limited to four intended files; draft PR #684 head remained `fcfa40015ed68d9e38d8432425b7cbd15171e835`. |
 
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P01, P01-T01, P01-T02, P01-T02-R01, P01-T02-R02, P01-T03, and P01-T04 are complete; no separate phase details required.
+* Plan markers and phase details: P04, P04-T01, and P04-T02 are complete; no separate phase details required.
 * Completed-work evidence and handoff prose: Current.
 * Validation, blockers, remaining work, and follow-up items: Current.
-* Review readiness: The independently owned Hermes correction and required validation are complete; the artifact is ready for commit/push and recorder-thread evidence reply.
+* Review readiness: The bounded terminal-persistence correction and required validation are complete; the artifact is ready for commit/push and exact-thread evidence reply.
 
 ## Blockers
 
@@ -142,7 +147,7 @@ Fry later rejected requirement 2 because non-finite numeric schema input still e
 ## Remaining Work
 
 * Create the conventional correction commit and push it to `origin/squad/video-stage-budget-redesign`.
-* Reply to recorder thread `PRRT_kwDOSzuis86kim9A`, then re-query PR head and all unresolved threads without changing unrelated resolution state.
+* Reply to and resolve only thread `PRRT_kwDOSzuis86krTaG`, then re-query that exact thread.
 
 ## Follow-Up Items
 
@@ -151,15 +156,15 @@ Fry later rejected requirement 2 because non-finite numeric schema input still e
 
 ## Return-to-Caller State
 
-* Implementation execution status: Partial full plan; the numeric schema correction is implemented and validated, with delivery actions pending.
-* Declared scope and markers: Full plan; P01 and P01-T01, P01-T02, P01-T02-R01, P01-T02-R02, P01-T03, and P01-T04 complete; no active implementation markers remain.
-* Validation coverage: Exact overflow regression 1 passed, recorder module 60 passed, affected four-module video suite 441 passed, Ruff check/format-check passed on the two touched Python files, and `git diff --check` passed.
+* Implementation execution status: Complete for bounded P04; delivery actions remain.
+* Declared scope and markers: P04, P04-T01, and P04-T02 complete; no active implementation markers remain.
+* Validation coverage: Focused regressions 3 passed, process-message grouping 19 passed, video job runner module 154 passed, Ruff check/format-check passed on both changed Python files, and `git diff --check` passed.
 * Blockers: None.
-* Current plan and detail updates: P01 and all implementation tasks, including P01-T02-R02, are complete; commit/push and GitHub recorder-thread evidence remain unchecked.
-* Planning and critique state: Fry's numeric overflow rejection was corrected independently by Hermes under the Bender lockout.
+* Current plan and detail updates: Added and completed bounded P04; no phase-details artifact exists.
+* Planning and critique state: Current; the exact new review finding is implemented without changing unrelated failure semantics.
 * Follow-up items: None.
-* Review readiness or no-handoff reason: Pre-commit correction evidence is finalized and ready for delivery continuation; the recorder-thread reply must cite the pending commit.
-* Continuation owner: Hermes.
+* Review readiness or no-handoff reason: P04 is review-ready; the exact thread reply must cite the pending commit.
+* Continuation owner: Bender.
 
 ## Independent Post-Review Revision
 
@@ -182,3 +187,31 @@ Fry later rejected requirement 2 because non-finite numeric schema input still e
 * Revision owner: Farnsworth; original author Bender remains locked out.
 * Defect corrected: budgeted `build_section_card_inserts()` calls without an explicit binary now use the existing drawtext-capable ffmpeg selector instead of forcing the PATH `ffmpeg`.
 * Regression coverage: a budgeted builder call verifies the selected alternate binary reaches every generated section-card command; the existing direct `generate_section_card()` regression remains intact.
+
+## Terminal-State Persistence Recovery
+
+### Opened bounded P04 implementation
+
+* Related markers: P04, P04-T01, P04-T02
+* Approved write boundary: `podcaster/video/job_runner.py`, `tests/test_video_job_runner.py`, and the existing plan and changes artifacts.
+* What must change: `TerminalStatePersistenceError` must be handled before generic `TransientVideoError` retry exhaustion so a missing terminal state can never be paired with queue-message deletion, including at or above `MAX_DEQUEUE_COUNT`.
+* Triggering evidence: Unresolved thread `PRRT_kwDOSzuis86krTaG` identifies the subclass ordering defect at the generic transient handler.
+* Validation intent: Run focused terminal-persistence and generic retry-exhaustion tests, the immediately affected process-message grouping, Ruff check and format-check on both changed Python files, and final diff checks.
+* Scope boundary: Preserve existing poison, permanent failure, ordinary transient, and generic retry-exhaustion semantics.
+* Blockers: None.
+
+### Preserved terminal-state recovery at retry exhaustion
+
+* Related markers: P04-T01
+* Files: `podcaster/video/job_runner.py`, `tests/test_video_job_runner.py`
+* What changed and why: `process_message()` now catches and re-raises `TerminalStatePersistenceError` before the generic transient handler, so no dequeue count can route a missing terminal state through `RetryExhausted` queue deletion. A parameterized regression covers both the exact limit and a count above it, asserting no queue deletion and no generic failure report.
+* Completion evidence: The focused regression passes for `MAX_DEQUEUE_COUNT` and `MAX_DEQUEUE_COUNT + 1`; the pre-existing ordinary transient exhaustion regression still deletes once and reports `RetryExhausted`.
+* Validation: Focused tests passed 3 cases; the complete `TestProcessMessage` grouping passed 19 tests; the full `tests/test_video_job_runner.py` module passed 154 tests.
+
+### Completed P04 validation and scope review
+
+* Related markers: P04-T02
+* Files: `podcaster/video/job_runner.py`, `tests/test_video_job_runner.py`
+* Completion evidence: `ruff check` and `ruff format --check` pass for both changed Python files; `git diff --check` passes; final diff is limited to the exception ordering, focused regression, and required tracking artifacts.
+* PR #684 verification: Draft PR #684 remained at head `fcfa40015ed68d9e38d8432425b7cbd15171e835` on `squad/incident-provider-terminal-truth`; no operation targeted that PR.
+* Delivery state: The resulting commit will be pushed to `origin/squad/video-stage-budget-redesign`, then only thread `PRRT_kwDOSzuis86krTaG` will be replied to and resolved.

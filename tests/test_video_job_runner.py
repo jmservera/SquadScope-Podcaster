@@ -2733,6 +2733,24 @@ class TestProcessMessage:
         assert outcome.reason == REASON_RETRY_EXHAUSTED
         assert len(queue.deleted) == 1
 
+    @pytest.mark.parametrize("dequeue_count", [MAX_DEQUEUE_COUNT, MAX_DEQUEUE_COUNT + 1])
+    def test_terminal_state_persistence_failure_never_deletes_at_retry_limit(
+        self, storage, queue, dry_config, dequeue_count
+    ):
+        msg = _make_message("terminal-state-missing", dequeue_count=dequeue_count)
+        with (
+            patch("podcaster.video.job_runner.report_failure") as mock_report,
+            patch(
+                "podcaster.video.job_runner.run_video_generation",
+                side_effect=TerminalStatePersistenceError("terminal state was not persisted"),
+            ),
+            pytest.raises(TerminalStatePersistenceError, match="was not persisted"),
+        ):
+            process_message(msg, storage=storage, queue=queue, config=dry_config)
+
+        assert queue.deleted == []
+        mock_report.assert_not_called()
+
     def test_successful_processing_deletes(self, storage, queue, dry_config):
         job_id = "success-job"
         storage.set_manifest(
