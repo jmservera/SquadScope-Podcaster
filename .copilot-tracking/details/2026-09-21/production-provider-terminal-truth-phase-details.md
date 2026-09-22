@@ -105,13 +105,13 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 
 ## Implementation Execution Boundary
 
-* Declared scope: P07-T01–P07-T07 only, covering RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009. Livingston completed independent review of final head `601d36a`; RV-002/RV-003/RV-004/RV-007/RV-009 are resolved and RV-008 remains High.
-* Current task: surgically prevent recovery authorization from selecting an older predecessor when any later terminal attempt exists, especially `provider_unknown`, and prove that unknown provider state can never regain mutation authority.
+* Declared scope: P07-T01 plus the validation and delivery reconciliation needed for the new source SHA. Livingston completed independent review of source candidate `601d36a`; RV-002/RV-003/RV-004/RV-007/RV-009 are resolved and RV-008 remains High.
+* Current task: Frank alone must bind recovery authorization to the complete ordered attempt history and latest relevant state. Any later possibly mutated, unknown, manual-action, identity-conflict, unresolved, omitted, or reordered attempt withholds mutation authority until exact authoritative terminal readback resolves that attempt into the specifically authorized safe continuation.
 * Revision author: Farnsworth only for the reopened correction cycle.
-* Fresh independent reviewer: Livingston completed review without source/test contribution.
+* Fresh independent reviewer: Rusty is reserved and may not contribute before final-SHA review. Livingston's completed rejection remains historical evidence.
 * Excluded contributors: Bender, Hermes, Amy, Leela, and Fry may not author, advise, pair, inspect, suggest, review, or otherwise contribute.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
-* Validation boundary: deterministic focused negative probes per P07 task, then the complete locked validation contract without weakening.
+* Validation boundary: deterministic stale/latest/reordered/omitted/history-resolution negative probes, the existing safe-recovery positive probe, all resolved-RV probes, then the complete locked validation contract without weakening.
 * Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 deployment/canary, and P06 elapsed evidence remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
 
 ## Implementation Marker Reconciliation
@@ -120,21 +120,21 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | High RV-008 remains open | Structured evidence is exact for the selected predecessor, but authorization can branch around a later `provider_unknown` attempt and restore mutation authority |
+| P07-T01 | Complete for Frank revision; Rusty review pending | Authorization matches the complete ordered history/latest relevant state; stale, omitted, reordered, unknown, manual, conflicting, or unresolved later attempts cannot restore mutation authority |
 | P07-T02 | Complete; RV-002 resolved | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
 | P07-T03 | Complete; RV-004 resolved | Bounded resumable migration backfills pre-index references and cleanup fails closed until completeness is proven |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
-| P07-T06 | Complete for reviewed head | Livingston independently reproduced focused, locked, full, static, Bicep, Checkov, container, integration, and secret/PII validation |
-| P07-T07; P05-T01 | Review complete; not accepted | Final head `601d36a` is pushed and PR #684 is refreshed; High RV-008 plus P00-T01/P05/P06 keep delivery blocked |
+| P07-T06 | Complete for Frank revision | Focused 107, locked 782, and full 3112 tests passed with all static, Bicep, Checkov, container, exit, diff, and secret/PII gates preserved |
+| P07-T07; P05-T01 | Pending Rusty review; blocked | Update the existing branch and PR #684 after validation; High RV-008 is not resolved until Rusty independently reviews the exact pushed SHA, and P00-T01/P05/P06 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
 | W39 classification | Settled | `missed_not_dispatched` |
 | Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
 
-Farnsworth alone authors the reopened P07 correction. Livingston alone performs fresh independent review after implementation and validation. Bender, Hermes, Amy, Leela, and Fry are excluded entirely.
+Frank alone authors the current P07-T01 correction. Rusty alone performs fresh independent review after implementation and validation. Bender, Hermes, Amy, Leela, Fry, Farnsworth, and Livingston are excluded entirely from contribution or advice.
 
 ### Implemented Surface Disposition
 
@@ -989,16 +989,18 @@ Require persisted, exact, identity-bound proof for every green outcome and evide
 
 * Missing or mismatched proof is non-green.
 * `provider_unknown` never authorizes another mutation.
-* Recovery authorization references durable reconciliation/operator evidence and the succeeding attempt.
+* Recovery authorization references durable reconciliation/operator evidence, the complete ordered attempt history, the latest relevant state, and the succeeding attempt.
+* Stale authorization, non-latest predecessor selection, and omitted or reordered attempt history fail closed.
+* A later unknown or possibly mutated attempt permits only read-only reconciliation until exact authoritative terminal readback resolves that attempt; only the resulting specifically authorized safe continuation may mutate.
 * Earlier failures and all possibly mutated attempts remain immutable and visible.
 
 #### Completion Evidence
 
-* Parameterized negative proof matrix, durable authorization round-trip, unknown-mutation no-retry probe, and exact successful/recovered-green fixtures.
+* Parameterized negative proof matrix, durable authorization round-trip, branch-around-unknown denial, exact-readback resolution, stale-authorization denial, omitted/reordered-history denial, and exact successful/recovered-green fixtures.
 
 #### Unresolved Items
 
-* Farnsworth correction: label-only recovery is non-green; authorization requires a validated durable evidence object and final recovered state rebinds that authorization to the succeeding attempt and provider readbacks. Livingston review remains pending.
+* Frank correction complete: authorization requires the selected predecessor to be the latest relevant attempt, validates the exact ordered terminal-attempt IDs, records post-terminal authoritative readbacks without changing immutable outcomes, and permits a new mutation-capable attempt only from a newly generated authorization over the exactly resolved latest history. Rusty's independent final-SHA review remains pending.
 
 <!-- rpi:task id=P07-T02 -->
 ### P07-T02: Make scheduler notification enqueue single-winner

@@ -10,15 +10,62 @@
 
 ## Execution Status
 
-* Status: Livingston independent review complete; exact final head not accepted because High RV-008 remains
-* Declared invocation scope: P07-T01–P07-T07 only
-* Sole current revision author: Farnsworth
-* Independent reviewer: Livingston
-* Completed markers: P07-T02–P07-T07
-* Active marker: P07-T01
-* Remaining in-scope marker: P07-T01 for the RV-008 branch-around-unknown defect
+* Status: Frank RV-008 implementation and validation complete from review/tracking head `1b057c0`; commit/push and Rusty's fresh independent review remain
+* Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
+* Sole current revision author: Frank
+* Independent reviewer: Rusty, reserved and non-contributing until final-SHA review
+* Completed markers preserved from prior cycles: P07-T02–P07-T05
+* Completed markers for current revision: P07-T01 and P07-T06
+* Active marker: P07-T07
+* Remaining in-scope work: existing-branch commit/push, PR reconciliation, and Rusty's independent review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: Livingston independently reviewed final head `601d36a`. RV-002, RV-003, RV-004, RV-007, and RV-009 are resolved. RV-008 remains High because authorization can select an older failed predecessor, ignore a later `provider_unknown` attempt, and restore mutation authority. No merge, deployment, canary, or production acceptance is claimed.
+* Status basis: the clean local/remote branch started at `1b057c0ea9073fb195c56cc884625216e18e49a7`, which records Livingston's rejection of `601d36afc62d745c6a67d917b63bcd89e8c18737`. Frank's source and tests now bind authorization to the complete ordered history/latest relevant state and pass the complete validation contract. RV-008 remains pending independent disposition until Rusty reviews the exact pushed SHA. RV-002, RV-003, RV-004, RV-007, and RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+
+## P07 Frank Ordered-History Revision Opening
+
+### Bound the sole-author correction and validation lifecycle
+
+* Affected markers: P07-T01, P07-T06, and P07-T07.
+* Authorship and lockout: Frank is the sole revision author. Rusty is reserved for fresh independent review. Bender, Hermes, Amy, Leela, Fry, Farnsworth, and Livingston may not author, advise, pair, or contribute.
+* Exact source baseline: clean local and remote branch at Livingston's review/tracking commit `1b057c0ea9073fb195c56cc884625216e18e49a7`; rejected source candidate `601d36afc62d745c6a67d917b63bcd89e8c18737` is an ancestor and remains historical evidence.
+* Write boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`; `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`, current plan/details/changes/PR artifacts, and existing PR #684 after validation. No branch replacement, new PR, deployment, production mutation, issue/thread resolution, or changes to `/home/azureuser/source/SquadScope-Podcaster`.
+* First execution boundary: bind recovery authorization and authorization evidence to the complete current ordered attempt history and latest relevant state. Reject stale predecessor selection and omitted/reordered history. A later possibly mutated, unknown, manual-action, identity-conflict, or unresolved attempt keeps any claim read-only or prevents claim creation until exact authoritative terminal readback resolves that attempt.
+* Safe continuation rule: exact authoritative terminal readback may resolve the latest uncertain attempt only by persisting the resolved terminal evidence; only a new authorization generated from that exact latest complete history may create the specifically authorized succeeding mutation-capable attempt.
+* Validation intent: add the required branch-around-unknown, exact-readback resolution, stale-authorization, omitted/reordered-history, and exact safe-recovery probes; preserve all resolved-RV probes; run focused, locked, full pytest, Ruff check/format, compile, diff safety, Bicep, documented and CI-equivalent Checkov, container build/smoke, Compose refresh if stale, and changed-file secret/PII scanning.
+* Retained blockers: P00-T01 upstream W39 prevention/detection, P05 deployment/canary/provenance, and P06 four future elapsed cycles remain open. PR #684 must remain open, draft, and blocked pending Rusty's review.
+* Historical evidence: every Leela/Fry and Farnsworth/Livingston rejection section below remains unchanged as historical lifecycle evidence.
+
+## P07 Frank Ordered-History Correction
+
+### Bound recovery to the latest complete ordered attempt history
+
+* Related markers: P07-T01; RV-008.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`.
+* Result: authorization validation now rejects any selected predecessor with a later attempt, verifies the exact ordered terminal-attempt ID list, and revalidates the same predecessor/successor tail when computing recovered green. A later `provider_unknown`, manual, conflicting, or otherwise unresolved attempt therefore dominates every older failed predecessor.
+* Exact readback resolution: read-only reconciliation appends sanitized post-terminal provider readbacks to the immutable attempt. The attempt's original `provider_unknown` outcome remains unchanged. Only when the latest readback for every requested provider is an exact authoritative failed-terminal readback with provider identity and native state can a new authorization be generated against that latest attempt.
+* Safe continuation: the new authorization is tied to the complete history and generated succeeding attempt. Only that succeeding attempt can claim with `read_only=False`; stale authorization or an older predecessor cannot regain mutation authority.
+* Negative probes: failed predecessor followed by unknown denies a third attempt and keeps takeover read-only; exact terminal readback of the latest unknown alone permits a new explicitly authorized continuation; stale non-latest predecessor is rejected; omitted and reordered attempt-ID histories are rejected.
+* Preserved positive probe: exact failed-terminal recovery remains accepted, retains the immutable failed predecessor, and produces `published_verified_recovered` only after exact succeeding provider readbacks.
+
+## P07 Frank Validation
+
+| Command | Result |
+|---|---|
+| Required RV-008 focused selection | Passed: `17 passed, 45 deselected in 0.45s` |
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py tests/test_distribution_worker.py tests/test_distribution_telemetry.py tests/test_deploy_workflow.py -q` | Passed: `107 passed in 2.41s` |
+| Locked dispatch/API/outbox/worker/provider/publication/monitoring/deployment command | Passed: `782 passed, 1 warning in 55.87s` |
+| `TMPDIR="$PWD/.test-tmp" pytest tests/ -q` | Passed directly: `3112 passed, 2 skipped, 2 deselected, 1 warning in 82.67s`; no Compose rebuild was required |
+| `ruff check podcaster tests`; `ruff format --check podcaster tests`; `python3 -m compileall -q podcaster`; `git diff --check` | Passed; `192 files already formatted` |
+| `az bicep build --file infra/main.bicep --stdout` | Passed with the documented pre-existing BCP318 warning |
+| `checkov --directory infra --framework bicep --quiet` | Documented baseline retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov skip-list command | Passed: `34 passed, 0 failed` |
+| Dockerfile Checkov with `.checkov.baseline` | Passed |
+| `docker build -f Containerfile -t podcaster-synthesis:frank-rv008 . --quiet` | Passed; image ID `sha256:17b865ed4401a534367a8e15f45abf80ebbcc813342d0337b04ba4aef6d6c4b9` |
+| Container smoke | Passed: UID `999`, ffmpeg/ffprobe, and `podcaster.audio`, `podcaster.episode`, `podcaster.job_runner`, `podcaster.distribution_outbox` imports |
+| Unconfigured distribution worker | Passed safety contract: exit `2` |
+| Changed-file suspected secret/PII scan | Passed: no private key, access key, JWT, signed credential URL, or email-address pattern found |
+
+No test, assertion, safety gate, security gate, or baseline was removed, skipped, weakened, or made non-blocking.
 
 ## P07 Farnsworth Revision Opening
 
