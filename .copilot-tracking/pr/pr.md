@@ -1,14 +1,14 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Leela's RV-008 correction awaits Basher's independent final-SHA review.** Exact typed canonical validation now rejects boolean/float `authz_count`, scalar substitutions across all versioned recovery structures, exponent-overflow/non-finite and negative-zero numbers, unsupported values, coercions, non-string keys, and duplicate JSON fields. P07-T07, P00-T01, P05, P06, and operator-only #682 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.** Exact typed canonical validation rejects boolean/float `authz_count`, scalar substitutions across all versioned recovery structures, exponent-overflow/non-finite and negative-zero numbers, unsupported values, coercions, non-string keys, and duplicate JSON fields. P00-T01, P05, P06, and operator-only #682 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
 Current source/tests commit: `9204e139be485cb916ccd6e70b6fce355b656136`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
 Current sole revision author: Leela.
-Fresh independent reviewer: Basher reserved; no contribution occurred.
+Fresh independent reviewer: Basher completed a read-only exact-SHA acceptance review.
 
 ## Leela RV-008 exact typed canonical correction
 
@@ -30,8 +30,10 @@ Checkov `36/7`; CI Bicep Checkov `34/0`; Dockerfile baseline; rebuilt container
 `sha256:89f3dad52ff9583ec92a6501e6132a67d96383fcacef5ded6c95153088c2eecc` with UID `999`,
 ffmpeg/ffprobe/import smoke; worker exit `2`; and changed executable diff secret/PII scan.
 
-PR #684 remains open/draft/blocked pending Basher, P00-T01, P05, P06, and operator-only #682. No
-issue, review thread, deployment, canary, merge, or production state was mutated.
+Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`
+with no blocking findings. PR #684 remains open/draft/blocked pending P00-T01, P05, P06, and
+operator-only #682. No issue, review thread, deployment, canary, merge, or production state was
+mutated.
 
 ## Leela final-SHA rejection
 
@@ -242,7 +244,7 @@ Frank's probes prove that a later `provider_unknown` blocks reuse of the older f
 ## Residual external gates
 
 - **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
-- **P07-T07:** obtain Basher's independent acceptance of Leela's corrected final pushed SHA; local implementation and validation do not self-accept.
+- **P07-T07 — complete:** Basher independently accepted Leela's corrected exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.
 - **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 
@@ -284,7 +286,7 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] Livingston independently reviewed final source SHA `e16963243973707ea2557f75f925d3c6935d49ee`; verdict Not accepted.
 - [x] RV-008 exact operation and durable intent/receipt authorization binding corrected.
 - [x] RV-008 exact recursive typed canonical set/envelope/evidence/history/successor correction completed and validated by Leela.
-- [ ] A new independent reviewer accepts the corrected final pushed SHA.
+- [x] Basher independently accepted corrected exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
 - [ ] P05 deployment/canary gates completed.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.
