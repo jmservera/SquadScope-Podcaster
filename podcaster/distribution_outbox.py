@@ -282,11 +282,15 @@ def commit_immutable_artifact(
     media_kind: str,
     content_type: str,
     suffix: str = "",
+    source_ownership: Mapping[str, Any] | None = None,
+    authorize: Callable[[], None] | None = None,
 ) -> ArtifactReference:
     digest, size = _sha256_file(source)
     path = artifact_path(digest, media_kind, suffix)
     existing_size = storage.blob_size(path)
     if existing_size is None:
+        if authorize is not None:
+            authorize()
         storage.upload_file(path, source, content_type)
     elif existing_size != size:
         raise OutboxConflictError("content-addressed artifact size conflicts with existing blob")
@@ -294,6 +298,8 @@ def commit_immutable_artifact(
     metadata_path = f"{ARTIFACT_METADATA_PREFIX}/{digest}.json"
 
     def _metadata(raw: bytes | None) -> bytes:
+        if authorize is not None:
+            authorize()
         if raw is not None:
             return raw
         document = {
@@ -303,6 +309,8 @@ def commit_immutable_artifact(
             "media_kind": _require_token("media_kind", media_kind),
             "created_at": _iso(utc_now()),
         }
+        if source_ownership is not None:
+            document["source_ownership"] = _safe_value(source_ownership)
         return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     storage.update_bytes(
@@ -313,6 +321,8 @@ def commit_immutable_artifact(
     reference_path = f"{ARTIFACT_REFERENCE_PREFIX}/{digest}.json"
 
     def _restore_reference(raw: bytes | None) -> bytes:
+        if authorize is not None:
+            authorize()
         reference = json.loads(raw.decode("utf-8")) if raw else {}
         if reference.get("deleting") is True:
             raise OutboxConflictError("artifact cleanup is in progress")
@@ -1374,6 +1384,8 @@ class DistributionOutboxRepository:
         provider_objectives: Mapping[str, str],
         enqueue_source: str,
         enqueue_version: str,
+        source_ownership: Mapping[str, Any] | None = None,
+        authorize: Callable[[], None] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         verify_artifact(self.storage, artifact)
         item_id = outbox_id_for(
@@ -1391,6 +1403,8 @@ class DistributionOutboxRepository:
 
         def _create(raw: bytes | None) -> bytes:
             nonlocal created
+            if authorize is not None:
+                authorize()
             if raw is not None:
                 existing = json.loads(raw.decode("utf-8"))
                 if (
@@ -1399,8 +1413,10 @@ class DistributionOutboxRepository:
                     or existing.get("provider_objectives") != expected["provider_objectives"]
                 ):
                     raise OutboxConflictError("logical outbox item conflicts with existing record")
+                if source_ownership is not None:
+                    existing["source_ownership"] = _safe_value(source_ownership)
                 captured.update(existing)
-                return raw
+                return json.dumps(existing, sort_keys=True, separators=(",", ":")).encode("utf-8")
             timestamp = _iso(self.now())
             providers = {
                 _require_token("provider", provider): {
@@ -1432,6 +1448,9 @@ class DistributionOutboxRepository:
                     "version": _require_token("enqueue_version", enqueue_version),
                     "notification_sent_at": None,
                 },
+                "source_ownership": (
+                    _safe_value(source_ownership) if source_ownership is not None else None
+                ),
                 "state": "pending",
                 "claim": None,
                 "fencing_token": 0,
@@ -1486,14 +1505,41 @@ class DistributionOutboxRepository:
 
         self.storage.update_bytes(path, "application/json; charset=utf-8", _register)
 
-    def mark_notification_sent(self, outbox_id: str) -> dict[str, Any]:
-        return self._update(
-            outbox_id,
-            lambda document: document["enqueue"].__setitem__(
-                "notification_sent_at",
-                document["enqueue"].get("notification_sent_at") or _iso(self.now()),
-            ),
-        )
+    def mark_notification_sent(
+        self,
+        outbox_id: str,
+        *,
+        source_ownership: Mapping[str, Any] | None = None,
+        authorize: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        def _mark(document: dict[str, Any]) -> None:
+            if authorize is not None:
+                authorize()
+            if source_ownership is not None and document.get(
+                "notification_source_ownership"
+            ) != dict(source_ownership):
+                raise StaleClaimError("outbox notification ownership is stale")
+            document["enqueue"]["notification_sent_at"] = document["enqueue"].get(
+                "notification_sent_at"
+            ) or _iso(self.now())
+
+        return self._update(outbox_id, _mark)
+
+    def reserve_notification(
+        self,
+        outbox_id: str,
+        *,
+        source_ownership: Mapping[str, Any],
+        authorize: Callable[[], None],
+    ) -> dict[str, Any]:
+        def _reserve(document: dict[str, Any]) -> None:
+            authorize()
+            document["notification_source_ownership"] = _safe_value(source_ownership)
+            document["enqueue"]["notification_reserved_at"] = document["enqueue"].get(
+                "notification_reserved_at"
+            ) or _iso(self.now())
+
+        return self._update(outbox_id, _reserve)
 
     def claim(
         self,

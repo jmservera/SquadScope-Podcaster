@@ -2950,6 +2950,7 @@ def _finalize_output(
     run: "CommandRunner",
     decode: "Callable[[Path], None] | None" = None,
     media_validation_budget: "Callable[[], float] | None" = None,
+    before_final_promotion: "Callable[[], None] | None" = None,
 ) -> ComposeResult:
     """Mux the podcast audio (if any) over the composed video and finalise.
 
@@ -3011,6 +3012,8 @@ def _finalize_output(
             decode=decode,
             media_validation_budget=media_validation_budget,
         )
+        if before_final_promotion is not None:
+            before_final_promotion()
         os.replace(staged_output, output_path)
     finally:
         try:
@@ -3209,6 +3212,7 @@ def compose_video(
     intermediates=None,
     task_reporter: "Callable[..., None] | None" = None,
     media_validation_budget: "Callable[[], float] | None" = None,
+    before_final_promotion: "Callable[[], None] | None" = None,
 ) -> ComposeResult:
     """Compose recorded segments into a single MP4 with transitions and overlays.
 
@@ -3283,6 +3287,8 @@ def compose_video(
         media_validation_budget: Optional callback returning the authoritative
             seconds remaining in the queue lifecycle and editor lease. It is
             sampled immediately before and after complete final-media decode.
+        before_final_promotion: Optional fail-closed ownership check sampled
+            immediately before atomic candidate promotion.
 
     Returns:
         ComposeResult with path to the final MP4.
@@ -3388,6 +3394,7 @@ def compose_video(
                 segment_count=len(segments),
                 run=run,
                 media_validation_budget=media_validation_budget,
+                before_final_promotion=before_final_promotion,
             )
 
     # Fit-to-window planning (issue #355): when the audio duration is known we
@@ -3755,6 +3762,7 @@ def compose_video(
         segment_count=len(segments),
         run=run,
         media_validation_budget=media_validation_budget,
+        before_final_promotion=before_final_promotion,
     )
 
 

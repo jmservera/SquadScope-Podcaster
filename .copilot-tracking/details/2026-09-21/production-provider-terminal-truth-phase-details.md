@@ -139,6 +139,13 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 
 ## Implementation Execution Boundary
 
+* Declared scope: P05-T03 stale-owner downstream mutation correction after Basher rejected exact head `df473dc0c059680b9c454ddab263c5c454e2ef2b`, plus focused/full validation, #682/#684 evidence, tracking, commit, and push.
+* Current task: Frank completed one authoritative persisted video execution claim and claim-bound boundary permits spanning final promotion, immutable archive, outbox creation, queue notification/sent marking, direct-provider durable intent/mutation, and terminal success. Commit, push, GitHub evidence, and Rusty final-SHA review remain.
+* Ownership invariants: exact job/owner/claim/execution/fence and persisted visibility/lease expiries are validated by durable readback and CAS. Missing, corrupt, unavailable, mismatched, expired, or ambiguous authority fails closed. Target records carry the source permit identity, ordinary takeover cannot cross an active permit, and forced transfer invalidates stale completion.
+* Idempotency/takeover: immutable artifacts and deterministic outbox identity remain reusable; consumed direct-provider intent never grants a second mutation; a successor reconciles existing artifacts/intents instead of recreating provider effects.
+* Delivery boundary: the incident worktree and existing `squad/incident-provider-terminal-truth` branch/PR only. Keep #684 draft/open and #682 open. Do not merge, deploy, dispatch W39, mutate a provider, or claim P05-T04–P05-T06/P06 credit.
+* Validation result: exact ownership probes `13`; focused race/provider suite `416`; locked contract `940`; full repository `3302 passed, 2 skipped, 2 deselected, 1 warning`; Ruff/format/compile/diff, Bicep, exact/CI Checkov, Dockerfile baseline, container/worker smoke, rebuilt Compose integration, and secret/PII scan passed or retained the documented baseline without weakening.
+
 * Declared scope: P05-T03 lifecycle-budget and process-shutdown correction after Basher rejected exact head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`, plus required validation, #682/#684 evidence, tracking, PR narrative, commit, and push.
 * Current task: implementation and validation complete in source commit `f6b713530947236c04f822289343d3f105cc6dc9`; corrected GitHub evidence, final push, and Rusty review remain.
 * Revision author: Livingston alone.

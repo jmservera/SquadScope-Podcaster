@@ -1046,6 +1046,7 @@ def distribute_video(
     published: Mapping[str, Any] | None = None,
     on_published: Callable[[str, dict[str, Any]], None] | None = None,
     publish_run_id: str | None = None,
+    before_mutation: Callable[[str, str], None] | None = None,
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
@@ -1107,6 +1108,8 @@ def distribute_video(
 
     # 1. Archive to blob — always done first so the video is stored even when no
     #    listener-facing target succeeds (#337). Also provides the RSS enclosure URL.
+    if config.blob_archive_enabled and before_mutation is not None:
+        before_mutation("blob", "archive_upload")
     blob_path = archive_to_blob(video_path, job_id, storage=storage, config=config)
     result.blob_path = blob_path
 
@@ -1146,6 +1149,8 @@ def distribute_video(
         )
     elif youtube_active:
         try:
+            if before_mutation is not None:
+                before_mutation("youtube", "draft_upload")
             video_id, video_url = upload_to_youtube(
                 video_path,
                 title,
@@ -1350,6 +1355,8 @@ def distribute_video(
                     "retry_blocked": False,
                 }
             else:
+                if before_mutation is not None:
+                    before_mutation("spotify_rss", "feed_update")
                 rss_ok = update_spotify_rss(
                     enclosure_url,
                     title,
@@ -1438,6 +1445,8 @@ def distribute_video(
                 provider_id_field="episode_id",
             )
         else:
+            if before_mutation is not None:
+                before_mutation("spotify", "episode_upload")
             upload_result = upload_to_spotify_episode(
                 video_path,
                 spotify_anchor_id,

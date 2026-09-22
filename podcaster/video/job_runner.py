@@ -29,7 +29,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -79,7 +79,7 @@ from podcaster.video.distribution import (
     youtube_enabled_for_language,
 )
 from podcaster.video.intermediates import create_intermediate_store
-from podcaster.video.ownership import OwnershipError, VideoOwnershipGuard
+from podcaster.video.ownership import BoundaryPermit, OwnershipError, VideoOwnershipGuard
 from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
@@ -494,11 +494,16 @@ def _record_video_state(
     storage: StorageBackend,
     job_id: str,
     state: dict[str, Any],
+    *,
+    authorize=None,
+    fail_closed: bool = False,
 ) -> None:
     """Record video runner state in the manifest."""
     from podcaster.generation import manifest_bytes
 
     def _apply(content: bytes | None) -> bytes:
+        if authorize is not None:
+            authorize()
         doc = json.loads(content.decode("utf-8")) if content else {}
         if not isinstance(doc, dict):
             doc = {}
@@ -509,6 +514,8 @@ def _record_video_state(
     try:
         storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
     except Exception:
+        if fail_closed:
+            raise
         logger.warning("failed to record video state for job_id=%s", job_id, exc_info=True)
 
 
@@ -838,19 +845,12 @@ def run_video_generation(
     scratch = fanout_scratch if fanout_scratch is not None else create_scratch_storage_backend()
     producer = clip_producer if clip_producer is not None else create_clip_queue_backend()
     fanout_enabled = _resolve_fanout(fanout, scratch, producer)
-    run_id = uuid.uuid4().hex if fanout_enabled else None
+    execution_id = ownership_execution_id or uuid.uuid4().hex
+    run_id = execution_id if fanout_enabled else None
     media_validation_lease = None
     media_validation_admitted = False
     ownership_guard: VideoOwnershipGuard | None = None
-
-    def _assert_downstream_authority() -> None:
-        if (
-            lifecycle_deadline_monotonic is not None
-            and time.monotonic() >= lifecycle_deadline_monotonic
-        ):
-            raise OwnershipError("authoritative queue visibility deadline has expired")
-        if ownership_guard is not None:
-            ownership_guard.assert_current()
+    promotion_permit: BoundaryPermit | None = None
 
     def _remaining_media_validation_budget() -> float:
         nonlocal media_validation_admitted, media_validation_lease
@@ -874,6 +874,8 @@ def run_video_generation(
                 raise RuntimeError(
                     f"final media validation failed: editor lease lost for job_id={job_id}"
                 )
+            if ownership_guard is not None:
+                ownership_guard.refresh_lease(media_validation_lease.expires_at)
             lease_deadline = _authoritative_deadline_monotonic(media_validation_lease.expires_at)
             if lease_deadline is None:
                 raise RuntimeError(
@@ -1166,7 +1168,40 @@ def run_video_generation(
                 sections_metadata=sections_metadata,
             )
 
+            if fanout_enabled and run_id is not None:
+                from podcaster.video.editor import renew_lease
+
+                media_validation_lease = renew_lease(scratch, job_id, run_id)
+                if media_validation_lease is None:
+                    raise OwnershipError("editor lease lost before downstream ownership claim")
+            visibility_expires_at = ownership_visibility_expires_at or (
+                datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
+            )
+            ownership_guard = VideoOwnershipGuard.acquire(
+                storage,
+                job_id,
+                owner="video-runner",
+                execution_id=execution_id,
+                visibility_expires_at=visibility_expires_at,
+                lease_expires_at=(
+                    media_validation_lease.expires_at
+                    if media_validation_lease is not None
+                    else None
+                ),
+            )
+
             with timings.phase("composition"):
+
+                def _before_final_promotion() -> None:
+                    nonlocal promotion_permit
+                    if ownership_guard is None:
+                        raise OwnershipError("downstream ownership guard is unavailable")
+                    promotion_permit = ownership_guard.begin(
+                        "final_candidate_promotion",
+                        allow_idempotent_takeover=True,
+                    )
+                    ownership_guard.assert_permit(promotion_permit)
+
                 compose_result = compose_video(
                     recording.recorded,
                     audio_path=audio_path,
@@ -1184,6 +1219,13 @@ def run_video_generation(
                         if lifecycle_deadline_monotonic is not None or fanout_enabled
                         else None
                     ),
+                    before_final_promotion=_before_final_promotion,
+                )
+                if promotion_permit is None:
+                    _before_final_promotion()
+                ownership_guard.complete(
+                    promotion_permit,
+                    target=output_path.name,
                 )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
@@ -1196,23 +1238,6 @@ def run_video_generation(
                         "final media validation failed: lifecycle or editor lease expired "
                         "before distribution"
                     )
-            if ownership_execution_id is not None:
-                if ownership_visibility_expires_at is None:
-                    raise RuntimeError(
-                        "downstream ownership requires the authoritative queue visibility expiry"
-                    )
-                ownership_guard = VideoOwnershipGuard.acquire(
-                    storage,
-                    job_id,
-                    owner=f"video-runner:{ownership_execution_id}",
-                    execution_id=ownership_execution_id,
-                    visibility_expires_at=ownership_visibility_expires_at,
-                    lease_expires_at=(
-                        media_validation_lease.expires_at
-                        if media_validation_lease is not None
-                        else None
-                    ),
-                )
 
             # Distribute
             request = manifest.get("request")
@@ -1385,27 +1410,60 @@ def run_video_generation(
                             reason="distribution_provider_not_requested",
                             details={"job_id": job_id},
                         )
-                    _assert_downstream_authority()
+                    archive_permit = ownership_guard.begin(
+                        "immutable_archive",
+                        allow_idempotent_takeover=True,
+                    )
+                    archive_token = ownership_guard.source_token(archive_permit)
                     artifact = commit_immutable_artifact(
                         storage,
                         output_path,
                         media_kind="video",
                         content_type="video/mp4",
                         suffix=output_path.suffix,
+                        source_ownership=archive_token,
+                        authorize=lambda: ownership_guard.assert_permit(archive_permit),
                     )
+                    ownership_guard.complete(archive_permit, target=artifact.path)
                     repository = DistributionOutboxRepository(storage)
-                    _assert_downstream_authority()
+                    outbox_permit = ownership_guard.begin(
+                        "distribution_outbox",
+                        allow_idempotent_takeover=True,
+                    )
+                    outbox_token = ownership_guard.source_token(outbox_permit)
                     outbox_document, _created = repository.enqueue(
                         publication_context,
                         artifact,
                         provider_objectives=objectives,
                         enqueue_source="video_runner",
                         enqueue_version="v1",
+                        source_ownership=outbox_token,
+                        authorize=lambda: ownership_guard.assert_permit(outbox_permit),
                     )
-                    _assert_downstream_authority()
+                    ownership_guard.complete(
+                        outbox_permit,
+                        target=outbox_document["outbox_id"],
+                    )
+                    notification_permit = ownership_guard.begin(
+                        "distribution_notification",
+                        allow_idempotent_takeover=True,
+                    )
+                    notification_token = ownership_guard.source_token(notification_permit)
+                    repository.reserve_notification(
+                        outbox_document["outbox_id"],
+                        source_ownership=notification_token,
+                        authorize=lambda: ownership_guard.assert_permit(notification_permit),
+                    )
                     if enqueue_distribution_job(outbox_document["outbox_id"]):
-                        _assert_downstream_authority()
-                        repository.mark_notification_sent(outbox_document["outbox_id"])
+                        repository.mark_notification_sent(
+                            outbox_document["outbox_id"],
+                            source_ownership=notification_token,
+                            authorize=lambda: ownership_guard.assert_permit(notification_permit),
+                        )
+                    ownership_guard.complete(
+                        notification_permit,
+                        target=outbox_document["outbox_id"],
+                    )
                     dist_result = DistributionResult(
                         status="partial",
                         public_delivery_status="pending",
@@ -1427,7 +1485,10 @@ def run_video_generation(
                         },
                     )
                 else:
-                    _assert_downstream_authority()
+                    provider_permit = ownership_guard.begin(
+                        "direct_provider_intent",
+                        allow_idempotent_takeover=False,
+                    )
                     dist_result = distribute_video(
                         output_path,
                         job_id,
@@ -1443,7 +1504,11 @@ def run_video_generation(
                         published=published_for_attempt,
                         publish_run_id=publish_run_id,
                         on_published=record_publication,
+                        before_mutation=lambda _provider, _operation: ownership_guard.assert_permit(
+                            provider_permit
+                        ),
                     )
+                    ownership_guard.complete(provider_permit, target="direct_distribution")
             result_publish_run_id = getattr(dist_result, "publish_run_id", None)
             if not isinstance(result_publish_run_id, str):
                 result_publish_run_id = publish_run_id
@@ -1504,7 +1569,6 @@ def run_video_generation(
                     "youtube_oauth_error": dist_result.youtube_oauth_error,
                     "youtube_oauth_error_subtype": dist_result.youtube_oauth_error_subtype,
                 }
-                _assert_downstream_authority()
                 _record_video_state(
                     storage,
                     job_id,
@@ -1541,7 +1605,10 @@ def run_video_generation(
             timings.log_summary(logger)
 
             # Record the aggregate terminal state in the manifest.
-            _assert_downstream_authority()
+            success_permit = ownership_guard.begin(
+                "terminal_success",
+                allow_idempotent_takeover=True,
+            )
             _record_video_state(
                 storage,
                 job_id,
@@ -1563,7 +1630,10 @@ def run_video_generation(
                         "public_delivery_status": public_delivery_status,
                     },
                 },
+                authorize=lambda: ownership_guard.assert_permit(success_permit),
+                fail_closed=True,
             )
+            ownership_guard.complete(success_permit, target=manifest_path(job_id))
 
             # Intermediates are no longer needed once the episode is published;
             # delete the job's scratch blobs (issue #410).  Best-effort — the
@@ -1877,8 +1947,11 @@ def process_message(
             config=config,
             now=now,
             lifecycle_deadline_monotonic=lifecycle_deadline_monotonic,
-            ownership_execution_id=message.pop_receipt,
-            ownership_visibility_expires_at=message.next_visible_on,
+            ownership_execution_id=f"{message.message_id}:{message.pop_receipt}",
+            ownership_visibility_expires_at=(
+                message.next_visible_on
+                or datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
+            ),
         )
     except PermanentVideoError as exc:
         logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)

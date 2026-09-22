@@ -10,6 +10,44 @@
 
 ## Execution Status
 
+* Status: Frank completed the stale-owner downstream-boundary implementation and required validation after Basher rejected exact head `df473dc0c059680b9c454ddab263c5c454e2ef2b`; commit, push, GitHub evidence, and Rusty review remain
+* Declared invocation scope: P05-T03 authoritative ownership guard, fenced downstream permits, exact race probes, full required validation, evidence reconciliation, commit, and push
+* Sole current revision author: Frank
+* Independent reviewer: Rusty is reserved and has not contributed
+* Revision base: `df473dc0c059680b9c454ddab263c5c454e2ef2b`
+* First execution boundary: final candidate promotion, followed by immutable archive, outbox creation, queue notification/sent marking, direct-provider intent/mutation, and terminal success
+* Approved write boundary: incident worktree source/tests and directly required tracking/PR evidence only
+* Current blockers: none for implementation or validation; P05-T03 remains pending Rusty's fresh independent final-SHA review
+
+## 2026-09-22 Frank correction after Basher stale-owner rejection
+
+* Related phase or task: P05-T03.
+* Ownership: Frank is the sole revision author from rejected head `df473dc0c059680b9c454ddab263c5c454e2ef2b`. Basher and jmservera's prior implementation context did not advise, pair, or contribute. Rusty is reserved for fresh independent final-SHA review. Bender, Hermes, and Amy remain excluded.
+* Authoritative guard: `podcaster/video/ownership.py` persists exact job, owner, claim, execution, monotonically increasing fence, visibility expiry, lease expiry, and per-boundary permits through durable CAS plus readback. Missing, corrupt, unavailable, mismatched, expired, type-invalid, or ambiguous authority fails closed.
+* Boundary fencing: final candidate promotion, immutable archive, outbox creation, notification reservation/send/sent marking, direct-provider intent/mutation, and terminal success each require a current permit immediately before the target action. Artifact metadata, outbox source ownership, and notification reservation retain the source permit identity. Transfer between guard and target write invalidates stale completion.
+* Provider safety: direct provider distribution consumes a durable non-takeover permit before any blob, YouTube, Spotify RSS, or Spotify episode mutation. A successor receives reconciliation-only authority for that intent and cannot issue a second mutation. Outbox routing retains deterministic artifact/outbox reuse and adopts idempotent archive/handoff permits after takeover.
+* Idempotency: immutable content-addressed artifacts and deterministic outbox IDs remain reusable. Queue notification is reserved durably before send, sent marking is fenced to the same permit, and orphan repair remains available after an interrupted handoff.
+* Concurrent branch reconciliation: while Frank was implementing, the shared branch advanced to user-authored commit `adb3e7ed224a67a8e013e9a361b826a0ac3e003c` from another Copilot session. History was preserved without force-push, its overlapping source/tests/tracking were superseded in the final revision, and the net executable diff from rejected head `df473dc` is Frank's independently authored correction.
+
+### Stale-owner correction validation
+
+| Check | Status | Evidence |
+|---|---|---|
+| Exact ownership/fence probes | Passed | `13 passed`; every named boundary expires closed, forced transfer rejects stale permits, unavailable/corrupt readback fails closed, takeover distinguishes idempotent reconciliation from provider mutation, and concurrent acquisition has one winner. |
+| Focused race/provider regressions | Passed | `416 passed` across ownership, video job runner, outbox, distribution worker, and direct distribution. |
+| Locked terminal-truth contract | Passed | `940 passed, 1 warning`. |
+| Full repository pytest | Passed | `3302 passed, 2 skipped, 2 deselected, 1 warning in 573.73s`. |
+| Ruff/format/compile/diff | Passed | Ruff check and format check passed; compileall and `git diff --check` passed. |
+| Bicep | Passed | Build succeeded with the existing BCP318 warning. |
+| Exact Checkov | Baseline retained | `36 passed, 7 failed`; the seven documented ACR/storage/OpenAI findings are unchanged. |
+| CI Bicep Checkov | Passed | `34 passed, 0 failed`. |
+| Dockerfile Checkov | Passed | Baseline-aware repository command passed. |
+| Container build/smoke | Passed | Image `sha256:0324e4661e5b22038c3dd1ce54aebb44b2314d4acb83d664c6a7e880f925fc7a`; UID `999`; ffmpeg/ffprobe and ownership/job/outbox/worker imports passed; unconfigured distribution worker exited `2`. |
+| Compose integration | Passed | Rebuilt fanout image; scaleout fanout plus video pipeline `3 passed`. |
+| Secret/PII scan | Passed | No suspected private key, access key, token/JWT, signed credential URL, or email-address pattern in added lines. |
+
+P05-T03 remains pending Rusty's fresh independent review of the pushed final SHA. PR #684 stays open/draft/blocked and #682 stays open. No merge, deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit is authorized.
+
 * Status: Livingston completed and pushed the sole-author lifecycle-budget and bounded-shutdown correction after Basher rejected exact head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`; Rusty acceptance remains
 * Declared invocation scope: P05-T03 final-media validation lifecycle/lease budgeting, bounded ffmpeg shutdown, exact #682/#684 evidence replies, full required validation, delivery reconciliation, commit, and push
 * Sole current revision author: Livingston

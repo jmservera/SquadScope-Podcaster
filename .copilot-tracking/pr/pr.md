@@ -1,7 +1,7 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Basher rejected head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1` because complete final-media decode used a fresh fixed timeout and unbounded post-KILL wait instead of the remaining lifecycle/visibility/lease budget. Livingston completed the sole-author lifecycle-budget and bounded-shutdown correction; fresh independent Rusty acceptance is pending.** Upstream `jmservera/SquadScope#773` is merged/check-green, completing P00-T01. P05-T03, merge authorization, P05-T04–P05-T06, and P06 remain pending. #682 remains open. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Basher rejected head `df473dc0c059680b9c454ddab263c5c454e2ef2b` because ownership could transfer after the post-compose check and before archive, outbox/notification, direct-provider, or terminal-success mutation. Frank completed the sole-author durable ownership/fence correction; fresh independent Rusty acceptance is pending.** Upstream `jmservera/SquadScope#773` is merged/check-green, completing P00-T01. P05-T03, merge authorization, P05-T04–P05-T06, and P06 remain pending. #682 remains open. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
@@ -9,8 +9,32 @@ Rejected final-media head: `d050d68c3590f9a00b60dee925452f971cbaf0d2`.
 Current source/tests commit: `8cc5da21b85b0ec73dab0f39293aab06149ac7a7`.
 Lifecycle correction source/tests commit: `f6b713530947236c04f822289343d3f105cc6dc9`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
-Current sole revision author: Livingston.
+Current sole revision author: Frank.
 Fresh independent reviewer: Rusty is reserved and pending.
+
+## Frank stale-owner downstream-boundary correction
+
+One persisted video execution claim now binds the exact job, owner, claim/execution identity,
+monotonic fence, queue visibility expiry, editor lease expiry, and durable per-boundary permits.
+CAS plus authoritative readback fails closed on mismatch, expiry, corrupt/unavailable state, or
+ambiguity.
+
+Final candidate promotion, immutable archive, outbox creation, notification reservation/send/sent
+marking, direct-provider intent/mutation, and terminal success each consume a current permit.
+Artifact/outbox/notification records carry the source permit. Direct provider mutation is
+non-takeover: a successor may reconcile the consumed intent but cannot issue a duplicate mutation.
+Idempotent archive/outbox handoffs may be adopted and reconciled by the new owner.
+
+Validation passed: exact ownership probes `13`; focused race/provider regressions `416`; locked
+terminal-truth contract `940`; full repository `3302 passed, 2 skipped, 2 deselected, 1 warning`;
+Ruff/format/compile/diff; Bicep with existing BCP318; exact Checkov `36/7`; CI Checkov `34/0`;
+Dockerfile baseline; container
+`sha256:0324e4661e5b22038c3dd1ce54aebb44b2314d4acb83d664c6a7e880f925fc7a`
+with UID `999`, ffmpeg/ffprobe/import smoke and worker exit `2`; rebuilt Compose integration `3`;
+and changed-line secret/PII scan.
+
+P05-T03 remains pending Rusty. #684 stays open/draft/blocked and #682 stays open. No merge,
+deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit is authorized.
 
 ## Livingston lifecycle-budget and bounded-shutdown correction
 
