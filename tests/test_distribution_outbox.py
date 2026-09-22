@@ -25,6 +25,7 @@ from podcaster.distribution_outbox import (
     four_cycle_acceptance,
     outbox_path,
     outbox_routing_enabled,
+    provider_approval_is_valid,
     reconciliation_message,
     weekly_state_from_attempts,
 )
@@ -89,6 +90,74 @@ def test_schema_round_trip_is_versioned_correlated_and_sanitized(setup):
     serialized = json.dumps(document)
     for secret_key in ("authorization", "cookie", "signed_url", "body"):
         assert secret_key not in serialized.lower()
+
+
+def test_human_approval_is_durable_and_bound_to_publication_identity(
+    tmp_path,
+    identity,
+):
+    storage = LocalStorageBackend(tmp_path / "storage", "http://localhost/artifacts")
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"safe-video")
+    artifact = commit_immutable_artifact(
+        storage,
+        source,
+        media_kind="video",
+        content_type="video/mp4",
+        suffix=".mp4",
+    )
+    repository = DistributionOutboxRepository(storage)
+    document, _created = repository.enqueue(
+        identity,
+        artifact,
+        provider_objectives={"youtube": "public"},
+        enqueue_source="test",
+        enqueue_version="v1",
+        provider_approvals={
+            "youtube": {
+                "approved": True,
+                "approved_by": "operator",
+                "approved_at": "2026-09-22T17:00:00Z",
+                "source": "manifest_human_review",
+            }
+        },
+    )
+
+    assert provider_approval_is_valid(document, "youtube") is True
+    approval = document["providers"]["youtube"]["approval"]
+    assert approval["publication_digest"] == document["publication_digest"]
+    assert approval["manifest_sha256"] == identity.manifest_sha256
+
+
+def test_system_auto_approval_is_rejected(tmp_path, identity):
+    storage = LocalStorageBackend(tmp_path / "storage", "http://localhost/artifacts")
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"safe-video")
+    artifact = commit_immutable_artifact(
+        storage,
+        source,
+        media_kind="video",
+        content_type="video/mp4",
+        suffix=".mp4",
+    )
+    document, _created = DistributionOutboxRepository(storage).enqueue(
+        identity,
+        artifact,
+        provider_objectives={"youtube": "public"},
+        enqueue_source="test",
+        enqueue_version="v1",
+        provider_approvals={
+            "youtube": {
+                "approved": True,
+                "approved_by": "system:auto-publish",
+                "approved_at": "2026-09-22T17:00:00Z",
+                "source": "manifest_human_review",
+            }
+        },
+    )
+
+    assert provider_approval_is_valid(document, "youtube") is False
+    assert document["providers"]["youtube"]["approval"]["approved"] is False
 
 
 def test_enqueue_is_idempotent_but_conflicting_artifact_is_rejected(setup, identity, tmp_path):

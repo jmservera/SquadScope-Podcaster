@@ -70,6 +70,7 @@ RECOVERY_MUTATION_OPERATION_TYPES = {
     "youtube": {
         "upload": "create",
         "draft_upload": "create",
+        "playlist_insert": "playlist_insert",
         "public_promotion": "publish",
         "recovery_mutation": "recovery_fixture",
         "recovery_readback": "readback",
@@ -79,9 +80,14 @@ RECOVERY_MUTATION_OPERATION_TYPES = {
     "spotify": {
         "create": "create",
         "create_episode_intent": "create",
+        "public_promotion": "publish",
         "recovery_mutation": "recovery_fixture",
         "recovery_readback": "readback",
         "fixture_readback": "readback",
+        "historical_reconciliation": "historical",
+    },
+    "spotify_rss": {
+        "rss_feed_publish": "publish",
         "historical_reconciliation": "historical",
     },
 }
@@ -1238,6 +1244,75 @@ def _publication_digest(identity: Mapping[str, Any], artifact: Mapping[str, Any]
     return hashlib.sha256("|".join(values).encode("utf-8")).hexdigest()
 
 
+def _provider_approval(
+    approval: Mapping[str, Any] | None,
+    *,
+    publication_digest: str,
+    manifest_sha256: str,
+) -> dict[str, Any]:
+    denied = {
+        "approved": False,
+        "approved_by": None,
+        "approved_at": None,
+        "source": None,
+        "publication_digest": publication_digest,
+        "manifest_sha256": manifest_sha256,
+    }
+    if not isinstance(approval, Mapping) or approval.get("approved") is not True:
+        return denied
+    approved_by = str(approval.get("approved_by") or "").strip()
+    approved_at = str(approval.get("approved_at") or "").strip()
+    source = str(approval.get("source") or "").strip()
+    if (
+        not approved_by
+        or approved_by.lower().startswith("system:")
+        or not approved_at
+        or source != "manifest_human_review"
+    ):
+        return denied
+    _require_token("approved_by", approved_by)
+    try:
+        _parse_time(approved_at)
+    except ValueError:
+        return denied
+    return {
+        "approved": True,
+        "approved_by": approved_by,
+        "approved_at": approved_at,
+        "source": source,
+        "publication_digest": publication_digest,
+        "manifest_sha256": manifest_sha256,
+    }
+
+
+def provider_approval_is_valid(
+    document: Mapping[str, Any],
+    provider: str,
+) -> bool:
+    providers = document.get("providers")
+    identity = document.get("publication_identity")
+    if not isinstance(providers, Mapping) or not isinstance(identity, Mapping):
+        return False
+    leg = providers.get(provider)
+    approval = leg.get("approval") if isinstance(leg, Mapping) else None
+    approved_at = approval.get("approved_at") if isinstance(approval, Mapping) else None
+    try:
+        parsed_approval_time = _parse_time(approved_at) if isinstance(approved_at, str) else None
+    except ValueError:
+        parsed_approval_time = None
+    return bool(
+        isinstance(approval, Mapping)
+        and approval.get("approved") is True
+        and isinstance(approval.get("approved_by"), str)
+        and approval["approved_by"]
+        and not approval["approved_by"].lower().startswith("system:")
+        and parsed_approval_time is not None
+        and approval.get("source") == "manifest_human_review"
+        and approval.get("publication_digest") == document.get("publication_digest")
+        and approval.get("manifest_sha256") == identity.get("manifest_sha256")
+    )
+
+
 def _attempt_event(attempt: dict[str, Any], state: str, at: str, **details: Any) -> None:
     event = {
         "sequence": len(attempt["events"]) + 1,
@@ -1386,6 +1461,8 @@ class DistributionOutboxRepository:
         enqueue_version: str,
         source_ownership: Mapping[str, Any] | None = None,
         authorize: Callable[[], None] | None = None,
+        provider_approvals: Mapping[str, Mapping[str, Any]] | None = None,
+        provider_context: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         verify_artifact(self.storage, artifact)
         item_id = outbox_id_for(
@@ -1400,13 +1477,19 @@ class DistributionOutboxRepository:
             "artifact": _artifact_dict(artifact),
             "provider_objectives": dict(sorted(provider_objectives.items())),
         }
+        publication_digest = _publication_digest(
+            expected["publication_identity"],
+            expected["artifact"],
+        )
+        approvals = provider_approvals or {}
+        contexts = provider_context or {}
 
         def _create(raw: bytes | None) -> bytes:
             nonlocal created
             if authorize is not None:
                 authorize()
             if raw is not None:
-                existing = json.loads(raw.decode("utf-8"))
+                existing = _load_outbox_document(raw)
                 if (
                     existing.get("publication_identity") != expected["publication_identity"]
                     or existing.get("artifact") != expected["artifact"]
@@ -1415,12 +1498,48 @@ class DistributionOutboxRepository:
                     raise OutboxConflictError("logical outbox item conflicts with existing record")
                 if source_ownership is not None:
                     existing["source_ownership"] = _safe_value(source_ownership)
+                for provider in provider_objectives:
+                    leg = existing.get("providers", {}).get(provider)
+                    if not isinstance(leg, dict):
+                        raise OutboxConflictError("existing provider leg is malformed")
+                    incoming_approval = _provider_approval(
+                        approvals.get(provider),
+                        publication_digest=publication_digest,
+                        manifest_sha256=identity.manifest_sha256,
+                    )
+                    if incoming_approval["approved"] is True:
+                        current_approval = leg.get("approval")
+                        if (
+                            isinstance(current_approval, Mapping)
+                            and current_approval.get("approved") is True
+                            and current_approval != incoming_approval
+                        ):
+                            raise OutboxConflictError(
+                                "provider approval conflicts with existing record"
+                            )
+                        leg["approval"] = incoming_approval
+                    incoming_context = _safe_value(dict(contexts.get(provider, {})))
+                    if incoming_context:
+                        current_context = leg.get("context")
+                        if current_context not in (None, {}, incoming_context):
+                            raise OutboxConflictError(
+                                "provider context conflicts with existing record"
+                            )
+                        leg["context"] = incoming_context
+                _ensure_truth_fields(existing)
+                _validate_document(existing, item_id)
                 captured.update(existing)
                 return json.dumps(existing, sort_keys=True, separators=(",", ":")).encode("utf-8")
             timestamp = _iso(self.now())
             providers = {
                 _require_token("provider", provider): {
                     "objective": _require_token("objective", objective),
+                    "approval": _provider_approval(
+                        approvals.get(provider),
+                        publication_digest=publication_digest,
+                        manifest_sha256=identity.manifest_sha256,
+                    ),
+                    "context": _safe_value(dict(contexts.get(provider, {}))),
                     "result": "pending_provider",
                     "intent": None,
                     "receipts": [],

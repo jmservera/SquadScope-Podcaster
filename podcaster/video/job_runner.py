@@ -445,6 +445,37 @@ def _extract_week(manifest: dict[str, Any]) -> int | None:
     return parsed[1] if parsed is not None else None
 
 
+def _distribution_human_approval(manifest: dict[str, Any]) -> dict[str, Any]:
+    review = manifest.get("review")
+    if not isinstance(review, dict) or review.get("status") != "approved":
+        return {"approved": False}
+    approved_by = review.get("approved_by")
+    approved_at = review.get("approved_at")
+    if (
+        not isinstance(approved_by, str)
+        or not approved_by.strip()
+        or approved_by.strip().lower().startswith("system:")
+        or not isinstance(approved_at, str)
+        or not approved_at.strip()
+    ):
+        return {"approved": False}
+    audit_trail = review.get("audit_trail")
+    if not isinstance(audit_trail, list) or not any(
+        isinstance(entry, dict)
+        and entry.get("decision") == "approved"
+        and entry.get("actor") == approved_by
+        and entry.get("at") == approved_at
+        for entry in audit_trail
+    ):
+        return {"approved": False}
+    return {
+        "approved": True,
+        "approved_by": approved_by.strip(),
+        "approved_at": approved_at.strip(),
+        "source": "manifest_human_review",
+    }
+
+
 def _already_processed(manifest: dict[str, Any]) -> bool:
     """Check if video has already been generated for this job."""
     generation = manifest.get("generation")
@@ -1404,6 +1435,8 @@ def run_video_generation(
                         objectives["youtube"] = "public"
                     if dist_config.spotify_upload_enabled:
                         objectives["spotify"] = "public"
+                    if dist_config.spotify_rss_enabled:
+                        objectives["spotify_rss"] = "public"
                     if not objectives:
                         raise PermanentVideoError(
                             "distribution outbox requires a requested production provider",
@@ -1426,6 +1459,22 @@ def run_video_generation(
                     )
                     ownership_guard.complete(archive_permit, target=artifact.path)
                     repository = DistributionOutboxRepository(storage)
+                    approval = _distribution_human_approval(manifest)
+                    provider_approvals = {provider: approval for provider in objectives}
+                    provider_context: dict[str, dict[str, Any]] = {
+                        "youtube": {
+                            "locale": job_language,
+                            "playlist_id": dist_config.youtube_playlist_id,
+                        },
+                        "spotify": {
+                            "audio_anchor_id": _resolve_anchor_id(manifest),
+                            "season_number": season_number,
+                            "episode_number": episode_number,
+                        },
+                        "spotify_rss": {
+                            "feed_path": dist_config.spotify_rss_feed_path,
+                        },
+                    }
                     outbox_permit = ownership_guard.begin(
                         "distribution_outbox",
                         allow_idempotent_takeover=True,
@@ -1439,6 +1488,10 @@ def run_video_generation(
                         enqueue_version="v1",
                         source_ownership=outbox_token,
                         authorize=lambda: ownership_guard.assert_permit(outbox_permit),
+                        provider_approvals=provider_approvals,
+                        provider_context={
+                            provider: provider_context[provider] for provider in objectives
+                        },
                     )
                     ownership_guard.complete(
                         outbox_permit,

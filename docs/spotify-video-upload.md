@@ -188,7 +188,7 @@ episode (`anchor_id`) is referenced only for logging and never modified.
 The flow has these steps:
 
 1. Create a new draft episode (never reuse the audio episode)
-2. Request per-part signed URLs (`uploadType=video`, `isMultipartUpload=true`,
+2. Request per-part signed URLs (`uploadType=default`, `isMultipartUpload=true`,
    `numParts = ceil(filesize / 30 MB)`)
 3. Upload each **30 MB chunk** (PUT) to its GCS signed URL, collecting ETags
 4. Notify Spotify that all parts are uploaded (`process_upload`)
@@ -212,108 +212,35 @@ episode (`anchor_id`) is always excluded from the match.
 > invariant holds against listing schemas this code understands; anything it
 > cannot read fails the publish closed instead of guessing.
 
-The current readback listing contract is the Spotify for Creators GraphQL
-persisted-query endpoint:
+The listing endpoint **requires `userId` as a query parameter**:
 
 ```text
-POST https://creators-graph.spotify.com/v2/graph-pq
-operationName=WebGetIndexedEpisodeList
-variables.showUri=spotify:show:{SPOTIFY_SHOW_ID}
-variables.currentPage=1
-variables.pageSize=50
-variables.filter=DRAFT_EPISODES
-extensions.persistedQuery.sha256Hash=da95dd0d…c9e98
-x-creator-client=public-website
+GET /v3/stations/{stationId}/episodes?userId={userId}&isMumsCompatible=true
 ```
 
-This persisted-query request and response shape was observed in one successful
-read-only probe on 2026-09-23. That observation establishes the schema used by
-the integration; it is not a guarantee that the endpoint is continuously
-available to every deployed account or credential. The earlier request failed
-because it omitted the persisted-query hash and creator client header, used
-cursor variables that the operation does not accept, and sent an empty `query`
-field. The observed response path is
-`data.showByShowUri.episodesV2`; the index must report `COMPLETED`, and numeric
-`currentPage`/`pageSize`/`totalItems`/`totalPages` metadata drives pagination.
-The implementation requires the page count to equal the ceiling implied by
-`totalItems` and the fixed page size, requires each page to contain exactly its
-declared share of those items, requires count metadata to remain unchanged
-across pages, and rejects repeated canonical episode identities. Reconciliation
-defaults on and fails closed if the readback is unavailable or inconsistent.
-If `PODCASTER_SPOTIFY_RECONCILE=0` disables this lookup, video draft creation
-fails closed instead of blind-creating.
-
-The older Anchor REST station listing (`GET /v3/stations/{stationId}/episodes`,
-with or without `userId`) is stale for this workflow and must not be treated as
-proof of absence when it errors.
+Omitting it returns `HTTP 400 {"property":"query.userId","message":"is required"}`.
+`userId` comes from `_resolve_legacy_ids` together with `stationId`.
 
 A lookup that fails (HTTP error, transport error, malformed JSON, missing
 identity) raises `SpotifyDraftReconcileError` and fails the publish. So does a
-listing whose *schema* this code cannot read — an unknown container, incomplete
-index, malformed pagination, non-array episode field, renamed title/id field, or
-non-object entry. `None` ("no draft exists") is only sound when every entry of
-the provider-filtered draft collection was understood and all numbered pages
-were fetched. A recognised empty draft page is still a legitimate no-match. A
-failed later page or a changing total-page count fails closed rather than
-returning a partial list. An entry whose title is present but null is understood
-as an untitled draft (no match). Entries whose id is the excluded audio anchor
-are skipped before title classification. More than one reusable draft with the
-exact target title is ambiguous identity and fails closed; no candidate is
-selected and no create or upload follows.
-#### Emergency unreconciled-create override
-
-Default behaviour is fail-closed: no configuration, a broken listing endpoint,
-nor `PODCASTER_SPOTIFY_RECONCILE=0` alone authorizes an unreconciled draft
-create. During a confirmed Spotify listing outage (for example
-jmservera/SquadScope-Podcaster#688), an operator may make a deliberate,
-bounded availability exception by setting the separate affirmative opt-in:
-
-```bash
-PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE=1
-```
-
-The override uses the repository truthy set: `1`, `true`, `yes`, or `on`
-(case-insensitive after trimming). This variable is intentionally distinct from
-`PODCASTER_SPOTIFY_RECONCILE=0`; existing deployments that disabled reconcile
-are **not** grandfathered into blind creation. The accepted risk is that the
-code cannot prove whether a same-title Spotify draft already exists, so one
-duplicate draft may be created.
-
-The override is capped by durable publication evidence, keyed by the canonical
-publication identity. It requires publication evidence storage and writes
-`operation=unreconciled_create_intent` before the provider mutation with
-`create_provenance=blind_unreconciled`,
-`snapshot_completeness=absent`, and `mutation_possibility=possible`. Once
-Spotify returns the new draft id, it writes `operation=unreconciled_create`
-with `provider_artifact_id` and `mutation_possibility=confirmed`. A second
-container or retry for the same identity sees the existing durable claim and
-fails before another create POST. Process-local state is not used as the
-concurrency bound.
-
-When used, the publisher logs a `WARNING` naming the safe publication identity
-(title, audio anchor id, station id, show id, publish run id) and the reason
-reconcile was bypassed. It never logs cookie, bearer-token, signed-URL, or body
-values.
-
-Operator procedure:
-
-1. Confirm in the Spotify creator console that no draft already exists for the
-   target title/week; do not use this before that manual check.
-2. Set `PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE` to one truthy value only
-   for the single run that needs the exception (with
-   `PODCASTER_SPOTIFY_RECONCILE=0` only if the listing endpoint itself is the
-   known blocker).
-3. After the run, remove the override and verify durable publication evidence
-   contains the `unreconciled_create` marker with the expected provider
-   artifact id. Cross-check the Spotify console for exactly one new draft and
-   delete/resolve any unexpected duplicate before retrying.
+listing whose *schema* this code cannot read — an unknown container, an error
+body, a non-array episode field, a renamed title/id/state field, or a non-object
+entry. `None` ("no draft exists") is only sound when every entry of a recognised
+container was understood **and** the listing carried no pagination hint (see
+[Pagination](#pagination-unimplemented-unverified) — by default a hint only
+warns, so `None` then means "no match on the page that was read"); a recognised
+**empty** array is still a legitimate no-match. An entry whose title is present
+but null is understood as an untitled draft (no match). Entries whose id is the
+excluded audio anchor are skipped *before* any state or title classification, so
+a scheduled or processing audio episode can never fail the video lookup.
+Reconciliation is mandatory. `PODCASTER_SPOTIFY_RECONCILE=0` is intentionally
+ignored and cannot restore blind create.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
-inspected, and the entry only yields an id when at least one canonical identity
-alias is present with a valid non-boolean identifier; all aliases that are
-present must be valid non-boolean identifiers and agree on one value. A
-malformed, boolean, or conflicting alias is a contradictory identity: the entry
-is treated as having no usable id (logged, never silent), which every caller
+inspected — a malformed `episodeId` never hides a usable `id` — but the entry
+only yields an id when the readable keys agree on one value. A malformed id or
+two keys naming different episodes is a contradictory identity: the entry is
+treated as having no usable id (logged, never silent), which every caller
 already handles fail-closed.
 
 ##### Draft state is read from evidence, never from truthiness
@@ -327,7 +254,7 @@ duplicate.
 |-------|----------|----------|
 | `isDraft` | JSON `true`/`false` (`true` ⇒ draft) | any non-boolean: `"false"`, `"true"`, `0`, `1`, `1.0`, `{}`, `[]` |
 | `isPublished` | JSON `true`/`false`. `true` ⇒ **not** a draft; `false` alone is **not** evidence of a draft and needs a corroborating `isDraft`/status signal | any non-boolean |
-| `status` / `state` / `publishStatus` / `publishState` | `"draft"`, `"published"` (trimmed, case-insensitive). `"scheduled"` and `"unpublished"` are understood only as non-public, never as reusable-draft evidence | any other token, and any non-string |
+| `status` / `state` / `publishStatus` / `publishState` | `"draft"`, `"published"` (trimmed, case-insensitive) | any other token, and any non-string |
 
 `isPublished` is asymmetric on purpose: it is the field this integration itself
 writes, so `true` reliably means "not a draft", but `false` only means "not
@@ -336,21 +263,19 @@ being a draft, and reusing one as the video draft would overwrite it. An entry
 whose *only* state signal is `isPublished: false` therefore fails closed.
 
 `bool("false")` is `True`, so a string is *never* truth-tested — it is schema
-drift. A non-public token (`"scheduled"` or `"unpublished"`) does not permit
-reuse without explicit draft evidence. An **unknown** token (`"processing"`,
-anything a future API version invents) is an error, not an implied state; the
+drift. An **unknown** status token (`"scheduled"`, `"processing"`, anything a
+future API version invents) is an error, not an implied "not a draft"; the
 allow-list is deliberately minimal and is only extended from observed evidence.
 An explicit `null` carries no state and is skipped, exactly like an absent
 field; if nothing is left, or if two fields disagree, the entry fails closed.
 Entries whose title does **not** match are never state-checked.
 
-The live query requests `DRAFT_EPISODES`, so an item without an individual state
-field is draft evidence only after the exact response path, completed index, and
-pagination contract have been validated. If Spotify later includes explicit
-state fields, contradictory or unknown values still fail closed. Verification is
-limited to this strict persisted-query request and envelope; aliases, alternate
-nesting, arrays, REST response shapes, omitted identities, and undocumented
-state values remain intentionally unsupported rather than being guessed.
+> No successful response from this endpoint has ever been observed (every call
+> 400'd on the missing `userId`), so the container shape is **unverified**. The
+> first deploy may therefore fail closed until the real schema is confirmed from
+> the `SpotifyDraftReconcileError` message, which reports the top-level key
+> *names* (never values), and — for an unrecognised state — the offending token
+> when it is identifier-shaped.
 
 #### Titling the new draft immediately (idempotency)
 
@@ -372,9 +297,7 @@ before uploading and names the orphan draft id so an operator can delete it.
 Only drafts known to be *untitled* are claimed: `_reconcile_or_create_draft`
 returns `(anchor_id, needs_title)` and `needs_title` is `False` for a
 reconciled draft **and** for a draft adopted during ambiguous-create recovery
-because it already carried the target title. An authorized unreconciled create
-is also claimed immediately before upload; `PODCASTER_SPOTIFY_RECONCILE=0`
-alone fails before create.
+because it already carried the target title.
 
 #### The create POST is never retried blindly
 
@@ -389,7 +312,7 @@ transient failure, or a `2xx` whose body does not yield an episode id (the draft
 exists; only its identifier was lost). A deterministic `4xx` is *not* ambiguous:
 nothing was created.
 
-When reconcile is enabled, `_reconcile_or_create_draft` resolves that ambiguity
+`_reconcile_or_create_draft` resolves that ambiguity
 with evidence rather than a retry. The listing read that looked for an existing
 draft doubles as a **pre-create snapshot** of episode ids (no extra request), and
 after an ambiguous create the listing is re-read:
@@ -416,36 +339,8 @@ make it provable.
 At most **two** create POSTs are ever sent for one publish attempt, and the
 second only after a settled, twice-observed listing that still shows nothing the
 first create could have produced. A second ambiguous create is not recovered
-again. With `PODCASTER_SPOTIFY_RECONCILE=0` there is no listing to reason from,
-so video create fails before any POST unless the durable emergency override is
-set.
-
-### Audio path: exact draft reconciliation after an ambiguous create (#679)
-
-The audio path in `publish_episode` still sends a **single** create POST and
-never a second one. Before that POST it reads one show-scoped listing
-(`_audio_pre_create_snapshot`, keyed by `spotify:show:{show_id}`; skipped when `PODCASTER_SPOTIFY_RECONCILE=0`).
-If that listing fails, the create still goes ahead, but an ambiguous result
-can't be recovered. If the create is ambiguous, `_recover_ambiguous_audio_create`
-re-reads the listing at most `_AMBIGUOUS_CREATE_READS` times, waiting
-`_AMBIGUOUS_CREATE_SETTLE_SECONDS` between reads:
-
-| Evidence | Action |
-|---|---|
-| Complete pre-create snapshot, and exactly one *new* untitled draft with no unclassifiable entries | adopt that episode id, record `create_episode` / `provider_artifact_reconciled` evidence bound to the accepted `job_id`, `publish_run_id`, week, and article/manifest SHA-256, then continue with upload → process → metadata |
-| No new draft after the settled reads | `publication_unknown`, retry-blocked, **no second POST** |
-| Several candidates, unclassifiable/contradictory entries, an absent or incomplete snapshot, or any failure while re-reading (credential expiry included) | `publication_unknown`, retry-blocked |
-
-The proof is the immutable episode id: it was absent from the complete pre-create
-listing of the same show, and the entry is still an untitled draft. A draft that
-matches only by title, or simply the newest item, is never adopted. The result's
-`details.create_verification` field holds only safe counts and candidate ids,
-never provider bodies, credentials, or signed URLs. After adoption, an ambiguous
-failure in process, metadata, or publish is never retried. Redelivery stays
-blocked by the durable evidence. Residual: another writer, including a video leg,
-could create an untitled draft in the same show at the same moment, and that
-draft could look like the one candidate. Automation is a single writer per show,
-which is the same assumption the video path relies on.
+again. `PODCASTER_SPOTIFY_RECONCILE=0` is ignored; the video path never falls
+back to a create without a complete listing.
 
 Residual, irreducible windows — stated precisely, because neither one loses the
 draft server-side:
@@ -469,122 +364,19 @@ client-side: the Anchor v5 API exposes no idempotency key. What is closed is the
 common case — a crash during the multi-minute upload — because the draft is
 titled before the upload starts and reconcile finds it on the next run.
 
-Later upload, processing or metadata failures are not claimed as a zero-risk
-window. On the video path with reconciliation enabled, create intent evidence
-is written only after the listing has proven there is no reusable draft and
-immediately before a create POST is attempted. That intent records the
-pre-create episode-id snapshot and is explicitly non-terminal
-(`publication_unknown`, `retry_blocked=false`): if credentials expire while the
-create outcome is unknown, a later run reuses the snapshot to adopt exactly one
-new untitled draft, persist its provider id, title it, and continue without a
-duplicate create. If the snapshot is incomplete, the follow-up listing is
-unreadable, or more than one candidate appears, the retry fails closed for
-manual cleanup instead of guessing. With the unreconciled-create override, the
-intent is written as `unreconciled_create_intent` with an absent snapshot and
-possible mutation state; no listing-based absence proof is claimed, and the
-durable claim blocks a second create for the same publication identity if the
-process dies before the provider id is recorded. Once this client has observed
-a video draft id — from a normal create response, from recovery of an ambiguous
-create, from a later run resolving a durable create intent, or from an
-authorized unreconciled create — the provider id is durably written as
-`create_episode`/`reconcile_episode`/`unreconciled_create` evidence before
-upload work continues when publication evidence storage is available. If that
-write fails, the call fails closed with
-`publication_unknown`, `retry_blocked=true`, and the observed
-`anchor_episode_id`. Subsequent failures after that point also return
-`publication_unknown` with `retry_blocked=true` and the observed id. That
-preserves duplicate safety by forcing reconciliation/manual handoff instead of
-presenting the failed call as "no draft was created"; the remaining risk is
-operational recovery of a known draft or of an ambiguous candidate set, not
-blind re-create permission.
+#### Pagination (unimplemented, unverified)
 
-A *definite* rejection of the create POST itself is different from an unknown
-outcome, because it proves no draft was created. A 401 from `_create_episode`
-writes `create_episode_failure` with `code=credentials_expired`,
-`retry_blocked=false` (outcome `manual_handoff_required`), which re-arms exactly
-one corrected-credential create for the identity (#693). A deterministic 4xx
-writes `create_episode_failure` with `code=create_rejected`, `retry_blocked=true`,
-because the same request would be rejected again. Only these two codes resolve a
-pending create intent. A resolved intent is never used for adoption, so an
-unrelated untitled draft that appears later is not uploaded onto. If the rejection
-record cannot be written, a retry-blocking `create_episode_failure_fence` is
-attempted instead. If both writes fail, the intent stays unknown: retries reconcile
-read-only and never create. Failures raised while recovering an ambiguous create,
-or while resolving an earlier intent, stay unknown (`publication_unknown`,
-`retry_blocked=false`, never "failed").
-
-With `PODCASTER_SPOTIFY_RECONCILE=0` there is no listing check, so only a
-definite rejection of the create that is written with `retry_blocked=false`
-(today only `create_episode_failure` with `code=credentials_expired`) re-arms a
-create without the override. Any other `retry_blocked=false` record, such as an
-unknown outcome, fails closed as `unreconciled_create_not_authorized`.
-
-When `publish_episode` routes an MP4 through this create-safe video flow, a
-live `publish_mode` (`immediate`/`scheduled`, with `SPOTIFY_ALLOW_LIVE_PUBLISH`)
-is applied by the final `/update` (`isPublished`/`publishOn`). The outcome is
-then classified from `/overview` readback, exactly as on the audio path (#700),
-and recorded as `publish`. An ambiguous `/update` failure that readback does not
-confirm as live is recorded as `provider_mutation_failure` (`uploaded` or
-`publication_unknown`, retry-blocked). The result is never reported as published
-without readback confirmation. `upload_video_to_episode` checks
-`SPOTIFY_ALLOW_LIVE_PUBLISH` itself too: a live behavior passed directly without
-the opt-in is downgraded to a draft (with the same warning), so the lower-level
-helper can never go public by accident.
-
-Persisted create-safety fields (`create_provenance`, `snapshot_completeness`,
-`mutation_possibility`, `snapshot_evidence_source`) are parsed through one
-closed-set parser that accepts only an exact string naming a member. A present
-field that is non-string, unknown, or carries look-alike or invisible characters
-fails closed as an unresolved intent. Each intent operation accepts only its own
-provenance (`create_episode_intent`: `reconciliation_backed` or
-`upload_dispatch`; `unreconciled_create_intent`: `blind_unreconciled`;
-`upload_intent`: `upload_dispatch`). One exception: an untrusted
-`snapshot_evidence_source` on a present snapshot degrades that snapshot to
-`absent`, with a single `WARNING`, and the intent stays blocking. An explicit
-`absent` snapshot that still carries observed-snapshot fields
-(`pre_create_episode_ids`, `pre_create_snapshot_complete`,
-`snapshot_evidence_source`) is degraded the same way. A degraded state is
-re-persisted with `snapshot_degraded: true`, so a deserialize/serialize cycle
-keeps it blocking; a non-boolean marker, or one on a non-absent snapshot, fails
-closed. Snapshot episode ids must be exact integers and are never coerced
-(`1.5` is rejected, not read as `1`). A present `details` value that is not an
-object fails closed; only an omitted or `null` `details` reads as a legacy
-intent. Identity fields in these warnings are capped at 80 characters after
-escaping. A non-reconciliation (`upload_dispatch`) create intent blocks only while it
-is still the pending intent. A later provider id or definite rejection resolves
-it, so repeated #693 credential re-arms each allow exactly one create. Observed-
-snapshot fragments (`pre_create_episode_ids`, `snapshot_evidence_source`) with
-no completeness claim are degraded and blocking, and a legacy
-`pre_create_snapshot_complete` record that also carries a
-`snapshot_evidence_source` is rejected. With reconciliation disabled, a definite
-rejection re-arms a create only if a create claim precedes it for the same
-identity. `append_evidence` enforces the same operation→provenance contract
-when it writes a record, so a mismatched pair is never persisted. The
-`mutation_possibility` must match the rest of the record, on both read and
-write: `confirmed` needs a durable provider artifact id, and a
-`blind_unreconciled` or `upload_dispatch` claim cannot record `not_possible`.
-An `unreconciled_create_intent` (blind create claim) stays a pending,
-blocking intent until a provider id or a definite rejection resolves it, even
-if its record says `retry_blocked: false`. A malformed `create_episode_intent`
-(one without the writer's `publication_unknown` / `mutation_intent` shape) is
-never treated as a resolution. It fails closed while an earlier intent is
-still pending, and it cannot hide a later valid intent.
-
-#### Pagination
-
-The production GraphQL listing uses numbered pages. `_fetch_episode_listing`
-requests `currentPage=1` with the fixed `pageSize=50`, validates
-`currentPage`/`pageSize`/`totalItems`/`totalPages`, and increments
-`currentPage` until the declared final page. Every page must contain exactly
-the share implied by the stable count metadata. Empty pages with remaining
-items, contradictory totals/page counts, changed metadata, repeated canonical
-episode identities, or any page-fetch error raise
-`SpotifyDraftReconcileError`; a partial or identity-ambiguous read is never
-returned as a complete empty listing.
+The listing is fetched with a single unpaginated GET. Whether the endpoint pages
+at all — and under which key — is unknown. When the response carries a truthy
+`hasMore`/`hasNextPage`/`nextPageToken`/`nextPage` key **and** no match was
+found, a warning is logged naming the key; the publish is *not* blocked, because
+hard-failing on a guessed key name could block every new video publish. Operators
+who have confirmed the contract for their show can opt into fail-closed
+behaviour with `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1`.
 
 #### Credential expiry
 
-A 401 in the video path raises `SpotifyCredentialExpiredError`,
+A 401/403 anywhere in the video path raises `SpotifyCredentialExpiredError`,
 which `upload_video_to_episode` converts into an operator credential-expiry
 notification (`notify_credential_expiry`, #364) and a result carrying
 `details.credentials_expired` — the same handling the audio publish path has.
@@ -631,8 +423,9 @@ ffmpeg -y -i input.mp4 \
 
 ##### Video MUST go to GCS (not S3)
 
-Without `uploadType=video` in the signedUrl request, the server routes the file
-to S3 storage. Even if the upload succeeds, `process_upload` will reject it with:
+The current Spotify contract requires `uploadType=default` together with the
+multipart flags in the signed-URL request. A different upload type can route the
+file through an incompatible processing path and fail with:
 
 ```
 "File is using invalid storage"
@@ -688,7 +481,7 @@ GET https://api-v5.anchor.fm/v3/episodes/{ANCHOR_ID}/upload/signedUrl
   &isMumsCompatible=true
   &isMultipartUpload=true
   &numParts=2
-  &uploadType=video
+  &uploadType=default
 Cookie: sp_dc=...; sp_key=...
 ```
 
@@ -700,7 +493,7 @@ Cookie: sp_dc=...; sp_key=...
 | `isMumsCompatible` | Yes | Always `true` |
 | `isMultipartUpload` | Yes | Must be `true` for video |
 | `numParts` | Yes | Number of chunks (ceil(filesize / chunk_size)) |
-| `uploadType` | Yes | Must be `video` — routes to GCS |
+| `uploadType` | Yes | Must be `default` for the current video upload contract |
 
 **Response:**
 ```json
@@ -1009,7 +802,7 @@ if __name__ == "__main__":
 | `signedUrl` in response is not usable for multipart | Use `signedUrlParts[].url` instead |
 | Response field names are S3-era (`requestUuid` not `uploadId`) | Handle both: `data.get("uploadId") or data["requestUuid"]` |
 | Audio longer than video by even 0.01s → rejection | Always trim audio to exact video duration before upload |
-| Files must use GCS for video | Always pass `uploadType=video` in signedUrl request |
+| Video uses the current multipart contract | Pass `uploadType=default` with multipart flags |
 | `state=processed` (not `completed`) is success for video | Check both states for compatibility |
 
 #### Audio vs Video Upload Comparison
@@ -1018,7 +811,7 @@ if __name__ == "__main__":
 |--------|-------------|-------------|
 | Storage | S3 | GCS |
 | Upload method | Single PUT | Multipart chunked |
-| `uploadType` param | (omitted) | `video` |
+| `uploadType` param | (omitted) | `default` |
 | `isMultipartUpload` | `false` or omitted | `true` |
 | Signed URL response | `signedUrl` (single URL) | `signedUrlParts` (array) |
 | PUT headers | Content-Type + Origin + Referer | Referer only |
@@ -1061,7 +854,7 @@ the precise machine code from `mediaValidation.failureInfo.errorCode` (issue
 | `INCONSISTENT_COLOR_DETAILS` | The concatenated H.264 stream carries disagreeing SPS VUI colour metadata across intro/content/outro NAL units. | (a) every encode pass sets `-colorspace/-color_trc/-color_primaries bt709 -color_range tv`; (b) the final `h264_metadata` BSF rewrites VUI to a single BT.709/limited-range set (§3). |
 | `VIDEO_DURATION_LONGER_THAN_AUDIO` | The video stream outlasts the audio stream. | `_build_audio_overlay_cmd` pads the audio with `-af apad=whole_dur={video_duration}` when `0 < audio_duration < video_duration`, so audio ≥ video. |
 | `AUDIO_DURATION_LONGER_THAN_VIDEO` (legacy) | The audio stream outlasts the video stream. | When `audio_duration > video_duration`, the final frame is held (`tpad=stop_mode=clone:stop_duration={pad}`) + faded to black (`fade=t=out`, `OUTRO_VIDEO_FADE_SECONDS`), extending video to ≥ audio. The outro audio is **never** truncated (no `-shortest`). |
-| `"File is using invalid storage"` | The signed-URL request omitted `uploadType=video`, routing the file to S3 instead of GCS. | Always pass `uploadType=video` (and `isMultipartUpload=true`). |
+| `"File is using invalid storage"` | The signed-URL request used a provider-incompatible upload type or omitted multipart fields. | Pass `uploadType=default` with `isMultipartUpload=true`. |
 | `process_upload` HTTP 500 | A single-PUT upload was used for video. | Always use the multipart flow (`numParts = ceil(filesize / 30 MB)`), even for one chunk. |
 
 > **Audio/video duration reconciliation (the heart of error prevention).**
@@ -1094,13 +887,11 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | Variable | Used by | Purpose |
 |----------|---------|---------|
 | `VIDEO_SPOTIFY_UPLOAD_ENABLED` | `distribution.VideoDistributionConfig.from_env` | `"true"` enables publishing the MP4 as a new Spotify video episode draft (§5). |
-| `SPOTIFY_VIDEO_PUBLISH_MODE` | `distribution.VideoDistributionConfig.from_env` | `live` promotes the video draft (default `draft`). Independent of `SPOTIFY_PUBLISH_ENABLED`, which gates only the audio episode — see [video-only-mode.md](video-only-mode.md). |
-| `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH` | `publish._spotify_video_allow_live_publish` | Operator authorization for video go-live; without it `live` stays a draft. |
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on with the observed persisted-query draft listing contract. `0`/`false`/`no`/`off` disables reconciliation and fails closed before a video create unless the separate unreconciled-create override is truthy (§5). |
-| `PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE` | `publish._spotify_unreconciled_create_allowed` | Emergency affirmative opt-in for one durable-evidence-keyed unreconciled video draft create. Accepts the repo truthy set (`1`/`true`/`yes`/`on`); `PODCASTER_SPOTIFY_RECONCILE=0` alone never satisfies it (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Retained for compatibility but ignored; strict reconcile-before-create is mandatory (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults on; an explicitly paginated listing with no first-page match fails closed (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,
@@ -1153,9 +944,6 @@ Spotify video upload reports `outcome: draft_created` after the separate video
 episode is uploaded and configured as a draft. Promotion reports `published`
 only after state read-back; ambiguous read-back is `publication_unknown`, and a
 known operator/capability stop is `manual_handoff_required`.
-An overview HTTP 403 is permission/readback denial, not evidence that the
-episode is unpublished or still a draft, so promotion aborts as
-`publication_unknown` without sending a publish mutation.
 
 The video publish run ID is threaded into promotion telemetry and durable
 accepted-job evidence. An existing `draft_created`, `published`,

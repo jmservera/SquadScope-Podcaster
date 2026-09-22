@@ -96,6 +96,8 @@ class VideoDistributionConfig:
 
     spotify_rss_enabled: bool = False
     spotify_rss_feed_path: str = ""
+    spotify_rss_public_media_origin: str = ""
+    spotify_rss_public_feed_url: str = ""
 
     spotify_upload_enabled: bool = False
     spotify_video_publish_mode: str = "draft"
@@ -123,6 +125,10 @@ class VideoDistributionConfig:
             youtube_required=os.environ.get("VIDEO_YOUTUBE_REQUIRED", "").lower() == "true",
             spotify_rss_enabled=os.environ.get("VIDEO_SPOTIFY_RSS_ENABLED", "").lower() == "true",
             spotify_rss_feed_path=os.environ.get("VIDEO_SPOTIFY_RSS_FEED_PATH", ""),
+            spotify_rss_public_media_origin=os.environ.get(
+                "VIDEO_SPOTIFY_RSS_PUBLIC_MEDIA_ORIGIN", ""
+            ),
+            spotify_rss_public_feed_url=os.environ.get("VIDEO_SPOTIFY_RSS_PUBLIC_FEED_URL", ""),
             spotify_upload_enabled=(
                 os.environ.get("VIDEO_SPOTIFY_UPLOAD_ENABLED", "").lower() == "true"
             ),
@@ -149,6 +155,8 @@ class VideoDistributionConfig:
             youtube_required=bool(payload.get("youtube_required", False)),
             spotify_rss_enabled=bool(payload.get("spotify_rss_enabled", False)),
             spotify_rss_feed_path=str(payload.get("spotify_rss_feed_path", "")),
+            spotify_rss_public_media_origin=str(payload.get("spotify_rss_public_media_origin", "")),
+            spotify_rss_public_feed_url=str(payload.get("spotify_rss_public_feed_url", "")),
             spotify_upload_enabled=bool(payload.get("spotify_upload_enabled", False)),
             spotify_video_publish_mode=(
                 "draft"

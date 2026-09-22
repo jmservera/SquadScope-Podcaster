@@ -335,6 +335,50 @@ Add an integration scenario beginning at the authoritative upstream weekly-publi
 
 * None.
 
+<!-- rpi:phase id=P08 -->
+## P08: Independent provider terminal-truth correction
+
+### Scope and ownership
+
+Amy independently owns this correction from exact remote head
+`19706f4b7bffe1375d6ccf3ef25d7a39454bd314`. Bender and Leela are locked out
+from contribution. The source boundary is the distribution outbox/worker,
+Spotify provider helper, video distribution configuration and enqueue wiring,
+focused tests, operator documentation, and existing RPI artifacts.
+Remote downstream ownership permits, fixed queue/editor lifecycle expiry,
+takeover behavior, immutable archive fencing, outbox/notification fencing,
+direct-provider fencing, and terminal-write fencing are mandatory retained
+behavior. Existing consolidated ownership evidence remains in this plan's
+changes/details records.
+
+### Required behavior
+
+* Human approval is copied only from a matching approved review audit entry,
+  rejects `system:` actors, and is bound to publication digest and manifest
+  identity.
+* YouTube reconciles the deterministic outbox marker before first create
+  intent. Playlist insertion is reconcile-first, fenced, approval-gated, and
+  externally read back before public success. Public promotion is separately
+  approval-gated.
+* Spotify video upload cannot disable strict reconcile-before-create.
+  Pagination/schema ambiguity fails closed, audio/video IDs remain separate,
+  protected historical IDs and live/operator gates remain, and both signed URL
+  and process payloads use `uploadType=default`.
+* Spotify RSS uses a separately consumed mutation intent, content-addressed
+  public media URL without signed query material, complete external media
+  SHA-256/size verification, CAS feed update, and external feed content
+  verification.
+* Malformed queue messages are safely discarded; exhausted valid messages are
+  durably poisoned and deleted; pre-exhaustion failures remain retryable.
+
+### Validation expectation
+
+Focused provider findings, crash/replay, RSS, Spotify, poison, playlist, outbox,
+queue, editor, job-runner, and video lifecycle suites run before the full
+repository suite. Ruff check/format, compileall, diff safety, changed-line
+secret scan, final remote head equality, normal push, draft/stack preservation,
+and hosted checks complete P08-T07.
+
 ## Revision Governance
 
 * The authoritative correction supersedes every assumption that W38 was unpublished, missed, or awaiting recovery.
