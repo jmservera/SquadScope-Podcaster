@@ -1565,6 +1565,7 @@ class DistributionOutboxRepository:
                     "at": timestamp,
                     "source": _require_token("enqueue_source", enqueue_source),
                     "version": _require_token("enqueue_version", enqueue_version),
+                    "notification_intent": None,
                     "notification_sent_at": None,
                 },
                 "source_ownership": (
@@ -1638,6 +1639,11 @@ class DistributionOutboxRepository:
                 "notification_source_ownership"
             ) != dict(source_ownership):
                 raise StaleClaimError("outbox notification ownership is stale")
+            intent = document["enqueue"].get("notification_intent")
+            if isinstance(intent, Mapping) and source_ownership is not None:
+                intent_source = intent.get("source_ownership")
+                if intent_source is not None and intent_source != dict(source_ownership):
+                    raise StaleClaimError("outbox notification intent ownership is stale")
             document["enqueue"]["notification_sent_at"] = document["enqueue"].get(
                 "notification_sent_at"
             ) or _iso(self.now())
@@ -1653,12 +1659,61 @@ class DistributionOutboxRepository:
     ) -> dict[str, Any]:
         def _reserve(document: dict[str, Any]) -> None:
             authorize()
-            document["notification_source_ownership"] = _safe_value(source_ownership)
-            document["enqueue"]["notification_reserved_at"] = document["enqueue"].get(
-                "notification_reserved_at"
-            ) or _iso(self.now())
+            enqueue = document["enqueue"]
+            current = enqueue.get("notification_intent")
+            if current is not None and not isinstance(current, Mapping):
+                raise OutboxConflictError("outbox notification intent is malformed")
+            if enqueue.get("notification_sent_at") or (
+                isinstance(current, Mapping) and current.get("consumed_at")
+            ):
+                return
+            safe_ownership = _safe_value(source_ownership)
+            if isinstance(current, Mapping) and current.get("source_ownership") == safe_ownership:
+                return
+            reserved_at = _iso(self.now())
+            enqueue["notification_intent"] = {
+                "intent_id": uuid.uuid4().hex,
+                "source_ownership": safe_ownership,
+                "reserved_at": reserved_at,
+                "consumed_at": None,
+            }
+            document["notification_source_ownership"] = safe_ownership
+            enqueue["notification_reserved_at"] = reserved_at
 
         return self._update(outbox_id, _reserve)
+
+    def consume_notification_intent(
+        self,
+        outbox_id: str,
+        *,
+        source_ownership: Mapping[str, Any],
+        authorize: Callable[[], None],
+    ) -> bool:
+        """Atomically authorize one queue send and suppress all later replays."""
+
+        consumed = False
+        safe_ownership = _safe_value(source_ownership)
+
+        def _consume(document: dict[str, Any]) -> None:
+            nonlocal consumed
+            authorize()
+            enqueue = document["enqueue"]
+            current = enqueue.get("notification_intent")
+            if enqueue.get("notification_sent_at") or (
+                isinstance(current, Mapping) and current.get("consumed_at")
+            ):
+                return
+            if not isinstance(current, dict):
+                raise StaleClaimError("outbox notification intent is missing")
+            if current.get("source_ownership") != safe_ownership:
+                raise StaleClaimError("outbox notification intent ownership is stale")
+            consumed_at = _iso(self.now())
+            current["consumed_at"] = consumed_at
+            enqueue["notification_sent_at"] = consumed_at
+            consumed = True
+
+        self._update(outbox_id, _consume)
+        return consumed
 
     def claim(
         self,
@@ -2679,11 +2734,30 @@ class DistributionOutboxRepository:
             if raw is None:
                 continue
             document = json.loads(raw.decode("utf-8"))
-            if document.get("enqueue", {}).get("notification_sent_at"):
+            enqueue = document.get("enqueue", {})
+            intent = enqueue.get("notification_intent")
+            if enqueue.get("notification_sent_at") or (
+                isinstance(intent, Mapping) and intent.get("consumed_at")
+            ):
                 continue
             item_id = str(document["outbox_id"])
+            repair_ownership = {"repair_id": uuid.uuid4().hex}
+            try:
+                self.reserve_notification(
+                    item_id,
+                    source_ownership=repair_ownership,
+                    authorize=lambda: None,
+                )
+                won_intent = self.consume_notification_intent(
+                    item_id,
+                    source_ownership=repair_ownership,
+                    authorize=lambda: None,
+                )
+            except StaleClaimError:
+                continue
+            if not won_intent:
+                continue
             notify(item_id)
-            self.mark_notification_sent(item_id)
             repaired += 1
         return repaired
 

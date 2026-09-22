@@ -1104,6 +1104,96 @@ class TestRunVideoGeneration:
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
+    def test_provider_return_takeover_blocks_runner_publication_callback(
+        self, mock_compose, mock_record, mock_distribute, storage
+    ):
+        from podcaster.publication_state import evidence_path
+        from podcaster.video.ownership import OwnershipError, ownership_path
+
+        job_id = "video-provider-return-takeover"
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Provider return takeover",
+                    "week": "2026-W37",
+                    "publish_run_id": "123",
+                    "article_sha256": "a" * 64,
+                    "manifest_sha256": "b" * 64,
+                    "publication_identity_mode": "canonical",
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+
+        def force_takeover() -> None:
+            def replace(raw: bytes | None) -> bytes:
+                assert raw is not None
+                document = json.loads(raw.decode("utf-8"))
+                fence = int(document["fencing_token"]) + 1
+                document["fencing_token"] = fence
+                document["claim"] = {
+                    **document["claim"],
+                    "owner": "successor",
+                    "claim_id": "successor-claim",
+                    "execution_id": "successor-execution",
+                    "fencing_token": fence,
+                }
+                return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+
+            storage.update_bytes(ownership_path(job_id), "application/json", replace)
+
+        def distribute(*args, on_published=None, before_mutation=None, **kwargs):
+            before_mutation("youtube", "draft_upload")
+            force_takeover()
+            on_published(
+                "youtube",
+                {
+                    "status": "published",
+                    "provider_status": "unlisted",
+                    "outcome": "draft_created",
+                    "video_id": "yt-123",
+                    "verification": "none",
+                    "retry_blocked": True,
+                },
+            )
+            return DistributionResult(status="completed")
+
+        mock_distribute.side_effect = distribute
+
+        with pytest.raises(TransientVideoError) as exc_info:
+            run_video_generation(
+                job_id,
+                storage,
+                config=VideoDistributionConfig(
+                    youtube_enabled=True,
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+            )
+
+        assert isinstance(exc_info.value.__cause__, OwnershipError)
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        assert "video_publish" not in manifest["generation"]
+        evidence = json.loads(storage.get_bytes(evidence_path(job_id)).decode())
+        assert all(record["operation"] != "distribution" for record in evidence["records"])
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
     def test_partial_distribution_status_is_not_collapsed_to_completed(
         self, mock_compose, mock_record, mock_distribute, storage
     ):

@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
-from typing import Protocol
+from typing import Callable, Protocol
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
@@ -468,8 +468,16 @@ def enqueue_distribution_job(
     outbox_id: str,
     *,
     producer: QueueProducer | None = None,
+    authorize_send: Callable[[], bool] | None = None,
 ) -> bool:
-    """Idempotently hint that an authoritative outbox item is ready to claim."""
+    """Idempotently hint that an authoritative outbox item is ready to claim.
+
+    When supplied, ``authorize_send`` must durably consume the caller's
+    single-winner notification intent and return ``True`` only for the winner.
+    It is invoked immediately before the irreversible queue send. Returning
+    ``False`` means a prior worker already consumed the intent, so the
+    authoritative outbox is treated as notified without sending a duplicate.
+    """
 
     backend = producer or create_distribution_queue_backend()
     if backend is None:
@@ -478,6 +486,13 @@ def enqueue_distribution_job(
             outbox_id,
         )
         return False
+    if authorize_send is not None and not authorize_send():
+        logging.info(
+            "distribution notification intent already consumed; "
+            "duplicate enqueue suppressed outbox_id=%s",
+            outbox_id,
+        )
+        return True
     backend.send_message(encode_distribution_message(outbox_id))
     logging.info("enqueued distribution outbox_id=%s", outbox_id)
     return True

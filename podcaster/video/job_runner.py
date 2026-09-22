@@ -31,7 +31,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from podcaster.config import PodcastConfig, SpotifyPublishConfig
 from podcaster.distribution_outbox import (
@@ -555,11 +555,16 @@ def _record_video_publish(
     job_id: str,
     platform: str,
     record: dict[str, Any],
+    *,
+    authorize: Callable[[], None] | None = None,
+    fail_closed: bool = False,
 ) -> None:
     """Record one durable per-platform video publish result in the manifest."""
     from podcaster.generation import manifest_bytes
 
     def _apply(content: bytes | None) -> bytes:
+        if authorize is not None:
+            authorize()
         doc = json.loads(content.decode("utf-8")) if content else {}
         if not isinstance(doc, dict):
             doc = {}
@@ -574,6 +579,8 @@ def _record_video_publish(
     try:
         storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
     except Exception:
+        if fail_closed:
+            raise
         logger.warning(
             "failed to record video publish state for job_id=%s platform=%s",
             job_id,
@@ -618,8 +625,17 @@ def _record_video_publication(
     identity: PublicationIdentity | None,
     platform: str,
     record: dict[str, Any],
+    *,
+    authorize: Callable[[], None] | None = None,
 ) -> bool:
-    _record_video_publish(storage, job_id, platform, record)
+    _record_video_publish(
+        storage,
+        job_id,
+        platform,
+        record,
+        authorize=authorize,
+        fail_closed=authorize is not None,
+    )
     outcome = record.get("outcome")
     if identity is None or not isinstance(outcome, str):
         return True
@@ -651,6 +667,7 @@ def _record_video_publication(
             ),
             retry_blocked=bool(record.get("retry_blocked", True)),
             code=(str(record.get("last_error_code")) if record.get("last_error_code") else None),
+            authorize=authorize,
         )
     except Exception:
         unknown_record = {
@@ -658,7 +675,14 @@ def _record_video_publication(
             "outcome": PUBLICATION_UNKNOWN,
             "retry_blocked": True,
         }
-        _record_video_publish(storage, job_id, platform, unknown_record)
+        _record_video_publish(
+            storage,
+            job_id,
+            platform,
+            unknown_record,
+            authorize=authorize,
+            fail_closed=authorize is not None,
+        )
         logger.error(
             "publication evidence failed after video provider mutation; "
             "retry blocked for job_id=%s platform=%s",
@@ -675,7 +699,11 @@ def _record_video_publication(
             media_kind="video",
             outcome=outcome,
             provider_artifact_id=provider_artifact_id,
+            authorize=authorize,
+            fail_closed=authorize is not None,
         )
+    except OwnershipError:
+        raise
     except Exception:
         logger.warning(
             "publication signal failed for job_id=%s platform=%s outcome=%s",
@@ -1412,16 +1440,6 @@ def run_video_generation(
 
             evidence_failures: list[str] = []
 
-            def record_publication(platform: str, record: dict[str, Any]) -> None:
-                if not _record_video_publication(
-                    storage,
-                    job_id,
-                    publication_context,
-                    platform,
-                    record,
-                ):
-                    evidence_failures.append(platform)
-
             with timings.phase("distribution"):
                 if outbox_routing_enabled():
                     if publication_context is None:
@@ -1507,12 +1525,14 @@ def run_video_generation(
                         source_ownership=notification_token,
                         authorize=lambda: ownership_guard.assert_permit(notification_permit),
                     )
-                    if enqueue_distribution_job(outbox_document["outbox_id"]):
-                        repository.mark_notification_sent(
+                    enqueue_distribution_job(
+                        outbox_document["outbox_id"],
+                        authorize_send=lambda: repository.consume_notification_intent(
                             outbox_document["outbox_id"],
                             source_ownership=notification_token,
                             authorize=lambda: ownership_guard.assert_permit(notification_permit),
-                        )
+                        ),
+                    )
                     ownership_guard.complete(
                         notification_permit,
                         target=outbox_document["outbox_id"],
@@ -1542,6 +1562,18 @@ def run_video_generation(
                         "direct_provider_intent",
                         allow_idempotent_takeover=False,
                     )
+
+                    def record_publication(platform: str, record: dict[str, Any]) -> None:
+                        if not _record_video_publication(
+                            storage,
+                            job_id,
+                            publication_context,
+                            platform,
+                            record,
+                            authorize=lambda: ownership_guard.assert_permit(provider_permit),
+                        ):
+                            evidence_failures.append(platform)
+
                     dist_result = distribute_video(
                         output_path,
                         job_id,
