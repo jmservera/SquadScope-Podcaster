@@ -116,7 +116,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
 | P07 | Review-follow-up closure for terminal truth | Complete for the current correction; Basher accepted exact reviewed head `905a890` | P07, P07-T01–P07-T07 |
-| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01 complete; P05-T02 awaits final hosted completion; P05-T03 blocked on #682 disposition/linkage; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
+| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01–P05-T02 complete; P05-T03 blocked on #682 disposition/linkage; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted exact-W39 production run and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
@@ -128,7 +128,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 * Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank did not author, advise, pair, inspect, suggest, review, or otherwise contribute. Basher was excluded from authoring, advice, and implementation contribution and completed the independent final-SHA review without contributing. Leela is the correction author and is not a reviewer for this cycle.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: exact timestamp/execution/fence bypass, parameterized mutation of every semantic attempt/event field, duplicate/omit/reorder/insert attempt or event, nested intent/receipt/provider/readback mutation, recovery-authorization metadata/cardinality, missing/ambiguous sequence/time, unexpected append after authorization, cross-week/publication/attempt replay, canonical round-trip, exact single authorized successor, all prior RV-008 and resolved-RV probes, then the complete locked validation contract without weakening.
-* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01 and P05-T01 are complete. P05-T02 awaits the final hosted gate; P05-T03 is blocked on durable #682 disposition/replacement linkage; P05-T04–P05-T06 and P06 remain future. Do not mutate or close #682, #671, #678, #679, or #681.
+* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01 and P05-T01–P05-T02 are complete, including all 13 successful final-head checks. P05-T03 is blocked on durable #682 disposition/replacement linkage; P05-T04–P05-T06 and P06 remain future. Do not mutate or close #682, #671, #678, #679, or #681.
 
 ## Implementation Marker Reconciliation
 
@@ -144,7 +144,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
 | P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, Ruff/format/compile/diff, Bicep/Checkov, container/exit, and secret/PII gates passed without weakening |
 | P07-T07; P05-T01 | Complete | Basher accepted exact executable head `905a890`; all later commits through `da84b6b` changed tracking/PR narrative only; #684 is linked to #773 |
-| P05-T02 | Awaiting final hosted gate | Final-SHA review found no executable drift or High/Critical issue; all checks on the post-review tracking head must complete successfully |
+| P05-T02 | Complete | Final-SHA review found no executable drift or High/Critical issue; all 13 hosted checks on the final pushed tracking head succeeded |
 | P05-T03 | Blocked | All 67 #682 threads report resolved, but 17 end with an undispositioned reviewer finding and zero final thread replies link #684; #682 must remain open until replacement evidence is durable |
 | P05-T05 | Expanded prerequisite gate | Exact merge-SHA-derived upstream and Podcaster artifacts must be deployed and every review/deployment/readiness/rollback gate cleared before real W39 execution |
 | P05-T06 | New authoritative gate | Reconcile all W39 history/provider candidates before mutation, then prove exact GitHub-to-provider execution and authoritative terminal external readback; ambiguity fails closed/manual-action |
