@@ -261,7 +261,11 @@ class Clipset:
         if not isinstance(data, dict):
             raise ValueError("clipset payload must be a JSON object")
         schema_version = data.get("schema_version")
-        if not isinstance(schema_version, str) or schema_version not in {
+        if not isinstance(schema_version, str):
+            raise ClipsetSchemaVersionError(
+                f"unsupported clipset schema version {schema_version!r}"
+            )
+        if schema_version not in {
             LEGACY_CLIPSET_SCHEMA_VERSION,
             CLIPSET_SCHEMA_VERSION,
         }:

@@ -313,19 +313,23 @@ def test_budgeted_clipset_rejects_malformed_budget_without_cleanup(bad_budget):
     assert storage._data == before
 
 
-def test_budgeted_clipset_rejects_unhashable_schema_without_cleanup():
+@pytest.mark.parametrize(
+    "schema_version",
+    [
+        pytest.param([], id="list"),
+        pytest.param({}, id="object"),
+    ],
+)
+def test_budgeted_clipset_rejects_non_string_schema_without_cleanup(schema_version):
     storage = FakeStorage()
     persisted = Clipset.from_segments(
         "job1",
         _segments(3),
         budget=VideoStageBudget.start().projection,
     ).to_dict()
-    persisted["schema_version"] = []
-    storage.put_bytes(
-        "video-jobs/job1/clipset.json",
-        json.dumps(persisted).encode("utf-8"),
-        _JSON,
-    )
+    persisted["schema_version"] = schema_version
+    original = json.dumps(persisted).encode("utf-8")
+    storage.put_bytes("video-jobs/job1/clipset.json", original, _JSON)
     _write_manifest(storage, "job1", 0)
     before = dict(storage._data)
 
