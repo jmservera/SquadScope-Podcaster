@@ -669,6 +669,8 @@ def _record_video_publication(
             code=(str(record.get("last_error_code")) if record.get("last_error_code") else None),
             authorize=authorize,
         )
+    except OwnershipError:
+        raise
     except Exception:
         unknown_record = {
             **record,

@@ -525,30 +525,30 @@ def test_provider_return_takeover_fences_every_publication_write(
 
     identity = PublicationIdentity(job_id, "2026-W39", "1", "a" * 64, "b" * 64)
 
-    result = distribute_video(
-        media,
-        job_id,
-        "title",
-        "description",
-        60,
-        VideoDistributionConfig(
-            youtube_enabled=True,
-            blob_archive_enabled=False,
-            dry_run=False,
-        ),
-        before_mutation=lambda _provider, _operation: guard.assert_permit(permit),
-        on_published=lambda platform, record: _record_video_publication(
-            storage,
+    with pytest.raises(OwnershipError, match="stale"):
+        distribute_video(
+            media,
             job_id,
-            identity,
-            platform,
-            record,
-            authorize=authorize_persistence,
-        ),
-    )
+            "title",
+            "description",
+            60,
+            VideoDistributionConfig(
+                youtube_enabled=True,
+                blob_archive_enabled=False,
+                dry_run=False,
+            ),
+            before_mutation=lambda _provider, _operation: guard.assert_permit(permit),
+            on_published=lambda platform, record: _record_video_publication(
+                storage,
+                job_id,
+                identity,
+                platform,
+                record,
+                authorize=authorize_persistence,
+            ),
+        )
 
     upload.assert_called_once()
-    assert result.errors
     manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode("utf-8"))
     assert ("video_publish" in manifest["generation"]) is manifest_written
     assert (storage.get_bytes(evidence_path(job_id)) is not None) is evidence_written

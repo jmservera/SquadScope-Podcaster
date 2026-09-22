@@ -38,6 +38,7 @@ from podcaster.publication_state import (
     UPLOADED,
     outcome_from_spotify_terminal_state,
 )
+from podcaster.video.ownership import OwnershipError
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
 from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
 
@@ -1238,6 +1239,8 @@ def distribute_video(
                 exc.code,
                 exc.retryable,
             )
+        except OwnershipError:
+            raise
         except Exception as exc:
             result.errors.append(f"YouTube upload error: {exc}")
             logger.error("YouTube distribution failed: %s", exc)
