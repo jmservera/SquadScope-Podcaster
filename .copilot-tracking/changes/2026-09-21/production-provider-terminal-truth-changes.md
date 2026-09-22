@@ -10,17 +10,35 @@
 
 ## Execution Status
 
-* Status: Livingston completed the sole RV-008 source/test correction and full validation from `fa3426fa030193e89a58cdb927c81a360df24a03`; Frank's independent final-SHA review is pending
+* Status: Frank independently reviewed and rejected Livingston's exact final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f`; RV-008 remains High because complete earlier attempt evidence is not durably rebound
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
 * Sole current revision author: Livingston
-* Independent reviewer: Frank, pending and reviewer-only
+* Independent reviewer: Frank, complete and reviewer-only; verdict Not accepted
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed markers for this cycle: P07-T01 and P07-T06
-* Open marker: P07-T07
+* Completed marker for this cycle: P07-T06
+* Open markers: P07-T01 and P07-T07
 * Source/tests/artifacts commit: `829fae69c4f20da18d34bae15f53c1cb21794808`
-* Remaining in-scope work: commit this delivery reconciliation, push the existing branch, update the existing draft PR narrative, and obtain Frank's independent final-SHA review
+* Remaining in-scope work: bind and recompute complete ordered durable attempt history, rerun validation, and obtain a new independent final-SHA acceptance
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: exact structured recovery binding and all requested denial probes pass; focused, locked, full, static, infrastructure, Checkov, container, exit, and secret/PII gates pass without weakening. Existing branch and draft PR #684 are retained. Ralph's rejected source `e16963243973707ea2557f75f925d3c6935d49ee` remains historical evidence. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+* Status basis: validation passes without weakening and the operation/intent/receipt/provider/readback bindings reject the requested direct mutations. Frank's independent probe nevertheless changed an earlier attempt event's timestamp, execution identity, and fence after authorization; because v2 records only `prior_attempt_ids` for prior history, the successor claim remained mutation-capable. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+
+## P07 Frank Fresh Independent Final-SHA Review
+
+* Independence: Frank did not author, advise, pair, or contribute to Livingston's revision. Livingston was the sole author. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph did not contribute.
+* Exact boundary: comparison `fa3426fa030193e89a58cdb927c81a360df24a03..f3c5e643d9068a83e87bd2ef6c8ac120d312519f`; source commit `829fae69c4f20da18d34bae15f53c1cb21794808`; later commit `f3c5e643d9068a83e87bd2ef6c8ac120d312519f` changed tracking/PR narrative only.
+* Opening state: clean worktree; local, origin, and PR head matched `f3c5e643d9068a83e87bd2ef6c8ac120d312519f`; comparison base was the merge base; remote divergence `0/0`; PR #684 was open, draft, mergeable/CLEAN, with 13 successful checks, no reviews, and zero review threads.
+* Verdict: **Not accepted (`request_changes`)** — 0 Critical, 1 High, 0 Medium, 0 Low.
+* RV dispositions: RV-002, RV-003, RV-004, RV-007, and RV-009 remain resolved. RV-008 remains **High/open**. P07-T01 and P07-T07 remain open.
+* Exact reproduction: after two terminal predecessor attempts and authorization of a third attempt, mutate the first attempt's claimed event to timestamp `1999-01-01T00:00:00Z`, execution identity `forged-earlier-owner`, and fencing token `999999`. The stored v2 evidence still contains only the two unchanged prior attempt IDs, and `claim()` returns `read_only=False`:
+
+```text
+RV008_COMPLETE_HISTORY_MUTATION_BYPASS {"attempts": 3, "read_only": false}
+```
+
+* Root cause: `exact_recovery_authorization_evidence()` serializes `prior_attempt_ids` rather than the complete ordered durable attempt records. `_validated_recovery_authorization_evidence()` therefore cannot detect mutation of earlier attempt event owner/execution/fence/timestamp/order evidence.
+* Required correction: include and recompute a canonical complete ordered attempt-history binding sufficient to detect missing, extra, duplicate, reordered, swapped, or mutated earlier attempt evidence. Preserve the current exact provider/operation/intent/receipt/publication/artifact/readback/successor bindings and prove the positive path remains accepted only once.
+* Independent validation: focused `133 passed`; locked `808 passed, 1 warning`; initial full reproduced the known stale Compose recorder image (`1 failed, 3137 passed, 2 skipped, 2 deselected, 1 warning`); rebuild and final full passed `3137 passed, 3 skipped, 2 deselected, 1 warning`. Compile, Ruff, format, exact diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, baseline-aware Dockerfile Checkov, container smoke, worker exit `2`, and exact-diff secret/PII scan passed. Review image: `sha256:da9825c04e9248453e5925c02367e52d1db62726f50e035c2cd8176f4a37f2a3`.
+* Residual gates: P00-T01, P05, and P06 remain open. No readiness, merge, deployment, canary, cycle, issue, thread, or production claim is made.
 
 ## P07 Livingston Exact Structured Recovery Binding Opening
 

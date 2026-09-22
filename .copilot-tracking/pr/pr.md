@@ -1,13 +1,13 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Livingston's sole-author RV-008 correction and full validation are complete; Frank's independent final-SHA review is pending.** The correction closes the exact wrong-operation and durable intent/receipt binding bypass locally, but it does not self-accept. All earlier rejection cycles remain historical evidence. P00-T01, P05, and P06 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Frank independently rejected Livingston's exact final head.** RV-008 remains High because authorization v2 binds prior attempt IDs but does not rebind the complete durable content of earlier attempts; mutating an earlier event's timestamp, execution identity, and fence still leaves the successor mutation-capable. All earlier rejection cycles remain historical evidence. P07-T01/P07-T07, P00-T01, P05, and P06 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
 Current source/tests/artifacts commit: `829fae69c4f20da18d34bae15f53c1cb21794808`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
-Fresh independent reviewer: Frank, pending and prohibited from source/test contribution.
+Fresh independent reviewer: Frank, complete and reviewer-only; verdict Not accepted.
 
 ## Incident and acceptance truth
 
@@ -48,6 +48,18 @@ Recovery authorization now uses an auditable `distribution-recovery-authorizatio
 Authorization creation recomputes and compares the exact caller structure. The stored successor-enriched structure is recomputed again before a successor claim may mutate. Missing, extra, duplicate, reordered, stale, conflicting, swapped, mutated, or legacy-v1 evidence makes the claim read-only. `unrelated_read_only_probe`, mutated intent/receipt IDs, provider-swapped receipts, changed owner/fence/time/item/readback/binding fields, and successor aliasing are denied. Exact evidence is accepted only for its bound successor. Immutable predecessor attempts and all resolved findings are preserved.
 
 Validation passed: required RV-008 probes `20/68`, outbox `88`, focused correction `133`, locked contract `808` with one warning, and final full repository `3137 passed, 3 skipped, 2 deselected, 1 warning`. The first full run reproduced only the documented stale Compose recorder image; rebuilding it made the final suite pass. Ruff, format, compile, diff safety, Bicep, exact Checkov baseline `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container smoke, worker exit `2`, and changed-diff secret/PII scan passed. Validation image: `sha256:c427f35291962193a83890f94549485745830d2008ea9d7231caf7931a4ae9fc`.
+
+## Frank final-SHA rejection
+
+Frank independently reviewed exact comparison `fa3426fa030193e89a58cdb927c81a360df24a03..f3c5e643d9068a83e87bd2ef6c8ac120d312519f`, focused on Livingston source commit `829fae69c4f20da18d34bae15f53c1cb21794808`. The later final-head commit changed tracking and PR narrative only. Local, origin, and PR head matched; divergence was `0/0`; the PR was open/draft/CLEAN with 13 successful checks, no reviews, and no review threads.
+
+RV-008 remains **High**. Authorization v2 stores `prior_attempt_ids` rather than a canonical binding of the complete ordered durable attempt records. After a valid third-attempt authorization, Frank changed the first attempt's claimed event timestamp to `1999-01-01T00:00:00Z`, execution identity to `forged-earlier-owner`, and fence to `999999`. The successor still claimed mutation authority:
+
+`RV008_COMPLETE_HISTORY_MUTATION_BYPASS attempts=3 read_only=False`
+
+Required correction: bind and recompute complete ordered attempt history, including durable event owner/execution/fence/timestamp/order evidence, so missing, extra, duplicate, reordered, swapped, or mutated earlier history fails closed. Preserve the current exact provider/operation/intent/receipt/publication/artifact/readback/successor bindings and the exact positive single-use path.
+
+Frank independently reproduced focused `133`, locked `808` with one warning, and final full `3137 passed, 3 skipped, 2 deselected, 1 warning` after rebuilding the known stale Compose recorder image. Ruff, format, compile, diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, baseline-aware Dockerfile Checkov, container smoke, worker exit `2`, and exact-diff secret/PII scan passed. Review image: `sha256:da9825c04e9248453e5925c02367e52d1db62726f50e035c2cd8176f4a37f2a3`.
 
 ## Ralph correction after Basher rejection
 
@@ -145,7 +157,7 @@ Frank's probes prove that a later `provider_unknown` blocks reuse of the older f
 ## Residual external gates
 
 - **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
-- **P07-T07:** obtain Livingston's independent review of the final pushed SHA; local RV-008 implementation and validation do not self-accept.
+- **P07-T01/P07-T07:** correct the complete-history binding defect and obtain a new independent acceptance of the corrected final pushed SHA; local implementation and validation do not self-accept.
 - **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 

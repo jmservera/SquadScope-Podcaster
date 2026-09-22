@@ -20,6 +20,8 @@ Rusty's 2026-09-22 exact-head review of Frank's revision preserved RV-001/RV-002
 
 Ralph's rejected revision requires exactly one usable receipt per provider, but Livingston's independent review of `e16963243973707ea2557f75f925d3c6935d49ee` proved that any non-empty consumed operation is accepted and exact intent/receipt identity is omitted from durable authorization. Livingston now owns the sole-author correction from `fa3426fa030193e89a58cdb927c81a360df24a03`; Frank is reserved for independent final-SHA review and may not contribute. The correction must retain and recompute an auditable exact structured binding across provider, operation, intent, receipt, predecessor, owner/fence/time/order, publication/artifact identity, terminal readback, and the succeeding attempt/provider expectation.
 
+Frank independently reviewed exact final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f` and rejected it. The v2 authorization recomputes `prior_attempt_ids`, but not the complete durable content of earlier attempts. After authorization, mutating the first attempt's claimed event timestamp, execution identity, and fencing token left the specifically authorized successor mutation-capable (`read_only=False`). RV-008 and P07-T01 therefore remain open; P07-T06 validation remains complete and P07-T07 cannot close.
+
 ## Cross-Phase Invariants
 
 1. **Recoverably atomic visibility:** upload an immutable content-addressed artifact, verify integrity/readability, then conditionally create the single authoritative outbox record referencing its hash. Queue notification is an idempotent hint; claim revalidates the artifact; verified orphan artifacts are repaired or garbage-collected without provider mutation.
@@ -103,16 +105,16 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | Livingston review complete with rejection; RV-008/P07-T01 remains open | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Frank review complete with rejection; RV-008/P07-T01 remains open | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: Livingston's review of Ralph's P07-T01/P07-T06 revision and delivery reconciliation is complete. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-008 remains High.
-* Current task: correct exact operation and durable intent/receipt authorization binding on a new final SHA, rerun the full validation contract, and obtain a new independent review while preserving #684 as draft/blocked.
+* Declared scope: Frank's review of Livingston's P07-T01/P07-T06 revision and delivery reconciliation is complete. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-008 remains High.
+* Current task: bind and recompute complete ordered durable attempt history on a new final SHA, rerun the full validation contract, and obtain a new independent review while preserving #684 as draft/blocked.
 * Revision author: Livingston only for the reopened correction cycle.
-* Fresh independent reviewer: Frank is reserved and may not contribute before final-SHA review.
+* Fresh independent reviewer: Frank completed this cycle reviewer-only and rejected it; the corrected final SHA requires a new independent reviewer.
 * Excluded contributors: Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Frank is reviewer-only.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: wrong-operation, mutated intent/receipt, swapped-provider receipt, extra/missing receipt, changed owner/fence/time/item/readback/binding, stale/latest/reordered/omitted/history-resolution negative probes; exact successor-only positive proof; all resolved-RV probes; then the complete locked validation contract without weakening.
@@ -124,14 +126,14 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | Complete for Livingston revision; Frank review pending | Recovery authorization v2 retains and recomputes exact provider/operation/intent/receipt/predecessor/owner/fence/time/publication/artifact/readback/successor evidence; every requested mutation probe fails closed |
+| P07-T01 | Open; Frank rejected final head | Bind and recompute complete ordered durable attempt records, including event owner/execution/fence/timestamp/order; preserve current exact provider/operation/intent/receipt/publication/artifact/readback/successor evidence |
 | P07-T02 | Complete; RV-002 resolved | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
 | P07-T03 | Complete; RV-004 resolved | Bounded resumable migration backfills pre-index references and cleanup fails closed until completeness is proven |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
 | P07-T06 | Complete for Livingston correction | Required `20/68`, outbox `88`, focused `133`, locked `808`, full `3137`, static/infra/Checkov/container/exit/security gates passed |
-| P07-T07; P05-T01 | Pending Frank independent review; blocked | Preserve the rejection, keep PR #684 draft/blocked, push only the existing branch, and obtain Frank's independent final-SHA review; P00-T01, P05, and P06 remain open |
+| P07-T07; P05-T01 | Frank review complete with rejection; blocked | Preserve all rejections, keep PR #684 draft/blocked, correct RV-008, and obtain a new independent final-SHA acceptance; P00-T01, P05, and P06 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
@@ -1006,7 +1008,7 @@ Require persisted, exact, identity-bound proof for every green outcome and evide
 
 #### Unresolved Items
 
-* Livingston correction complete: recovery authorization schema v2 retains the exact structured provider/operation/intent/receipt/predecessor/owner/fence/time/publication/artifact/readback/successor binding. Authorization creation and claim-time use recompute it from durable records; wrong operation, intent/receipt mutation, provider receipt swap, owner/fence/time/item/readback mutation, extra/missing evidence, legacy schema, and successor aliasing fail closed. Frank's independent final-SHA review remains required.
+* Frank review rejection: recovery authorization schema v2 closes the operation/intent/receipt/provider/readback/successor gaps, but it retains only `prior_attempt_ids` for earlier history. Exact reproduction mutated an earlier attempt event from its durable timestamp/execution/fence to `1999-01-01T00:00:00Z` / `forged-earlier-owner` / `999999`; the successor claim still returned `read_only=False` with three attempts. Bind and recompute the complete ordered durable attempt records, including event owner/execution/fence/timestamp/order, and prove any earlier-history mutation fails closed. P07-T01 remains open.
 
 <!-- rpi:task id=P07-T02 -->
 ### P07-T02: Make scheduler notification enqueue single-winner
@@ -1193,7 +1195,7 @@ Run focused negative probes and the complete repository quality/security/contain
 
 #### Unresolved Items
 
-* Livingston validation complete for source SHA `829fae69c4f20da18d34bae15f53c1cb21794808`: required RV-008 `20 passed, 68 deselected`; outbox `88 passed`; focused `133 passed`; locked `808 passed, 1 warning`; final full `3137 passed, 3 skipped, 2 deselected, 1 warning`. Ruff, format, compile, diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container image `sha256:c427f35291962193a83890f94549485745830d2008ea9d7231caf7931a4ae9fc`, UID/tool/import smoke, worker exit `2`, and changed-diff secret/PII scan passed. The first full run reproduced only the known stale Compose recorder image; rebuilding it made the final suite pass. P07-T07 remains pending Frank review.
+* Frank independently reproduced the same validation posture at final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f`: focused `133 passed`; locked `808 passed, 1 warning`; initial full `1 failed, 3137 passed, 2 skipped, 2 deselected, 1 warning` from the known stale Compose recorder image; rebuild followed by final full `3137 passed, 3 skipped, 2 deselected, 1 warning`. Ruff, format, compile, exact diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, baseline-aware Dockerfile Checkov, container image `sha256:da9825c04e9248453e5925c02367e52d1db62726f50e035c2cd8176f4a37f2a3`, UID/tool/import smoke, worker exit `2`, and exact-diff secret/PII scan passed. Validation does not clear the independently reproduced RV-008 High; P07-T07 remains open.
 
 <!-- rpi:task id=P07-T07 -->
 ### P07-T07: Reconcile delivery evidence and obtain Frank's independent final-SHA review

@@ -505,6 +505,99 @@ No issue, PR, review thread, deployment, canary, or production state was resolve
 
 ---
 
+## Fresh Independent Livingston-Revision Review — Frank — 2026-09-22
+
+### Reviewer Identity, Independence, and Exact Boundary
+
+* Reviewer: **Frank, Integration Engineer**.
+* Independence: Frank did not author, advise, pair, or contribute to Livingston's revision. Livingston was the sole author. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph did not author, advise, pair, or contribute.
+* Exact comparison: `fa3426fa030193e89a58cdb927c81a360df24a03..f3c5e643d9068a83e87bd2ef6c8ac120d312519f`.
+* Source focus: Livingston commit `829fae69c4f20da18d34bae15f53c1cb21794808`.
+* Post-source scope: `829fae6..f3c5e64` changes only plan/details/changes/PR narrative; no executable source or tests changed after Livingston's source commit.
+* Opening state: clean worktree; local, origin, and PR head all matched `f3c5e643d9068a83e87bd2ef6c8ac120d312519f`; the comparison base was the merge base; remote divergence was `0/0`.
+* PR state: #684 open, draft, mergeable/CLEAN, 13 successful checks, no submitted reviews, and zero review threads.
+
+### Frank Final Verdict
+
+**Not accepted (`request_changes`).** Severity: 0 Critical, 1 High, 0 Medium, 0 Low. Livingston closes the wrong-operation, intent/receipt identity, provider swap, receipt cardinality, provider item/readback, successor, legacy, and serialization gaps, but RV-008 still fails the complete immutable attempt-history contract.
+
+### Finding Dispositions
+
+| Finding | Frank disposition |
+|---|---|
+| RV-002 | Remains resolved; focused, locked, and full regression suites pass. |
+| RV-003 | Remains resolved; telemetry/deployment regressions, Bicep, and CI Checkov pass. |
+| RV-004 | Remains resolved; bounded cleanup and reference-fencing regressions pass. |
+| RV-007 | Remains resolved at tracking level after this append-only reconciliation; all prior cycles remain intact. |
+| RV-008 | **High, open.** Authorization v2 binds prior attempt IDs, not the complete ordered durable content of earlier attempts. |
+| RV-009 | Remains resolved; proof-envelope and four-cycle regressions pass. |
+
+### High Finding: Complete Earlier Attempt Evidence Is Not Bound
+
+`exact_recovery_authorization_evidence()` records `prior_attempt_ids` for prior history. It does not record or digest the complete ordered durable attempt records or their event owner/execution/fence/timestamp/order evidence. `_validated_recovery_authorization_evidence()` consequently recomputes the same IDs after earlier attempt evidence is mutated.
+
+Independent exact reproduction:
+
+```text
+ROUND_TRIP_EQUAL True
+ATTEMPTS_BEFORE 3
+RV008_COMPLETE_HISTORY_MUTATION_BYPASS {"attempts": 3, "bound_prior_attempt_ids": ["<first>", "<second>"], "mutated_event": {"at": "1999-01-01T00:00:00Z", "execution_id": "forged-earlier-owner", "fencing_token": 999999, "sequence": 2, "state": "claimed"}, "read_only": false}
+```
+
+The probe created two terminal attempts, authorized a third exact successor, then mutated the first attempt's durable claimed event. The successor remained mutation-capable. This violates the required immutable complete-history binding and the explicit rule that mutated historical evidence fails closed.
+
+Required correction: serialize and recompute a canonical complete ordered attempt-history binding sufficient to detect missing, extra, duplicate, reordered, swapped, or mutated earlier attempt evidence, including event ordering and owner/execution/fence/timestamp fields. Retain the current exact provider kind/item, operation name/type, intent ID, receipt ID, predecessor, provider evidence, publication/digests/artifact, readback, and successor bindings. Prove the exact positive recovery remains accepted only once and all predecessor attempts remain immutable.
+
+### Independent Probes
+
+| Probe | Result |
+|---|---|
+| Wrong operation / operation type | Denied |
+| Mutated intent ID / receipt ID | Denied |
+| Cross-provider receipt swap | Denied |
+| Missing, extra, duplicate, partial, stale, malformed, or wrong-bound receipt | Denied |
+| Consumed owner/fence/time and receipt timestamp/fence mutation | Denied for the bound predecessor evidence |
+| Provider item, terminal readback state/item, and duplicate readback | Denied |
+| Stale predecessor, wrong successor, and non-latest authorization | Denied |
+| Week/publication/manifest/digest/artifact and authorization binding mutation | Denied |
+| Omitted/reordered prior attempt IDs | Denied |
+| Legacy-v1 evidence | Denied |
+| Replay against another successor/attempt | Denied |
+| JSON serialization round trip | Exact equality preserved |
+| Exact positive recovery | Accepted for the specifically bound successor only; existing immutable-predecessor regression passes |
+| Earlier attempt event owner/fence/timestamp mutation | **Failed safety: successor remained `read_only=False`** |
+
+### Independent Validation
+
+| Command or gate | Result |
+|---|---|
+| Focused correction suite | `133 passed` |
+| Locked contract suite | `808 passed, 1 warning` |
+| Initial full suite | `1 failed, 3137 passed, 2 skipped, 2 deselected, 1 warning`; known stale Compose recorder image only |
+| Compose rebuild and final full suite | `3137 passed, 3 skipped, 2 deselected, 1 warning` |
+| Ruff, format, compile, exact diff safety, deleted-test check | Passed |
+| Bicep build | Passed with the existing BCP318 warning |
+| Exact Checkov | Existing baseline reproduced: `36 passed, 7 failed` |
+| CI-equivalent Checkov | `34 passed, 0 failed` |
+| Baseline-aware Dockerfile Checkov | Passed |
+| Review container | `sha256:da9825c04e9248453e5925c02367e52d1db62726f50e035c2cd8176f4a37f2a3` |
+| Container smoke | UID `999`; ffmpeg/ffprobe and pipeline/outbox imports passed; unconfigured distribution worker exited `2` |
+| Exact-diff secret/PII scan | No suspected private key, access key, JWT, signed credential URL, or email-address pattern |
+
+No source, test, assertion, validation gate, security gate, issue, review thread, deployment, canary, or production state was changed.
+
+### GitHub State, Blockers, and Relationships
+
+* #684 remains open, draft, mergeable/CLEAN, with 13 successful checks, no reviews, and zero review threads at the reviewed SHA. It is not approved.
+* P07-T01 and P07-T07 remain open because RV-008 is High. P07-T06 validation remains complete.
+* P00-T01 remains owned by `jmservera/SquadScope`; P05 remains delivery/deployment work; P06 remains four elapsed future production cycles.
+* jmservera/SquadScope-Podcaster#682, jmservera/SquadScope-Podcaster#671, jmservera/SquadScope-Podcaster#678, jmservera/SquadScope-Podcaster#679, jmservera/SquadScope-Podcaster#681, and jmservera/SquadScope-Coordinator#17 remain open and unmodified.
+* jmservera/SquadScope#770 remains merged but does not clear P00-T01.
+
+No merge, readiness, deployment, canary, elapsed-cycle, or production acceptance is claimed.
+
+---
+
 ## Ralph Exact-Receipt Revision Review — Livingston — 2026-09-22
 
 ### Reviewer Independence and Exact Boundary
