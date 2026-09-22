@@ -1,11 +1,11 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Ralph's post-rejection RV-008 correction is implemented and validated; Livingston's fresh independent final-SHA review is pending.** Ralph's rejection of Basher source `eaaac5706985d0df4058f46d25e4aa4d9217f41e`, Fry's rejection of Leela's revision `02241a1`, Livingston's earlier rejection of Farnsworth source candidate `601d36a`, and Rusty's rejection of Frank's `1efa749` remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Livingston independently rejected Ralph's exact-receipt revision at `e16963243973707ea2557f75f925d3c6935d49ee`.** Receipt cardinality and item/fence/time checks pass, but RV-008 remains High because a wrong consumed operation can still authorize a mutation-capable successor and the durable authorization omits exact intent/receipt identity. All earlier rejection cycles remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Ralph revision base: `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e`.
 Current source/tests/artifacts commit: this Ralph delivery commit; exact SHA is recorded in the pushed PR head and delivery return.
-Fresh independent reviewer: Livingston, pending without source/test contribution.
+Fresh independent reviewer: Livingston, complete without source/test contribution; verdict Not accepted.
 
 ## Incident and acceptance truth
 
@@ -39,13 +39,25 @@ Completion of the declared implementation scope does not imply acceptance. Fry's
 
 ## Ralph correction after Basher rejection
 
-Ralph is the sole author of the current correction. Livingston is reserved for fresh independent final-SHA review and did not contribute. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Frank, Rusty, and Basher did not contribute or advise.
+Ralph is the sole author of the reviewed correction. Livingston did not contribute and independently completed the final-SHA review with verdict Not accepted. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Frank, Rusty, and Basher did not contribute or advise.
 
 Recovery of the latest `provider_unknown` attempt now requires one consumed explicit operation identity and exactly one usable durable receipt for every requested provider. The receipt must match the intent ID, consumption fence and timestamp, accepted transport class, exact expected provider item, non-ambiguous classification, and native provider state. Zero, duplicate, conflicting, stale, malformed, wrong-kind, wrong-item, wrong-operation, or provider-partial receipts fail closed.
 
 The authoritative post-terminal failed readback must uniquely resolve that same provider item. Terminal attempts remain reconciliation-only; only the successor created by the exact authorization can become mutation-capable. Immutable history and all week/publication/digest/artifact and authorization bindings remain intact.
 
 Validation passed: focused RV-008 `30/45`, outbox `75`, focused correction `119`, locked contract `794` with one warning, and final full repository `3125 passed, 2 skipped, 2 deselected, 1 warning`. The first final full run reproduced only the documented stale Compose recorder image; rebuilding it made the fanout integration and final full suite pass. Ruff, format, compile, diff safety, Bicep, exact Checkov baseline `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container smoke, worker exit `2`, and changed-file secret/PII scan passed. Validation image: `sha256:1c3f35e4d36d78660b746fca802aec1da9cf04289fccff9c7567322125e4b421`.
+
+## Livingston final-SHA rejection
+
+Livingston independently reviewed exact comparison `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e..e16963243973707ea2557f75f925d3c6935d49ee`. Local, remote, and PR head matched with divergence `0/0`; the PR was open/draft/CLEAN with 13 successful checks, no reviews, and no review threads.
+
+RV-008 remains **High**. `_recovery_predecessor_provider_evidence()` requires only a non-empty intent operation, while the durable authorization evidence omits operation, intent ID, and receipt ID. Replacing the implicated YouTube operation with an unrelated operation still created a third mutation-capable attempt:
+
+`RV008_WRONG_OPERATION_BYPASS read_only=False attempts=3 operation=unrelated_read_only_probe`
+
+Required correction: validate the exact expected operation and bind provider, operation, intent, receipt, attempt, fence/time, publication/week/digests, and artifact into the durable authorization/digest. A substituted operation or aliased provider intent/receipt must fail closed before a successor is appended.
+
+Independent validation passed: required matrix `40/35`, focused correction `120`, locked contract `795` with one warning, and full repository `3124 passed, 3 skipped, 2 deselected, 1 warning`. Ruff, format, compile, diff safety, Bicep, exact Checkov baseline `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container smoke, worker exit `2`, and exact-diff secret/PII scan passed. Review image: `sha256:30c8be5535617b86db502c8ab6feb8399ffff2b790a7c528d373b2e96b4ab5a0`.
 
 ## Basher correction after Rusty rejection
 
@@ -160,7 +172,9 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] RV-008 different-item latest-unknown readback bypass corrected and validated by Basher.
 - [x] Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835`; verdict Not accepted.
 - [x] RV-008 missing/duplicate/wrong-bound receipt authorization corrected and fully validated by Ralph.
-- [ ] Livingston independently accepts the final pushed SHA.
+- [x] Livingston independently reviewed final source SHA `e16963243973707ea2557f75f925d3c6935d49ee`; verdict Not accepted.
+- [ ] RV-008 exact operation and durable intent/receipt authorization binding corrected.
+- [ ] A new independent reviewer accepts the corrected final pushed SHA.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
 - [ ] P05 deployment/canary gates completed.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.

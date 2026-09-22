@@ -10,16 +10,16 @@
 
 ## Execution Status
 
-* Status: Ralph's sole-author RV-008 correction and validation are complete after rejecting Basher's source/tests commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e`. The cycle starts from review/tracking head `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e`; Livingston's independent final-SHA review remains pending
+* Status: Livingston independently reviewed Ralph's final source SHA `e16963243973707ea2557f75f925d3c6935d49ee` and rejected it. Receipt cardinality and item/fence/time checks pass, but RV-008 remains High because a wrong consumed operation can still authorize a mutation-capable successor. P07-T01 remains open; P07-T07 records rejection rather than acceptance
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
 * Sole current revision author: Ralph
-* Independent reviewer: Livingston, reserved and pending without source/test contribution
+* Independent reviewer: Livingston, complete without source/test contribution; verdict Not accepted
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed markers for current revision pending review: P07-T01 and P07-T06
-* Open review marker: P07-T07
-* Remaining in-scope work: commit/push, reconcile PR delivery, and obtain Livingston's independent final-SHA review
+* Completed marker for reviewed revision: P07-T06; rerun required after any executable correction
+* Open markers: P07-T01 and P07-T07
+* Remaining in-scope work: correct exact operation and durable intent/receipt authorization binding, rerun validation, and obtain a new independent final-SHA review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: the reviewed clean local, remote, and PR head was `fcfa40015ed68d9e38d8432425b7cbd15171e835`, source commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e`, with divergence `0/0` and no executable changes after source. Different-item, missing identity, duplicate, conflicting, wrong-kind, stale-receipt, stale-authorization, wrong-binding, omitted/reordered-history, and fencing probes pass. Ralph reproduced authorization from exact-item failed readback with zero durable receipts: `RV008_MISSING_RECEIPT_BYPASS receipts={'youtube': 0, 'spotify': 0} attempts=3 read_only=False`. RV-008 remains High. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+* Status basis: clean local, remote, and PR head `e16963243973707ea2557f75f925d3c6935d49ee`, exact comparison `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e..e16963243973707ea2557f75f925d3c6935d49ee`, divergence `0/0`. Zero, duplicate, partial-provider, conflicting, wrong-item/kind/fence, malformed, stale-authorization, different-item, and history-order probes pass. Livingston reproduced `RV008_WRONG_OPERATION_BYPASS read_only=False attempts=3 operation=unrelated_read_only_probe`. RV-008 remains High. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
 
 ## P07 Ralph Exact Receipt Revision Opening
 
@@ -58,7 +58,19 @@
 | Unconfigured distribution worker | Exited `2` as required |
 | Changed-file suspected secret/PII scan | No private key, access key, JWT, signed credential URL, or email-address pattern found |
 
-No test, assertion, safety gate, security gate, or baseline was removed, skipped, weakened, or made non-blocking. Livingston's fresh independent final-SHA review remains required before P07-T07 can complete.
+No test, assertion, safety gate, security gate, or baseline was removed, skipped, weakened, or made non-blocking. Livingston's fresh independent final-SHA review is complete with rejection; P07-T07 remains open until a corrected final SHA is independently accepted.
+
+## P07 Livingston Fresh Independent Final-SHA Review
+
+* Reviewer and independence: Livingston did not author Ralph's revision and received no contribution or advice from Bender, Hermes, Amy, Leela, Fry, Farnsworth, Frank, Rusty, Basher, or Ralph.
+* Exact boundary: `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e..e16963243973707ea2557f75f925d3c6935d49ee`; clean local/remote/PR head with divergence `0/0`.
+* Verdict: **Not accepted** with 0 Critical, 1 High, 0 Medium, and 0 Low current in-repository findings.
+* Resolved dispositions: RV-002/RV-003/RV-004/RV-007/RV-009 remain resolved. Zero/duplicate/partial-provider receipts, conflicting evidence, malformed timestamps/IDs, wrong transport/item/provider/fence, duplicate readback, Rusty's different-item bypass, stale authorization, and omitted/reordered history fail closed.
+* Open disposition: RV-008 remains High. The recovery helper verifies only that the intent operation is non-empty; the durable authorization does not bind the operation, intent ID, or receipt ID. Replacing the implicated YouTube operation with `unrelated_read_only_probe` still appended a third attempt and yielded `read_only=False`.
+* Exact reproduction: `RV008_WRONG_OPERATION_BYPASS read_only=False attempts=3 operation=unrelated_read_only_probe`.
+* Validation: required matrix `40 passed, 35 deselected`; focused `120 passed`; locked `795 passed, 1 warning`; full `3124 passed, 3 skipped, 2 deselected, 1 warning`. Ruff, format, compile, exact diff safety, Bicep, CI Checkov `34/0`, Dockerfile Checkov, and container smoke passed. Exact Checkov retained `36 passed, 7 failed`.
+* Container and security: review image `sha256:30c8be5535617b86db502c8ab6feb8399ffff2b790a7c528d373b2e96b4ab5a0`; UID `999`, ffmpeg/ffprobe and pipeline/outbox imports passed; unconfigured worker exited `2`; exact-diff secret/PII scan found no suspected pattern.
+* Delivery posture: #684 remains open, draft, and blocked. P07 is not accepted; P00-T01, P05, and P06 remain open. No issue, review thread, deployment, canary, or production state was mutated.
 
 ## P07 Ralph Fresh Independent Final-SHA Review
 
