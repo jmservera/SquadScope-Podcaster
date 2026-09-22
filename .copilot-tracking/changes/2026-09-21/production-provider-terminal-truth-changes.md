@@ -10,7 +10,7 @@
 
 ## Execution Status
 
-* Status: Basher's sole-author RV-008 correction and validation are complete from Rusty's rejected tracking head `97c9520b7c365b078a50df113154bb1e66b1ecbb`; source/tests/artifacts commit `eaaac5730740aeadcd641d3260684584337ba330` is ready for delivery, with Ralph review pending
+* Status: Basher's sole-author RV-008 correction and validation are complete from Rusty's rejected tracking head `97c9520b7c365b078a50df113154bb1e66b1ecbb`; source/tests/artifacts commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e` is delivered, with Ralph review pending
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
 * Sole current revision author: Basher
 * Independent reviewer: Ralph, reserved and pending without source/test contribution
@@ -46,7 +46,7 @@
 * Readback handling: every requested provider requires exactly one post-terminal readback entry. Duplicate entries, unknown provider kinds, missing providers, non-readback sources, missing native state, and any provider item other than the exact persisted expected item fail closed.
 * Preserved binding: the existing authorization validator continues to bind the exact predecessor, complete ordered terminal-attempt list, week/publication identity, publication digest, artifact digest, canonical artifact, authorization digest, and specifically generated successor.
 * Immutability: the failed/unknown predecessor is unchanged. Exact matching readback permits only creation of the newly authorized successor; mismatched or incomplete evidence leaves the current history at two attempts and every takeover reconciliation-only.
-* Source/tests/artifacts commit: `eaaac5730740aeadcd641d3260684584337ba330`.
+* Source/tests/artifacts commit: `eaaac5706985d0df4058f46d25e4aa4d9217f41e`.
 
 ## P07 Basher Validation
 
