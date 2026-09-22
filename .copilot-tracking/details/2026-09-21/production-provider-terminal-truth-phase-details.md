@@ -110,13 +110,13 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 
 | Phase ID | Name | Status | Detail sections |
 |---|---|---|---|
-| P00 | Prevent and detect W39-class dispatch blockage | Podcaster receipt/absence boundary implemented; upstream prevention owner blocked | P00, P00-T01–P00-T03 |
+| P00 | Prevent and detect W39-class dispatch blockage | Complete through upstream PR #773 and the Podcaster receipt/absence boundary | P00, P00-T01–P00-T03 |
 | P01 | Establish the durable outbox and immutable attempt contract | Complete in Amy correction cycle | P01, P01-T01–P01-T04 |
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
 | P07 | Review-follow-up closure for terminal truth | Complete for the current correction; Basher accepted exact reviewed head `905a890` | P07, P07-T01–P07-T07 |
-| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | Blocked by upstream/Podcaster merge, deployment, provider-reconciliation, and authority gates | P05, P05-T01–P05-T06 |
+| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01 complete; P05-T02 awaits final hosted completion; P05-T03 blocked on #682 disposition/linkage; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted exact-W39 production run and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
@@ -128,13 +128,13 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 * Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank did not author, advise, pair, inspect, suggest, review, or otherwise contribute. Basher was excluded from authoring, advice, and implementation contribution and completed the independent final-SHA review without contributing. Leela is the correction author and is not a reviewer for this cycle.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: exact timestamp/execution/fence bypass, parameterized mutation of every semantic attempt/event field, duplicate/omit/reorder/insert attempt or event, nested intent/receipt/provider/readback mutation, recovery-authorization metadata/cardinality, missing/ambiguous sequence/time, unexpected append after authorization, cross-week/publication/attempt replay, canonical round-trip, exact single authorized successor, all prior RV-008 and resolved-RV probes, then the complete locked validation contract without weakening.
-* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 merge/provenance/deployment plus exact-W39 production acceptance, P06 elapsed evidence, and operator-only #682 remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
+* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01 and P05-T01 are complete. P05-T02 awaits the final hosted gate; P05-T03 is blocked on durable #682 disposition/replacement linkage; P05-T04–P05-T06 and P06 remain future. Do not mutate or close #682, #671, #678, #679, or #681.
 
 ## Implementation Marker Reconciliation
 
 | Marker(s) | Current disposition | Completion expectation |
 |---|---|---|
-| P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
+| P00-T01 | Complete | `jmservera/SquadScope#773` reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2` merged as `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3` at `2026-09-22T09:20:43Z`; 18 PR checks and merge-SHA CI/security/release/deploy workflows succeeded; canonical identity, append-only trusted receipts, missing/terminal monitoring, and fail-closed weekly evidence satisfy the prevention/detection and durable dispatch-evidence contract |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
 | P07-T01 | Complete for Leela correction | Exact recursive typed canonical contracts cover set/envelope/evidence/history/attempt-event/successor structures; boolean/float count and all scalar substitutions fail closed |
 | P07-T02 | Complete; RV-002 resolved | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
@@ -143,8 +143,9 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
 | P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, Ruff/format/compile/diff, Bicep/Checkov, container/exit, and secret/PII gates passed without weakening |
-| P07-T07; P05-T01 | P07-T07 complete; delivery blocked | Basher accepted exact reviewed head `905a890`; keep PR #684 draft/blocked because P00-T01, P05, P06, and operator-only #682 remain open |
-| P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
+| P07-T07; P05-T01 | Complete | Basher accepted exact executable head `905a890`; all later commits through `da84b6b` changed tracking/PR narrative only; #684 is linked to #773 |
+| P05-T02 | Awaiting final hosted gate | Final-SHA review found no executable drift or High/Critical issue; all checks on the post-review tracking head must complete successfully |
+| P05-T03 | Blocked | All 67 #682 threads report resolved, but 17 end with an undispositioned reviewer finding and zero final thread replies link #684; #682 must remain open until replacement evidence is durable |
 | P05-T05 | Expanded prerequisite gate | Exact merge-SHA-derived upstream and Podcaster artifacts must be deployed and every review/deployment/readiness/rollback gate cleared before real W39 execution |
 | P05-T06 | New authoritative gate | Reconcile all W39 history/provider candidates before mutation, then prove exact GitHub-to-provider execution and authoritative terminal external readback; ambiguity fails closed/manual-action |
 | P06-T01–P06-T02 | Preserved | Four future qualifying cycles remain required; exact W39 does not automatically count |

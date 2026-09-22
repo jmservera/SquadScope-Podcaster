@@ -6,9 +6,9 @@
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Review date: 2026-09-21
 * Final-revision review date: 2026-09-22
-* Final revision reviewed: `273f94e0d1fa773e108661f908aca6f34be132c4`
-* Final-revision reviewer: Leela, independent of sole revision author Fry; Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, Frank, and Fry did not contribute to this review
-* Review scope: Fry's final authorization-envelope revision from comparison base `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0`, source commit `7f00b5795117f144cb23615d59f92029246162fe`, and exact final head `273f94e0d1fa773e108661f908aca6f34be132c4`
+* Final revision reviewed: pending exact-head gate for `da84b6b2c50f0226b2abb3b469a01c2158d41ef3`
+* Final-revision reviewer: Basher, independent of latest tracking-only author Leela; Bender, Hermes, Amy, and Leela are excluded from this review
+* Review scope: Final-SHA P05 delivery gate for PR #684, including ancestry from accepted implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` and executable source revision `9204e139be485cb916ccd6e70b6fce355b656136`, upstream prerequisite PR #773, exact-W39 tracking requirements, hosted checks, and PR #682 disposition evidence
 * Assessed boundary: Immutable attempt truth; deterministic weekly aggregation; exact provider proof; controlled recovery; unknown-mutation safety; RV-002 scheduler fairness/deduplication; RV-003 alert deployment; RV-004 cleanup; RV-007 terminology/tracking consistency; W38/W39 fixtures; four-cycle evaluation; validation; and residual P00-T01/P05/P06 work
 * Plan: `.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md`
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
@@ -18,13 +18,44 @@
 
 ## Opening Review State
 
-* Interpreted review goal: Independently assess Amy's current immutable-attempt and weekly terminal-truth revision, transparently update prior RV dispositions, and distinguish in-repository conformance from upstream, delivery, and elapsed-cycle residual work.
-* Review scope: Full current task boundary and `origin/main` delta, including the author's uncommitted correction state, without a second review pass.
-* Evidence readiness: One unambiguous artifact set and one canonical review record exist. Plan, phase details, research, changes, historical critique, source, tests, runbook, infrastructure, and prior review state are available locally.
-* Acceptance basis: The caller's authoritative QA gate; current plan requirements and acceptance criteria; historical PC-001-PC-009 dispositions; prior RV-001-RV-007 dispositions; exact provider proof, recovery, retry-safety, fairness, alert, cleanup, terminology, W38/W39, and four-cycle contracts.
-* First comparison boundary: Inspect the actual `origin/main` implementation delta and current uncommitted author corrections for immutable attempts, weekly aggregation, exact proof, controlled recovery, and mutation safety before reassessing RV-002/RV-003/RV-004/RV-007 and validation.
-* Active read-only boundaries: Source, tests, docs, plan, details, research, critique, changes, git, GitHub, and deployment state are read-only. This review record is the only writable artifact.
-* Initial blockers: P00-T01 requires an owning `jmservera/SquadScope` change. P05 requires repository/delivery/deployment authority. P06 requires four elapsed production cycles.
+* Interpreted review goal: Independently determine whether exact PR #684 head `da84b6b2c50f0226b2abb3b469a01c2158d41ef3` is acceptable and merge-authorizable without executing W39, deploying, or mutating provider state.
+* Review scope: P00-T01 and P05-T01–P05-T03 final-SHA delivery gates, with P05-T04–P05-T06 and P06 retained as future production work.
+* Evidence readiness: One unambiguous artifact set and canonical review record exist. Local and remote PR #684 heads match. Upstream PR #773 is merged at `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3` from reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, with 18 successful checks. Three PR #684 checks are initially pending and PR #682 thread disposition remains to be verified.
+* Acceptance basis: Required upstream prevention/detection and durable dispatch-evidence contract; no executable drift after accepted source revision; exact-W39 reconcile-before-mutate/fail-closed/correlation/safe-report/no-automatic-P06-credit requirements; all hosted checks successful; no unresolved High/Critical finding; and authoritative #682 thread disposition evidence.
+* First comparison boundary: Verify commit ancestry and classify every path changed after `9204e139be485cb916ccd6e70b6fce355b656136` and `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`, then compare the exact-W39 gate and GitHub delivery state.
+* Active read-only boundaries: Executable source/tests, deployment/provider state, W39 execution, and issue/review-thread state are read-only. During evidence comparison this canonical review record is the only writable artifact.
+* Initial blockers: PR #684 has three pending hosted checks. P05-T03 depends on complete #682 thread disposition and replacement linkage. P05-T04–P05-T06 and P06 remain future and may not execute in this review.
+
+## P05 Basher Final-SHA Delivery Review
+
+* Independent reviewer: Basher. Leela authored the latest tracking-only exact-W39 commit and did not contribute to this review. Bender, Hermes, and Amy remained excluded.
+* Exact reviewed head: `da84b6b2c50f0226b2abb3b469a01c2158d41ef3`.
+* Accepted executable boundary: `9204e139be485cb916ccd6e70b6fce355b656136`; prior accepted implementation head: `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.
+* Ancestry and drift: both accepted SHAs are ancestors of `da84b6b`. Changes after `905a890` touch only `.copilot-tracking/plans/2026-09-21/production-provider-terminal-truth-plan.md`, `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`, `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`, and `.copilot-tracking/pr/pr.md`. No executable source or tests changed.
+* Upstream prerequisite: `jmservera/SquadScope#773` reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2` merged as `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3` at `2026-09-22T09:20:43Z`. All 18 PR checks succeeded. Merge-SHA CI, security, Checkov, lint, release, and deploy workflows also succeeded.
+* P00-T01 disposition: complete. The merged upstream code uses exact canonical publication identity, append-only trusted dispatch receipts, accepted/missing/terminal monitoring, immutable prior-attempt evidence, fail-closed non-green weekly states, and externally verified provider terminal status.
+* Exact-W39 gate assessment: conformant. P05-T06 is dependency-ordered after review/merge/provenance/deployment/readiness/rollback/provider-authority gates; reconciles all W39 intent, dispatch, receipt, Podcaster, Azure, immutable-attempt, and provider-candidate evidence before mutation; fails closed on existing/conflicting/unknown/incomplete state; requires one sanitized GitHub-to-provider correlation chain and authoritative terminal readback; preserves historical W39=`missed_not_dispatched`; and grants no automatic P06 credit.
+* P05-T01 disposition: complete after durable #773 cross-link and PR narrative reconciliation.
+* P05-T02 disposition: conditionally conformant for the reviewed executable/tracking boundary, but not complete until every hosted check on the final pushed tracking head finishes successfully.
+* P05-T03 disposition: blocked. GitHub reports 67/67 #682 threads resolved, but 17 have a Copilot reviewer finding as the final comment without an author disposition, and zero final thread replies link replacement PR #684. PR #682 remains open. Resolved UI state alone is insufficient replacement evidence.
+* Draft/merge posture: retain draft. #684 is not merge-authorized while P05-T02 or P05-T03 is incomplete. Do not close #682 until durable disposition/replacement links exist and #684 is otherwise accepted and merge-ready.
+* Production boundary: no merge, deployment, W39 dispatch, provider mutation, canary, issue closure, or review-thread mutation occurred.
+
+<!-- rpi:review id=RV-010 -->
+### RV-010 [Medium, open]: PR #682 resolution state lacks complete durable replacement disposition
+
+* Related scope: P05-T03.
+* Evidence: GitHub GraphQL reports 67 total and 67 resolved review threads, but 17 final comments are still reviewer findings without an author disposition; no final thread reply references #684.
+* Impact: The replacement relationship cannot be audited, and closing #682 or authorizing #684 merge would prematurely treat UI resolution as evidence-backed supersession.
+* Destination: `rpi-research`.
+* Smallest useful next action: For each of the 17 threads, record a code/test/non-port disposition and durable #684 replacement link; then verify all authoritative rows and only close #682 after #684 is accepted/merge-ready.
+
+### Current Review Outcome
+
+* Review execution status: Complete for exact head `da84b6b2c50f0226b2abb3b469a01c2158d41ef3`; hosted finalization remains contingent on the post-review tracking head.
+* Outcome: Not accepted for merge authorization because P05-T03 has a material evidence gap. The exact executable and exact-W39 tracking boundary is otherwise conformant with no High/Critical finding.
+* Severity summary: 0 Critical, 0 High, 1 Medium open (`RV-010`).
+* Remaining work: P05-T03 durable dispositions; P05-T04 merge/provenance; P05-T05 deployment/readiness/rollback/provider authority; P05-T06 exact real-W39 reconciliation/execution/readback; P06 four qualifying future cycles.
 
 ## P07 Leela Fresh Independent Final-SHA Review
 

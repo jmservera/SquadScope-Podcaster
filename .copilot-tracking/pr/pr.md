@@ -1,7 +1,7 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`; the pre-directive tracking head was `a4a152eb4561c55ca11777abdff026dc54f66ecd`.** Exact typed canonical validation rejects boolean/float `authz_count`, scalar substitutions across all versioned recovery structures, exponent-overflow/non-finite and negative-zero numbers, unsupported values, coercions, non-string keys, and duplicate JSON fields. P00-T01, P05 including the mandatory exact real-W39 production run, P06, and operator-only #682 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`; exact head `da84b6b2c50f0226b2abb3b469a01c2158d41ef3` adds tracking only.** Upstream prerequisite `jmservera/SquadScope#773` is merged and green, completing P00-T01. P05-T03 remains blocked because #682's 67 threads are marked resolved but 17 end without author disposition and no final thread reply links #684. P05-T04–P05-T06 and P06 remain future, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
@@ -9,6 +9,11 @@ Current source/tests commit: `9204e139be485cb916ccd6e70b6fce355b656136`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
 Current sole revision author: Leela.
 Fresh independent reviewer: Basher completed a read-only exact-SHA acceptance review.
+
+Upstream prerequisite: jmservera/SquadScope#773, reviewed head
+`d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merged as
+`7a6d8811bf82507cbdd0b01ba1135bc42e5942f3` at `2026-09-22T09:20:43Z`, with all
+18 PR checks and merge-SHA CI/security/release/deploy workflows successful.
 
 ## Leela RV-008 exact typed canonical correction
 
@@ -261,7 +266,7 @@ Frank's probes prove that a later `provider_unknown` blocks reuse of the older f
 
 ## Residual external gates
 
-- **P00-T01 — `jmservera/SquadScope`:** verify the merged upstream prevention/fix set, exact merge-SHA artifact deployment, and production readiness for W39 dispatch. PRs #770, #771, and #772 are merged; deployment provenance remains unproven here.
+- **P00-T01 — complete:** `jmservera/SquadScope#773` reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2` merged as `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3`; all 18 PR checks and merge-SHA CI/security/release/deploy workflows succeeded.
 - **P07-T07 — complete:** Basher independently accepted Leela's corrected exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.
 - **P05 — delivery and exact W39 acceptance:** complete Podcaster/#682 disposition, required reviews and merges, exact upstream/Podcaster merge-SHA artifact deployment, all rollout gates, P05-T06 reconcile-first real-W39 execution, authoritative external provider readback, safe evidence reporting, alert fire/clear evidence, and rollback evidence.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
