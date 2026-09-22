@@ -1456,6 +1456,22 @@ def test_outbox_json_rejects_duplicate_recovery_fields(setup):
         repository.read(document["outbox_id"])
 
 
+def test_outbox_json_rejects_exponent_overflow(setup):
+    storage, repository, _clock, document, _created = setup
+    path = outbox_path(document["outbox_id"])
+    raw = storage.get_bytes(path)
+    assert raw is not None
+    overflowed = raw.replace(b'"fencing_token":0', b'"fencing_token":1e999', 1)
+    assert overflowed != raw
+    storage.update_bytes(
+        path,
+        "application/json; charset=utf-8",
+        lambda _raw: overflowed,
+    )
+    with pytest.raises(DistributionOutboxError, match="non-finite number"):
+        repository.read(document["outbox_id"])
+
+
 def test_latest_unknown_readback_for_different_provider_item_fails_closed(setup):
     _storage, repository, _clock, document, _created = setup
     failed = _failed_attempt(

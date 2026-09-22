@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -194,11 +195,18 @@ def _load_outbox_document(raw: bytes) -> dict[str, Any]:
     def _reject_non_finite_number(value: str) -> None:
         raise DistributionOutboxError(f"outbox record contains non-finite number: {value}")
 
+    def _parse_finite_float(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise DistributionOutboxError(f"outbox record contains non-finite number: {value}")
+        return parsed
+
     try:
         document = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_object_without_duplicates,
             parse_constant=_reject_non_finite_number,
+            parse_float=_parse_finite_float,
         )
     except DistributionOutboxError:
         raise
