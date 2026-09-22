@@ -38,6 +38,10 @@ Recovery authorization uses the exact `distribution-recovery-authz-v4` envelope 
 explicit version and null policy, immutable source/reason/time and predecessor/successor identity,
 structured evidence plus digest, an empty bound extensions map, and active/superseded linkage.
 The ordered collection count, IDs, active ID, and digest must match the attempt chain exactly.
+Every versioned recovery structure is validated against its exact recursive JSON type/schema before
+digest or equality checks. Canonical comparison distinguishes null, boolean, integer, string,
+object, and array values; floats, non-finite numbers, negative zero, non-string keys, unsupported
+containers, duplicate JSON fields, coercions, and legacy/unknown structures fail closed.
 Missing, legacy, unknown-version, type-mutated, extra-field, duplicate, reordered, conflicting, or
 unrelated authorizations fail closed. Exactly one active authorization may grant the successor's
 first mutation-capable claim; concurrent claims have one winner and all later claims are
