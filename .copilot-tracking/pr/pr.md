@@ -1,11 +1,11 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Basher corrected Rusty's RV-008 rejection; Ralph's fresh independent final-SHA review is pending.** Fry's rejection of Leela's revision `02241a1`, Livingston's rejection of Farnsworth source candidate `601d36a`, and Rusty's rejection of Frank's `1efa749` remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Ralph independently rejected final head `fcfa40015ed68d9e38d8432425b7cbd15171e835`; RV-008 remains High.** Fry's rejection of Leela's revision `02241a1`, Livingston's rejection of Farnsworth source candidate `601d36a`, and Rusty's rejection of Frank's `1efa749` remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Basher revision base: `97c9520b7c365b078a50df113154bb1e66b1ecbb`.
 Current source/tests/artifacts commit: `eaaac5706985d0df4058f46d25e4aa4d9217f41e`.
-Fresh independent reviewer: Ralph, pending.
+Fresh independent reviewer: Ralph, completed with verdict **Not accepted**.
 
 ## Incident and acceptance truth
 
@@ -43,7 +43,19 @@ Basher is the sole author of the current correction. Ralph is reserved for fresh
 
 The latest `provider_unknown` attempt now supplies recovery identity only through its immutable provider-evidence snapshot. Each provider must have a consumed, provider-matching intent with one expected item; receipts must belong to that intent, be non-ambiguous, and not conflict with the expected identity. Each provider must then have exactly one failed-terminal post-readback for that same item. Missing identity, provider-kind mismatch, stale receipt, conflicting item evidence, duplicate readback, or a different readback item fails closed.
 
-Rusty's exact bypass using intents for `youtube-unknown`/`spotify-unknown` and failed readbacks for `youtube-DIFFERENT-ITEM`/`spotify-DIFFERENT-ITEM` can no longer create authorization or a third mutation-capable attempt. Exact matching readback still resolves only the matching latest attempt under the existing attempt/week/publication/digest/artifact and ordered-history contract.
+Rusty's exact bypass using intents for `youtube-unknown`/`spotify-unknown` and failed readbacks for `youtube-DIFFERENT-ITEM`/`spotify-DIFFERENT-ITEM` can no longer create authorization or a third mutation-capable attempt. However, Ralph proved the exact-match path still accepts zero durable provider receipts and creates a mutation-capable successor.
+
+## Ralph final-SHA rejection
+
+Ralph independently reviewed `97c9520b7c365b078a50df113154bb1e66b1ecbb..fcfa40015ed68d9e38d8432425b7cbd15171e835`, focused on source commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e`. No executable changes followed that source commit.
+
+RV-008 remains **High**. `_recovery_predecessor_provider_evidence()` accepts `receipts=[]`; exact-item failed-terminal readback then authorizes a third attempt:
+
+`RV008_MISSING_RECEIPT_BYPASS receipts={'youtube': 0, 'spotify': 0} attempts=3 read_only=False`
+
+Required correction: require exactly one usable, non-ambiguous receipt bound to each consumed intent, provider kind, and expected provider item before failed-terminal readback can authorize the specifically bound successor. Missing or duplicate receipts must fail closed.
+
+RV-002, RV-003, RV-004, RV-007, and RV-009 remain resolved. P07 is not accepted.
 
 ## Historical Frank correction and Rusty rejection
 
@@ -76,7 +88,7 @@ Rusty's verdict on Frank's revision remains **Not accepted**: 0 Critical, 1 High
 - Container image `sha256:0e4d101baaca7f4b4ebc2b84f78f103c8451aff4710ea9bb1d239897a34bdfff` passed UID `999`, ffmpeg/ffprobe, and pipeline import smoke; the unconfigured distribution worker exited `2`.
 - Changed-file suspected secret/PII scan found no private key, access key, JWT, signed credential URL, or email-address pattern.
 
-No Compose rebuild was required. No validation or security gate was weakened. Ralph review remains pending.
+Ralph's initial full run reproduced the known stale Compose recorder image; after rebuilding the recorder, the fanout probe and full suite passed. Independent counts were focused `113`, locked `788`, and full `3118`; exact Checkov remained `36/7`, CI Checkov passed `34/0`, and review image `sha256:5baa9f5828ab055362ba8e5b25d3fae388ab5cb85c5029c335cce4d79f2ccf10` passed smoke. No validation or security gate was weakened.
 
 ## Historical independent validation evidence
 
@@ -99,7 +111,7 @@ Frank's probes prove that a later `provider_unknown` blocks reuse of the older f
 ## Residual external gates
 
 - **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
-- **P07-T07:** obtain Ralph's fresh independent review of Basher's final pushed SHA.
+- **RV-008 / P07-T01 / P07-T07:** require exact durable provider receipts, rerun validation, and obtain a new independent final-SHA review.
 - **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 
@@ -135,8 +147,9 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] Livingston's rejection of source candidate `601d36a` preserved.
 - [x] RV-008 branch-around-older-unknown recovery defect corrected and validated by Frank.
 - [x] Rusty independently reviewed exact head `1efa749`; verdict Not accepted.
-- [x] RV-008 exact latest-unknown provider-item readback binding corrected and fully validated by Basher.
-- [ ] Ralph independently reviews the final pushed SHA.
+- [x] RV-008 different-item latest-unknown readback bypass corrected and validated by Basher.
+- [x] Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835`; verdict Not accepted.
+- [ ] RV-008 missing-receipt authorization corrected and independently accepted.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
 - [ ] P05 deployment/canary gates completed.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.

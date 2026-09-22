@@ -10,16 +10,29 @@
 
 ## Execution Status
 
-* Status: Basher's sole-author RV-008 correction and validation are complete from Rusty's rejected tracking head `97c9520b7c365b078a50df113154bb1e66b1ecbb`; source/tests/artifacts commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e` is delivered, with Ralph review pending
+* Status: Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835` and rejected Basher's sole-author RV-008 correction. Source/tests commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e` closes Rusty's different-item bypass but still authorizes recovery without any durable provider receipt
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
 * Sole current revision author: Basher
 * Independent reviewer: Ralph, reserved and pending without source/test contribution
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed markers for current revision: P07-T01 and P07-T06
-* Pending marker: P07-T07 fresh Ralph final-SHA review
-* Remaining in-scope work: commit/push, PR reconciliation, and Ralph review
+* Completed marker for current revision: P07-T06
+* Open markers: P07-T01 and P07-T07
+* Remaining in-scope work: require exact durable receipt binding, revalidate, reconcile delivery, and obtain a new independent final-SHA review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: the clean local, remote, and PR head is `97c9520b7c365b078a50df113154bb1e66b1ecbb`; Frank's source commit `502807d562996ecf6c8cd4213afd4cdf454aa5c3` and Rusty's review are ancestors with divergence `0/0`. Complete-history/latest-attempt checks pass, but Rusty reproduced authorization from failed readback of a different provider item than the latest unknown mutation. RV-008 remains High. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+* Status basis: the reviewed clean local, remote, and PR head was `fcfa40015ed68d9e38d8432425b7cbd15171e835`, source commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e`, with divergence `0/0` and no executable changes after source. Different-item, missing identity, duplicate, conflicting, wrong-kind, stale-receipt, stale-authorization, wrong-binding, omitted/reordered-history, and fencing probes pass. Ralph reproduced authorization from exact-item failed readback with zero durable receipts: `RV008_MISSING_RECEIPT_BYPASS receipts={'youtube': 0, 'spotify': 0} attempts=3 read_only=False`. RV-008 remains High. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+
+## P07 Ralph Fresh Independent Final-SHA Review
+
+* Reviewer and independence: Ralph did not author Basher's revision and received no contribution or advice from Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, Frank, Rusty, or Basher during review.
+* Exact boundary: `97c9520b7c365b078a50df113154bb1e66b1ecbb..fcfa40015ed68d9e38d8432425b7cbd15171e835`; source focus `eaaac5706985d0df4058f46d25e4aa4d9217f41e`. Commits after source changed only `.copilot-tracking/changes/...` and `.copilot-tracking/pr/pr.md`.
+* Verdict: **Not accepted** with 0 Critical, 1 High, 0 Medium, and 0 Low current in-repository findings.
+* RV dispositions: RV-002/RV-003/RV-004/RV-007/RV-009 remain resolved. Rusty's different-item RV-008 reproduction is denied. RV-008 remains High because latest-unknown authorization accepts an empty provider receipt list.
+* Exact reproduction: consume exact provider intents, persist no receipts, terminate `provider_unknown`, append exact-item failed-terminal readbacks, generate authorization, and claim the successor. Result: `RV008_MISSING_RECEIPT_BYPASS receipts={'youtube': 0, 'spotify': 0} attempts=3 read_only=False`.
+* Required clearing evidence: require one exact, non-ambiguous receipt bound to the consumed intent, provider kind, and expected provider item for each provider before failed-terminal readback can authorize a successor; missing or duplicate receipts must fail closed while preserving immutable attempts.
+* Validation: focused RV probes `29 passed, 39 deselected`; focused correction `113 passed`; locked contract `788 passed, 1 warning`; initial full suite reproduced only the stale Compose recorder image (`1 failed, 3117 passed, 2 skipped, 2 deselected, 1 warning`); recorder rebuild and fanout probe `1 passed`; final full suite `3118 passed, 2 skipped, 2 deselected, 1 warning`.
+* Other gates: Ruff, format, compile, diff safety, Bicep, CI-equivalent Checkov `34/0`, Dockerfile Checkov baseline, and container smoke passed. Exact Checkov retained `36 passed, 7 failed`. Review image `sha256:5baa9f5828ab055362ba8e5b25d3fae388ab5cb85c5029c335cce4d79f2ccf10`; UID `999`, ffmpeg/ffprobe and pipeline imports passed; unconfigured distribution worker exited `2`.
+* Security scan: no suspected private key, access key, JWT, signed credential URL, email-address pattern, or raw PII was identified in the changed files.
+* Delivery posture: PR #684 remains open, draft, and blocked. P07 is not accepted; P00-T01, P05, and P06 remain open.
 
 ## P07 Basher Exact Provider-Identity Revision Opening
 
