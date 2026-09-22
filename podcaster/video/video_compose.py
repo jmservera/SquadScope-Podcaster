@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -112,6 +113,9 @@ LOWER_THIRD_FONT_SIZE = 36
 LOWER_THIRD_BOX_OPACITY = 0.6
 LOWER_THIRD_Y_POSITION = "h-h/6"
 LOWER_THIRD_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FINAL_MEDIA_DECODE_TIMEOUT_SECONDS = 1800
+FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS = 5
+FINAL_MEDIA_DECODE_STDERR_BYTES = 16 * 1024
 
 # --- Final encode settings (YouTube/Spotify-ready) -------------------------
 # Every knob below is env-overridable so encode quality can be tuned — and the
@@ -2937,6 +2941,7 @@ def _finalize_output(
     output_path: Path,
     segment_count: int,
     run: "CommandRunner",
+    decode: "Callable[[Path], None] | None" = None,
 ) -> ComposeResult:
     """Mux the podcast audio (if any) over the composed video and finalise.
 
@@ -2991,7 +2996,7 @@ def _finalize_output(
     staged_output = output_path.with_name(f".{output_path.stem}.{uuid.uuid4().hex}.staged.mp4")
     try:
         run(_build_h264_metadata_cmd(pre_final_path, staged_output))
-        _validate_final_media(staged_output, run, require_audio=needs_audio)
+        _validate_final_media(staged_output, run, require_audio=needs_audio, decode=decode)
         os.replace(staged_output, output_path)
     finally:
         try:
@@ -3012,8 +3017,9 @@ def _validate_final_media(
     run: "CommandRunner",
     *,
     require_audio: bool,
+    decode: "Callable[[Path], None] | None" = None,
 ) -> None:
-    """Require an exact, readable final media container before publication."""
+    """Require exact metadata and a complete media decode before publication."""
     if not path.is_file() or path.stat().st_size <= 0:
         raise RuntimeError("final media validation failed: output is missing or empty")
     cmd = [
@@ -3028,6 +3034,8 @@ def _validate_final_media(
     ]
     try:
         proc = run(cmd)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffprobe exited {proc.returncode}")
         info = json.loads(proc.stdout or "{}")
         streams = info["streams"]
         duration = float(info["format"]["duration"])
@@ -3043,6 +3051,82 @@ def _validate_final_media(
         raise RuntimeError("final media validation failed: audio stream is missing")
     if not math.isfinite(duration) or duration <= 0:
         raise RuntimeError("final media validation failed: duration is not positive")
+    (decode or _decode_final_media)(path)
+
+
+def _bounded_stderr_tail(stream: Any) -> str:
+    stream.flush()
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+    stream.seek(max(0, size - FINAL_MEDIA_DECODE_STDERR_BYTES))
+    return stream.read(FINAL_MEDIA_DECODE_STDERR_BYTES).decode("utf-8", errors="replace").strip()
+
+
+def _decode_final_media(path: Path) -> None:
+    """Decode every audio/video stream completely and fail on the first corruption."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("final media validation failed: ffmpeg is unavailable")
+    cmd = [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-xerror",
+        "-err_detect",
+        "explode",
+        "-protocol_whitelist",
+        "file,crypto,data,pipe",
+        "-i",
+        str(path),
+        "-map",
+        "0:v?",
+        "-map",
+        "0:a?",
+        "-f",
+        "null",
+        "-",
+    ]
+    with tempfile.TemporaryFile() as stderr:
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+                start_new_session=True,
+            )
+            try:
+                returncode = process.wait(timeout=FINAL_MEDIA_DECODE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired as exc:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                detail = _bounded_stderr_tail(stderr)
+                suffix = f": {detail}" if detail else ""
+                raise RuntimeError(
+                    "final media validation failed: complete decode timed out "
+                    f"after {FINAL_MEDIA_DECODE_TIMEOUT_SECONDS}s{suffix}"
+                ) from exc
+        except OSError as exc:
+            raise RuntimeError("final media validation failed: ffmpeg could not run") from exc
+        if returncode != 0:
+            detail = _bounded_stderr_tail(stderr)
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"final media validation failed: complete decode exited {returncode}{suffix}"
+            )
 
 
 # Blob checkpoint name for the finished video-only composed clip (issue #410).
