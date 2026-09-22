@@ -26,6 +26,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -1931,11 +1932,11 @@ def run_video_generation(
     clip_producer: QueueProducer | None = None,
     budget: VideoStageBudget | None = None,
     budget_utcnow: Callable[[], datetime] | None = None,
-    media_probe: Callable[[Path, float], ProbeEvidence] | None = None,
     storage_operation_runner: Callable[[Callable[[], Any], float], Any] | None = None,
     attempt: int | None = None,
     defer_optional_cleanup: bool = False,
     on_budget_resolved: Callable[[VideoStageBudget], None] | None = None,
+    lifecycle_deadline_monotonic: float | None = None,
 ) -> VideoOutcome:
     """Generate video for a staged job_id and distribute to configured targets.
 
@@ -1985,6 +1986,33 @@ def run_video_generation(
     stage_budget = budget
     if on_budget_resolved is not None:
         on_budget_resolved(stage_budget)
+
+    media_validation_lease_deadline: float | None = None
+
+    def _remaining_media_validation_budget() -> float:
+        nonlocal media_validation_lease_deadline
+
+        current_monotonic = time.monotonic()
+        remaining: list[float] = []
+        if lifecycle_deadline_monotonic is not None:
+            remaining.append(lifecycle_deadline_monotonic - current_monotonic)
+        if fanout_enabled and run_id is not None:
+            from podcaster.video.editor import (
+                DEFAULT_LEASE_TTL_SECONDS,
+                acquire_or_renew_lease,
+            )
+
+            if media_validation_lease_deadline is None:
+                if not acquire_or_renew_lease(scratch, job_id, run_id):
+                    raise RuntimeError(
+                        f"final media validation failed: editor lease lost for job_id={job_id}"
+                    )
+                current_monotonic = time.monotonic()
+                media_validation_lease_deadline = current_monotonic + DEFAULT_LEASE_TTL_SECONDS
+            remaining.append(media_validation_lease_deadline - current_monotonic)
+        if not remaining:
+            return float("inf")
+        return min(remaining)
 
     # Load manifest
     raw_manifest = storage.get_bytes(manifest_path(job_id))
@@ -2436,8 +2464,11 @@ def run_video_generation(
                     section_cards=section_cards,
                     intermediates=intermediates,
                     task_reporter=normalize_reporter,
-                    budget=stage_budget,
-                    media_probe=media_probe,
+                    media_validation_budget=(
+                        _remaining_media_validation_budget
+                        if lifecycle_deadline_monotonic is not None or fanout_enabled
+                        else None
+                    ),
                 )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
@@ -3581,6 +3612,7 @@ def process_message(
     budget: VideoStageBudget | None = None,
     budget_utcnow: Callable[[], datetime] | None = None,
     queue_operation_runner: Callable[[Callable[[], Any], float], Any] = _run_queue_operation,
+    lifecycle_deadline_monotonic: float | None = None,
 ) -> VideoOutcome:
     """Process one video queue message: generate, then delete on terminal outcome."""
     current = now or datetime.now(timezone.utc)
@@ -3631,6 +3663,7 @@ def process_message(
             attempt=message.dequeue_count,
             defer_optional_cleanup=True,
             on_budget_resolved=capture_budget,
+            lifecycle_deadline_monotonic=lifecycle_deadline_monotonic,
         )
     except PermanentVideoError as exc:
         logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)
@@ -3764,7 +3797,16 @@ def drain(
         if not messages:
             break
         for message in messages:
-            outcomes.append(process_message(message, storage=storage, queue=queue, config=config))
+            lifecycle_deadline = time.monotonic() + visibility_timeout
+            outcomes.append(
+                process_message(
+                    message,
+                    storage=storage,
+                    queue=queue,
+                    config=config,
+                    lifecycle_deadline_monotonic=lifecycle_deadline,
+                )
+            )
     return outcomes
 
 

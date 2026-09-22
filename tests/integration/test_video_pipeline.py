@@ -92,7 +92,11 @@ def test_video_pipeline_generates_mp4_output(
     output_path = tmp_path / (
         "episode-with-audio.mp4" if with_audio else "episode-without-audio.mp4"
     )
-    monkeypatch.setattr(video_compose, "_decode_final_media", lambda _path: None)
+    monkeypatch.setattr(
+        video_compose,
+        "_decode_final_media",
+        lambda _path, **_kwargs: None,
+    )
 
     result = compose_video(
         recorded_segments,
