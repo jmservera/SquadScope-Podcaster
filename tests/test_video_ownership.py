@@ -12,6 +12,7 @@ from podcaster.distribution_outbox import (
     DistributionOutboxRepository,
     commit_immutable_artifact,
     outbox_path,
+    provider_approval_is_valid,
 )
 from podcaster.publication_state import PublicationIdentity
 from podcaster.storage import LocalStorageBackend
@@ -221,8 +222,20 @@ def test_archive_outbox_and_notification_writes_consume_source_permit(tmp_path):
         enqueue_version="v1",
         source_ownership=outbox_token,
         authorize=lambda: guard.assert_permit(outbox),
+        provider_approvals={
+            "youtube": {
+                "approved": True,
+                "approved_by": "operator",
+                "approved_at": "2026-09-22T17:00:00Z",
+                "source": "manifest_human_review",
+            }
+        },
+        provider_context={"youtube": {"playlist_id": "playlist-1"}},
     )
     assert created is True
+    assert document["source_ownership"] == outbox_token
+    assert provider_approval_is_valid(document, "youtube") is True
+    assert document["providers"]["youtube"]["context"]["playlist_id"] == "playlist-1"
     guard.complete(outbox, target=document["outbox_id"])
 
     notification = guard.begin("notification", allow_idempotent_takeover=True)

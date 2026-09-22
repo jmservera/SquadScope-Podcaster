@@ -1112,3 +1112,98 @@ This historical return is not the current delivery state. The current revision h
 * Follow-up items: Spotify contract reevaluation and optional W38 deployed-image forensics.
 * Review readiness or no-handoff reason: ready for independent review of the declared local scope; no delivery or production acceptance is claimed.
 * Continuation owner: requesting parent/reviewer.
+
+## 2026-09-22 Amy independent provider correction
+
+### Reconciliation opening state
+
+* Related phase or task: P08-T07.
+* Approved base: exact remote head `19706f4b7bffe1375d6ccf3ef25d7a39454bd314`.
+* Active scope: reconcile Amy source commit
+  `64745c1aa15154e9a779263ce07a8f2533b6103c` by intent onto the approved base.
+* Approved write boundary: provider outbox/worker/publish integration, directly
+  affected tests and operator docs, and current RPI evidence.
+* Retained remote behavior: every ownership permit, fixed lifecycle expiry,
+  takeover, archive, outbox, notification, direct-provider, and terminal-write
+  fence from `6bba12719ac5bf13b3c757bda9d56eff12732632`.
+* Planned validation: focused provider tests; ownership, lifecycle, queue,
+  editor, and job-runner suites; all affected tests; full pytest; Ruff check
+  and format; compileall; diff hygiene; changed-line secret scan; exact remote
+  gate; normal push; and hosted PR/stack/check verification.
+* Current blockers: none.
+
+### Ownership-fenced provider reconciliation
+
+* Related phase or task: P08-T01 through P08-T07.
+* Files: `podcaster/distribution_outbox.py`,
+  `podcaster/video/job_runner.py`, `tests/test_video_ownership.py`.
+* What changed and why: outbox creation now atomically combines the remote
+  source-ownership permit and authorization callback with publication-bound
+  provider approval and provider context. The video runner begins and consumes
+  the remote ownership permit around the same write, then retains the remote
+  notification reservation/sent permit. The ownership regression proves the
+  durable record contains the exact source token, valid human approval, and
+  playlist context before the permit completes.
+* Completion evidence: the combined exact regression passed `1`; the ownership
+  and job-runner rerun passed `133`; no ownership, lifecycle-expiry, takeover,
+  archive, notification, direct-provider, or terminal-write fence was removed.
+* Validation: passed.
+
+### Durable approval and YouTube mutation boundary
+
+* Related phase or task: P08-T01, P08-T04, P08-T05.
+* Files: `podcaster/distribution_outbox.py`, `podcaster/distribution_worker.py`,
+  `podcaster/video/job_runner.py`, `tests/test_distribution_outbox.py`,
+  `tests/test_distribution_worker.py`.
+* What changed and why: provider legs now carry durable human approval bound to
+  publication digest and manifest hash. Automated `system:` actors fail closed.
+  YouTube performs deterministic marker reconciliation before first create
+  intent, and configured playlist insertion requires approval, consumed intent,
+  idempotent membership reconciliation, and external membership readback before
+  terminal public success.
+* Completion evidence: focused worker/provider tests pass; unapproved paths
+  perform no playlist or public-promotion mutation.
+
+### Spotify video and RSS terminal truth
+
+* Related phase or task: P08-T02, P08-T03.
+* Files: `podcaster/publish.py`, `podcaster/video/distribution.py`,
+  `podcaster/distribution_worker.py`, `tests/test_publish.py`,
+  `tests/test_distribution_worker.py`.
+* What changed and why: Spotify video reconcile-before-create is mandatory even
+  when `PODCASTER_SPOTIFY_RECONCILE=0`; `uploadType=default` is retained for
+  signed URL and processing calls. The outbox worker now owns fenced draft
+  upload/promotion with strict readback and approval/live gates. Spotify RSS is
+  a separate fenced leg requiring immutable public media hash/size verification
+  and external feed content verification.
+* Completion evidence: focused Spotify upload, promotion, immutable RSS,
+  invalid-origin, and external-readback regressions pass.
+
+### Queue disposition and lifecycle preservation
+
+* Related phase or task: P08-T06.
+* Files: `podcaster/distribution_worker.py`,
+  `tests/test_distribution_worker.py`.
+* What changed and why: malformed distribution messages are sanitized and
+  deleted without provider work; valid messages remain retryable below the
+  bounded dequeue limit and become durable poisoned terminal records at
+  exhaustion.
+* Completion evidence: affected provider/queue/editor/job-runner suite passed
+  `566` ownership/lifecycle/queue/editor/job-runner tests and `102` remaining
+  affected telemetry/YouTube tests on the combined ownership-fenced revision.
+
+## P08 Validation Record
+
+| Check | Scope | Status | Evidence or reason |
+|---|---|---|---|
+| Focused provider correction | outbox, worker, publish, video distribution | Passed | `555 passed in 487.53s`. |
+| Ownership/lifecycle/queue/editor/job-runner | ownership, job runner, compose, queue, clip queue, editor, synthesis runner | Passed | `566 passed in 9.28s`. |
+| Remaining affected suites | distribution telemetry and YouTube playlist/publish/upload/integration | Passed | `102 passed in 0.34s`. |
+| Combined approval/ownership regression | source token, authorization callback, human approval, playlist context | Passed | `1 passed in 0.29s`; final ownership/job-runner rerun `133 passed in 0.95s`. |
+| Full repository | repository | Passed | `3315 passed, 2 skipped, 2 deselected, 1 warning in 526.16s`. |
+| Ruff check | `podcaster tests` | Passed | `All checks passed!`. |
+| Ruff format | `podcaster tests` | Passed | `195 files already formatted`. |
+| Compileall | `podcaster` | Passed | `python3 -m compileall -q podcaster`. |
+| Diff hygiene | exact diff from `19706f4` | Passed | `git diff --check`. |
+| Changed-line secret scan | non-tracking added lines | Passed | No suspected credentials or email addresses; two explicit `.example` `sig=ephemeral` negative-test fixtures were allowlisted. |
+| Delivery and hosted proof | branch/PR | Pending | Final remote equality, commit, normal push, and hosted draft/stack/check verification remain P08-T07. |

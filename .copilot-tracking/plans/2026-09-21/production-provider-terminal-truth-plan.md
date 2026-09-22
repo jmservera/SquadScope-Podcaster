@@ -834,3 +834,36 @@ The existing critique is preserved unchanged as historical evidence. No second c
 * Current author/reviewer: Leela is the sole correction author from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`; Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` without contributing. All prior author/reviewer cycles remain historical evidence.
 * Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are resolved; RV-006 remains planning-resolved.
 * Remaining blockers after revision: proof that all required upstream and Podcaster fixes are reviewed/merged; exact merge-SHA artifact deployment and cleared review/deployment gates; P05-T06 reconcile-first exact W39 production execution with authoritative external provider readback; P06 four elapsed future post-fix cycles; and operator-only #682. Basher independently accepted exact reviewed implementation head `905a890`, so P07-T07 is complete. PR #684 remains draft/blocked while any remaining gate is open.
+
+## 2026-09-22 Independent Amy Terminal-Truth Correction
+
+This user-directed reconciliation supersedes the stale author exclusions above only for the exact
+revision based on remote head `19706f4b7bffe1375d6ccf3ef25d7a39454bd314`. Bender and Leela are
+locked out from authoring, advice, pairing, or co-authorship. The branch remains draft and stacked;
+production rollout, provider mutation, merge, and ready-for-review promotion remain prohibited.
+The reconciliation must preserve the complete downstream ownership permit, fixed lifecycle expiry,
+takeover, archive, outbox, notification, direct-provider, and terminal-write fences already present
+at the approved base.
+
+<!-- rpi:phase id=P08 -->
+### P08: Close provider approval, RSS, reconcile, and playlist findings
+
+* [x] <!-- rpi:task id=P08-T01 --> Persist publication-bound human approval and gate YouTube
+  playlist insertion/public promotion without accepting automated identities.
+* [x] <!-- rpi:task id=P08-T02 --> Add a fenced Spotify RSS provider leg using an immutable public
+  locator and require external media hash/size plus feed-content readback.
+* [x] <!-- rpi:task id=P08-T03 --> Make Spotify video reconcile-before-create mandatory regardless
+  of `PODCASTER_SPOTIFY_RECONCILE`, retain `uploadType=default`, protected IDs, media separation,
+  approval/live gates, and fail-closed ambiguity.
+* [x] <!-- rpi:task id=P08-T04 --> Reconcile YouTube by deterministic outbox marker before first
+  create intent and retain consumed-intent no-repeat behavior.
+* [x] <!-- rpi:task id=P08-T05 --> Require fenced, idempotent, externally read-back playlist
+  membership before terminal YouTube public success.
+* [x] <!-- rpi:task id=P08-T06 --> Preserve bounded poison exhaustion, sanitized evidence, safe
+  malformed discard, and current queue/editor/job-runner lifecycle ownership behavior.
+* [ ] <!-- rpi:task id=P08-T07 --> Complete full validation, final remote-SHA gate, commit, normal
+  push, and hosted draft/stack/check verification.
+
+P08-T01 through P08-T06 have source and focused/affected-suite evidence. P08-T07 remains the only
+active implementation marker; its first boundary is intent-level reconciliation of Amy's source
+commit onto the ownership-fenced base before rerunning all provider and ownership validation.

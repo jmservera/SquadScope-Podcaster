@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from podcaster.distribution_outbox import (
     DistributionOutboxRepository,
     commit_immutable_artifact,
@@ -20,7 +22,7 @@ class Queue:
         self.deleted.append(message)
 
 
-def _setup(tmp_path, providers):
+def _setup(tmp_path, providers, *, approved=True, context=None):
     storage = LocalStorageBackend(tmp_path / "storage", "http://localhost/artifacts")
     source = tmp_path / "video.mp4"
     source.write_bytes(b"x" * 2048)
@@ -44,6 +46,20 @@ def _setup(tmp_path, providers):
         provider_objectives=providers,
         enqueue_source="test",
         enqueue_version="v1",
+        provider_approvals={
+            provider: (
+                {
+                    "approved": True,
+                    "approved_by": "operator",
+                    "approved_at": "2026-09-22T17:00:00Z",
+                    "source": "manifest_human_review",
+                }
+                if approved
+                else {"approved": False}
+            )
+            for provider in providers
+        },
+        provider_context=context or {},
     )
     message = QueueMessage(
         "m1",
@@ -60,6 +76,10 @@ def test_youtube_draft_processing_promotion_and_public_readback(tmp_path, monkey
     monkeypatch.setattr(
         "podcaster.distribution_worker._get_youtube_access_token",
         lambda config, transport: "token",
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._youtube_reconcile_create",
+        lambda *args, **kwargs: ("absent", None),
     )
     monkeypatch.setattr(
         "podcaster.distribution_worker.upload_to_youtube",
@@ -105,6 +125,10 @@ def test_ambiguous_youtube_create_is_durable_unknown_without_retry(tmp_path, mon
         "podcaster.distribution_worker._get_youtube_access_token",
         lambda config, transport: "token",
     )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._youtube_reconcile_create",
+        lambda *args, **kwargs: ("absent", None),
+    )
 
     def ambiguous(*args, **kwargs):
         calls.append("upload")
@@ -137,6 +161,10 @@ def test_ambiguous_chunk_upload_redelivery_is_reconcile_only(tmp_path, monkeypat
         "podcaster.distribution_worker._get_youtube_access_token",
         lambda config, transport: "token",
     )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._youtube_reconcile_create",
+        lambda *args, **kwargs: ("absent", None),
+    )
 
     def ambiguous(*args, **kwargs):
         calls.append("upload")
@@ -162,8 +190,15 @@ def test_ambiguous_chunk_upload_redelivery_is_reconcile_only(tmp_path, monkeypat
     )
 
 
-def test_spotify_unsupported_public_mutation_preserves_manual_handoff(tmp_path):
+def test_spotify_failed_reconcile_fails_closed_without_public_success(tmp_path, monkeypatch):
     storage, _document, message = _setup(tmp_path, {"spotify": "public"})
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.upload_video_to_episode",
+        lambda *args, **kwargs: SimpleNamespace(
+            status="failed",
+            anchor_episode_id=None,
+        ),
+    )
     queue = Queue()
     final = process_message(
         message,
@@ -171,8 +206,8 @@ def test_spotify_unsupported_public_mutation_preserves_manual_handoff(tmp_path):
         storage=storage,
         config=VideoDistributionConfig(),
     )
-    assert final["aggregate"]["result"] == "manual_handoff_required"
-    assert final["providers"]["spotify"]["receipts"] == []
+    assert final["aggregate"]["result"] == "publication_unknown"
+    assert final["providers"]["spotify"]["receipts"][0]["ambiguous"] is True
     assert queue.deleted == [message]
 
 
@@ -366,3 +401,345 @@ def test_lost_promotion_response_nonpublic_takeover_never_mutates_again(tmp_path
     leg = final["providers"]["youtube"]
     assert leg["result"] == "publication_unknown"
     assert leg["verification"]["source"] == "youtube_promotion_identity_readback"
+
+
+def test_unapproved_youtube_never_inserts_playlist_or_promotes(tmp_path, monkeypatch):
+    storage, _document, message = _setup(
+        tmp_path,
+        {"youtube": "public"},
+        approved=False,
+        context={"youtube": {"locale": "en", "playlist_id": "PLshow"}},
+    )
+    calls = []
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._get_youtube_access_token",
+        lambda config, transport: "token",
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._youtube_reconcile_create",
+        lambda *args, **kwargs: ("found", "video-1"),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.get_video_snippet",
+        lambda *args, **kwargs: {
+            "uploadStatus": "processed",
+            "processingStatus": "succeeded",
+            "privacyStatus": "unlisted",
+        },
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.playlist_contains_video",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.add_video_to_playlist",
+        lambda *args, **kwargs: calls.append("playlist"),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.publish_video",
+        lambda *args, **kwargs: calls.append("promote"),
+    )
+
+    final = process_message(
+        message,
+        queue=Queue(),
+        storage=storage,
+        config=VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_playlist_id="PLshow",
+        ),
+    )
+
+    assert calls == []
+    assert final["providers"]["youtube"]["result"] == "manual_handoff_required"
+    assert final["providers"]["youtube"]["intent"] is None
+
+
+def test_youtube_first_create_reconciles_before_consuming_intent(tmp_path, monkeypatch):
+    storage, _document, message = _setup(tmp_path, {"youtube": "public"})
+    calls = []
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._get_youtube_access_token",
+        lambda config, transport: "token",
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._youtube_reconcile_create",
+        lambda *args, **kwargs: (calls.append("reconcile") or "found", "video-1"),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.upload_to_youtube",
+        lambda *args, **kwargs: calls.append("upload"),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.get_video_snippet",
+        lambda *args, **kwargs: {
+            "uploadStatus": "processed",
+            "processingStatus": "succeeded",
+            "privacyStatus": "public",
+        },
+    )
+
+    final = process_message(
+        message,
+        queue=Queue(),
+        storage=storage,
+        config=VideoDistributionConfig(youtube_enabled=True),
+    )
+
+    assert calls == ["reconcile"]
+    assert final["aggregate"]["externally_verified_public"] is True
+    assert final["providers"]["youtube"]["intent"] is None
+
+
+def test_approved_playlist_is_inserted_and_read_back_before_public_success(
+    tmp_path,
+    monkeypatch,
+):
+    storage, _document, message = _setup(
+        tmp_path,
+        {"youtube": "public"},
+        context={"youtube": {"locale": "en", "playlist_id": "PLshow"}},
+    )
+    membership = iter([False, True])
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._get_youtube_access_token",
+        lambda config, transport: "token",
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._youtube_reconcile_create",
+        lambda *args, **kwargs: ("found", "video-1"),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.get_video_snippet",
+        lambda *args, **kwargs: {
+            "uploadStatus": "processed",
+            "processingStatus": "succeeded",
+            "privacyStatus": "public",
+        },
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.playlist_contains_video",
+        lambda *args, **kwargs: next(membership),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.add_video_to_playlist",
+        lambda *args, **kwargs: SimpleNamespace(succeeded=True),
+    )
+
+    final = process_message(
+        message,
+        queue=Queue(),
+        storage=storage,
+        config=VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_playlist_id="PLshow",
+        ),
+    )
+
+    assert final["providers"]["youtube"]["intent"]["operation"] == "playlist_insert"
+    assert final["aggregate"]["externally_verified_public"] is True
+
+
+def test_spotify_upload_and_promotion_are_fenced_and_externally_verified(
+    tmp_path,
+    monkeypatch,
+):
+    storage, _document, message = _setup(
+        tmp_path,
+        {"spotify": "public"},
+        context={"spotify": {"audio_anchor_id": 42}},
+    )
+    states = iter([False, True])
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.upload_video_to_episode",
+        lambda *args, **kwargs: SimpleNamespace(status="draft", anchor_episode_id=777),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.read_spotify_video_publication_state",
+        lambda *args, **kwargs: next(states),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.promote_spotify_video_draft",
+        lambda *args, **kwargs: SimpleNamespace(terminal_state="published"),
+    )
+
+    final = process_message(
+        message,
+        queue=Queue(),
+        storage=storage,
+        config=VideoDistributionConfig(
+            spotify_upload_enabled=True,
+            spotify_video_publish_mode="live",
+        ),
+    )
+
+    assert final["aggregate"]["externally_verified_public"] is True
+    assert final["providers"]["spotify"]["intent"]["operation"] == "public_promotion"
+    assert final["providers"]["spotify"]["intent_history"][0]["operation"] == (
+        "create_episode_intent"
+    )
+
+
+def test_spotify_rss_requires_immutable_media_and_external_feed_readback(
+    tmp_path,
+    monkeypatch,
+):
+    storage, document, message = _setup(
+        tmp_path,
+        {"spotify_rss": "public"},
+        context={"spotify_rss": {"feed_path": "feeds/video.xml"}},
+    )
+    media_url = (
+        f"https://cdn.example/distribution-artifacts/video/{document['artifact']['sha256']}.mp4"
+    )
+    feeds = iter(
+        [
+            None,
+            f"""<rss><channel><item>
+<guid isPermaLink="false">{document["outbox_id"]}</guid>
+<enclosure url="{media_url}" />
+</item></channel></rss>""",
+        ]
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._verify_public_media",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._read_public_feed",
+        lambda *args, **kwargs: next(feeds),
+    )
+
+    final = process_message(
+        message,
+        queue=Queue(),
+        storage=storage,
+        config=VideoDistributionConfig(
+            spotify_rss_enabled=True,
+            spotify_rss_feed_path="feeds/video.xml",
+            spotify_rss_public_media_origin="https://cdn.example",
+            spotify_rss_public_feed_url="https://feeds.example/video.xml",
+        ),
+    )
+
+    assert final["aggregate"]["externally_verified_public"] is True
+    assert final["providers"]["spotify_rss"]["intent"]["operation"] == "rss_feed_publish"
+
+
+def test_spotify_rss_redelivery_after_accepted_update_is_readback_only(
+    tmp_path,
+    monkeypatch,
+):
+    storage, _document, message = _setup(
+        tmp_path,
+        {"spotify_rss": "public"},
+        context={"spotify_rss": {"feed_path": "feeds/video.xml"}},
+    )
+    updates = 0
+    original_update = storage.update_bytes
+
+    def counted_update(path, content_type, updater):
+        nonlocal updates
+        if path == "feeds/video.xml":
+            updates += 1
+        return original_update(path, content_type, updater)
+
+    storage.update_bytes = counted_update
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._verify_public_media",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._read_public_feed",
+        lambda *args, **kwargs: None,
+    )
+    config = VideoDistributionConfig(
+        spotify_rss_enabled=True,
+        spotify_rss_feed_path="feeds/video.xml",
+        spotify_rss_public_media_origin="https://cdn.example",
+        spotify_rss_public_feed_url="https://feeds.example/video.xml",
+    )
+
+    first = process_message(message, queue=Queue(), storage=storage, config=config)
+    second = process_message(message, queue=Queue(), storage=storage, config=config)
+
+    assert first["providers"]["spotify_rss"]["result"] == "pending_provider"
+    assert second["providers"]["spotify_rss"]["result"] == "pending_provider"
+    assert updates == 1
+
+
+def test_spotify_rss_unconfigured_origin_fails_closed_without_feed_mutation(tmp_path):
+    storage, _document, message = _setup(tmp_path, {"spotify_rss": "public"})
+    final = process_message(
+        message,
+        queue=Queue(),
+        storage=storage,
+        config=VideoDistributionConfig(
+            spotify_rss_enabled=True,
+            spotify_rss_feed_path="feeds/video.xml",
+        ),
+    )
+    assert final["providers"]["spotify_rss"]["result"] == "manual_handoff_required"
+    assert final["providers"]["spotify_rss"]["intent"] is None
+
+
+def test_spotify_rss_signed_or_query_origin_fails_closed(tmp_path):
+    storage, _document, message = _setup(tmp_path, {"spotify_rss": "public"})
+    final = process_message(
+        message,
+        queue=Queue(),
+        storage=storage,
+        config=VideoDistributionConfig(
+            spotify_rss_enabled=True,
+            spotify_rss_feed_path="feeds/video.xml",
+            spotify_rss_public_media_origin="https://cdn.example?sig=ephemeral",
+            spotify_rss_public_feed_url="https://feeds.example/video.xml?sig=ephemeral",
+        ),
+    )
+    assert final["providers"]["spotify_rss"]["result"] == "manual_handoff_required"
+    assert final["providers"]["spotify_rss"]["intent"] is None
+
+
+def test_malformed_distribution_message_is_safely_discarded(tmp_path):
+    storage, _document, _message = _setup(tmp_path, {"youtube": "public"})
+    malformed = QueueMessage("bad", "r1", "not-json", 1)
+    queue = Queue()
+    final = process_message(
+        malformed,
+        queue=queue,
+        storage=storage,
+        config=VideoDistributionConfig(),
+    )
+    assert final["state"] == "malformed_discarded"
+    assert queue.deleted == [malformed]
+
+
+def test_distribution_poison_exhaustion_is_durable_and_deleted(tmp_path, monkeypatch):
+    storage, _document, message = _setup(tmp_path, {"youtube": "public"})
+    poison = QueueMessage(message.message_id, message.pop_receipt, message.body, 5)
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._get_youtube_access_token",
+        lambda config, transport: "token",
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._youtube_reconcile_create",
+        lambda *args, **kwargs: ("absent", None),
+    )
+    monkeypatch.setattr(
+        "podcaster.distribution_worker.upload_to_youtube",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("provider failed")),
+    )
+    queue = Queue()
+
+    final = process_message(
+        poison,
+        queue=queue,
+        storage=storage,
+        config=VideoDistributionConfig(youtube_enabled=True),
+    )
+
+    assert final["providers"]["youtube"]["result"] == "poisoned"
+    assert final["providers"]["youtube"]["verification"]["exhaustion_reason"] == (
+        "maximum_dequeue_count_exhausted"
+    )
+    assert queue.deleted == [poison]
