@@ -1208,7 +1208,7 @@ Run focused negative probes and the complete repository quality/security/contain
 * Frank independently reproduced the same validation posture at final head `f3c5e643d9068a83e87bd2ef6c8ac120d312519f`: focused `133 passed`; locked `808 passed, 1 warning`; initial full `1 failed, 3137 passed, 2 skipped, 2 deselected, 1 warning` from the known stale Compose recorder image; rebuild followed by final full `3137 passed, 3 skipped, 2 deselected, 1 warning`. Ruff, format, compile, exact diff safety, Bicep, exact Checkov `36/7`, CI Checkov `34/0`, baseline-aware Dockerfile Checkov, container image `sha256:da9825c04e9248453e5925c02367e52d1db62726f50e035c2cd8176f4a37f2a3`, UID/tool/import smoke, worker exit `2`, and exact-diff secret/PII scan passed. Validation does not clear the independently reproduced RV-008 High; P07-T07 remains open.
 
 <!-- rpi:task id=P07-T07 -->
-### P07-T07: Reconcile delivery evidence and obtain Leela's independent final-SHA review
+### P07-T07: Reconcile delivery evidence and obtain Basher's independent final-SHA review
 
 #### Context
 
@@ -1216,16 +1216,16 @@ RV-007 proved current tracking overstates finding closure and contains stale loc
 
 #### Intent
 
-Publish a truthful current delivery update for PR #684 and have Leela independently assess the final validated implementation/evidence.
+Publish a truthful current delivery update for PR #684 and have Basher independently assess Leela's final validated implementation/evidence.
 
 #### Boundaries
 
-* Included: exact current finding count/status, implementation and negative-probe links, validation commands/counts, residual P00/P05/P06 gates, draft/blocked PR state, and Leela's final review.
+* Included: exact current finding count/status, implementation and negative-probe links, validation commands/counts, residual P00/P05/P06 and operator-only #682 gates, draft/blocked PR state, and Basher's final review.
 * Excluded: editing the historical review conclusion, erasing historical implementation claims, claiming deployment/canary/cycle acceptance, or accepting self-review.
 
 #### Likely Targets
 
-* Implementation-owned changes delivery update, current review-status summary, PR #684 handoff/body, and Leela's independent review artifact/comment.
+* Implementation-owned changes delivery update, current review-status summary, PR #684 handoff/body, and Basher's independent review artifact/comment.
 
 #### Dependencies
 
