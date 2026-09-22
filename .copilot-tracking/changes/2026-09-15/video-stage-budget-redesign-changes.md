@@ -10,17 +10,33 @@
 
 ## Execution Status
 
-* Status: Complete — P08 focused PR gate remediation delivered
+* Status: Implementation complete — P09 delivery verification active
 * Declared invocation scope: Full plan
-* Completed scope markers: P01-P08 and all tasks
+* Completed scope markers: P01-P09 and all tasks
 * All remaining active-plan markers: None
-* Status basis: The focused corrections, local validation, commit/push, six thread resolutions, and post-push hosted checks completed successfully.
+* Status basis: Both post-push findings are implemented and locally validated; hosted checks and thread resolution follow the push.
 
 ## Execution Summary
 
 The shared budget, recorder convergence, browser-free fallback, owned cancellation, validated resume, verified archive/readback, per-mutation provider admission, bounded shutdown/queue disposition, fail-closed audio publication gate, and P07 production/doc/infra corrections are complete. Production/W38/provider operations remain prohibited.
 
 ## Completed Work
+
+### P09 post-push pass opening
+
+* Related phase or task: P09, P09-T01 through P09-T03.
+* Approved write boundary: Budget reload, section-card custom-runner handling, focused tests, tracking, and PR operations.
+* Validation intent: Focused budget/section-card tests and Ruff, then full repository Python validation and hosted checks.
+* Current blockers: None.
+
+### P09 backward-clock and custom-runner corrections
+
+* Related phase or task: P09-T01 and P09-T02.
+* Files: `podcaster/video/budget.py`, `section_cards.py`, and focused tests.
+* What changed and why: Reloading a projection before its persisted start now exhausts the local lifetime projection instead of resetting it; injected section-card runners now surface non-zero return codes through the existing cleanup path.
+* Completion evidence: Backward-clock redelivery has zero shutdown budget, and a failing custom runner leaves no partial card.
+* Focused validation: 71 passed; focused Ruff lint/format passed.
+* Full validation: 3249 passed, 2 skipped, 2 deselected; repository Ruff lint/format, compileall, and diff check passed.
 
 ### P08 focused pass opening
 

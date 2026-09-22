@@ -20,6 +20,7 @@
 | P06 | Fail closed audio-only publication | Complete | P06, P06-T01, P06-T02 |
 | P07 | Remediate unresolved PR review findings | Complete | P07, P07-T01, P07-T02, P07-T03, P07-T04, P07-T05 |
 | P08 | Complete focused PR gate remediation | Complete | P08, P08-T01, P08-T02, P08-T03 |
+| P09 | Close post-push budget and runner findings | Complete | P09, P09-T01, P09-T02, P09-T03 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish shared budget and evidence contracts
@@ -623,6 +624,33 @@ Perform one narrow correction pass that preserves provider no-repeat, storage ve
 
 * Focused/full validation, commit SHA, push result, resolved thread IDs, and remote check states are recorded.
 * PR remains open, operator-only, and unmerged.
+
+<!-- rpi:phase id=P09 -->
+## P09: Close post-push budget and runner findings
+
+### Context
+
+Two new Copilot threads appeared after P08 was pushed and initially green.
+
+### Boundaries
+
+* Included: `budget.py`, `section_cards.py`, focused tests, tracking, and PR operations.
+* Excluded: Any other issue, refactor, merge, or deployment.
+
+<!-- rpi:task id=P09-T01 -->
+### P09-T01: Fail closed on backward-clock budget reload
+
+* Completion evidence: A redelivery UTC value before `started_at_utc` exhausts rather than resets the immutable job lifetime.
+
+<!-- rpi:task id=P09-T02 -->
+### P09-T02: Reject custom section-card runner failures
+
+* Completion evidence: A non-zero custom runner result raises and removes its partial output under a budget.
+
+<!-- rpi:task id=P09-T03 -->
+### P09-T03: Validate, resolve, and restore operator readiness
+
+* Completion evidence: Focused/full validation, resolved thread IDs, hosted checks, clean worktree, and open unmerged PR state.
 
 <!-- rpi:phase id=P04 -->
 ## P04: Persist render boundary and bound distribution/shutdown

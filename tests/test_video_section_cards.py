@@ -318,6 +318,24 @@ class TestGenerateSectionCard:
 
         assert commands[0][0] == selected
 
+    def test_budgeted_custom_runner_failure_removes_partial_output(self, tmp_path):
+        out = tmp_path / "partial.mp4"
+
+        def failed_runner(cmd):
+            out.write_bytes(b"partial")
+            return subprocess.CompletedProcess(cmd, 1, "", "render failed")
+
+        with pytest.raises(subprocess.CalledProcessError):
+            generate_section_card(
+                "Trends",
+                out,
+                ffmpeg_bin="ffmpeg",
+                runner=failed_runner,
+                budget=VideoStageBudget.start(),
+            )
+
+        assert not out.exists()
+
 
 # --- build_section_card_inserts ---
 

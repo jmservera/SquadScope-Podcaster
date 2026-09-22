@@ -351,7 +351,11 @@ class VideoStageBudget:
     ) -> VideoStageBudget:
         current_utc = _require_utc(now_utc or utcnow(), "now_utc")
         durable_elapsed = (current_utc - projection.started_at_utc).total_seconds()
-        local_elapsed = min(JOB_DEADLINE_SECONDS, max(0.0, durable_elapsed))
+        local_elapsed = (
+            JOB_DEADLINE_SECONDS
+            if durable_elapsed < 0
+            else min(JOB_DEADLINE_SECONDS, durable_elapsed)
+        )
         return cls(
             projection=projection,
             _local_started_monotonic=monotonic(),

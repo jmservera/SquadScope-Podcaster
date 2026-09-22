@@ -168,6 +168,23 @@ def test_reload_projects_elapsed_time_and_never_resets_lifetime():
     assert redelivered.to_dict() == projection
 
 
+def test_reload_before_persisted_start_fails_closed():
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    projection = _budget(FakeClock(started)).to_dict()
+    rolled_back = started - timedelta(seconds=1)
+    clock = FakeClock(rolled_back)
+
+    redelivered = VideoStageBudget.from_dict(
+        projection,
+        now_utc=rolled_back,
+        monotonic=clock.monotonic,
+        utcnow=clock.utcnow,
+    )
+
+    assert redelivered.elapsed_seconds() == JOB_DEADLINE_SECONDS
+    assert redelivered.remaining_seconds(VideoStage.SHUTDOWN) == 0
+
+
 def test_clip_first_admission_round_trip_is_not_reset_on_redelivery():
     first_time = datetime(2026, 9, 15, 0, 5, tzinfo=timezone.utc)
     first = ClipAdmission.first_or_existing("clip-7", now_utc=first_time)

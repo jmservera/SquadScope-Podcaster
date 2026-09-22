@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -532,7 +533,14 @@ def generate_section_card(
                 check=True,
             )
         else:
-            (runner or _default_runner)(cmd)
+            result = (runner or _default_runner)(cmd)
+            if getattr(result, "returncode", 0) != 0:
+                raise subprocess.CalledProcessError(
+                    result.returncode,
+                    cmd,
+                    output=getattr(result, "stdout", None),
+                    stderr=getattr(result, "stderr", None),
+                )
     except BaseException:
         output_path.unlink(missing_ok=True)
         raise

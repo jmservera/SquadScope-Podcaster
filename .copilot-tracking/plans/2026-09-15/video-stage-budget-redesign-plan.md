@@ -5,7 +5,7 @@
 
 * Task ID: video-stage-budget-redesign
 * Task slug: video-stage-budget-redesign
-* Planning status: Complete through P08; operator review gate clear
+* Planning status: P09 implementation and local validation complete; delivery active
 * Plan date: 2026-09-15
 * Phase details: .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 * Plan critique: .copilot-tracking/reviews/plans/2026-09-15/video-stage-budget-redesign-plan-critique.md
@@ -335,6 +335,30 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Expected result: Focused and repository-standard validation pass, applicable threads are resolved, the existing branch is committed/pushed, and remote checks are reported without merging.
 * Detail section: P08-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
+<!-- rpi:phase id=P09 -->
+### [x] P09: Close post-push budget and runner findings
+
+* Intent: Address the two review threads created after the P08 green snapshot.
+* Dependencies: P08 and current PR #682 review evidence.
+
+<!-- rpi:task id=P09-T01 -->
+#### [x] P09-T01: Fail closed on backward-clock budget reload
+
+* Expected result: A durable projection observed before its persisted start cannot regain the job lifetime.
+* Detail section: P09-T01 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P09-T02 -->
+#### [x] P09-T02: Reject custom section-card runner failures
+
+* Expected result: Non-zero injected-runner returns raise and remove partial card output.
+* Detail section: P09-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P09-T03 -->
+#### [x] P09-T03: Validate, resolve, and restore operator readiness
+
+* Expected result: Focused/full checks pass, both new threads resolve, hosted gates pass, and readiness is re-established without merge.
+* Detail section: P09-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
 ## Dependencies
 
 * Baseline provider evidence and distribution state machine: must remain additive and fail closed.
@@ -362,5 +386,5 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 ## Handoff
 
 * Implementation artifact: .copilot-tracking/changes/2026-09-15/video-stage-budget-redesign-changes.md
-* Ready phase or task: None; P01-P08 are complete.
-* Remaining provisional question or blocker: None. Operator review remains the only next action.
+* Ready phase or task: None; P01-P09 are complete.
+* Remaining provisional question or blocker: Hosted checks and thread resolution follow the P09 push.
