@@ -33,7 +33,7 @@ The branch contains the Podcaster-side P00 receipt/absence boundary and Amy's de
 - Provider intent, receipt, verification, readback, and fail-closed/manual-handoff behavior.
 - Truthful worker/ACA exits, telemetry, alert infrastructure, runbook updates, and fault/concurrency/lifecycle coverage.
 
-Completion of the declared implementation scope does not imply acceptance. The independent review found material defects in scheduler deduplication, alert contracts, cleanup safety, exact provider proof, four-cycle proof evaluation, and canonical tracking accuracy.
+Completion of the declared implementation scope does not imply acceptance. Fry's final review resolved the alert and tracking findings but rejected `02241a1` for scheduler lease recovery, legacy cleanup safety, recovery authorization, and four-cycle identity binding.
 
 ## Farnsworth correction after independent rejection
 
@@ -97,7 +97,7 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] Current status, branch diff, independent review, and existing draft PR inspected.
 - [x] Public PR content checked under the content-policy citation rules; no citation was required.
 - [x] Review execution and Amy's declared in-repo implementation execution recorded as Complete.
-- [x] Outcome retained as Not accepted with 0 Critical, 4 High open, and 2 Medium open.
+- [x] Fry's historical outcome retained as Not accepted with 0 Critical and 4 High findings open at `02241a1`.
 - [x] W38 retained as evidence-conditional and W39 retained as `missed_not_dispatched`.
 - [x] Positive validation and independent negative probes recorded exactly.
 - [x] Existing PR retained OPEN, DRAFT, and BLOCKED.
