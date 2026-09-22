@@ -262,12 +262,12 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
 * Revision author: Leela only for the current correction
 * Fresh independent reviewer: Basher reserved and non-contributing
-* Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, and Frank did not author, advise, pair, or contribute; Leela remained reviewer-only
+* Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank did not author, advise, pair, or contribute. Basher is excluded from authoring/advice/implementation contribution and is expressly reserved for independent final-SHA review. Leela is the correction author, not a reviewer, for this cycle.
 * Delivery restrictions: commit and push only the existing branch and update existing draft PR #684; no deployment, issue mutation, replacement branch/PR, or changes to `/home/azureuser/source/SquadScope`
 * Active implementation boundary: P07 review-follow-up defects only; P00-T01, P05, and P06 remain outside P07 and block final acceptance
 * Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
 * Validation intent: deterministic P07 negative probes, locked owner suites, full suite, Ruff check/format, compileall, Bicep, Checkov, diff check, container build, and applicable container/exit smoke without weakening
-* Current blockers: Basher's independent final-SHA review for P07-T07; P00-T01 upstream prevention evidence, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles remain blockers
+* Current blockers: Basher's independent final-SHA review for P07-T07; P00-T01 upstream prevention evidence, P05 delivery/deployment/canary authority, P06 four elapsed production cycles, and operator-only #682 remain blockers
 
 ## Sources
 
@@ -747,4 +747,4 @@ The existing critique is preserved unchanged as historical evidence. No second c
 * Review-follow-up implementation marker range: P07-T01 through P07-T07.
 * Current author/reviewer: Leela is the sole correction author from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`; Basher is reserved for independent final-SHA review and did not contribute. All prior author/reviewer cycles remain historical evidence.
 * Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-006 remains planning-resolved; RV-008 implementation is corrected and awaits independent acceptance.
-* Remaining blockers after revision: Basher final-SHA review; P00-T01 upstream ownership; P05 deployment/provider authority and canary; P06 four elapsed future post-fix cycles. PR #684 remains draft/blocked while any remain.
+* Remaining blockers after revision: Basher final-SHA review; P00-T01 upstream ownership; P05 deployment/provider authority and canary; P06 four elapsed future post-fix cycles; and operator-only #682. PR #684 remains draft/blocked while any remain.

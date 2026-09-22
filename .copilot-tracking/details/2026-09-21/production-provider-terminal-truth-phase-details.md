@@ -125,10 +125,10 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 * Current task: obtain Basher's independent final-SHA review without reviewer contribution.
 * Revision author: Leela alone.
 * Fresh independent reviewer: Basher reserved; no contribution occurred.
-* Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, and Frank may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Leela may review only after delivery.
+* Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Basher is excluded from authoring, advice, and implementation contribution but is expressly reserved for the independent final-SHA review. Leela is the correction author and is not a reviewer for this cycle.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: exact timestamp/execution/fence bypass, parameterized mutation of every semantic attempt/event field, duplicate/omit/reorder/insert attempt or event, nested intent/receipt/provider/readback mutation, recovery-authorization metadata/cardinality, missing/ambiguous sequence/time, unexpected append after authorization, cross-week/publication/attempt replay, canonical round-trip, exact single authorized successor, all prior RV-008 and resolved-RV probes, then the complete locked validation contract without weakening.
-* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 deployment/canary, and P06 elapsed evidence remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
+* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 deployment/canary, P06 elapsed evidence, and operator-only #682 remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
 
 ## Implementation Marker Reconciliation
 
