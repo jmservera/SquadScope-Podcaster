@@ -19,8 +19,8 @@
 * Completed marker: P07-T07 closed by Basher's independent final-SHA acceptance
 * Source/tests commit: `9204e139be485cb916ccd6e70b6fce355b656136`
 * Remaining in-scope work: none for RV-008/P07-T01/P07-T07
-* Outside-scope active-plan markers: P00-T01, P05-T01–P05-T06, and P06-T01–P06-T02
-* Status basis: all versioned recovery authorization set/envelope/evidence/history/successor structures now use exact recursive typed canonical validation before digest/equality checks. Boolean/float `authz_count`, scalar substitutions across every canonical surface, exponent-overflow/non-finite and negative-zero floats, unsupported values, duplicate JSON fields, coercions, and legacy/unknown structures fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are resolved; RV-006 remains planning-resolved. Basher independently accepted exact reviewed implementation head `905a890`; the pre-directive tracking head was verified as `a4a152eb4561c55ca11777abdff026dc54f66ecd`. P00-T01, P05 including exact-W39 production acceptance, P06, and operator-only #682 remain blockers. No merge, deployment, workflow dispatch, provider mutation, issue/thread mutation, or production action is authorized by this update.
+* Outside-scope active-plan markers: P05-T02–P05-T06 and P06-T01–P06-T02; P00-T01 and P05-T01 are now complete
+* Status basis: all versioned recovery authorization set/envelope/evidence/history/successor structures now use exact recursive typed canonical validation before digest/equality checks. Boolean/float `authz_count`, scalar substitutions across every canonical surface, exponent-overflow/non-finite and negative-zero floats, unsupported values, duplicate JSON fields, coercions, and legacy/unknown structures fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are resolved; RV-006 remains planning-resolved. Basher independently accepted exact reviewed implementation head `905a890`; P00-T01 and P05-T01 are complete. P05-T02 awaits the final hosted gate, P05-T03 lacks durable #682 disposition/replacement evidence, and P05-T04–P05-T06 plus P06 remain future. No merge, deployment, workflow dispatch, provider mutation, issue/thread mutation, or production action is authorized by this update.
 
 ## 2026-09-22 Authoritative Exact-W39 Production Acceptance Directive
 
@@ -36,6 +36,18 @@
 * Historical classification: W39 remains `missed_not_dispatched` until the later recovery execution produces evidence; the historical incident and later recovery execution remain distinct records. W38 successful publication and every immutable failed/partial/unknown attempt remain preserved.
 * Current GitHub evidence: upstream PRs `jmservera/SquadScope#770`, `#771`, and `#772` are merged at `9074afa0cd90c09049836df6e7ad79951ae71519`, `2ce5dff50f4ac7ec67d9fd2514420ae1efb91a02`, and `574e4e463c81ad5d1e2d90290b70352596d9b9dc`; this update does not claim those exact commits are deployed. Podcaster PR #682 remains open at `e4578a2699e45c090d689d172dad89055d48adfe`. PR #684 remains open/draft/blocked.
 * Immediate blockers: PR #684 is unmerged; #682 disposition/closure evidence is open; no exact Podcaster merge SHA or merge-derived deployed artifact exists; exact upstream deployed-artifact provenance is unproven here; deployment/provider authority is absent; and W39 pre-mutation reconciliation has not been performed.
+
+## 2026-09-22 Basher Final-SHA Delivery Gate
+
+* Independent reviewer: Basher. Leela authored tracking-only head `da84b6b2c50f0226b2abb3b469a01c2158d41ef3` and did not contribute to this review; Bender, Hermes, and Amy remained excluded.
+* Exact ancestry: executable source revision `9204e139be485cb916ccd6e70b6fce355b656136` and accepted implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` are ancestors of `da84b6b`. Changes after `905a890` are limited to plan, phase details, changes, and PR narrative; no executable source or test drift exists.
+* Upstream prerequisite: `jmservera/SquadScope#773` reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2` merged as `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3` at `2026-09-22T09:20:43Z`. All 18 PR checks succeeded. Merge-SHA CI, security, Checkov, lint, release, and deploy workflows succeeded.
+* P00-T01: complete. The merged contract supplies exact canonical publication identity, append-only trusted dispatch receipts, accepted/missing/terminal monitoring, immutable prior-attempt evidence, fail-closed non-green weekly states, and authoritative provider readback requirements.
+* P05-T01: complete after cross-linking #684 to #773 and reconciling the exact-W39 narrative.
+* P05-T02: final-SHA review found no High/Critical issue and no executable drift. Hosted completion remains a hard gate for the final tracking head; no acceptance is recorded while any check is pending or failed.
+* P05-T03: blocked. GitHub reports 67/67 #682 review threads resolved, but 17 have a reviewer finding as their final comment without an author disposition, and zero final thread replies link replacement PR #684. PR #682 remains open and must not be closed until replacement evidence is durable and #684 is accepted/merge-ready.
+* Exact-W39 gate assessment: conformant. It requires reconcile-before-mutate across all W39 identities/jobs/receipts/executions/provider candidates, fails closed on existing/conflicting/unknown/incomplete state, correlates GitHub → upstream → Podcaster → Azure → immutable attempts → provider readback, limits persisted evidence to safe identifiers/URLs/state, preserves historical W39=`missed_not_dispatched`, and grants no automatic P06 cycle credit.
+* Production boundary: no merge, deployment, W39 dispatch, provider mutation, canary, issue closure, or review-thread mutation occurred.
 
 ## P07 Leela Exact Typed Canonical Correction
 
