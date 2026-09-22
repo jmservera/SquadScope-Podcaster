@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import math
 import os
 import shutil
 import socket
@@ -3040,7 +3041,7 @@ def _validate_final_media(
         isinstance(stream, dict) and stream.get("codec_type") == "audio" for stream in streams
     ):
         raise RuntimeError("final media validation failed: audio stream is missing")
-    if not duration > 0:
+    if not math.isfinite(duration) or duration <= 0:
         raise RuntimeError("final media validation failed: duration is not positive")
 
 

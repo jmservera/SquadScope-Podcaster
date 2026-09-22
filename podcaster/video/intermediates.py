@@ -237,7 +237,7 @@ class IntermediateStore:
             return False
         if actual is None:
             return False
-        return int(actual) == int(expected)
+        return type(actual) is int and actual == expected
 
     def read_text(self, name: str) -> str | None:
         """Return the UTF-8 text of intermediate ``name`` (sidecar metadata)."""

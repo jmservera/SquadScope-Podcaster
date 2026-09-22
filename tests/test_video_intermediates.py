@@ -265,6 +265,24 @@ class TestVerifiedUpload:
         assert src.read_bytes() == b"complete"
         assert backend.deleted == ["video-jobs/job-v/intermediates/x.mp4"]
 
+    @pytest.mark.parametrize("reported_size", [True, "8", 8.0])
+    def test_upload_rejects_non_integer_size_probe(self, tmp_path, reported_size):
+        class _InvalidSizeBackend:
+            def upload_file(self, path, source, content_type):
+                return None
+
+            def blob_size(self, path):
+                return reported_size
+
+            def delete_blob(self, path):
+                return True
+
+        store = IntermediateStore(_InvalidSizeBackend(), "job-v")
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"12345678")
+
+        assert store.upload("x.mp4", src, "video/mp4") is False
+
 
 class TestDiskBudget:
     def test_raises_when_insufficient(self, tmp_path):
