@@ -1139,6 +1139,12 @@ class TestRunVideoGeneration:
             ),
         )[1]
 
+        successor_state = {
+            "status": STATUS_COMPLETED,
+            "at": "2026-09-22T21:35:50+00:00",
+            "owner": "successor",
+        }
+
         def force_takeover() -> None:
             def replace(raw: bytes | None) -> bytes:
                 assert raw is not None
@@ -1155,6 +1161,9 @@ class TestRunVideoGeneration:
                 return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
 
             storage.update_bytes(ownership_path(job_id), "application/json", replace)
+            manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+            manifest["generation"]["video_runner"] = successor_state
+            storage.set_manifest(job_id, manifest)
 
         def distribute(*args, on_published=None, before_mutation=None, **kwargs):
             before_mutation("youtube", "draft_upload")
@@ -1174,7 +1183,7 @@ class TestRunVideoGeneration:
 
         mock_distribute.side_effect = distribute
 
-        with pytest.raises(TransientVideoError) as exc_info:
+        with pytest.raises(OwnershipError, match="stale"):
             run_video_generation(
                 job_id,
                 storage,
@@ -1185,11 +1194,120 @@ class TestRunVideoGeneration:
                 ),
             )
 
-        assert isinstance(exc_info.value.__cause__, OwnershipError)
         manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
         assert "video_publish" not in manifest["generation"]
+        assert manifest["generation"]["video_runner"] == successor_state
         evidence = json.loads(storage.get_bytes(evidence_path(job_id)).decode())
         assert all(record["operation"] != "distribution" for record in evidence["records"])
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_required_youtube_takeover_before_failure_persistence_writes_nothing(
+        self, mock_compose, mock_record, mock_distribute, storage, monkeypatch
+    ):
+        from podcaster.video.ownership import (
+            OwnershipClaim,
+            OwnershipError,
+            VideoOwnershipGuard,
+            ownership_path,
+        )
+
+        job_id = "video-required-youtube-takeover"
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Required YouTube takeover"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+        mock_distribute.return_value = DistributionResult(
+            status="failed",
+            errors=["YouTube token refresh failed: HTTP 503"],
+            provider_outcomes={"youtube": "publication_unknown"},
+            provider_records={"youtube": {"status": "unknown"}},
+            youtube_required_failed=True,
+            youtube_failure_retryable=True,
+            youtube_failure_code="youtube_oauth_http_503",
+            youtube_failure_stage="oauth_token",
+            youtube_failure_http_status=503,
+        )
+
+        original_begin = VideoOwnershipGuard.begin
+
+        def begin_with_takeover(self, name, *, allow_idempotent_takeover):
+            permit = original_begin(
+                self,
+                name,
+                allow_idempotent_takeover=allow_idempotent_takeover,
+            )
+            if name == "required_youtube_failure":
+                raw = storage.get_bytes(ownership_path(job_id))
+                assert raw is not None
+                document = json.loads(raw.decode())
+                fence = int(document["fencing_token"]) + 1
+                document["fencing_token"] = fence
+                document["claim"] = {
+                    **document["claim"],
+                    "owner": "successor",
+                    "claim_id": "successor-claim",
+                    "execution_id": "successor-execution",
+                    "fencing_token": fence,
+                }
+                storage.put_bytes(
+                    ownership_path(job_id),
+                    json.dumps(document, sort_keys=True, separators=(",", ":")).encode(),
+                    "application/json",
+                )
+            return permit
+
+        monkeypatch.setattr(VideoOwnershipGuard, "begin", begin_with_takeover)
+
+        with pytest.raises(OwnershipError, match="stale"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=VideoDistributionConfig(
+                    youtube_enabled=True,
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+            )
+
+        mock_distribute.assert_called_once()
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        assert "video_runner" not in manifest["generation"]
+
+        current = json.loads(storage.get_bytes(ownership_path(job_id)).decode())["claim"]
+        successor = VideoOwnershipGuard(
+            storage,
+            OwnershipClaim(
+                job_id=job_id,
+                owner=current["owner"],
+                claim_id=current["claim_id"],
+                execution_id=current["execution_id"],
+                fencing_token=current["fencing_token"],
+            ),
+        )
+        reconcile_only = successor.begin(
+            "direct_provider_intent",
+            allow_idempotent_takeover=False,
+        )
+        assert reconcile_only.reconcile_only is True
+        with pytest.raises(OwnershipError, match="reconciliation-only"):
+            successor.assert_permit(reconcile_only)
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")

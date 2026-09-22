@@ -10,15 +10,51 @@
 
 ## Execution Status
 
-* Status: P05-T03 concurrent-history reconciliation is implemented and validated locally atop remote commit `328fbffec00eefbcf351cb8e7fcdf83315eb3885`; source/tests reconciliation commit `a6b3bc08b90957b5c6f2794b941b272930385921` is complete
-* Declared invocation scope: compare concurrent remote commit `328fbff` with local source/tests commit `8ac549d`, preserve remote ancestry, retain only meaningful additional fail-closed source/tests behavior, reconcile the three canonical RPI artifacts, rerun the exact requested validation, and create focused detached-HEAD commits without push or GitHub mutation
-* Current source owner: Bender
-* Test reconciliation owner: Bender under jmservera's explicit concurrent-history repair request
-* Independent fail-closed reviewer: Hermes
-* First execution boundary: compare durable queue-send authority and every post-provider write boundary, then rebase the two local commits onto the exact remote head
-* Approved source boundary: the source/tests/tracking files already changed by `328fbff`, `8ac549d`, and `0f2286a`; the final additional source/tests delta is limited to `podcaster/video/distribution.py`, `podcaster/video/job_runner.py`, and `tests/test_video_ownership.py`
-* Validation: post-reconciliation exact race probes passed `5`; full `tests/test_video_ownership.py` and `tests/test_video_job_runner.py` passed `140`; Ruff check and format, compileall, and `git diff --check` passed
-* Current blockers: final remote-head equality gate, independent exact-final-SHA review, and a later authorized push; P05-T03 remains open and no push is authorized
+* Status: Leela's independent P05-T03 correction is implemented and locally validated after Hermes rejected exact head `071a85a3193957f297d10cda260604435588de8b`; Fry validation support and Hermes corrected-final-SHA review remain pending
+* Declared invocation scope: implement only the three rejected stale-owner findings in `podcaster/video/job_runner.py`, `tests/test_video_ownership.py`, `tests/test_video_job_runner.py`, and these canonical tracking artifacts; validate and commit once without push or GitHub mutation
+* Current revision owner: Leela, independently revising from exact clean rejected head `071a85a3193957f297d10cda260604435588de8b`
+* Locked-out prior author: Bender; no advice, pairing, consultation, contribution, or revision attribution is permitted
+* Validation support: Fry only after the revision is complete
+* Independent fail-closed reviewer: Hermes, reviewer-only and not consulted for implementation
+* First execution boundary: preserve `OwnershipError` through the outer runner, then fence required-YouTube post-provider durable writes, then exercise the actual notification send interleaving
+* Approved source boundary: `podcaster/video/job_runner.py`, `tests/test_video_ownership.py`, `tests/test_video_job_runner.py`, and the existing plan/details/changes artifacts
+* Planned validation: exact new/affected tests; full `tests/test_video_ownership.py`; full `tests/test_video_job_runner.py`; Ruff check/format on changed Python; compileall; `git diff --check`; clean status and remote-head verification
+* Validation: affected regressions passed `6`; full `tests/test_video_ownership.py` and `tests/test_video_job_runner.py` passed `142`; Ruff check/format, `python3 -m compileall`, and `git diff --check` passed
+* Current blockers: none for implementation; Fry validation support, Hermes corrected-final-SHA review, and a later authorized push remain pending
+
+## 2026-09-22 Hermes rejection and Leela independent revision
+
+* Related phase or task: P05-T03.
+* Rejected boundary: exact head `071a85a3193957f297d10cda260604435588de8b`.
+* Hermes findings: the outer runner could catch and reclassify `OwnershipError`; the required-YouTube failure branch could persist provider outcomes, provider records, and failure status after provider return without fresh authorization inside the manifest mutation; and the notification test did not transfer ownership after durable intent consumption at the physical send boundary.
+* Independence state: Bender authored the rejected artifact and is locked out. Leela owns this revision without consulting Bender or seeking implementation advice from Hermes. Fry is reserved for post-revision validation support; Hermes remains the independent reviewer.
+* Remote safety gate: PR #684 advanced from `328fbffec00eefbcf351cb8e7fcdf83315eb3885` to lockfile-only commit `2e4372e34d405aa187ec7aafe4c1537670fe9670`. The complete four-commit local repair stack was rebased onto that remote tip without force, and `requirements.lock` remains byte-identical to the remote. No push or GitHub mutation is authorized.
+
+### Ownership propagation and required-YouTube persistence repair
+
+* Related phase or task: P05-T03.
+* Files: `podcaster/video/job_runner.py`, `tests/test_video_job_runner.py`.
+* What changed and why: `run_video_generation()` now releases the editor lease and re-raises `OwnershipError` before the generic exception handler can record failure state or convert ownership loss into `TransientVideoError`. Required-YouTube failure persistence now acquires a distinct `required_youtube_failure` permit after provider return and authorizes inside `_record_video_state()`'s manifest mutation before completing that target boundary.
+* Completion evidence: deterministic takeover tests preserve a successor-owned terminal state, leave required-YouTube provider outcomes/records/failure status unwritten after takeover, call the provider once, and prove the successor's consumed direct-provider boundary is reconciliation-only.
+* Validation: affected regression set passed `6`.
+
+### Durable notification consumption at the physical send boundary
+
+* Related phase or task: P05-T03.
+* Files: `tests/test_video_ownership.py`.
+* What changed and why: the deterministic interleaving now observes the durable consumed notification intent inside the producer's actual `send_message()` boundary, transfers ownership before the physical send effect, and then proves the successor cannot replay. The separate crash-after-consumption test remains unchanged to preserve ambiguity reconciliation coverage.
+* Completion evidence: the stale worker performs exactly one physical send after consuming authority; the successor performs zero sends because the consumed intent is durable.
+* Validation: affected regression set passed `6`, including the send-boundary and crash/ambiguity probes.
+
+### Leela validation and pre-review reconciliation
+
+* Related phase or task: P05-T03.
+* Exact affected tests: `6 passed in 0.65s`.
+* Full affected modules: `142 passed in 1.02s` across `tests/test_video_ownership.py` and `tests/test_video_job_runner.py`.
+* Static checks: Ruff check passed; Ruff format check reported `3 files already formatted`.
+* Compile and diff safety: the initial `python -m compileall` invocation was unavailable because no `python` shim exists; the required compile check was rerun successfully with `python3 -m compileall -q podcaster tests`. `git diff --check` passed.
+* Scope reconciliation: the diff contains only `podcaster/video/job_runner.py`, `tests/test_video_ownership.py`, `tests/test_video_job_runner.py`, and the three existing canonical tracking artifacts. No provider, deployment, GitHub, or push action occurred.
+* Review readiness: implementation evidence is current and ready for Fry validation support followed by Hermes's independent corrected-final-SHA review. P05-T03 remains open pending those gates and later authorized delivery.
 
 ## 2026-09-22 Concurrent remote reconciliation
 

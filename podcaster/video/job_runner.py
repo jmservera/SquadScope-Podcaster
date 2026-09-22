@@ -1656,6 +1656,10 @@ def run_video_generation(
                     "youtube_oauth_error": dist_result.youtube_oauth_error,
                     "youtube_oauth_error_subtype": dist_result.youtube_oauth_error_subtype,
                 }
+                failure_permit = ownership_guard.begin(
+                    "required_youtube_failure",
+                    allow_idempotent_takeover=True,
+                )
                 _record_video_state(
                     storage,
                     job_id,
@@ -1666,7 +1670,10 @@ def run_video_generation(
                         "performance": timings.to_dict(),
                         "distribution": distribution_state,
                     },
+                    authorize=lambda: ownership_guard.assert_permit(failure_permit),
+                    fail_closed=True,
                 )
+                ownership_guard.complete(failure_permit, target=manifest_path(job_id))
                 message = (
                     f"required YouTube delivery failed for job_id={job_id} "
                     f"code={dist_result.youtube_failure_code or 'unknown'} "
@@ -1743,6 +1750,9 @@ def run_video_generation(
                 distribution=dist_result,
             )
 
+    except OwnershipError:
+        _release_editor_lease(scratch, job_id, run_id)
+        raise
     except TransientVideoError:
         _release_editor_lease(scratch, job_id, run_id)
         raise

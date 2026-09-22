@@ -1516,8 +1516,8 @@ Preserve the completed #682 disposition ledger while repairing the two remaining
 
 #### Boundaries
 
-* Included: all prior P05-T03 evidence plus the exact notification and direct-provider ownership repairs at base `c8a4922`, Fry's deterministic race regressions, and Hermes's independent fail-closed review.
-* Excluded: check-then-send authorization, provider replay after consumed direct intent, test edits by Bender, #682 mutation, merge/deploy/workflow/provider operations, and later production gates.
+* Included: all prior P05-T03 evidence plus Leela's independent correction from rejected head `071a85a3193957f297d10cda260604435588de8b`: preserve `OwnershipError` through the outer runner, authorize every required-YouTube post-provider durable manifest mutation, and prove ownership transfer after durable notification-intent consumption but before physical queue send cannot duplicate.
+* Excluded: contribution, advice, pairing, or attribution from Bender; advice from Hermes; provider replay after consumed direct intent; #682 mutation; merge/deploy/workflow/provider operations; and later production gates.
 
 #### Likely Targets
 
@@ -1529,7 +1529,10 @@ Preserve the completed #682 disposition ledger while repairing the two remaining
 
 #### Validation Expectations
 
+* `run_video_generation()` propagates `OwnershipError` unchanged; the stale worker does not call `_record_video_state`, overwrite successor terminal state, become `TransientVideoError`, or enter unsafe retry.
+* Every required-YouTube failure write of provider outcomes, provider records, or failure status after provider return authorizes inside the durable manifest mutation. Takeover before persistence writes nothing, and successor authority remains reconciliation/readback-only.
 * A deterministic transfer after reservation but before queue send yields no stale or successor duplicate send.
+* A deterministic transfer immediately after successful durable notification-intent consumption and before the producer's physical `send_message()` yields one stale send attempt, no successor replay, and preserved crash/ambiguity reconciliation semantics.
 * A deterministic transfer after provider return but before persistence yields no stale manifest, evidence, or signal write and no successor provider replay.
 * `OwnershipError` is not converted to publication evidence failure or signal-warning continuation.
 * Existing provider unknown/manual/retry-blocked semantics and all later delivery/production gates remain intact.
@@ -1550,7 +1553,7 @@ Preserve the completed #682 disposition ledger while repairing the two remaining
 
 #### Unresolved Items
 
-* Concurrent remote commit `328fbffec00eefbcf351cb8e7fcdf83315eb3885` is the reconciled base. Source/tests commit `a6b3bc08b90957b5c6f2794b941b272930385921` retains only explicit `OwnershipError` propagation and matching provider-boundary assertions. Exact post-reconciliation race probes passed `5`; full ownership/job-runner modules passed `140`; Ruff check/format, compileall, and diff safety passed. P05-T03 remains open for the final remote-head equality gate, Hermes's independent exact-final-SHA fail-closed review, and a later authorized push. PR #682 remains unchanged/operator-only. P05-T04–P05-T06 and P06 remain future and are not implied complete.
+* Hermes rejected `071a85a3193957f297d10cda260604435588de8b`; Bender is locked out. Leela's independent revision is complete from that exact clean head. Deterministic affected probes passed `6`; full `tests/test_video_ownership.py` and `tests/test_video_job_runner.py` passed `142`; Ruff check/format, compileall, and diff safety passed. Fry validation support and Hermes independent corrected-final-SHA review remain pending. Remote PR head advanced only by `requirements.lock` to `2e4372e34d405aa187ec7aafe4c1537670fe9670`; the complete local repair stack is rebased onto that tip without modifying the lockfile. No push is authorized. PR #682 remains unchanged/operator-only. P05-T04–P05-T06 and P06 remain future and are not implied complete.
 
 <!-- rpi:task id=P05-T04 -->
 ### P05-T04: Approve, merge, and prove release image provenance
