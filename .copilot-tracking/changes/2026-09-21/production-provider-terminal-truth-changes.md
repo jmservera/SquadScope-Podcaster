@@ -46,6 +46,7 @@
 * Safe continuation: the new authorization is tied to the complete history and generated succeeding attempt. Only that succeeding attempt can claim with `read_only=False`; stale authorization or an older predecessor cannot regain mutation authority.
 * Negative probes: failed predecessor followed by unknown denies a third attempt and keeps takeover read-only; exact terminal readback of the latest unknown alone permits a new explicitly authorized continuation; stale non-latest predecessor is rejected; omitted and reordered attempt-ID histories are rejected.
 * Preserved positive probe: exact failed-terminal recovery remains accepted, retains the immutable failed predecessor, and produces `published_verified_recovered` only after exact succeeding provider readbacks.
+* Source/tests/artifacts commit: `502807d562996ecf6c8cd4213afd4cdf454aa5c3`.
 
 ## P07 Frank Validation
 

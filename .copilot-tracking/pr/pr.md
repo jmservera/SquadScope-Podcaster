@@ -3,7 +3,7 @@
 > [!WARNING]
 > **OPEN / DRAFT / BLOCKED — Frank's RV-008 correction is validated; Rusty review is required.** Fry's rejection of Leela's revision `02241a1` and Livingston's rejection of Farnsworth source candidate `601d36a` remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
-Current Frank revision: pending commit/push from review/tracking head `1b057c0ea9073fb195c56cc884625216e18e49a7`.
+Current Frank source/tests/artifacts commit: `502807d562996ecf6c8cd4213afd4cdf454aa5c3`.
 Fresh independent reviewer: Rusty, pending exact pushed-SHA review.
 
 ## Incident and acceptance truth
