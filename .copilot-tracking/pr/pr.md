@@ -8,6 +8,7 @@ Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
 Rejected final-media head: `d050d68c3590f9a00b60dee925452f971cbaf0d2`.
 Current source/tests commit: `8cc5da21b85b0ec73dab0f39293aab06149ac7a7`.
 Lifecycle correction source/tests commit: `f6b713530947236c04f822289343d3f105cc6dc9`.
+Ownership fencing source/tests commit: `6bba1275efbe30754230db7cfe3e67522f7033df`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
 Current sole revision author: Frank.
 Fresh independent reviewer: Rusty is reserved and pending.
