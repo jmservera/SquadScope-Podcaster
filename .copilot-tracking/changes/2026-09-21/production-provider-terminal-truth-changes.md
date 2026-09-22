@@ -10,16 +10,63 @@
 
 ## Execution Status
 
-* Status: Rusty's fresh independent review of exact head `1efa749` is complete and **Not accepted**; RV-008 remains High because latest-unknown failed readback is not bound to the unknown attempt's exact provider item
+* Status: Basher's sole-author RV-008 correction and validation are complete from Rusty's rejected tracking head `97c9520b7c365b078a50df113154bb1e66b1ecbb`; delivery is pending commit/push and Ralph review
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
-* Sole current revision author: Frank
-* Independent reviewer: Rusty, completed without source/test contribution
+* Sole current revision author: Basher
+* Independent reviewer: Ralph, reserved and pending without source/test contribution
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed markers for current revision: P07-T06 and P07-T07 review execution
-* Active marker: P07-T01 reopened
-* Remaining in-scope work: exact provider-item readback binding, revalidation, and a new fresh final-SHA review
+* Completed markers for current revision: P07-T01 and P07-T06
+* Pending marker: P07-T07 fresh Ralph final-SHA review
+* Remaining in-scope work: commit/push, PR reconciliation, and Ralph review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: the clean local/remote/PR head was `1efa74956e23b51512b7eff1ded4e809b79566e1`; Frank's source commit is `502807d562996ecf6c8cd4213afd4cdf454aa5c3`, with only tracking narrative after it. Complete-history/latest-attempt checks pass, but Rusty reproduced authorization from failed readback of a different provider item than the latest unknown mutation. RV-008 remains High. RV-002, RV-003, RV-004, RV-007, and RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+* Status basis: the clean local, remote, and PR head is `97c9520b7c365b078a50df113154bb1e66b1ecbb`; Frank's source commit `502807d562996ecf6c8cd4213afd4cdf454aa5c3` and Rusty's review are ancestors with divergence `0/0`. Complete-history/latest-attempt checks pass, but Rusty reproduced authorization from failed readback of a different provider item than the latest unknown mutation. RV-008 remains High. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+
+## P07 Basher Exact Provider-Identity Revision Opening
+
+### Bound the sole-author correction and validation lifecycle
+
+* Affected markers: P07-T01, P07-T06, and P07-T07.
+* Authorship and lockout: Basher is the sole revision author. Ralph is reserved for fresh independent final-SHA review. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, Frank, and Rusty may not author, advise, pair, inspect, suggest, review, or contribute.
+* Exact baseline: clean local/remote/PR head `97c9520b7c365b078a50df113154bb1e66b1ecbb`; Frank source commit `502807d562996ecf6c8cd4213afd4cdf454aa5c3` and Rusty rejection are preserved as historical evidence.
+* Write boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`; `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`, current plan/details/changes/PR artifacts, and existing PR #684 after validation. No branch replacement, new PR, deployment, production mutation, issue/thread resolution, or changes to `/home/azureuser/source/SquadScope-Podcaster`.
+* First execution boundary: for the latest `provider_unknown` attempt, derive candidate provider identities only from durable intent, receipt, and attempt provider-evidence contracts. Each requested provider must resolve to exactly one non-empty item identity and its provider kind; zero candidates, duplicate evidence, ambiguity, or conflicts fail closed. A resolving post-terminal readback must match that exact provider kind and item.
+* Binding boundary: preserve exact attempt/week/publication identity, publication digest, artifact digest, canonical artifact, ordered attempt history, and authorization/successor bindings. A different provider item remains unrelated even when its readback says `failed_terminal`.
+* Validation intent: add Rusty's exact different-item bypass, exact-match continuation, missing-identity, duplicate/conflicting-candidate, provider-kind mismatch, stale receipt, wrong attempt/week/digest/artifact, and existing safe-recovery probes; then run focused, locked, full pytest, Ruff check/format, compile, diff safety, Bicep, exact and CI-equivalent Checkov, container build/smoke, Compose rebuild if stale, and changed-file suspected secret/PII scanning.
+* Retained blockers: P00-T01 upstream W39 prevention/detection, P05 deployment/canary/provenance, and P06 four future elapsed cycles remain open. PR #684 must remain open, draft, and blocked. P07-T07 remains pending Ralph's fresh independent review.
+* Historical evidence: all Leela/Fry, Farnsworth/Livingston, and Frank/Rusty lifecycle sections below remain unchanged.
+
+## P07 Basher Exact Provider-Identity Correction
+
+### Bound latest-unknown resolution to durable provider identity
+
+* Related markers: P07-T01; RV-008.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`.
+* Result: post-terminal recovery of a `provider_unknown` attempt now reads identity only from that immutable attempt's provider-evidence snapshot. Each requested provider requires a consumed intent whose provider kind matches its evidence leg and whose expected item is present.
+* Receipt handling: every retained receipt must belong to that exact intent and be non-ambiguous. Any receipt or prior verification that names a different provider item conflicts with the intent and fails closed.
+* Readback handling: every requested provider requires exactly one post-terminal readback entry. Duplicate entries, unknown provider kinds, missing providers, non-readback sources, missing native state, and any provider item other than the exact persisted expected item fail closed.
+* Preserved binding: the existing authorization validator continues to bind the exact predecessor, complete ordered terminal-attempt list, week/publication identity, publication digest, artifact digest, canonical artifact, authorization digest, and specifically generated successor.
+* Immutability: the failed/unknown predecessor is unchanged. Exact matching readback permits only creation of the newly authorized successor; mismatched or incomplete evidence leaves the current history at two attempts and every takeover reconciliation-only.
+
+## P07 Basher Validation
+
+| Command | Result |
+|---|---|
+| Required RV-008 focused selection | Passed: `19 passed, 49 deselected in 0.53s` |
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py -q` | Passed: `68 passed in 2.33s` |
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py tests/test_distribution_worker.py tests/test_distribution_telemetry.py tests/test_deploy_workflow.py -q` | Passed: `113 passed in 2.67s` |
+| Locked dispatch/API/outbox/worker/provider/publication/monitoring/deployment command | Passed: `788 passed, 1 warning in 56.20s` |
+| `TMPDIR="$PWD/.test-tmp" pytest tests/ -q` | Passed directly: `3118 passed, 2 skipped, 2 deselected, 1 warning in 83.38s`; no Compose rebuild was required |
+| `ruff check podcaster tests`; `ruff format --check podcaster tests`; `python3 -m compileall -q podcaster`; `git diff --check` | Passed; `192 files already formatted` |
+| `az bicep build --file infra/main.bicep --stdout` | Passed with the documented pre-existing BCP318 warning |
+| `checkov --directory infra --framework bicep --quiet` | Documented baseline retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov skip-list command | Passed: `34 passed, 0 failed` |
+| `checkov -d . --framework dockerfile --quiet --baseline .checkov.baseline` | Passed |
+| `docker build -f Containerfile -t podcaster-synthesis:basher-rv008 . --quiet` | Passed; image ID `sha256:0e4d101baaca7f4b4ebc2b84f78f103c8451aff4710ea9bb1d239897a34bdfff` |
+| Container smoke | Passed: UID `999`, ffmpeg/ffprobe, and `podcaster.audio`, `podcaster.episode`, `podcaster.job_runner`, `podcaster.distribution_outbox` imports |
+| Unconfigured distribution worker | Passed safety contract: exit `2` |
+| Changed-file suspected secret/PII scan | Passed: no private key, access key, JWT, signed credential URL, or email-address pattern found |
+
+No test, assertion, safety gate, security gate, or baseline was removed, skipped, weakened, or made non-blocking. Ralph's fresh independent final-SHA review remains required before P07-T07 can complete.
 
 ## P07 Rusty Fresh Independent Review
 
