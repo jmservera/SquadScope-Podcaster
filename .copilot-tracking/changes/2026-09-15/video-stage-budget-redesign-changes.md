@@ -10,11 +10,11 @@
 
 ## Execution Status
 
-* Status: In progress — P08 focused PR gate remediation
+* Status: Complete — P08 focused PR gate remediation delivered
 * Declared invocation scope: Full plan
-* Completed scope markers: P01-P07 and all tasks
-* All remaining active-plan markers: P08, P08-T01, P08-T02, P08-T03
-* Status basis: Head `6acad97` has one failing hosted test and six unresolved Copilot threads. The approved pass is limited to those gates and directly related regression coverage.
+* Completed scope markers: P01-P08 and all tasks
+* All remaining active-plan markers: None
+* Status basis: The focused corrections, local validation, commit/push, six thread resolutions, and post-push hosted checks completed successfully.
 
 ## Execution Summary
 
@@ -54,6 +54,15 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 * Full pytest: 3247 passed, 2 skipped, 2 deselected; one existing HTTPX deprecation warning.
 * Repository checks: `ruff check podcaster tests`, `ruff format --check podcaster tests`, `python3 -m compileall -q podcaster tests`, and `git diff --check` passed.
 * Hosted failure root cause: The foreign-clipset mismatch was wrapped as the generic setup error, so fallback received zero rendering budget and terminalized as `recording_insufficient`. The typed `ForeignClipsetRecorderSetupError` preserves the intended 30-second fallback budget.
+
+### P08 delivery and review-thread reconciliation
+
+* Related phase or task: P08-T03.
+* Commit and push: `88ffd730ea0202db51d7c67605acbe24e922f0c8` pushed to `origin/squad/video-stage-budget-redesign`.
+* Resolved threads: `PRRT_kwDOSzuis86kjgMz`, `PRRT_kwDOSzuis86kjsxQ`, `PRRT_kwDOSzuis86kjsxn`, `PRRT_kwDOSzuis86kjsx7`, `PRRT_kwDOSzuis86kjsyP`, and `PRRT_kwDOSzuis86kjsym`.
+* Thread verification: GraphQL returned zero unresolved review threads.
+* Hosted validation: CI test, lint, lockfile, infrastructure, UI, intro-outro, synthesis image, integration, Squad CI, CodeQL, and Zizmor checks passed after the remediation push.
+* Merge state: PR remains open and unmerged for operator review.
 
 ### Fail-closed audio staging
 
@@ -222,10 +231,10 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 
 ## Pre-Review Reconciliation
 
-* Plan markers and phase details: P01-P07 implementation complete; Fry's local QA review is approved.
-* Completed-work evidence and handoff prose: Current through pushed remediation commits `234807b` and `e2bb790`.
-* Validation, blockers, remaining work, and follow-up items: Current for the five-finding correction cycle.
-* Review readiness: Source implementation and local validation are complete.
+* Plan markers and phase details: P01-P08 implementation complete.
+* Completed-work evidence and handoff prose: Current through pushed remediation commit `88ffd73`.
+* Validation, blockers, remaining work, and follow-up items: Current for the focused six-thread/CI correction cycle.
+* Review readiness: Local and hosted validation passed; zero unresolved threads remain.
 
 ## Blockers
 
@@ -233,7 +242,7 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 
 ## Remaining Work
 
-* Observe hosted CI, complete any remaining independent review, reply to and resolve each targeted PR thread after verifying the pushed fix, then re-query PR #682 for newly surfaced correctness findings.
+* Operator review and merge decision only.
 * Do not merge or deploy as part of this remediation.
 
 ## Follow-Up Items

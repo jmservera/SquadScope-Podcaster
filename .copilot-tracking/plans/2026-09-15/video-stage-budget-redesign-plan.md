@@ -5,7 +5,7 @@
 
 * Task ID: video-stage-budget-redesign
 * Task slug: video-stage-budget-redesign
-* Planning status: P08 implementation and local validation complete; delivery active
+* Planning status: Complete through P08; operator review gate clear
 * Plan date: 2026-09-15
 * Phase details: .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 * Plan critique: .copilot-tracking/reviews/plans/2026-09-15/video-stage-budget-redesign-plan-critique.md
@@ -309,7 +309,7 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Detail section: P07-T05 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
 <!-- rpi:phase id=P08 -->
-### [~] P08: Complete focused PR gate remediation
+### [x] P08: Complete focused PR gate remediation
 
 * Intent: Correct the six current review findings and the hosted recorder regression without broadening the operator-only PR.
 * Dependencies: P07 and current PR #682 review/check evidence.
@@ -329,7 +329,7 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Detail section: P08-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
 <!-- rpi:task id=P08-T03 -->
-#### [~] P08-T03: Validate, resolve proven threads, and deliver
+#### [x] P08-T03: Validate, resolve proven threads, and deliver
 
 * Requirement and evidence: PR #682 remains blocked by one failing check and six unresolved threads.
 * Expected result: Focused and repository-standard validation pass, applicable threads are resolved, the existing branch is committed/pushed, and remote checks are reported without merging.
@@ -362,5 +362,5 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 ## Handoff
 
 * Implementation artifact: .copilot-tracking/changes/2026-09-15/video-stage-budget-redesign-changes.md
-* Ready phase or task: P08-T01 and P08-T02 are dependency-ready for Bender as one focused correction pass; P08-T03 follows.
-* Remaining provisional question or blocker: None. The safest local decisions are fixed in P07 details.
+* Ready phase or task: None; P01-P08 are complete.
+* Remaining provisional question or blocker: None. Operator review remains the only next action.

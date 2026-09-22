@@ -19,7 +19,7 @@
 | P05 | Validate, review, follow up, and deliver | Complete | P05, P05-T01, P05-T02, P05-T03 |
 | P06 | Fail closed audio-only publication | Complete | P06, P06-T01, P06-T02 |
 | P07 | Remediate unresolved PR review findings | Complete | P07, P07-T01, P07-T02, P07-T03, P07-T04, P07-T05 |
-| P08 | Complete focused PR gate remediation | Active: P08-T01-P08-T02 ready | P08, P08-T01, P08-T02, P08-T03 |
+| P08 | Complete focused PR gate remediation | Complete | P08, P08-T01, P08-T02, P08-T03 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish shared budget and evidence contracts
