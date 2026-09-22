@@ -10,7 +10,7 @@
 
 ## Execution Status
 
-* Status: Livingston completed the sole-author lifecycle-budget and bounded-shutdown implementation after Basher rejected exact head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`; commit/push and Rusty acceptance remain
+* Status: Livingston completed and pushed the sole-author lifecycle-budget and bounded-shutdown correction after Basher rejected exact head `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`; Rusty acceptance remains
 * Declared invocation scope: P05-T03 final-media validation lifecycle/lease budgeting, bounded ffmpeg shutdown, exact #682/#684 evidence replies, full required validation, delivery reconciliation, commit, and push
 * Sole current revision author: Livingston
 * Independent reviewer: Rusty is reserved and has not contributed
@@ -18,7 +18,7 @@
 * Completed marker retained for this cycle: P07-T06
 * Review marker: P05-T03 remains open pending implementation evidence and Basher's exact-SHA acceptance
 * Revision base: `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`
-* Remaining in-scope work: corrected #682/#684 replies, PR reconciliation, tracking commit/push, and Rusty review
+* Remaining in-scope work: Rusty's fresh independent final-SHA review
 * Outside-scope active-plan markers: P05-T04–P05-T06 and P06-T01–P06-T02; P00-T01 is complete
 * Status basis: Basher proved the complete decode receives a fresh fixed 1800-second timeout instead of the authoritative remaining queue/lifecycle/lease budget, and timeout cleanup can block indefinitely after SIGKILL. The correction must admit decode only within the remaining safe ownership window, fail closed before launch when insufficient, and use bounded TERM/KILL/reap stages while preserving full-stream corruption detection, staging safety, and all prior upload/checkpoint/provider protections. No merge, deployment, workflow dispatch, provider mutation, issue closure, or production action is authorized.
 
@@ -69,6 +69,16 @@
 * Triggering evidence: while validation was running, the remote branch advanced from the mandated rejected head to unrelated provider-transition commit `a8f4730c8680bb3c596b0f38bf3bb88b80753497`.
 * Reconciliation: preserved remote history without force-push, then reverted its out-of-scope net changes in `2c1265508731986a0b9f38f22f793e1becb0251f` before committing the authorized lifecycle correction. The final net diff from `86f96bb03c006bf0b307cd461b15cd18cfab5ed1` contains only lifecycle source/tests and required tracking/PR evidence.
 * Validation effect: exact probes and static checks were rerun after reconciliation; the previously completed locked/full/container/infrastructure evidence applies to the identical final source tree.
+
+### Delivery and corrected GitHub evidence
+
+* Existing branch `squad/incident-provider-terminal-truth` was pushed without force; local/origin divergence was reconciled.
+* PR #684 body was refreshed from `.copilot-tracking/pr/pr.md` and remains open/draft/blocked.
+* Corrected #682 final-media thread evidence:
+  [r4074996598](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4074996598).
+* Corrected response to Basher's #684 finding:
+  [issuecomment-5781771685](https://github.com/jmservera/SquadScope-Podcaster/pull/684#issuecomment-5781771685).
+* #682 remains open. No review thread was reopened or closed, and no merge, deployment, workflow dispatch, provider mutation, or W39 execution occurred.
 
 ## 2026-09-22 Leela correction after Rusty final-media rejection
 
