@@ -70,6 +70,22 @@ def test_distribution_alert_contract_has_routes_windows_and_missing_data() -> No
     assert "where observed == 0" in alerts
     assert "distribution_active_outbox_depth" in alerts
     assert "distribution_claim_heartbeat_missing" in alerts
+    assert alerts.count("event: 'distribution_weekly_state'") == 0
+    assert (
+        alerts.count(
+            "event: 'distribution_provider_state'\n    metric: 'distribution_identity_conflict'"
+        )
+        == 1
+    )
+    assert (
+        alerts.count(
+            "event: 'distribution_provider_state'\n    metric: 'distribution_weekly_non_green'"
+        )
+        == 1
+    )
+    assert "let activeDepth = toscalar" in alerts
+    assert "let stateRows = toscalar" in alerts
+    assert "where activeDepth > 0 and stateRows == 0" in alerts
 
 
 def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:

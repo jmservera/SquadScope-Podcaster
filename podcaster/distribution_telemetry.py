@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+PROVIDER_STATE_EVENT = "distribution_provider_state"
+SCHEDULER_STATE_EVENT = "distribution_scheduler_state"
+WEEKLY_ALERT_METRICS = frozenset(
+    {"distribution_identity_conflict", "distribution_weekly_non_green"}
+)
+
 
 @dataclass(frozen=True)
 class DistributionSignal:
@@ -201,7 +207,7 @@ def signal_rows(documents: Iterable[Mapping[str, Any]], *, now: datetime | None 
     for document in documents:
         for signal in signals_for_outbox(document, now=now):
             yield {
-                "event": "distribution_provider_state",
+                "event": PROVIDER_STATE_EVENT,
                 "metric": signal.name,
                 "value": signal.value,
                 "severity": signal.severity,

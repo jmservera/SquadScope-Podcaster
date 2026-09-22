@@ -196,6 +196,22 @@ def test_scheduler_enqueues_each_due_outbox_once(monkeypatch):
         def mark_reconciliation_notified(self, outbox_id, *, provider, token):
             return None
 
+        def reserve_reconciliation_notification(
+            self, outbox_id, *, provider, token, owner, lease_seconds=60
+        ):
+            return f"{provider}-reservation"
+
+        def begin_reconciliation_enqueue(self, outbox_id, *, provider, token, reservation_id):
+            return None
+
+        def complete_reconciliation_notification(
+            self, outbox_id, *, provider, token, reservation_id
+        ):
+            return None
+
+        def abort_reconciliation_enqueue(self, outbox_id, *, provider, token, reservation_id):
+            return None
+
         def cleanup_orphan_artifacts(self, limit):
             return 0
 

@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 
-from podcaster.distribution_telemetry import signal_rows, signals_for_outbox
+from podcaster.distribution_telemetry import (
+    PROVIDER_STATE_EVENT,
+    WEEKLY_ALERT_METRICS,
+    signal_rows,
+    signals_for_outbox,
+)
 
 
 def _document(state, native_state=None):
@@ -75,3 +80,12 @@ def test_identity_conflict_and_non_green_weekly_state_are_alertable():
     }
     assert "distribution_identity_conflict" in names
     assert "distribution_weekly_non_green" in names
+    rows = list(
+        signal_rows(
+            [document],
+            now=datetime(2026, 9, 21, 21, 0, tzinfo=timezone.utc),
+        )
+    )
+    weekly_rows = [row for row in rows if row["metric"] in WEEKLY_ALERT_METRICS]
+    assert weekly_rows
+    assert {row["event"] for row in weekly_rows} == {PROVIDER_STATE_EVENT}

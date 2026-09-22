@@ -18,6 +18,7 @@ from podcaster.distribution_outbox import (
     UnsafeOutboxValueError,
     aggregate_exit_code,
     commit_immutable_artifact,
+    exact_verification_proof,
     four_cycle_acceptance,
     outbox_routing_enabled,
     reconciliation_message,
@@ -261,6 +262,7 @@ def test_receipt_and_external_readback_are_required_for_public_success(setup):
             source="provider_readback",
             provider_item_id=f"{provider}-id",
             native_state="public",
+            proof=exact_verification_proof(document, provider_item_id=f"{provider}-id"),
         )
     state = repository.release(claim)
     assert state["state"] == "completed_public"
@@ -426,6 +428,76 @@ def test_reconciliation_notification_is_deduplicated_until_stale(setup):
     assert repository.due_reconciliations()
 
 
+def test_reconciliation_notification_reservation_is_single_winner_and_fenced(setup):
+    _storage, repository, clock, document, _created = setup
+    claim = repository.claim(
+        document["outbox_id"], owner="worker", execution_id="exec-1", lease_seconds=300
+    )
+    token = repository.schedule_reconciliation(
+        claim,
+        provider="youtube",
+        due_at=clock() - timedelta(seconds=1),
+    )
+    repository.release(claim)
+    winners = []
+    errors = []
+    barrier = threading.Barrier(2)
+
+    def reserve(owner):
+        barrier.wait()
+        try:
+            winners.append(
+                repository.reserve_reconciliation_notification(
+                    document["outbox_id"],
+                    provider="youtube",
+                    token=token,
+                    owner=owner,
+                    lease_seconds=30,
+                )
+            )
+        except StaleClaimError as exc:
+            errors.append(str(exc))
+
+    workers = [threading.Thread(target=reserve, args=(f"scheduler-{index}",)) for index in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert len(winners) == 1
+    assert len(errors) == 1
+
+    first_reservation = winners[0]
+    clock.advance(31)
+    replacement = repository.reserve_reconciliation_notification(
+        document["outbox_id"],
+        provider="youtube",
+        token=token,
+        owner="scheduler-recovery",
+        lease_seconds=30,
+    )
+    with pytest.raises(StaleClaimError):
+        repository.begin_reconciliation_enqueue(
+            document["outbox_id"],
+            provider="youtube",
+            token=token,
+            reservation_id=first_reservation,
+        )
+    repository.begin_reconciliation_enqueue(
+        document["outbox_id"],
+        provider="youtube",
+        token=token,
+        reservation_id=replacement,
+    )
+    assert repository.due_reconciliations() == []
+    repository.abort_reconciliation_enqueue(
+        document["outbox_id"],
+        provider="youtube",
+        token=token,
+        reservation_id=replacement,
+    )
+    assert repository.due_reconciliations()
+
+
 def test_orphan_artifact_cleanup_is_retained_bounded_and_reference_safe(setup):
     storage, repository, clock, document, _created = setup
     referenced_digest = document["artifact"]["sha256"]
@@ -537,12 +609,18 @@ def test_failed_attempt_remains_immutable_after_authorized_verified_recovery(set
         predecessor_attempt_id=failed_attempt["attempt_id"],
         source="operator",
         reason="no_mutation_proven",
-        no_mutation_proven=True,
+        evidence_reference="incident-W38-provider-audit",
     )
     recovered_claim = repository.claim(
         document["outbox_id"], owner="recovery", execution_id="exec-recovery", lease_seconds=300
     )
     for provider in ("youtube", "spotify"):
+        repository.persist_intent(
+            recovered_claim,
+            provider=provider,
+            operation="recovery_readback",
+            expected_provider_item_id=f"{provider}-recovered",
+        )
         repository.record_verification(
             recovered_claim,
             provider=provider,
@@ -550,6 +628,10 @@ def test_failed_attempt_remains_immutable_after_authorized_verified_recovery(set
             source=f"{provider}_readback",
             provider_item_id=f"{provider}-recovered",
             native_state="public" if provider == "youtube" else "published",
+            proof=exact_verification_proof(
+                repository.read(document["outbox_id"]),
+                provider_item_id=f"{provider}-recovered",
+            ),
         )
     recovered = repository.release(recovered_claim)
     assert recovered["attempts"][0] == failed_attempt
@@ -613,16 +695,23 @@ def test_unknown_mutation_cannot_authorize_blind_retry(setup):
             predecessor_attempt_id=attempt_id,
             source="automatic",
             reason="blind_retry",
-            no_mutation_proven=True,
+            evidence_reference="unsafe-blind-retry",
         )
 
 
 def test_weekly_w38_recovery_candidate_and_w39_missed_fixture():
     attempts = [
         {"attempt_id": "failed", "terminal_outcome": "failed_terminal"},
-        {"attempt_id": "recovered", "terminal_outcome": "published_verified"},
+        {
+            "attempt_id": "recovered",
+            "terminal_outcome": "published_verified",
+            "proof_complete": True,
+            "recovery_evidence_reference": "incident-W38-provider-audit",
+        },
     ]
     assert weekly_state_from_attempts(attempts) == "published_verified_recovered"
+    attempts[-1].pop("recovery_evidence_reference")
+    assert weekly_state_from_attempts(attempts) == "identity_conflict"
     assert weekly_state_from_attempts([], missed_not_dispatched=True) == "missed_not_dispatched"
 
 
@@ -649,17 +738,18 @@ def test_weekly_attempt_precedence_is_deterministic():
     )
 
 
-def test_four_cycle_acceptance_requires_exactly_four_green_weekly_decisions():
-    green = [
-        {"weekly_aggregation": {"state": "published_verified"}},
-        {"weekly_aggregation": {"state": "published_verified_recovered"}},
-        {"weekly_aggregation": {"state": "published_verified"}},
-        {"weekly_aggregation": {"state": "published_verified"}},
-    ]
+def test_four_cycle_acceptance_requires_complete_authoritative_envelopes():
+    green = [_authoritative_cycle(f"2026-W{week}") for week in range(35, 39)]
     assert four_cycle_acceptance(green) is True
-    green[2] = {"weekly_aggregation": {"state": "provider_unknown"}}
+    green[2]["providers"]["youtube"]["verification"]["proof"]["green"] = False
     assert four_cycle_acceptance(green) is False
     assert four_cycle_acceptance(green[:3]) is False
+    assert (
+        four_cycle_acceptance(
+            [{"weekly_aggregation": {"state": "published_verified"}} for _ in range(4)]
+        )
+        is False
+    )
 
 
 def test_cleanup_pages_complete_references_before_deleting(setup):
@@ -690,6 +780,105 @@ def test_cleanup_pages_complete_references_before_deleting(setup):
             outbox_scan_limit=1,
         )
     assert storage.blob_exists(document["artifact"]["path"])
+
+
+def test_cleanup_reference_created_before_delete_prevents_removal(setup, monkeypatch, tmp_path):
+    storage, repository, clock, _document, _created = setup
+    source = tmp_path / "concurrent-orphan.mp4"
+    source.write_bytes(b"concurrent-orphan")
+    artifact = commit_immutable_artifact(
+        storage,
+        source,
+        media_kind="video",
+        content_type="video/mp4",
+        suffix=".mp4",
+    )
+    metadata_path = f"{ARTIFACT_METADATA_PREFIX}/{artifact.sha256}.json"
+
+    def age(raw):
+        value = json.loads(raw.decode())
+        value["created_at"] = "2026-09-19T00:00:00Z"
+        return json.dumps(value).encode()
+
+    storage.update_bytes(metadata_path, "application/json", age)
+    clock.advance(2 * 86400)
+    original_update = storage.update_bytes
+    injected = {"done": False}
+
+    def update_with_reference(path, content_type, update):
+        if (
+            path.endswith(f"{artifact.sha256}.json")
+            and "distribution-artifact-references/" in path
+            and not injected["done"]
+        ):
+            target = storage.root / path
+            value = json.loads(target.read_text())
+            value["outbox_ids"] = ["f" * 64]
+            target.write_text(json.dumps(value))
+            injected["done"] = True
+        return original_update(path, content_type, update)
+
+    monkeypatch.setattr(storage, "update_bytes", update_with_reference)
+    assert repository.cleanup_orphan_artifacts(retention=timedelta(hours=24), limit=100) == 0
+    assert storage.blob_exists(artifact.path)
+
+
+def _authoritative_cycle(week):
+    attempt_id = f"attempt-{week}"
+    provider_ids = ["youtube-id", "spotify-id"]
+    proof = {
+        "week_match": True,
+        "publication_identity_match": True,
+        "manifest_match": True,
+        "publication_digest_match": True,
+        "artifact_sha256_match": True,
+        "canonical_artifact_selected": True,
+        "provider_identity_match": True,
+        "terminal_authoritative_readback": True,
+        "duplicate_ambiguity_resolved": True,
+        "green": True,
+    }
+    return {
+        "publication_identity": {
+            "week": week,
+            "accepted_job_id": f"job-{week}",
+            "publish_run_id": f"run-{week}",
+            "article_sha256": "b" * 64,
+            "manifest_sha256": "c" * 64,
+        },
+        "publication_digest": "d" * 64,
+        "artifact": {"sha256": "a" * 64},
+        "canonical_artifact": {
+            "artifact_id": "a" * 64,
+            "selected": True,
+            "selection_version": "v1",
+        },
+        "attempts": [{"attempt_id": attempt_id, "terminal_outcome": "published_verified"}],
+        "recovery_authz": [],
+        "providers": {
+            provider: {
+                "result": "externally_verified_public",
+                "verification": {
+                    "provider_item_id": provider_id,
+                    "source": f"{provider}_readback",
+                    "native_state": "public" if provider == "youtube" else "published",
+                    "proof": dict(proof),
+                },
+            }
+            for provider, provider_id in zip(("youtube", "spotify"), provider_ids, strict=True)
+        },
+        "weekly_aggregation": {
+            "state": "published_verified",
+            "decision_id": f"decision-{week}",
+            "rule_version": "weekly-publication-truth-v1",
+            "evaluated_attempt_ids": [attempt_id],
+            "winning_attempt_id": attempt_id,
+            "proof_references": provider_ids,
+            "unresolved_conditions": [],
+            "worker_exit_class": "zero",
+        },
+        "aggregate": {"externally_verified_public": True},
+    }
 
 
 def _artifact(document):
