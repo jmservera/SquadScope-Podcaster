@@ -99,7 +99,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | Independently reviewed at `02241a1`; not accepted; RV-002/RV-004/RV-008/RV-009 reopened | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Farnsworth correction validated; delivery reconciliation and Livingston review pending | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
@@ -107,12 +107,12 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 
 * Declared scope: P07-T01–P07-T07 only, covering RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009. Fry completed the independent review of `02241a1`; RV-003/RV-007 are resolved, while RV-002/RV-004/RV-008/RV-009 remain open.
 * Current task: implement exact proof/recovery authorization, atomic scheduler notification ownership, bounded fenced cleanup, canonical telemetry vocabulary, proof-backed four-cycle evaluation, locked validation, and truthful delivery evidence.
-* Revision author: Leela only.
-* Fresh independent reviewer: Fry after implementation and validation; Fry may not contribute during planning or implementation.
-* Excluded contributors: Bender, Hermes, and Amy may not author, advise, pair, inspect, suggest, review, or otherwise contribute.
-* Source boundary: this Podcaster worktree's narrowly identified downstream owners, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts. Do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, deployment, or production.
+* Revision author: Farnsworth only for the reopened correction cycle.
+* Fresh independent reviewer: Livingston after implementation, validation, commit, push, and PR refresh; Livingston may not contribute during implementation.
+* Excluded contributors: Bender, Hermes, Amy, Leela, and Fry may not author, advise, pair, inspect, suggest, review, or otherwise contribute.
+* Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: deterministic focused negative probes per P07 task, then the complete locked validation contract without weakening.
-* Delivery boundary: P00-T01, P05, and P06 are outside scope. This invocation performs no commit, push, PR/issue mutation, deployment, production-week claim, or modification of `/home/azureuser/source/SquadScope`.
+* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 deployment/canary, and P06 elapsed evidence remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
 
 ## Implementation Marker Reconciliation
 
@@ -120,21 +120,21 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | Reopened for RV-008 | Replace label-only recovery and opaque evidence-token authorization with exact durable predecessor/provider proof |
-| P07-T02 | Reopened for RV-002 | Recover expired/abandoned `enqueue_started` reservations without duplicate enqueue |
-| P07-T03 | Reopened for RV-004 | Migrate/backfill or safely fall back for pre-reference-index retained outbox artifacts |
+| P07-T01 | Corrected; pending Livingston review | Structured authorization and final recovery state bind exact identity, predecessor evidence, succeeding attempt/provider IDs, digests, and authoritative readback |
+| P07-T02 | Corrected; pending Livingston review | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
+| P07-T03 | Corrected; pending Livingston review | Bounded resumable migration backfills pre-index references and cleanup fails closed until completeness is proven |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
-| P07-T05 | Reopened for RV-009 | Rebind stored proof to immutable raw identity/readback evidence during four-cycle evaluation |
-| P07-T06 | Reopened | Standard validation passed after Compose refresh, but independent negative probes failed for four findings |
-| P07-T07; P05-T01 | Review complete; RV-007 resolved | Exact Fry verdict/counts/status and PR #684 narrative reconciled; external delivery remains blocked |
+| P07-T05 | Corrected; pending Livingston review | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
+| P07-T06 | Complete for Farnsworth revision | Focused, locked, full, static, Bicep, Checkov, container, and secret/PII validation passed or matched the documented baseline |
+| P07-T07; P05-T01 | In progress | Commit/push and PR #684 refresh are current-revision delivery work; Livingston review remains pending and external delivery remains blocked |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
 | W39 classification | Settled | `missed_not_dispatched` |
 | Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
 
-Leela alone authors P07. Fry alone performs fresh independent review after implementation and validation. Bender, Hermes, and Amy are excluded entirely.
+Farnsworth alone authors the reopened P07 correction. Livingston alone performs fresh independent review after implementation and validation. Bender, Hermes, Amy, Leela, and Fry are excluded entirely.
 
 ### Implemented Surface Disposition
 
@@ -998,7 +998,7 @@ Require persisted, exact, identity-bound proof for every green outcome and evide
 
 #### Unresolved Items
 
-* RV-008 remains open: `weekly_state_from_attempts()` still accepts label-only `proof_complete` plus an opaque evidence token, and recovery authorization is not bound to a validated durable proof object.
+* Farnsworth correction: label-only recovery is non-green; authorization requires a validated durable evidence object and final recovered state rebinds that authorization to the succeeding attempt and provider readbacks. Livingston review remains pending.
 
 <!-- rpi:task id=P07-T02 -->
 ### P07-T02: Make scheduler notification enqueue single-winner
@@ -1036,7 +1036,7 @@ Move ownership/idempotency before enqueue so one durable winner may notify while
 
 #### Unresolved Items
 
-* RV-002 remains open: an expired reservation in `enqueue_started` remains excluded from due scans indefinitely.
+* Farnsworth correction: `reserved` and `enqueue_started` are hidden only while their lease is live. Expired work is recoverable by one new fenced owner; stale owners cannot abort or complete the replacement.
 
 <!-- rpi:task id=P07-T03 -->
 ### P07-T03: Bound and fence resumable cleanup
@@ -1074,7 +1074,7 @@ Make cleanup explicitly bounded per execution, resumable across executions, and 
 
 #### Unresolved Items
 
-* RV-004 remains open and is escalated to High: existing pre-reference-index outbox records can lose referenced artifacts during cleanup because no migration/fallback populates the new index.
+* Farnsworth correction: cleanup performs a bounded resumable reference-index migration and refuses deletion until the outbox scan is complete. Legacy references are backfilled, and concurrent current-schema references win the deletion fence.
 
 <!-- rpi:task id=P07-T04 -->
 ### P07-T04: Unify emitted telemetry and deployable alert vocabulary
@@ -1149,7 +1149,7 @@ Evaluate each cycle from persisted authoritative proof receipts/readbacks and th
 
 #### Unresolved Items
 
-* RV-009 remains open: persisted proof booleans are not rebound to immutable raw identity values, so an identity-tampered envelope can pass. P06 also still requires four real elapsed production cycles.
+* Farnsworth correction: persisted proof includes raw evidence and is recomputed against the current weekly record. Identity/readback/duplicate mismatches and recovered cycles without exact authorization fail closed. P06 still requires four real elapsed production cycles.
 
 <!-- rpi:task id=P07-T06 -->
 ### P07-T06: Run the locked review-follow-up validation contract

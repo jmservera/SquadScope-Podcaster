@@ -1,7 +1,7 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — independent review outcome: Not accepted.** Review execution is **Complete**. Amy's declared in-repo implementation execution is **Complete**. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Farnsworth correction validated; Livingston review pending.** Fry's rejection of Leela's revision `02241a1` remains historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 ## Incident and acceptance truth
 
@@ -33,29 +33,29 @@ The branch contains the Podcaster-side P00 receipt/absence boundary and Amy's de
 
 Completion of the declared implementation scope does not imply acceptance. The independent review found material defects in scheduler deduplication, alert contracts, cleanup safety, exact provider proof, four-cycle proof evaluation, and canonical tracking accuracy.
 
-## Independent review: Not accepted
+## Farnsworth correction after independent rejection
 
-**Severity:** 0 Critical, 4 High open, 2 Medium open.
+Farnsworth is the sole author of the current correction. Livingston is reserved as the fresh independent reviewer. Bender, Hermes, Amy, Leela, and Fry did not contribute.
 
 | Finding | State | Review result |
 |---|---|---|
 | RV-001 | Resolved | Read-only YouTube promotion takeover converges through authoritative readback without a duplicate mutation. |
-| RV-002 | **High open** | Concurrent schedulers can select and enqueue the same notification because selection and sent-marking are not atomic. |
-| RV-003 | **High open** | Weekly alert queries do not match emitted event names, so required critical signals can fail to fire. |
-| RV-004 | **Medium open** | Cleanup is paginated but remains unbounded across the retained corpus and unsafe against a concurrent new reference. |
+| RV-002 | Corrected; review pending | Expired `reserved`/`enqueue_started` leases become recoverable by one fenced owner; stale owners cannot release or complete the replacement. |
+| RV-003 | Resolved | Emitted weekly rows, deployed rules, and active-depth absence semantics remain aligned. |
+| RV-004 | Corrected; review pending | A bounded resumable migration backfills legacy references, and cleanup refuses deletion until reference completeness is proven. |
 | RV-005 | Resolved | Missing provider identity remains accurately fail-closed rather than inventing identity-bound readback. |
 | RV-006 | Planning-resolved | The closure inventory is present; P05 execution remains outstanding, and no issue or review thread is treated as resolved by this delivery. |
-| RV-007 | **Medium open** | Canonical tracking overstates finding dispositions and retains a stale locked-test count. |
-| RV-008 | **High open** | Exact provider identity/proof and durable recovery authorization are not enforced; omitted proof can produce false green. |
-| RV-009 | **High open** | The four-cycle evaluator accepts green labels without validating external proof. |
+| RV-007 | Resolved | Current tracking and PR narrative preserve Fry's rejection and identify Farnsworth/Livingston as the new author/reviewer pair. |
+| RV-008 | Corrected; review pending | Recovery authorization is structured and bound to exact identity, prior attempts, successor/provider identities, digests, and authoritative readback. |
+| RV-009 | Corrected; review pending | Every cycle recomputes proof from raw evidence and rejects label-only, tampered, mismatched, or unauthorized recovered envelopes. |
 
-Do not implement these findings in this delivery. They remain routed follow-up work under the **Not accepted** outcome.
+Fry's historical verdict remains **Not accepted**. The four corrected findings remain pending Livingston's independent final-SHA assessment.
 
 ## Independent validation evidence
 
-- Focused correction suite: **81 passed**.
-- Locked contract suite: **756 passed, 1 warning**.
-- Full repository suite after refreshing the stale Compose image: **3086 passed, 2 skipped, 2 deselected, 1 warning**.
+- Focused correction suite: **102 passed**.
+- Locked contract suite: **777 passed, 1 warning**.
+- Full repository suite after refreshing the stale Compose image: **3107 passed, 2 skipped, 2 deselected, 1 warning**.
 - Python compile, Ruff check, Ruff format check, Bicep build, and diff safety: **passed**.
 - Exact Checkov baseline: **36 passed, 7 failed**, matching the documented pre-existing baseline.
 - CI-equivalent Checkov gate: **34 passed, 0 failed**.
@@ -64,14 +64,7 @@ The initial full run failed only against the stale Compose image; rebuilding tha
 
 ## Negative probes
 
-Independent QA reproduced:
-
-- **False green without identity proof:** missing explicit proof and expected provider IDs still produced all-green proof and `published_verified`.
-- **Duplicate scheduler selection:** two concurrent pre-mark scans selected the same outbox/provider/token and could enqueue duplicate work.
-- **Telemetry/query mismatch:** emitted weekly critical rows use `distribution_provider_state`, while deployed weekly rules query `distribution_weekly_state`.
-- **Label-only four-cycle acceptance:** four green labels with no attempts, identity, provider item, duplicate resolution, or external readback returned accepted.
-
-These probes are acceptance blockers even though the positive test suites pass.
+The focused suite now proves expired reservation recovery with one fenced winner, fail-closed cleanup until legacy reference migration completes, rejection of opaque or mismatched recovery authorization, rejection of label-only/tampered/mismatched proof envelopes, and acceptance of exact complete proof only.
 
 ## Residual external gates
 
@@ -106,8 +99,9 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] W38 retained as evidence-conditional and W39 retained as `missed_not_dispatched`.
 - [x] Positive validation and independent negative probes recorded exactly.
 - [x] Existing PR retained OPEN, DRAFT, and BLOCKED.
-- [ ] RV-002, RV-003, RV-004, RV-008, and RV-009 corrected and independently verified.
-- [ ] RV-007 canonical tracking reconciled after implementation corrections.
+- [x] RV-002, RV-004, RV-008, and RV-009 corrected with focused negative probes.
+- [x] RV-003 and RV-007 preserved as resolved.
+- [ ] Livingston independently reviews the final pushed SHA.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
 - [ ] P05 deployment/canary gates completed.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.

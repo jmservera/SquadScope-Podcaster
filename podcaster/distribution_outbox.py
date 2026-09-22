@@ -35,6 +35,7 @@ VERIFICATION_PROOF_FIELDS = (
     "terminal_authoritative_readback",
     "duplicate_ambiguity_resolved",
 )
+RECOVERY_AUTHORIZATION_SCHEMA_VERSION = "distribution-recovery-authorization-v1"
 
 PROVIDER_RESULTS = frozenset(
     {
@@ -322,6 +323,199 @@ def exact_verification_proof(
         "terminal_authoritative_readback": True,
         "duplicate_ambiguity_resolved": True,
     }
+
+
+def exact_recovery_authorization_evidence(
+    document: Mapping[str, Any],
+    *,
+    predecessor_attempt_id: str,
+    expected_provider_item_ids: Mapping[str, str],
+) -> dict[str, Any]:
+    identity = document["publication_identity"]
+    artifact = document["artifact"]
+    canonical = document["canonical_artifact"]
+    attempts = document.get("attempts", [])
+    predecessor = next(
+        (
+            attempt
+            for attempt in attempts
+            if isinstance(attempt, Mapping) and attempt.get("attempt_id") == predecessor_attempt_id
+        ),
+        None,
+    )
+    if not isinstance(predecessor, Mapping):
+        raise DistributionOutboxError("recovery predecessor is missing")
+    provider_evidence = predecessor.get("provider_evidence")
+    if not isinstance(provider_evidence, Mapping):
+        raise DistributionOutboxError("recovery predecessor evidence is missing")
+    providers: dict[str, Any] = {}
+    for provider in sorted(document.get("provider_objectives", {})):
+        leg = provider_evidence.get(provider)
+        if not isinstance(leg, Mapping):
+            raise DistributionOutboxError("recovery predecessor provider evidence is missing")
+        verification = leg.get("verification")
+        if not isinstance(verification, Mapping):
+            raise DistributionOutboxError("recovery predecessor readback is missing")
+        providers[provider] = {
+            "predecessor_result": leg.get("result"),
+            "predecessor_provider_item_id": verification.get("provider_item_id"),
+            "safety_readback_source": verification.get("source"),
+            "safety_readback_state": verification.get("native_state"),
+            "expected_succeeding_provider_item_id": expected_provider_item_ids.get(provider),
+            "mutation_safe": leg.get("result") == "failed_terminal",
+            "duplicate_ambiguity_resolved": True,
+        }
+    return {
+        "schema_version": RECOVERY_AUTHORIZATION_SCHEMA_VERSION,
+        "outbox_id": document["outbox_id"],
+        "publication_identity": dict(identity),
+        "publication_digest": document["publication_digest"],
+        "artifact_sha256": artifact["sha256"],
+        "canonical_artifact_id": canonical["artifact_id"],
+        "canonical_selection_version": canonical["selection_version"],
+        "prior_attempt_ids": [
+            str(attempt["attempt_id"])
+            for attempt in attempts
+            if isinstance(attempt, Mapping) and attempt.get("terminal_outcome")
+        ],
+        "predecessor_attempt_id": predecessor_attempt_id,
+        "providers": providers,
+    }
+
+
+def _validated_recovery_authorization_evidence(
+    document: Mapping[str, Any],
+    predecessor: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    value = _safe_value(dict(evidence), key="recovery_evidence")
+    identity = document["publication_identity"]
+    artifact = document["artifact"]
+    canonical = document["canonical_artifact"]
+    attempts = document.get("attempts", [])
+    predecessor_index = next(
+        (
+            index
+            for index, attempt in enumerate(attempts)
+            if isinstance(attempt, Mapping)
+            and attempt.get("attempt_id") == predecessor.get("attempt_id")
+        ),
+        -1,
+    )
+    expected_attempt_ids = [
+        str(attempt["attempt_id"])
+        for attempt in attempts[: predecessor_index + 1]
+        if isinstance(attempt, Mapping) and attempt.get("terminal_outcome")
+    ]
+    if (
+        value.get("schema_version") != RECOVERY_AUTHORIZATION_SCHEMA_VERSION
+        or value.get("outbox_id") != document.get("outbox_id")
+        or value.get("publication_identity") != identity
+        or value.get("publication_digest") != document.get("publication_digest")
+        or value.get("artifact_sha256") != artifact.get("sha256")
+        or value.get("canonical_artifact_id") != canonical.get("artifact_id")
+        or value.get("canonical_selection_version") != canonical.get("selection_version")
+        or value.get("prior_attempt_ids") != expected_attempt_ids
+        or value.get("predecessor_attempt_id") != predecessor.get("attempt_id")
+    ):
+        raise DistributionOutboxError("recovery authorization identity evidence is invalid")
+    provider_evidence = predecessor.get("provider_evidence")
+    providers = value.get("providers")
+    objectives = document.get("provider_objectives")
+    if (
+        not isinstance(provider_evidence, Mapping)
+        or not isinstance(providers, Mapping)
+        or not isinstance(objectives, Mapping)
+        or set(providers) != set(objectives)
+    ):
+        raise DistributionOutboxError("recovery authorization provider evidence is incomplete")
+    for provider in objectives:
+        prior_leg = provider_evidence.get(provider)
+        authorization_leg = providers.get(provider)
+        verification = prior_leg.get("verification") if isinstance(prior_leg, Mapping) else None
+        if (
+            not isinstance(prior_leg, Mapping)
+            or not isinstance(authorization_leg, Mapping)
+            or not isinstance(verification, Mapping)
+            or prior_leg.get("result") != "failed_terminal"
+            or authorization_leg.get("predecessor_result") != prior_leg.get("result")
+            or authorization_leg.get("predecessor_provider_item_id")
+            != verification.get("provider_item_id")
+            or authorization_leg.get("safety_readback_source") != verification.get("source")
+            or authorization_leg.get("safety_readback_state") != verification.get("native_state")
+            or "readback" not in str(verification.get("source") or "")
+            or authorization_leg.get("mutation_safe") is not True
+            or authorization_leg.get("duplicate_ambiguity_resolved") is not True
+            or not authorization_leg.get("expected_succeeding_provider_item_id")
+        ):
+            raise DistributionOutboxError("recovery authorization safety evidence is invalid")
+    return value
+
+
+def _recovery_authorization_is_valid(
+    document: Mapping[str, Any],
+    winner: Mapping[str, Any],
+    authorizations: Iterable[Mapping[str, Any]],
+) -> bool:
+    authorization = next(
+        (
+            item
+            for item in authorizations
+            if isinstance(item, Mapping)
+            and item.get("authz_id") == winner.get("authz_id")
+            and item.get("attempt_id") == winner.get("attempt_id")
+            and item.get("predecessor_attempt_id") == winner.get("predecessor_attempt_id")
+        ),
+        None,
+    )
+    if not isinstance(authorization, Mapping):
+        return False
+    predecessor = next(
+        (
+            attempt
+            for attempt in document.get("attempts", [])
+            if isinstance(attempt, Mapping)
+            and attempt.get("attempt_id") == winner.get("predecessor_attempt_id")
+        ),
+        None,
+    )
+    evidence = authorization.get("evidence")
+    if not isinstance(predecessor, Mapping) or not isinstance(evidence, Mapping):
+        return False
+    try:
+        validated = _validated_recovery_authorization_evidence(
+            document,
+            predecessor,
+            evidence,
+        )
+    except (DistributionOutboxError, UnsafeOutboxValueError):
+        return False
+    digest = hashlib.sha256(
+        json.dumps(validated, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if (
+        authorization.get("evidence_digest") != digest
+        or winner.get("recovery_proof_digest") != digest
+    ):
+        return False
+    providers = document.get("providers")
+    if not isinstance(providers, Mapping):
+        return False
+    for provider, authorization_leg in validated["providers"].items():
+        leg = providers.get(provider)
+        verification = leg.get("verification") if isinstance(leg, Mapping) else None
+        if (
+            not isinstance(verification, Mapping)
+            or verification.get("provider_item_id")
+            != authorization_leg.get("expected_succeeding_provider_item_id")
+            or str(verification.get("native_state") or "").lower() not in ("public", "published")
+            or (
+                "readback" not in str(verification.get("source") or "")
+                and verification.get("source") not in ("youtube_videos_list", "provider_readback")
+            )
+        ):
+            return False
+    return True
 
 
 def _publication_digest(identity: Mapping[str, Any], artifact: Mapping[str, Any]) -> str:
@@ -677,7 +871,7 @@ class DistributionOutboxRepository:
         predecessor_attempt_id: str,
         source: str,
         reason: str,
-        evidence_reference: str,
+        evidence: Mapping[str, Any],
     ) -> str:
         """Create a new attempt without rewriting its predecessor."""
 
@@ -698,7 +892,6 @@ class DistributionOutboxRepository:
                 raise DistributionOutboxError("recovery predecessor is not terminal")
             if predecessor.get("terminal_outcome") == "provider_unknown":
                 raise DistributionOutboxError("unknown provider mutation cannot authorize retry")
-            evidence = _require_token("recovery_evidence_reference", evidence_reference)
             if source not in ("operator", "bounded_reconciliation"):
                 raise DistributionOutboxError("recovery requires an explicit trusted authorizer")
             provider_evidence = predecessor.get("provider_evidence")
@@ -716,16 +909,29 @@ class DistributionOutboxRepository:
                         raise DistributionOutboxError(
                             "ambiguous provider mutation cannot authorize retry"
                         )
+            validated_evidence = _validated_recovery_authorization_evidence(
+                document,
+                predecessor,
+                evidence,
+            )
             at = _iso(self.now())
             authorization_id = uuid.uuid4().hex
             attempt_id = uuid.uuid4().hex
+            evidence_digest = hashlib.sha256(
+                json.dumps(
+                    validated_evidence,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
             authorization = {
                 "authz_id": authorization_id,
                 "source": _require_token("authorization_source", source),
                 "reason": _require_token("authorization_reason", reason),
                 "authorized_at": at,
                 "predecessor_attempt_id": predecessor_attempt_id,
-                "evidence_reference": evidence,
+                "evidence_digest": evidence_digest,
+                "evidence": validated_evidence,
                 "attempt_id": attempt_id,
             }
             document["recovery_authz"].append(authorization)
@@ -737,7 +943,7 @@ class DistributionOutboxRepository:
                     "authz_reason": authorization["reason"],
                     "authorized_at": at,
                     "predecessor_attempt_id": predecessor_attempt_id,
-                    "recovery_evidence_reference": evidence,
+                    "recovery_proof_digest": evidence_digest,
                     "state": "pending",
                     "terminal_outcome": None,
                     "events": [{"sequence": 1, "at": at, "state": "accepted"}],
@@ -779,6 +985,29 @@ class DistributionOutboxRepository:
         def _persist(document: dict[str, Any]) -> None:
             self._require_claim(document, claim, mutation=True)
             leg = self._provider(document, provider)
+            attempt = _active_attempt(document)
+            if attempt.get("authz_source") != "initial_enqueue":
+                authorization = next(
+                    (
+                        item
+                        for item in document.get("recovery_authz", [])
+                        if isinstance(item, Mapping)
+                        and item.get("authz_id") == attempt.get("authz_id")
+                    ),
+                    None,
+                )
+                expected = (
+                    authorization.get("evidence", {})
+                    .get("providers", {})
+                    .get(provider, {})
+                    .get("expected_succeeding_provider_item_id")
+                    if isinstance(authorization, Mapping)
+                    else None
+                )
+                if not expected or expected_provider_item_id != expected:
+                    raise DistributionOutboxError(
+                        "recovery intent does not match its authorization"
+                    )
             existing = leg.get("intent")
             if isinstance(existing, Mapping):
                 if existing.get("operation") == operation:
@@ -1174,10 +1403,9 @@ class DistributionOutboxRepository:
                     reservation_is_fresh = (
                         isinstance(reservation, Mapping)
                         and reservation.get("token") == token
-                        and (
-                            reservation.get("stage") == "enqueue_started"
-                            or (reservation_expires is not None and reservation_expires > now)
-                        )
+                        and reservation.get("stage") in ("reserved", "enqueue_started")
+                        and reservation_expires is not None
+                        and reservation_expires > now
                     )
                     if due_at is not None and due_at <= now and isinstance(token, str):
                         if notification_is_fresh or reservation_is_fresh:
@@ -1344,6 +1572,36 @@ class DistributionOutboxRepository:
         pages = 0
         raw_state = self.storage.get_bytes(ORPHAN_CLEANUP_STATE_PATH)
         cleanup_state = json.loads(raw_state.decode("utf-8")) if raw_state else {}
+        if cleanup_state.get("reference_index_complete") is not True:
+            migration_cursor = cleanup_state.get("outbox_reference_cursor")
+            paths, next_migration_cursor = self._list_page(
+                f"{OUTBOX_PREFIX}/",
+                limit=outbox_scan_limit,
+                continuation=migration_cursor,
+            )
+            for path in paths:
+                raw = self.storage.get_bytes(path)
+                if raw is None:
+                    continue
+                document = json.loads(raw.decode("utf-8"))
+                artifact = document.get("artifact")
+                digest = artifact.get("sha256") if isinstance(artifact, Mapping) else None
+                outbox_id = document.get("outbox_id")
+                if _SHA256.fullmatch(str(digest or "")) and isinstance(outbox_id, str):
+                    self._register_artifact_reference(str(digest), outbox_id)
+            cleanup_state["outbox_reference_cursor"] = next_migration_cursor
+            cleanup_state["reference_index_complete"] = next_migration_cursor is None
+            cleanup_state["last_reference_migration"] = {
+                "scanned": len(paths),
+                "completed_at": _iso(self.now()),
+            }
+            self.storage.put_bytes(
+                ORPHAN_CLEANUP_STATE_PATH,
+                json.dumps(cleanup_state, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                "application/json; charset=utf-8",
+            )
+            if next_migration_cursor is not None:
+                return 0
         cursor = cleanup_state.get("metadata_cursor")
         while (
             pages < page_limit
@@ -1452,6 +1710,11 @@ class DistributionOutboxRepository:
             json.dumps(
                 {
                     "metadata_cursor": cursor,
+                    "outbox_reference_cursor": cleanup_state.get("outbox_reference_cursor"),
+                    "reference_index_complete": cleanup_state.get(
+                        "reference_index_complete", False
+                    ),
+                    "last_reference_migration": cleanup_state.get("last_reference_migration"),
                     "last_run": {
                         "pages": pages,
                         "work_items": work,
@@ -1697,6 +1960,7 @@ class DistributionOutboxRepository:
             and len(expected_provider_ids) == 1,
         }
         values["green"] = all(values.values())
+        values["evidence"] = _safe_value(supplied, key="verification_evidence")
         return values
 
     @staticmethod
@@ -1778,10 +2042,21 @@ class DistributionOutboxRepository:
                 winning_attempt_id = None
                 unresolved = ["provider_unknown"]
             else:
-                weekly_state = (
-                    "published_verified_recovered" if previous_non_green else "published_verified"
-                )
-                winning_attempt_id = current_attempt["attempt_id"]
+                if previous_non_green:
+                    authorized = _recovery_authorization_is_valid(
+                        document,
+                        current_attempt,
+                        document.get("recovery_authz", []),
+                    )
+                    weekly_state = (
+                        "published_verified_recovered" if authorized else "identity_conflict"
+                    )
+                    winning_attempt_id = current_attempt["attempt_id"] if authorized else None
+                    if not authorized:
+                        unresolved = ["recovery_authorization_invalid"]
+                else:
+                    weekly_state = "published_verified"
+                    winning_attempt_id = current_attempt["attempt_id"]
         else:
             candidates = [normalized.get(result, result) for result in results]
             if "identity_conflict" in candidates:
@@ -1888,6 +2163,7 @@ def _authoritative_green_document(document: Mapping[str, Any]) -> bool:
         or canonical.get("selected") is not True
         or canonical.get("artifact_id") != artifact.get("sha256")
         or not canonical.get("selection_version")
+        or document.get("publication_digest") != _publication_digest(identity, artifact)
     ):
         return False
     evaluated = aggregation.get("evaluated_attempt_ids")
@@ -1912,15 +2188,8 @@ def _authoritative_green_document(document: Mapping[str, Any]) -> bool:
         if (
             not isinstance(winner, Mapping)
             or not winner.get("predecessor_attempt_id")
-            or not winner.get("recovery_evidence_reference")
             or not isinstance(authz, list)
-            or not any(
-                isinstance(item, Mapping)
-                and item.get("authz_id") == winner.get("authz_id")
-                and item.get("attempt_id") == winner.get("attempt_id")
-                and item.get("evidence_reference") == winner.get("recovery_evidence_reference")
-                for item in authz
-            )
+            or not _recovery_authorization_is_valid(document, winner, authz)
         ):
             return False
     verified_provider_ids: list[str] = []
@@ -1931,11 +2200,26 @@ def _authoritative_green_document(document: Mapping[str, Any]) -> bool:
         if not isinstance(verification, Mapping):
             return False
         proof = verification.get("proof")
+        evidence = proof.get("evidence") if isinstance(proof, Mapping) else None
         provider_item_id = verification.get("provider_item_id")
+        rebound = (
+            DistributionOutboxRepository._verification_proof(
+                document,
+                leg,
+                provider_item_id=str(provider_item_id or ""),
+                native_state=str(verification.get("native_state") or ""),
+                source=str(verification.get("source") or ""),
+                proof=evidence,
+            )
+            if isinstance(evidence, Mapping)
+            else {}
+        )
         if (
             not isinstance(proof, Mapping)
             or proof.get("green") is not True
             or not all(proof.get(field) is True for field in VERIFICATION_PROOF_FIELDS)
+            or rebound.get("green") is not True
+            or any(rebound.get(field) != proof.get(field) for field in VERIFICATION_PROOF_FIELDS)
             or provider_item_id not in aggregation.get("proof_references", [])
             or str(verification.get("native_state") or "").lower() not in ("public", "published")
             or (
@@ -1959,6 +2243,7 @@ def weekly_state_from_attempts(
     attempts: Iterable[Mapping[str, Any]],
     *,
     missed_not_dispatched: bool = False,
+    weekly_record: Mapping[str, Any] | None = None,
 ) -> str:
     """Deterministically aggregate immutable attempt outcomes for one week."""
 
@@ -1974,7 +2259,14 @@ def weekly_state_from_attempts(
         item
         for item in items
         if str(item.get("terminal_outcome")) == "published_verified"
-        and item.get("proof_complete") is True
+        and (
+            item.get("proof_complete") is True
+            or (
+                weekly_record is not None
+                and weekly_record.get("weekly_aggregation", {}).get("winning_attempt_id")
+                == item.get("attempt_id")
+            )
+        )
     ]
     if verified:
         earlier_non_green = any(
@@ -1985,10 +2277,19 @@ def weekly_state_from_attempts(
         if earlier_non_green:
             return (
                 "published_verified_recovered"
-                if verified[-1].get("recovery_evidence_reference")
+                if weekly_record is not None
+                and _authoritative_green_document(weekly_record)
+                and weekly_record.get("weekly_aggregation", {}).get("state")
+                == "published_verified_recovered"
                 else "identity_conflict"
             )
-        return "published_verified"
+        return (
+            "published_verified"
+            if weekly_record is not None
+            and _authoritative_green_document(weekly_record)
+            and weekly_record.get("weekly_aggregation", {}).get("state") == "published_verified"
+            else "identity_conflict"
+        )
     precedence = (
         "manual_action_required",
         "partial",

@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: P07 independently reviewed and not accepted; RV-002/RV-004/RV-008/RV-009 require correction, and delivery remains blocked by P00-T01, P05, and P06
+* Planning status: Farnsworth's reopened P07 source correction and validation are complete; commit/push/PR reconciliation and Livingston's independent review remain, and delivery stays blocked by P00-T01, P05, and P06
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -31,7 +31,7 @@ P07 requires atomic scheduler notification ownership, one telemetry vocabulary s
 * Four future post-fix cycles must each be `published_verified` or controlled `published_verified_recovered`; internal status is never sufficient.
 * PR #682 is superseded or selectively reworked only after the historical W17–W29 set, all six RV-006 threads, and later current unresolved safety threads have explicit closure evidence.
 * Existing CI, tests, idempotency, provider safety, and security gates remain intact.
-* Leela is the sole P07 revision author. Fry is reserved as the fresh independent reviewer after implementation and validation. Bender, Hermes, and Amy are excluded from all contribution.
+* Leela's revision at `02241a1` was rejected by Fry. Farnsworth is the sole author of the reopened P07 correction cycle. Livingston is reserved as the fresh independent reviewer after implementation and validation. Bender, Hermes, Amy, Leela, and Fry are excluded from contribution to the correction.
 
 ### What You May Not Know
 
@@ -67,7 +67,7 @@ P07 requires atomic scheduler notification ownership, one telemetry vocabulary s
 * Do not weaken CI/tests/provider safety/idempotency/security gates and do not modify `/home/azureuser/source/SquadScope`.
 * Plan only the active review findings RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009; do not reopen or add findings.
 * Add a distinct review-follow-up phase with dependency-ordered tasks and closure evidence for every active finding.
-* Assign Leela as sole revision author and Fry as fresh independent reviewer; exclude Bender, Hermes, and Amy entirely. Scribe may log only after the lifecycle completes.
+* Preserve Leela/Fry as the historical rejected author/reviewer pair. Assign Farnsworth as sole author of the reopened correction and Livingston as the fresh independent reviewer; exclude Bender, Hermes, Amy, Leela, and Fry entirely from this revision. Scribe may log only after the lifecycle completes.
 * Keep PR #684 draft/blocked while P00-T01, P05 deployment/canary, or P06 elapsed-cycle gates remain.
 
 ## Goals
@@ -427,17 +427,17 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 
 * Intent: Resolve only RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009 with fail-closed implementation, deterministic negative probes, truthful delivery evidence, and fresh independent review.
 * Dependencies: canonical review complete; historical P01–P04 implementation available as the correction baseline.
-* Ownership: Leela is sole revision author. Fry is reserved for P07-T07 independent review. Bender, Hermes, and Amy are excluded entirely.
+* Ownership: Farnsworth is sole author of the reopened correction. Livingston is reserved for P07-T07 independent review. Bender, Hermes, Amy, Leela, and Fry are excluded entirely.
 
 <!-- rpi:task id=P07-T01 -->
-#### [ ] P07-T01: Enforce exact proof and durable recovery authorization
+#### [x] P07-T01: Enforce exact proof and durable recovery authorization
 
 * Finding: RV-008.
 * Expected result: green requires exact week, publication, manifest, publication digest, canonical artifact digest/selection, expected provider identity, authoritative terminal readback source/state, and explicit duplicate resolution. Recovery authorization is durable, evidence-referenced, and cannot arise from an unknown mutation or caller boolean alone.
 * Closure evidence: label-only/omitted/mismatched/ambiguous proof probes are non-green; immutable failed/unknown attempts remain; no blind retry occurs; exact authorized recovery alone can produce recovered green.
 
 <!-- rpi:task id=P07-T02 -->
-#### [ ] P07-T02: Make scheduler notification enqueue single-winner
+#### [x] P07-T02: Make scheduler notification enqueue single-winner
 
 * Finding: RV-002.
 * Dependencies: P07-T01 schema compatibility.
@@ -445,7 +445,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: deterministic two-scheduler barriers prove one enqueue winner; stale worker completion is rejected; lease expiry/recovery cannot duplicate a notification.
 
 <!-- rpi:task id=P07-T03 -->
-#### [ ] P07-T03: Bound and fence resumable cleanup
+#### [x] P07-T03: Bound and fence resumable cleanup
 
 * Finding: RV-004.
 * Dependencies: P07-T01 identity/reference invariants.
@@ -460,7 +460,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: representative emitted rows satisfy generated queries; renamed/mismatched event probes fail validation; fire/clear and missing-data cases pass for every affected rule.
 
 <!-- rpi:task id=P07-T05 -->
-#### [ ] P07-T05: Require authoritative proof for four-cycle acceptance
+#### [x] P07-T05: Require authoritative proof for four-cycle acceptance
 
 * Finding: RV-009.
 * Dependencies: P07-T01.
@@ -468,7 +468,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: a parameterized negative matrix rejects label-only, missing, mismatched, ambiguous, partial, unknown, manual, identity-conflict, duplicate-unresolved, and no-readback cycles; exactly four consecutive fully proven cycles are required.
 
 <!-- rpi:task id=P07-T06 -->
-#### [ ] P07-T06: Run the locked review-follow-up validation contract
+#### [x] P07-T06: Run the locked review-follow-up validation contract
 
 * Findings: RV-002, RV-003, RV-004, RV-008, RV-009.
 * Dependencies: P07-T01–P07-T05.
@@ -476,12 +476,12 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: exact commands, counts, exit statuses, SHA/image digest where applicable, and any generated-artifact cleanup are recorded in the implementation delivery update.
 
 <!-- rpi:task id=P07-T07 -->
-#### [x] P07-T07: Reconcile delivery evidence and obtain Fry's independent review
+#### [ ] P07-T07: Reconcile delivery evidence and obtain Livingston's independent review
 
 * Finding: RV-007 and cross-finding closure.
 * Dependencies: P07-T06.
-* Expected result: plan/details remain prospective; implementation updates changes/review-status summary/PR #684 with exact counts, finding dispositions, validation commands, and residual gates without rewriting historical review conclusions. Fry independently reviews the final validated diff and evidence.
-* Closure evidence: Fry reviewed `02241a1` and recorded no Critical finding, but High RV-002/RV-004/RV-008/RV-009 remain. Current artifacts and PR #684 report the same rejected disposition, exact validation, and residual gates.
+* Expected result: plan/details remain current; implementation updates changes/review-status summary/PR #684 with the Farnsworth revision SHA, exact counts, pending Livingston disposition, validation commands, and residual gates without rewriting Fry's historical rejection.
+* Closure evidence: the existing branch is committed and pushed, PR #684 remains open/draft/blocked, and Livingston independently reviews the final validated SHA. Fry's rejection of `02241a1` remains immutable historical evidence.
 
 <!-- rpi:phase id=P05 -->
 ### [ ] P05: Deliver reviewed, reversible implementation
@@ -561,13 +561,13 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Marker(s) | Revised disposition | Required next evidence |
 |---|---|---|
 | P00-T01 | Preserved external gate | Exact W39 blocked-stage evidence and upstream prevention/detection remain owned by `jmservera/SquadScope`; W39 stays `missed_not_dispatched` |
-| P07-T01 | Reopened; RV-008 High remains | Exact `record_verification` proof is fail-closed, but label-only recovery and opaque authorization evidence remain accepted |
-| P07-T02 | Reopened; RV-002 High remains | Concurrent reservation is single-winner, but expired `enqueue_started` reservations are hidden indefinitely |
-| P07-T03 | Reopened; RV-004 High remains | New-schema cleanup is bounded/fenced, but pre-index retained outbox artifacts can be deleted |
+| P07-T01 | Corrected; pending Livingston review | Structured authorization is bound to the exact weekly identity, complete prior attempt set, predecessor provider readback, expected succeeding provider items, generated attempt, artifact/digest, and final authoritative proof |
+| P07-T02 | Corrected; pending Livingston review | Expired `reserved` and `enqueue_started` leases become due; CAS fencing preserves a single current owner and rejects stale completion/release |
+| P07-T03 | Corrected; pending Livingston review | Cleanup completes a bounded resumable pre-index outbox migration before deletion; incomplete scans fail closed and current references retain CAS priority |
 | P07-T04 | Complete; RV-003 resolved | Canonical emitted/query vocabulary and active-depth absence semantics independently passed |
-| P07-T05 | Reopened; RV-009 High remains | Label-only rows fail, but identity-tampered envelopes with stale proof booleans still pass |
-| P07-T06 | Reopened | Repository validation passed after Compose refresh, but required independent negative probes found four implementation failures |
-| P07-T07; P05-T01 | Review complete; RV-007 resolved | Fry verdict, exact counts, and PR #684 narrative reconciled; PR remains draft/blocked |
+| P07-T05 | Corrected; pending Livingston review | Stored proof booleans are rebound to raw exact evidence and the current weekly record; label-only, tampered, mismatched, and unauthorized recovered cycles fail closed |
+| P07-T06 | Complete for Farnsworth revision | Focused 102 passed; locked 777 passed; full 3107 passed after the documented Compose refresh; all static, infrastructure, container, and secret/PII checks completed |
+| P07-T07; P05-T01 | Reopened for current delivery | Record Farnsworth's final SHA, exact validation and pending Livingston review while preserving Fry's rejection; PR remains draft/blocked |
 | P05-T03 | Expanded by RV-006 and refreshed current metadata | Closure evidence for W17–W29, the six RV-006 threads, and four later unresolved threads found during revision; do not claim resolution without GitHub evidence |
 | P01-T04, P02-T01–P02-T02 | Implemented surfaces; dependency verification | Preserve safe behavior unless the new receipt/attempt schema requires minimal compatible updates |
 | Existing W38 references in plan/PR handoff | Evidence-conditional correction | Use `published_verified_recovered` only with full exact proof; otherwise label it an allowed candidate and retain all attempt history |
@@ -575,7 +575,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Original PC-001–PC-009 dispositions | Historical, no change | Preserve existing critique artifact and disposition record; no second critique |
 | P05/P06 | Residual gates | PR #684 stays draft/blocked pending deployment/canary and four fully proven elapsed cycles |
 
-Leela alone authors P07. Fry alone performs the fresh independent review after implementation/validation. Bender, Hermes, and Amy are excluded from contribution.
+Farnsworth alone authors the reopened P07 correction. Livingston alone performs the fresh independent review after implementation/validation. Bender, Hermes, Amy, Leela, and Fry are excluded from contribution.
 
 ## Review-Follow-Up Finding Map
 
@@ -583,7 +583,7 @@ Leela alone authors P07. Fry alone performs the fresh independent review after i
 |---|---|---|
 | RV-002 High | P07-T02, P07-T06, P07-T07 | Atomic durable scheduler reservation or enqueue idempotency; deterministic concurrent-worker/lease-race probes; validation and Fry disposition |
 | RV-003 High | P07-T04, P07-T06, P07-T07 | One canonical emitted/query/test/runbook vocabulary; generated drift failure; representative query fire/clear proof; validation and Fry disposition |
-| RV-004 Medium | P07-T03, P07-T06, P07-T07 | Explicit run/page/item/time budgets, durable continuation, fenced/conditional deletion, concurrent-reference negative probe; validation and Fry disposition |
+| RV-004 High | P07-T03, P07-T06, P07-T07 | Explicit run/page/item/time budgets, durable legacy-reference migration, fenced/conditional deletion, concurrent-reference negative probe; validation and Livingston disposition |
 | RV-007 Medium | P07-T07, P05-T01 | Exact current counts/statuses/commands in delivery update and PR #684; historical review unchanged; residual gates explicit |
 | RV-008 High | P07-T01, P07-T06, P07-T07 | Exact persisted identity/provider proof, durable recovery authorization, immutable failures, no blind retry, fail-closed negative matrix; validation and Fry disposition |
 | RV-009 High | P07-T05, P07-T06, P07-T07 | Four-cycle evaluator reloads authoritative proof envelopes; label-only and incomplete proof matrix fails; validation and Fry disposition |
@@ -743,5 +743,5 @@ The existing critique is preserved unchanged as historical evidence. No second c
 
 * Implementation artifact: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
 * Review-follow-up implementation marker range: P07-T01 through P07-T07.
-* Author/reviewer: Leela sole revision author; Fry fresh independent reviewer after implementation and validation.
+* Current author/reviewer: Farnsworth sole correction author; Livingston fresh independent reviewer after implementation and validation. Leela/Fry remain the historical rejected revision pair.
 * Remaining blockers after P07: P00-T01 upstream ownership; P05 git/GitHub/deployment/provider authority and canary; P06 four elapsed future post-fix cycles. PR #684 remains draft/blocked while any remain.
