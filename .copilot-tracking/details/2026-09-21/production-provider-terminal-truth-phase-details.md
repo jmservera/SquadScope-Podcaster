@@ -116,8 +116,8 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
 | P07 | Review-follow-up closure for terminal truth | Complete for the current correction; Basher accepted exact reviewed head `905a890` | P07, P07-T01–P07-T07 |
-| P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
-| P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
+| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | Blocked by upstream/Podcaster merge, deployment, provider-reconciliation, and authority gates | P05, P05-T01–P05-T06 |
+| P06 | Verify four consecutive post-fix production cycles | Blocked by accepted exact-W39 production run and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
@@ -128,7 +128,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 * Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank did not author, advise, pair, inspect, suggest, review, or otherwise contribute. Basher was excluded from authoring, advice, and implementation contribution and completed the independent final-SHA review without contributing. Leela is the correction author and is not a reviewer for this cycle.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: exact timestamp/execution/fence bypass, parameterized mutation of every semantic attempt/event field, duplicate/omit/reorder/insert attempt or event, nested intent/receipt/provider/readback mutation, recovery-authorization metadata/cardinality, missing/ambiguous sequence/time, unexpected append after authorization, cross-week/publication/attempt replay, canonical round-trip, exact single authorized successor, all prior RV-008 and resolved-RV probes, then the complete locked validation contract without weakening.
-* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 deployment/canary, P06 elapsed evidence, and operator-only #682 remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
+* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 merge/provenance/deployment plus exact-W39 production acceptance, P06 elapsed evidence, and operator-only #682 remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
 
 ## Implementation Marker Reconciliation
 
@@ -145,6 +145,9 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, Ruff/format/compile/diff, Bicep/Checkov, container/exit, and secret/PII gates passed without weakening |
 | P07-T07; P05-T01 | P07-T07 complete; delivery blocked | Basher accepted exact reviewed head `905a890`; keep PR #684 draft/blocked because P00-T01, P05, P06, and operator-only #682 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
+| P05-T05 | Expanded prerequisite gate | Exact merge-SHA-derived upstream and Podcaster artifacts must be deployed and every review/deployment/readiness/rollback gate cleared before real W39 execution |
+| P05-T06 | New authoritative gate | Reconcile all W39 history/provider candidates before mutation, then prove exact GitHub-to-provider execution and authoritative terminal external readback; ambiguity fails closed/manual-action |
+| P06-T01–P06-T02 | Preserved | Four future qualifying cycles remain required; exact W39 does not automatically count |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
 | W39 classification | Settled | `missed_not_dispatched` |
@@ -1246,19 +1249,19 @@ Publish a truthful current delivery update for PR #684 and have Basher independe
 * Leela's exact typed-canonical correction and validation completed. Boolean/float authorization-set cardinality and the systematic scalar/numeric/unsupported/duplicate-key matrix fail closed. Basher independently accepted exact reviewed head `905a890`, closing P07-T07 and RV-008. PR #684 remains draft/blocked because P00-T01, P05, P06, and operator-only #682 remain open. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 remain resolved; RV-006 remains planning-resolved.
 
 <!-- rpi:phase id=P05 -->
-## P05: Deliver reviewed, reversible implementation
+## P05: Deliver reviewed, reversible implementation and exact W39 production acceptance
 
 ### Context
 
-Implementation acceptance requires independent review, durable GitHub linkage/thread closure, and real-provider canary/rollback evidence.
+Implementation acceptance requires independent review, durable GitHub linkage/thread closure, exact merge-SHA deployment provenance, rollback readiness, reconcile-first exact-W39 production execution, and authoritative external provider evidence.
 
 ### Intent
 
-Push/open coordinated upstream and Podcaster replacement PRs as required, pass required checks, preserve or refresh Fry's independent review for the final pushed SHA, supersede unsafe prior work, merge without content drift, prove merge-SHA image provenance, and deploy through a controlled reversible path.
+Push/open coordinated upstream and Podcaster replacement PRs as required, pass required checks, preserve or refresh independent review for the final pushed SHA, supersede unsafe prior work, merge without content drift, prove exact merge-SHA artifact provenance, deploy through a controlled reversible path, and only then execute the actual W39 production recovery.
 
 ### Boundaries
 
-* Included: branch/PR, required checks, independent final-SHA review, approval/merge, image provenance, #682 closure, canary/rollback.
+* Included: branch/PR, required checks, independent final-SHA review, approval/merge, upstream and Podcaster artifact provenance, #682 closure, deployment/rollback readiness, W39 reconciliation, exact production execution, and external readback.
 * Excluded: accepting critical risk to meet schedule.
 
 ### Likely Targets
@@ -1267,15 +1270,15 @@ Push/open coordinated upstream and Podcaster replacement PRs as required, pass r
 
 ### Dependencies
 
-* P07 complete and P00-T01 resolved. Historical P04 validation is not a substitute for P07-T06.
+* P07 complete; required upstream and Podcaster fixes reviewed/merged; P00-T01 delivery evidence resolved. Historical P04 validation is not a substitute for P07-T06.
 
 ### Validation Expectations
 
-* Review is independent and covers the final pushed SHA; merge content is equivalent; deployed digest derives from the merge SHA; canary uses external readback.
+* Review is independent and covers the final pushed SHA; merge content is equivalent; deployed artifacts derive from exact upstream and Podcaster merge SHAs; no real W39 run begins until all review/deployment gates clear; W39 acceptance uses authoritative external readback.
 
 ### Completion Evidence
 
-* PR/check/review/approval/merge records, reviewed and merged SHAs, release workflow/digest provenance, thread resolutions, deployment execution, rollback drill.
+* PR/check/review/approval/merge records, reviewed and merged SHAs, release workflow/digest provenance, thread resolutions, deployment execution, rollback drill, W39 reconciliation, dispatch/execution IDs, provider identity/state, and terminal external readback.
 
 ### Unresolved Items
 
@@ -1426,20 +1429,20 @@ Obtain approval, merge without content drift, run post-merge/release checks, and
 * None.
 
 <!-- rpi:task id=P05-T05 -->
-### P05-T05: Deploy feature-flagged canary and verify rollback
+### P05-T05: Deploy exact merge-SHA artifacts and clear rollout gates
 
 #### Context
 
-Current release validates API health only and proves neither W39-class upstream dispatch arrival nor provider terminal truth.
+Current release validates API health only and proves neither exact W39 upstream dispatch arrival nor provider terminal truth. Real W39 execution must not begin until both repositories' required fixes are reviewed/merged and their exact merge-SHA artifacts are proven deployed.
 
 #### Intent
 
-Deploy the exact merge-derived image with routing disabled, run migration/readiness checks, then initiate a bounded canary from the W39-class upstream weekly-publication boundary. Prove dispatch, Azure API acceptance, first durable Azure arrival, immutable attempts, deterministic aggregation, exact publication/manifest/digest/canonical-artifact identity, external provider state, and alert contracts. The canary must end `published_verified` or controlled `published_verified_recovered`.
+Deploy exact upstream and Podcaster merge-SHA-derived artifacts with routing disabled. Complete migration/readiness checks, deployment verification, alert fire/clear evidence, provider authority/credential readiness, and a rollback drill. Non-mutating or provider-disabled probes may validate readiness, but they cannot satisfy production acceptance.
 
 #### Boundaries
 
-* Included: upstream dispatch control, correlation, config flag, queue routing, one W39-class scheduled publication identity, controlled recovery if safely authorized, provider readback, alert fire/clear, rollback drill.
-* Excluded: Podcaster-only injection as incident proof, assuming W38 recovery without proof, blind retry after unknown mutation, broad enablement before canary evidence, accepting manual handoff without later external readback, or rollback by deleting durable evidence.
+* Included: exact upstream and Podcaster merge-SHA provenance, deployment/revision identity, config flag, queue routing disabled state, migration/readiness checks, alert fire/clear, provider authority, and rollback drill.
+* Excluded: any real W39 mutation, treating tests/CI/GitHub/Azure/queue/ACA success as production acceptance, broad enablement, or rollback by deleting durable evidence.
 
 #### Likely Targets
 
@@ -1447,19 +1450,61 @@ Deploy the exact merge-derived image with routing disabled, run migration/readin
 
 #### Dependencies
 
-* P05-T04 and approved deployment authority/provider credentials.
+* P05-T04, completed upstream review/merge evidence, and approved deployment authority.
 
 #### Validation Expectations
 
-* Exact merge-derived image digest; correlated upstream intent/dispatch/Azure arrival; exact manifest/digest and canonical artifact; YouTube processing/public readback; Spotify externally read expected item/state after automated or manual publication; zero unresolved duplicate ambiguity; immutable failed-attempt evidence after any controlled recovery; ACA non-zero for every non-green state; every alert contract has deployed route/query and controlled fire/clear evidence; rollback preserves records.
+* Exact upstream and Podcaster merge SHAs map to the deployed workflow/revision/image digests; all required review and deployment gates are green; readiness does not mutate W39; every alert contract has deployed route/query and controlled fire/clear evidence; rollback preserves records.
 
 #### Completion Evidence
 
-* Sanitized end-to-end correlation, provider readbacks, execution status, comparative partial/retry record, alert rule/fire/clear records, flag transitions, and rollback drill in changes/PR.
+* Merge/release/deploy run URLs, merge SHAs, image/revision digests, equality/provenance checks, alert rule/fire/clear records, flag state, authority confirmation, and rollback drill in changes/PR.
 
 #### Unresolved Items
 
 * None.
+
+<!-- rpi:task id=P05-T06 -->
+### P05-T06: Execute and verify the exact real-W39 production recovery
+
+#### Context
+
+The historical W39 incident remains `missed_not_dispatched`. A later recovery execution is distinct evidence and must not rewrite that incident record. A generic W39-class canary, green internal workflow, or weekly label is not acceptance.
+
+#### Intent
+
+After P05-T01–P05-T05 and all upstream delivery gates are complete, reconcile every existing W39 intent, dispatch, receipt, Podcaster job, Azure execution, immutable attempt, and provider candidate before mutation. Prove no existing or ambiguous provider publication. If proof is incomplete or conflicting, fail closed to `manual_action_required`; never create a duplicate. When safe, execute the actual W39 GitHub dispatch and correlate it through upstream publication identity/dispatch result, Podcaster accepted job/correlation IDs, Azure synth/recorder/video job or execution IDs, immutable attempts, provider item identity, and authoritative terminal external readback.
+
+#### Boundaries
+
+* Included: exact W39 identity, pre-mutation reconciliation, dispatch, Azure execution, provider publication/readback, safe evidence reporting, and manual-action handoff.
+* Excluded: duplicate publication, blind retry, acceptance from tests/CI/GitHub success/Azure internal success/queue completion/ACA exit 0/weekly labels, unsafe provider URLs, credentials, tokens, signed URLs, or response bodies.
+
+#### Likely Targets
+
+* Existing production dispatch workflow, upstream and Podcaster status/receipt stores, Azure execution records, provider readback tooling, changes record, and PR evidence.
+
+#### Dependencies
+
+* P05-T01–P05-T05 complete.
+* All required upstream and Podcaster fixes reviewed and merged.
+* Exact merge-SHA-derived artifacts proven deployed.
+* Required checks, approvals, deployment/readiness/rollback gates, provider authority, and safe credentials clear.
+
+#### Validation Expectations
+
+* Reconciliation enumerates and binds every known W39 intent/attempt/receipt/job/provider record to exact identity and records the mutation/no-mutation decision.
+* No mutation occurs unless authoritative evidence proves no existing or ambiguous W39 provider publication.
+* One sanitized chain records GitHub dispatch/run IDs and URLs, upstream publication identity and dispatch result, Podcaster accepted job/correlation IDs, Azure synth/recorder/video execution or job IDs, immutable attempt IDs, provider item identity/state and safe provider URLs, and authoritative terminal external readback.
+* Any ambiguity, identity conflict, unknown mutation, unsafe duplicate risk, missing external readback, partial provider state, or manual action remains non-green and blocks acceptance.
+
+#### Completion Evidence
+
+* Timestamped reconciliation inventory and decision; exact safe run/job/execution/attempt/provider identifiers and URLs; terminal external readback; duplicate-resolution proof; resulting weekly recovery classification; and any manual-action blocker.
+
+#### Unresolved Items
+
+* This task is blocked now. PR #684 and #682 remain open; exact Podcaster merge SHA and deployed artifact do not exist; upstream merged commits `9074afa0cd90c09049836df6e7ad79951ae71519`, `2ce5dff50f4ac7ec67d9fd2514420ae1efb91a02`, and `574e4e463c81ad5d1e2d90290b70352596d9b9dc` have not been proven here as the exact deployed upstream artifact set; deployment/provider authority and full W39 reconciliation have not been established.
 
 <!-- rpi:phase id=P06 -->
 ## P06: Verify four consecutive post-fix production cycles
@@ -1483,11 +1528,11 @@ Keep the task open through four future consecutive post-fix scheduled cycles and
 
 ### Dependencies
 
-* P05-T05 canary accepted and staged routing enabled.
+* P05-T06 exact W39 production acceptance complete and production routing approved.
 
 ### Validation Expectations
 
-* The evaluator reloads persisted authoritative receipts/readbacks and independently validates each proof envelope; labels alone are ignored. Each of four future consecutive post-fix cycles ends `published_verified` or controlled `published_verified_recovered`. Any `partial`, `provider_unknown`, `manual_action_required`, `missed_not_dispatched`, `failed_terminal`, `identity_conflict`, unresolved duplicate ambiguity, identity mismatch, or missing readback blocks acceptance and restarts the gate after correction.
+* The evaluator reloads persisted authoritative receipts/readbacks and independently validates each proof envelope; labels alone are ignored. Each of four future consecutive post-fix cycles ends `published_verified` or controlled `published_verified_recovered`. Any `partial`, `provider_unknown`, `manual_action_required`, `missed_not_dispatched`, `failed_terminal`, `identity_conflict`, unresolved duplicate ambiguity, identity mismatch, or missing readback blocks acceptance and restarts the gate after correction. The P05-T06 W39 recovery run counts only if it independently satisfies these future scheduled-cycle timing and evidence criteria; otherwise it provides no P06 cycle credit.
 
 ### Completion Evidence
 
@@ -1519,7 +1564,7 @@ Record sanitized upstream intent/dispatch result, Azure API acceptance and first
 
 #### Dependencies
 
-* P05-T05.
+* P05-T06.
 
 #### Validation Expectations
 
@@ -1563,7 +1608,7 @@ Summarize four-week outcomes, reconciliations/incidents, alert quality, rollback
 
 #### Completion Evidence
 
-* Final changes-record acceptance summary, #681 closed with replacement PR/canary/four-week evidence links, and durable GitHub closure links.
+* Final changes-record acceptance summary, #681 closed with replacement PR/exact-W39/four-week evidence links, and durable GitHub closure links.
 
 #### Unresolved Items
 

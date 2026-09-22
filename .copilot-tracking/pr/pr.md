@@ -1,7 +1,7 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.** Exact typed canonical validation rejects boolean/float `authz_count`, scalar substitutions across all versioned recovery structures, exponent-overflow/non-finite and negative-zero numbers, unsupported values, coercions, non-string keys, and duplicate JSON fields. P00-T01, P05, P06, and operator-only #682 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`; the pre-directive tracking head was `a4a152eb4561c55ca11777abdff026dc54f66ecd`.** Exact typed canonical validation rejects boolean/float `authz_count`, scalar substitutions across all versioned recovery structures, exponent-overflow/non-finite and negative-zero numbers, unsupported values, coercions, non-string keys, and duplicate JSON fields. P00-T01, P05 including the mandatory exact real-W39 production run, P06, and operator-only #682 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
@@ -102,6 +102,24 @@ Green weekly success requires all of the following:
 - Authorized recovery backed by durable proof, with no blind retry after an unknown mutation.
 
 Four future post-fix cycles must each end `published_verified` or controlled `published_verified_recovered`. `partial`, `provider_unknown`, `manual_action_required`, `identity_conflict`, missing readback, duplicate ambiguity, or any other incomplete proof is non-green.
+
+## Authoritative exact-W39 production acceptance gate
+
+After every required upstream `jmservera/SquadScope` and Podcaster fix is reviewed and merged, exact merge-SHA-derived artifacts are proven deployed, and all review/deployment/readiness/rollback/provider-authority gates are clear, P05-T06 must execute the actual W39 generation and publishing pipeline.
+
+Before any mutation, the operator must reconcile every existing W39 intent, dispatch, receipt, Podcaster job, Azure synth/recorder/video execution, immutable attempt, and provider candidate against exact W39 identity. The run may proceed only when authoritative evidence proves no existing or ambiguous W39 provider publication. Existing, conflicting, unknown, or incomplete state must fail closed to `manual_action_required`; duplicate publication is forbidden.
+
+Acceptance requires one sanitized correlation chain containing:
+
+- actual GitHub dispatch/run IDs and safe URLs;
+- upstream publication identity and dispatch result;
+- Podcaster accepted job and correlation IDs;
+- Azure synth, recorder, and video execution/job IDs;
+- immutable attempt IDs and reconciliation decisions;
+- provider item identity/state, safe provider URLs where non-sensitive, and authoritative terminal external readback;
+- any manual-action blocker.
+
+Tests, CI, GitHub workflow success, Azure internal success, queue completion, ACA exit 0, and weekly labels are not production acceptance. The historical W39 incident remains `missed_not_dispatched` until later recovery evidence exists and remains distinct from that recovery execution. The mandatory W39 run does not automatically count toward P06; it counts only if it independently meets the future scheduled-cycle timing and proof criteria, and the four-cycle requirement is not reduced.
 
 ## Implemented scope
 
@@ -243,17 +261,19 @@ Frank's probes prove that a later `provider_unknown` blocks reuse of the older f
 
 ## Residual external gates
 
-- **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
+- **P00-T01 — `jmservera/SquadScope`:** verify the merged upstream prevention/fix set, exact merge-SHA artifact deployment, and production readiness for W39 dispatch. PRs #770, #771, and #772 are merged; deployment provenance remains unproven here.
 - **P07-T07 — complete:** Basher independently accepted Leela's corrected exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.
-- **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
+- **P05 — delivery and exact W39 acceptance:** complete Podcaster/#682 disposition, required reviews and merges, exact upstream/Podcaster merge-SHA artifact deployment, all rollout gates, P05-T06 reconcile-first real-W39 execution, authoritative external provider readback, safe evidence reporting, alert fire/clear evidence, and rollback evidence.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 
-No merge, deployment, canary, four-cycle completion, or production acceptance is claimed.
+No Podcaster merge, deployment, W39 dispatch, provider mutation, canary, four-cycle completion, or production acceptance is claimed.
 
 ## Related work
 
 - jmservera/SquadScope-Coordinator#17
 - jmservera/SquadScope#770
+- jmservera/SquadScope#771
+- jmservera/SquadScope#772
 - jmservera/SquadScope-Podcaster#671
 - jmservera/SquadScope-Podcaster#678
 - jmservera/SquadScope-Podcaster#679
@@ -273,6 +293,8 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] Review execution and Amy's declared in-repo implementation execution recorded as Complete.
 - [x] Fry's historical outcome retained as Not accepted with 0 Critical and 4 High findings open at `02241a1`.
 - [x] W38 retained as evidence-conditional and W39 retained as `missed_not_dispatched`.
+- [x] Exact real-W39 production acceptance added as dependency-ordered P05-T06 with reconcile-before-mutate and fail-closed duplicate prevention.
+- [x] P06 remains four future qualifying cycles; W39 receives no automatic cycle credit.
 - [x] Positive validation and independent negative probes recorded exactly.
 - [x] Existing PR retained OPEN, DRAFT, and BLOCKED.
 - [x] RV-002, RV-004, and RV-009 independently resolved.
@@ -288,7 +310,8 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] RV-008 exact recursive typed canonical set/envelope/evidence/history/successor correction completed and validated by Leela.
 - [x] Basher independently accepted corrected exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
-- [ ] P05 deployment/canary gates completed.
+- [ ] P05-T01–P05-T05 review/merge/provenance/deployment/readiness gates completed.
+- [ ] P05-T06 exact real-W39 production run reconciled, executed, and externally verified.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.
 
 ## Artifacts

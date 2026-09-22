@@ -19,8 +19,23 @@
 * Completed marker: P07-T07 closed by Basher's independent final-SHA acceptance
 * Source/tests commit: `9204e139be485cb916ccd6e70b6fce355b656136`
 * Remaining in-scope work: none for RV-008/P07-T01/P07-T07
-* Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: all versioned recovery authorization set/envelope/evidence/history/successor structures now use exact recursive typed canonical validation before digest/equality checks. Boolean/float `authz_count`, scalar substitutions across every canonical surface, exponent-overflow/non-finite and negative-zero floats, unsupported values, duplicate JSON fields, coercions, and legacy/unknown structures fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are resolved; RV-006 remains planning-resolved. Basher independently accepted exact reviewed head `905a890`. P00-T01, P05, P06, and operator-only #682 remain blockers. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+* Outside-scope active-plan markers: P00-T01, P05-T01–P05-T06, and P06-T01–P06-T02
+* Status basis: all versioned recovery authorization set/envelope/evidence/history/successor structures now use exact recursive typed canonical validation before digest/equality checks. Boolean/float `authz_count`, scalar substitutions across every canonical surface, exponent-overflow/non-finite and negative-zero floats, unsupported values, duplicate JSON fields, coercions, and legacy/unknown structures fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are resolved; RV-006 remains planning-resolved. Basher independently accepted exact reviewed implementation head `905a890`; the pre-directive tracking head was verified as `a4a152eb4561c55ca11777abdff026dc54f66ecd`. P00-T01, P05 including exact-W39 production acceptance, P06, and operator-only #682 remain blockers. No merge, deployment, workflow dispatch, provider mutation, issue/thread mutation, or production action is authorized by this update.
+
+## 2026-09-22 Authoritative Exact-W39 Production Acceptance Directive
+
+* Directive owner/time: requested by `jmservera`; incorporated by Leela at `2026-09-22T13:57:50.048+00:00`.
+* Scope: planning and delivery evidence only. No production workflow was dispatched; no merge, deployment, provider mutation, issue/thread state, source, or tests were changed.
+* Marker change: P05 expands from P05-T01–P05-T05 to P05-T01–P05-T06. P05-T05 now owns exact merge-SHA artifact deployment, readiness, alert, authority, and rollback gates. New P05-T06 owns reconcile-first execution and authoritative verification of the actual W39 production recovery.
+* Prerequisite order: all required upstream `jmservera/SquadScope` and Podcaster fixes must be reviewed and merged; release/deploy evidence must bind exact merge SHAs to deployed workflows, images, and revisions; required checks, approvals, deployment/readiness, alert, rollback, provider-authority, and credential gates must be clear before P05-T06 may dispatch W39.
+* Pre-mutation reconciliation: enumerate and identity-bind every existing W39 intent, dispatch, receipt, Podcaster job, Azure synth/recorder/video execution, immutable attempt, and provider candidate. Mutation is prohibited unless authoritative evidence proves there is no existing or ambiguous W39 provider publication. Existing, conflicting, unknown, or incomplete evidence fails closed to `manual_action_required`; duplicate publication is forbidden.
+* Required correlation: actual GitHub dispatch/run IDs and safe URLs → upstream publication identity and dispatch result → Podcaster accepted job/correlation IDs → Azure synth/recorder/video execution or job IDs → immutable attempt IDs → provider item identity/state and authoritative terminal external readback.
+* Safe report: record run/job/execution/attempt IDs, safe GitHub/provider URLs, provider states, reconciliation decisions, and manual-action blockers. Exclude credentials, tokens, signed URLs, request/response bodies, content bodies, and PII.
+* Explicit non-evidence: tests, CI, GitHub workflow success, Azure internal success, queue completion, ACA exit 0, and weekly labels cannot independently satisfy P05-T06.
+* P06 relationship: the exact W39 run is mandatory production acceptance after deployment. It does not automatically count as one of four future cycles; it counts only if it independently meets P06 future scheduled-cycle timing and proof criteria. Four-cycle proof is not weakened.
+* Historical classification: W39 remains `missed_not_dispatched` until the later recovery execution produces evidence; the historical incident and later recovery execution remain distinct records. W38 successful publication and every immutable failed/partial/unknown attempt remain preserved.
+* Current GitHub evidence: upstream PRs `jmservera/SquadScope#770`, `#771`, and `#772` are merged at `9074afa0cd90c09049836df6e7ad79951ae71519`, `2ce5dff50f4ac7ec67d9fd2514420ae1efb91a02`, and `574e4e463c81ad5d1e2d90290b70352596d9b9dc`; this update does not claim those exact commits are deployed. Podcaster PR #682 remains open at `e4578a2699e45c090d689d172dad89055d48adfe`. PR #684 remains open/draft/blocked.
+* Immediate blockers: PR #684 is unmerged; #682 disposition/closure evidence is open; no exact Podcaster merge SHA or merge-derived deployed artifact exists; exact upstream deployed-artifact provenance is unproven here; deployment/provider authority is absent; and W39 pre-mutation reconciliation has not been performed.
 
 ## P07 Leela Exact Typed Canonical Correction
 
@@ -869,12 +884,12 @@ The following section records the superseded Amy-cycle handoff. The current P07 
 ## Blockers
 
 * None within the declared reopened P01–P04 scope.
-* Outside scope: P00-T01 belongs to `jmservera/SquadScope`; P05 requires git/GitHub/deployment authority; P06 requires four elapsed production cycles.
+* Outside scope: P00-T01/upstream deployed-artifact proof belongs to `jmservera/SquadScope`; P05 requires review/merge/deployment/provider authority plus the reconcile-first exact-W39 production run; P06 requires four elapsed production cycles.
 
 ## Remaining Work
 
 * In scope: none.
-* Outside scope: P00-T01 and P05-T01 through P06-T02.
+* Outside scope: P00-T01, P05-T01 through P05-T06, and P06-T01 through P06-T02.
 * RV-007 PR-body rewriting remains P05 work and was intentionally not performed.
 
 ## Follow-Up Items
