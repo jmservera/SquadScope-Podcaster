@@ -6,6 +6,7 @@
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
 Rejected final-media head: `d050d68c3590f9a00b60dee925452f971cbaf0d2`.
+Current source/tests commit: `8cc5da21b85b0ec73dab0f39293aab06149ac7a7`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
 Current sole revision author: Leela.
 Fresh independent reviewer: Basher is reserved and pending.
@@ -34,6 +35,11 @@ and changed-line secret/PII scan.
 
 P05-T03 remains pending Basher. #684 stays open/draft/blocked and #682 stays open. No merge,
 deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit is authorized.
+
+Corrected #682 evidence reply:
+[r4074434076](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4074434076)
+supersedes the metadata-only statement in r4073299841 and cites the exact complete-decode source,
+real-media probes, destination/staged cleanup proof, and no-downstream-visibility regression.
 
 Upstream prerequisite: jmservera/SquadScope#773, reviewed head
 `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merged as

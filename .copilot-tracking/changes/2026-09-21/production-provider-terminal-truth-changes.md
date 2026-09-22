@@ -31,6 +31,7 @@
 * Safety boundary: validation precedes `os.replace`; invalid candidates preserve an existing destination, delete only the staged candidate, and cannot reach archive, outbox, or provider visibility.
 * Validation intent: real H.264/AAC success; 99/90/75/50/25 percent truncation and middle-byte corruption rejection; timeout/non-zero/missing-tool failure; destination and no-downstream-call assertions; existing upload ambiguity, checkpoint, P07/RV, W39, locked/full, static, Bicep, Checkov, container, Compose, and secret/PII gates.
 * Current blockers: none for implementation. P05-T03 remains pending Basher acceptance after the corrected final SHA is pushed.
+* Source/tests commit: `8cc5da21b85b0ec73dab0f39293aab06149ac7a7`.
 
 ### Required complete-decode final-media validation
 
@@ -59,6 +60,12 @@
 | Secret/PII scan | Passed | No suspected private key, access key, token/JWT, signed credential URL, or email-address pattern in added lines. |
 
 P05-T03 remains pending Basher's fresh independent acceptance of the pushed final SHA. PR #684 stays open/draft/blocked and #682 stays open. No merge, deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit is authorized.
+
+Corrected #682 evidence was appended without changing the already-resolved thread state:
+[r4074434076](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4074434076)
+supersedes the metadata-only claim in r4073299841, incorporates the finite-duration proof from
+r4073533159, and supplies exact source/test/validation proof for the r4072865450 finalization
+thread.
 
 ## 2026-09-22 Livingston correction after Basher rejection
 
