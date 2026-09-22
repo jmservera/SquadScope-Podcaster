@@ -1,11 +1,11 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Basher rejected head `5fdd69f5210053daa742f3690d0fa34c5795f1bc`; Livingston's corrective source commit is `d6e85efa33816430f9141cc4dfed8379c9502ad8`, pending fresh independent Rusty review.** Upstream `jmservera/SquadScope#773` is merged/check-green, completing P00-T01. P05-T03, merge authorization, P05-T04–P05-T06, and P06 remain pending. #682 remains open. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Basher rejected head `5fdd69f5210053daa742f3690d0fa34c5795f1bc`; Livingston's corrective source commit is `b7e3615ee5c2f0ab904350d581b9fd32938e0f3a`, pending fresh independent Rusty review.** Upstream `jmservera/SquadScope#773` is merged/check-green, completing P00-T01. P05-T03, merge authorization, P05-T04–P05-T06, and P06 remain pending. #682 remains open. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
-Current source/tests commit: `d6e85efa33816430f9141cc4dfed8379c9502ad8`.
+Current source/tests commit: `b7e3615ee5c2f0ab904350d581b9fd32938e0f3a`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
 Current sole revision author: Livingston.
 Fresh independent reviewer: Rusty is reserved and pending.
@@ -43,22 +43,26 @@ mutated.
 ## P05-T03 PR #682 disposition evidence
 
 Basher's review found three prior dispositions were not source-backed. Livingston corrected them
-at `d6e85ef` and posted exact replacement evidence:
+through `b7e3615` and posted exact replacement evidence:
 
 - [r4073299493](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299493):
   exhausted chunk transport/status uncertainty is mutation-ambiguous, persists
   `provider_unknown`, and cannot issue a duplicate mutation on redelivery.
 - [r4073299679](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299679):
   unavailable, throwing, null, and incorrect checkpoint size probes fail closed.
+- [r4073532947](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073532947):
+  boolean/string/float size reports also fail closed instead of coercing.
 - [r4073299841](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299841):
   final output is staged, strictly media-probed, and atomically promoted only after validation.
+- [r4073533159](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073533159):
+  non-finite final duration is explicitly rejected.
 
 P05-T03 remains pending Rusty's independent acceptance of the corrected final SHA.
 
-Validation: focused `418`; locked terminal-truth contract `920` with one existing warning;
-rebuilt Compose integration `3`; full pytest `3257 passed, 2 skipped, 2 deselected, 1 warning`;
+Validation: focused `422`; locked terminal-truth contract `920` with one existing warning;
+rebuilt Compose integration `3`; full pytest `3261 passed, 2 skipped, 2 deselected, 1 warning`;
 Ruff/format/compile/diff; Bicep with existing BCP318; exact Checkov `36/7`; CI Checkov `34/0`;
-Dockerfile baseline; container `sha256:c782082dd01f42fc74ad6561498ba35ea565cf1f56ed4e7c6f402dcbe0999899`
+Dockerfile baseline; container `sha256:e12f2423bb418d66e8c7b2d601ebe3f0f2f77df35d86a8933b483cebeca15b37`
 with UID `999`, ffmpeg/ffprobe/import smoke; worker exit `2`; changed-content secret/PII scan.
 
 All 67 review threads on #682 were inspected and remain resolved. The earlier 17 replies are
