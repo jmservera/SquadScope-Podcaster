@@ -10,17 +10,41 @@
 
 ## Execution Status
 
-* Status: Leela completed the sole-author RV-008 exact typed-canonical correction; Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`
-* Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
-* Sole current revision author: Leela
-* Independent reviewer: Basher completed a read-only exact-SHA review with no blocking findings
+* Status: Livingston completed the sole-author correction of Basher's three findings against rejected head `5fdd69f5210053daa742f3690d0fa34c5795f1bc`; fresh independent Rusty review is pending
+* Declared invocation scope: #682 threads r4072863167, r4072863563, and r4072865450; validation and delivery reconciliation
+* Sole current revision author: Livingston
+* Independent reviewer: Rusty is reserved and has not yet reviewed
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
 * Completed marker retained for this cycle: P07-T06
-* Completed marker: P07-T07 closed by Basher's independent final-SHA acceptance
-* Source/tests commit: `9204e139be485cb916ccd6e70b6fce355b656136`
-* Remaining in-scope work: none for RV-008/P07-T01/P07-T07
-* Outside-scope active-plan markers: P05-T04–P05-T06 and P06-T01–P06-T02; P00-T01 and P05-T01–P05-T03 are now complete
-* Status basis: all versioned recovery authorization set/envelope/evidence/history/successor structures now use exact recursive typed canonical validation before digest/equality checks. Boolean/float `authz_count`, scalar substitutions across every canonical surface, exponent-overflow/non-finite and negative-zero floats, unsupported values, duplicate JSON fields, coercions, and legacy/unknown structures fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-006/RV-007/RV-008/RV-009 are resolved. Basher independently accepted exact reviewed implementation head `905a890`; P00-T01 through P05-T03 are complete. P05-T03 added evidence replies only and preserved all 67 existing resolved states. P05-T04–P05-T06 plus P06 remain future. No merge, deployment, workflow dispatch, provider mutation, issue closure, or production action is authorized by this update.
+* Review marker: P07-T07 and P05-T03 reopened pending Rusty's exact-SHA review
+* Source/tests commit: `d6e85efa33816430f9141cc4dfed8379c9502ad8`
+* Remaining in-scope work: Rusty independent review and final delivery reconciliation
+* Outside-scope active-plan markers: P05-T04–P05-T06 and P06-T01–P06-T02; P00-T01 is complete
+* Status basis: ambiguous chunk exhaustion now produces durable provider-unknown truth and no repeat mutation; checkpoint size verification fails closed; final output is staged and media-validated before atomic publication. Corrected #682 replies are r4073299493, r4073299679, and r4073299841. P05-T03 and merge authorization remain pending Rusty. No merge, deployment, workflow dispatch, provider mutation, issue closure, or production action is authorized.
+
+## 2026-09-22 Livingston correction after Basher rejection
+
+* Chunked YouTube: transient transport exceptions, exhausted transient HTTP results, and
+  completion-without-identity results are non-retryable and mutation-ambiguous. The outbox worker
+  records an ambiguous receipt and `publication_unknown`; a repeated delivery is read-only and
+  does not invoke upload again. A provable permanent initiation rejection remains deterministic.
+* Checkpoints: `_verify_size()` returns true only for an exact integer size match. Missing,
+  throwing, null, and incorrect probes fail closed. The caller retains the local source for safe
+  recomputation and removes the unverified uploaded checkpoint best-effort.
+* Final media: `_finalize_output()` writes to a unique sibling staged MP4, requires ffprobe
+  evidence of a positive-duration video stream and an audio stream when requested, and uses
+  `os.replace()` only after validation. Corrupt, truncated, missing, or unprobeable output is
+  rejected before archive/outbox/provider work; an existing destination is preserved and only the
+  staged candidate is cleaned.
+* Tests: focused correction/regression suite `418 passed`; locked terminal-truth contract
+  `920 passed, 1 warning`; rebuilt Compose integration `3 passed`; full suite `3257 passed,
+  2 skipped, 2 deselected, 1 warning`; Ruff, format, compile, diff, Bicep, exact Checkov `36/7`,
+  CI Checkov `34/0`, Dockerfile baseline, container build/smoke, worker exit `2`, and
+  changed-content secret/PII scan passed. Validation image:
+  `sha256:c782082dd01f42fc74ad6561498ba35ea565cf1f56ed4e7c6f402dcbe0999899`.
+* Upstream P00-T01: complete at reviewed head
+  `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merge SHA
+  `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3`, and 18 successful checks.
 
 ## 2026-09-22 P05-T03 PR #682 evidence disposition
 

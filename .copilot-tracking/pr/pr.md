@@ -1,14 +1,14 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`; accepted executable boundary `9204e139be485cb916ccd6e70b6fce355b656136` remains unchanged, and all 13 pre-update final-head checks succeeded.** Upstream prerequisite `jmservera/SquadScope#773` is merged and green, completing P00-T01. P05-T01–P05-T03 are complete: all 67 #682 threads remain resolved, the 17 formerly undispositioned findings now have durable #684 evidence/non-port replies, and the authoritative closure ledger is recorded. #682 remains open pending operator closure after this PR is finally accepted and merge-ready. P05-T04–P05-T06 and P06 remain future, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Basher rejected head `5fdd69f5210053daa742f3690d0fa34c5795f1bc`; Livingston's corrective source commit is `d6e85efa33816430f9141cc4dfed8379c9502ad8`, pending fresh independent Rusty review.** Upstream `jmservera/SquadScope#773` is merged/check-green, completing P00-T01. P05-T03, merge authorization, P05-T04–P05-T06, and P06 remain pending. #682 remains open. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
-Current source/tests commit: `9204e139be485cb916ccd6e70b6fce355b656136`.
+Current source/tests commit: `d6e85efa33816430f9141cc4dfed8379c9502ad8`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
-Current sole revision author: Leela.
-Fresh independent reviewer: Basher completed a read-only exact-SHA acceptance review.
+Current sole revision author: Livingston.
+Fresh independent reviewer: Rusty is reserved and pending.
 
 Upstream prerequisite: jmservera/SquadScope#773, reviewed head
 `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merged as
@@ -42,17 +42,34 @@ mutated.
 
 ## P05-T03 PR #682 disposition evidence
 
-All 67 review threads on #682 were inspected. GitHub reports all 67 resolved and zero unresolved.
-The 17 threads that previously ended with a reviewer finding now have factual replies linking this
-replacement PR, accepted executable boundary `9204e139be485cb916ccd6e70b6fce355b656136`,
-and exact source/test evidence or an explicit non-port rationale. The plan's authoritative ledger
-also covers every W17–W29, RV-006, and later-current row with thread ID, URL, disposition, and
-actual GitHub state. No thread was resolved, reopened, or re-resolved.
+Basher's review found three prior dispositions were not source-backed. Livingston corrected them
+at `d6e85ef` and posted exact replacement evidence:
 
-P05-T03 is complete. #682 remains open and should be closed as superseded only after #684 is
-finally accepted, made merge-ready, remains unchanged at the accepted executable boundary, and
-required checks are green. P05-T04–P05-T06 and P06 remain future. This evidence update does not
-authorize merge, deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit.
+- [r4073299493](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299493):
+  exhausted chunk transport/status uncertainty is mutation-ambiguous, persists
+  `provider_unknown`, and cannot issue a duplicate mutation on redelivery.
+- [r4073299679](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299679):
+  unavailable, throwing, null, and incorrect checkpoint size probes fail closed.
+- [r4073299841](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299841):
+  final output is staged, strictly media-probed, and atomically promoted only after validation.
+
+P05-T03 remains pending Rusty's independent acceptance of the corrected final SHA.
+
+Validation: focused `418`; locked terminal-truth contract `920` with one existing warning;
+rebuilt Compose integration `3`; full pytest `3257 passed, 2 skipped, 2 deselected, 1 warning`;
+Ruff/format/compile/diff; Bicep with existing BCP318; exact Checkov `36/7`; CI Checkov `34/0`;
+Dockerfile baseline; container `sha256:c782082dd01f42fc74ad6561498ba35ea565cf1f56ed4e7c6f402dcbe0999899`
+with UID `999`, ffmpeg/ffprobe/import smoke; worker exit `2`; changed-content secret/PII scan.
+
+All 67 review threads on #682 were inspected and remain resolved. The earlier 17 replies are
+historical evidence; the three corrected replies above supersede their inaccurate dispositions.
+The plan's authoritative ledger covers every W17–W29, RV-006, and later-current row. No thread was
+resolved, reopened, or re-resolved during this revision.
+
+P05-T03 remains pending Rusty. #682 may be closed as superseded only after #684 is independently
+accepted and merge-ready with required checks green. P05-T04–P05-T06 and P06 remain future. This
+evidence update does not authorize merge, deployment, workflow dispatch, provider mutation, W39
+execution, or P06 credit.
 
 ## Leela final-SHA rejection
 
@@ -328,8 +345,8 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] RV-008 exact operation and durable intent/receipt authorization binding corrected.
 - [x] RV-008 exact recursive typed canonical set/envelope/evidence/history/successor correction completed and validated by Leela.
 - [x] Basher independently accepted corrected exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.
-- [ ] P00-T01 completed in `jmservera/SquadScope`.
-- [ ] P05-T01–P05-T05 review/merge/provenance/deployment/readiness gates completed.
+- [x] P00-T01 completed in `jmservera/SquadScope` by reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merge SHA `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3`, and 18 successful checks.
+- [ ] P05-T03 accepted by Rusty and P05-T04–P05-T05 merge/provenance/deployment/readiness gates completed.
 - [ ] P05-T06 exact real-W39 production run reconciled, executed, and externally verified.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.
 
