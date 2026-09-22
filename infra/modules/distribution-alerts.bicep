@@ -208,7 +208,7 @@ var alertDefinitions = [
   }
   {
     name: 'distribution-identity-conflict'
-    event: 'distribution_weekly_state'
+    event: 'distribution_provider_state'
     metric: 'distribution_identity_conflict'
     signalSeverity: 'critical'
     severity: 0
@@ -219,7 +219,7 @@ var alertDefinitions = [
   }
   {
     name: 'distribution-weekly-non-green'
-    event: 'distribution_weekly_state'
+    event: 'distribution_provider_state'
     metric: 'distribution_weekly_non_green'
     signalSeverity: 'critical'
     severity: 0
@@ -280,7 +280,7 @@ resource distributionAlerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' 
       criteria: {
         allOf: [
           {
-            query: alert.name == 'distribution-scheduler-telemetry-missing' ? 'let observed = toscalar(ContainerAppConsoleLogs_CL | where TimeGenerated > ago(15m) | where Log_s contains "\\"event\\": \\"distribution_scheduler_state\\"" and Log_s contains "\\"metric\\": \\"distribution_scheduler_heartbeat\\"" | count); print observed | where observed == 0' : 'ContainerAppConsoleLogs_CL | where Log_s contains "\\"event\\": \\"${alert.event}\\"" | where Log_s contains "\\"metric\\": \\"${alert.metric}\\"" | where Log_s contains "\\"severity\\": \\"${alert.signalSeverity}\\""'
+            query: alert.name == 'distribution-scheduler-telemetry-missing' ? 'let observed = toscalar(ContainerAppConsoleLogs_CL | where TimeGenerated > ago(15m) | where Log_s contains "\\"event\\": \\"distribution_scheduler_state\\"" and Log_s contains "\\"metric\\": \\"distribution_scheduler_heartbeat\\"" | count); print observed | where observed == 0' : alert.name == 'distribution-active-depth-without-state' ? 'let activeDepth = toscalar(ContainerAppConsoleLogs_CL | where TimeGenerated > ago(10m) | where Log_s contains "\\"event\\": \\"distribution_scheduler_state\\"" and Log_s contains "\\"metric\\": \\"distribution_active_outbox_depth\\"" and Log_s contains "\\"state\\": \\"active\\"" | count); let stateRows = toscalar(ContainerAppConsoleLogs_CL | where TimeGenerated > ago(10m) | where Log_s contains "\\"event\\": \\"distribution_provider_state\\"" | count); print activeDepth, stateRows | where activeDepth > 0 and stateRows == 0' : 'ContainerAppConsoleLogs_CL | where Log_s contains "\\"event\\": \\"${alert.event}\\"" | where Log_s contains "\\"metric\\": \\"${alert.metric}\\"" | where Log_s contains "\\"severity\\": \\"${alert.signalSeverity}\\""'
             timeAggregation: 'Count'
             operator: 'GreaterThan'
             threshold: 0

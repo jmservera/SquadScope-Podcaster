@@ -14,6 +14,8 @@ The authoritative QA correction separates attempt-level truth from weekly public
 
 W39 remains `missed_not_dispatched`: it has no synth, recorder, video, outbox, or provider attempt. W38 may be classified `published_verified_recovered` only if its exact proof chain satisfies this plan; otherwise that state is an allowed candidate, not assumed proof.
 
+The canonical review subsequently proved six active defects: RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009. P07 is a distinct review-follow-up lifecycle phase and is the only current in-repository implementation boundary. Historical P01–P04 completion is retained as context, not accepted as closure for those findings.
+
 ## Cross-Phase Invariants
 
 1. **Recoverably atomic visibility:** upload an immutable content-addressed artifact, verify integrity/readability, then conditionally create the single authoritative outbox record referencing its hash. Queue notification is an idempotent hint; claim revalidates the artifact; verified orphan artifacts are repaired or garbage-collected without provider mutation.
@@ -97,16 +99,19 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
+| P07 | Review-follow-up closure for terminal truth | P07-T01–P07-T06 complete; P07-T07 delivery reconciliation active; Fry review pending | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: all dependency-ready reopened P01–P04 tasks for the QA state model plus RV-002, RV-003, RV-004, and source/docs/tests/runbook/tracking consistency for RV-007.
-* Current task: implement immutable attempts, deterministic weekly aggregation, exact receipt/readback proof, controlled recovery, scalable scheduler/cleanup, deployable alerts, and consistent repository artifacts. P00-T01, P05, and P06 remain outside this invocation.
-* Implementation owner: Amy. Bender and Hermes are locked out of this artifact revision cycle.
+* Declared scope: P07-T01–P07-T07 only, covering RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009. P07-T01–P07-T06 have completion evidence; P07-T07 is active and Fry review remains pending.
+* Current task: implement exact proof/recovery authorization, atomic scheduler notification ownership, bounded fenced cleanup, canonical telemetry vocabulary, proof-backed four-cycle evaluation, locked validation, and truthful delivery evidence.
+* Revision author: Leela only.
+* Fresh independent reviewer: Fry after implementation and validation; Fry may not contribute during planning or implementation.
+* Excluded contributors: Bender, Hermes, and Amy may not author, advise, pair, inspect, suggest, review, or otherwise contribute.
 * Source boundary: this Podcaster worktree's narrowly identified downstream owners, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts. Do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, deployment, or production.
-* Validation boundary: focused semantic/fault checks per task, then the complete locked validation contract.
+* Validation boundary: deterministic focused negative probes per P07 task, then the complete locked validation contract without weakening.
 * Delivery boundary: P00-T01, P05, and P06 are outside scope. This invocation performs no commit, push, PR/issue mutation, deployment, production-week claim, or modification of `/home/azureuser/source/SquadScope`.
 
 ## Implementation Marker Reconciliation
@@ -115,26 +120,27 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P01-T01, P02-T03, P03-T01, P04-T01–P04-T02 | Reopened for QA correction | Immutable attempt history, exact receipt schema, aggregation precedence, controlled recovery, W38/W39 classification |
-| P01-T02, P03-T02, P04-T01 | Reopened for RV-004 | Reference-safe cleanup that makes bounded progress beyond 5,000 retained paths |
-| P01-T03, P03-T02, P04-T01 | Reopened for RV-002 | Pagination/continuation or bounded sharding that eventually visits every retained due record |
+| P07-T01 | Open for RV-008 | Exact proof fields, persisted expected provider identity, authoritative readback, duplicate resolution, durable authorization references, immutable failed attempts |
+| P07-T02 | Open for RV-002 | Atomic reservation/claim or enqueue idempotency prevents duplicate selection/enqueue under concurrent workers and lease races |
+| P07-T03 | Open for RV-004 | Explicit per-run/page/item/time budgets, durable continuation, fencing/conditional deletion, and concurrent-reference protection |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
-| P03-T03, P04-T02 | Reopened for RV-003 | Distinct deployable routes and executable missing-data/depth/heartbeat alerts |
-| P04-T03 | Reopened | Targeted and full validation after all current corrections |
-| Phase details; P05-T01 | RV-007 planning half resolved; handoff pending | Canonical details are current; PR narrative must be rewritten before delivery |
+| P07-T04 | Open for RV-003 | One emitted/query/test/runbook vocabulary; generated validation fails on drift; missing-state semantics are executable |
+| P07-T05 | Open for RV-009 | Four-cycle evaluator consumes authoritative persisted proof envelopes, never labels alone |
+| P07-T06 | Open validation gate | Focused negative probes plus full suite, compile, Ruff, Bicep, Checkov, diff, container, and exit smoke |
+| P07-T07; P05-T01 | Open for RV-007 | Reconcile exact current evidence/status/counts and PR #684 delivery narrative without changing historical review conclusions |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
 | W39 classification | Settled | `missed_not_dispatched` |
 | Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
 
-All reopened implementation and independent-review work must be assigned to an agent other than Bender.
+Leela alone authors P07. Fry alone performs fresh independent review after implementation and validation. Bender, Hermes, and Amy are excluded entirely.
 
 ### Implemented Surface Disposition
 
 * **State-model and narrative correction:** later update `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`, `.copilot-tracking/pr/pr.md`, PR handoff, and production evidence summaries to preserve every attempt, use W38 recovery only with exact proof, keep W39 `missed_not_dispatched`, and separate downstream hardening from W39 root cause.
 * **W39 additions:** P00-T01 selects the exact upstream dispatch owner; then extend its workflow/client/status store plus the selected Podcaster/Azure ingress-arrival metadata, monitoring/alert infrastructure, and cross-boundary tests.
-* **Review-driven additions:** update publication/outbox/worker aggregation owners for the QA state model; implement RV-002/RV-003/RV-004 in scheduler/outbox/alerts; preserve resolved RV-001/RV-005 behavior.
+* **Review-follow-up additions:** implement only RV-002/RV-003/RV-004/RV-008/RV-009 behavior in existing scheduler/outbox/storage/telemetry/aggregation owners, then reconcile RV-007 delivery evidence; preserve resolved RV-001/RV-005 behavior.
 * **No-change safety surfaces:** preserve publication schema/sanitization, disabled-by-default routing, Spotify fail-closed/manual handoff, and externally-verified-public exit semantics except for compatible P00 correlation.
 * **Removed/narrowed:** no assumed W38 recovery, no W39 downstream-cause claim, no Podcaster-only incident canary, no blind retry, and no acceptance credit for provider hardening without upstream dispatch/Azure evidence.
 
@@ -288,7 +294,7 @@ Add an integration scenario beginning at the authoritative upstream weekly-publi
 * The authoritative correction supersedes every assumption that W38 was unpublished, missed, or awaiting recovery.
 * W39 is the only active missed-publication incident and ends before Azure arrival; no W39 downstream execution may be inferred.
 * The original critique remains unchanged as historical evidence. No second critique was run because this is an authoritative post-implementation user correction.
-* RV-002, RV-003, and RV-004 are implemented and validated in Amy's correction cycle. RV-007 is reconciled across source/docs/tests/runbook/tracking; the prohibited PR-body rewrite remains P05 delivery work. RV-001/RV-005 remain resolved; RV-006 remains resolved at planning level without claiming any GitHub thread resolved.
+* Historical note: Amy's correction cycle claimed RV-002, RV-003, and RV-004 complete, but the canonical independent review rejected those claims. Leela's P07 implementation now supplies replacement correction and validation evidence; RV-002, RV-003, RV-004, and RV-007 remain pending Fry's independent final-commit disposition. RV-001/RV-005 remain resolved; RV-006 remains resolved at planning level without claiming any GitHub thread resolved.
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish the durable outbox contract
@@ -656,7 +662,7 @@ Make process exit authoritative from deterministic weekly aggregation, keep retr
 
 ### Completion Evidence
 
-* The QA aggregation contract and RV-002, RV-003, and RV-004 corrections are complete and validated. Expanded RV-006 thread closure evidence remains P05 delivery work.
+* Historical P03 evidence was later rejected for RV-002, RV-003, and RV-004. Current closure evidence belongs to P07-T02–P07-T04 and remains pending Fry's independent disposition. Expanded RV-006 thread closure evidence remains P05 delivery work.
 
 ### Unresolved Items
 
@@ -914,6 +920,311 @@ Run targeted and full validation exactly as locked in the plan and resolve failu
 
 * None.
 
+<!-- rpi:phase id=P07 -->
+## P07: Review-follow-up closure for terminal truth
+
+### Context
+
+The canonical review is complete and supplies deterministic negative probes showing that current completion claims are unsound for six findings. No new research or critique is required. This phase is distinct from the historical implementation and must not be collapsed into P01–P04 status edits.
+
+### Intent
+
+Correct the six active findings in dependency order, prove fail-closed behavior with deterministic negative probes, reconcile current delivery evidence without rewriting historical conclusions, and obtain Fry's fresh independent review.
+
+### Boundaries
+
+* Included: existing Podcaster source/test/infrastructure/runbook owners necessary for RV-002/RV-003/RV-004/RV-008/RV-009; current delivery evidence updates necessary for RV-007.
+* Excluded: any new finding, new critique, historical review/critique edits, P00-T01 implementation, git/GitHub/deployment/production actions during planning, and contribution from Bender, Hermes, Amy, or Fry before review.
+
+### Likely Targets
+
+* Existing outbox, scheduler, storage/cleanup, telemetry, aggregation/evaluator, infrastructure query generation, runbook, and locked owner suites identified in the plan.
+* Implementation-time delivery updates to the changes record and PR #684 evidence summary after validation.
+
+### Dependencies
+
+* Canonical review and its negative probes.
+* Historical P01–P04 implementation as the correction baseline.
+
+### Validation Expectations
+
+* Deterministic concurrency uses barriers/fake clocks/CAS outcomes, not sleeps.
+* Omitted, mismatched, ambiguous, or label-only proof fails closed.
+* No test removal, skip, weakening, or non-blocking gate.
+* Full locked validation passes before Fry reviews the final diff/evidence.
+
+### Completion Evidence
+
+* One closure row per RV finding links exact implementation, focused negative probes, full validation evidence, current delivery disposition, and Fry's independent finding disposition.
+
+### Unresolved Items
+
+* None. P00-T01, P05, and P06 remain explicit residual acceptance gates after this phase.
+
+<!-- rpi:task id=P07-T01 -->
+### P07-T01: Enforce exact proof and durable recovery authorization
+
+#### Context
+
+RV-008 proved `_verification_proof()` can synthesize green from omitted values and that recovery authorization can be a caller assertion rather than durable evidence.
+
+#### Intent
+
+Require persisted, exact, identity-bound proof for every green outcome and evidence-backed authorization for every recovery attempt.
+
+#### Boundaries
+
+* Included: week/publication identity, requested objectives, manifest and publication digests, canonical artifact selection/digest, expected provider identity, terminal authoritative readback source/state/time, duplicate reconciliation, authorization evidence references, and immutable predecessor attempts.
+* Excluded: default-to-match behavior, inferred expected provider identity, caller booleans as sole authorization, label-derived recovery, and mutation retry after unknown state.
+
+#### Likely Targets
+
+* Existing outbox proof, aggregation, recovery-authorization, provider receipt/readback, and owner test surfaces.
+
+#### Dependencies
+
+* Existing immutable attempt schema; compatible schema migration where required.
+
+#### Validation Expectations
+
+* Missing or mismatched proof is non-green.
+* `provider_unknown` never authorizes another mutation.
+* Recovery authorization references durable reconciliation/operator evidence and the succeeding attempt.
+* Earlier failures and all possibly mutated attempts remain immutable and visible.
+
+#### Completion Evidence
+
+* Parameterized negative proof matrix, durable authorization round-trip, unknown-mutation no-retry probe, and exact successful/recovered-green fixtures.
+
+#### Unresolved Items
+
+* None.
+
+<!-- rpi:task id=P07-T02 -->
+### P07-T02: Make scheduler notification enqueue single-winner
+
+#### Context
+
+RV-002 proved two schedulers can read the same due token, enqueue twice, and only later mark it notified.
+
+#### Intent
+
+Move ownership/idempotency before enqueue so one durable winner may notify while stale or concurrent workers cannot duplicate the logical notification.
+
+#### Boundaries
+
+* Included: atomic CAS reservation/claim or broker-supported idempotency key, owner/fence/lease, bounded reservation expiry, retryable pre-enqueue release, post-enqueue durable completion, and abandoned-reservation recovery.
+* Excluded: read-then-enqueue-then-mark choreography, process-local locks, timing assumptions, and unbounded stuck claims.
+
+#### Likely Targets
+
+* Existing scheduler, due-reconciliation state, outbox persistence, queue adapter, and scheduler/outbox tests.
+
+#### Dependencies
+
+* P07-T01 schema compatibility and immutable notification identity.
+
+#### Validation Expectations
+
+* A deterministic two-worker barrier allows exactly one enqueue.
+* A stale owner cannot complete or re-enqueue after lease/fence loss.
+* Crash before enqueue permits bounded recovery; crash after acknowledged enqueue does not duplicate.
+
+#### Completion Evidence
+
+* Concurrent single-winner probe, stale-fence probe, pre/post-enqueue crash probes, and durable restart recovery evidence.
+
+#### Unresolved Items
+
+* None.
+
+<!-- rpi:task id=P07-T03 -->
+### P07-T03: Bound and fence resumable cleanup
+
+#### Context
+
+RV-004 proved cleanup loads the complete retained outbox reference corpus and can delete after a new concurrent reference is created.
+
+#### Intent
+
+Make cleanup explicitly bounded per execution, resumable across executions, and safe against concurrent reference creation.
+
+#### Boundaries
+
+* Included: page/item/time/work budgets, durable cursor/generation, bounded reference lookup/index, claim/fence or atomic conditional deletion, retention checks, crash recovery, and reference-wins semantics.
+* Excluded: full-corpus in-memory reference sets, unbounded scans, best-effort check-then-delete races, and deletion without revalidated ownership/reference state.
+
+#### Likely Targets
+
+* Existing storage pagination, outbox reference persistence/index, orphan metadata, cleanup worker, and cleanup tests.
+
+#### Dependencies
+
+* P07-T01 exact artifact/reference identity.
+
+#### Validation Expectations
+
+* Each run stays within every configured budget and makes measurable progress.
+* Cursor/generation survives restart without skipping or repeatedly monopolizing one page.
+* A concurrent enqueue/reference appearing before deletion prevents deletion.
+
+#### Completion Evidence
+
+* Scale/budget probe, restart/resume probe, deterministic concurrent-reference barrier, stale-fence rejection, and retained-reference invariant evidence.
+
+#### Unresolved Items
+
+* None.
+
+<!-- rpi:task id=P07-T04 -->
+### P07-T04: Unify emitted telemetry and deployable alert vocabulary
+
+#### Context
+
+RV-003 proved weekly critical rows emit one event name while deployed rules query another; the active-depth rule also does not implement the documented absence condition.
+
+#### Intent
+
+Define one canonical telemetry vocabulary and generate or validate all emission, query, test, and runbook consumers from it.
+
+#### Boundaries
+
+* Included: event/state constants or schema, dimensions, generated Bicep query parameters/fragments, representative row-to-query evaluation, missing-state joins/absence windows, runbook examples, fire/clear tests, and drift checks.
+* Excluded: duplicated string literals without validation and syntax-only infrastructure assertions.
+
+#### Likely Targets
+
+* Existing telemetry module, scheduler emissions, distribution alert Bicep, deploy workflow assertions, telemetry tests, and terminal-truth runbook.
+
+#### Dependencies
+
+* Existing sanitized low-cardinality telemetry contract.
+
+#### Validation Expectations
+
+* Representative emitted identity-conflict and weekly non-green rows match deployed queries.
+* Active depth alerts only when state/heartbeat evidence is absent under the documented window.
+* A deliberate vocabulary mismatch fails generation or tests.
+
+#### Completion Evidence
+
+* Canonical vocabulary mapping, generated-query assertions, representative fire/clear evaluations, missing-data negative probes, and Bicep/Checkov success.
+
+#### Unresolved Items
+
+* None.
+
+<!-- rpi:task id=P07-T05 -->
+### P07-T05: Require authoritative proof for four-cycle acceptance
+
+#### Context
+
+RV-009 proved four label-only dictionaries are accepted as four green cycles.
+
+#### Intent
+
+Evaluate each cycle from persisted authoritative proof receipts/readbacks and the complete attempt/aggregation envelope rather than trusting stored labels.
+
+#### Boundaries
+
+* Included: exact week/publication identity, deployed provenance, manifest/publication/artifact digests, complete immutable attempts, recovery authorization, provider objectives/items/states, authoritative readbacks, duplicate resolution, aggregation rule/version, and consecutiveness.
+* Excluded: status-label-only rows, internal ACA/API/CI green, missing provider proof, ambiguous recovery, and manual action without later readback.
+
+#### Likely Targets
+
+* Existing four-cycle evaluator, dispatch receipt/proof loaders, aggregation verifier, and owner tests.
+
+#### Dependencies
+
+* P07-T01.
+
+#### Validation Expectations
+
+* Any missing, mismatched, ambiguous, partial, unknown, manual, identity-conflict, duplicate-unresolved, no-readback, nonconsecutive, or wrong-count envelope is non-green.
+* Exactly four consecutive fully proven cycles pass.
+
+#### Completion Evidence
+
+* Parameterized negative matrix covering every rejection class, authoritative receipt/readback loading tests, and one exact four-cycle positive fixture.
+
+#### Unresolved Items
+
+* P06 still requires four real elapsed production cycles; a fixture validates the evaluator only.
+
+<!-- rpi:task id=P07-T06 -->
+### P07-T06: Run the locked review-follow-up validation contract
+
+#### Context
+
+Current historical validation counts cannot close findings discovered afterward.
+
+#### Intent
+
+Run focused negative probes and the complete repository quality/security/container contract after P07-T01–P07-T05.
+
+#### Boundaries
+
+* Included: locked owner suites, full pytest, compileall, Ruff check/format, Bicep build, Checkov, diff check, container build, and applicable entrypoint/container exit smoke.
+* Excluded: removed/skipped tests, weakened assertions, expected-failure conversions, non-blocking gates, and stale counts.
+
+#### Likely Targets
+
+* Commands and owner paths in the plan's `Locked Test and Validation Contract`.
+
+#### Dependencies
+
+* P07-T01–P07-T05 complete.
+
+#### Validation Expectations
+
+* All required commands pass; negative exit smoke remains non-zero for non-green/missing configuration; generated output and local artifacts are not committed.
+
+#### Completion Evidence
+
+* Exact command, exit status, test count, relevant summary, commit SHA, image digest, and artifact-cleanup record in the implementation delivery update.
+
+#### Unresolved Items
+
+* None.
+
+<!-- rpi:task id=P07-T07 -->
+### P07-T07: Reconcile delivery evidence and obtain Fry's independent review
+
+#### Context
+
+RV-007 proved current tracking overstates finding closure and contains stale locked-test counts. Historical review conclusions must remain immutable.
+
+#### Intent
+
+Publish a truthful current delivery update for PR #684 and have Fry independently assess the final validated implementation/evidence.
+
+#### Boundaries
+
+* Included: exact current finding count/status, implementation and negative-probe links, validation commands/counts, residual P00/P05/P06 gates, draft/blocked PR state, and Fry's final review.
+* Excluded: editing the historical review conclusion, erasing historical implementation claims, claiming deployment/canary/cycle acceptance, or accepting self-review.
+
+#### Likely Targets
+
+* Implementation-owned changes delivery update, current review-status summary, PR #684 handoff/body during P05, and Fry's independent review artifact/comment.
+
+#### Dependencies
+
+* P07-T06.
+
+#### Validation Expectations
+
+* Plan/details/current delivery evidence/PR report identical counts and dispositions.
+* Every RV maps to implementation, focused negative probes, and full validation.
+* Fry reviews the final validated diff and reports no unresolved accepted critical finding; later content change requires revalidation and re-review.
+
+#### Completion Evidence
+
+* Six-row closure matrix, exact validation record, Fry verdict/finding dispositions, and explicit statement that P00-T01/P05/P06 still block final acceptance.
+
+#### Unresolved Items
+
+* PR #684 remains draft/blocked until P00-T01, P05, and P06 are satisfied.
+
 <!-- rpi:phase id=P05 -->
 ## P05: Deliver reviewed, reversible implementation
 
@@ -923,7 +1234,7 @@ Implementation acceptance requires independent review, durable GitHub linkage/th
 
 ### Intent
 
-Push/open coordinated upstream and Podcaster replacement PRs as required, pass required checks, independently review the final pushed SHAs, supersede unsafe prior work, merge without content drift, prove merge-SHA image provenance, and deploy through a controlled reversible path. Bender is locked out of this revision cycle; implementation/review ownership must be assigned to another agent.
+Push/open coordinated upstream and Podcaster replacement PRs as required, pass required checks, preserve or refresh Fry's independent review for the final pushed SHA, supersede unsafe prior work, merge without content drift, prove merge-SHA image provenance, and deploy through a controlled reversible path.
 
 ### Boundaries
 
@@ -936,7 +1247,7 @@ Push/open coordinated upstream and Podcaster replacement PRs as required, pass r
 
 ### Dependencies
 
-* P04 passes.
+* P07 complete and P00-T01 resolved. Historical P04 validation is not a substitute for P07-T06.
 
 ### Validation Expectations
 
@@ -955,11 +1266,11 @@ Push/open coordinated upstream and Podcaster replacement PRs as required, pass r
 
 #### Context
 
-The durable handoff must make validation, operations, and cross-repository relationships discoverable before review.
+The durable handoff must make validation, operations, cross-repository relationships, and all six active review-follow-up dispositions discoverable before review.
 
 #### Intent
 
-Commit and push the validated Podcaster implementation, open the replacement PR against current main, and link the coordinated upstream W39 dispatch PR created from its dedicated owning-repository worktree. Replace the superseded RV-007 handoff narrative with the immutable-attempt/weekly-aggregation model and current review dispositions.
+Commit and push the validated Podcaster implementation, open or update PR #684 against current main, and link the coordinated upstream W39 dispatch PR created from its dedicated owning-repository worktree. Replace the superseded RV-007 handoff narrative with the immutable-attempt/weekly-aggregation model and exact RV-002/RV-003/RV-004/RV-007/RV-008/RV-009 dispositions.
 
 #### Boundaries
 
@@ -976,7 +1287,7 @@ Commit and push the validated Podcaster implementation, open the replacement PR 
 
 #### Validation Expectations
 
-* PR handoff links Coordinator #17, #681, #680, #682, and the coordinated upstream W39 dispatch PR. It states W38's evidence-conditional `published_verified_recovered` rule, W39's `missed_not_dispatched` state, immutable attempt preservation, current RV-002/RV-003/RV-004/RV-007 dispositions, exact validation evidence, four-cycle gate, canary, rollback, and changes-record pointers.
+* PR handoff links Coordinator #17, #681, #680, #682, and the coordinated upstream W39 dispatch PR. It states W38's evidence-conditional `published_verified_recovered` rule, W39's `missed_not_dispatched` state, immutable attempt preservation, current RV-002/RV-003/RV-004/RV-007/RV-008/RV-009 dispositions, exact validation evidence, four-cycle gate, canary, rollback, and changes-record pointers.
 
 #### Completion Evidence
 
@@ -995,7 +1306,7 @@ The caller prohibits accepted critical findings, and production provenance must 
 
 #### Intent
 
-Run all required PR checks and dispatch independent implementation review by an agent other than Bender against the final pushed SHA, covering correctness, dispatch correlation, concurrency/fencing, provider ambiguity, evidence safety, operations, tests, and docs.
+Run all required PR checks and have Fry independently review the final pushed SHA, covering correctness, dispatch correlation, concurrency/fencing, provider ambiguity, evidence safety, operations, tests, and docs.
 
 #### Boundaries
 
@@ -1156,7 +1467,7 @@ Keep the task open through four future consecutive post-fix scheduled cycles and
 
 ### Validation Expectations
 
-* Each of four future consecutive post-fix cycles ends `published_verified` or controlled `published_verified_recovered`. Any `partial`, `provider_unknown`, `manual_action_required`, `missed_not_dispatched`, `failed_terminal`, `identity_conflict`, unresolved duplicate ambiguity, identity mismatch, or missing readback blocks acceptance and restarts the gate after correction.
+* The evaluator reloads persisted authoritative receipts/readbacks and independently validates each proof envelope; labels alone are ignored. Each of four future consecutive post-fix cycles ends `published_verified` or controlled `published_verified_recovered`. Any `partial`, `provider_unknown`, `manual_action_required`, `missed_not_dispatched`, `failed_terminal`, `identity_conflict`, unresolved duplicate ambiguity, identity mismatch, or missing readback blocks acceptance and restarts the gate after correction.
 
 ### Completion Evidence
 

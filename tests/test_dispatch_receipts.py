@@ -12,6 +12,7 @@ from podcaster.dispatch_receipts import (
 from podcaster.distribution_outbox import (
     DistributionOutboxRepository,
     commit_immutable_artifact,
+    exact_verification_proof,
 )
 from podcaster.publication_state import PublicationIdentity
 from podcaster.storage import LocalStorageBackend
@@ -136,6 +137,12 @@ def test_w39_class_trace_localizes_dispatch_arrival_and_terminal_provider_fixtur
         execution_id="fixture-exec",
         lease_seconds=300,
     )
+    outbox.persist_intent(
+        claim,
+        provider="youtube",
+        operation="fixture_readback",
+        expected_provider_item_id="fixture-video",
+    )
     outbox.record_verification(
         claim,
         provider="youtube",
@@ -143,6 +150,7 @@ def test_w39_class_trace_localizes_dispatch_arrival_and_terminal_provider_fixtur
         source="deterministic_external_readback",
         provider_item_id="fixture-video",
         native_state="public",
+        proof=exact_verification_proof(document, provider_item_id="fixture-video"),
     )
     terminal = outbox.release(claim)
     assert terminal["publication_identity"]["accepted_job_id"] == arrival["accepted_job_id"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from podcaster.dispatch_receipts import DispatchReceiptRepository
@@ -31,14 +32,49 @@ def run_once() -> int:
         by_outbox.setdefault(outbox_id, []).append((provider, token))
     sent = 0
     for outbox_id, notifications in by_outbox.items():
-        if not enqueue_distribution_job(outbox_id):
-            continue
-        sent += 1
+        owner = f"scheduler-{uuid.uuid4().hex}"
+        reservations: list[tuple[str, str, str]] = []
         for provider, token in notifications:
-            repository.mark_reconciliation_notified(
+            try:
+                reservation_id = repository.reserve_reconciliation_notification(
+                    outbox_id,
+                    provider=provider,
+                    token=token,
+                    owner=owner,
+                )
+            except Exception:
+                logger.info(
+                    "reconciliation notification reservation lost outbox=%s provider=%s",
+                    outbox_id,
+                    provider,
+                )
+                continue
+            reservations.append((provider, token, reservation_id))
+        if not reservations:
+            continue
+        for provider, token, reservation_id in reservations:
+            repository.begin_reconciliation_enqueue(
                 outbox_id,
                 provider=provider,
                 token=token,
+                reservation_id=reservation_id,
+            )
+        if not enqueue_distribution_job(outbox_id):
+            for provider, token, reservation_id in reservations:
+                repository.abort_reconciliation_enqueue(
+                    outbox_id,
+                    provider=provider,
+                    token=token,
+                    reservation_id=reservation_id,
+                )
+            continue
+        sent += 1
+        for provider, token, reservation_id in reservations:
+            repository.complete_reconciliation_notification(
+                outbox_id,
+                provider=provider,
+                token=token,
+                reservation_id=reservation_id,
             )
     cleaned = repository.cleanup_orphan_artifacts(limit=100)
     storage.put_bytes(

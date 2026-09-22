@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from podcaster.distribution_outbox import (
     DistributionOutboxRepository,
     aggregate_exit_code,
+    exact_verification_proof,
     utc_now,
     verify_artifact,
 )
@@ -175,6 +176,7 @@ def _process_youtube(
             source="youtube_videos_list",
             provider_item_id=video_id,
             native_state=privacy,
+            proof=exact_verification_proof(document, provider_item_id=video_id),
         )
         return
     if upload_status not in ("uploaded", "processed") or processing_status not in (
@@ -245,6 +247,11 @@ def _process_youtube(
         source="youtube_privacy_readback",
         provider_item_id=video_id,
         native_state=result.privacy_status,
+        proof=(
+            exact_verification_proof(document, provider_item_id=video_id)
+            if result.succeeded
+            else None
+        ),
     )
 
 
@@ -266,6 +273,7 @@ def _process_spotify(repository, claim, document: Mapping[str, Any]) -> None:
                 source="spotify_episode_readback",
                 provider_item_id=provider_id,
                 native_state="published",
+                proof=exact_verification_proof(document, provider_item_id=provider_id),
             )
             return
         if published is None:
