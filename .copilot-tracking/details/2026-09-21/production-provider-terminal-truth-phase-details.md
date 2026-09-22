@@ -116,7 +116,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
 | P07 | Review-follow-up closure for terminal truth | Complete for the current correction; Basher accepted exact reviewed head `905a890` | P07, P07-T01–P07-T07 |
-| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01–P05-T02 complete; P05-T03 blocked on #682 disposition/linkage; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
+| P05 | Deliver reviewed, reversible implementation and exact W39 production acceptance | P05-T01–P05-T03 complete; #682 closure awaits #684 final acceptance/merge readiness; P05-T04–P05-T06 future | P05, P05-T01–P05-T06 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted exact-W39 production run and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
@@ -128,7 +128,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 * Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank did not author, advise, pair, inspect, suggest, review, or otherwise contribute. Basher was excluded from authoring, advice, and implementation contribution and completed the independent final-SHA review without contributing. Leela is the correction author and is not a reviewer for this cycle.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: exact timestamp/execution/fence bypass, parameterized mutation of every semantic attempt/event field, duplicate/omit/reorder/insert attempt or event, nested intent/receipt/provider/readback mutation, recovery-authorization metadata/cardinality, missing/ambiguous sequence/time, unexpected append after authorization, cross-week/publication/attempt replay, canonical round-trip, exact single authorized successor, all prior RV-008 and resolved-RV probes, then the complete locked validation contract without weakening.
-* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01 and P05-T01–P05-T02 are complete, including all 13 successful final-head checks. P05-T03 is blocked on durable #682 disposition/replacement linkage; P05-T04–P05-T06 and P06 remain future. Do not mutate or close #682, #671, #678, #679, or #681.
+* Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01 and P05-T01–P05-T03 are complete, including all 13 successful pre-update checks and durable disposition of every #682 thread. P05-T04–P05-T06 and P06 remain future. Do not close #682 until #684 is finally accepted and merge-ready; do not mutate or close #671, #678, #679, or #681.
 
 ## Implementation Marker Reconciliation
 
@@ -145,7 +145,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, Ruff/format/compile/diff, Bicep/Checkov, container/exit, and secret/PII gates passed without weakening |
 | P07-T07; P05-T01 | Complete | Basher accepted exact executable head `905a890`; all later commits through `da84b6b` changed tracking/PR narrative only; #684 is linked to #773 |
 | P05-T02 | Complete | Final-SHA review found no executable drift or High/Critical issue; all 13 hosted checks on the final pushed tracking head succeeded |
-| P05-T03 | Blocked | All 67 #682 threads report resolved, but 17 end with an undispositioned reviewer finding and zero final thread replies link #684; #682 must remain open until replacement evidence is durable |
+| P05-T03 | Complete | All 67 #682 threads remain resolved; the 17 previously undispositioned reviewer findings now have factual #684 replies, and the authoritative W17–W29/RV-006/current matrix records thread IDs, evidence, non-port rationale where applicable, and actual GitHub state |
 | P05-T05 | Expanded prerequisite gate | Exact merge-SHA-derived upstream and Podcaster artifacts must be deployed and every review/deployment/readiness/rollback gate cleared before real W39 execution |
 | P05-T06 | New authoritative gate | Reconcile all W39 history/provider candidates before mutation, then prove exact GitHub-to-provider execution and authoritative terminal external readback; ambiguity fails closed/manual-action |
 | P06-T01–P06-T02 | Preserved | Four future qualifying cycles remain required; exact W39 does not automatically count |
@@ -1387,11 +1387,23 @@ Reply with replacement evidence, resolve each thread only where evidence permits
 
 #### Completion Evidence
 
-* Every authoritative matrix row has evidence and recorded state; unresolved rows remain explicitly open until GitHub evidence shows resolution.
+* GitHub GraphQL inventory covered all 67 threads. Before and after replies the state was
+  `67 total / 67 resolved / 0 unresolved`.
+* The 17 reviewer-final threads received durable replacement replies
+  `r4072863167`, `r4072863344`, `r4072863563`, `r4072863767`, `r4072863985`,
+  `r4072864217`, `r4072864494`, `r4072864723`, `r4072864920`, `r4072865106`,
+  `r4072865276`, `r4072865450`, `r4072865681`, `r4072865926`, `r4072866127`,
+  `r4072866389`, and `r4072866652`.
+* The plan's authoritative disposition ledger records every W17–W29, RV-006, later-current,
+  and previously undispositioned row against #684 and accepted executable boundary
+  `9204e139be485cb916ccd6e70b6fce355b656136`.
+* No thread was resolved, re-resolved, or reopened by this work.
 
 #### Unresolved Items
 
-* None.
+* P05-T03 has no remaining evidence blocker. PR #682 remains open because operator closure as
+  superseded is deferred until #684 is finally accepted and merge-ready. P05-T04–P05-T06 and
+  P06 remain future and are not implied complete by thread disposition.
 
 <!-- rpi:task id=P05-T04 -->
 ### P05-T04: Approve, merge, and prove release image provenance

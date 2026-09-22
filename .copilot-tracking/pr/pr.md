@@ -1,7 +1,7 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`; all later branch changes are tracking/review narrative only, and all 13 final-head checks succeeded.** Upstream prerequisite `jmservera/SquadScope#773` is merged and green, completing P00-T01. P05-T01–P05-T02 are complete. P05-T03 remains blocked because #682's 67 threads are marked resolved but 17 end without author disposition and no final thread reply links #684. P05-T04–P05-T06 and P06 remain future, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — RV-008 is corrected and Basher independently accepted exact reviewed implementation head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`; accepted executable boundary `9204e139be485cb916ccd6e70b6fce355b656136` remains unchanged, and all 13 pre-update final-head checks succeeded.** Upstream prerequisite `jmservera/SquadScope#773` is merged and green, completing P00-T01. P05-T01–P05-T03 are complete: all 67 #682 threads remain resolved, the 17 formerly undispositioned findings now have durable #684 evidence/non-port replies, and the authoritative closure ledger is recorded. #682 remains open pending operator closure after this PR is finally accepted and merge-ready. P05-T04–P05-T06 and P06 remain future, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
@@ -39,6 +39,20 @@ Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb
 with no blocking findings. PR #684 remains open/draft/blocked pending P00-T01, P05, P06, and
 operator-only #682. No issue, review thread, deployment, canary, merge, or production state was
 mutated.
+
+## P05-T03 PR #682 disposition evidence
+
+All 67 review threads on #682 were inspected. GitHub reports all 67 resolved and zero unresolved.
+The 17 threads that previously ended with a reviewer finding now have factual replies linking this
+replacement PR, accepted executable boundary `9204e139be485cb916ccd6e70b6fce355b656136`,
+and exact source/test evidence or an explicit non-port rationale. The plan's authoritative ledger
+also covers every W17–W29, RV-006, and later-current row with thread ID, URL, disposition, and
+actual GitHub state. No thread was resolved, reopened, or re-resolved.
+
+P05-T03 is complete. #682 remains open and should be closed as superseded only after #684 is
+finally accepted, made merge-ready, remains unchanged at the accepted executable boundary, and
+required checks are green. P05-T04–P05-T06 and P06 remain future. This evidence update does not
+authorize merge, deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit.
 
 ## Leela final-SHA rejection
 
