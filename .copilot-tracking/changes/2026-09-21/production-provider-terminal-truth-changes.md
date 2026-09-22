@@ -10,17 +10,17 @@
 
 ## Execution Status
 
-* Status: Leela completed the sole-author RV-008 exact typed-canonical correction; independent Basher final-SHA review is pending
+* Status: Leela completed the sole-author RV-008 exact typed-canonical correction; Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
 * Sole current revision author: Leela
-* Independent reviewer: Basher reserved; no contribution occurred
+* Independent reviewer: Basher completed a read-only exact-SHA review with no blocking findings
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
 * Completed marker retained for this cycle: P07-T06
-* Open marker: P07-T07 pending Basher's independent final-SHA review
+* Completed marker: P07-T07 closed by Basher's independent final-SHA acceptance
 * Source/tests commit: `9204e139be485cb916ccd6e70b6fce355b656136`
-* Remaining in-scope work: obtain Basher's independent final-SHA acceptance
+* Remaining in-scope work: none for RV-008/P07-T01/P07-T07
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
-* Status basis: all versioned recovery authorization set/envelope/evidence/history/successor structures now use exact recursive typed canonical validation before digest/equality checks. Boolean/float `authz_count`, scalar substitutions across every canonical surface, exponent-overflow/non-finite and negative-zero floats, unsupported values, duplicate JSON fields, coercions, and legacy/unknown structures fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-006 remains planning-resolved. RV-008 implementation is corrected but awaits Basher's independent final-SHA acceptance. P00-T01, P05, P06, and operator-only #682 remain blockers. No merge, deployment, canary, issue/thread, or production mutation is authorized.
+* Status basis: all versioned recovery authorization set/envelope/evidence/history/successor structures now use exact recursive typed canonical validation before digest/equality checks. Boolean/float `authz_count`, scalar substitutions across every canonical surface, exponent-overflow/non-finite and negative-zero floats, unsupported values, duplicate JSON fields, coercions, and legacy/unknown structures fail closed. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are resolved; RV-006 remains planning-resolved. Basher independently accepted exact reviewed head `905a890`. P00-T01, P05, P06, and operator-only #682 remain blockers. No merge, deployment, canary, issue/thread, or production mutation is authorized.
 
 ## P07 Leela Exact Typed Canonical Correction
 
@@ -30,7 +30,7 @@
 * Input hardening: canonical recovery data rejects floats including `1.0` and `-0.0`, NaN/infinity, non-string object keys, tuples/sets and other unsupported containers, serialization coercions, and duplicate JSON object fields.
 * Probes: explicit boolean/float `authz_count` bypasses fail closed; parameterized bool/int/float/string/null substitutions traverse the authorization set, envelope, evidence, history, attempt records/events, and successor; unsupported numeric/container and duplicate-key probes fail closed; the exact canonical round trip remains mutation-capable once and read-only on replay.
 * Validation: focused `241 passed`; locked `916 passed, 1 warning`; full `3246 passed, 2 skipped, 2 deselected, 1 warning`; Ruff/format/compile/diff passed; Bicep passed with the existing BCP318 warning; exact Checkov retained `36/7`; CI Bicep Checkov `34/0`; Dockerfile baseline passed; rebuilt image `sha256:89f3dad52ff9583ec92a6501e6132a67d96383fcacef5ded6c95153088c2eecc` passed UID `999`, ffmpeg/ffprobe/import smoke; unconfigured worker exited `2`; changed executable diff secret/PII scan was clear.
-* Delivery posture: PR #684 remains open/draft/blocked. Basher review, P00-T01, P05, P06, and operator-only #682 remain blockers. No issue, thread, deployment, canary, merge, or production state was mutated.
+* Delivery posture: PR #684 remains open/draft/blocked. P00-T01, P05, P06, and operator-only #682 remain blockers. Basher accepted exact reviewed head `905a890`; no deployment, canary, merge, or production state was mutated.
 
 ## P07 Leela Fresh Independent Final-SHA Rejection
 

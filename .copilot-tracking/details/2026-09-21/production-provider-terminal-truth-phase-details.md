@@ -115,16 +115,16 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | Leela correction complete and validated; Basher final-SHA review pending | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Complete for the current correction; Basher accepted exact reviewed head `905a890` | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
 * Declared scope: Leela's sole-author P07-T01 typed-canonical correction and full validation.
-* Current task: obtain Basher's independent final-SHA review without reviewer contribution.
+* Current task: complete; Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9`.
 * Revision author: Leela alone.
-* Fresh independent reviewer: Basher reserved; no contribution occurred.
+* Fresh independent reviewer: Basher completed a read-only review without contributing.
 * Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Basher is excluded from authoring, advice, and implementation contribution but is expressly reserved for the independent final-SHA review. Leela is the correction author and is not a reviewer for this cycle.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: exact timestamp/execution/fence bypass, parameterized mutation of every semantic attempt/event field, duplicate/omit/reorder/insert attempt or event, nested intent/receipt/provider/readback mutation, recovery-authorization metadata/cardinality, missing/ambiguous sequence/time, unexpected append after authorization, cross-week/publication/attempt replay, canonical round-trip, exact single authorized successor, all prior RV-008 and resolved-RV probes, then the complete locked validation contract without weakening.
@@ -143,14 +143,14 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
 | P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, Ruff/format/compile/diff, Bicep/Checkov, container/exit, and secret/PII gates passed without weakening |
-| P07-T07; P05-T01 | Awaiting Basher; blocked | Preserve all rejection history, keep PR #684 draft/blocked, and obtain Basher's independent final-SHA acceptance; P00-T01, P05, and P06 remain open |
+| P07-T07; P05-T01 | P07-T07 complete; delivery blocked | Basher accepted exact reviewed head `905a890`; keep PR #684 draft/blocked because P00-T01, P05, P06, and operator-only #682 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
 | W39 classification | Settled | `missed_not_dispatched` |
 | Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
 
-Leela alone authors the active P07-T01 correction. Basher alone is reserved for fresh independent review after implementation and validation and may not contribute beforehand. Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, Frank, and Fry are excluded entirely from contribution or advice.
+Leela alone authored the active P07-T01 correction. Basher completed the fresh independent review after implementation and validation without contributing. Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, Frank, and Fry were excluded entirely from contribution or advice.
 
 ### Implemented Surface Disposition
 
@@ -1243,7 +1243,7 @@ Publish a truthful current delivery update for PR #684 and have Basher independe
 
 #### Unresolved Items
 
-* Leela's exact typed-canonical correction and validation completed. Boolean/float authorization-set cardinality and the systematic scalar/numeric/unsupported/duplicate-key matrix fail closed. PR #684 remains draft/blocked pending Basher. P07-T07, P00-T01, P05, and P06 remain open. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-006 remains planning-resolved; RV-008 implementation awaits independent acceptance.
+* Leela's exact typed-canonical correction and validation completed. Boolean/float authorization-set cardinality and the systematic scalar/numeric/unsupported/duplicate-key matrix fail closed. Basher independently accepted exact reviewed head `905a890`, closing P07-T07 and RV-008. PR #684 remains draft/blocked because P00-T01, P05, P06, and operator-only #682 remain open. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 remain resolved; RV-006 remains planning-resolved.
 
 <!-- rpi:phase id=P05 -->
 ## P05: Deliver reviewed, reversible implementation
