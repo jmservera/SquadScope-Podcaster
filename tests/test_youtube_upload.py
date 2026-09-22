@@ -159,6 +159,24 @@ def test_initiate_resumable_session_transport_loss_is_ambiguous():
         initiate_resumable_session(_LostResponse(), "tok", {}, file_size=10)
 
 
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_initiate_resumable_session_transient_status_is_ambiguous(status):
+    class _TransientResponse:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            return status, {}, b""
+
+    with pytest.raises(
+        RuntimeError,
+        match="session initiation outcome is unknown",
+    ):
+        initiate_resumable_session(
+            _TransientResponse(),
+            "token",
+            build_video_metadata("title", "description"),
+            file_size=2048,
+        )
+
+
 # --- chunked upload happy path ------------------------------------------------
 
 

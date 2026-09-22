@@ -606,7 +606,6 @@ def upload_to_youtube(
         raise ValueError(f"Video file too small ({file_size} bytes), likely corrupt")
 
     http = transport or _DefaultTransport()
-    access_token = _get_youtube_access_token(config, http)
     mutation_started = False
 
     def admit_mutation() -> None:
@@ -634,10 +633,10 @@ def upload_to_youtube(
         },
     }
 
-    # Files above the single-request ceiling use the chunked uploader, which
-    # owns the resumable session from initialization through completion.
+    # Budgeted production uploads and files above the single-request ceiling use
+    # the ambiguity-aware chunked uploader from initialization through completion.
     _MAX_SINGLE_UPLOAD_BYTES = 128 * 1024 * 1024
-    if file_size > _MAX_SINGLE_UPLOAD_BYTES:
+    if budget is not None or file_size > _MAX_SINGLE_UPLOAD_BYTES:
         chunked = _try_chunked_upload(
             video_path,
             title,
@@ -657,6 +656,8 @@ def upload_to_youtube(
             _MAX_SINGLE_UPLOAD_BYTES,
         )
         return None, None
+
+    access_token = _get_youtube_access_token(config, http)
 
     # Initiate resumable upload
     params = urlencode(

@@ -191,6 +191,10 @@ def initiate_resumable_session(
         raise YouTubeSessionInitiationUnknown(
             "YouTube resumable session initiation outcome is unknown"
         ) from exc
+    if status in _TRANSIENT_STATUSES:
+        raise YouTubeSessionInitiationUnknown(
+            f"YouTube resumable session initiation outcome is unknown: HTTP {status}"
+        )
     if status not in (200, 308):
         raise RuntimeError(f"YouTube resumable init failed: HTTP {status}")
 

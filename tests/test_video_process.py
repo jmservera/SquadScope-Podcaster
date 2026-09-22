@@ -151,6 +151,12 @@ def test_media_evidence_collects_size_sha256_and_probe(tmp_path):
     assert MediaEvidence.from_dict(evidence.to_dict()) == evidence
 
 
+@pytest.mark.parametrize("duration", [float("nan"), float("inf"), float("-inf")])
+def test_probe_evidence_rejects_non_finite_duration(duration):
+    with pytest.raises(ValueError, match="finite"):
+        ProbeEvidence("mov,mp4", duration)
+
+
 def test_media_hashing_uses_owned_stage_timeout_and_stops_before_probe(tmp_path):
     media = tmp_path / "clip.mp4"
     media.write_bytes(b"valid-media")

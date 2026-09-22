@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import json
+import math
 import multiprocessing
 import os
 import pickle
@@ -78,8 +79,10 @@ class ProbeEvidence:
     def __post_init__(self) -> None:
         if not self.format_name.strip():
             raise ValueError("probe format_name must not be empty")
-        if self.duration_seconds is not None and self.duration_seconds < 0:
-            raise ValueError("probe duration must not be negative")
+        if self.duration_seconds is not None and (
+            not math.isfinite(self.duration_seconds) or self.duration_seconds < 0
+        ):
+            raise ValueError("probe duration must be finite and non-negative")
 
     def to_dict(self) -> dict[str, Any]:
         return {

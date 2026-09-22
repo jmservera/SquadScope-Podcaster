@@ -10,11 +10,11 @@
 
 ## Execution Status
 
-* Status: Implementation complete — P09 delivery verification active
+* Status: Implementation complete — P10 final delivery verification active
 * Declared invocation scope: Full plan
-* Completed scope markers: P01-P09 and all tasks
+* Completed scope markers: P01-P10 and all tasks
 * All remaining active-plan markers: None
-* Status basis: Both post-push findings are implemented and locally validated; hosted checks and thread resolution follow the push.
+* Status basis: The final five post-push findings are implemented and locally validated; hosted checks and thread resolution follow the push.
 
 ## Execution Summary
 
@@ -37,6 +37,14 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 * Completion evidence: Backward-clock redelivery has zero shutdown budget, and a failing custom runner leaves no partial card.
 * Focused validation: 71 passed; focused Ruff lint/format passed.
 * Full validation: 3249 passed, 2 skipped, 2 deselected; repository Ruff lint/format, compileall, and diff check passed.
+
+### P10 final safety corrections
+
+* Related phase or task: P10-T01 through P10-T03.
+* Files: `distribution.py`, `youtube.py`, `process.py`, `recorder.py`, `video_compose.py`, and focused tests.
+* What changed and why: Budgeted uploads of every size now use the ambiguity-aware resumable implementation; transient session-init responses are retry-blocked unknown; probe durations reject non-finite values; malformed permanent recorder setup writes a bounded terminal insufficient result while foreign clipsets retain deterministic fallback; resumed final mux output is validated before return.
+* Focused validation: 505 passed.
+* Full validation: 3258 passed, 2 skipped, 2 deselected; repository Ruff lint/format, compileall, and diff check passed.
 
 ### P08 focused pass opening
 

@@ -300,6 +300,28 @@ class TestUploadToYouTube:
         ]
         assert len(resumable_inits) == 1
 
+    def test_budgeted_small_upload_uses_ambiguity_aware_uploader(
+        self, video_file, youtube_config, monkeypatch
+    ):
+        captured = []
+
+        def chunked(*args, **kwargs):
+            captured.append(kwargs["budget"])
+            return "yt-safe", "https://youtube.com/watch?v=yt-safe"
+
+        monkeypatch.setattr("podcaster.video.distribution._try_chunked_upload", chunked)
+        budget = VideoStageBudget.start()
+
+        assert upload_to_youtube(
+            video_file,
+            "title",
+            "description",
+            youtube_config,
+            transport=FakeTransport(),
+            budget=budget,
+        ) == ("yt-safe", "https://youtube.com/watch?v=yt-safe")
+        assert captured == [budget]
+
     def test_file_not_found(self, youtube_config):
         with pytest.raises(FileNotFoundError):
             upload_to_youtube(

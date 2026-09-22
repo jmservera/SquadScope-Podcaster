@@ -3337,7 +3337,7 @@ def compose_video(
                 "Resumed composed video from blob checkpoint (%.1fs); skipping to final mux",
                 resumed_duration,
             )
-            return _finalize_output(
+            result = _finalize_output(
                 video_only_path=resumed_video,
                 video_duration=resumed_duration,
                 audio_path=audio_path,
@@ -3345,6 +3345,9 @@ def compose_video(
                 segment_count=len(segments),
                 run=run,
             )
+            if budget is not None:
+                _evidence(result.output_path)
+            return result
 
     # Fit-to-window planning (issue #355): when the audio duration is known we
     # trim/freeze the content so it fills exactly the audio timeline minus the

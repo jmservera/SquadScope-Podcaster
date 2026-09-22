@@ -21,6 +21,7 @@
 | P07 | Remediate unresolved PR review findings | Complete | P07, P07-T01, P07-T02, P07-T03, P07-T04, P07-T05 |
 | P08 | Complete focused PR gate remediation | Complete | P08, P08-T01, P08-T02, P08-T03 |
 | P09 | Close post-push budget and runner findings | Complete | P09, P09-T01, P09-T02, P09-T03 |
+| P10 | Close final post-push safety findings | Complete | P10, P10-T01, P10-T02, P10-T03 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish shared budget and evidence contracts
@@ -651,6 +652,29 @@ Two new Copilot threads appeared after P08 was pushed and initially green.
 ### P09-T03: Validate, resolve, and restore operator readiness
 
 * Completion evidence: Focused/full validation, resolved thread IDs, hosted checks, clean worktree, and open unmerged PR state.
+
+<!-- rpi:phase id=P10 -->
+## P10: Close final post-push safety findings
+
+### Boundaries
+
+* Included: Small YouTube upload routing, resumable initialization ambiguity, media duration validation, permanent recorder setup terminalization, resumed final-mux validation, tests, tracking, and PR operations.
+* Excluded: New issues, refactors, merge, deployment, or provider operations.
+
+<!-- rpi:task id=P10-T01 -->
+### P10-T01: Preserve provider and media ambiguity safety
+
+* Completion evidence: Budgeted uploads use the ambiguity-aware uploader at every file size; transient init statuses become retry-blocked unknown; NaN and infinities are rejected from probe evidence.
+
+<!-- rpi:task id=P10-T02 -->
+### P10-T02: Preserve terminalization and final-output validation
+
+* Completion evidence: Malformed durable recorder state writes a terminal insufficient manifest and deletes the message; resumed final muxes are probed before return.
+
+<!-- rpi:task id=P10-T03 -->
+### P10-T03: Validate and deliver the final correction
+
+* Completion evidence: Focused/full tests and Ruff pass before commit/push; all addressed threads and hosted checks are verified afterward.
 
 <!-- rpi:phase id=P04 -->
 ## P04: Persist render boundary and bound distribution/shutdown

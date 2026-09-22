@@ -5,7 +5,7 @@
 
 * Task ID: video-stage-budget-redesign
 * Task slug: video-stage-budget-redesign
-* Planning status: P09 implementation and local validation complete; delivery active
+* Planning status: Complete through P10; final hosted verification follows push
 * Plan date: 2026-09-15
 * Phase details: .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 * Plan critique: .copilot-tracking/reviews/plans/2026-09-15/video-stage-budget-redesign-plan-critique.md
@@ -359,6 +359,29 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Expected result: Focused/full checks pass, both new threads resolve, hosted gates pass, and readiness is re-established without merge.
 * Detail section: P09-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
+<!-- rpi:phase id=P10 -->
+### [x] P10: Close final post-push safety findings
+
+* Intent: Resolve the five findings created after the P09 push without expanding beyond review remediation.
+
+<!-- rpi:task id=P10-T01 -->
+#### [x] P10-T01: Preserve provider and media ambiguity safety
+
+* Expected result: Budgeted small YouTube uploads use the ambiguity-aware uploader, transient init statuses are unknown, and non-finite probe durations are rejected.
+* Detail section: P10-T01 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P10-T02 -->
+#### [x] P10-T02: Preserve terminalization and final-output validation
+
+* Expected result: All permanent recorder setup errors terminalize with bounded writes, and resumed composition validates the final mux.
+* Detail section: P10-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P10-T03 -->
+#### [x] P10-T03: Validate and deliver the final correction
+
+* Expected result: Focused/full validation passes; commit, push, thread resolution, and hosted checks are recorded.
+* Detail section: P10-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
 ## Dependencies
 
 * Baseline provider evidence and distribution state machine: must remain additive and fail closed.
@@ -386,5 +409,5 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 ## Handoff
 
 * Implementation artifact: .copilot-tracking/changes/2026-09-15/video-stage-budget-redesign-changes.md
-* Ready phase or task: None; P01-P09 are complete.
-* Remaining provisional question or blocker: Hosted checks and thread resolution follow the P09 push.
+* Ready phase or task: None; P01-P10 implementation and local validation are complete.
+* Remaining provisional question or blocker: Hosted checks and thread resolution follow the final push.

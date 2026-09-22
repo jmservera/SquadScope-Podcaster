@@ -25,6 +25,7 @@ from podcaster import ssrf, watermark
 from podcaster.image_validation import sniff_image
 from podcaster.video import video_compose as vc
 from podcaster.video.budget import VideoStageBudget
+from podcaster.video.process import MediaValidationError
 from podcaster.video.sync_plan import EpisodePlan, RepoReference, VideoSegment
 from podcaster.video.video_compose import (
     BOUNDARY_CONTENT_TO_CONTENT,
@@ -3398,6 +3399,41 @@ class TestComposeVideoCheckpointResume:
         assert runner.call_count <= 2
         ran = [str(c[0][0]) for c in runner.call_args_list]
         assert not any("scale" in r for r in ran)
+
+    def test_budgeted_resumed_checkpoint_validates_final_mux(self, tmp_path):
+        store = self._store(tmp_path)
+        clip = tmp_path / "seg.webm"
+        clip.write_bytes(b"\x00" * 2048)
+        seg = _make_recorded_segment(duration=10.0, video_path=clip)
+
+        def probe(_path, _timeout):
+            return vc.ProbeEvidence(format_name="mov,mp4", duration_seconds=10.0)
+
+        compose_video(
+            segments=[seg],
+            output_dir=tmp_path / "initial",
+            runner=_touch_output_runner(),
+            intermediates=store,
+            budget=_RenderClock().budget(),
+            media_probe=probe,
+        )
+
+        final_output = tmp_path / "resumed" / "episode.mp4"
+
+        def fail_final_probe(path, _timeout):
+            if path == final_output:
+                raise OSError("final mux is corrupt")
+            return vc.ProbeEvidence(format_name="mov,mp4", duration_seconds=10.0)
+
+        with pytest.raises(MediaValidationError):
+            compose_video(
+                segments=[seg],
+                output_path=final_output,
+                runner=_touch_output_runner(),
+                intermediates=store,
+                budget=_RenderClock().budget(),
+                media_probe=fail_final_probe,
+            )
 
     @pytest.mark.parametrize(
         ("initial_metadata", "updated_metadata"),

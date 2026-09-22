@@ -196,6 +196,27 @@ def test_process_message_foreign_clipset_terminalizes_expected_job_and_deletes(
     assert not scratch.blob_exists(clip_blob_path(foreign_job_id, 0))
 
 
+def test_process_message_malformed_clipset_terminalizes_and_deletes(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    scratch.put_bytes(clipset_blob_path(JOB_ID), b"{not-json", "application/json")
+    record, calls = _recorder()
+    queue = FakeQueue()
+    message = _message(0)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_INSUFFICIENT
+    assert calls == []
+    assert queue.deleted == [message]
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+
+
 @pytest.mark.parametrize("stop_at", range(1, 9))
 def test_record_clip_finalization_operations_are_budgeted_and_stop_on_timeout(
     tmp_path, stop_at

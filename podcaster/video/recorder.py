@@ -923,13 +923,19 @@ def process_clip_message(
             30.0,
         )
     except PermanentRecorderSetupError as exc:
+        renderer = fallback_renderer
+        if not isinstance(exc, ForeignClipsetRecorderSetupError):
+
+            def renderer(_output_path: Path, _timeout_seconds: float) -> MediaEvidence:
+                raise PermanentRecorderSetupError("fallback source metadata is invalid")
+
         outcome = write_fallback_manifest(
             job_id,
             clip_index,
             scratch=scratch,
             reason=f"recording timing unavailable: {type(exc).__name__}",
-            timeout_seconds=30 if isinstance(exc, ForeignClipsetRecorderSetupError) else 0,
-            renderer=fallback_renderer,
+            timeout_seconds=30,
+            renderer=renderer,
             terminal_utcnow=utcnow,
         )
         _delete_queue_message(
