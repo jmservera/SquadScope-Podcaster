@@ -1374,3 +1374,30 @@ This historical return is not the current delivery state. The current revision h
 | Compileall and diff hygiene | `podcaster`; exact worktree diff | Passed | `python3 -m compileall -q podcaster`; `git diff --check`. |
 | Changed-line secret scan | all added lines from `ddaada1` | Passed | `342` added lines scanned; `0` suspected secrets. |
 | Delivery and hosted proof | branch/PR | Pending | Exact remote gate, commit, normal push, and hosted check completion remain P09-T03. |
+
+## Bender notification-loss correction after rejected head `ac7bbdb`
+
+* Related scope: P05-T03 and the PR #684 finding at issue comment `5785534889`.
+* Source commit: `a91fce989851ed4b91dcab49e3ec44dd569624e7`.
+* Durable protocol: notification intent is reserved first, atomically transitions to
+  `sending` before broker I/O, and becomes `accepted` only after the queue call
+  returns. A `sending` or legacy consumed intent is ambiguous and cannot be
+  replaced or replayed by stale/successor notification owners.
+* Recovery: every newly created provider leg receives an independent five-minute
+  reconciliation token. Generic notification repair also backfills missing
+  schedules and migrates historical consumed-before-acceptance records from
+  false `notification_sent_at` evidence to ambiguous reconciliation.
+* Provider safety: recovery wakes the authoritative outbox state machine; it does
+  not grant another direct provider mutation. Existing provider claim, intent,
+  readback, and recovery-authorization fences remain authoritative.
+* Regression evidence: deterministic tests cover pre-send crash recovery,
+  timeout before/around broker acceptance, successor suppression, no duplicate
+  physical send after ambiguous acceptance, initial-leg scheduling, explicit
+  worker schedule replacement, and legacy consumed-intent migration.
+* Validation: focused correction selection `7 passed`; queue/outbox/video
+  ownership, job-runner, and distribution-worker suites `364 passed in
+  432.88s`; Ruff check passed; Ruff format reported `195 files already
+  formatted`; changed Python files compiled; `git diff --check` passed.
+* Remaining gate: PR #684 stays draft/open and explicitly blocked by
+  operator-only #682. No merge, deployment, workflow dispatch, or provider
+  mutation is authorized.
