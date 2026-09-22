@@ -10,7 +10,7 @@
 
 ## Execution Status
 
-* Status: Frank completed the stale-owner downstream-boundary implementation and required validation after Basher rejected exact head `df473dc0c059680b9c454ddab263c5c454e2ef2b`; commit, push, GitHub evidence, and Rusty review remain
+* Status: Frank completed the stale-owner downstream-boundary implementation and required validation after Basher rejected exact head `df473dc0c059680b9c454ddab263c5c454e2ef2b`; source/evidence commit `6bba1275efbe30754230db7cfe3e67522f7033df` is complete, and final narrative commit, push, GitHub evidence, and Rusty review remain
 * Declared invocation scope: P05-T03 authoritative ownership guard, fenced downstream permits, exact race probes, full required validation, evidence reconciliation, commit, and push
 * Sole current revision author: Frank
 * Independent reviewer: Rusty is reserved and has not contributed
@@ -28,6 +28,7 @@
 * Provider safety: direct provider distribution consumes a durable non-takeover permit before any blob, YouTube, Spotify RSS, or Spotify episode mutation. A successor receives reconciliation-only authority for that intent and cannot issue a second mutation. Outbox routing retains deterministic artifact/outbox reuse and adopts idempotent archive/handoff permits after takeover.
 * Idempotency: immutable content-addressed artifacts and deterministic outbox IDs remain reusable. Queue notification is reserved durably before send, sent marking is fenced to the same permit, and orphan repair remains available after an interrupted handoff.
 * Concurrent branch reconciliation: while Frank was implementing, the shared branch advanced to user-authored commit `adb3e7ed224a67a8e013e9a361b826a0ac3e003c` from another Copilot session. History was preserved without force-push, its overlapping source/tests/tracking were superseded in the final revision, and the net executable diff from rejected head `df473dc` is Frank's independently authored correction.
+* Source and evidence commit: `6bba1275efbe30754230db7cfe3e67522f7033df`.
 
 ### Stale-owner correction validation
 
