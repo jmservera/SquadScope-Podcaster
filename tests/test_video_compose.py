@@ -3435,6 +3435,36 @@ class TestComposeVideoCheckpointResume:
                 media_probe=fail_final_probe,
             )
 
+    def test_fresh_final_metadata_output_is_validated_with_remaining_budget(self, tmp_path):
+        store = self._store(tmp_path)
+        clip = tmp_path / "seg.webm"
+        clip.write_bytes(b"\x00" * 2048)
+        seg = _make_recorded_segment(duration=10.0, video_path=clip)
+        final_output = tmp_path / "out" / "episode.mp4"
+        clock = _RenderClock()
+        clock.elapsed = 3299.75
+        probe_calls: list[tuple[Path, float]] = []
+
+        def reject_corrupt_final(path, timeout):
+            probe_calls.append((path, timeout))
+            if path == final_output:
+                raise OSError("final metadata output is corrupt")
+            return vc.ProbeEvidence(format_name="mov,mp4", duration_seconds=10.0)
+
+        with pytest.raises(MediaValidationError):
+            compose_video(
+                segments=[seg],
+                output_path=final_output,
+                runner=_touch_output_runner(),
+                intermediates=store,
+                budget=clock.budget(),
+                media_probe=reject_corrupt_final,
+            )
+
+        assert store.exists("composed_video.mp4") is True
+        assert probe_calls[-1][0] == final_output
+        assert 0 < probe_calls[-1][1] <= 0.25
+
     @pytest.mark.parametrize(
         ("initial_metadata", "updated_metadata"),
         [

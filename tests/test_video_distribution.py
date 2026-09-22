@@ -722,7 +722,7 @@ class TestVerifiedArchive:
         assert result.completed_elapsed_seconds == completion
         assert result.pending_only is pending_only
 
-    def test_archive_after_3600_fails_without_validation_claim(self, tmp_path):
+    def test_archive_after_3600_fails_without_unbounded_cleanup_or_false_success(self, tmp_path):
         storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
         video = tmp_path / "video.mp4"
         video.write_bytes(b"a" * 2048)
@@ -748,7 +748,18 @@ class TestVerifiedArchive:
                 probe=_archive_probe,
                 operation_runner=operation_runner,
             )
-        assert storage.get_bytes("jobs/job/video/job.mp4.validation.json") is None
+        validation_path = "jobs/job/video/job.mp4.validation.json"
+        assert calls == 4
+        assert storage.get_bytes(validation_path) is not None
+
+        replay = archive_video_verified(
+            video,
+            "job",
+            storage=storage,
+            budget=_ArchiveClock(0).budget(),
+            probe=_archive_probe,
+        )
+        assert replay.reused is True
 
     def test_storage_timeout_fails_closed(self, tmp_path):
         storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
@@ -1290,6 +1301,66 @@ class TestDistributeVideo:
 
         assert len(requests) == request_count
         assert redelivery.provider_outcomes["youtube"] == "publication_unknown"
+        assert redelivery.provider_records["youtube"]["retry_blocked"] is True
+
+    def test_youtube_exhausted_chunk_ambiguity_blocks_redelivery_mutation(
+        self, video_file, monkeypatch
+    ):
+        recorded: list[tuple[str, dict]] = []
+        upload_calls = 0
+
+        def fail_youtube(*args, **kwargs):
+            nonlocal upload_calls
+            upload_calls += 1
+            raise YouTubeDeliveryError(
+                "YouTube chunk transport outcome is unknown after retries",
+                code="youtube_resumable_chunk_outcome_ambiguous",
+                stage="resumable_chunk_upload",
+                retryable=False,
+                mutation_ambiguous=True,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_required=True,
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+
+        result = distribute_video(
+            video_file,
+            "job-chunk-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            on_published=lambda platform, record: recorded.append((platform, record)),
+            publish_run_id="10",
+        )
+
+        assert upload_calls == 1
+        assert result.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert result.youtube_required_failed is False
+        assert recorded[0][1]["outcome"] == PUBLICATION_UNKNOWN
+        assert recorded[0][1]["retry_blocked"] is True
+
+        redelivery = distribute_video(
+            video_file,
+            "job-chunk-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            published={"youtube": recorded[0][1]},
+            publish_run_id="10",
+        )
+
+        assert upload_calls == 1
+        assert redelivery.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN
         assert redelivery.provider_records["youtube"]["retry_blocked"] is True
 
     def test_youtube_completion_ambiguity_persists_unknown_and_blocks_retry(

@@ -3013,6 +3013,8 @@ def _finalize_output(
     output_path: Path,
     segment_count: int,
     run: "CommandRunner",
+    budget: VideoStageBudget | None = None,
+    media_probe: Callable[[Path, float], ProbeEvidence] | None = None,
 ) -> ComposeResult:
     """Mux the podcast audio (if any) over the composed video and finalise.
 
@@ -3063,6 +3065,15 @@ def _finalize_output(
 
     # Final post-processing: normalise H.264 colour metadata (stream copy).
     run(_build_h264_metadata_cmd(pre_final_path, output_path))
+    if budget is not None or media_probe is not None:
+        probe_kwargs: dict[str, Any] = {
+            "timeout_seconds": 30.0,
+            "budget": budget,
+            "stage": VideoStage.RENDER,
+        }
+        if media_probe is not None:
+            probe_kwargs["probe"] = media_probe
+        collect_media_evidence(output_path, **probe_kwargs)
 
     return ComposeResult(
         output_path=output_path,
@@ -3366,9 +3377,9 @@ def compose_video(
                 output_path=output_path,
                 segment_count=len(segments),
                 run=run,
+                budget=budget,
+                media_probe=media_probe,
             )
-            if budget is not None:
-                _evidence(result.output_path)
             return result
 
     # Fit-to-window planning (issue #355): when the audio duration is known we
@@ -3847,9 +3858,9 @@ def compose_video(
         output_path=output_path,
         segment_count=len(segments),
         run=run,
+        budget=budget,
+        media_probe=media_probe,
     )
-    if budget is not None:
-        _evidence(result.output_path)
     return result
 
 

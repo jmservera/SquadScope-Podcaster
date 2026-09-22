@@ -241,16 +241,47 @@ class TestVerifiedUpload:
         assert store.upload("normalized_000.mp4", src, "video/mp4") is True
         assert backend.blob_size("video-jobs/job-v/intermediates/normalized_000.mp4") == 4096
 
-    def test_upload_passes_when_backend_cannot_report_size(self, tmp_path):
+    def test_upload_rejects_when_backend_cannot_report_size(self, tmp_path):
         class _NoSizeBackend:
+            def __init__(self):
+                self.deleted: list[str] = []
+
             def upload_file(self, path, source, content_type):
                 return None
 
-        store = IntermediateStore(_NoSizeBackend(), "job-v")
+            def delete_blob(self, path):
+                self.deleted.append(path)
+                return True
+
+        backend = _NoSizeBackend()
+        store = IntermediateStore(backend, "job-v")
         src = tmp_path / "clip.mp4"
         src.write_bytes(b"x")
-        # No blob_size method → best-effort: the upload is trusted.
-        assert store.upload("x.mp4", src, "video/mp4") is True
+        assert store.upload("x.mp4", src, "video/mp4") is False
+        assert backend.deleted == ["video-jobs/job-v/intermediates/x.mp4"]
+
+    def test_upload_rejects_when_size_probe_raises(self, tmp_path):
+        class _BrokenSizeBackend:
+            def __init__(self):
+                self.deleted: list[str] = []
+
+            def upload_file(self, path, source, content_type):
+                return None
+
+            def blob_size(self, path):
+                raise RuntimeError("size unavailable")
+
+            def delete_blob(self, path):
+                self.deleted.append(path)
+                return True
+
+        backend = _BrokenSizeBackend()
+        store = IntermediateStore(backend, "job-v")
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"x" * 4096)
+
+        assert store.upload("normalized_000.mp4", src, "video/mp4") is False
+        assert backend.deleted == ["video-jobs/job-v/intermediates/normalized_000.mp4"]
 
 
 class TestValidatedCheckpoint:
@@ -577,6 +608,18 @@ class TestValidatedCheckpoint:
             )
             == 0
         )
+
+    def test_cleanup_runner_timeout_is_bounded_by_shutdown_remaining(self, backend):
+        store = IntermediateStore(backend, "job-v")
+        calls: list[float] = []
+
+        store.cleanup(
+            budget=_shutdown_budget(5099.75),
+            timeout_seconds=30.0,
+            operation_runner=lambda call, timeout: calls.append(timeout) or call(),
+        )
+
+        assert calls == [pytest.approx(0.25)]
 
     def test_started_blocking_cleanup_is_killed_before_late_side_effect(self, tmp_path):
         started = tmp_path / "cleanup-started"

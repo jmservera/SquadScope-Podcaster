@@ -332,13 +332,12 @@ class IntermediateStore:
     ) -> bool:
         """Verify the uploaded blob's size equals ``expected`` local bytes.
 
-        Returns True when sizes match.  When the backend cannot report a size
-        (older backend) or the probe itself errors, the check passes (best
-        effort) — the upload itself already succeeded.
+        Returns True only when the backend successfully reports an integer size
+        exactly equal to ``expected``.
         """
         getter = getattr(self._backend, "blob_size", None)
         if getter is None:
-            return True
+            return False
         try:
             actual = self._call(
                 lambda: getter(self.blob_path(name)),
@@ -360,10 +359,10 @@ class IntermediateStore:
                 name,
                 exc_info=True,
             )
-            return True
-        if actual is None:
             return False
-        return int(actual) == int(expected)
+        if type(actual) is not int:
+            return False
+        return actual == expected
 
     def read_text(
         self,

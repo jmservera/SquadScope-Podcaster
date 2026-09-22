@@ -345,20 +345,25 @@ def test_upload_chunked_non_retryable_fails(tmp_path):
 @pytest.mark.parametrize("failure", [TimeoutError("response lost"), 503])
 def test_upload_chunked_exhausted_post_mutation_retry_is_unknown(tmp_path, failure):
     class _Exhausted:
+        def __init__(self):
+            self.calls = 0
+
         def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            self.calls += 1
             if isinstance(failure, BaseException):
                 raise failure
             return failure, {}, b""
 
     path = _make_file(tmp_path, _GRANULE)
+    transport = _Exhausted()
     result = upload_chunked(
-        _Exhausted(),
+        transport,
         "https://upload.example/session",
         "tok",
         path,
         _GRANULE,
         chunk_size=_GRANULE,
-        max_retries=0,
+        max_retries=2,
         sleep=lambda _seconds: None,
     )
 
@@ -366,8 +371,49 @@ def test_upload_chunked_exhausted_post_mutation_retry_is_unknown(tmp_path, failu
     assert result.bytes_uploaded == 0
     assert result.details == {
         "retry_blocked": True,
+        "mutation_ambiguous": True,
         "code": "youtube_resumable_chunk_outcome_ambiguous",
     }
+    assert transport.calls == 5
+
+
+def test_upload_chunked_exhausted_inconclusive_resume_status_is_unknown(tmp_path):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+    content_ranges: list[str | None] = []
+
+    class _InconclusiveStatus:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            content_range = (headers or {}).get("Content-Range")
+            content_ranges.append(content_range)
+            if content_range == f"bytes 0-{total - 1}/{total}":
+                return 503, {}, b""
+            if content_range == f"bytes */{total}":
+                raise TimeoutError("resume status unavailable")
+            raise AssertionError(f"unexpected request: {method} {content_range}")
+
+    result = upload_chunked(
+        _InconclusiveStatus(),
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        max_retries=1,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result.status == "unknown"
+    assert result.details == {
+        "retry_blocked": True,
+        "mutation_ambiguous": True,
+        "code": "youtube_resumable_chunk_outcome_ambiguous",
+    }
+    assert content_ranges == [
+        f"bytes 0-{total - 1}/{total}",
+        f"bytes */{total}",
+        f"bytes 0-{total - 1}/{total}",
+    ]
 
 
 def test_upload_chunked_blocks_retry_when_final_status_response_is_lost(tmp_path):
@@ -398,6 +444,7 @@ def test_upload_chunked_blocks_retry_when_final_status_response_is_lost(tmp_path
     assert result.bytes_uploaded == total
     assert result.details == {
         "retry_blocked": True,
+        "mutation_ambiguous": True,
         "code": "youtube_resumable_final_status_ambiguous",
     }
     assert "final resumable status query outcome is unknown" in result.error
@@ -440,6 +487,7 @@ def test_upload_chunked_identifierless_success_is_retry_blocked_unknown(tmp_path
     assert result.bytes_uploaded == total
     assert result.details == {
         "retry_blocked": True,
+        "mutation_ambiguous": True,
         "code": "youtube_resumable_completion_ambiguous",
     }
     assert "valid video id" in result.error
@@ -484,6 +532,7 @@ def test_upload_chunked_transient_resume_completion_without_id_is_unknown(
     assert result.bytes_uploaded == 0
     assert result.details == {
         "retry_blocked": True,
+        "mutation_ambiguous": True,
         "code": "youtube_resumable_completion_ambiguous",
     }
     assert "valid video id" in result.error
@@ -554,6 +603,7 @@ def test_upload_video_blocks_retry_when_session_init_response_is_lost(tmp_path, 
     assert res.status == "unknown"
     assert res.details == {
         "retry_blocked": True,
+        "mutation_ambiguous": True,
         "code": "youtube_resumable_init_ambiguous",
     }
 
@@ -577,6 +627,7 @@ def test_upload_video_blocks_retry_when_session_init_has_no_location(tmp_path, m
     assert res.status == "unknown"
     assert res.details == {
         "retry_blocked": True,
+        "mutation_ambiguous": True,
         "code": "youtube_resumable_init_ambiguous",
     }
     assert transport.methods == ["POST"]

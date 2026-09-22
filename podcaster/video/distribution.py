@@ -299,6 +299,7 @@ class YouTubeDeliveryError(RuntimeError):
         code: str,
         stage: str,
         retryable: bool,
+        mutation_ambiguous: bool = False,
         http_status: int | None = None,
         oauth_error: str | None = None,
         oauth_error_subtype: str | None = None,
@@ -307,6 +308,7 @@ class YouTubeDeliveryError(RuntimeError):
         self.code = code
         self.stage = stage
         self.retryable = retryable
+        self.mutation_ambiguous = mutation_ambiguous
         self.http_status = http_status
         self.oauth_error = oauth_error
         self.oauth_error_subtype = oauth_error_subtype
@@ -316,6 +318,7 @@ class YouTubeDeliveryError(RuntimeError):
             "code": self.code,
             "stage": self.stage,
             "retryable": self.retryable,
+            "mutation_ambiguous": self.mutation_ambiguous,
         }
         if self.http_status is not None:
             details["http_status"] = self.http_status
@@ -1098,7 +1101,7 @@ def archive_video_verified(
         if deleter is not None:
             for path in (validation_path, blob_path):
                 try:
-                    deleter(path)
+                    operation_runner(lambda path=path: deleter(path), _remaining())
                 except Exception:
                     logger.debug("could not delete late archive %s", path, exc_info=True)
         raise StorageOperationTimeout("archive completed after T+3600")
@@ -1286,6 +1289,7 @@ def _try_chunked_upload(
             code=code,
             stage=stage,
             retryable=False,
+            mutation_ambiguous=bool(result.details.get("mutation_ambiguous")),
         )
     if raise_on_failure:
         error_text = (result.error or "").strip()
@@ -1578,7 +1582,7 @@ def distribute_video(
                 )
         except YouTubeDeliveryError as exc:
             result.errors.append(str(exc))
-            if exc.code in {
+            if exc.mutation_ambiguous or exc.code in {
                 "youtube_resumable_init_ambiguous",
                 "youtube_resumable_chunk_outcome_ambiguous",
                 "youtube_resumable_completion_ambiguous",
@@ -1609,7 +1613,7 @@ def distribute_video(
                             "at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
-            if config.youtube_required:
+            if config.youtube_required and not exc.mutation_ambiguous:
                 youtube_required_failure = exc
             logger.error(
                 "YouTube distribution failed stage=%s code=%s retryable=%s",
@@ -1707,7 +1711,8 @@ def distribute_video(
             job_id,
         )
 
-    if config.youtube_required and result.youtube_id is None:
+    youtube_publication_unknown = result.provider_outcomes.get("youtube") == PUBLICATION_UNKNOWN
+    if config.youtube_required and result.youtube_id is None and not youtube_publication_unknown:
         result.youtube_required_failed = True
         if youtube_required_failure is None:
             if not youtube_active:

@@ -174,6 +174,25 @@ def test_record_video_state_nonterminal_logs_without_raising(monkeypatch):
     )
 
 
+def test_record_video_state_terminal_raises_with_no_shutdown_budget():
+    storage = FakeStorage()
+    storage.set_manifest("job-terminal-expired", {"generation": {}})
+    clock = _P04Clock()
+    clock.elapsed = 5100.0
+
+    with pytest.raises(TerminalStatePersistenceError, match="failed to persist terminal"):
+        _record_video_state(
+            storage,
+            "job-terminal-expired",
+            {"status": STATUS_COMPLETED},
+            budget=clock.budget(),
+            operation_runner=lambda call, timeout: call(),
+        )
+
+    manifest = json.loads(storage.get_bytes(manifest_path("job-terminal-expired")))
+    assert "video_runner" not in manifest["generation"]
+
+
 def _p04_archive_result(
     job_id: str,
     *,

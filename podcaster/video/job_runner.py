@@ -563,6 +563,11 @@ def _record_video_state(
         else:
             timeout = budget.operation_timeout(VideoStage.SHUTDOWN, 30.0)
             if timeout <= 0:
+                if fail_closed:
+                    raise TerminalStatePersistenceError(
+                        f"failed to persist terminal video state for job_id={job_id}: "
+                        "no shutdown budget remains"
+                    )
                 logger.warning("no shutdown budget remains to record video state job_id=%s", job_id)
                 return
             operation_runner(

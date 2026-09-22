@@ -317,6 +317,7 @@ def upload_chunked(
                             error=f"network error after {max_retries} retries: {exc}",
                             details={
                                 "retry_blocked": True,
+                                "mutation_ambiguous": True,
                                 "code": "youtube_resumable_chunk_outcome_ambiguous",
                             },
                         )
@@ -374,6 +375,7 @@ def upload_chunked(
                             error=f"HTTP {status} after {max_retries} retries",
                             details={
                                 "retry_blocked": True,
+                                "mutation_ambiguous": True,
                                 "code": "youtube_resumable_chunk_outcome_ambiguous",
                             },
                         )
@@ -426,6 +428,7 @@ def upload_chunked(
             error=f"final resumable status query outcome is unknown: {exc}",
             details={
                 "retry_blocked": True,
+                "mutation_ambiguous": mutation_started,
                 "code": "youtube_resumable_final_status_ambiguous",
             },
         )
@@ -490,6 +493,7 @@ def _ambiguous_completion_result(
         error=f"resumable completion outcome is ambiguous: {error}",
         details={
             "retry_blocked": True,
+            "mutation_ambiguous": True,
             "code": "youtube_resumable_completion_ambiguous",
         },
     )
@@ -584,7 +588,11 @@ def upload_video(
         return YouTubeUploadResult(
             status="unknown",
             error=str(exc),
-            details={"retry_blocked": True, "code": "youtube_resumable_init_ambiguous"},
+            details={
+                "retry_blocked": True,
+                "mutation_ambiguous": True,
+                "code": "youtube_resumable_init_ambiguous",
+            },
         )
     except RuntimeError as exc:
         logger.error("YouTube resumable init failed: %s", exc)
