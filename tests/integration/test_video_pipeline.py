@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from podcaster.video import video_compose
 from podcaster.video.sync_plan import (
     RepoReference,
     VideoSegment,
@@ -67,6 +68,7 @@ def test_video_pipeline_generates_mp4_output(
     fake_webm: Path,
     fake_mp3: Path,
     with_audio: bool,
+    monkeypatch,
 ) -> None:
     repos = extract_repo_urls(sample_script)
 
@@ -90,6 +92,7 @@ def test_video_pipeline_generates_mp4_output(
     output_path = tmp_path / (
         "episode-with-audio.mp4" if with_audio else "episode-without-audio.mp4"
     )
+    monkeypatch.setattr(video_compose, "_decode_final_media", lambda _path: None)
 
     result = compose_video(
         recorded_segments,

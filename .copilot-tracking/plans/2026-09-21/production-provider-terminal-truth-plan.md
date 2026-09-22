@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Basher rejected final head `5fdd69f5210053daa742f3690d0fa34c5795f1bc` because three #682 dispositions exposed executable gaps. Livingston is the sole revision author and implemented the corrections through source commit `b7e3615ee5c2f0ab904350d581b9fd32938e0f3a`; Rusty is reserved for fresh independent review. P00-T01 is complete through upstream PR `jmservera/SquadScope#773`, reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merged as `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3` with all 18 checks successful. P05-T03 and merge authorization remain pending Rusty's review. PR #682 remains open. P05-T04–P05-T06 and P06 remain future.
+* Planning status: Rusty rejected final head `d050d68c3590f9a00b60dee925452f971cbaf0d2` because metadata-only final-media validation accepts truncated H.264/AAC MP4 payloads. Leela is the sole revision author for the bounded full-decode correction; Basher is reserved as the fresh independent reviewer and may not contribute before final-SHA review. Livingston and Rusty are locked out from authoring, advice, pairing, or contribution for this cycle; Bender, Hermes, and Amy remain excluded. P00-T01 is complete through upstream PR `jmservera/SquadScope#773`, reviewed head `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merged as `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3` with all 18 checks successful. P05-T03 remains pending Basher acceptance of the corrected final SHA. PR #682 remains open. P05-T04–P05-T06 and P06 remain future.
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -519,7 +519,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 #### [ ] P05-T03: Resolve or supersede every PR #682 safety thread
 
 * Requirement and evidence: W16–W29.
-* Expected result: W17–W29, the six RV-006 rows, and later current unresolved rows each have code/test or non-port evidence, a reviewer-facing reply, and actual resolved/closed state; #682 is closed once replacement linkage is durable. No row is pre-marked resolved.
+* Expected result: W17–W29, the six RV-006 rows, and later current unresolved rows each have code/test or non-port evidence, a reviewer-facing reply, and actual resolved/closed state; final-media evidence requires structural metadata plus successful complete bounded decode before atomic promotion. #682 is closed once replacement linkage and fresh Basher acceptance are durable. No row is pre-marked resolved.
 * Detail section: P05-T03 in phase details.
 
 <!-- rpi:task id=P05-T04 -->

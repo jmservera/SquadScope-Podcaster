@@ -10,17 +10,55 @@
 
 ## Execution Status
 
-* Status: Livingston completed the sole-author correction of Basher's three findings against rejected head `5fdd69f5210053daa742f3690d0fa34c5795f1bc`; fresh independent Rusty review is pending
-* Declared invocation scope: #682 threads r4072863167, r4072863563, and r4072865450; validation and delivery reconciliation
-* Sole current revision author: Livingston
-* Independent reviewer: Rusty is reserved and has not yet reviewed
+* Status: Leela completed the sole-author final-media integrity correction after Rusty rejected head `d050d68c3590f9a00b60dee925452f971cbaf0d2`; Basher acceptance is pending
+* Declared invocation scope: P05-T03 final-media validation, exact #682 evidence replies, full required validation, delivery reconciliation, commit, and push
+* Sole current revision author: Leela
+* Independent reviewer: Basher is reserved and has not contributed
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
 * Completed marker retained for this cycle: P07-T06
-* Review marker: P07-T07 and P05-T03 reopened pending Rusty's exact-SHA review
-* Source/tests commit: `b7e3615ee5c2f0ab904350d581b9fd32938e0f3a`
-* Remaining in-scope work: Rusty independent review and final delivery reconciliation
+* Review marker: P05-T03 remains open pending implementation evidence and Basher's exact-SHA acceptance
+* Revision base: `d050d68c3590f9a00b60dee925452f971cbaf0d2`
+* Remaining in-scope work: commit/push, corrected #682 replies, PR reconciliation, and Basher review
 * Outside-scope active-plan markers: P05-T04–P05-T06 and P06-T01–P06-T02; P00-T01 is complete
-* Status basis: ambiguous chunk exhaustion now produces durable provider-unknown truth and no repeat mutation; checkpoint size verification fails closed; final output is staged and media-validated before atomic publication. Corrected #682 replies are r4073299493, r4073299679, and r4073299841. P05-T03 and merge authorization remain pending Rusty. No merge, deployment, workflow dispatch, provider mutation, issue closure, or production action is authorized.
+* Status basis: Rusty's real-media probe proved `_validate_final_media()` accepted five truncated fast-start H.264/AAC files because it checked only ffprobe metadata/duration. The correction must require successful complete bounded decode before atomic promotion while preserving all prior upload-ambiguity, checkpoint, destination-preservation, and provider-safety behavior. No merge, deployment, workflow dispatch, provider mutation, issue closure, or production action is authorized.
+
+## 2026-09-22 Leela correction after Rusty final-media rejection
+
+* Related phase or task: P05-T03.
+* Ownership: Leela is the sole revision author from rejected head `d050d68c3590f9a00b60dee925452f971cbaf0d2`. Livingston and Rusty are excluded from authoring, advice, pairing, or contribution. Basher is reserved as the fresh independent reviewer and is excluded from implementation contribution. Bender, Hermes, and Amy remain excluded.
+* Approved source boundary: `podcaster/video/video_compose.py`, directly owned media tests, and only the tracking/review/PR documentation needed to state exact evidence.
+* Required behavior: retain exact structural ffprobe expectations and require a complete ffmpeg decode of all relevant streams to null with error-on-corruption behavior, no stdin/network interaction, an explicit stage-compatible timeout, bounded captured diagnostics, and fail-closed handling for timeout, non-zero exit, or missing ffmpeg.
+* Safety boundary: validation precedes `os.replace`; invalid candidates preserve an existing destination, delete only the staged candidate, and cannot reach archive, outbox, or provider visibility.
+* Validation intent: real H.264/AAC success; 99/90/75/50/25 percent truncation and middle-byte corruption rejection; timeout/non-zero/missing-tool failure; destination and no-downstream-call assertions; existing upload ambiguity, checkpoint, P07/RV, W39, locked/full, static, Bicep, Checkov, container, Compose, and secret/PII gates.
+* Current blockers: none for implementation. P05-T03 remains pending Basher acceptance after the corrected final SHA is pushed.
+
+### Required complete-decode final-media validation
+
+* Related phase or task: P05-T03.
+* Files: `podcaster/video/video_compose.py`, `tests/test_video_compose.py`, `tests/test_video_job_runner.py`, `tests/integration/test_video_pipeline.py`.
+* What changed and why: final validation retains exact ffprobe stream/duration checks, then resolves ffmpeg and decodes all video/audio streams to null with `-xerror`, `-err_detect explode`, no stdin, a file-only protocol whitelist, a 30-minute bound under the 90-minute stage visibility budget, process-group termination, and a 16 KiB stderr tail. Missing ffmpeg, launch failure, timeout, or non-zero decode fails closed before `os.replace`.
+* Completion evidence: a generated fast-start H.264/AAC MP4 passes; 99%, 90%, 75%, 50%, and 25% truncations and middle-byte corruption retain readable metadata but fail complete decode. Existing destination preservation, staged-only cleanup, timeout cancellation, bounded diagnostics, missing ffmpeg, and no archive/outbox/provider continuation are asserted.
+* Validation: passed.
+
+### Final validation record
+
+| Check | Status | Evidence |
+|---|---|---|
+| Exact final-media probes | Passed | `22 passed`; intact real H.264/AAC accepted; five truncations, middle corruption, timeout, non-zero, missing ffmpeg, destination preservation, staged cleanup, and no downstream visibility covered. |
+| Complete video compose suite | Passed | `320 passed`. |
+| Focused media/provider safety suite | Passed | `677 passed`. |
+| Locked terminal-truth contract | Passed | `1241 passed, 1 warning`. |
+| Full repository pytest | Passed | `3275 passed, 2 skipped, 2 deselected, 1 warning`. The first run exposed only the fake-MP4 integration runner; it now explicitly stubs the external decode while real-media tests exercise production decoding. |
+| Ruff/format/compile/diff | Passed | Ruff check passed; `192 files already formatted`; `python3 -m compileall -q podcaster`; `git diff --check`. |
+| Bicep | Passed | Build succeeded with the existing BCP318 warning. |
+| Exact Checkov | Baseline retained | `36 passed, 7 failed`; all seven are the documented existing ACR/storage/OpenAI findings. |
+| CI Bicep Checkov | Passed | `34 passed, 0 failed`. |
+| Dockerfile Checkov | Passed | Repository baseline gate passed. |
+| Container build/smoke | Passed | Image `sha256:659d0808a77b136c35088ab7042a3cdae67731df3f53cf866ee936b89d5dc7ac`; UID `999`; ffmpeg/ffprobe/import smoke passed; unconfigured distribution worker exited `2`. |
+| Compose integration | Passed | Rebuilt fanout image; scaleout fanout plus video pipeline `3 passed`. |
+| Secret/PII scan | Passed | No suspected private key, access key, token/JWT, signed credential URL, or email-address pattern in added lines. |
+
+P05-T03 remains pending Basher's fresh independent acceptance of the pushed final SHA. PR #684 stays open/draft/blocked and #682 stays open. No merge, deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit is authorized.
 
 ## 2026-09-22 Livingston correction after Basher rejection
 

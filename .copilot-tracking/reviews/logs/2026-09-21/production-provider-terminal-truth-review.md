@@ -623,6 +623,34 @@ No test, assertion, validation gate, or security gate was weakened.
 
 No issue, PR, review thread, deployment, canary, or production state was resolved, closed, or mutated by this review.
 
+## Rusty Final-Media Rejection and Leela Revision Pending Basher — 2026-09-22
+
+Rusty independently rejected exact head `d050d68c3590f9a00b60dee925452f971cbaf0d2`
+because `_validate_final_media()` accepted real fast-start H.264/AAC MP4 files truncated to 99%,
+90%, 75%, 50%, and 25%. ffprobe still returned stream metadata and positive duration, while
+complete ffmpeg decode returned corrupt-packet/invalid-NAL failures.
+
+Leela alone authored the correction. Livingston and Rusty did not author, advise, pair, or
+contribute. Basher is reserved as the fresh independent reviewer and has not contributed. Bender,
+Hermes, and Amy remain excluded.
+
+The corrected finalizer preserves exact structural metadata checks and additionally requires a
+successful complete bounded ffmpeg decode before atomic promotion. It fails closed on missing
+ffmpeg, launch failure, timeout, or non-zero decode; captures only a bounded stderr tail; preserves
+an existing destination; removes only the staged candidate; and cannot reach archive, outbox, or
+provider work after validation failure.
+
+Validation passed: real intact/truncation/corruption and failure-path probes `22`; complete compose
+`320`; focused safety `677`; locked contract `1241`; full repository `3275 passed, 2 skipped,
+2 deselected, 1 warning`; Ruff/format/compile/diff; Bicep; exact and CI Checkov; Dockerfile
+baseline; container build/smoke and worker exit; rebuilt Compose integration; and changed-line
+secret/PII scan. Image:
+`sha256:659d0808a77b136c35088ab7042a3cdae67731df3f53cf866ee936b89d5dc7ac`.
+
+P05-T03 remains pending Basher's exact-final-SHA acceptance. PR #684 and PR #682 remain open; #684
+remains draft/blocked. No merge, deployment, workflow dispatch, provider mutation, W39 execution,
+or production acceptance occurred.
+
 ---
 
 ## Frank Canonical-History Revision Review — Fry — 2026-09-22

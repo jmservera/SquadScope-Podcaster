@@ -1,14 +1,39 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Basher rejected head `5fdd69f5210053daa742f3690d0fa34c5795f1bc`; Livingston's corrective source commit is `b7e3615ee5c2f0ab904350d581b9fd32938e0f3a`, pending fresh independent Rusty review.** Upstream `jmservera/SquadScope#773` is merged/check-green, completing P00-T01. P05-T03, merge authorization, P05-T04–P05-T06, and P06 remain pending. #682 remains open. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Rusty rejected head `d050d68c3590f9a00b60dee925452f971cbaf0d2` because metadata-only final-media validation accepted truncated real MP4 payloads. Leela has completed the bounded complete-decode correction; fresh independent Basher acceptance is pending.** Upstream `jmservera/SquadScope#773` is merged/check-green, completing P00-T01. P05-T03, merge authorization, P05-T04–P05-T06, and P06 remain pending. #682 remains open. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
-Current source/tests commit: `b7e3615ee5c2f0ab904350d581b9fd32938e0f3a`.
+Rejected final-media head: `d050d68c3590f9a00b60dee925452f971cbaf0d2`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
-Current sole revision author: Livingston.
-Fresh independent reviewer: Rusty is reserved and pending.
+Current sole revision author: Leela.
+Fresh independent reviewer: Basher is reserved and pending.
+
+## Leela final-media complete-decode correction
+
+Final promotion now requires both the existing exact ffprobe stream/duration contract and a
+successful complete ffmpeg decode of all audio/video streams to null. The decode uses `-xerror`,
+exploding error detection, no stdin, a restricted local protocol whitelist, process-group
+termination, a 30-minute timeout within the 90-minute stage budget, and a bounded 16 KiB stderr
+tail. Missing ffmpeg, launch failure, timeout, corrupt packets, invalid NAL data, or any non-zero
+decode fails closed before `os.replace`.
+
+Real generated fast-start H.264/AAC coverage accepts the intact file and rejects 99%, 90%, 75%,
+50%, and 25% truncations plus middle-byte corruption while metadata remains readable. Existing
+destination preservation, staged-only cleanup, and no archive/outbox/provider continuation are
+also asserted.
+
+Validation passed: exact probes `22`; complete compose `320`; focused media/provider safety `677`;
+locked terminal-truth `1241` with one existing warning; full repository `3275 passed, 2 skipped,
+2 deselected, 1 warning`; Ruff/format/compile/diff; Bicep with existing BCP318; exact Checkov
+`36/7`; CI Checkov `34/0`; Dockerfile baseline; container
+`sha256:659d0808a77b136c35088ab7042a3cdae67731df3f53cf866ee936b89d5dc7ac`
+with UID `999`, ffmpeg/ffprobe/import smoke and worker exit `2`; rebuilt Compose integration `3`;
+and changed-line secret/PII scan.
+
+P05-T03 remains pending Basher. #684 stays open/draft/blocked and #682 stays open. No merge,
+deployment, workflow dispatch, provider mutation, W39 execution, or P06 credit is authorized.
 
 Upstream prerequisite: jmservera/SquadScope#773, reviewed head
 `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merged as

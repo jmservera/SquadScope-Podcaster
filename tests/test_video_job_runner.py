@@ -614,6 +614,42 @@ class TestRunVideoGeneration:
         with pytest.raises(TransientVideoError, match="no script"):
             run_video_generation("no-script", storage, config=dry_config)
 
+    @patch("podcaster.video.job_runner.enqueue_distribution_job")
+    @patch("podcaster.video.job_runner.commit_immutable_artifact")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_final_media_failure_prevents_archive_outbox_and_provider_visibility(
+        self,
+        mock_compose,
+        mock_record,
+        mock_distribute,
+        mock_commit,
+        mock_enqueue,
+        storage,
+        dry_config,
+    ):
+        job_id = "invalid-final-media"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Invalid Final Media"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = RuntimeError(
+            "final media validation failed: complete decode exited 183"
+        )
+
+        with pytest.raises(TransientVideoError, match="video generation failed"):
+            run_video_generation(job_id, storage, config=dry_config)
+
+        mock_commit.assert_not_called()
+        mock_enqueue.assert_not_called()
+        mock_distribute.assert_not_called()
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_no_repos_generates_generic_video(self, mock_compose, mock_record, storage, dry_config):

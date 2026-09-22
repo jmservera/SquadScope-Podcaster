@@ -10,10 +10,14 @@ import hashlib
 import http.client
 import importlib
 import json
+import os
+import shutil
+import signal
 import socket
 import ssl
 import struct
 import subprocess
+import time
 import zlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -79,6 +83,8 @@ from podcaster.video.video_compose import (
 )
 from podcaster.video.video_gen import RecordedSegment
 
+_REAL_DECODE_FINAL_MEDIA = vc._decode_final_media
+
 
 @pytest.fixture(autouse=True)
 def _stub_drawtext_probe(monkeypatch):
@@ -86,6 +92,11 @@ def _stub_drawtext_probe(monkeypatch):
         "podcaster.video.video_compose._find_drawtext_capable_ffmpeg",
         lambda: "ffmpeg",
     )
+
+
+@pytest.fixture(autouse=True)
+def _stub_final_media_decode(monkeypatch):
+    monkeypatch.setattr(vc, "_decode_final_media", lambda _path: None)
 
 
 # --- Helpers ---
@@ -4319,6 +4330,279 @@ class TestFinalOutputValidation:
         assert result.output_path == output
         assert output.read_bytes() == b"candidate-media"
         assert list(tmp_path.glob("*.staged.mp4")) == []
+
+    @staticmethod
+    def _real_media_runner(cmd):
+        result = subprocess.run(
+            [str(value) for value in cmd],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                cmd,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+        return result
+
+    @pytest.fixture
+    def real_h264_aac_mp4(self, tmp_path):
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        if ffmpeg is None or ffprobe is None:
+            pytest.skip("ffmpeg/ffprobe not available")
+        output = tmp_path / "valid-faststart.mp4"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=30:duration=5",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=5",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+                "-shortest",
+                str(output),
+            ],
+            capture_output=True,
+            check=True,
+        )
+        return output
+
+    def test_real_h264_aac_media_complete_decode_passes(self, real_h264_aac_mp4, monkeypatch):
+        monkeypatch.setattr(vc, "_decode_final_media", _REAL_DECODE_FINAL_MEDIA)
+        vc._validate_final_media(
+            real_h264_aac_mp4,
+            self._real_media_runner,
+            require_audio=True,
+        )
+
+    @pytest.mark.parametrize("retained_percent", [99, 90, 75, 50, 25])
+    def test_truncated_real_h264_aac_media_fails_closed(
+        self,
+        tmp_path,
+        real_h264_aac_mp4,
+        retained_percent,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(vc, "_decode_final_media", _REAL_DECODE_FINAL_MEDIA)
+        payload = real_h264_aac_mp4.read_bytes()
+        candidate = tmp_path / f"truncated-{retained_percent}.mp4"
+        candidate.write_bytes(payload[: len(payload) * retained_percent // 100])
+
+        with pytest.raises(RuntimeError, match="complete decode exited"):
+            vc._validate_final_media(
+                candidate,
+                self._real_media_runner,
+                require_audio=True,
+            )
+
+    def test_middle_corruption_with_readable_metadata_fails_closed(
+        self,
+        tmp_path,
+        real_h264_aac_mp4,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(vc, "_decode_final_media", _REAL_DECODE_FINAL_MEDIA)
+        payload = bytearray(real_h264_aac_mp4.read_bytes())
+        atom_type = payload.find(b"mdat")
+        assert atom_type >= 4
+        atom_size = int.from_bytes(payload[atom_type - 4 : atom_type], "big")
+        payload_start = atom_type + 4
+        payload_end = min(len(payload), atom_type - 4 + atom_size)
+        corrupt_start = payload_start + (payload_end - payload_start) // 3
+        corrupt_end = corrupt_start + max(4096, (payload_end - payload_start) // 4)
+        payload[corrupt_start : min(corrupt_end, payload_end)] = b"\xff" * min(
+            corrupt_end - corrupt_start,
+            payload_end - corrupt_start,
+        )
+        candidate = tmp_path / "middle-corrupt.mp4"
+        candidate.write_bytes(payload)
+
+        probe = self._real_media_runner(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration:stream=codec_type",
+                "-of",
+                "json",
+                str(candidate),
+            ]
+        )
+        assert json.loads(probe.stdout)["format"]["duration"]
+        with pytest.raises(RuntimeError, match="complete decode exited"):
+            vc._validate_final_media(
+                candidate,
+                self._real_media_runner,
+                require_audio=True,
+            )
+
+    def test_decode_failure_preserves_destination_and_removes_only_staged_candidate(
+        self,
+        tmp_path,
+        real_h264_aac_mp4,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(vc, "_decode_final_media", _REAL_DECODE_FINAL_MEDIA)
+        payload = real_h264_aac_mp4.read_bytes()
+        corrupt_source = tmp_path / "truncated-source.mp4"
+        corrupt_source.write_bytes(payload[: len(payload) * 3 // 4])
+        destination = tmp_path / "episode.mp4"
+        destination.write_bytes(b"known-good-destination")
+        staged_paths = []
+
+        def run(cmd):
+            if cmd[0] == "ffprobe":
+                return self._real_media_runner(cmd)
+            staged = Path(cmd[-1])
+            staged_paths.append(staged)
+            shutil.copyfile(corrupt_source, staged)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with pytest.raises(RuntimeError, match="complete decode exited"):
+            vc._finalize_output(
+                video_only_path=real_h264_aac_mp4,
+                video_duration=5.0,
+                audio_path=None,
+                output_path=destination,
+                segment_count=1,
+                run=run,
+            )
+
+        assert destination.read_bytes() == b"known-good-destination"
+        assert len(staged_paths) == 1
+        assert not staged_paths[0].exists()
+
+    def test_decode_missing_ffmpeg_fails_closed(self, tmp_path, monkeypatch):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+        monkeypatch.setattr(vc.shutil, "which", lambda _name: None)
+
+        with pytest.raises(RuntimeError, match="ffmpeg is unavailable"):
+            _REAL_DECODE_FINAL_MEDIA(candidate)
+
+    def test_decode_establishes_bound_and_safe_command(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+        calls = []
+
+        class Process:
+            pid = 123
+
+            def wait(self, *, timeout=None):
+                calls.append(("wait", timeout))
+                return 0
+
+        def popen(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return Process()
+
+        monkeypatch.setattr(vc.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(vc.subprocess, "Popen", popen)
+
+        _REAL_DECODE_FINAL_MEDIA(candidate)
+
+        assert len(calls) == 2
+        cmd, kwargs = calls[0]
+        assert cmd[0] == "/usr/bin/ffmpeg"
+        assert "-nostdin" in cmd
+        assert "-xerror" in cmd
+        assert cmd[cmd.index("-protocol_whitelist") + 1] == "file,crypto,data,pipe"
+        assert [cmd[index + 1] for index, value in enumerate(cmd) if value == "-map"] == [
+            "0:v?",
+            "0:a?",
+        ]
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is not subprocess.DEVNULL
+        assert kwargs["start_new_session"] is True
+        assert calls[1] == ("wait", vc.FINAL_MEDIA_DECODE_TIMEOUT_SECONDS)
+
+    def test_decode_enforces_timeout(self, tmp_path, monkeypatch):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+        ffmpeg = tmp_path / "ffmpeg"
+        ffmpeg.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+        ffmpeg.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+        monkeypatch.setattr(vc, "FINAL_MEDIA_DECODE_TIMEOUT_SECONDS", 0.05)
+
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match=r"complete decode timed out after 0\.05s"):
+            _REAL_DECODE_FINAL_MEDIA(candidate)
+
+        assert time.monotonic() - started < 2
+
+    def test_decode_timeout_cancels_process_group(self, tmp_path, monkeypatch):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+        waits = []
+        signals = []
+
+        class Process:
+            pid = 321
+
+            def wait(self, *, timeout=None):
+                waits.append(timeout)
+                if len(waits) < 3:
+                    raise subprocess.TimeoutExpired(["ffmpeg"], timeout)
+                return -signal.SIGKILL
+
+        monkeypatch.setattr(vc.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+        monkeypatch.setattr(vc.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+        monkeypatch.setattr(vc.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(vc, "FINAL_MEDIA_DECODE_TIMEOUT_SECONDS", 0.05)
+
+        with pytest.raises(RuntimeError, match=r"complete decode timed out after 0\.05s"):
+            _REAL_DECODE_FINAL_MEDIA(candidate)
+
+        assert waits == [0.05, vc.FINAL_MEDIA_DECODE_TERMINATE_GRACE_SECONDS, None]
+        assert signals == [(321, signal.SIGTERM), (321, signal.SIGKILL)]
+
+    def test_decode_nonzero_has_bounded_diagnostics(self, tmp_path, monkeypatch):
+        candidate = tmp_path / "candidate.mp4"
+        candidate.write_bytes(b"candidate")
+
+        class Process:
+            pid = 123
+
+            def wait(self, *, timeout=None):
+                return 183
+
+        def popen(_cmd, **kwargs):
+            kwargs["stderr"].write(b"x" * (vc.FINAL_MEDIA_DECODE_STDERR_BYTES * 2))
+            return Process()
+
+        monkeypatch.setattr(vc.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(vc.subprocess, "Popen", popen)
+
+        with pytest.raises(RuntimeError, match="complete decode exited 183") as exc_info:
+            _REAL_DECODE_FINAL_MEDIA(candidate)
+        assert len(str(exc_info.value)) < vc.FINAL_MEDIA_DECODE_STDERR_BYTES + 256
 
 
 class TestProbeVideoFrameSpan:
