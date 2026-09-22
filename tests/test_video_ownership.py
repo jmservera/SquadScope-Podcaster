@@ -179,6 +179,7 @@ def test_transfer_between_guard_and_target_write_rejects_stale_permit(tmp_path):
         "distribution_outbox",
         "distribution_notification",
         "direct_provider_intent",
+        "required_youtube_failure",
         "terminal_success",
     ],
 )
@@ -321,7 +322,7 @@ def test_archive_outbox_and_notification_writes_consume_source_permit(tmp_path):
     assert storage.get_bytes(outbox_path(document["outbox_id"])) is not None
 
 
-def test_takeover_at_distribution_send_boundary_selects_one_successor(tmp_path):
+def test_takeover_after_notification_intent_consumption_cannot_duplicate_send(tmp_path):
     storage, guard, repository, outbox_id = _notification_outbox(tmp_path)
     permit = guard.begin("distribution_notification", allow_idempotent_takeover=True)
     token = guard.source_token(permit)
@@ -331,30 +332,28 @@ def test_takeover_at_distribution_send_boundary_selects_one_successor(tmp_path):
         authorize=lambda: guard.assert_permit(permit),
     )
 
-    class Producer:
-        def __init__(self):
-            self.messages: list[str] = []
+    messages: list[str] = []
 
+    class TakeoverAtPhysicalSendProducer:
         def send_message(self, body: str) -> None:
-            self.messages.append(body)
+            intent = repository.read(outbox_id)["enqueue"]["notification_intent"]
+            assert intent["consumed_at"] is not None
+            _force_takeover(storage, "job")
+            messages.append(body)
 
-    stale_producer = Producer()
-
-    def lose_at_send() -> bool:
-        _force_takeover(storage, "job")
-        return repository.consume_notification_intent(
-            outbox_id,
-            source_ownership=token,
-            authorize=lambda: guard.assert_permit(permit),
-        )
-
-    with pytest.raises(OwnershipError, match="stale"):
+    assert (
         enqueue_distribution_job(
             outbox_id,
-            producer=stale_producer,
-            authorize_send=lose_at_send,
+            producer=TakeoverAtPhysicalSendProducer(),
+            authorize_send=lambda: repository.consume_notification_intent(
+                outbox_id,
+                source_ownership=token,
+                authorize=lambda: guard.assert_permit(permit),
+            ),
         )
-    assert stale_producer.messages == []
+        is True
+    )
+    assert len(messages) == 1
 
     successor = _successor_guard(storage, guard)
     successor_permit = successor.begin(
@@ -367,11 +366,10 @@ def test_takeover_at_distribution_send_boundary_selects_one_successor(tmp_path):
         source_ownership=successor_token,
         authorize=lambda: successor.assert_permit(successor_permit),
     )
-    winner = Producer()
     assert (
         enqueue_distribution_job(
             outbox_id,
-            producer=winner,
+            producer=TakeoverAtPhysicalSendProducer(),
             authorize_send=lambda: repository.consume_notification_intent(
                 outbox_id,
                 source_ownership=successor_token,
@@ -380,7 +378,7 @@ def test_takeover_at_distribution_send_boundary_selects_one_successor(tmp_path):
         )
         is True
     )
-    assert len(winner.messages) == 1
+    assert len(messages) == 1
 
 
 def test_crash_after_notification_intent_consumption_cannot_replay_send(tmp_path):
