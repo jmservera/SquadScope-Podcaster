@@ -46,6 +46,7 @@ from podcaster.video.job_runner import (
     _append_video_timing_evidence,
     _build_section_cards,
     _build_video_description,
+    _current_render_input_facts,
     _record_video_publication,
     _record_video_state,
     _release_editor_lease,
@@ -228,6 +229,29 @@ def _pending_manifest(job_id: str, budget: VideoStageBudget) -> tuple[dict, str]
         budget=budget,
     )
     return {"generation": {STATUS_RENDERED_PENDING_DISTRIBUTION: pending}}, script
+
+
+def test_pending_replay_after_preflight_cutoff_reuses_persisted_clipset(storage):
+    job_id = "pending-removed-repo"
+    script = "Ada: https://github.com/octo/removed"
+    clock = _P04Clock()
+    budget = clock.budget()
+    clock.elapsed = 301.0
+    persisted_clipset = {"count": 1, "sha256": "a" * 64}
+
+    current_clipset, current_audio = _current_render_input_facts(
+        job_id=job_id,
+        manifest={"generation": {}},
+        script=script,
+        storage=storage,
+        budget=budget,
+        recorded_audio={"present": False},
+        clipset_storage=None,
+        persisted_clipset=persisted_clipset,
+    )
+
+    assert current_clipset == persisted_clipset
+    assert current_audio == {"present": False}
 
 
 @pytest.mark.parametrize(

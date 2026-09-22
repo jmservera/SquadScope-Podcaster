@@ -10,11 +10,11 @@
 
 ## Execution Status
 
-* Status: Implementation complete — P10 final delivery verification active
+* Status: Implementation complete — P11 final delivery verification active
 * Declared invocation scope: Full plan
-* Completed scope markers: P01-P10 and all tasks
+* Completed scope markers: P01-P11 and all tasks
 * All remaining active-plan markers: None
-* Status basis: The final five post-push findings are implemented and locally validated; hosted checks and thread resolution follow the push.
+* Status basis: The final pending-replay finding is implemented and locally validated; hosted checks and thread resolution follow the push.
 
 ## Execution Summary
 
@@ -45,6 +45,14 @@ The shared budget, recorder convergence, browser-free fallback, owned cancellati
 * What changed and why: Budgeted uploads of every size now use the ambiguity-aware resumable implementation; transient session-init responses are retry-blocked unknown; probe durations reject non-finite values; malformed permanent recorder setup writes a bounded terminal insufficient result while foreign clipsets retain deterministic fallback; resumed final mux output is validated before return.
 * Focused validation: 505 passed.
 * Full validation: 3258 passed, 2 skipped, 2 deselected; repository Ruff lint/format, compileall, and diff check passed.
+
+### P11 pending replay identity correction
+
+* Related phase or task: P11-T01 and P11-T02.
+* Files: `podcaster/video/job_runner.py`, `tests/test_video_job_runner.py`, and tracking artifacts.
+* What changed and why: A non-fan-out rendered-pending replay after the T+300 preflight cutoff now reuses the persisted clipset identity, preserving removal annotations and preventing a false permanent input mismatch.
+* Focused validation: 151 passed.
+* Full validation: 3259 passed, 2 skipped, 2 deselected; repository Ruff lint/format, compileall, and diff check passed.
 
 ### P08 focused pass opening
 

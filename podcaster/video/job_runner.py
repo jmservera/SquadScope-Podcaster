@@ -810,6 +810,7 @@ def _current_render_input_facts(
     budget: VideoStageBudget,
     recorded_audio: dict[str, Any],
     clipset_storage: StorageBackend | None,
+    persisted_clipset: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         authoritative_audio = _audio_artifact_identity(manifest, job_id)
@@ -863,6 +864,8 @@ def _current_render_input_facts(
                 plan,
                 remaining_seconds=lambda: budget.remaining_seconds(VideoStage.PREFLIGHT),
             )
+        elif persisted_clipset is not None:
+            return persisted_clipset, current_audio
         return _render_clipset_facts(plan), current_audio
     except ClipsetJobMismatchError:
         raise
@@ -1501,6 +1504,7 @@ def _resume_rendered_pending_distribution(
             budget=budget,
             recorded_audio=recorded_audio,
             clipset_storage=clipset_storage,
+            persisted_clipset=recorded_clipset,
         )
     except ClipsetJobMismatchError as exc:
         message = f"rendered pending clipset belongs to another job for job_id={job_id}"

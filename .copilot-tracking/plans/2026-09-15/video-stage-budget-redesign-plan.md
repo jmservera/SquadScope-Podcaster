@@ -5,7 +5,7 @@
 
 * Task ID: video-stage-budget-redesign
 * Task slug: video-stage-budget-redesign
-* Planning status: Complete through P10; final hosted verification follows push
+* Planning status: Complete through P11; final hosted verification follows push
 * Plan date: 2026-09-15
 * Phase details: .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 * Plan critique: .copilot-tracking/reviews/plans/2026-09-15/video-stage-budget-redesign-plan-critique.md
@@ -382,6 +382,23 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 * Expected result: Focused/full validation passes; commit, push, thread resolution, and hosted checks are recorded.
 * Detail section: P10-T03 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
 
+<!-- rpi:phase id=P11 -->
+### [x] P11: Preserve pending replay plan identity
+
+* Intent: Reuse persisted clipset facts after the preflight cutoff so removed-repo annotations cannot drift on pending distribution redelivery.
+
+<!-- rpi:task id=P11-T01 -->
+#### [x] P11-T01: Reuse persisted clipset identity after preflight cutoff
+
+* Expected result: Pending replay after T+300 compares against the persisted rendered plan rather than an unannotated regenerated tail.
+* Detail section: P11-T01 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
+<!-- rpi:task id=P11-T02 -->
+#### [x] P11-T02: Validate and deliver the replay correction
+
+* Expected result: Focused/full tests pass; final commit/push, thread resolution, and hosted checks are recorded.
+* Detail section: P11-T02 in .copilot-tracking/details/2026-09-15/video-stage-budget-redesign-phase-details.md
+
 ## Dependencies
 
 * Baseline provider evidence and distribution state machine: must remain additive and fail closed.
@@ -409,5 +426,5 @@ This plan will replace independent video-pipeline timeouts with one editor-owned
 ## Handoff
 
 * Implementation artifact: .copilot-tracking/changes/2026-09-15/video-stage-budget-redesign-changes.md
-* Ready phase or task: None; P01-P10 implementation and local validation are complete.
+* Ready phase or task: None; P01-P11 implementation and local validation are complete.
 * Remaining provisional question or blocker: Hosted checks and thread resolution follow the final push.

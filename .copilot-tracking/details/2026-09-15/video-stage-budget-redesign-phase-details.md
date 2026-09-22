@@ -22,6 +22,7 @@
 | P08 | Complete focused PR gate remediation | Complete | P08, P08-T01, P08-T02, P08-T03 |
 | P09 | Close post-push budget and runner findings | Complete | P09, P09-T01, P09-T02, P09-T03 |
 | P10 | Close final post-push safety findings | Complete | P10, P10-T01, P10-T02, P10-T03 |
+| P11 | Preserve pending replay plan identity | Complete | P11, P11-T01, P11-T02 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish shared budget and evidence contracts
@@ -675,6 +676,19 @@ Two new Copilot threads appeared after P08 was pushed and initially green.
 ### P10-T03: Validate and deliver the final correction
 
 * Completion evidence: Focused/full tests and Ruff pass before commit/push; all addressed threads and hosted checks are verified afterward.
+
+<!-- rpi:phase id=P11 -->
+## P11: Preserve pending replay plan identity
+
+<!-- rpi:task id=P11-T01 -->
+### P11-T01: Reuse persisted clipset identity after preflight cutoff
+
+* Completion evidence: `_current_render_input_facts` receives the recorded clipset and returns it when no authoritative fan-out clipset exists and preflight is no longer admissible.
+
+<!-- rpi:task id=P11-T02 -->
+### P11-T02: Validate and deliver the replay correction
+
+* Completion evidence: Focused job-runner suite and repository-standard validation pass; thread resolution and hosted checks follow push.
 
 <!-- rpi:phase id=P04 -->
 ## P04: Persist render boundary and bound distribution/shutdown
