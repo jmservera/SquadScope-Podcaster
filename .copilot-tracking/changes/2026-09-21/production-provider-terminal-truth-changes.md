@@ -24,7 +24,7 @@
 
 ## P07 Leela Exact Typed Canonical Correction
 
-* Ownership and boundary: Leela alone authored the new cycle in the incident worktree from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`; Fry and all other named locked agents did not contribute. Basher is reserved for independent final-SHA review.
+* Ownership and boundary: Leela alone authored the new cycle in the incident worktree from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`; Fry and all other named locked agents did not contribute. Basher independently accepted exact reviewed head `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` without contributing.
 * Comparator: `_exact_canonical_equal()` compares deterministic type-tagged canonical JSON bytes, distinguishing null, boolean, integer, string, object, and array values without Python numeric coercion.
 * Schema enforcement: the v1 authorization set has exact field/container/scalar validation; v4 evidence and envelope comparisons, attempt-history records/events, successor expectations, and every versioned recovery structure validate exact types and versions before digest/equality checks.
 * Input hardening: canonical recovery data rejects floats including `1.0` and `-0.0`, NaN/infinity, non-string object keys, tuples/sets and other unsupported containers, serialization coercions, and duplicate JSON object fields.

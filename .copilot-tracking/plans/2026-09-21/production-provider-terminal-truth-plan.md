@@ -262,7 +262,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
 * Revision author: Leela only for the current correction
 * Fresh independent reviewer: Basher completed a read-only review without contributing
-* Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank did not author, advise, pair, or contribute. Basher is excluded from authoring/advice/implementation contribution and is expressly reserved for independent final-SHA review. Leela is the correction author, not a reviewer, for this cycle.
+* Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, and Frank did not author, advise, pair, or contribute. Basher was excluded from authoring/advice/implementation contribution and completed the independent final-SHA review. Leela is the correction author, not a reviewer, for this cycle.
 * Delivery restrictions: commit and push only the existing branch and update existing draft PR #684; no deployment, issue mutation, replacement branch/PR, or changes to `/home/azureuser/source/SquadScope`
 * Active implementation boundary: P07 review-follow-up defects only; P00-T01, P05, and P06 remain outside P07 and block final acceptance
 * Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
