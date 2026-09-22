@@ -130,6 +130,38 @@ def test_ambiguous_youtube_create_is_durable_unknown_without_retry(tmp_path, mon
     assert queue.deleted == [message]
 
 
+def test_ambiguous_chunk_upload_redelivery_is_reconcile_only(tmp_path, monkeypatch):
+    storage, _document, message = _setup(tmp_path, {"youtube": "public"})
+    calls = []
+    monkeypatch.setattr(
+        "podcaster.distribution_worker._get_youtube_access_token",
+        lambda config, transport: "token",
+    )
+
+    def ambiguous(*args, **kwargs):
+        calls.append("upload")
+        raise YouTubeDeliveryError(
+            "ambiguous",
+            code="youtube_chunked_ambiguous_http_503",
+            stage="upload_chunked",
+            retryable=False,
+            http_status=503,
+            mutation_ambiguous=True,
+        )
+
+    monkeypatch.setattr("podcaster.distribution_worker.upload_to_youtube", ambiguous)
+    config = VideoDistributionConfig(youtube_enabled=True)
+    first = process_message(message, queue=Queue(), storage=storage, config=config)
+    second = process_message(message, queue=Queue(), storage=storage, config=config)
+
+    assert calls == ["upload"]
+    assert first["aggregate"]["result"] == "publication_unknown"
+    assert second["aggregate"]["result"] == "publication_unknown"
+    assert second["providers"]["youtube"]["verification"]["source"] == (
+        "youtube_identity_unprovable"
+    )
+
+
 def test_spotify_unsupported_public_mutation_preserves_manual_handoff(tmp_path):
     storage, _document, message = _setup(tmp_path, {"spotify": "public"})
     queue = Queue()

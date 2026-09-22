@@ -9,6 +9,7 @@ import base64
 import hashlib
 import http.client
 import importlib
+import json
 import socket
 import ssl
 import struct
@@ -151,8 +152,25 @@ def _make_recorded_segment(
 
 def _mock_runner() -> MagicMock:
     """Create a mock command runner that returns success."""
-    runner = MagicMock()
-    runner.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    def _run(cmd):
+        if cmd and cmd[0] == "ffprobe":
+            streams = [{"codec_type": "video"}]
+            if str(cmd[-1]).endswith(".staged.mp4"):
+                streams.append({"codec_type": "audio"})
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=json.dumps({"streams": streams, "format": {"duration": "5.0"}}),
+                stderr="",
+            )
+        output = Path(str(cmd[-1]))
+        if output.suffix in {".mp4", ".staged"}:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"\x00" * 2048)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    runner = MagicMock(side_effect=_run)
     return runner
 
 
@@ -434,8 +452,8 @@ class TestComposeVideo:
         assert result.segment_count == 1
         assert result.output_path.suffix == ".mp4"
         assert result.has_audio is False
-        # Should have: 1 normalize + 1 compose + 1 h264_metadata BSF
-        assert runner.call_count == 3
+        # 1 normalize + 1 compose + 1 h264_metadata BSF + final validation probe
+        assert runner.call_count == 4
 
     def test_two_segments_with_xfade(self, tmp_path):
         runner = _mock_runner()
@@ -457,8 +475,8 @@ class TestComposeVideo:
         assert result.segment_count == 2
         # Duration accounts for 1 transition overlap
         assert result.duration_seconds == pytest.approx(19.0)
-        # 2 normalize + 1 compose + 1 h264_metadata BSF
-        assert runner.call_count == 4
+        # 2 normalize + 1 compose + 1 h264_metadata BSF + final validation probe
+        assert runner.call_count == 5
 
     def test_with_audio(self, tmp_path):
         runner = _mock_runner()
@@ -475,12 +493,12 @@ class TestComposeVideo:
         )
 
         assert result.has_audio is True
-        # The audio overlay (penultimate call) re-encodes audio to aac; the
-        # final call is the h264_metadata BSF stream-copy pass.
-        overlay_cmd = runner.call_args_list[-2][0][0]
+        # The audio overlay re-encodes audio to aac, followed by the metadata
+        # pass and exact final-media validation.
+        overlay_cmd = runner.call_args_list[-3][0][0]
         assert "-c:a" in overlay_cmd
         assert "aac" in overlay_cmd
-        final_cmd = runner.call_args_list[-1][0][0]
+        final_cmd = runner.call_args_list[-2][0][0]
         assert any("h264_metadata" in str(a) for a in final_cmd)
 
     def test_explicit_output_path(self, tmp_path):
@@ -522,8 +540,8 @@ class TestComposeVideo:
         assert result.segment_count == 3
         # 30s - 2 transitions of 1s each = 28s
         assert result.duration_seconds == pytest.approx(28.0)
-        # 3 normalize + 2 pairwise xfade passes + 1 h264_metadata BSF
-        assert runner.call_count == 6
+        # 3 normalize + 2 xfade + 1 metadata pass + final validation probe
+        assert runner.call_count == 7
 
     def test_many_segments_pairwise_constant_inputs(self, tmp_path):
         """>10 segments compose without a cap; each xfade pass has 2 inputs (#349)."""
@@ -543,8 +561,8 @@ class TestComposeVideo:
         )
 
         assert result.segment_count == 18
-        # 18 normalize + 17 pairwise xfade passes + 1 h264_metadata BSF
-        assert runner.call_count == 18 + 17 + 1
+        # 18 normalize + 17 xfade + 1 metadata pass + final validation probe
+        assert runner.call_count == 18 + 17 + 2
 
         # Every composition (xfade) pass must use exactly two video inputs so
         # memory stays constant regardless of segment count (no N-way graph).
@@ -569,7 +587,7 @@ class TestComposeVideo:
 
         # The encode settings live on the compose pass; the final call is the
         # h264_metadata BSF stream-copy pass.
-        final_cmd = runner.call_args_list[-2][0][0]
+        final_cmd = runner.call_args_list[-3][0][0]
         assert "-preset" in final_cmd
         assert ENCODE_PRESET in final_cmd
         assert "-crf" in final_cmd
@@ -727,7 +745,7 @@ class TestComposeVideoDrawtext:
 
         # The drawtext-capable binary is used on the compose pass; the final
         # call is the h264_metadata BSF stream-copy pass.
-        final_cmd = runner.call_args_list[-2][0][0]
+        final_cmd = runner.call_args_list[-3][0][0]
         assert final_cmd[0] == "/usr/bin/ffmpeg"
         # Lower third drawtext overlays must be in the filter_complex
         fc_idx = final_cmd.index("-filter_complex")
@@ -757,7 +775,7 @@ class TestComposeVideoDrawtext:
         assert any("drawtext" in record.message for record in caplog.records)
 
         # Final compose command must NOT contain drawtext filter expressions
-        final_cmd = runner.call_args_list[-1][0][0]
+        final_cmd = runner.call_args_list[-2][0][0]
         assert "-filter_complex" not in final_cmd, (
             "drawtext filter_complex should not be in compose cmd"
         )
@@ -895,7 +913,7 @@ class TestComposeVideoTransitions:
             )
 
         all_calls = [call[0][0] for call in runner.call_args_list]
-        compose_cmd = all_calls[-2]
+        compose_cmd = all_calls[-3]
         fc_idx = compose_cmd.index("-filter_complex")
         assert "fadeblack" in compose_cmd[fc_idx + 1]
 
@@ -921,7 +939,7 @@ class TestComposeVideoTransitions:
             )
 
         all_calls = [call[0][0] for call in runner.call_args_list]
-        compose_cmd = all_calls[-2]
+        compose_cmd = all_calls[-3]
         fc_idx = compose_cmd.index("-filter_complex")
         assert "wipeleft" in compose_cmd[fc_idx + 1]
 
@@ -1166,7 +1184,7 @@ def _ffprobe_runner(has_audio: bool = True, duration: float = 6.0) -> MagicMock:
     def _side_effect(command):
         if command and command[0] == "ffprobe":
             streams = [{"codec_type": "video"}]
-            if has_audio:
+            if has_audio or str(command[-1]).endswith(".staged.mp4"):
                 streams.append({"codec_type": "audio"})
             payload = (
                 '{"streams": '
@@ -1176,6 +1194,10 @@ def _ffprobe_runner(has_audio: bool = True, duration: float = 6.0) -> MagicMock:
                 + '"}}'
             )
             return subprocess.CompletedProcess(command, 0, stdout=payload, stderr="")
+        output = Path(str(command[-1]))
+        if output.suffix in {".mp4", ".staged"}:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"\x00" * 2048)
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     runner.side_effect = _side_effect
@@ -1624,14 +1646,14 @@ class TestComposeVideoContentVideoOnly:
         assert "-an" in compose_cmd
         assert str(audio) not in compose_cmd
         # The penultimate command overlays the podcast MP3 onto the content
-        overlay_cmd = cmds[-2]
+        overlay_cmd = cmds[-3]
         assert str(audio) in overlay_cmd
         assert "-shortest" not in overlay_cmd
         assert overlay_cmd[-1].endswith("muxed.mp4")
         # The final command is the h264_metadata BSF pass writing the output
-        final_cmd = cmds[-1]
+        final_cmd = cmds[-2]
         assert any("h264_metadata" in str(a) for a in final_cmd)
-        assert final_cmd[-1] == str(out)
+        assert final_cmd[-1].endswith(".staged.mp4")
         # Reported duration is the full (untruncated) length; the runner probes
         # both audio and video as 12.0s here.
         assert result.has_audio is True
@@ -1676,13 +1698,13 @@ class TestComposeVideoContentVideoOnly:
         assert len(xfade_cmds) == 1
         assert "transition=fade" in " ".join(xfade_cmds[0])
         # penultimate command overlays the podcast MP3 on the joined video
-        overlay_cmd = cmds[-2]
+        overlay_cmd = cmds[-3]
         assert str(audio) in overlay_cmd
         assert overlay_cmd[-1].endswith("muxed.mp4")
         # final command is the h264_metadata BSF pass writing the output
-        final_cmd = cmds[-1]
+        final_cmd = cmds[-2]
         assert any("h264_metadata" in str(a) for a in final_cmd)
-        assert final_cmd[-1] == str(out)
+        assert final_cmd[-1].endswith(".staged.mp4")
         # video duration = 10 (content) + 5 + 5 (bookends); audio probes as 5.0s.
         # The runner mocks every probe at 5.0s, so the reported (untruncated)
         # length resolves to 5.0s here.
@@ -1695,9 +1717,9 @@ class TestComposeVideoIntroOutro:
         seg = _make_recorded_segment(duration=10.0, video_path=tmp_path / "s.webm")
         (tmp_path / "s.webm").touch()
         compose_video(segments=[seg], output_dir=tmp_path / "out", runner=runner)
-        # 1 normalize + 1 compose + 1 h264_metadata BSF, no ffprobe/concat
-        assert runner.call_count == 3
-        assert all(c.args[0][0] != "ffprobe" for c in runner.call_args_list)
+        # 1 normalize + 1 compose + 1 metadata pass + final validation probe.
+        assert runner.call_count == 4
+        assert sum(c.args[0][0] == "ffprobe" for c in runner.call_args_list) == 1
 
     def test_prepends_intro_and_appends_outro(self, tmp_path):
         runner = _ffprobe_runner(has_audio=True, duration=5.0)
@@ -1729,13 +1751,12 @@ class TestComposeVideoIntroOutro:
         assert len(xfade_cmds) == 1
         assert "transition=fade" in " ".join(xfade_cmds[0])
         # the final h264_metadata BSF pass writes the real output
-        final_cmd = cmds[-1]
+        final_cmd = cmds[-2]
         assert any("h264_metadata" in str(a) for a in final_cmd)
-        assert final_cmd[-1] == str(out)
-        # three ffprobe calls (intro + outro + content, the latter to compute
-        # the crossfade offset)
+        assert final_cmd[-1].endswith(".staged.mp4")
+        # Intro, outro, content-crossfade, and final validation probes.
         probe_cmds = [c for c in cmds if c[0] == "ffprobe"]
-        assert len(probe_cmds) == 3
+        assert len(probe_cmds) == 4
         # canonical re-encodes for intro, content, outro and the crossfaded
         # content+outro clip (4 canonicalize calls)
         canon_cmds = [
@@ -1764,9 +1785,9 @@ class TestComposeVideoIntroOutro:
         )
 
         cmds = [c.args[0] for c in runner.call_args_list]
-        # No concat, no ffprobe — behaves like the plain path.
+        # No concat; only the mandatory final validation probe runs.
         assert not any("concat" in c for c in cmds)
-        assert not any(c[0] == "ffprobe" for c in cmds)
+        assert sum(c[0] == "ffprobe" for c in cmds) == 1
         # content written straight to the final output
         assert result.output_path == out
         assert result.duration_seconds == pytest.approx(10.0)
@@ -1791,7 +1812,7 @@ class TestComposeVideoIntroOutro:
         assert len(concat_cmds) == 1
         # only the intro is probed
         probe_cmds = [c for c in cmds if c[0] == "ffprobe"]
-        assert len(probe_cmds) == 1
+        assert len(probe_cmds) == 2
         assert result.duration_seconds == pytest.approx(15.0)
 
 
@@ -3215,8 +3236,8 @@ class TestComposeVideoSectionCards:
             runner=runner,
             section_cards=None,
         )
-        # 1 normalize + 1 compose + 1 h264 metadata — unchanged from baseline.
-        assert runner.call_count == 3
+        # 1 normalize + 1 compose + metadata pass + final validation.
+        assert runner.call_count == 4
         assert result.segment_count == 1
 
     def test_cards_reserve_audio_window(self, tmp_path):
@@ -3280,9 +3301,19 @@ def _touch_output_runner():
     (which require the local source file to exist) succeed under mocked ffmpeg."""
 
     def _run(cmd):
+        if cmd and cmd[0] == "ffprobe":
+            streams = [{"codec_type": "video"}]
+            if str(cmd[-1]).endswith(".staged"):
+                streams.append({"codec_type": "audio"})
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=json.dumps({"streams": streams, "format": {"duration": "5.0"}}),
+                stderr="",
+            )
         for arg in cmd:
             s = str(arg)
-            if s.endswith(".mp4") and not Path(s).exists():
+            if (s.endswith(".mp4") or s.endswith(".staged")) and not Path(s).exists():
                 Path(s).parent.mkdir(parents=True, exist_ok=True)
                 Path(s).write_bytes(b"\x00" * 2048)
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
@@ -3342,7 +3373,7 @@ class TestComposeVideoCheckpointResume:
         assert (tmp_path / "out" / COMPOSED_VIDEO_CHECKPOINT).exists()
         assert result.segment_count == 1
         # Only the final mux path ran (probe + h264 metadata); no normalize/compose.
-        assert runner.call_count <= 2
+        assert runner.call_count <= 3
         ran = [str(c[0][0]) for c in runner.call_args_list]
         assert not any("scale" in r for r in ran)
 
@@ -3360,6 +3391,13 @@ class TestComposeVideoCheckpointResume:
 
         def _run(cmd):
             calls.append([str(a) for a in cmd])
+            if cmd[0] == "ffprobe":
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout='{"streams":[{"codec_type":"video"}],"format":{"duration":"5.0"}}',
+                    stderr="",
+                )
             for arg in cmd:
                 s = str(arg)
                 if s.endswith(".mp4") and not Path(s).exists():
@@ -3422,6 +3460,13 @@ class TestComposeVideoCheckpointResume:
 
         def _run(cmd):
             calls.append([str(a) for a in cmd])
+            if cmd[0] == "ffprobe":
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout='{"streams":[{"codec_type":"video"}],"format":{"duration":"5.0"}}',
+                    stderr="",
+                )
             for arg in cmd:
                 s = str(arg)
                 if s.endswith(".mp4") and not Path(s).exists():
@@ -4183,6 +4228,98 @@ class TestApadFrameSpanRealFfmpeg:
         assert result.duration_seconds == pytest.approx(video_dur + vc.AUDIO_PAD_EPSILON, abs=0.06)
 
 
+class TestFinalOutputValidation:
+    def _runner(self, probe_payload: str, *, write_output: bool = True):
+        calls = []
+
+        def _run(cmd):
+            calls.append(cmd)
+            if cmd[0] == "ffprobe":
+                return subprocess.CompletedProcess(cmd, 0, probe_payload, "")
+            if write_output:
+                Path(cmd[-1]).write_bytes(b"candidate-media")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        return _run, calls
+
+    @pytest.mark.parametrize(
+        "probe_payload",
+        [
+            "{}",
+            '{"streams":[],"format":{"duration":"5.0"}}',
+            '{"streams":[{"codec_type":"video"}],"format":{"duration":"0"}}',
+            "not-json",
+        ],
+    )
+    def test_invalid_final_media_preserves_existing_destination(self, tmp_path, probe_payload):
+        output = tmp_path / "episode.mp4"
+        output.write_bytes(b"known-good-destination")
+        source = tmp_path / "video-only.mp4"
+        source.write_bytes(b"source")
+        runner, calls = self._runner(probe_payload)
+
+        with pytest.raises(RuntimeError, match="final media validation failed"):
+            vc._finalize_output(
+                video_only_path=source,
+                video_duration=5.0,
+                audio_path=None,
+                output_path=output,
+                segment_count=1,
+                run=runner,
+            )
+
+        assert output.read_bytes() == b"known-good-destination"
+        staged = [Path(cmd[-1]) for cmd in calls if cmd[0] != "ffprobe"]
+        assert len(staged) == 1
+        assert not staged[0].exists()
+
+    def test_unprobeable_final_media_preserves_existing_destination(self, tmp_path):
+        output = tmp_path / "episode.mp4"
+        output.write_bytes(b"known-good-destination")
+        source = tmp_path / "video-only.mp4"
+        source.write_bytes(b"source")
+
+        def _run(cmd):
+            if cmd[0] == "ffprobe":
+                raise OSError("ffprobe unavailable")
+            Path(cmd[-1]).write_bytes(b"candidate-media")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with pytest.raises(RuntimeError, match="final media validation failed"):
+            vc._finalize_output(
+                video_only_path=source,
+                video_duration=5.0,
+                audio_path=None,
+                output_path=output,
+                segment_count=1,
+                run=_run,
+            )
+        assert output.read_bytes() == b"known-good-destination"
+        assert list(tmp_path.glob("*.staged.mp4")) == []
+
+    def test_valid_final_media_atomically_replaces_destination(self, tmp_path):
+        output = tmp_path / "episode.mp4"
+        output.write_bytes(b"old")
+        source = tmp_path / "video-only.mp4"
+        source.write_bytes(b"source")
+        runner, _calls = self._runner(
+            '{"streams":[{"codec_type":"video"}],"format":{"duration":"5.0"}}'
+        )
+
+        result = vc._finalize_output(
+            video_only_path=source,
+            video_duration=5.0,
+            audio_path=None,
+            output_path=output,
+            segment_count=1,
+            run=runner,
+        )
+
+        assert result.output_path == output
+        assert output.read_bytes() == b"candidate-media"
+        assert list(tmp_path.glob("*.staged.mp4")) == []
+
+
 class TestProbeVideoFrameSpan:
     """Unit coverage for the true-frame-span probe (#549)."""
 
@@ -4277,12 +4414,22 @@ class _FlakyNormalizeRunner:
 
     def __call__(self, cmd):
         self.calls.append([str(a) for a in cmd])
+        if cmd[0] == "ffprobe":
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout='{"streams":[{"codec_type":"video"}],"format":{"duration":"5.0"}}',
+                stderr="",
+            )
         out = str(cmd[-1])
         if "normalized" in out and out.endswith(".mp4"):
             seg = Path(out).stem  # e.g. seg_001
             self.norm_calls[seg] = self.norm_calls.get(seg, 0) + 1
             if seg == self.fail_seg and self.norm_calls[seg] <= self.fail_times:
                 raise subprocess.CalledProcessError(1, cmd, stderr="transient ffmpeg error")
+        if out.endswith(".mp4"):
+            Path(out).parent.mkdir(parents=True, exist_ok=True)
+            Path(out).write_bytes(b"\x00" * 2048)
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
 

@@ -946,10 +946,11 @@ def _try_chunked_upload(
     except _TRANSIENT_TRANSPORT_ERRORS as exc:
         if raise_on_failure:
             raise YouTubeDeliveryError(
-                "YouTube chunked upload failed: network error",
-                code="youtube_chunked_network_error",
+                "YouTube chunked upload result is ambiguous after network failure",
+                code="youtube_chunked_ambiguous_network_error",
                 stage="upload_chunked",
-                retryable=True,
+                retryable=False,
+                mutation_ambiguous=True,
             ) from exc
         logger.error("YouTube chunked upload failed: network error", exc_info=True)
         return None, None
@@ -967,21 +968,37 @@ def _try_chunked_upload(
         retryable = (http_status is not None and _is_transient_http_status(http_status)) or (
             "network error" in lowered
         )
+        mutation_ambiguous = retryable or any(
+            marker in lowered
+            for marker in (
+                "upload ended without a completion response",
+                "upload completed but response had no video id",
+            )
+        )
         code = (
-            f"youtube_chunked_http_{http_status}"
-            if http_status is not None
+            f"youtube_chunked_ambiguous_http_{http_status}"
+            if http_status is not None and mutation_ambiguous
             else (
-                "youtube_chunked_network_error"
-                if "network error" in lowered
-                else "youtube_chunked_failed"
+                f"youtube_chunked_http_{http_status}"
+                if http_status is not None
+                else (
+                    "youtube_chunked_ambiguous_network_error"
+                    if "network error" in lowered
+                    else (
+                        "youtube_chunked_ambiguous_result"
+                        if mutation_ambiguous
+                        else "youtube_chunked_failed"
+                    )
+                )
             )
         )
         raise YouTubeDeliveryError(
             "YouTube chunked upload failed",
             code=code,
             stage="upload_chunked",
-            retryable=retryable,
+            retryable=False if mutation_ambiguous else retryable,
             http_status=http_status,
+            mutation_ambiguous=mutation_ambiguous,
         )
     logger.error("YouTube chunked upload failed: %s", result.error)
     return None, None

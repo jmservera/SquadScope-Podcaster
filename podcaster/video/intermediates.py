@@ -217,23 +217,24 @@ class IntermediateStore:
     def _verify_size(self, name: str, expected: int) -> bool:
         """Verify the uploaded blob's size equals ``expected`` local bytes.
 
-        Returns True when sizes match.  When the backend cannot report a size
-        (older backend) or the probe itself errors, the check passes (best
-        effort) — the upload itself already succeeded.
+        Returns True only when the backend reports the exact expected size.
+        Missing or failing probes are unverifiable and therefore fail closed:
+        callers retain the local source and recompute rather than trusting a
+        checkpoint that could be partial.
         """
         getter = getattr(self._backend, "blob_size", None)
         if getter is None:
-            return True
+            return False
         try:
             actual = getter(self.blob_path(name))
         except Exception:
-            logger.debug(
-                "blob size probe failed job_id=%s name=%s",
+            logger.warning(
+                "blob size probe failed job_id=%s name=%s; checkpoint is untrusted",
                 self._job_id,
                 name,
                 exc_info=True,
             )
-            return True
+            return False
         if actual is None:
             return False
         return int(actual) == int(expected)

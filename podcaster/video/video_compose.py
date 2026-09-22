@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.parse
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -2983,8 +2984,19 @@ def _finalize_output(
         pre_final_path = video_only_path
         total_duration = video_duration
 
-    # Final post-processing: normalise H.264 colour metadata (stream copy).
-    run(_build_h264_metadata_cmd(pre_final_path, output_path))
+    # Final post-processing is staged beside the destination.  Only a complete,
+    # probe-validated media file is atomically promoted, so a failed final pass
+    # cannot destroy a previously valid destination.
+    staged_output = output_path.with_name(f".{output_path.stem}.{uuid.uuid4().hex}.staged.mp4")
+    try:
+        run(_build_h264_metadata_cmd(pre_final_path, staged_output))
+        _validate_final_media(staged_output, run, require_audio=needs_audio)
+        os.replace(staged_output, output_path)
+    finally:
+        try:
+            staged_output.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not remove staged final output %s", staged_output, exc_info=True)
 
     return ComposeResult(
         output_path=output_path,
@@ -2992,6 +3004,44 @@ def _finalize_output(
         segment_count=segment_count,
         has_audio=audio_path is not None,
     )
+
+
+def _validate_final_media(
+    path: Path,
+    run: "CommandRunner",
+    *,
+    require_audio: bool,
+) -> None:
+    """Require an exact, readable final media container before publication."""
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("final media validation failed: output is missing or empty")
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration:stream=codec_type",
+        "-of",
+        "json",
+        str(path),
+    ]
+    try:
+        proc = run(cmd)
+        info = json.loads(proc.stdout or "{}")
+        streams = info["streams"]
+        duration = float(info["format"]["duration"])
+    except Exception as exc:
+        raise RuntimeError("final media validation failed: ffprobe result is invalid") from exc
+    if not isinstance(streams, list) or not any(
+        isinstance(stream, dict) and stream.get("codec_type") == "video" for stream in streams
+    ):
+        raise RuntimeError("final media validation failed: video stream is missing")
+    if require_audio and not any(
+        isinstance(stream, dict) and stream.get("codec_type") == "audio" for stream in streams
+    ):
+        raise RuntimeError("final media validation failed: audio stream is missing")
+    if not duration > 0:
+        raise RuntimeError("final media validation failed: duration is not positive")
 
 
 # Blob checkpoint name for the finished video-only composed clip (issue #410).

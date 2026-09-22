@@ -398,7 +398,7 @@ class TestUploadToYouTube:
         assert raised.value.oauth_error is None
         assert raised.value.oauth_error_subtype is None
 
-    def test_required_chunked_transport_failure_is_retryable(
+    def test_required_chunked_transport_failure_is_ambiguous(
         self, video_file, youtube_config, monkeypatch
     ):
         monkeypatch.setattr(
@@ -415,8 +415,56 @@ class TestUploadToYouTube:
                 transport=FakeTransport(),
                 raise_on_failure=True,
             )
-        assert raised.value.code == "youtube_chunked_network_error"
-        assert raised.value.retryable is True
+        assert raised.value.code == "youtube_chunked_ambiguous_network_error"
+        assert raised.value.retryable is False
+        assert raised.value.mutation_ambiguous is True
+
+    @pytest.mark.parametrize("error", ["HTTP 503 after 5 retries", "network error after 5 retries"])
+    def test_exhausted_chunked_result_is_ambiguous(
+        self, video_file, youtube_config, monkeypatch, error
+    ):
+        from podcaster.video.youtube import YouTubeUploadResult
+
+        monkeypatch.setattr(
+            "podcaster.video.youtube.upload_video",
+            lambda *args, **kwargs: YouTubeUploadResult(status="failed", error=error),
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            _try_chunked_upload(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                tags=None,
+                transport=FakeTransport(),
+                raise_on_failure=True,
+            )
+        assert raised.value.mutation_ambiguous is True
+        assert raised.value.retryable is False
+
+    def test_provable_permanent_chunked_rejection_is_failed(
+        self, video_file, youtube_config, monkeypatch
+    ):
+        from podcaster.video.youtube import YouTubeUploadResult
+
+        monkeypatch.setattr(
+            "podcaster.video.youtube.upload_video",
+            lambda *args, **kwargs: YouTubeUploadResult(
+                status="failed", error="YouTube resumable init failed: HTTP 403"
+            ),
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            _try_chunked_upload(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                tags=None,
+                transport=FakeTransport(),
+                raise_on_failure=True,
+            )
+        assert raised.value.mutation_ambiguous is False
+        assert raised.value.retryable is False
 
 
 # --- Spotify RSS Tests ---
