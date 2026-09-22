@@ -1,11 +1,11 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Ralph independently rejected final head `fcfa40015ed68d9e38d8432425b7cbd15171e835`; RV-008 remains High.** Fry's rejection of Leela's revision `02241a1`, Livingston's rejection of Farnsworth source candidate `601d36a`, and Rusty's rejection of Frank's `1efa749` remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Ralph's post-rejection RV-008 correction is implemented and validated; Livingston's fresh independent final-SHA review is pending.** Ralph's rejection of Basher source `eaaac5706985d0df4058f46d25e4aa4d9217f41e`, Fry's rejection of Leela's revision `02241a1`, Livingston's earlier rejection of Farnsworth source candidate `601d36a`, and Rusty's rejection of Frank's `1efa749` remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
-Basher revision base: `97c9520b7c365b078a50df113154bb1e66b1ecbb`.
-Current source/tests/artifacts commit: `eaaac5706985d0df4058f46d25e4aa4d9217f41e`.
-Fresh independent reviewer: Ralph, completed with verdict **Not accepted**.
+Ralph revision base: `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e`.
+Current source/tests/artifacts commit: this Ralph delivery commit; exact SHA is recorded in the pushed PR head and delivery return.
+Fresh independent reviewer: Livingston, pending without source/test contribution.
 
 ## Incident and acceptance truth
 
@@ -36,6 +36,16 @@ The branch contains the Podcaster-side P00 receipt/absence boundary and Amy's de
 - Truthful worker/ACA exits, telemetry, alert infrastructure, runbook updates, and fault/concurrency/lifecycle coverage.
 
 Completion of the declared implementation scope does not imply acceptance. Fry's final review resolved the alert and tracking findings but rejected `02241a1` for scheduler lease recovery, legacy cleanup safety, recovery authorization, and four-cycle identity binding.
+
+## Ralph correction after Basher rejection
+
+Ralph is the sole author of the current correction. Livingston is reserved for fresh independent final-SHA review and did not contribute. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Frank, Rusty, and Basher did not contribute or advise.
+
+Recovery of the latest `provider_unknown` attempt now requires one consumed explicit operation identity and exactly one usable durable receipt for every requested provider. The receipt must match the intent ID, consumption fence and timestamp, accepted transport class, exact expected provider item, non-ambiguous classification, and native provider state. Zero, duplicate, conflicting, stale, malformed, wrong-kind, wrong-item, wrong-operation, or provider-partial receipts fail closed.
+
+The authoritative post-terminal failed readback must uniquely resolve that same provider item. Terminal attempts remain reconciliation-only; only the successor created by the exact authorization can become mutation-capable. Immutable history and all week/publication/digest/artifact and authorization bindings remain intact.
+
+Validation passed: focused RV-008 `30/45`, outbox `75`, focused correction `119`, locked contract `794` with one warning, and final full repository `3125 passed, 2 skipped, 2 deselected, 1 warning`. The first final full run reproduced only the documented stale Compose recorder image; rebuilding it made the fanout integration and final full suite pass. Ruff, format, compile, diff safety, Bicep, exact Checkov baseline `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container smoke, worker exit `2`, and changed-file secret/PII scan passed. Validation image: `sha256:1c3f35e4d36d78660b746fca802aec1da9cf04289fccff9c7567322125e4b421`.
 
 ## Basher correction after Rusty rejection
 
@@ -111,7 +121,7 @@ Frank's probes prove that a later `provider_unknown` blocks reuse of the older f
 ## Residual external gates
 
 - **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
-- **RV-008 / P07-T01 / P07-T07:** require exact durable provider receipts, rerun validation, and obtain a new independent final-SHA review.
+- **P07-T07:** obtain Livingston's independent review of the final pushed SHA; local RV-008 implementation and validation do not self-accept.
 - **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 
@@ -149,7 +159,8 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] Rusty independently reviewed exact head `1efa749`; verdict Not accepted.
 - [x] RV-008 different-item latest-unknown readback bypass corrected and validated by Basher.
 - [x] Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835`; verdict Not accepted.
-- [ ] RV-008 missing-receipt authorization corrected and independently accepted.
+- [x] RV-008 missing/duplicate/wrong-bound receipt authorization corrected and fully validated by Ralph.
+- [ ] Livingston independently accepts the final pushed SHA.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
 - [ ] P05 deployment/canary gates completed.
 - [ ] P06 four future elapsed cycles proven green with authoritative external evidence.

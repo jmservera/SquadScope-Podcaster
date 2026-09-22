@@ -18,6 +18,8 @@ The canonical review subsequently proved six active defects: RV-002, RV-003, RV-
 
 Rusty's 2026-09-22 exact-head review of Frank's revision preserved RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 as resolved but rejected P07 because RV-008 remained High. Basher then closed the different-item readback bypass. Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835` and rejected it because exact-item failed readback still authorizes recovery when the latest `provider_unknown` attempt has no durable provider receipts.
 
+Ralph now owns the sole-author correction cycle from review/tracking head `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e`. The bounded source change must require exactly one usable, non-ambiguous durable receipt for every consumed intent/provider/item implicated in resolving the latest unknown state, bind that receipt to the authoritative post-terminal readback, and fail closed on missing, duplicate, conflicting, stale, malformed, or wrong-bound evidence. Livingston is reserved for fresh independent review and may not contribute to implementation or validation.
+
 ## Cross-Phase Invariants
 
 1. **Recoverably atomic visibility:** upload an immutable content-addressed artifact, verify integrity/readability, then conditionally create the single authoritative outbox record referencing its hash. Queue notification is an idempotent hint; claim revalidates the artifact; verified orphan artifacts are repaired or garbage-collected without provider mutation.
@@ -101,17 +103,17 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | Basher correction and validation complete; P07-T07 pending Ralph final-SHA review | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Ralph correction and validation complete; P07-T07 pending Livingston final-SHA review | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: P07-T01 plus P07-T06 validation and delivery reconciliation, with P07-T07 pending Ralph review. Basher's correction and validation are complete from Rusty's tracking head `97c9520`. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are locally resolved.
-* Current task: commit and push Basher's validated exact-identity correction on the existing branch, refresh PR #684, and preserve the draft/blocked posture pending Ralph review and the external/elapsed gates.
-* Revision author: Basher only for the reopened correction cycle.
-* Fresh independent reviewer: Ralph is reserved and may not contribute before final-SHA review. Rusty's completed rejection remains historical evidence.
-* Excluded contributors: Bender, Hermes, Amy, Leela, Fry, Farnsworth, Livingston, Frank, and Rusty may not author, advise, pair, inspect, suggest, review, or otherwise contribute.
+* Declared scope: P07-T01 plus P07-T06 validation and delivery reconciliation, with P07-T07 pending Livingston review. Ralph's correction and validation are complete from his review/tracking head `21a3fa0`. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-008/RV-009 are locally resolved.
+* Current task: commit and push Ralph's validated exact-receipt correction on the existing branch, refresh PR #684, and preserve the draft/blocked posture pending Livingston review and the external/elapsed gates.
+* Revision author: Ralph only for the reopened correction cycle.
+* Fresh independent reviewer: Livingston is reserved and may not contribute before final-SHA review. Ralph's completed rejection of Basher remains historical evidence.
+* Excluded contributors: Bender, Hermes, Amy, Leela, Fry, Farnsworth, Frank, Rusty, and Basher may not author, advise, pair, inspect, suggest, review, or otherwise contribute.
 * Source boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`, limited to narrowly identified downstream owners, tests, operator documentation, and RPI/PR tracking artifacts. Do not modify `/home/azureuser/source/SquadScope-Podcaster`, switch/create branches, create a replacement PR, deploy, or mutate production.
 * Validation boundary: deterministic stale/latest/reordered/omitted/history-resolution negative probes, the existing safe-recovery positive probe, all resolved-RV probes, then the complete locked validation contract without weakening.
 * Delivery boundary: commit and push the existing branch and refresh only PR #684 after validation. P00-T01, P05 deployment/canary, and P06 elapsed evidence remain blocked. Do not mutate or close #682, #671, #678, #679, or #681.
@@ -122,14 +124,14 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | Active Basher correction after Rusty rejection | Complete ordered-history/latest-state checks remain; latest-unknown recovery additionally requires one exact, non-conflicting provider item candidate per provider from durable intent/receipt/evidence and an exact provider-kind/item readback match |
+| P07-T01 | Ralph correction complete pending independent review | Complete ordered-history/latest-state checks remain; latest-unknown recovery requires one consumed explicit operation identity and exactly one accepted, non-ambiguous, correctly fenced and timestamped receipt per provider/item before exact post-terminal readback can authorize the bound successor |
 | P07-T02 | Complete; RV-002 resolved | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
 | P07-T03 | Complete; RV-004 resolved | Bounded resumable migration backfills pre-index references and cleanup fails closed until completeness is proven |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
-| P07-T06 | Active for Basher revision | Rerun focused, locked, and complete tests plus static, Bicep, exact/CI Checkov, container, exit, diff, and secret/PII gates after the source correction |
-| P07-T07; P05-T01 | Pending Ralph review; blocked | Record Basher's validated revision on the existing branch and PR #684, then require Ralph's fresh independent final-SHA review; P00-T01, P05, and P06 remain open |
+| P07-T06 | Complete for Ralph revision | Focused, locked, full, static, Bicep, exact/CI Checkov, container, worker-exit, diff, Compose refresh, and secret/PII gates passed without weakening |
+| P07-T07; P05-T01 | Pending Livingston review; blocked | Record Ralph's validated revision on the existing branch and PR #684, then require Livingston's fresh independent final-SHA review; P00-T01, P05, and P06 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |

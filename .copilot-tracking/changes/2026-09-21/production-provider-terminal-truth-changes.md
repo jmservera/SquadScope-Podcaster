@@ -10,16 +10,55 @@
 
 ## Execution Status
 
-* Status: Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835` and rejected Basher's sole-author RV-008 correction. Source/tests commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e` closes Rusty's different-item bypass but still authorizes recovery without any durable provider receipt
+* Status: Ralph's sole-author RV-008 correction and validation are complete after rejecting Basher's source/tests commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e`. The cycle starts from review/tracking head `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e`; Livingston's independent final-SHA review remains pending
 * Declared invocation scope: P07-T01 plus final-SHA validation and delivery reconciliation
-* Sole current revision author: Basher
-* Independent reviewer: Ralph, reserved and pending without source/test contribution
+* Sole current revision author: Ralph
+* Independent reviewer: Livingston, reserved and pending without source/test contribution
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
-* Completed marker for current revision: P07-T06
-* Open markers: P07-T01 and P07-T07
-* Remaining in-scope work: require exact durable receipt binding, revalidate, reconcile delivery, and obtain a new independent final-SHA review
+* Completed markers for current revision pending review: P07-T01 and P07-T06
+* Open review marker: P07-T07
+* Remaining in-scope work: commit/push, reconcile PR delivery, and obtain Livingston's independent final-SHA review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
 * Status basis: the reviewed clean local, remote, and PR head was `fcfa40015ed68d9e38d8432425b7cbd15171e835`, source commit `eaaac5706985d0df4058f46d25e4aa4d9217f41e`, with divergence `0/0` and no executable changes after source. Different-item, missing identity, duplicate, conflicting, wrong-kind, stale-receipt, stale-authorization, wrong-binding, omitted/reordered-history, and fencing probes pass. Ralph reproduced authorization from exact-item failed readback with zero durable receipts: `RV008_MISSING_RECEIPT_BYPASS receipts={'youtube': 0, 'spotify': 0} attempts=3 read_only=False`. RV-008 remains High. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, or production acceptance is claimed.
+
+## P07 Ralph Exact Receipt Revision Opening
+
+* Authorship and lockout: Ralph is the sole revision author. Livingston is reserved for fresh independent final-SHA review and may not author, advise, pair, or contribute. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Frank, Rusty, and Basher remain locked out.
+* Exact baseline: clean local/remote/PR head `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e`; rejected Basher source `eaaac5706985d0df4058f46d25e4aa4d9217f41e`. All prior review and revision history remains immutable below.
+* Write boundary: only `/home/azureuser/source/worktrees/SquadScope-Podcaster-incident`; existing branch `squad/incident-provider-terminal-truth`; existing draft PR #684. No branch/PR replacement, issue/thread mutation, deployment, canary, or production action.
+* Contract: each requested provider needed to resolve the latest `provider_unknown` attempt must have one consumed intent and exactly one usable durable receipt bound to that intent, provider, expected provider item, attempt, publication/week/digests, and artifact. The authoritative post-terminal readback must resolve that same operation and item. Zero, duplicate, conflicting, stale, malformed, ambiguous, or wrong-bound receipts fail closed.
+* Sequential-operation boundary: multiple historical provider receipts are never selected by position or similarity. If future contracts permit multiple sequential mutations, each mutation must carry an explicit operation identity and the recovery path must still resolve exactly one receipt for the implicated consumed intent.
+* Validation boundary: exact zero/one/duplicate/conflicting/stale/malformed/wrong-bound/partial-provider probes; all earlier RV-008 history/item-binding probes; RV-002/RV-003/RV-004/RV-007/RV-009 regressions; focused, locked, full, Ruff, format, compile, diff safety, Bicep, Checkov baseline/CI, container build/smoke, Compose rebuild if stale, and secret/PII scan.
+
+## P07 Ralph Exact Receipt Correction
+
+* Related markers: P07-T01; RV-008.
+* Files: `podcaster/distribution_outbox.py`, `tests/test_distribution_outbox.py`.
+* Receipt cardinality: resolving a latest `provider_unknown` attempt now requires exactly one receipt for each requested provider's current consumed intent. Zero receipts, duplicate identical receipts, stale or additional receipts, and a provider-specific partial receipt set all fail closed.
+* Usable receipt binding: the sole receipt must have a durable receipt ID, match the consumed intent ID and fence, follow the consumption timestamp, use accepted transport, be explicitly non-ambiguous, name the exact expected provider item, and retain native provider state. The consumed intent ID is the explicit operation identity; no receipt is selected by list position or similarity.
+* Readback binding: the authoritative failed-terminal post-readback must still be unique per requested provider and match the same provider item. The resolved predecessor evidence retains the exact intent and receipt rather than replacing them with empty placeholders.
+* Claim safety: every terminal attempt remains reconciliation-only. A mutation-capable claim exists only after exact evidence creates the explicitly authorized successor, preventing an accepted receipt from independently opening a third attempt.
+* Preserved semantics: immutable attempts, complete ordered history, week/publication/digest/artifact identity, authorization digest, successor binding, and all resolved RV findings remain unchanged.
+
+## P07 Ralph Validation
+
+| Command | Result |
+|---|---|
+| Required RV-008 focused selection | Passed: `30 passed, 45 deselected in 1.06s` |
+| `TMPDIR="$PWD/.test-tmp" pytest tests/test_distribution_outbox.py -q` | Passed: `75 passed in 3.06s` |
+| Focused correction suite | Passed: `119 passed in 3.48s` |
+| Locked dispatch/API/outbox/worker/provider/publication/monitoring/deployment command | Passed: `794 passed, 1 warning in 56.57s` |
+| Full repository suite | Initial run reproduced only the documented stale Compose recorder image (`1 failed, 3124 passed, 2 skipped, 2 deselected, 1 warning`); Compose rebuild plus focused fanout passed `1`; final full suite passed `3125 passed, 2 skipped, 2 deselected, 1 warning in 84.07s` |
+| Ruff, format, compile, diff safety | Passed after formatting the new tests; no gate or assertion weakened |
+| Bicep build | Passed with the documented pre-existing BCP318 warning |
+| Exact Checkov baseline | Retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov | Passed: `34 passed, 0 failed` |
+| Dockerfile Checkov baseline | Passed |
+| Container image | `sha256:1c3f35e4d36d78660b746fca802aec1da9cf04289fccff9c7567322125e4b421`; UID `999`, ffmpeg/ffprobe, and pipeline imports passed |
+| Unconfigured distribution worker | Exited `2` as required |
+| Changed-file suspected secret/PII scan | No private key, access key, JWT, signed credential URL, or email-address pattern found |
+
+No test, assertion, safety gate, security gate, or baseline was removed, skipped, weakened, or made non-blocking. Livingston's fresh independent final-SHA review remains required before P07-T07 can complete.
 
 ## P07 Ralph Fresh Independent Final-SHA Review
 
