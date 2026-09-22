@@ -176,3 +176,9 @@ Fry later rejected requirement 2 because non-finite numeric schema input still e
 * Full lint validation: `ruff check podcaster tests` and `ruff format --check podcaster tests` passed; all 187 Python files are formatted.
 * Full test validation: the first repository run passed 3271 tests, with three environment/state failures (a stale Docker Compose stack and two dirty local artifact races). Each failed test passed independently after the stale stack was removed; no production or test gate was weakened.
 * Amy follow-up validation: strengthened the DOG checkpoint regression to cover both no-logo to logo-B and same-URL logo-A bytes to logo-B bytes, proving that configuration presence and resolved content SHA-256 independently invalidate reuse. The three touched modules pass 369 tests; repository lint/format pass; the full suite passed 3272 tests with two unrelated transient failures that both passed immediately in isolation.
+
+## Independent Section-Card Binary Revision
+
+* Revision owner: Farnsworth; original author Bender remains locked out.
+* Defect corrected: budgeted `build_section_card_inserts()` calls without an explicit binary now use the existing drawtext-capable ffmpeg selector instead of forcing the PATH `ffmpeg`.
+* Regression coverage: a budgeted builder call verifies the selected alternate binary reaches every generated section-card command; the existing direct `generate_section_card()` regression remains intact.

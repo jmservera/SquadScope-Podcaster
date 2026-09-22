@@ -341,7 +341,11 @@ class TestGenerateSectionCard:
 
 
 class TestBuildSectionCardInserts:
-    def test_end_to_end_produces_inserts(self, tmp_path):
+    def test_end_to_end_produces_inserts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "podcaster.video.section_cards._get_drawtext_ffmpeg",
+            lambda: pytest.fail("explicit ffmpeg override must bypass auto-detection"),
+        )
         runner = _mock_runner()
         inserts = build_section_card_inserts(
             SCRIPT_WITH_SECTIONS,
@@ -356,6 +360,31 @@ class TestBuildSectionCardInserts:
         assert all(i.duration_seconds == SECTION_CARD_DURATION_MS / 1000.0 for i in inserts)
         # One render per card.
         assert runner.call_count == 3
+        assert all(call.args[0][0] == "ffmpeg" for call in runner.call_args_list)
+
+    def test_budgeted_render_uses_drawtext_capable_ffmpeg(self, tmp_path, monkeypatch):
+        selected = "/opt/ffmpeg-drawtext"
+        monkeypatch.setattr(
+            "podcaster.video.section_cards._get_drawtext_ffmpeg",
+            lambda: selected,
+        )
+        commands: list[list[str]] = []
+
+        def runner(cmd):
+            commands.append(cmd)
+            Path(cmd[-1]).write_bytes(b"rendered")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        inserts = build_section_card_inserts(
+            SCRIPT_WITH_SECTIONS,
+            SEGMENT_URLS,
+            tmp_path,
+            runner=runner,
+            budget=VideoStageBudget.start(),
+        )
+
+        assert len(inserts) == 3
+        assert [cmd[0] for cmd in commands] == [selected, selected, selected]
 
     def test_no_sections_returns_empty(self, tmp_path):
         runner = _mock_runner()

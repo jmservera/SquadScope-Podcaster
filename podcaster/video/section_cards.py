@@ -608,9 +608,7 @@ def build_section_card_inserts(
 
     if budget is not None and not budget.admit(VideoStage.RENDER).allowed:
         return []
-    if ffmpeg_bin is None and budget is not None:
-        ffmpeg_bin = "ffmpeg"
-    elif ffmpeg_bin is None:
+    if ffmpeg_bin is None:
         ffmpeg_bin = _get_drawtext_ffmpeg()
     if ffmpeg_bin is None:
         logger.warning(
