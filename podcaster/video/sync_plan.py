@@ -628,7 +628,7 @@ def annotate_removed_repos(
         checker = check_repo_removed
     new_segments: list[VideoSegment] = []
     removed_count = 0
-    for seg in plan.segments:
+    for source_index, seg in enumerate(plan.segments):
         if seg.repo is None or seg.removed_reason is not None:
             new_segments.append(seg)
             continue
@@ -639,7 +639,7 @@ def annotate_removed_repos(
                 logger.warning(
                     "repo pre-flight deadline reached; skipping remaining network checks"
                 )
-                new_segments.extend(plan.segments[len(new_segments) :])
+                new_segments.extend(plan.segments[source_index:])
                 break
         try:
             removed = checker(seg.repo.url, timeout=effective_timeout)

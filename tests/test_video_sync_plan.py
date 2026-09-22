@@ -1122,6 +1122,51 @@ class TestAnnotateRemovedRepos:
         assert calls == []
         assert result.segments == self._plan().segments
 
+    def test_preflight_cutoff_after_generic_preserves_remaining_segments_once(self):
+        plan = EpisodePlan(
+            total_duration_seconds=30.0,
+            segments=(
+                VideoSegment(
+                    repo=None,
+                    source_url="https://claracle.com/x",
+                    start_seconds=0.0,
+                    duration_seconds=10.0,
+                ),
+                VideoSegment(
+                    repo=RepoReference("microsoft", "vscode"),
+                    start_seconds=10.0,
+                    duration_seconds=10.0,
+                ),
+                VideoSegment(
+                    repo=RepoReference("astral-sh", "ruff"),
+                    start_seconds=20.0,
+                    duration_seconds=10.0,
+                ),
+            ),
+        )
+        checker_calls: list[str] = []
+        budget_calls = 0
+
+        def remaining_seconds():
+            nonlocal budget_calls
+            budget_calls += 1
+            return 0.0
+
+        result = annotate_removed_repos(
+            plan,
+            checker=lambda url, timeout=5.0: checker_calls.append(url),
+            remaining_seconds=remaining_seconds,
+        )
+
+        assert checker_calls == []
+        assert budget_calls == 1
+        assert result.segments == plan.segments
+        assert [segment.repo.name if segment.repo else None for segment in result.segments] == [
+            None,
+            "vscode",
+            "ruff",
+        ]
+
 
 class TestRemovedRepoSpeakerNotes:
     def test_notes_for_removed_repos_only(self):
