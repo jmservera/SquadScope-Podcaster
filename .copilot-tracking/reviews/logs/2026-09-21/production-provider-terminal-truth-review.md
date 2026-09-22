@@ -503,6 +503,93 @@ No test, assertion, validation gate, or security gate was weakened.
 
 No issue, PR, review thread, deployment, canary, or production state was resolved, closed, or mutated by this review.
 
+---
+
+## Ralph Exact-Receipt Revision Review — Livingston — 2026-09-22
+
+### Reviewer Independence and Exact Boundary
+
+* Reviewer: **Livingston, QA / Verification**.
+* Independence: Livingston did not author Ralph's revision and received no contribution or advice from Bender, Hermes, Amy, Leela, Fry, Farnsworth, Frank, Rusty, Basher, or Ralph during review.
+* Exact comparison: `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e..e16963243973707ea2557f75f925d3c6935d49ee`.
+* Opening repository state: clean worktree; local branch, remote branch, and PR head all at `e16963243973707ea2557f75f925d3c6935d49ee`; comparison base is the merge base; divergence `0/0`.
+* PR state at opening: #684 open, draft, mergeable/CLEAN, 13 successful checks, no reviews, and zero review threads.
+* Review boundary: exact receipt cardinality, operation identity, provider-specific completeness, duplicate normalization, stale evidence, time/fence binding, serialization compatibility, races, prior RV regressions, and delivery evidence.
+
+### Livingston Verdict
+
+**Not accepted (`request_changes`).** Ralph's revision closes the zero-receipt, duplicate-receipt, partial-provider, wrong-item, wrong-provider, wrong-fence, malformed-receipt, and stale-history paths covered by the owner matrix. RV-008 remains **High** because the recovery path accepts any non-empty intent operation and the durable authorization omits the consumed intent/receipt identity. Replacing the implicated YouTube intent operation with an unrelated operation still authorizes a third mutation-capable attempt. Severity: 0 Critical, 1 High, 0 Medium, 0 Low.
+
+### Finding Dispositions
+
+| Finding | Livingston disposition |
+|---|---|
+| RV-002 | Remains resolved; reservation single-winner, lease recovery, and stale-owner fencing regressions pass. |
+| RV-003 | Remains resolved; telemetry/deployment tests, Bicep, and CI-equivalent Checkov pass. |
+| RV-004 | Remains resolved; legacy migration, incomplete-scan fail-closed behavior, and concurrent-reference regressions pass. |
+| RV-007 | Remains resolved at the tracking level after this review-only reconciliation; all earlier rejection cycles remain intact. |
+| RV-008 | **High, open.** Receipt cardinality and item/fence/time checks improved, but exact operation identity and durable intent/receipt binding are not enforced. |
+| RV-009 | Remains resolved; proof-envelope rebinding and four-cycle regressions pass. |
+
+### RV-008 High: Wrong Operation Still Authorizes Mutation
+
+`_recovery_predecessor_provider_evidence()` requires only a truthy `intent["operation"]`. It does not verify the operation against an expected provider mutation or include the operation, intent ID, receipt ID, receipt fence, or receipt timestamp in the durable recovery authorization evidence. The owner test labelled `wrong-operation-fence` changes only the fence and does not probe the operation value.
+
+Independent reproduction:
+
+```text
+RV008_WRONG_OPERATION_BYPASS read_only=False attempts=3 operation=unrelated_read_only_probe
+```
+
+The probe created the latest `provider_unknown` attempt with one otherwise exact accepted receipt per provider, recorded exact failed-terminal readbacks, then changed the persisted YouTube intent operation to `unrelated_read_only_probe`. `exact_recovery_authorization_evidence()` and `authorize_recovery()` accepted it, appended a third attempt, and `claim()` returned `read_only=False`.
+
+This violates the target requirement that recovery require the exact consumed operation and exact durable receipt for every implicated provider mutation. Required clearing evidence: define and validate the expected operation for each provider leg; bind provider, operation, intent ID, receipt ID, item, attempt, fence, consumed/receipt times, publication/week/digests, and artifact into the authorization evidence/digest; reject a wrong or substituted operation before any successor is appended or mutation authority is granted. Preserve provider-specific intent/receipt legs rather than reusing loop-final values when constructing resolved evidence.
+
+### Required and Regression Probes
+
+| Probe | Result |
+|---|---|
+| Zero receipt | Denied; successor not appended and takeover remains read-only |
+| Exactly one receipt with exact item/readback | Accepted only for the specifically authorized continuation |
+| Duplicate identical receipt | Denied |
+| Partial provider receipts when both providers are implicated | Denied |
+| Conflicting receipt/item candidate | Denied |
+| Wrong provider item or provider kind | Denied |
+| Wrong fence, malformed receipt ID/timestamp, or non-accepted transport | Denied |
+| Duplicate authoritative readback | Denied |
+| Rusty's different-item bypass | Denied |
+| Older predecessor, stale authorization, omitted history, or reordered history | Denied |
+| RV-002/RV-003/RV-004/RV-007/RV-009 focused regressions | Passed |
+| Wrong consumed operation | **Failed safety:** third attempt appended and claim returned `read_only=False` |
+
+### Independent Validation
+
+| Command or gate | Result |
+|---|---|
+| Required adversarial/regression selection | `40 passed, 35 deselected in 3.43s` |
+| Focused correction suite | `120 passed in 4.73s` |
+| Locked targeted contract | `795 passed, 1 warning in 59.10s` |
+| Full repository suite | `3124 passed, 3 skipped, 2 deselected, 1 warning in 79.92s`; no Compose rebuild was needed |
+| Ruff check and format | Passed; `192 files already formatted` |
+| Python compile and exact diff safety | Passed; no deleted tests |
+| Bicep build | Passed with the documented pre-existing BCP318 warning |
+| Exact Bicep Checkov | Documented baseline retained: `36 passed, 7 failed` |
+| CI-equivalent Bicep Checkov | `34 passed, 0 failed` |
+| Dockerfile Checkov baseline | Passed |
+| Container build | `sha256:30c8be5535617b86db502c8ab6feb8399ffff2b790a7c528d373b2e96b4ab5a0` |
+| Container smoke | UID `999`; ffmpeg/ffprobe and pipeline/outbox imports passed; unconfigured distribution worker exited `2` |
+| Exact-diff suspected secret/PII scan | No private key, access key, JWT, signed credential URL, or email-address pattern found |
+
+No source, test, assertion, validation gate, security gate, baseline, issue, review thread, deployment, canary, or production state was modified by this review.
+
+### GitHub and Residual Gates
+
+* #684 remains open, draft, mergeable/CLEAN, and blocked; its 13 checks are successful, but checks do not override RV-008.
+* jmservera/SquadScope-Podcaster#671, jmservera/SquadScope-Podcaster#678, jmservera/SquadScope-Podcaster#679, jmservera/SquadScope-Podcaster#681, jmservera/SquadScope-Podcaster#682, and jmservera/SquadScope-Coordinator#17 remain open.
+* jmservera/SquadScope#770 remains merged and does not clear P00-T01.
+* P07-T01 remains open. P07-T07 records a completed independent review with rejection, not acceptance.
+* P00-T01, P05, and P06 remain open. No merge, deployment, canary, four-cycle completion, or production acceptance is claimed.
+
 ## Ralph Fresh Independent Final-SHA Review — 2026-09-22
 
 ### Independence and Exact Boundary
