@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Frank's sole-author RV-008 correction is implemented and fully validated from review head `3529a027d68c3811274237a49202dafc87d33c70`. Authorization v3 now binds a versioned canonical typed snapshot and digest of every predecessor attempt/event through an exact history boundary plus the single expected successor. P07-T01 and P07-T06 are complete for this revision; P07-T07 remains open pending Fry's fresh independent final-SHA review. P00-T01, P05, and P06 remain blocked
+* Planning status: Frank's sole-author RV-008 correction is implemented, fully validated, and committed as source/tests/artifacts SHA `bfead2572ae7c98bf82122281ac3a26ff3b91edc` from review head `3529a027d68c3811274237a49202dafc87d33c70`. Authorization v3 now binds a versioned canonical typed snapshot and digest of every predecessor attempt/event through an exact history boundary plus the single expected successor. P07-T01 and P07-T06 are complete for this revision; P07-T07 remains open pending Fry's fresh independent final-SHA review. P00-T01, P05, and P06 remain blocked
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`

@@ -114,7 +114,7 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 ## Implementation Execution Boundary
 
 * Declared scope: Frank's P07-T01 correction plus P07-T06 validation and delivery reconciliation. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. The authored RV-008 correction is complete locally and awaits Fry's independent final-SHA acceptance.
-* Current task: commit and push the validated correction on the existing branch, refresh #684 without changing its draft/blocked posture, and hand the final SHA to Fry.
+* Current task: push source/tests/artifacts commit `bfead2572ae7c98bf82122281ac3a26ff3b91edc` plus the final delivery reconciliation on the existing branch, refresh #684 without changing its draft/blocked posture, and hand the final SHA to Fry.
 * Revision author: Frank only for this correction cycle.
 * Fresh independent reviewer: Fry, review-only after the final pushed SHA.
 * Excluded contributors: Bender, Hermes, Amy, Leela, Farnsworth, Rusty, Basher, Ralph, and Livingston may not author, advise, pair, inspect, suggest, review, or otherwise contribute. Fry may review only after delivery.

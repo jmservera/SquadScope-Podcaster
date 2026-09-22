@@ -5,7 +5,7 @@
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
-Current source/tests/artifacts commit: recorded after the Frank source commit.
+Current source/tests/artifacts commit: `bfead2572ae7c98bf82122281ac3a26ff3b91edc`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
 Fresh independent reviewer: Fry, reserved and review-only; verdict pending.
 

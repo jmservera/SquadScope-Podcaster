@@ -17,7 +17,7 @@
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
 * Completed markers for this cycle: P07-T01 and P07-T06
 * Open marker: P07-T07
-* Source/tests/artifacts commit: `829fae69c4f20da18d34bae15f53c1cb21794808`
+* Source/tests/artifacts commit: `bfead2572ae7c98bf82122281ac3a26ff3b91edc`
 * Remaining in-scope work: commit/push, refresh the draft PR narrative, and obtain Fry's independent final-SHA review
 * Outside-scope active-plan markers: P00-T01, P05-T01–P05-T05, and P06-T01–P06-T02
 * Status basis: Frank's independent probe changed an earlier attempt event's timestamp, execution identity, and fence after authorization; because v2 records only `prior_attempt_ids` for prior history, the successor claim remained mutation-capable. The approved correction replaces that list with a versioned canonical structured history envelope plus digest, recomputed from current durable records at authorization use and bound to a precise predecessor boundary and successor expectation. Existing branch and draft PR #684 are retained. RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved. No merge, deployment, canary, issue/thread, or production mutation is authorized.
@@ -60,6 +60,14 @@
 | Changed-diff suspected secret scan | No private key, access key, JWT, or signed credential URL pattern found |
 
 The RV-008 probes deny the exact timestamp/execution/fence bypass; parameterized mutation of attempt version/identity/authorization/linkage/state/classification/proof/provider readback and every claim-event security field; duplicate, omitted, reordered, or inserted attempts/events; an unexpected successor event; and cross-week/publication replay. Canonical JSON round-trip and recomputation are stable. Exact unmodified history grants mutation authority once to the bound successor, and a later claim is read-only. Prior RV-008 and RV-002/RV-003/RV-004/RV-007/RV-009 probes remain green. No assertion, safety gate, security gate, or baseline was weakened.
+
+## P07 Frank Delivery Reconciliation
+
+* Source/tests/artifacts commit: `bfead2572ae7c98bf82122281ac3a26ff3b91edc`.
+* Delivery target: existing branch `squad/incident-provider-terminal-truth` and existing draft PR #684 only.
+* PR posture: remains open, draft, and blocked pending Fry's independent final-SHA review plus P00-T01, P05, and P06.
+* Preserved history: Livingston's rejected source `829fae69c4f20da18d34bae15f53c1cb21794808`, Frank's rejection at review head `3529a027d68c3811274237a49202dafc87d33c70`, and every earlier author/reviewer cycle remain recorded below.
+* Prohibited mutations: no issue, review thread, deployment, canary, merge, or production state was changed.
 
 ## P07 Frank Fresh Independent Final-SHA Review
 
