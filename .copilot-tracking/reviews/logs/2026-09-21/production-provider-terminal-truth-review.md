@@ -10,12 +10,12 @@ uploads were misclassified as failed terminal, unavailable checkpoint size probe
 final output lacked a post-write media validity probe. The stale P00-T01 checklist state was also
 identified.
 
-Livingston alone authored source commit `d6e85efa33816430f9141cc4dfed8379c9502ad8`.
+Livingston alone authored source through commit `b7e3615ee5c2f0ab904350d581b9fd32938e0f3a`.
 The correction maps possibly-mutated chunk exhaustion to durable `provider_unknown` and
 reconcile-only redelivery, makes checkpoint size verification fail closed, and stages plus
-strictly probes final media before atomic destination replacement. Focused tests passed `418`;
+strictly probes final media before atomic destination replacement. Focused tests passed `422`;
 the locked terminal-truth contract passed `920` with one warning; rebuilt Compose integration
-passed `3`; full pytest passed `3257` with 2 skipped, 2 deselected, and one existing warning.
+passed `3`; full pytest passed `3261` with 2 skipped, 2 deselected, and one existing warning.
 Ruff, format, compile, diff safety, Bicep, Checkov baselines, container build/smoke, worker exit,
 and secret/PII scan passed. Corrected #682 replies are
 [r4073299493](https://github.com/jmservera/SquadScope-Podcaster/pull/682#discussion_r4073299493),

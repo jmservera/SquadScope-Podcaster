@@ -39,7 +39,7 @@ open when unavailable, and final output was not media-probed before success. Liv
 sole revision author for the correction; Frank and Basher are excluded from contribution, Rusty
 is reserved for fresh independent review, and Bender, Hermes, and Amy remain excluded.
 
-Source commit `d6e85efa33816430f9141cc4dfed8379c9502ad8` closes the three implementation
+Source commit `b7e3615ee5c2f0ab904350d581b9fd32938e0f3a` closes the three implementation
 gaps. Chunk exhaustion that may follow provider mutation is non-retryable
 `mutation_ambiguous` and persists `provider_unknown`; redelivery is read-only. Checkpoint upload
 trust now requires an exact size result and otherwise retains local source for recomputation while

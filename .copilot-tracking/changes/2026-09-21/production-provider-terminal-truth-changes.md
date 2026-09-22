@@ -17,7 +17,7 @@
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
 * Completed marker retained for this cycle: P07-T06
 * Review marker: P07-T07 and P05-T03 reopened pending Rusty's exact-SHA review
-* Source/tests commit: `d6e85efa33816430f9141cc4dfed8379c9502ad8`
+* Source/tests commit: `b7e3615ee5c2f0ab904350d581b9fd32938e0f3a`
 * Remaining in-scope work: Rusty independent review and final delivery reconciliation
 * Outside-scope active-plan markers: P05-T04–P05-T06 and P06-T01–P06-T02; P00-T01 is complete
 * Status basis: ambiguous chunk exhaustion now produces durable provider-unknown truth and no repeat mutation; checkpoint size verification fails closed; final output is staged and media-validated before atomic publication. Corrected #682 replies are r4073299493, r4073299679, and r4073299841. P05-T03 and merge authorization remain pending Rusty. No merge, deployment, workflow dispatch, provider mutation, issue closure, or production action is authorized.
@@ -36,12 +36,12 @@
   `os.replace()` only after validation. Corrupt, truncated, missing, or unprobeable output is
   rejected before archive/outbox/provider work; an existing destination is preserved and only the
   staged candidate is cleaned.
-* Tests: focused correction/regression suite `418 passed`; locked terminal-truth contract
-  `920 passed, 1 warning`; rebuilt Compose integration `3 passed`; full suite `3257 passed,
+* Tests: focused correction/regression suite `422 passed`; locked terminal-truth contract
+  `920 passed, 1 warning`; rebuilt Compose integration `3 passed`; full suite `3261 passed,
   2 skipped, 2 deselected, 1 warning`; Ruff, format, compile, diff, Bicep, exact Checkov `36/7`,
   CI Checkov `34/0`, Dockerfile baseline, container build/smoke, worker exit `2`, and
   changed-content secret/PII scan passed. Validation image:
-  `sha256:c782082dd01f42fc74ad6561498ba35ea565cf1f56ed4e7c6f402dcbe0999899`.
+  `sha256:e12f2423bb418d66e8c7b2d601ebe3f0f2f77df35d86a8933b483cebeca15b37`.
 * Upstream P00-T01: complete at reviewed head
   `d75e3f5523f4810edbcaeef9a217d34cd21825a2`, merge SHA
   `7a6d8811bf82507cbdd0b01ba1135bc42e5942f3`, and 18 successful checks.
