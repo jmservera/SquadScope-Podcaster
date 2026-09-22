@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Leela independently rejected Fry's exact final head `273f94e0d1fa773e108661f908aca6f34be132c4`. Authorization-envelope v4 behavior and concurrency/reuse fencing pass, but `distribution-recovery-authz-set-v1.authz_count` accepts boolean `true` and float `1.0` as equal to integer `1`, leaving the successor mutation-capable. RV-008 and P07-T01 are reopened High; P07-T06 remains complete, and P07-T07 remains open for a corrected final-SHA review. P00-T01, P05, and P06 remain blocked
+* Planning status: Leela completed the sole-author exact typed-canonical RV-008 correction from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`. P07-T01 and P07-T06 are complete for this revision; P07-T07 remains open pending Basher's independent final-SHA review. P00-T01, P05, and P06 remain blocked
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -43,7 +43,7 @@ P07 requires atomic scheduler notification ownership, one telemetry vocabulary s
 
 ### Unresolved Decisions or Blockers
 
-* No planning decision is open. Leela's exact-head review confirms the complete envelope, history, collection ordering, supersession, concurrency, and replay corrections, but proves that the set manifest lacks exact scalar type validation: `authz_count=true` and `authz_count=1.0` compare equal to expected integer `1` and authorize mutation. P07-T01 must enforce an exact set field/type schema and typed comparison before P07-T07 repeats final-SHA review. P00-T01, P05 deployment/canary, and P06 elapsed cycles remain acceptance blockers. No second critique was run; the original critique and its dispositions remain historical evidence.
+* No planning decision is open. Exact recursive typed canonical validation now covers the authorization set, envelope, evidence, history, attempt/event records, successor expectations, and versions before digest/equality checks. Scalar substitutions, unsupported/non-finite numeric forms, negative zero, coercions, unsupported containers, and duplicate JSON fields fail closed. P07-T07 requires Basher's independent final-SHA review. P00-T01, P05 deployment/canary, and P06 elapsed cycles remain acceptance blockers. No second critique was run; the original critique and its dispositions remain historical evidence.
 
 ## User Decisions and Requirements
 
@@ -258,16 +258,16 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 
 ## Implementation Status
 
-* Execution status: Fry's sole-author RV-008 complete-envelope/cardinality correction was fully validated but rejected by Leela at exact head `273f94e0d1fa773e108661f908aca6f34be132c4`; exact authorization-set scalar typing remains open
+* Execution status: Leela's sole-author RV-008 typed-canonical correction is complete and fully validated; Basher final-SHA review remains open
 * Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
-* Revision author: Fry only for the rejected revision; next correction author is unassigned
-* Fresh independent reviewer: Leela completed review-only rejection and is locked out from the next correction/review cycle
+* Revision author: Leela only for the current correction
+* Fresh independent reviewer: Basher reserved and non-contributing
 * Excluded contributors: Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, and Frank did not author, advise, pair, or contribute; Leela remained reviewer-only
 * Delivery restrictions: commit and push only the existing branch and update existing draft PR #684; no deployment, issue mutation, replacement branch/PR, or changes to `/home/azureuser/source/SquadScope`
 * Active implementation boundary: P07 review-follow-up defects only; P00-T01, P05, and P06 remain outside P07 and block final acceptance
 * Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
 * Validation intent: deterministic P07 negative probes, locked owner suites, full suite, Ruff check/format, compileall, Bicep, Checkov, diff check, container build, and applicable container/exit smoke without weakening
-* Current blockers: RV-008/P07-T01 requires exact authorization-set field/type validation and typed comparison plus a new eligible independent review; P00-T01 upstream prevention evidence, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles remain blockers
+* Current blockers: Basher's independent final-SHA review for P07-T07; P00-T01 upstream prevention evidence, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles remain blockers
 
 ## Sources
 
@@ -563,13 +563,13 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Marker(s) | Revised disposition | Required next evidence |
 |---|---|---|
 | P00-T01 | Preserved external gate | Exact W39 blocked-stage evidence and upstream prevention/detection remain owned by `jmservera/SquadScope`; W39 stays `missed_not_dispatched` |
-| P07-T01 | Complete for Fry correction | `distribution-recovery-authz-v4` and `distribution-recovery-authz-set-v1` bind exact envelope fields/types/nulls/extensions/evidence/digest plus collection count/order/active ID/digest; all requested mutation/cardinality probes fail closed |
+| P07-T01 | Complete for Leela correction | Exact recursive typed canonical contracts bind `distribution-recovery-authz-v4`, `distribution-recovery-authz-set-v1`, evidence/history, attempt/events, and successor expectations; all scalar/type/numeric/duplicate-key probes fail closed |
 | P07-T02 | Complete; RV-002 resolved | Expired `reserved` and `enqueue_started` leases become due; CAS fencing preserves a single current owner and rejects stale completion/release |
 | P07-T03 | Complete; RV-004 resolved | Cleanup completes a bounded resumable pre-index outbox migration before deletion; incomplete scans fail closed and current references retain CAS priority |
 | P07-T04 | Complete; RV-003 resolved | Canonical emitted/query vocabulary and active-depth absence semantics independently passed |
 | P07-T05 | Complete; RV-009 resolved | Stored proof booleans are rebound to raw exact evidence and the current weekly record; label-only, tampered, mismatched, and unauthorized recovered cycles fail closed |
-| P07-T06 | Complete for Fry correction | Outbox `182`, focused `227`, locked `902`, full `3232`, static/infra/Checkov/container/exit/security gates passed without weakening |
-| P07-T07; P05-T01 | Awaiting Leela independent review; delivery blocked | Preserve every rejection cycle; keep PR #684 draft/blocked and require Leela's independent final-SHA acceptance without reviewer contribution |
+| P07-T06 | Complete for Leela correction | Focused `241`, locked `916`, full `3246`, static/infra/Checkov/container/exit/security gates passed without weakening |
+| P07-T07; P05-T01 | Awaiting Basher independent review; delivery blocked | Preserve every rejection cycle; keep PR #684 draft/blocked and require Basher's independent final-SHA acceptance without reviewer contribution |
 | P05-T03 | Expanded by RV-006 and refreshed current metadata | Closure evidence for W17–W29, the six RV-006 threads, and four later unresolved threads found during revision; do not claim resolution without GitHub evidence |
 | P01-T04, P02-T01–P02-T02 | Implemented surfaces; dependency verification | Preserve safe behavior unless the new receipt/attempt schema requires minimal compatible updates |
 | Existing W38 references in plan/PR handoff | Evidence-conditional correction | Use `published_verified_recovered` only with full exact proof; otherwise label it an allowed candidate and retain all attempt history |
@@ -577,7 +577,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Original PC-001–PC-009 dispositions | Historical, no change | Preserve existing critique artifact and disposition record; no second critique |
 | P05/P06 | Residual gates | PR #684 stays draft/blocked pending deployment/canary and four fully proven elapsed cycles |
 
-Livingston alone authors the current P07-T01 correction. Frank alone performs the fresh independent review after implementation/validation and may not contribute beforehand. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph are excluded from authoring, advice, pairing, or contribution.
+Leela alone authors the current P07-T01 correction. Basher alone performs the fresh independent review after implementation/validation and may not contribute beforehand. Bender, Hermes, Amy, Farnsworth, Rusty, Ralph, Livingston, Frank, and Fry are excluded from authoring, advice, pairing, or contribution.
 
 ## Review-Follow-Up Finding Map
 
@@ -745,6 +745,6 @@ The existing critique is preserved unchanged as historical evidence. No second c
 
 * Implementation artifact: `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md`
 * Review-follow-up implementation marker range: P07-T01 through P07-T07.
-* Current author/reviewer: Fry was the sole correction author from review head `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0`; Leela independently rejected exact head `273f94e0d1fa773e108661f908aca6f34be132c4` without prior contribution and is now locked out. Frank and all other named locked agents remained excluded. All prior author/reviewer cycles remain historical evidence.
-* Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-006 remains planning-resolved; RV-008 is High/open.
-* Remaining blockers after revision: RV-008/P07-T01 exact set-type correction and a new eligible independent final-SHA review; P00-T01 upstream ownership; P05 deployment/provider authority and canary; P06 four elapsed future post-fix cycles. PR #684 remains draft/blocked while any remain.
+* Current author/reviewer: Leela is the sole correction author from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`; Basher is reserved for independent final-SHA review and did not contribute. All prior author/reviewer cycles remain historical evidence.
+* Current finding state: RV-001/RV-002/RV-003/RV-004/RV-005/RV-007/RV-009 remain resolved; RV-006 remains planning-resolved; RV-008 implementation is corrected and awaits independent acceptance.
+* Remaining blockers after revision: Basher final-SHA review; P00-T01 upstream ownership; P05 deployment/provider authority and canary; P06 four elapsed future post-fix cycles. PR #684 remains draft/blocked while any remain.

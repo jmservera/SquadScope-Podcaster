@@ -1,14 +1,37 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Leela rejected the final authorization-set revision.** Authorization v4 envelope/history, ordering, supersession, concurrency, and replay behavior pass, but a one-record v1 authorization set accepts `authz_count=true` or `authz_count=1.0` as equal to integer `1` and still grants mutation authority. RV-008/P07-T01 and P07-T07 remain open; P00-T01, P05, and P06 also remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Leela's RV-008 correction awaits Basher's independent final-SHA review.** Exact typed canonical validation now rejects boolean/float `authz_count`, scalar substitutions across all versioned recovery structures, non-finite/negative-zero numbers, unsupported values, coercions, and duplicate JSON fields. P07-T07, P00-T01, P05, and P06 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
-Current source/tests/artifacts commit: `7f00b5795117f144cb23615d59f92029246162fe`.
+Current source/tests commit: `9204e139be485cb916ccd6e70b6fce355b656136`.
 Final delivery commit: the pushed PR head; exact SHA is recorded in the delivery return.
-Current sole revision author: Fry.
-Fresh independent reviewer: Leela completed review-only rejection; no contribution occurred.
+Current sole revision author: Leela.
+Fresh independent reviewer: Basher reserved; no contribution occurred.
+
+## Leela RV-008 exact typed canonical correction
+
+Leela alone authored the new cycle from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`.
+The correction replaces ordinary Python equality with deterministic type-tagged canonical JSON byte
+comparison for recovery authorization sets, envelopes, evidence, histories, attempt/event records,
+and successor expectations. Exact versioned schemas are enforced before digest/equality checks.
+Floats (including `1.0` and `-0.0`), NaN/infinity, unsupported containers, non-string keys,
+coercions, duplicate JSON fields, legacy versions, and invalid types fail closed.
+
+The explicit `authz_count=true` and `authz_count=1.0` bypass probes now deny mutation. A
+parameterized bool/int/float/string/null matrix traverses every scalar leaf across the authorization
+set, envelope, evidence, history, predecessor attempt/events, successor, and versions. Valid
+canonical JSON round-trip still grants exactly one mutation-capable claim and replay is read-only.
+
+Validation passes: focused `241`; locked `916` with one existing warning; full `3246 passed, 2
+skipped, 2 deselected, 1 warning`; Ruff/format/compile/diff; Bicep with existing BCP318; exact
+Checkov `36/7`; CI Bicep Checkov `34/0`; Dockerfile baseline; rebuilt container
+`sha256:89f3dad52ff9583ec92a6501e6132a67d96383fcacef5ded6c95153088c2eecc` with UID `999`,
+ffmpeg/ffprobe/import smoke; worker exit `2`; and changed executable diff secret/PII scan.
+
+PR #684 remains open/draft/blocked pending Basher, P00-T01, P05, and P06. No issue, review thread,
+deployment, canary, merge, or production state was mutated.
 
 ## Leela final-SHA rejection
 
@@ -259,7 +282,8 @@ The current change set and public PR text were checked for suspected secrets and
 - [x] Ralph independently reviewed final head `fcfa40015ed68d9e38d8432425b7cbd15171e835`; verdict Not accepted.
 - [x] RV-008 missing/duplicate/wrong-bound receipt authorization corrected and fully validated by Ralph.
 - [x] Livingston independently reviewed final source SHA `e16963243973707ea2557f75f925d3c6935d49ee`; verdict Not accepted.
-- [ ] RV-008 exact operation and durable intent/receipt authorization binding corrected.
+- [x] RV-008 exact operation and durable intent/receipt authorization binding corrected.
+- [x] RV-008 exact recursive typed canonical set/envelope/evidence/history/successor correction completed and validated by Leela.
 - [ ] A new independent reviewer accepts the corrected final pushed SHA.
 - [ ] P00-T01 completed in `jmservera/SquadScope`.
 - [ ] P05 deployment/canary gates completed.
