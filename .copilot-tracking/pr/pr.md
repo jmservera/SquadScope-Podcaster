@@ -4,7 +4,7 @@
 > **OPEN / DRAFT / BLOCKED — Basher corrected Rusty's RV-008 rejection; Ralph's fresh independent final-SHA review is pending.** Fry's rejection of Leela's revision `02241a1`, Livingston's rejection of Farnsworth source candidate `601d36a`, and Rusty's rejection of Frank's `1efa749` remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Basher revision base: `97c9520b7c365b078a50df113154bb1e66b1ecbb`.
-Current source/tests/artifacts commit: `eaaac5730740aeadcd641d3260684584337ba330`.
+Current source/tests/artifacts commit: `eaaac5706985d0df4058f46d25e4aa4d9217f41e`.
 Fresh independent reviewer: Ralph, pending.
 
 ## Incident and acceptance truth
