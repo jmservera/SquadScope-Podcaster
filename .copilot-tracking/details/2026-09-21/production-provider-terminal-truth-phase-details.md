@@ -945,12 +945,12 @@ The canonical review is complete and supplies deterministic negative probes show
 
 ### Intent
 
-Correct the six active findings in dependency order, prove fail-closed behavior with deterministic negative probes, reconcile current delivery evidence without rewriting historical conclusions, and obtain Fry's fresh independent review.
+Correct the six active findings in dependency order, prove fail-closed behavior with deterministic negative probes, reconcile current delivery evidence without rewriting historical conclusions, and obtain the designated fresh independent review.
 
 ### Boundaries
 
 * Included: existing Podcaster source/test/infrastructure/runbook owners necessary for RV-002/RV-003/RV-004/RV-008/RV-009; current delivery evidence updates necessary for RV-007.
-* Excluded: any new finding, new critique, historical review/critique edits, P00-T01 implementation, git/GitHub/deployment/production actions during planning, and contribution from Bender, Hermes, Amy, or Fry before review.
+* Excluded: any new finding, new critique, historical review/critique edits, P00-T01 implementation, git/GitHub/deployment/production actions during planning, and implementation contribution from the designated reviewer before review.
 
 ### Likely Targets
 
@@ -967,7 +967,7 @@ Correct the six active findings in dependency order, prove fail-closed behavior 
 * Deterministic concurrency uses barriers/fake clocks/CAS outcomes, not sleeps.
 * Omitted, mismatched, ambiguous, or label-only proof fails closed.
 * No test removal, skip, weakening, or non-blocking gate.
-* Full locked validation passes before Fry reviews the final diff/evidence.
+* Full locked validation passes before the designated independent reviewer assesses the final diff/evidence.
 
 ### Completion Evidence
 

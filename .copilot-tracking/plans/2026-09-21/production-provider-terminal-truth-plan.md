@@ -67,7 +67,7 @@ P07 requires atomic scheduler notification ownership, one telemetry vocabulary s
 * Do not weaken CI/tests/provider safety/idempotency/security gates and do not modify `/home/azureuser/source/SquadScope`.
 * Plan only the active review findings RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009; do not reopen or add findings.
 * Add a distinct review-follow-up phase with dependency-ordered tasks and closure evidence for every active finding.
-* Preserve every historical rejected author/reviewer pair. Assign Fry as sole author of the current RV-008 correction from review head `d7eb7ba53b6024812a33a1abc9d2961bd3ddd1b0` and Leela as the fresh independent reviewer; exclude Bender, Hermes, Amy, Farnsworth, Rusty, Basher, Ralph, Livingston, and Frank from authoring, advice, pairing, or contribution. Leela may not contribute before final-SHA review. Scribe may log only after the lifecycle completes.
+* Preserve every historical rejected author/reviewer pair. For the current correction from review head `c59669405018f7fa7f9b470568d22e8e474d6f6c`, Leela is the sole author and Basher is the fresh independent reviewer. Basher is excluded from authoring, advice, pairing, or implementation contribution before final-SHA review. Scribe may log only after the lifecycle completes.
 * Keep PR #684 draft/blocked while P00-T01, P05 deployment/canary, or P06 elapsed-cycle gates remain.
 
 ## Goals
@@ -502,7 +502,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 #### [ ] P05-T02: Pass required checks and independent final-SHA review
 
 * Requirement and evidence: caller requirement 8 and repository required checks.
-* Expected result: required PR checks pass; Fry reviews each final pushed SHA for dispatch correctness, concurrency/idempotency, provider safety, evidence security, operations, and tests; no critical finding is accepted or unresolved, and any post-review content change triggers revalidation/re-review. Bender, Hermes, and Amy remain excluded.
+* Expected result: required PR checks pass; the designated fresh independent reviewer assesses each final pushed SHA for dispatch correctness, concurrency/idempotency, provider safety, evidence security, operations, and tests; no critical finding is accepted or unresolved, and any post-review content change triggers revalidation/re-review. Bender, Hermes, and Amy remain excluded from implementation.
 * Detail section: P05-T02 in phase details.
 
 <!-- rpi:task id=P05-T03 -->

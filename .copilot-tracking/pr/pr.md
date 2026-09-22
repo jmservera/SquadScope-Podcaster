@@ -1,7 +1,7 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Leela's RV-008 correction awaits Basher's independent final-SHA review.** Exact typed canonical validation now rejects boolean/float `authz_count`, scalar substitutions across all versioned recovery structures, non-finite/negative-zero numbers, unsupported values, coercions, and duplicate JSON fields. P07-T07, P00-T01, P05, and P06 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Leela's RV-008 correction awaits Basher's independent final-SHA review.** Exact typed canonical validation now rejects boolean/float `authz_count`, scalar substitutions across all versioned recovery structures, exponent-overflow/non-finite and negative-zero numbers, unsupported values, coercions, non-string keys, and duplicate JSON fields. P07-T07, P00-T01, P05, P06, and operator-only #682 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
 Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
 Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
@@ -30,8 +30,8 @@ Checkov `36/7`; CI Bicep Checkov `34/0`; Dockerfile baseline; rebuilt container
 `sha256:89f3dad52ff9583ec92a6501e6132a67d96383fcacef5ded6c95153088c2eecc` with UID `999`,
 ffmpeg/ffprobe/import smoke; worker exit `2`; and changed executable diff secret/PII scan.
 
-PR #684 remains open/draft/blocked pending Basher, P00-T01, P05, and P06. No issue, review thread,
-deployment, canary, merge, or production state was mutated.
+PR #684 remains open/draft/blocked pending Basher, P00-T01, P05, P06, and operator-only #682. No
+issue, review thread, deployment, canary, merge, or production state was mutated.
 
 ## Leela final-SHA rejection
 
@@ -242,7 +242,7 @@ Frank's probes prove that a later `provider_unknown` blocks reuse of the older f
 ## Residual external gates
 
 - **P00-T01 — `jmservera/SquadScope`:** implement and verify prevention of the W39-class upstream dispatch blockage.
-- **P07-T07:** obtain Leela's independent acceptance of Fry's corrected final pushed SHA; local implementation and validation do not self-accept.
+- **P07-T07:** obtain Basher's independent acceptance of Leela's corrected final pushed SHA; local implementation and validation do not self-accept.
 - **P05 — deployment/canary:** complete final-SHA delivery review, provenance, authorized deployment, canary evidence, alert fire/clear evidence, and rollback evidence after the open findings are corrected.
 - **P06 — four elapsed cycles:** record four consecutive future post-fix weekly cycles with complete upstream, Azure, immutable-attempt, weekly-aggregation, provider-identity, and authoritative external-readback evidence.
 
