@@ -35,7 +35,9 @@ VERIFICATION_PROOF_FIELDS = (
     "terminal_authoritative_readback",
     "duplicate_ambiguity_resolved",
 )
-RECOVERY_AUTHORIZATION_SCHEMA_VERSION = "distribution-recovery-authorization-v2"
+RECOVERY_AUTHORIZATION_SCHEMA_VERSION = "distribution-recovery-authorization-v3"
+ATTEMPT_HISTORY_EVIDENCE_SCHEMA_VERSION = "distribution-attempt-history-evidence-v1"
+ATTEMPT_RECORD_VERSION = "distribution-attempt-record-v1"
 
 PROVIDER_RESULTS = frozenset(
     {
@@ -413,13 +415,172 @@ def exact_recovery_authorization_evidence(
         "publication_digest": document["publication_digest"],
         "artifact": dict(artifact),
         "canonical_artifact": dict(canonical),
-        "prior_attempt_ids": [
-            str(attempt["attempt_id"])
-            for attempt in attempts[: predecessor_index + 1]
-            if isinstance(attempt, Mapping) and attempt.get("terminal_outcome")
-        ],
+        "attempt_history": _canonical_attempt_history_evidence(
+            document,
+            predecessor_index=predecessor_index,
+        ),
         "predecessor_attempt_id": predecessor_attempt_id,
         "providers": providers,
+    }
+
+
+def _canonical_typed_value(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"type": "null", "value": None}
+    if isinstance(value, bool):
+        return {"type": "boolean", "value": value}
+    if isinstance(value, int):
+        return {"type": "integer", "value": value}
+    if isinstance(value, float):
+        if not (-float("inf") < value < float("inf")):
+            raise DistributionOutboxError("attempt history contains a non-finite number")
+        return {"type": "number", "value": value}
+    if isinstance(value, str):
+        return {"type": "string", "value": value}
+    if isinstance(value, Mapping):
+        entries = []
+        for key in sorted(value):
+            if not isinstance(key, str):
+                raise DistributionOutboxError("attempt history contains a non-string field")
+            entries.append({"key": key, "value": _canonical_typed_value(value[key])})
+        return {"type": "object", "entries": entries}
+    if isinstance(value, (list, tuple)):
+        return {
+            "type": "array",
+            "items": [_canonical_typed_value(item) for item in value],
+        }
+    raise DistributionOutboxError("attempt history contains an unsupported value")
+
+
+def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _validated_attempt_history_records(
+    attempts: Any,
+    *,
+    predecessor_index: int,
+) -> list[Mapping[str, Any]]:
+    if not isinstance(attempts, list) or predecessor_index < 0:
+        raise DistributionOutboxError("recovery attempt history is missing")
+    if predecessor_index >= len(attempts):
+        raise DistributionOutboxError("recovery attempt history boundary is invalid")
+    records = attempts[: predecessor_index + 1]
+    attempt_ids: set[str] = set()
+    previous_authorized_at: datetime | None = None
+    for attempt_order, attempt in enumerate(records):
+        if not isinstance(attempt, Mapping):
+            raise DistributionOutboxError("recovery attempt history is malformed")
+        if attempt.get("record_version") != ATTEMPT_RECORD_VERSION:
+            raise DistributionOutboxError("recovery attempt record version is unsupported")
+        attempt_id = attempt.get("attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id or attempt_id in attempt_ids:
+            raise DistributionOutboxError("recovery attempt identity is duplicate or missing")
+        attempt_ids.add(attempt_id)
+        if not attempt.get("terminal_outcome"):
+            raise DistributionOutboxError("recovery attempt history contains a non-terminal record")
+        authorized_at = attempt.get("authorized_at")
+        if not isinstance(authorized_at, str):
+            raise DistributionOutboxError("recovery attempt authorization time is missing")
+        try:
+            parsed_authorized_at = _parse_time(authorized_at)
+        except ValueError as exc:
+            raise DistributionOutboxError("recovery attempt authorization time is invalid") from exc
+        if parsed_authorized_at is None or (
+            previous_authorized_at is not None and parsed_authorized_at < previous_authorized_at
+        ):
+            raise DistributionOutboxError("recovery attempt authorization order is ambiguous")
+        previous_authorized_at = parsed_authorized_at
+        predecessor_attempt_id = attempt.get("predecessor_attempt_id")
+        if attempt_order == 0:
+            if predecessor_attempt_id is not None:
+                raise DistributionOutboxError("initial attempt predecessor is invalid")
+        elif predecessor_attempt_id != records[attempt_order - 1].get("attempt_id"):
+            raise DistributionOutboxError("recovery attempt linkage is invalid")
+        events = attempt.get("events")
+        if not isinstance(events, list) or not events:
+            raise DistributionOutboxError("recovery attempt events are missing")
+        previous_event_at: datetime | None = None
+        for event_order, event in enumerate(events, start=1):
+            if not isinstance(event, Mapping):
+                raise DistributionOutboxError("recovery attempt event is malformed")
+            sequence = event.get("sequence")
+            if isinstance(sequence, bool) or sequence != event_order:
+                raise DistributionOutboxError("recovery attempt event sequence is invalid")
+            if event.get("event_type") != event.get("state") or not event.get("state"):
+                raise DistributionOutboxError("recovery attempt event type is invalid")
+            event_at = event.get("at")
+            if not isinstance(event_at, str):
+                raise DistributionOutboxError("recovery attempt event time is missing")
+            try:
+                parsed_event_at = _parse_time(event_at)
+            except ValueError as exc:
+                raise DistributionOutboxError("recovery attempt event time is invalid") from exc
+            if parsed_event_at is None or (
+                previous_event_at is not None and parsed_event_at < previous_event_at
+            ):
+                raise DistributionOutboxError("recovery attempt event order is ambiguous")
+            previous_event_at = parsed_event_at
+    return records
+
+
+def _canonical_attempt_history_evidence(
+    document: Mapping[str, Any],
+    *,
+    predecessor_index: int,
+) -> dict[str, Any]:
+    records = _validated_attempt_history_records(
+        document.get("attempts"),
+        predecessor_index=predecessor_index,
+    )
+    identity = document.get("publication_identity")
+    if not isinstance(identity, Mapping):
+        raise DistributionOutboxError("recovery publication identity is missing")
+    envelope = {
+        "schema_version": ATTEMPT_HISTORY_EVIDENCE_SCHEMA_VERSION,
+        "context": _canonical_typed_value(
+            {
+                "outbox_id": document.get("outbox_id"),
+                "publication_identity": dict(identity),
+                "publication_digest": document.get("publication_digest"),
+                "artifact": dict(document.get("artifact", {})),
+                "canonical_artifact": dict(document.get("canonical_artifact", {})),
+                "provider_objectives": dict(document.get("provider_objectives", {})),
+            }
+        ),
+        "boundary": {
+            "predecessor_attempt_id": records[-1]["attempt_id"],
+            "predecessor_attempt_index": predecessor_index,
+            "bound_attempt_count": len(records),
+            "bound_event_count": sum(len(attempt["events"]) for attempt in records),
+        },
+        "records": [_canonical_typed_value(dict(attempt)) for attempt in records],
+    }
+    envelope["digest"] = hashlib.sha256(_canonical_json_bytes(envelope)).hexdigest()
+    return envelope
+
+
+def _successor_authorization_expectation(attempt: Mapping[str, Any]) -> dict[str, Any]:
+    semantic_record = {
+        key: value for key, value in attempt.items() if key != "recovery_proof_digest"
+    }
+    return {
+        "initial_record": _canonical_typed_value(semantic_record),
+        "immutable_identity": _canonical_typed_value(
+            {
+                key: attempt.get(key)
+                for key in (
+                    "record_version",
+                    "attempt_id",
+                    "authz_id",
+                    "authz_source",
+                    "authz_reason",
+                    "authorized_at",
+                    "predecessor_attempt_id",
+                )
+            }
+        ),
+        "separately_bound_fields": ["recovery_proof_digest"],
     }
 
 
@@ -615,6 +776,7 @@ def _validated_recovery_authorization_evidence(
     evidence: Mapping[str, Any],
     *,
     succeeding_attempt_id: str | None = None,
+    successor_may_progress: bool = False,
 ) -> dict[str, Any]:
     value = _safe_value(dict(evidence), key="recovery_evidence")
     attempts = document.get("attempts", [])
@@ -666,6 +828,24 @@ def _validated_recovery_authorization_evidence(
         expected_provider_item_ids=expected_succeeding_items,
     )
     if succeeding_attempt_id is not None:
+        current_expectation = _successor_authorization_expectation(later_attempts[0])
+        stored_succeeding_attempt = value.get("succeeding_attempt")
+        stored_expectation = (
+            stored_succeeding_attempt.get("expectation")
+            if isinstance(stored_succeeding_attempt, Mapping)
+            else None
+        )
+        if successor_may_progress:
+            if (
+                not isinstance(stored_expectation, Mapping)
+                or stored_expectation.get("immutable_identity")
+                != current_expectation["immutable_identity"]
+                or stored_expectation.get("separately_bound_fields") != ["recovery_proof_digest"]
+            ):
+                raise DistributionOutboxError("recovery authorization successor is invalid")
+            succeeding_expectation = dict(stored_expectation)
+        else:
+            succeeding_expectation = current_expectation
         expected_value["succeeding_attempt"] = {
             "attempt_id": succeeding_attempt_id,
             "predecessor_attempt_id": predecessor.get("attempt_id"),
@@ -673,6 +853,7 @@ def _validated_recovery_authorization_evidence(
                 provider: expected_value["providers"][provider]["succeeding_provider"]
                 for provider in sorted(objectives)
             },
+            "expectation": succeeding_expectation,
         }
     if value != expected_value:
         raise DistributionOutboxError("recovery authorization identity evidence is invalid")
@@ -683,6 +864,8 @@ def _recovery_authorization_binding_is_valid(
     document: Mapping[str, Any],
     winner: Mapping[str, Any],
     authorizations: Iterable[Mapping[str, Any]],
+    *,
+    successor_may_progress: bool = False,
 ) -> bool:
     authorization = next(
         (
@@ -715,6 +898,7 @@ def _recovery_authorization_binding_is_valid(
             predecessor,
             evidence,
             succeeding_attempt_id=str(winner.get("attempt_id") or ""),
+            successor_may_progress=successor_may_progress,
         )
     except (DistributionOutboxError, UnsafeOutboxValueError):
         return False
@@ -734,7 +918,12 @@ def _recovery_authorization_is_valid(
     winner: Mapping[str, Any],
     authorizations: Iterable[Mapping[str, Any]],
 ) -> bool:
-    if not _recovery_authorization_binding_is_valid(document, winner, authorizations):
+    if not _recovery_authorization_binding_is_valid(
+        document,
+        winner,
+        authorizations,
+        successor_may_progress=True,
+    ):
         return False
     authorization = next(
         item
@@ -776,7 +965,12 @@ def _publication_digest(identity: Mapping[str, Any], artifact: Mapping[str, Any]
 
 
 def _attempt_event(attempt: dict[str, Any], state: str, at: str, **details: Any) -> None:
-    event = {"sequence": len(attempt["events"]) + 1, "at": at, "state": state}
+    event = {
+        "sequence": len(attempt["events"]) + 1,
+        "event_type": state,
+        "at": at,
+        "state": state,
+    }
     event.update({key: value for key, value in details.items() if value is not None})
     attempt["events"].append(event)
     attempt["state"] = state
@@ -807,6 +1001,7 @@ def _ensure_truth_fields(document: dict[str, Any]) -> None:
         attempt_id = uuid.uuid4().hex
         attempts.append(
             {
+                "record_version": ATTEMPT_RECORD_VERSION,
                 "attempt_id": attempt_id,
                 "authz_id": hashlib.sha256(
                     f"initial|{document.get('outbox_id')}|{attempt_id}".encode()
@@ -817,7 +1012,14 @@ def _ensure_truth_fields(document: dict[str, Any]) -> None:
                 "predecessor_attempt_id": None,
                 "state": "pending",
                 "terminal_outcome": None,
-                "events": [{"sequence": 1, "at": timestamp, "state": "accepted"}],
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "accepted",
+                        "at": timestamp,
+                        "state": "accepted",
+                    }
+                ],
                 "proof_references": [],
             }
         )
@@ -1101,9 +1303,11 @@ class DistributionOutboxRepository:
                 _active_attempt(document),
                 "reconciling" if consumed else "claimed",
                 _iso(now),
+                owner=claim["owner"],
                 claim_id=claim["claim_id"],
                 execution_id=claim["execution_id"],
                 fencing_token=token,
+                lease_expires_at=claim["lease_expires_at"],
             )
             result.update(claim)
 
@@ -1168,6 +1372,26 @@ class DistributionOutboxRepository:
             at = _iso(self.now())
             authorization_id = uuid.uuid4().hex
             attempt_id = uuid.uuid4().hex
+            succeeding_attempt = {
+                "record_version": ATTEMPT_RECORD_VERSION,
+                "attempt_id": attempt_id,
+                "authz_id": authorization_id,
+                "authz_source": _require_token("authorization_source", source),
+                "authz_reason": _require_token("authorization_reason", reason),
+                "authorized_at": at,
+                "predecessor_attempt_id": predecessor_attempt_id,
+                "state": "pending",
+                "terminal_outcome": None,
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "accepted",
+                        "at": at,
+                        "state": "accepted",
+                    }
+                ],
+                "proof_references": [],
+            }
             validated_evidence["succeeding_attempt"] = {
                 "attempt_id": attempt_id,
                 "predecessor_attempt_id": predecessor_attempt_id,
@@ -1175,6 +1399,7 @@ class DistributionOutboxRepository:
                     provider: validated_evidence["providers"][provider]["succeeding_provider"]
                     for provider in sorted(validated_evidence["providers"])
                 },
+                "expectation": _successor_authorization_expectation(succeeding_attempt),
             }
             evidence_digest = hashlib.sha256(
                 json.dumps(
@@ -1194,21 +1419,8 @@ class DistributionOutboxRepository:
                 "attempt_id": attempt_id,
             }
             document["recovery_authz"].append(authorization)
-            attempts.append(
-                {
-                    "attempt_id": attempt_id,
-                    "authz_id": authorization_id,
-                    "authz_source": authorization["source"],
-                    "authz_reason": authorization["reason"],
-                    "authorized_at": at,
-                    "predecessor_attempt_id": predecessor_attempt_id,
-                    "recovery_proof_digest": evidence_digest,
-                    "state": "pending",
-                    "terminal_outcome": None,
-                    "events": [{"sequence": 1, "at": at, "state": "accepted"}],
-                    "proof_references": [],
-                }
-            )
+            succeeding_attempt["recovery_proof_digest"] = evidence_digest
+            attempts.append(succeeding_attempt)
             for leg in document["providers"].values():
                 leg["result"] = "pending_provider"
                 leg["verification"] = None
