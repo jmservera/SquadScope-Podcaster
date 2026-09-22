@@ -1529,7 +1529,12 @@ def run_video_generation(
                     )
                     enqueue_distribution_job(
                         outbox_document["outbox_id"],
-                        authorize_send=lambda: repository.consume_notification_intent(
+                        authorize_send=lambda: repository.authorize_notification_send(
+                            outbox_document["outbox_id"],
+                            source_ownership=notification_token,
+                            authorize=lambda: ownership_guard.assert_permit(notification_permit),
+                        ),
+                        mark_accepted=lambda: repository.accept_notification_send(
                             outbox_document["outbox_id"],
                             source_ownership=notification_token,
                             authorize=lambda: ownership_guard.assert_permit(notification_permit),

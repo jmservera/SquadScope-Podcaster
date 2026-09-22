@@ -469,14 +469,15 @@ def enqueue_distribution_job(
     *,
     producer: QueueProducer | None = None,
     authorize_send: Callable[[], bool] | None = None,
+    mark_accepted: Callable[[], bool] | None = None,
 ) -> bool:
-    """Idempotently hint that an authoritative outbox item is ready to claim.
+    """Send an at-least-once hint for an authoritative outbox item.
 
-    When supplied, ``authorize_send`` must durably consume the caller's
-    single-winner notification intent and return ``True`` only for the winner.
-    It is invoked immediately before the irreversible queue send. Returning
-    ``False`` means a prior worker already consumed the intent, so the
-    authoritative outbox is treated as notified without sending a duplicate.
+    ``authorize_send`` atomically consumes the sole initial-send authority.
+    ``mark_accepted`` records acceptance only after ``send_message`` returns.
+    A crash around broker I/O leaves that attempt ambiguous and non-replayable;
+    the outbox's independently scheduled provider reconciliation recovers the
+    item without granting a second provider mutation.
     """
 
     backend = producer or create_distribution_queue_backend()
@@ -488,12 +489,17 @@ def enqueue_distribution_job(
         return False
     if authorize_send is not None and not authorize_send():
         logging.info(
-            "distribution notification intent already consumed; "
+            "distribution notification intent already accepted; "
             "duplicate enqueue suppressed outbox_id=%s",
             outbox_id,
         )
         return True
     backend.send_message(encode_distribution_message(outbox_id))
+    if mark_accepted is not None and not mark_accepted():
+        logging.info(
+            "distribution notification acceptance was already recorded outbox_id=%s",
+            outbox_id,
+        )
     logging.info("enqueued distribution outbox_id=%s", outbox_id)
     return True
 

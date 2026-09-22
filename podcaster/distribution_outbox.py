@@ -25,6 +25,7 @@ ARTIFACT_METADATA_PREFIX = "distribution-artifact-metadata"
 ARTIFACT_REFERENCE_PREFIX = "distribution-artifact-references"
 ORPHAN_CLEANUP_STATE_PATH = "distribution-scheduler/orphan-cleanup-state.json"
 RECONCILIATION_QUEUE_SCHEMA_VERSION = "squadscope-podcaster-distribution-reconcile-v1"
+INITIAL_RECONCILIATION_DELAY = timedelta(minutes=5)
 VERIFICATION_PROOF_FIELDS = (
     "week_match",
     "publication_identity_match",
@@ -1391,6 +1392,41 @@ def _ensure_truth_fields(document: dict[str, Any]) -> None:
             "worker_exit_class": "nonzero",
         },
     )
+    enqueue = document.setdefault("enqueue", {})
+    intent = enqueue.get("notification_intent")
+    if isinstance(intent, dict):
+        if intent.get("accepted_at"):
+            intent["state"] = "accepted"
+        elif intent.get("consumed_at"):
+            intent["state"] = "ambiguous"
+            enqueue["notification_sent_at"] = None
+        else:
+            intent.setdefault("state", "reserved")
+
+
+def _ensure_provider_reconciliation(
+    document: dict[str, Any],
+    *,
+    due_at: datetime,
+) -> bool:
+    changed = False
+    outbox_id = str(document.get("outbox_id") or "")
+    for provider, leg in document.get("providers", {}).items():
+        if (
+            not isinstance(leg, dict)
+            or leg.get("result") != "pending_provider"
+            or leg.get("active_schedule_token")
+        ):
+            continue
+        token = hashlib.sha256(f"{outbox_id}|{provider}|{_iso(due_at)}".encode("utf-8")).hexdigest()
+        leg["next_reconcile_at"] = _iso(due_at)
+        leg["active_schedule_token"] = token
+        leg["active_schedule_source"] = "initial_notification"
+        leg["schedule_notification_token"] = None
+        leg["schedule_notification_sent_at"] = None
+        leg["notification_reservation"] = None
+        changed = True
+    return changed
 
 
 def _active_attempt(document: Mapping[str, Any]) -> dict[str, Any]:
@@ -1527,6 +1563,10 @@ class DistributionOutboxRepository:
                             )
                         leg["context"] = incoming_context
                 _ensure_truth_fields(existing)
+                _ensure_provider_reconciliation(
+                    existing,
+                    due_at=self.now() + INITIAL_RECONCILIATION_DELAY,
+                )
                 _validate_document(existing, item_id)
                 captured.update(existing)
                 return json.dumps(existing, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1549,6 +1589,7 @@ class DistributionOutboxRepository:
                     "verification_budget": 8,
                     "verification_horizon_at": _iso(self.now() + timedelta(hours=24)),
                     "active_schedule_token": None,
+                    "active_schedule_source": None,
                     "schedule_notification_token": None,
                     "schedule_notification_sent_at": None,
                     "notification_reservation": None,
@@ -1585,6 +1626,10 @@ class DistributionOutboxRepository:
                 "updated_at": timestamp,
             }
             _ensure_truth_fields(document)
+            _ensure_provider_reconciliation(
+                document,
+                due_at=self.now() + INITIAL_RECONCILIATION_DELAY,
+            )
             _validate_document(document, item_id)
             captured.update(document)
             created = True
@@ -1664,7 +1709,8 @@ class DistributionOutboxRepository:
             if current is not None and not isinstance(current, Mapping):
                 raise OutboxConflictError("outbox notification intent is malformed")
             if enqueue.get("notification_sent_at") or (
-                isinstance(current, Mapping) and current.get("consumed_at")
+                isinstance(current, Mapping)
+                and current.get("state") in ("sending", "ambiguous", "accepted")
             ):
                 return
             safe_ownership = _safe_value(source_ownership)
@@ -1675,45 +1721,83 @@ class DistributionOutboxRepository:
                 "intent_id": uuid.uuid4().hex,
                 "source_ownership": safe_ownership,
                 "reserved_at": reserved_at,
-                "consumed_at": None,
+                "state": "reserved",
+                "send_started_at": None,
+                "accepted_at": None,
             }
             document["notification_source_ownership"] = safe_ownership
             enqueue["notification_reserved_at"] = reserved_at
 
         return self._update(outbox_id, _reserve)
 
-    def consume_notification_intent(
+    def authorize_notification_send(
         self,
         outbox_id: str,
         *,
         source_ownership: Mapping[str, Any],
         authorize: Callable[[], None],
     ) -> bool:
-        """Atomically authorize one queue send and suppress all later replays."""
+        """Atomically consume the sole initial queue-send authority."""
 
-        consumed = False
+        authorized = False
         safe_ownership = _safe_value(source_ownership)
 
-        def _consume(document: dict[str, Any]) -> None:
-            nonlocal consumed
+        def _authorize(document: dict[str, Any]) -> None:
+            nonlocal authorized
             authorize()
             enqueue = document["enqueue"]
             current = enqueue.get("notification_intent")
             if enqueue.get("notification_sent_at") or (
-                isinstance(current, Mapping) and current.get("consumed_at")
+                isinstance(current, Mapping)
+                and current.get("state") in ("sending", "ambiguous", "accepted")
             ):
                 return
             if not isinstance(current, dict):
                 raise StaleClaimError("outbox notification intent is missing")
             if current.get("source_ownership") != safe_ownership:
                 raise StaleClaimError("outbox notification intent ownership is stale")
-            consumed_at = _iso(self.now())
-            current["consumed_at"] = consumed_at
-            enqueue["notification_sent_at"] = consumed_at
-            consumed = True
+            current["state"] = "sending"
+            current["send_started_at"] = _iso(self.now())
+            authorized = True
 
-        self._update(outbox_id, _consume)
-        return consumed
+        self._update(outbox_id, _authorize)
+        return authorized
+
+    def accept_notification_send(
+        self,
+        outbox_id: str,
+        *,
+        source_ownership: Mapping[str, Any],
+        authorize: Callable[[], None],
+    ) -> bool:
+        """Mark a reserved notification accepted only after the queue send returns."""
+
+        accepted = False
+        safe_ownership = _safe_value(source_ownership)
+
+        def _accept(document: dict[str, Any]) -> None:
+            nonlocal accepted
+            authorize()
+            enqueue = document["enqueue"]
+            current = enqueue.get("notification_intent")
+            if enqueue.get("notification_sent_at") or (
+                isinstance(current, Mapping) and current.get("state") == "accepted"
+            ):
+                return
+            if not isinstance(current, dict):
+                raise StaleClaimError("outbox notification intent is missing")
+            if current.get("source_ownership") != safe_ownership:
+                raise StaleClaimError("outbox notification intent ownership is stale")
+            if current.get("state") != "sending":
+                raise StaleClaimError("outbox notification send was not started")
+            accepted_at = _iso(self.now())
+            current["state"] = "accepted"
+            current["accepted_at"] = accepted_at
+            enqueue["notification_sent_at"] = accepted_at
+            accepted = True
+
+        self._update(outbox_id, _accept)
+        return accepted
 
     def claim(
         self,
@@ -2191,6 +2275,7 @@ class DistributionOutboxRepository:
             leg["next_reconcile_at"] = _iso(next_reconcile_at) if next_reconcile_at else None
             if effective_result != "pending_provider":
                 leg["active_schedule_token"] = None
+                leg["active_schedule_source"] = None
                 leg["schedule_notification_token"] = None
                 leg["schedule_notification_sent_at"] = None
                 leg["notification_reservation"] = None
@@ -2220,7 +2305,7 @@ class DistributionOutboxRepository:
             self._require_claim(document, claim)
             leg = self._provider(document, provider)
             existing = leg.get("active_schedule_token")
-            if existing:
+            if existing and leg.get("active_schedule_source") != "initial_notification":
                 captured["token"] = str(existing)
                 return
             if int(leg.get("verification_attempt") or 0) >= int(
@@ -2241,6 +2326,7 @@ class DistributionOutboxRepository:
             ).hexdigest()
             leg["next_reconcile_at"] = _iso(due_at)
             leg["active_schedule_token"] = token
+            leg["active_schedule_source"] = "worker"
             leg["schedule_notification_token"] = None
             leg["schedule_notification_sent_at"] = None
             leg["result"] = "pending_provider"
@@ -2266,6 +2352,7 @@ class DistributionOutboxRepository:
             if due is None or due > self.now():
                 raise DistributionOutboxError("reconciliation token is not due")
             leg["active_schedule_token"] = None
+            leg["active_schedule_source"] = None
             leg["schedule_notification_token"] = None
             leg["schedule_notification_sent_at"] = None
             leg["last_reconciled_at"] = _iso(self.now())
@@ -2734,13 +2821,21 @@ class DistributionOutboxRepository:
             if raw is None:
                 continue
             document = json.loads(raw.decode("utf-8"))
+            item_id = str(document["outbox_id"])
+            document = self._update(
+                item_id,
+                lambda current: _ensure_provider_reconciliation(
+                    current,
+                    due_at=self.now() + INITIAL_RECONCILIATION_DELAY,
+                ),
+            )
             enqueue = document.get("enqueue", {})
             intent = enqueue.get("notification_intent")
             if enqueue.get("notification_sent_at") or (
-                isinstance(intent, Mapping) and intent.get("consumed_at")
+                isinstance(intent, Mapping)
+                and intent.get("state") in ("sending", "ambiguous", "accepted")
             ):
                 continue
-            item_id = str(document["outbox_id"])
             repair_ownership = {"repair_id": uuid.uuid4().hex}
             try:
                 self.reserve_notification(
@@ -2748,7 +2843,7 @@ class DistributionOutboxRepository:
                     source_ownership=repair_ownership,
                     authorize=lambda: None,
                 )
-                won_intent = self.consume_notification_intent(
+                won_intent = self.authorize_notification_send(
                     item_id,
                     source_ownership=repair_ownership,
                     authorize=lambda: None,
@@ -2758,6 +2853,11 @@ class DistributionOutboxRepository:
             if not won_intent:
                 continue
             notify(item_id)
+            self.accept_notification_send(
+                item_id,
+                source_ownership=repair_ownership,
+                authorize=lambda: None,
+            )
             repaired += 1
         return repaired
 

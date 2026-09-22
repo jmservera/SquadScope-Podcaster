@@ -384,6 +384,72 @@ def test_lost_notification_is_repaired_idempotently(setup):
     assert repository.repair_notifications(sent.append) == 0
 
 
+def test_initial_provider_legs_have_durable_reconciliation_schedule(setup):
+    _storage, _repository, clock, document, _created = setup
+    expected_due = clock() + timedelta(minutes=5)
+    for leg in document["providers"].values():
+        assert leg["next_reconcile_at"] == expected_due.isoformat().replace("+00:00", "Z")
+        assert isinstance(leg["active_schedule_token"], str)
+        assert len(leg["active_schedule_token"]) == 64
+
+
+def test_ambiguous_notification_is_not_resent_and_becomes_due(setup):
+    _storage, repository, clock, document, _created = setup
+    ownership = {"owner": "initial"}
+    repository.reserve_notification(
+        document["outbox_id"],
+        source_ownership=ownership,
+        authorize=lambda: None,
+    )
+    assert repository.authorize_notification_send(
+        document["outbox_id"],
+        source_ownership=ownership,
+        authorize=lambda: None,
+    )
+    sent = []
+    assert repository.repair_notifications(sent.append) == 0
+    assert sent == []
+    clock.advance(301)
+    due = repository.due_reconciliations()
+    assert {(provider, token) for _outbox, provider, token in due} == {
+        (provider, leg["active_schedule_token"]) for provider, leg in document["providers"].items()
+    }
+
+
+def test_legacy_consumed_notification_is_migrated_to_reconciliation(setup):
+    storage, repository, clock, document, _created = setup
+    path = outbox_path(document["outbox_id"])
+
+    def make_legacy(raw):
+        current = json.loads(raw.decode())
+        for leg in current["providers"].values():
+            leg["next_reconcile_at"] = None
+            leg["active_schedule_token"] = None
+            leg["active_schedule_source"] = None
+        current["enqueue"]["notification_intent"] = {
+            "intent_id": "legacy-intent",
+            "source_ownership": {"owner": "legacy"},
+            "reserved_at": "2026-09-21T20:59:00Z",
+            "consumed_at": "2026-09-21T21:00:00Z",
+        }
+        current["enqueue"]["notification_sent_at"] = "2026-09-21T21:00:00Z"
+        return json.dumps(current, sort_keys=True, separators=(",", ":")).encode()
+
+    storage.update_bytes(path, "application/json", make_legacy)
+    sent = []
+    assert repository.repair_notifications(sent.append) == 0
+    assert sent == []
+    repaired = repository.read(document["outbox_id"])
+    assert repaired["enqueue"]["notification_intent"]["state"] == "ambiguous"
+    assert repaired["enqueue"]["notification_sent_at"] is None
+    expected_due = clock() + timedelta(minutes=5)
+    assert all(
+        leg["next_reconcile_at"] == expected_due.isoformat().replace("+00:00", "Z")
+        and leg["active_schedule_token"]
+        for leg in repaired["providers"].values()
+    )
+
+
 def test_reconciliation_scan_is_fair_beyond_one_hundred_records(tmp_path):
     storage = LocalStorageBackend(tmp_path / "storage", "http://localhost/artifacts")
     source = tmp_path / "video.mp4"

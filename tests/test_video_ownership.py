@@ -303,26 +303,25 @@ def test_archive_outbox_and_notification_writes_consume_source_permit(tmp_path):
         source_ownership=notification_token,
         authorize=lambda: guard.assert_permit(notification),
     )
-    assert (
-        repository.consume_notification_intent(
-            document["outbox_id"],
-            source_ownership=notification_token,
-            authorize=lambda: guard.assert_permit(notification),
-        )
-        is True
+    assert repository.authorize_notification_send(
+        document["outbox_id"],
+        source_ownership=notification_token,
+        authorize=lambda: guard.assert_permit(notification),
     )
-    assert (
-        repository.consume_notification_intent(
-            document["outbox_id"],
-            source_ownership=notification_token,
-            authorize=lambda: guard.assert_permit(notification),
-        )
-        is False
+    assert repository.accept_notification_send(
+        document["outbox_id"],
+        source_ownership=notification_token,
+        authorize=lambda: guard.assert_permit(notification),
+    )
+    assert not repository.authorize_notification_send(
+        document["outbox_id"],
+        source_ownership=notification_token,
+        authorize=lambda: guard.assert_permit(notification),
     )
     assert storage.get_bytes(outbox_path(document["outbox_id"])) is not None
 
 
-def test_takeover_after_notification_intent_consumption_cannot_duplicate_send(tmp_path):
+def test_takeover_after_notification_send_authorization_cannot_duplicate_send(tmp_path):
     storage, guard, repository, outbox_id = _notification_outbox(tmp_path)
     permit = guard.begin("distribution_notification", allow_idempotent_takeover=True)
     token = guard.source_token(permit)
@@ -337,7 +336,7 @@ def test_takeover_after_notification_intent_consumption_cannot_duplicate_send(tm
     class TakeoverAtPhysicalSendProducer:
         def send_message(self, body: str) -> None:
             intent = repository.read(outbox_id)["enqueue"]["notification_intent"]
-            assert intent["consumed_at"] is not None
+            assert intent["state"] == "sending"
             _force_takeover(storage, "job")
             messages.append(body)
 
@@ -345,7 +344,7 @@ def test_takeover_after_notification_intent_consumption_cannot_duplicate_send(tm
         enqueue_distribution_job(
             outbox_id,
             producer=TakeoverAtPhysicalSendProducer(),
-            authorize_send=lambda: repository.consume_notification_intent(
+            authorize_send=lambda: repository.authorize_notification_send(
                 outbox_id,
                 source_ownership=token,
                 authorize=lambda: guard.assert_permit(permit),
@@ -370,7 +369,7 @@ def test_takeover_after_notification_intent_consumption_cannot_duplicate_send(tm
         enqueue_distribution_job(
             outbox_id,
             producer=TakeoverAtPhysicalSendProducer(),
-            authorize_send=lambda: repository.consume_notification_intent(
+            authorize_send=lambda: repository.authorize_notification_send(
                 outbox_id,
                 source_ownership=successor_token,
                 authorize=lambda: successor.assert_permit(successor_permit),
@@ -381,7 +380,7 @@ def test_takeover_after_notification_intent_consumption_cannot_duplicate_send(tm
     assert len(messages) == 1
 
 
-def test_crash_after_notification_intent_consumption_cannot_replay_send(tmp_path):
+def test_crash_after_notification_send_authorization_recovers_by_reconciliation(tmp_path):
     storage, guard, repository, outbox_id = _notification_outbox(tmp_path)
     permit = guard.begin("distribution_notification", allow_idempotent_takeover=True)
     token = guard.source_token(permit)
@@ -399,15 +398,19 @@ def test_crash_after_notification_intent_consumption_cannot_replay_send(tmp_path
         enqueue_distribution_job(
             outbox_id,
             producer=CrashingProducer(),
-            authorize_send=lambda: repository.consume_notification_intent(
+            authorize_send=lambda: repository.authorize_notification_send(
                 outbox_id,
                 source_ownership=token,
                 authorize=lambda: guard.assert_permit(permit),
             ),
         )
 
-    consumed = repository.read(outbox_id)["enqueue"]["notification_intent"]
-    assert consumed["consumed_at"] is not None
+    ambiguous = repository.read(outbox_id)
+    assert ambiguous["enqueue"]["notification_intent"]["state"] == "sending"
+    assert all(
+        leg["active_schedule_token"] and leg["next_reconcile_at"]
+        for leg in ambiguous["providers"].values()
+    )
 
     _force_takeover(storage, "job")
     successor = _successor_guard(storage, guard)
@@ -432,7 +435,7 @@ def test_crash_after_notification_intent_consumption_cannot_replay_send(tmp_path
         enqueue_distribution_job(
             outbox_id,
             producer=ReplayProducer(),
-            authorize_send=lambda: repository.consume_notification_intent(
+            authorize_send=lambda: repository.authorize_notification_send(
                 outbox_id,
                 source_ownership=successor_token,
                 authorize=lambda: successor.assert_permit(successor_permit),
@@ -441,7 +444,13 @@ def test_crash_after_notification_intent_consumption_cannot_replay_send(tmp_path
         is True
     )
     assert replayed == []
-    assert repository.read(outbox_id)["enqueue"]["notification_intent"] == consumed
+    repaired: list[str] = []
+    assert repository.repair_notifications(repaired.append) == 0
+    assert repaired == []
+    assert (
+        repository.read(outbox_id)["enqueue"]["notification_intent"]
+        == ambiguous["enqueue"]["notification_intent"]
+    )
 
 
 def test_provider_mutation_consumes_durable_permit_and_takeover_is_read_only(tmp_path, monkeypatch):
