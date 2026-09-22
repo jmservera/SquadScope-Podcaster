@@ -90,6 +90,25 @@ class TestContains:
         t = _FakeTransport([(200, b'{"items": []}')])
         assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
 
+    @pytest.mark.parametrize("body", [b"[]", b"null"], ids=["array", "null"])
+    def test_false_when_success_json_is_not_an_object(self, body):
+        t = _FakeTransport([(200, body)])
+
+        assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
+
+    @pytest.mark.parametrize("body", [b"[]", b"null"], ids=["array", "null"])
+    def test_strict_mode_rejects_success_json_that_is_not_an_object(self, body):
+        t = _FakeTransport([(200, body)])
+
+        with pytest.raises(RuntimeError, match="^playlist membership response was invalid$"):
+            playlist_contains_video(
+                "PL",
+                "vid",
+                "s3cr3t-token",
+                transport=t,
+                raise_on_error=True,
+            )
+
     def test_false_on_http_error(self):
         t = _FakeTransport([(404, b"{}")])
         assert playlist_contains_video("PL", "vid", "tok", transport=t) is False
@@ -283,6 +302,19 @@ class TestAddToShowPlaylist:
         assert res.retry_blocked is True
         assert len(t.calls) == 1
         assert t.calls[0]["method"] == "GET"
+
+    @pytest.mark.parametrize("body", [b"[]", b"null"], ids=["array", "null"])
+    def test_non_object_membership_is_retry_blocked_without_insert(self, monkeypatch, body):
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
+        t = _FakeTransport([(200, body)])
+
+        res = add_to_show_playlist(None, "en", "vid", "tok", transport=t)
+
+        assert res.succeeded is False
+        assert res.outcome == "unknown"
+        assert res.retry_blocked is True
+        assert res.error == "playlist membership response was invalid"
+        assert [call["method"] for call in t.calls] == ["GET"]
 
     def test_lost_insert_response_is_retry_blocked_unknown(self, monkeypatch):
         monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
