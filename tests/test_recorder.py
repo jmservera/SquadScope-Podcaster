@@ -15,7 +15,6 @@ from podcaster.storage import LocalStorageBackend
 from podcaster.video import recorder
 from podcaster.video.budget import VideoStageBudget
 from podcaster.video.clipset import (
-    CLIPSET_SCHEMA_VERSION,
     LEGACY_CLIPSET_SCHEMA_VERSION,
     Clipset,
     clip_blob_path,
@@ -220,35 +219,29 @@ def test_process_message_malformed_clipset_terminalizes_and_deletes(tmp_path) ->
 
 
 @pytest.mark.parametrize(
-    ("schema_version", "budget_value", "include_budget"),
+    "budget_value",
     [
-        (LEGACY_CLIPSET_SCHEMA_VERSION, None, False),
-        (CLIPSET_SCHEMA_VERSION, None, False),
-        (CLIPSET_SCHEMA_VERSION, None, True),
-        (CLIPSET_SCHEMA_VERSION, "not-an-object", True),
+        pytest.param("missing", id="missing"),
+        pytest.param("invalid", id="string"),
+        pytest.param([], id="list"),
+        pytest.param(42, id="numeric"),
+        pytest.param({"schema_version": 1}, id="invalid-object"),
     ],
-    ids=["legacy-v1", "missing-budget", "null-budget", "non-object-budget"],
 )
-def test_process_message_budget_migration_preserves_delivery(
-    tmp_path,
-    schema_version,
-    budget_value,
-    include_budget,
-) -> None:
+def test_process_message_retries_rollout_incompatible_clipset(tmp_path, budget_value) -> None:
     scratch = _scratch(tmp_path)
-    current = Clipset.from_segments(
+    persisted = Clipset.from_segments(
         JOB_ID,
         [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
-        budget=VideoStageBudget.start().projection,
     ).to_dict()
-    current["schema_version"] = schema_version
-    if include_budget:
-        current["video_budget"] = budget_value
+    persisted["schema_version"] = LEGACY_CLIPSET_SCHEMA_VERSION
+    if budget_value == "missing":
+        persisted.pop("video_budget")
     else:
-        current.pop("video_budget")
+        persisted["video_budget"] = budget_value
     scratch.put_bytes(
         clipset_blob_path(JOB_ID),
-        json.dumps(current).encode("utf-8"),
+        json.dumps(persisted).encode("utf-8"),
         "application/json",
     )
     record, calls = _recorder()
@@ -257,6 +250,34 @@ def test_process_message_budget_migration_preserves_delivery(
 
     outcome = process_clip_message(
         message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_RETRY
+    assert calls == []
+    assert queue.deleted == []
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+
+
+def test_process_message_retries_authentic_null_budget_v1(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    persisted = Clipset.from_segments(
+        JOB_ID,
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+    ).to_dict()
+    scratch.put_bytes(
+        clipset_blob_path(JOB_ID),
+        json.dumps(persisted).encode("utf-8"),
+        "application/json",
+    )
+    record, calls = _recorder()
+    queue = FakeQueue()
+
+    outcome = process_clip_message(
+        _message(0),
         scratch=scratch,
         queue=queue,
         record_segment=record,

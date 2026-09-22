@@ -22,8 +22,8 @@ from typing import Any, Sequence
 from podcaster.video.budget import BudgetProjection
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 
-#: Schema marker for the serialised fan-out plan. Version 2 requires the
-#: durable parent video budget used by recorders for deadline enforcement.
+#: Schema markers for the serialised fan-out plan. V1 always serialized
+#: ``video_budget`` as either an object or null; V2 requires an object.
 LEGACY_CLIPSET_SCHEMA_VERSION = "squadscope-podcaster-clipset-v1"
 CLIPSET_SCHEMA_VERSION = "squadscope-podcaster-clipset-v2"
 
@@ -32,12 +32,12 @@ class ClipsetJobMismatchError(ValueError):
     """Raised when a clipset is loaded from another job's storage path."""
 
 
-class ClipsetMigrationRequiredError(ValueError):
-    """Raised when an editor must rebuild a clipset before recorders consume it."""
+class ClipsetSchemaVersionError(ValueError):
+    """Raised when a persisted clipset uses an unsupported schema."""
 
 
-class UnknownClipsetSchemaError(ValueError):
-    """Raised when a clipset uses an unsupported non-legacy schema."""
+class ClipsetBudgetError(ValueError):
+    """Raised when a budget-bearing clipset has an invalid parent budget."""
 
 
 #: Root prefix for per-job scratch artifacts (matches
@@ -190,7 +190,7 @@ class Clipset:
 
     job_id: str
     clips: tuple[ClipPlanEntry, ...]
-    budget: BudgetProjection
+    budget: BudgetProjection | None = None
     schema_version: str = CLIPSET_SCHEMA_VERSION
 
     @property
@@ -218,21 +218,38 @@ class Clipset:
         job_id: str,
         segments: Sequence[VideoSegment],
         *,
-        budget: BudgetProjection,
+        budget: BudgetProjection | None = None,
     ) -> "Clipset":
         clips = tuple(
             ClipPlanEntry.from_segment(index, segment) for index, segment in enumerate(segments)
         )
-        return cls(job_id=_clean_job_id(job_id), clips=clips, budget=budget)
+        return cls(
+            job_id=_clean_job_id(job_id),
+            clips=clips,
+            budget=budget,
+            schema_version=(
+                CLIPSET_SCHEMA_VERSION if budget is not None else LEGACY_CLIPSET_SCHEMA_VERSION
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "schema_version": self.schema_version,
             "job_id": self.job_id,
             "count": self.count,
             "clips": [c.to_dict() for c in self.clips],
-            "video_budget": self.budget.to_dict(),
         }
+        if self.schema_version == CLIPSET_SCHEMA_VERSION:
+            if self.budget is None:
+                raise ClipsetBudgetError("current clipset schema requires video_budget")
+            data["video_budget"] = self.budget.to_dict()
+        elif self.schema_version == LEGACY_CLIPSET_SCHEMA_VERSION:
+            data["video_budget"] = self.budget.to_dict() if self.budget is not None else None
+        else:
+            raise ClipsetSchemaVersionError(
+                f"unsupported clipset schema version {self.schema_version!r}"
+            )
+        return data
 
     @classmethod
     def from_dict(
@@ -244,12 +261,60 @@ class Clipset:
         if not isinstance(data, dict):
             raise ValueError("clipset payload must be a JSON object")
         schema_version = data.get("schema_version")
-        if schema_version == LEGACY_CLIPSET_SCHEMA_VERSION:
-            raise ClipsetMigrationRequiredError(
-                "legacy clipset schema must be rebuilt with a video budget"
+        if schema_version not in {
+            LEGACY_CLIPSET_SCHEMA_VERSION,
+            CLIPSET_SCHEMA_VERSION,
+        }:
+            raise ClipsetSchemaVersionError(
+                f"unsupported clipset schema version {schema_version!r}"
             )
-        if schema_version != CLIPSET_SCHEMA_VERSION:
-            raise UnknownClipsetSchemaError("unknown clipset schema version")
+        if "video_budget" not in data:
+            raise ClipsetBudgetError("clipset video_budget is missing")
+        raw_budget = data["video_budget"]
+        if schema_version == LEGACY_CLIPSET_SCHEMA_VERSION and raw_budget is None:
+            budget = None
+        elif not isinstance(raw_budget, dict):
+            requirement = (
+                "current clipset schema requires object video_budget"
+                if schema_version == CLIPSET_SCHEMA_VERSION
+                else "legacy clipset video_budget must be an object or null"
+            )
+            raise ClipsetBudgetError(requirement)
+        else:
+            try:
+                budget = BudgetProjection.from_dict(raw_budget)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ClipsetBudgetError("clipset video_budget is invalid") from exc
+        return cls._from_validated_dict(
+            data,
+            expected_job_id=expected_job_id,
+            budget=budget,
+            schema_version=str(schema_version),
+        )
+
+    @classmethod
+    def from_legacy_v1_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        expected_job_id: str,
+    ) -> "Clipset":
+        """Parse an authentic v1 document with an object or null budget."""
+        if not isinstance(data, dict):
+            raise ValueError("clipset payload must be a JSON object")
+        if data.get("schema_version") != LEGACY_CLIPSET_SCHEMA_VERSION:
+            raise ClipsetSchemaVersionError("clipset is not a legacy v1 document")
+        return cls.from_dict(data, expected_job_id=expected_job_id)
+
+    @classmethod
+    def _from_validated_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        expected_job_id: str,
+        budget: BudgetProjection | None,
+        schema_version: str,
+    ) -> "Clipset":
         job_id = _clean_job_id(str(data["job_id"]))
         expected = _clean_job_id(expected_job_id)
         if job_id != expected:
@@ -260,14 +325,11 @@ class Clipset:
         declared = data.get("count")
         if declared is not None and int(declared) != len(clips):
             raise ValueError(f"clipset count {declared} does not match {len(clips)} clip entries")
-        raw_budget = data.get("video_budget")
-        if not isinstance(raw_budget, dict):
-            raise ClipsetMigrationRequiredError("clipset video_budget must be a JSON object")
         return cls(
             job_id=job_id,
             clips=clips,
-            budget=BudgetProjection.from_dict(raw_budget),
-            schema_version=str(data["schema_version"]),
+            budget=budget,
+            schema_version=schema_version,
         )
 
     def to_json_bytes(self) -> bytes:
@@ -283,6 +345,20 @@ class Clipset:
         if not payload:
             raise ValueError("clipset.json was empty or missing")
         return cls.from_dict(
+            json.loads(payload.decode("utf-8")),
+            expected_job_id=expected_job_id,
+        )
+
+    @classmethod
+    def from_legacy_v1_bytes(
+        cls,
+        payload: bytes | None,
+        *,
+        expected_job_id: str,
+    ) -> "Clipset":
+        if not payload:
+            raise ValueError("clipset.json was empty or missing")
+        return cls.from_legacy_v1_dict(
             json.loads(payload.decode("utf-8")),
             expected_job_id=expected_job_id,
         )

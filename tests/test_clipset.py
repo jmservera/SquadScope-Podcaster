@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from podcaster.video.budget import VideoStageBudget
@@ -10,7 +12,8 @@ from podcaster.video.clipset import (
     LEGACY_CLIPSET_SCHEMA_VERSION,
     ClipPlanEntry,
     Clipset,
-    ClipsetMigrationRequiredError,
+    ClipsetBudgetError,
+    ClipsetSchemaVersionError,
     clip_blob_path,
     clip_manifest_blob_path,
     clips_prefix,
@@ -37,14 +40,6 @@ def _segments() -> list[VideoSegment]:
     ]
 
 
-def _clipset(job_id: str = "job-1") -> Clipset:
-    return Clipset.from_segments(
-        job_id,
-        _segments(),
-        budget=VideoStageBudget.start().projection,
-    )
-
-
 def test_blob_path_helpers_use_zero_padded_index() -> None:
     assert job_prefix("job-1") == "video-jobs/job-1/"
     assert clipset_blob_path("job-1") == "video-jobs/job-1/clipset.json"
@@ -54,7 +49,11 @@ def test_blob_path_helpers_use_zero_padded_index() -> None:
 
 
 def test_clipset_round_trips_through_bytes() -> None:
-    clipset = _clipset()
+    clipset = Clipset.from_segments(
+        "job-1",
+        _segments(),
+        budget=VideoStageBudget.start().projection,
+    )
     assert clipset.count == 3
     assert clipset.indices() == [0, 1, 2]
     assert clipset.schema_version == CLIPSET_SCHEMA_VERSION
@@ -64,7 +63,7 @@ def test_clipset_round_trips_through_bytes() -> None:
 
 
 def test_entry_to_segment_preserves_repo_and_timings() -> None:
-    clipset = _clipset()
+    clipset = Clipset.from_segments("job-1", _segments())
 
     generic = clipset.entry(0).to_segment()
     assert generic.repo is None
@@ -81,13 +80,13 @@ def test_entry_to_segment_preserves_repo_and_timings() -> None:
 
 
 def test_entry_repo_url() -> None:
-    clipset = _clipset()
+    clipset = Clipset.from_segments("job-1", _segments())
     assert clipset.entry(0).repo_url is None
     assert clipset.entry(1).repo_url == "https://github.com/octo/api"
 
 
 def test_entry_missing_index_raises_keyerror() -> None:
-    clipset = _clipset()
+    clipset = Clipset.from_segments("job-1", _segments())
     with pytest.raises(KeyError):
         clipset.entry(99)
 
@@ -100,14 +99,18 @@ def test_from_bytes_rejects_empty() -> None:
 
 
 def test_from_dict_rejects_count_mismatch() -> None:
-    data = _clipset().to_dict()
+    data = Clipset.from_segments("job-1", _segments()).to_dict()
     data["count"] = 99
     with pytest.raises(ValueError):
         Clipset.from_dict(data, expected_job_id="job-1")
 
 
 def test_from_bytes_rejects_cross_job_clipset() -> None:
-    clipset = _clipset("job-b")
+    clipset = Clipset.from_segments(
+        "job-b",
+        _segments(),
+        budget=VideoStageBudget.start().projection,
+    )
 
     with pytest.raises(ValueError, match="does not match expected"):
         Clipset.from_dict(clipset.to_dict(), expected_job_id="job-a")
@@ -116,29 +119,60 @@ def test_from_bytes_rejects_cross_job_clipset() -> None:
 
 
 def test_from_dict_rejects_legacy_or_unknown_schema() -> None:
-    data = _clipset().to_dict()
+    data = Clipset.from_segments(
+        "job-1",
+        _segments(),
+        budget=VideoStageBudget.start().projection,
+    ).to_dict()
     data.pop("schema_version")
-    with pytest.raises(ValueError, match="schema"):
+    with pytest.raises(ClipsetSchemaVersionError, match="schema"):
         Clipset.from_dict(data, expected_job_id="job-1")
     data["schema_version"] = "future-v99"
-    with pytest.raises(ValueError, match="schema"):
+    with pytest.raises(ClipsetSchemaVersionError, match="schema"):
         Clipset.from_dict(data, expected_job_id="job-1")
 
 
-def test_from_dict_requires_object_budget_for_current_schema() -> None:
-    data = _clipset().to_dict()
-    for malformed in (None, [], "budget", 1):
-        data["video_budget"] = malformed
-        with pytest.raises(ClipsetMigrationRequiredError, match="video_budget"):
-            Clipset.from_dict(data, expected_job_id="job-1")
+@pytest.mark.parametrize("bad_budget", [None, "invalid", [], 42])
+def test_current_schema_rejects_non_object_budget(bad_budget) -> None:
+    data = Clipset.from_segments(
+        "job-1",
+        _segments(),
+        budget=VideoStageBudget.start().projection,
+    ).to_dict()
+    data["video_budget"] = bad_budget
+
+    with pytest.raises(ClipsetBudgetError, match="object video_budget"):
+        Clipset.from_dict(data, expected_job_id="job-1")
 
 
-def test_from_dict_rejects_legacy_schema_for_editor_migration() -> None:
-    data = _clipset().to_dict()
-    data["schema_version"] = LEGACY_CLIPSET_SCHEMA_VERSION
+@pytest.mark.parametrize("budgeted", [False, True], ids=["null-budget", "object-budget"])
+def test_legacy_parser_accepts_authentic_v1_serializer_shapes(budgeted) -> None:
+    budget = VideoStageBudget.start().projection if budgeted else None
+    legacy = replace(
+        Clipset.from_segments("job-1", _segments(), budget=budget),
+        schema_version=LEGACY_CLIPSET_SCHEMA_VERSION,
+    )
+    data = legacy.to_dict()
+
+    assert "video_budget" in data
+    assert isinstance(data["video_budget"], dict) if budgeted else data["video_budget"] is None
+    assert Clipset.from_legacy_v1_dict(data, expected_job_id="job-1") == legacy
+
+
+@pytest.mark.parametrize("bad_budget", ["invalid", [], 42])
+def test_legacy_parser_rejects_non_object_non_null_budget(bad_budget) -> None:
+    data = Clipset.from_segments("job-1", _segments()).to_dict()
+    data["video_budget"] = bad_budget
+
+    with pytest.raises(ClipsetBudgetError, match="object or null"):
+        Clipset.from_legacy_v1_dict(data, expected_job_id="job-1")
+
+
+def test_all_schemas_reject_missing_budget() -> None:
+    data = Clipset.from_segments("job-1", _segments()).to_dict()
     data.pop("video_budget")
 
-    with pytest.raises(ClipsetMigrationRequiredError, match="legacy"):
+    with pytest.raises(ClipsetBudgetError, match="missing"):
         Clipset.from_dict(data, expected_job_id="job-1")
 
 

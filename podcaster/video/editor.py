@@ -36,6 +36,7 @@ Responsibilities (RFC §5, §6, §8):
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -48,9 +49,12 @@ from podcaster.storage import StorageBackend
 from podcaster.video.budget import VideoStage, VideoStageBudget
 from podcaster.video.clip_manifest import CLIP_MANIFEST_SCHEMA_VERSION
 from podcaster.video.clipset import (
+    CLIPSET_SCHEMA_VERSION,
+    LEGACY_CLIPSET_SCHEMA_VERSION,
     Clipset,
+    ClipsetBudgetError,
     ClipsetJobMismatchError,
-    UnknownClipsetSchemaError,
+    ClipsetSchemaVersionError,
     clip_blob_path,
     clip_content_blob_path,
     clip_manifest_blob_path,
@@ -211,11 +215,10 @@ def plan_or_load_clipset(
     can't drift (RFC §6.3).
     """
     path = clipset_blob_path(job_id)
-    effective_budget = budget or VideoStageBudget.start()
     planned = Clipset.from_segments(
         job_id,
         segments,
-        budget=effective_budget.projection,
+        budget=budget.projection if budget is not None else None,
     )
     written = planned.to_json_bytes()
 
@@ -228,7 +231,9 @@ def plan_or_load_clipset(
     raw = scratch.get_bytes(path) or written
     try:
         clipset = Clipset.from_bytes(raw, expected_job_id=job_id)
-    except (ClipsetJobMismatchError, UnknownClipsetSchemaError):
+    except ClipsetJobMismatchError:
+        raise
+    except (ClipsetBudgetError, ClipsetSchemaVersionError):
         raise
     except (TypeError, ValueError):
         if budget is None or not budget.admit(VideoStage.PREFLIGHT).allowed:
@@ -237,6 +242,25 @@ def plan_or_load_clipset(
         scratch.delete_prefix(clips_prefix(job_id))
         scratch.update_bytes(path, _JSON_CONTENT_TYPE, lambda _current: written)
         clipset = planned
+    if clipset.schema_version == LEGACY_CLIPSET_SCHEMA_VERSION:
+        migrated_budget = clipset.budget or (budget.projection if budget is not None else None)
+        if migrated_budget is not None:
+            migration_document = json.loads(raw.decode("utf-8"))
+            migration_document["schema_version"] = CLIPSET_SCHEMA_VERSION
+            migration_document["video_budget"] = migrated_budget.to_dict()
+            migrated_bytes = json.dumps(
+                migration_document,
+                separators=(",", ":"),
+            ).encode("utf-8")
+
+            def _migrate(current: bytes | None) -> bytes:
+                if current == raw:
+                    return migrated_bytes
+                return current if current is not None else migrated_bytes
+
+            scratch.update_bytes(path, _JSON_CONTENT_TYPE, _migrate)
+            authoritative = scratch.get_bytes(path) or migrated_bytes
+            clipset = Clipset.from_bytes(authoritative, expected_job_id=job_id)
     if clipset != planned:
         logger.warning(
             "reusing immutable existing clipset job_id=%s existing_count=%d planned_count=%d",

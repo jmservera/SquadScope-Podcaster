@@ -3976,7 +3976,7 @@ class TestFanoutGating:
         selected = Clipset.from_segments(
             job_id,
             [VideoSegment(start_seconds=17.0, duration_seconds=43.0)],
-            budget=_P04Clock().budget().projection,
+            budget=VideoStageBudget.start().projection,
         )
         scratch.put_bytes(
             clipset_blob_path(job_id),

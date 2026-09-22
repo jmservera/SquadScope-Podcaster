@@ -6,16 +6,19 @@ import hashlib
 import json
 import multiprocessing
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from podcaster.queue import parse_clip_job
 from podcaster.video.budget import VideoStageBudget
 from podcaster.video.clipset import (
     CLIPSET_SCHEMA_VERSION,
     LEGACY_CLIPSET_SCHEMA_VERSION,
     Clipset,
+    ClipsetBudgetError,
     clip_blob_path,
     clip_content_blob_path,
     clip_manifest_blob_path,
@@ -199,6 +202,160 @@ def test_plan_or_load_clipset_is_immutable_on_redelivery():
     assert second.indices() == [0, 1, 2]
 
 
+def test_budgeted_clipset_migrates_genuine_v1_without_losing_completed_clips():
+    storage = FakeStorage()
+    original_budget = VideoStageBudget.start(
+        now_utc=datetime(2026, 9, 22, 8, 0, tzinfo=timezone.utc)
+    ).projection
+    legacy = replace(
+        Clipset.from_segments("job1", _segments(3), budget=original_budget),
+        schema_version=LEGACY_CLIPSET_SCHEMA_VERSION,
+    )
+    legacy_document = legacy.to_dict()
+    legacy_document["durable_marker"] = {"preserve": True}
+    storage.put_bytes(
+        "video-jobs/job1/clipset.json",
+        json.dumps(legacy_document).encode("utf-8"),
+        _JSON,
+    )
+    _write_manifest(storage, "job1", 0)
+
+    migrated = plan_or_load_clipset(
+        storage,
+        "job1",
+        _segments(2),
+        budget=VideoStageBudget.start(),
+    )
+    producer = FakeProducer()
+    pending = enqueue_missing_clips(storage, migrated, producer=producer)
+
+    assert migrated.count == legacy.count == 3
+    assert migrated.clips == legacy.clips
+    assert migrated.budget == original_budget
+    assert storage.blob_exists(clip_manifest_blob_path("job1", 0))
+    assert storage.blob_exists(
+        clip_content_blob_path(
+            "job1",
+            0,
+            hashlib.sha256(b"WEBMDATA").hexdigest(),
+        )
+    )
+    persisted = json.loads(storage.get_bytes("video-jobs/job1/clipset.json"))
+    assert persisted["schema_version"] == CLIPSET_SCHEMA_VERSION
+    assert persisted["video_budget"] == original_budget.to_dict()
+    assert {
+        key: value
+        for key, value in persisted.items()
+        if key not in {"schema_version", "video_budget"}
+    } == {
+        key: value
+        for key, value in legacy_document.items()
+        if key not in {"schema_version", "video_budget"}
+    }
+    assert pending == [1, 2]
+    assert [parse_clip_job(body) for body in producer.sent] == [("job1", 1), ("job1", 2)]
+
+
+def test_budgeted_clipset_upgrades_authentic_null_v1_without_replacing_plan():
+    storage = FakeStorage()
+    legacy = Clipset.from_segments("job1", _segments(3))
+    storage.put_bytes(
+        "video-jobs/job1/clipset.json",
+        legacy.to_json_bytes(),
+        _JSON,
+    )
+    _write_manifest(storage, "job1", 0)
+
+    migrated = plan_or_load_clipset(
+        storage,
+        "job1",
+        _segments(2),
+        budget=VideoStageBudget.start(),
+    )
+
+    assert migrated.count == 3
+    assert migrated.clips == legacy.clips
+    assert migrated.budget is not None
+    assert storage.blob_exists(clip_manifest_blob_path("job1", 0))
+
+
+@pytest.mark.parametrize(
+    "bad_budget",
+    [
+        pytest.param("missing", id="missing"),
+        pytest.param("invalid", id="string"),
+        pytest.param([], id="list"),
+        pytest.param(42, id="numeric"),
+        pytest.param({"schema_version": 1}, id="invalid-object"),
+    ],
+)
+def test_budgeted_clipset_rejects_malformed_budget_without_cleanup(bad_budget):
+    storage = FakeStorage()
+    persisted = Clipset.from_segments("job1", _segments(3)).to_dict()
+    if bad_budget == "missing":
+        persisted.pop("video_budget")
+    else:
+        persisted["video_budget"] = bad_budget
+    original = json.dumps(persisted).encode("utf-8")
+    storage.put_bytes("video-jobs/job1/clipset.json", original, _JSON)
+    _write_manifest(storage, "job1", 0)
+    before = dict(storage._data)
+
+    with pytest.raises(ClipsetBudgetError):
+        plan_or_load_clipset(
+            storage,
+            "job1",
+            _segments(2),
+            budget=VideoStageBudget.start(),
+        )
+
+    assert storage._data == before
+
+
+def test_concurrent_v1_migration_keeps_cas_winner():
+    initial_budget = VideoStageBudget.start(
+        now_utc=datetime(2026, 9, 22, 8, 0, tzinfo=timezone.utc)
+    ).projection
+    winning_budget = VideoStageBudget.start(
+        now_utc=datetime(2026, 9, 22, 8, 1, tzinfo=timezone.utc)
+    ).projection
+    legacy = replace(
+        Clipset.from_segments("job1", _segments(3), budget=initial_budget),
+        schema_version=LEGACY_CLIPSET_SCHEMA_VERSION,
+    )
+    winner = Clipset(job_id="job1", clips=legacy.clips, budget=winning_budget)
+
+    class ConcurrentStorage(FakeStorage):
+        def __init__(self):
+            super().__init__()
+            self.updates = 0
+
+        def update_bytes(self, path, content_type, update):
+            self.updates += 1
+            if self.updates == 2:
+                self._data[path] = winner.to_json_bytes()
+            return super().update_bytes(path, content_type, update)
+
+    storage = ConcurrentStorage()
+    storage.put_bytes("video-jobs/job1/clipset.json", legacy.to_json_bytes(), _JSON)
+
+    loaded = plan_or_load_clipset(
+        storage,
+        "job1",
+        _segments(2),
+        budget=VideoStageBudget.start(),
+    )
+
+    assert loaded == winner
+    assert (
+        Clipset.from_bytes(
+            storage.get_bytes("video-jobs/job1/clipset.json"),
+            expected_job_id="job1",
+        )
+        == winner
+    )
+
+
 def test_budgeted_clipset_rejects_malformed_cache_and_recomputes():
     storage = FakeStorage()
     storage.put_bytes("video-jobs/job1/clipset.json", b"{malformed", _JSON)
@@ -232,31 +389,6 @@ def test_budgeted_clipset_rejects_malformed_cache_and_recomputes():
     assert storage.blob_exists(lease_path)
 
 
-def test_legacy_clipset_without_budget_is_rebuilt_and_refanned_out():
-    storage = FakeStorage()
-    producer = FakeProducer()
-    budget = VideoStageBudget.start()
-    legacy = Clipset.from_segments("job1", _segments(2), budget=budget.projection).to_dict()
-    legacy["schema_version"] = LEGACY_CLIPSET_SCHEMA_VERSION
-    legacy.pop("video_budget")
-    storage.put_bytes(
-        "video-jobs/job1/clipset.json",
-        json.dumps(legacy).encode("utf-8"),
-        _JSON,
-    )
-    storage.put_bytes("video-jobs/job1/clips/000.webm", b"stale", _WEBM)
-
-    clipset = plan_or_load_clipset(storage, "job1", _segments(2), budget=budget)
-    enqueued = enqueue_missing_clips(storage, clipset, producer=producer)
-
-    persisted = json.loads(storage.get_bytes("video-jobs/job1/clipset.json"))
-    assert persisted["schema_version"] == CLIPSET_SCHEMA_VERSION
-    assert persisted["video_budget"] == budget.projection.to_dict()
-    assert not storage.blob_exists("video-jobs/job1/clips/000.webm")
-    assert enqueued == [0, 1]
-    assert len(producer.sent) == 2
-
-
 def test_plan_or_load_clipset_rejects_cross_job_cache_without_cleanup():
     storage = FakeStorage()
     foreign = plan_or_load_clipset(storage, "job2", _segments(2))
@@ -272,25 +404,6 @@ def test_plan_or_load_clipset_rejects_cross_job_cache_without_cleanup():
             _segments(2),
             budget=VideoStageBudget.start(),
         )
-
-    assert storage._data == before
-
-
-def test_plan_or_load_clipset_rejects_future_schema_without_cleanup():
-    storage = FakeStorage()
-    budget = VideoStageBudget.start()
-    future = Clipset.from_segments("job1", _segments(2), budget=budget.projection).to_dict()
-    future["schema_version"] = "squadscope-podcaster-clipset-v99"
-    storage.put_bytes(
-        "video-jobs/job1/clipset.json",
-        json.dumps(future).encode("utf-8"),
-        _JSON,
-    )
-    storage.put_bytes("video-jobs/job1/clips/000.webm", b"keep", _WEBM)
-    before = dict(storage._data)
-
-    with pytest.raises(ValueError, match="unknown clipset schema"):
-        plan_or_load_clipset(storage, "job1", _segments(2), budget=budget)
 
     assert storage._data == before
 
