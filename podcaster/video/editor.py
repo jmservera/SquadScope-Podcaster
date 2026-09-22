@@ -130,18 +130,19 @@ def acquire_or_renew_lease(
     *,
     now: datetime | None = None,
     ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS,
-) -> bool:
+) -> EditorLease | None:
     """Claim or heartbeat-renew the editor lease for *job_id* via CAS.
 
-    Returns ``True`` when *run_id* holds the lease after this call (it was free,
-    expired, or already ours), ``False`` when an **unexpired foreign** lease is
-    present — in which case the caller must exit without working (RFC §6.2).
+    Returns the authoritative persisted lease when *run_id* owns it after the
+    CAS, otherwise ``None``. Reading the committed value back prevents a caller
+    from inventing a fresh TTL after storage request latency.
     """
     current_now = now or datetime.now(timezone.utc)
     expires_at = current_now + timedelta(seconds=ttl_seconds)
     acquired = {"ok": False}
 
     def _update(current: bytes | None) -> bytes:
+        acquired["ok"] = False
         existing = EditorLease.from_bytes(current)
         if existing is not None and existing.run_id != run_id and existing.expires_at > current_now:
             # Unexpired lease owned by another editor — leave it untouched.
@@ -149,8 +150,46 @@ def acquire_or_renew_lease(
         acquired["ok"] = True
         return EditorLease(run_id, current_now, expires_at).to_bytes()
 
-    scratch.update_bytes(editor_lease_blob_path(job_id), _JSON_CONTENT_TYPE, _update)
-    return acquired["ok"]
+    path = editor_lease_blob_path(job_id)
+    scratch.update_bytes(path, _JSON_CONTENT_TYPE, _update)
+    if not acquired["ok"]:
+        return None
+    persisted = EditorLease.from_bytes(scratch.get_bytes(path))
+    return persisted if persisted is not None and persisted.run_id == run_id else None
+
+
+def renew_lease(
+    scratch: StorageBackend,
+    job_id: str,
+    run_id: str,
+    *,
+    now: datetime | None = None,
+    ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS,
+) -> EditorLease | None:
+    """Renew an unexpired lease still owned by *run_id* and return stored truth."""
+    current_now = now or datetime.now(timezone.utc)
+    expires_at = current_now + timedelta(seconds=ttl_seconds)
+    renewed = {"ok": False}
+    path = editor_lease_blob_path(job_id)
+
+    def _update(current: bytes | None) -> bytes:
+        renewed["ok"] = False
+        existing = EditorLease.from_bytes(current)
+        if existing is None or existing.run_id != run_id or existing.expires_at <= current_now:
+            return current if current is not None else b""
+        renewed["ok"] = True
+        return EditorLease(run_id, existing.claimed_at, expires_at).to_bytes()
+
+    scratch.update_bytes(path, _JSON_CONTENT_TYPE, _update)
+    if not renewed["ok"]:
+        return None
+    persisted = EditorLease.from_bytes(scratch.get_bytes(path))
+    return persisted if persisted is not None and persisted.run_id == run_id else None
+
+
+def read_lease(scratch: StorageBackend, job_id: str) -> EditorLease | None:
+    """Return the lease value currently persisted for *job_id*."""
+    return EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id)))
 
 
 def release_lease(scratch: StorageBackend, job_id: str, run_id: str) -> None:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import subprocess
 import tempfile
@@ -137,6 +138,7 @@ ENV_FANOUT = "PODCASTER_VIDEO_FANOUT"
 #: compose + publish); the dedicated editor lease is the backstop if it is too low.
 ENV_VIDEO_VISIBILITY_TIMEOUT = "PODCASTER_VIDEO_VISIBILITY_TIMEOUT"
 DEFAULT_VIDEO_VISIBILITY_TIMEOUT = 5400
+AUTHORITY_CLOCK_SKEW_RESERVE_SECONDS = 5.0
 
 # Minimum valid MP4 byte size
 _MIN_VALID_MP4_BYTES = 1024
@@ -778,6 +780,21 @@ def _video_visibility_timeout(env: dict[str, str] | None = None) -> int:
     return value if value > 0 else DEFAULT_VIDEO_VISIBILITY_TIMEOUT
 
 
+def _authoritative_deadline_monotonic(expires_at: datetime | None) -> float | None:
+    """Convert a provider/storage wall expiry to a conservative monotonic deadline."""
+    if expires_at is None or expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        return None
+    wall_now = datetime.now(timezone.utc)
+    monotonic_now = time.monotonic()
+    try:
+        remaining = (expires_at.astimezone(timezone.utc) - wall_now).total_seconds()
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(remaining):
+        return None
+    return monotonic_now + remaining - AUTHORITY_CLOCK_SKEW_RESERVE_SECONDS
+
+
 def run_video_generation(
     job_id: str,
     storage: StorageBackend,
@@ -819,10 +836,11 @@ def run_video_generation(
     producer = clip_producer if clip_producer is not None else create_clip_queue_backend()
     fanout_enabled = _resolve_fanout(fanout, scratch, producer)
     run_id = uuid.uuid4().hex if fanout_enabled else None
-    media_validation_lease_deadline: float | None = None
+    media_validation_lease = None
+    media_validation_admitted = False
 
     def _remaining_media_validation_budget() -> float:
-        nonlocal media_validation_lease_deadline
+        nonlocal media_validation_admitted, media_validation_lease
 
         current_monotonic = time.monotonic()
         remaining: list[float] = []
@@ -830,18 +848,28 @@ def run_video_generation(
             remaining.append(lifecycle_deadline_monotonic - current_monotonic)
         if fanout_enabled and run_id is not None:
             from podcaster.video.editor import (
-                DEFAULT_LEASE_TTL_SECONDS,
-                acquire_or_renew_lease,
+                read_lease,
+                renew_lease,
             )
 
-            if media_validation_lease_deadline is None:
-                if not acquire_or_renew_lease(scratch, job_id, run_id):
-                    raise RuntimeError(
-                        f"final media validation failed: editor lease lost for job_id={job_id}"
-                    )
-                current_monotonic = time.monotonic()
-                media_validation_lease_deadline = current_monotonic + DEFAULT_LEASE_TTL_SECONDS
-            remaining.append(media_validation_lease_deadline - current_monotonic)
+            media_validation_lease = (
+                renew_lease(scratch, job_id, run_id)
+                if not media_validation_admitted
+                else read_lease(scratch, job_id)
+            )
+            if media_validation_lease is None or media_validation_lease.run_id != run_id:
+                raise RuntimeError(
+                    f"final media validation failed: editor lease lost for job_id={job_id}"
+                )
+            lease_deadline = _authoritative_deadline_monotonic(media_validation_lease.expires_at)
+            if lease_deadline is None:
+                raise RuntimeError(
+                    "final media validation failed: editor lease expiry invalid "
+                    f"for job_id={job_id}"
+                )
+            media_validation_admitted = True
+            current_monotonic = time.monotonic()
+            remaining.append(lease_deadline - current_monotonic)
         if not remaining:
             return float("inf")
         return min(remaining)
@@ -892,7 +920,8 @@ def run_video_generation(
     if fanout_enabled and run_id is not None:
         from podcaster.video.editor import acquire_or_renew_lease
 
-        if not acquire_or_renew_lease(scratch, job_id, run_id, now=current):
+        media_validation_lease = acquire_or_renew_lease(scratch, job_id, run_id)
+        if media_validation_lease is None:
             logger.info("video skipped job_id=%s reason=%s", job_id, REASON_EDITOR_LEASE_HELD)
             return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_EDITOR_LEASE_HELD)
 
@@ -1063,8 +1092,8 @@ def run_video_generation(
             with timings.phase("recording"):
                 if fanout_enabled and run_id is not None:
                     from podcaster.video.editor import (
-                        acquire_or_renew_lease,
                         record_via_fanout,
+                        renew_lease,
                     )
 
                     def _heartbeat() -> None:
@@ -1077,7 +1106,7 @@ def run_video_generation(
                         # than risk a concurrent compose/publish for the same job_id.
                         # Raising TransientVideoError leaves the message for redelivery;
                         # our CAS release is a no-op since the successor owns the lease.
-                        if not acquire_or_renew_lease(scratch, job_id, run_id):
+                        if renew_lease(scratch, job_id, run_id) is None:
                             logger.warning(
                                 "editor lease lost during fan-in job_id=%s run_id=%s; "
                                 "aborting (another editor took over)",
@@ -1146,6 +1175,14 @@ def run_video_generation(
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
                 raise RuntimeError(f"composition produced invalid output for job_id={job_id}")
+            if lifecycle_deadline_monotonic is not None or fanout_enabled:
+                from podcaster.video.video_compose import FINAL_MEDIA_PROMOTION_RESERVE_SECONDS
+
+                if _remaining_media_validation_budget() < FINAL_MEDIA_PROMOTION_RESERVE_SECONDS:
+                    raise RuntimeError(
+                        "final media validation failed: lifecycle or editor lease expired "
+                        "before distribution"
+                    )
 
             # Distribute
             request = manifest.get("request")
@@ -1871,7 +1908,14 @@ def drain(
         if not messages:
             break
         for message in messages:
-            lifecycle_deadline = time.monotonic() + visibility_timeout
+            lifecycle_deadline = _authoritative_deadline_monotonic(message.next_visible_on)
+            if lifecycle_deadline is None:
+                lifecycle_deadline = float("-inf")
+                logger.error(
+                    "video message missing authoritative next-visible timestamp "
+                    "message_id=%s; media promotion will fail closed",
+                    message.message_id,
+                )
             outcomes.append(
                 process_message(
                     message,

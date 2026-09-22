@@ -6,6 +6,10 @@ import hashlib
 import json
 import logging
 import socket
+import subprocess
+import time
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
@@ -18,6 +22,7 @@ from podcaster.queue import QueueMessage
 from podcaster.video.distribution import DistributionResult, VideoDistributionConfig
 from podcaster.video.job_runner import (
     _DEFAULT_MUSIC_CREDITS,
+    AUTHORITY_CLOCK_SKEW_RESERVE_SECONDS,
     MAX_DEQUEUE_COUNT,
     REASON_ALREADY_PROCESSED,
     REASON_EDITOR_LEASE_HELD,
@@ -33,6 +38,7 @@ from podcaster.video.job_runner import (
     TransientVideoError,
     VideoOutcome,
     _already_processed,
+    _authoritative_deadline_monotonic,
     _build_section_cards,
     _build_video_description,
     _record_video_publication,
@@ -2858,30 +2864,82 @@ class TestFanoutGating:
     @patch("podcaster.video.job_runner.enqueue_distribution_job")
     @patch("podcaster.video.job_runner.commit_immutable_artifact")
     @patch("podcaster.video.job_runner.distribute_video")
-    @patch("podcaster.video.editor.acquire_or_renew_lease")
     @patch("podcaster.video.editor.record_via_fanout")
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
-    def test_media_validation_lease_loss_fails_before_distribution(
+    def test_concurrent_redelivery_takeover_blocks_promotion_and_distribution(
         self,
         mock_compose,
         mock_record_episode,
         mock_fanout,
-        mock_acquire,
         mock_distribute,
         mock_commit,
         mock_enqueue,
         storage,
         dry_config,
     ):
+        from podcaster.video import video_compose as vc
+        from podcaster.video.editor import (
+            EditorLease,
+            acquire_or_renew_lease,
+            editor_lease_blob_path,
+            read_lease,
+        )
+
         job_id = self._seed(storage)
         scratch = _ScratchStorage()
-        mock_acquire.side_effect = [True, False]
         mock_fanout.return_value = MagicMock(recorded=[], output_dir=Path("."))
+        promoted = []
 
-        def compose(*_args, **kwargs):
-            kwargs["media_validation_budget"]()
-            raise AssertionError("lost lease must reject the validation admission")
+        def compose(*_args, output_path, **kwargs):
+            source = output_path.parent / "video-only.mp4"
+            source.write_bytes(b"source")
+
+            def run(cmd):
+                if cmd[0] == "ffprobe":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        json.dumps(
+                            {
+                                "streams": [{"codec_type": "video"}],
+                                "format": {"duration": "1"},
+                            }
+                        ),
+                        "",
+                    )
+                Path(cmd[-1]).write_bytes(b"candidate-media")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            def decode(_path):
+                held = read_lease(scratch, job_id)
+                assert held is not None
+                expired_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                scratch.put_bytes(
+                    editor_lease_blob_path(job_id),
+                    EditorLease(held.run_id, held.claimed_at, expired_at).to_bytes(),
+                    "application/json",
+                )
+                takeover = acquire_or_renew_lease(scratch, job_id, "redelivery-run")
+                assert takeover is not None and takeover.run_id == "redelivery-run"
+
+            original_replace = vc.os.replace
+
+            def observe_replace(source_path, destination_path):
+                promoted.append((source_path, destination_path))
+                return original_replace(source_path, destination_path)
+
+            with patch.object(vc.os, "replace", observe_replace):
+                return vc._finalize_output(
+                    video_only_path=source,
+                    video_duration=1.0,
+                    audio_path=None,
+                    output_path=output_path,
+                    segment_count=1,
+                    run=run,
+                    decode=decode,
+                    media_validation_budget=kwargs["media_validation_budget"],
+                )
 
         mock_compose.side_effect = compose
 
@@ -2896,11 +2954,46 @@ class TestFanoutGating:
                 lifecycle_deadline_monotonic=__import__("time").monotonic() + 300,
             )
 
-        assert mock_acquire.call_count == 2
+        assert promoted == []
         mock_record_episode.assert_not_called()
         mock_commit.assert_not_called()
         mock_enqueue.assert_not_called()
         mock_distribute.assert_not_called()
+
+    def test_delayed_lease_renewal_consumes_persisted_budget(self):
+        from podcaster.video.editor import acquire_or_renew_lease, renew_lease
+
+        class DelayedReadStorage(_ScratchStorage):
+            def get_bytes(self, path):
+                time.sleep(0.08)
+                return super().get_bytes(path)
+
+        scratch = DelayedReadStorage()
+        assert (
+            acquire_or_renew_lease(
+                scratch,
+                "delayed-renew",
+                "run-A",
+                ttl_seconds=10,
+            )
+            is not None
+        )
+        started = time.monotonic()
+        renewed = renew_lease(
+            scratch,
+            "delayed-renew",
+            "run-A",
+            ttl_seconds=10,
+        )
+        assert renewed is not None
+        deadline = _authoritative_deadline_monotonic(renewed.expires_at)
+        assert deadline is not None
+
+        deadline_from_request_start = deadline - started
+        remaining_after_renew = deadline - time.monotonic()
+        assert 4.8 <= deadline_from_request_start <= 5.2
+        assert 0 < remaining_after_renew <= 4.95
+        assert remaining_after_renew <= deadline_from_request_start - 0.05
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
@@ -2930,7 +3023,14 @@ class _VisibilityQueue:
     def receive_messages(self, max_messages=1, *, visibility_timeout=600):
         self.visibility_timeouts.append(visibility_timeout)
         if self._messages:
-            return [self._messages.pop(0)]
+            message = self._messages.pop(0)
+            if message.next_visible_on is None:
+                message = replace(
+                    message,
+                    next_visible_on=datetime.now(timezone.utc)
+                    + timedelta(seconds=visibility_timeout),
+                )
+            return [message]
         return []
 
     def delete_message(self, message):
@@ -2974,7 +3074,64 @@ class TestEditorVisibilityTimeout:
         after = __import__("time").monotonic()
 
         assert len(deadlines) == 1
-        assert before + 1234 <= deadlines[0] <= after + 1234
+        expected = 1234 - AUTHORITY_CLOCK_SKEW_RESERVE_SECONDS
+        assert before + expected - 0.1 <= deadlines[0] <= after + expected + 0.1
+
+    def test_delayed_receive_does_not_add_request_latency_back(
+        self,
+        storage,
+        dry_config,
+        monkeypatch,
+    ):
+        deadlines = []
+        message = _make_message("j1")
+
+        class DelayedQueue(_VisibilityQueue):
+            def receive_messages(self, max_messages=1, *, visibility_timeout=600):
+                self.visibility_timeouts.append(visibility_timeout)
+                if not self._messages:
+                    return []
+                next_visible = datetime.now(timezone.utc) + timedelta(seconds=10)
+                time.sleep(0.08)
+                return [replace(self._messages.pop(0), next_visible_on=next_visible)]
+
+        def process(_message, **kwargs):
+            deadlines.append(kwargs["lifecycle_deadline_monotonic"])
+            return VideoOutcome("j1", STATUS_COMPLETED)
+
+        queue = DelayedQueue([message])
+        monkeypatch.setattr("podcaster.video.job_runner.process_message", process)
+        started = time.monotonic()
+        drain(queue, storage, dry_config)
+        deadline_from_request_start = deadlines[0] - started
+        remaining_after_receive = deadlines[0] - time.monotonic()
+
+        assert 4.8 <= deadline_from_request_start <= 5.2
+        assert 0 < remaining_after_receive <= 4.95
+        assert remaining_after_receive <= deadline_from_request_start - 0.05
+
+    def test_missing_authoritative_timestamp_fails_closed(
+        self,
+        storage,
+        dry_config,
+        monkeypatch,
+    ):
+        deadlines = []
+
+        class MissingAuthorityQueue(_VisibilityQueue):
+            def receive_messages(self, max_messages=1, *, visibility_timeout=600):
+                self.visibility_timeouts.append(visibility_timeout)
+                return [self._messages.pop(0)] if self._messages else []
+
+        def process(_message, **kwargs):
+            deadlines.append(kwargs["lifecycle_deadline_monotonic"])
+            return VideoOutcome("j1", STATUS_COMPLETED)
+
+        queue = MissingAuthorityQueue([_make_message("j1")])
+        monkeypatch.setattr("podcaster.video.job_runner.process_message", process)
+        drain(queue, storage, dry_config)
+
+        assert deadlines == [float("-inf")]
 
 
 class TestWatermarkDnsLifecycle:
