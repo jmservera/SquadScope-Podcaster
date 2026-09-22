@@ -173,6 +173,27 @@ class TestAddVideo:
         body = json.loads(t.calls[0]["data"])
         assert body["snippet"]["position"] == 0
 
+    @pytest.mark.parametrize("status", [200, 201])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"{not-json",
+            b"{}",
+            b'{"id": ""}',
+            b'{"id": "   "}',
+        ],
+        ids=["malformed-json", "missing-id", "empty-id", "blank-id"],
+    )
+    def test_identifierless_success_is_retry_blocked_unknown(self, body, status):
+        t = _FakeTransport([(status, body)])
+        res = add_video_to_playlist("PL", "vid", "tok", transport=t)
+
+        assert res.succeeded is False
+        assert res.playlist_item_id == ""
+        assert res.outcome == "unknown"
+        assert res.retry_blocked is True
+        assert res.error == "playlist insert completed without a valid item id"
+
     def test_http_error_returns_failed(self):
         t = _FakeTransport([(403, b"{}")])
         res = add_video_to_playlist("PL", "vid", "tok", transport=t)

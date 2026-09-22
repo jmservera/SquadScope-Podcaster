@@ -231,12 +231,26 @@ def add_video_to_playlist(
         )
 
     if status in (200, 201):
-        item_id = ""
         try:
             data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
-            item_id = str(data.get("id", ""))
-        except (ValueError, AttributeError):
-            pass
+        except (TypeError, ValueError, AttributeError):
+            data = {}
+        item_id = data.get("id") if isinstance(data, dict) else None
+        if not isinstance(item_id, str) or not item_id.strip():
+            logger.warning(
+                "playlistItems.insert completion is ambiguous for %s -> %s",
+                video_id,
+                playlist_id,
+            )
+            return PlaylistAddResult(
+                video_id=video_id,
+                playlist_id=playlist_id,
+                succeeded=False,
+                error="playlist insert completed without a valid item id",
+                outcome="unknown",
+                retry_blocked=True,
+            )
+        item_id = item_id.strip()
         logger.info("Added video %s to playlist %s", video_id, playlist_id)
         return PlaylistAddResult(
             video_id=video_id,

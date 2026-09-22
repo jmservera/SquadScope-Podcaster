@@ -13,6 +13,7 @@ from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBud
 from podcaster.video.distribution import VideoDistributionConfig
 from podcaster.video.youtube import (
     RESUMABLE_CHUNK_SIZE,
+    YouTubeSessionInitiationUnknown,
     align_chunk_size,
     build_video_metadata,
     initiate_resumable_session,
@@ -138,12 +139,16 @@ def test_initiate_resumable_session_returns_uri():
     assert uri == t.session_uri
 
 
-def test_initiate_resumable_session_raises_without_location():
+@pytest.mark.parametrize("status", [200, 308])
+def test_initiate_resumable_session_missing_location_is_ambiguous(status):
     class _NoLoc:
         def request_with_headers(self, *a, **k):
-            return 200, {}, b""
+            return status, {}, b""
 
-    with pytest.raises(RuntimeError, match="no session URI"):
+    with pytest.raises(
+        YouTubeSessionInitiationUnknown,
+        match="session initiation outcome is unknown: no session URI",
+    ):
         initiate_resumable_session(_NoLoc(), "tok", {}, file_size=10)
 
 
@@ -435,6 +440,50 @@ def test_upload_chunked_identifierless_success_is_retry_blocked_unknown(tmp_path
     assert "valid video id" in result.error
 
 
+@pytest.mark.parametrize(
+    "completion_body",
+    [
+        b"",
+        b"{not-json",
+        b'{"kind":"youtube#video"}',
+    ],
+    ids=["empty", "malformed-json", "missing-id"],
+)
+def test_upload_chunked_transient_resume_completion_without_id_is_unknown(
+    tmp_path, completion_body
+):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+
+    class _AmbiguousResumeCompletion:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            content_range = (headers or {}).get("Content-Range")
+            if content_range == f"bytes 0-{total - 1}/{total}":
+                return 503, {}, b""
+            if content_range == f"bytes */{total}":
+                return 200, {}, completion_body
+            raise AssertionError(f"unexpected request: {method} {content_range}")
+
+    result = upload_chunked(
+        _AmbiguousResumeCompletion(),
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda _seconds: None,
+        mutation_started=True,
+    )
+
+    assert result.status == "unknown"
+    assert result.bytes_uploaded == 0
+    assert result.details == {
+        "retry_blocked": True,
+        "code": "youtube_resumable_completion_ambiguous",
+    }
+    assert "valid video id" in result.error
+
+
 # --- upload_video top-level ---------------------------------------------------
 
 
@@ -496,6 +545,23 @@ def test_upload_video_blocks_retry_when_session_init_response_is_lost(tmp_path, 
 
     monkeypatch.setattr("podcaster.video.youtube._get_youtube_access_token", lambda c, h: "tok")
     res = upload_video(path, "Title", "Desc", _config(), transport=_LostResponse())
+
+    assert res.status == "unknown"
+    assert res.details == {
+        "retry_blocked": True,
+        "code": "youtube_resumable_init_ambiguous",
+    }
+
+
+def test_upload_video_blocks_retry_when_session_init_location_is_missing(tmp_path, monkeypatch):
+    path = _make_file(tmp_path, 2 * _GRANULE)
+
+    class _MissingLocation:
+        def request_with_headers(self, *args, **kwargs):
+            return 200, {}, b""
+
+    monkeypatch.setattr("podcaster.video.youtube._get_youtube_access_token", lambda c, h: "tok")
+    res = upload_video(path, "Title", "Desc", _config(), transport=_MissingLocation())
 
     assert res.status == "unknown"
     assert res.details == {

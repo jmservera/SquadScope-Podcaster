@@ -1581,6 +1581,7 @@ def distribute_video(
             if exc.code in {
                 "youtube_resumable_init_ambiguous",
                 "youtube_resumable_chunk_outcome_ambiguous",
+                "youtube_resumable_completion_ambiguous",
                 "youtube_resumable_final_status_ambiguous",
             }:
                 result.provider_outcomes["youtube"] = PUBLICATION_UNKNOWN

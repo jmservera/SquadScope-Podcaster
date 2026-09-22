@@ -1292,6 +1292,63 @@ class TestDistributeVideo:
         assert redelivery.provider_outcomes["youtube"] == "publication_unknown"
         assert redelivery.provider_records["youtube"]["retry_blocked"] is True
 
+    def test_youtube_completion_ambiguity_persists_unknown_and_blocks_retry(
+        self, video_file, monkeypatch
+    ):
+        recorded: list[tuple[str, dict]] = []
+        upload_calls = 0
+
+        def fail_youtube(*args, **kwargs):
+            nonlocal upload_calls
+            upload_calls += 1
+            raise YouTubeDeliveryError(
+                "YouTube reported completion without a valid video id",
+                code="youtube_resumable_completion_ambiguous",
+                stage="resumable_final_status",
+                retryable=False,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        config = VideoDistributionConfig(youtube_enabled=True, dry_run=False)
+        result = distribute_video(
+            video_file,
+            "job-completion-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            on_published=lambda platform, record: recorded.append((platform, record)),
+            publish_run_id="9",
+        )
+
+        assert upload_calls == 1
+        assert result.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert (
+            result.provider_records["youtube"]["last_error_code"]
+            == "youtube_resumable_completion_ambiguous"
+        )
+        assert recorded[0][0] == "youtube"
+        assert recorded[0][1]["outcome"] == PUBLICATION_UNKNOWN
+        assert recorded[0][1]["retry_blocked"] is True
+
+        redelivery = distribute_video(
+            video_file,
+            "job-completion-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            published={"youtube": recorded[0][1]},
+            publish_run_id="9",
+        )
+
+        assert upload_calls == 1
+        assert redelivery.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN
+        assert redelivery.provider_records["youtube"]["retry_blocked"] is True
+
     def test_required_youtube_but_disabled_is_terminal_config_failure(
         self, video_file, monkeypatch
     ):

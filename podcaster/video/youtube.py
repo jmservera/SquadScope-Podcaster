@@ -167,7 +167,8 @@ def initiate_resumable_session(
 ) -> str:
     """Start a resumable session and return the session URI.
 
-    Raises RuntimeError if the API does not return a session URI.
+    Raises YouTubeSessionInitiationUnknown if the API may have created a session
+    but does not return its URI.
     """
 
     params = urlencode({"uploadType": "resumable", "part": "snippet,status"})
@@ -204,7 +205,9 @@ def initiate_resumable_session(
 
     session_uri = resp_headers.get("location")
     if not session_uri:
-        raise RuntimeError("YouTube resumable init returned no session URI")
+        raise YouTubeSessionInitiationUnknown(
+            "YouTube resumable session initiation outcome is unknown: no session URI"
+        )
     return session_uri
 
 
@@ -378,15 +381,18 @@ def upload_chunked(
                         error=f"HTTP {status} after {max_retries} retries",
                     )
                 sleep(_RETRY_BACKOFF_BASE ** (transient_retries - 1))
-                start = _resume_after_failure(
-                    http,
-                    session_uri,
-                    access_token,
-                    total_size,
-                    fallback=start,
-                    budget=budget,
-                    mutation_started=mutation_started,
-                )
+                try:
+                    start = _resume_after_failure(
+                        http,
+                        session_uri,
+                        access_token,
+                        total_size,
+                        fallback=start,
+                        budget=budget,
+                        mutation_started=mutation_started,
+                    )
+                except YouTubeCompletionAmbiguous as exc:
+                    return _ambiguous_completion_result(start, exc)
                 continue
 
             return YouTubeUploadResult(
