@@ -35,7 +35,7 @@ VERIFICATION_PROOF_FIELDS = (
     "terminal_authoritative_readback",
     "duplicate_ambiguity_resolved",
 )
-RECOVERY_AUTHORIZATION_SCHEMA_VERSION = "distribution-recovery-authorization-v1"
+RECOVERY_AUTHORIZATION_SCHEMA_VERSION = "distribution-recovery-authorization-v2"
 
 PROVIDER_RESULTS = frozenset(
     {
@@ -62,6 +62,25 @@ ACTIONABLE_RESULTS = frozenset(
         "identity_conflict",
     }
 )
+RECOVERY_MUTATION_OPERATION_TYPES = {
+    "youtube": {
+        "upload": "create",
+        "draft_upload": "create",
+        "public_promotion": "publish",
+        "recovery_mutation": "recovery_fixture",
+        "recovery_readback": "readback",
+        "fixture_readback": "readback",
+        "historical_reconciliation": "historical",
+    },
+    "spotify": {
+        "create": "create",
+        "create_episode_intent": "create",
+        "recovery_mutation": "recovery_fixture",
+        "recovery_readback": "readback",
+        "fixture_readback": "readback",
+        "historical_reconciliation": "historical",
+    },
+}
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _UNSAFE_KEY = re.compile(
@@ -356,39 +375,128 @@ def exact_recovery_authorization_evidence(
     )
     if not isinstance(predecessor, Mapping):
         raise DistributionOutboxError("recovery predecessor is missing")
+    predecessor_index = next(
+        index
+        for index, attempt in enumerate(attempts)
+        if isinstance(attempt, Mapping) and attempt.get("attempt_id") == predecessor_attempt_id
+    )
     provider_evidence = _recovery_predecessor_provider_evidence(document, predecessor)
+    objectives = document.get("provider_objectives")
+    if not isinstance(objectives, Mapping):
+        raise DistributionOutboxError("recovery provider objectives are missing")
     providers: dict[str, Any] = {}
-    for provider in sorted(document.get("provider_objectives", {})):
+    for provider in sorted(objectives):
         leg = provider_evidence.get(provider)
         if not isinstance(leg, Mapping):
             raise DistributionOutboxError("recovery predecessor provider evidence is missing")
-        verification = leg.get("verification")
-        if not isinstance(verification, Mapping):
-            raise DistributionOutboxError("recovery predecessor readback is missing")
+        expected_succeeding_item = expected_provider_item_ids.get(provider)
+        if not expected_succeeding_item:
+            raise DistributionOutboxError("recovery succeeding provider identity is missing")
         providers[provider] = {
-            "predecessor_result": leg.get("result"),
-            "predecessor_provider_item_id": verification.get("provider_item_id"),
-            "safety_readback_source": verification.get("source"),
-            "safety_readback_state": verification.get("native_state"),
-            "expected_succeeding_provider_item_id": expected_provider_item_ids.get(provider),
-            "mutation_safe": leg.get("result") == "failed_terminal",
-            "duplicate_ambiguity_resolved": True,
+            "provider": provider,
+            "objective": objectives[provider],
+            "predecessor": _recovery_provider_binding(
+                predecessor_attempt_id,
+                provider,
+                leg,
+            ),
+            "succeeding_provider": {
+                "provider": provider,
+                "objective": objectives[provider],
+                "expected_provider_item_id": str(expected_succeeding_item),
+            },
         }
     return {
         "schema_version": RECOVERY_AUTHORIZATION_SCHEMA_VERSION,
         "outbox_id": document["outbox_id"],
         "publication_identity": dict(identity),
         "publication_digest": document["publication_digest"],
-        "artifact_sha256": artifact["sha256"],
-        "canonical_artifact_id": canonical["artifact_id"],
-        "canonical_selection_version": canonical["selection_version"],
+        "artifact": dict(artifact),
+        "canonical_artifact": dict(canonical),
         "prior_attempt_ids": [
             str(attempt["attempt_id"])
-            for attempt in attempts
+            for attempt in attempts[: predecessor_index + 1]
             if isinstance(attempt, Mapping) and attempt.get("terminal_outcome")
         ],
         "predecessor_attempt_id": predecessor_attempt_id,
         "providers": providers,
+    }
+
+
+def _recovery_operation_type(provider: str, operation: Any) -> str:
+    operation_name = str(operation or "")
+    operation_type = RECOVERY_MUTATION_OPERATION_TYPES.get(provider, {}).get(operation_name)
+    if not operation_type:
+        raise DistributionOutboxError("recovery predecessor operation is invalid")
+    return operation_type
+
+
+def _recovery_provider_binding(
+    predecessor_attempt_id: str,
+    provider: str,
+    leg: Mapping[str, Any],
+) -> dict[str, Any]:
+    verification = leg.get("verification")
+    if not isinstance(verification, Mapping):
+        raise DistributionOutboxError("recovery predecessor readback is missing")
+    intent = leg.get("intent")
+    receipts = leg.get("receipts")
+    intent_binding = None
+    receipt_binding = None
+    if isinstance(intent, Mapping):
+        operation = str(intent.get("operation") or "")
+        intent_binding = {
+            "intent_id": intent.get("intent_id"),
+            "provider": intent.get("provider"),
+            "operation": operation,
+            "operation_type": _recovery_operation_type(provider, operation),
+            "expected_provider_item_id": intent.get("expected_provider_item_id"),
+            "created_at": intent.get("created_at"),
+            "created_fence": intent.get("created_fence"),
+            "consumed_at": intent.get("consumed_at"),
+            "consumed_fence": intent.get("consumed_fence"),
+            "consumed_owner": intent.get("consumed_owner"),
+            "consumed_attempt_id": intent.get("consumed_attempt_id"),
+        }
+        if not isinstance(receipts, list) or len(receipts) != 1:
+            raise DistributionOutboxError("recovery predecessor receipt is invalid")
+        receipt = receipts[0]
+        if not isinstance(receipt, Mapping):
+            raise DistributionOutboxError("recovery predecessor receipt is invalid")
+        receipt_binding = {
+            "receipt_id": receipt.get("receipt_id"),
+            "intent_id": receipt.get("intent_id"),
+            "provider": receipt.get("provider"),
+            "operation": receipt.get("operation"),
+            "operation_type": receipt.get("operation_type"),
+            "attempt_id": receipt.get("attempt_id"),
+            "consumed_owner": receipt.get("consumed_owner"),
+            "at": receipt.get("at"),
+            "fencing_token": receipt.get("fencing_token"),
+            "transport_class": receipt.get("transport_class"),
+            "provider_item_id": receipt.get("provider_item_id"),
+            "native_state": receipt.get("native_state"),
+            "ambiguous": receipt.get("ambiguous"),
+            "code": receipt.get("code"),
+        }
+    elif receipts not in (None, []):
+        raise DistributionOutboxError("recovery predecessor receipt is invalid")
+    return {
+        "attempt_id": predecessor_attempt_id,
+        "provider": provider,
+        "result": leg.get("result"),
+        "intent": intent_binding,
+        "receipt": receipt_binding,
+        "terminal_readback": {
+            "at": verification.get("at"),
+            "source": verification.get("source"),
+            "provider_item_id": verification.get("provider_item_id"),
+            "native_state": verification.get("native_state"),
+            "result": verification.get("result"),
+            "fencing_token": verification.get("fencing_token"),
+        },
+        "mutation_safe": leg.get("result") == "failed_terminal",
+        "duplicate_ambiguity_resolved": True,
     }
 
 
@@ -415,6 +523,7 @@ def _recovery_predecessor_provider_evidence(
     if not isinstance(provider_evidence, Mapping) or set(provider_evidence) != set(objectives):
         raise DistributionOutboxError(unresolved_message)
     expected_provider_items: dict[str, str] = {}
+    exact_provider_evidence: dict[str, dict[str, Any]] = {}
     for provider in objectives:
         leg = provider_evidence.get(provider)
         intent = leg.get("intent") if isinstance(leg, Mapping) else None
@@ -426,11 +535,17 @@ def _recovery_predecessor_provider_evidence(
             or not intent.get("operation")
             or not intent.get("consumed_at")
             or intent.get("consumed_fence") is None
+            or not intent.get("consumed_owner")
+            or intent.get("consumed_attempt_id") != predecessor.get("attempt_id")
             or not intent.get("intent_id")
             or not intent.get("expected_provider_item_id")
             or not isinstance(receipts, list)
             or len(receipts) != 1
         ):
+            raise DistributionOutboxError(unresolved_message)
+        operation = str(intent["operation"])
+        operation_type = _recovery_operation_type(provider, operation)
+        if operation_type == "readback":
             raise DistributionOutboxError(unresolved_message)
         expected_item = str(intent["expected_provider_item_id"])
         receipt = receipts[0]
@@ -438,6 +553,11 @@ def _recovery_predecessor_provider_evidence(
             not isinstance(receipt, Mapping)
             or not receipt.get("receipt_id")
             or receipt.get("intent_id") != intent.get("intent_id")
+            or receipt.get("provider") != provider
+            or receipt.get("operation") != operation
+            or receipt.get("operation_type") != operation_type
+            or receipt.get("attempt_id") != predecessor.get("attempt_id")
+            or receipt.get("consumed_owner") != intent.get("consumed_owner")
             or receipt.get("transport_class") != "accepted"
             or receipt.get("ambiguous") is not False
             or receipt.get("provider_item_id") != expected_item
@@ -453,6 +573,12 @@ def _recovery_predecessor_provider_evidence(
         if candidates != {expected_item}:
             raise DistributionOutboxError(unresolved_message)
         expected_provider_items[provider] = expected_item
+        exact_provider_evidence[provider] = {
+            "intent": intent,
+            "receipts": [receipt],
+            "verification": verification,
+            "result": leg.get("result"),
+        }
     latest: dict[str, Mapping[str, Any]] = {}
     for readback in readbacks:
         if not isinstance(readback, Mapping):
@@ -475,8 +601,8 @@ def _recovery_predecessor_provider_evidence(
         ):
             raise DistributionOutboxError(unresolved_message)
         resolved[provider] = {
-            "intent": intent,
-            "receipts": [receipt],
+            "intent": exact_provider_evidence[provider]["intent"],
+            "receipts": exact_provider_evidence[provider]["receipts"],
             "verification": verification,
             "result": "failed_terminal",
         }
@@ -491,9 +617,6 @@ def _validated_recovery_authorization_evidence(
     succeeding_attempt_id: str | None = None,
 ) -> dict[str, Any]:
     value = _safe_value(dict(evidence), key="recovery_evidence")
-    identity = document["publication_identity"]
-    artifact = document["artifact"]
-    canonical = document["canonical_artifact"]
     attempts = document.get("attempts", [])
     predecessor_index = next(
         (
@@ -515,57 +638,48 @@ def _validated_recovery_authorization_evidence(
         or later_attempts[0].get("predecessor_attempt_id") != predecessor.get("attempt_id")
     ):
         raise DistributionOutboxError("recovery authorization attempt history is invalid")
-    expected_attempt_ids = [
-        str(attempt["attempt_id"])
-        for attempt in attempts[: predecessor_index + 1]
-        if isinstance(attempt, Mapping) and attempt.get("terminal_outcome")
-    ]
-    if (
-        value.get("schema_version") != RECOVERY_AUTHORIZATION_SCHEMA_VERSION
-        or value.get("outbox_id") != document.get("outbox_id")
-        or value.get("publication_identity") != identity
-        or value.get("publication_digest") != document.get("publication_digest")
-        or value.get("artifact_sha256") != artifact.get("sha256")
-        or value.get("canonical_artifact_id") != canonical.get("artifact_id")
-        or value.get("canonical_selection_version") != canonical.get("selection_version")
-        or value.get("prior_attempt_ids") != expected_attempt_ids
-        or value.get("predecessor_attempt_id") != predecessor.get("attempt_id")
-    ):
-        raise DistributionOutboxError("recovery authorization identity evidence is invalid")
-    provider_evidence = _recovery_predecessor_provider_evidence(document, predecessor)
     providers = value.get("providers")
     objectives = document.get("provider_objectives")
-    if (
-        not isinstance(provider_evidence, Mapping)
-        or not isinstance(providers, Mapping)
-        or not isinstance(objectives, Mapping)
-        or set(providers) != set(objectives)
-    ):
+    if not isinstance(providers, Mapping) or not isinstance(objectives, Mapping):
         raise DistributionOutboxError("recovery authorization provider evidence is incomplete")
+    if set(providers) != set(objectives):
+        raise DistributionOutboxError("recovery authorization provider evidence is incomplete")
+    expected_succeeding_items: dict[str, str] = {}
     for provider in objectives:
-        prior_leg = provider_evidence.get(provider)
         authorization_leg = providers.get(provider)
-        verification = prior_leg.get("verification") if isinstance(prior_leg, Mapping) else None
-        if (
-            not isinstance(prior_leg, Mapping)
-            or not isinstance(authorization_leg, Mapping)
-            or not isinstance(verification, Mapping)
-            or prior_leg.get("result") != "failed_terminal"
-            or authorization_leg.get("predecessor_result") != prior_leg.get("result")
-            or authorization_leg.get("predecessor_provider_item_id")
-            != verification.get("provider_item_id")
-            or authorization_leg.get("safety_readback_source") != verification.get("source")
-            or authorization_leg.get("safety_readback_state") != verification.get("native_state")
-            or "readback" not in str(verification.get("source") or "")
-            or authorization_leg.get("mutation_safe") is not True
-            or authorization_leg.get("duplicate_ambiguity_resolved") is not True
-            or not authorization_leg.get("expected_succeeding_provider_item_id")
-        ):
-            raise DistributionOutboxError("recovery authorization safety evidence is invalid")
+        succeeding_provider = (
+            authorization_leg.get("succeeding_provider")
+            if isinstance(authorization_leg, Mapping)
+            else None
+        )
+        expected_item = (
+            succeeding_provider.get("expected_provider_item_id")
+            if isinstance(succeeding_provider, Mapping)
+            else None
+        )
+        if not expected_item:
+            raise DistributionOutboxError("recovery authorization provider evidence is incomplete")
+        expected_succeeding_items[provider] = str(expected_item)
+    expected_value = exact_recovery_authorization_evidence(
+        document,
+        predecessor_attempt_id=str(predecessor.get("attempt_id") or ""),
+        expected_provider_item_ids=expected_succeeding_items,
+    )
+    if succeeding_attempt_id is not None:
+        expected_value["succeeding_attempt"] = {
+            "attempt_id": succeeding_attempt_id,
+            "predecessor_attempt_id": predecessor.get("attempt_id"),
+            "providers": {
+                provider: expected_value["providers"][provider]["succeeding_provider"]
+                for provider in sorted(objectives)
+            },
+        }
+    if value != expected_value:
+        raise DistributionOutboxError("recovery authorization identity evidence is invalid")
     return value
 
 
-def _recovery_authorization_is_valid(
+def _recovery_authorization_binding_is_valid(
     document: Mapping[str, Any],
     winner: Mapping[str, Any],
     authorizations: Iterable[Mapping[str, Any]],
@@ -612,6 +726,22 @@ def _recovery_authorization_is_valid(
         or winner.get("recovery_proof_digest") != digest
     ):
         return False
+    return True
+
+
+def _recovery_authorization_is_valid(
+    document: Mapping[str, Any],
+    winner: Mapping[str, Any],
+    authorizations: Iterable[Mapping[str, Any]],
+) -> bool:
+    if not _recovery_authorization_binding_is_valid(document, winner, authorizations):
+        return False
+    authorization = next(
+        item
+        for item in authorizations
+        if isinstance(item, Mapping) and item.get("authz_id") == winner.get("authz_id")
+    )
+    validated = authorization["evidence"]
     providers = document.get("providers")
     if not isinstance(providers, Mapping):
         return False
@@ -621,7 +751,7 @@ def _recovery_authorization_is_valid(
         if (
             not isinstance(verification, Mapping)
             or verification.get("provider_item_id")
-            != authorization_leg.get("expected_succeeding_provider_item_id")
+            != authorization_leg.get("succeeding_provider", {}).get("expected_provider_item_id")
             or str(verification.get("native_state") or "").lower() not in ("public", "published")
             or (
                 "readback" not in str(verification.get("source") or "")
@@ -923,7 +1053,18 @@ class DistributionOutboxRepository:
                 if expiry is not None and expiry > now:
                     raise StaleClaimError("outbox item already has an active claim")
             token = int(document.get("fencing_token") or 0) + 1
-            consumed = bool(_active_attempt(document).get("terminal_outcome"))
+            active_attempt = _active_attempt(document)
+            consumed = bool(active_attempt.get("terminal_outcome"))
+            if (
+                active_attempt.get("authz_source") != "initial_enqueue"
+                and not consumed
+                and not _recovery_authorization_binding_is_valid(
+                    document,
+                    active_attempt,
+                    document.get("recovery_authz", []),
+                )
+            ):
+                consumed = True
             for provider in document["providers"].values():
                 if not isinstance(provider, Mapping):
                     continue
@@ -1027,6 +1168,14 @@ class DistributionOutboxRepository:
             at = _iso(self.now())
             authorization_id = uuid.uuid4().hex
             attempt_id = uuid.uuid4().hex
+            validated_evidence["succeeding_attempt"] = {
+                "attempt_id": attempt_id,
+                "predecessor_attempt_id": predecessor_attempt_id,
+                "providers": {
+                    provider: validated_evidence["providers"][provider]["succeeding_provider"]
+                    for provider in sorted(validated_evidence["providers"])
+                },
+            }
             evidence_digest = hashlib.sha256(
                 json.dumps(
                     validated_evidence,
@@ -1110,7 +1259,8 @@ class DistributionOutboxRepository:
                     authorization.get("evidence", {})
                     .get("providers", {})
                     .get(provider, {})
-                    .get("expected_succeeding_provider_item_id")
+                    .get("succeeding_provider", {})
+                    .get("expected_provider_item_id")
                     if isinstance(authorization, Mapping)
                     else None
                 )
@@ -1142,10 +1292,13 @@ class DistributionOutboxRepository:
                 "intent_id": uuid.uuid4().hex,
                 "provider": _require_token("provider", provider),
                 "operation": _require_token("operation", operation),
+                "operation_type": _recovery_operation_type(provider, operation),
                 "created_at": _iso(self.now()),
                 "created_fence": claim.fencing_token,
                 "consumed_at": None,
                 "consumed_fence": None,
+                "consumed_owner": None,
+                "consumed_attempt_id": None,
                 "expected_provider_item_id": (
                     _require_token("provider_item_id", expected_provider_item_id)
                     if expected_provider_item_id
@@ -1198,6 +1351,8 @@ class DistributionOutboxRepository:
                 )
             intent["consumed_at"] = _iso(self.now())
             intent["consumed_fence"] = claim.fencing_token
+            intent["consumed_owner"] = claim.owner
+            intent["consumed_attempt_id"] = claim.attempt_id
             document["state"] = "mutating"
             _attempt_event(
                 _active_attempt(document),
@@ -1233,6 +1388,11 @@ class DistributionOutboxRepository:
             receipt = {
                 "receipt_id": uuid.uuid4().hex,
                 "intent_id": intent["intent_id"],
+                "provider": provider,
+                "operation": intent["operation"],
+                "operation_type": intent["operation_type"],
+                "attempt_id": claim.attempt_id,
+                "consumed_owner": intent["consumed_owner"],
                 "at": _iso(self.now()),
                 "fencing_token": claim.fencing_token,
                 "transport_class": _require_token("transport_class", transport_class),

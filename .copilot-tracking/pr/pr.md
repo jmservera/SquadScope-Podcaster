@@ -1,11 +1,12 @@
 # fix(distribution): provider terminal truth and outbox remediation
 
 > [!WARNING]
-> **OPEN / DRAFT / BLOCKED — Livingston independently rejected Ralph's exact-receipt revision at `e16963243973707ea2557f75f925d3c6935d49ee`.** Receipt cardinality and item/fence/time checks pass, but RV-008 remains High because a wrong consumed operation can still authorize a mutation-capable successor and the durable authorization omits exact intent/receipt identity. All earlier rejection cycles remain historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
+> **OPEN / DRAFT / BLOCKED — Livingston's sole-author RV-008 correction and full validation are complete; Frank's independent final-SHA review is pending.** The correction closes the exact wrong-operation and durable intent/receipt binding bypass locally, but it does not self-accept. All earlier rejection cycles remain historical evidence. P00-T01, P05, and P06 remain open, so this PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
-Ralph revision base: `21a3fa0da9f3a6752d96e1f6db17386e8dabaf6e`.
-Current source/tests/artifacts commit: this Ralph delivery commit; exact SHA is recorded in the pushed PR head and delivery return.
-Fresh independent reviewer: Livingston, complete without source/test contribution; verdict Not accepted.
+Livingston revision base: `fa3426fa030193e89a58cdb927c81a360df24a03`.
+Rejected Ralph source: `e16963243973707ea2557f75f925d3c6935d49ee`.
+Current source/tests/artifacts commit: pending commit/push; exact source and final SHA will be recorded after delivery.
+Fresh independent reviewer: Frank, pending and prohibited from source/test contribution.
 
 ## Incident and acceptance truth
 
@@ -36,6 +37,16 @@ The branch contains the Podcaster-side P00 receipt/absence boundary and Amy's de
 - Truthful worker/ACA exits, telemetry, alert infrastructure, runbook updates, and fault/concurrency/lifecycle coverage.
 
 Completion of the declared implementation scope does not imply acceptance. Fry's final review resolved the alert and tracking findings but rejected `02241a1` for scheduler lease recovery, legacy cleanup safety, recovery authorization, and four-cycle identity binding.
+
+## Livingston correction after rejecting Ralph
+
+Livingston is the sole author of the current correction. Frank is reserved for fresh independent final-SHA review and did not contribute. Bender, Hermes, Amy, Leela, Fry, Farnsworth, Rusty, Basher, and Ralph did not author, advise, pair, or contribute.
+
+Recovery authorization now uses an auditable `distribution-recovery-authorization-v2` structure rather than relying on a partial field set plus an opaque digest. It binds the exact provider kind/objective/item, allowed operation name and type, consumed intent ID, exact receipt ID, predecessor attempt, consumption owner/fence/time, receipt provider/operation/attempt/owner/time/order, complete week/publication/manifest/digest/artifact identity, terminal readback identity/state/time/fence, ordered attempt history, and specifically authorized succeeding attempt/provider expectation.
+
+Authorization creation recomputes and compares the exact caller structure. The stored successor-enriched structure is recomputed again before a successor claim may mutate. Missing, extra, duplicate, reordered, stale, conflicting, swapped, mutated, or legacy-v1 evidence makes the claim read-only. `unrelated_read_only_probe`, mutated intent/receipt IDs, provider-swapped receipts, changed owner/fence/time/item/readback/binding fields, and successor aliasing are denied. Exact evidence is accepted only for its bound successor. Immutable predecessor attempts and all resolved findings are preserved.
+
+Validation passed: required RV-008 probes `20/68`, outbox `88`, focused correction `133`, locked contract `808` with one warning, and final full repository `3137 passed, 3 skipped, 2 deselected, 1 warning`. The first full run reproduced only the documented stale Compose recorder image; rebuilding it made the final suite pass. Ruff, format, compile, diff safety, Bicep, exact Checkov baseline `36/7`, CI Checkov `34/0`, Dockerfile Checkov, container smoke, worker exit `2`, and changed-diff secret/PII scan passed. Validation image: `sha256:c427f35291962193a83890f94549485745830d2008ea9d7231caf7931a4ae9fc`.
 
 ## Ralph correction after Basher rejection
 
