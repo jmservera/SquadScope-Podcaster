@@ -3497,9 +3497,9 @@ class TestComposeVideoCheckpointResume:
         commands = [[str(arg) for arg in call.args[0]] for call in runner.call_args_list]
         assert any("-vf" in command and "scale=" in " ".join(command) for command in commands)
 
-    @pytest.mark.parametrize("initial_logo_url", [None, "https://example.test/logo-a.png"])
+    @pytest.mark.parametrize("initial_has_logo", [False, True], ids=["no-logo", "logo-a"])
     def test_dog_logo_change_invalidates_composed_checkpoint(
-        self, tmp_path, monkeypatch, initial_logo_url
+        self, tmp_path, monkeypatch, initial_has_logo
     ):
         store = self._store(tmp_path)
         clip = tmp_path / "seg.webm"
@@ -3508,17 +3508,20 @@ class TestComposeVideoCheckpointResume:
         logo_b = tmp_path / "logo-b.png"
         logo_a.write_bytes(b"logo-a")
         logo_b.write_bytes(b"logo-b")
-        logos = {
-            "https://example.test/logo-a.png": logo_a,
-            "https://example.test/logo-b.png": logo_b,
-        }
-        monkeypatch.setattr(vc, "_fetch_dog_logo", lambda url, _cache: logos[url])
+        requested_logo = "https://example.test/logo.png"
+        resolved_logo = logo_a
+
+        def _fetch_logo(url, _cache):
+            assert url == requested_logo
+            return resolved_logo
+
+        monkeypatch.setattr(vc, "_fetch_dog_logo", _fetch_logo)
 
         def _probe(_path, _timeout):
             return vc.ProbeEvidence(format_name="matroska,webm", duration_seconds=10.0)
 
         seg = _make_recorded_segment(duration=10.0, video_path=clip)
-        initial_logo = DogLogoConfig(url=initial_logo_url) if initial_logo_url is not None else None
+        initial_logo = DogLogoConfig(url=requested_logo) if initial_has_logo else None
         compose_video(
             segments=[seg],
             output_dir=tmp_path / "initial",
@@ -3529,6 +3532,7 @@ class TestComposeVideoCheckpointResume:
             dog_logo=initial_logo,
         )
 
+        resolved_logo = logo_b
         runner = MagicMock(side_effect=_touch_output_runner())
         compose_video(
             segments=[seg],
@@ -3537,7 +3541,7 @@ class TestComposeVideoCheckpointResume:
             intermediates=store,
             budget=_RenderClock().budget(),
             media_probe=_probe,
-            dog_logo=DogLogoConfig(url="https://example.test/logo-b.png"),
+            dog_logo=DogLogoConfig(url=requested_logo),
         )
 
         commands = [[str(arg) for arg in call.args[0]] for call in runner.call_args_list]
