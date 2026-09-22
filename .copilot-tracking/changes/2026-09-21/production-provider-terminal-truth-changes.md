@@ -10,63 +10,10 @@
 
 ## Execution Status
 
-* Status: P08 complete and validated; commit/push delivery pending
-* Declared invocation scope: full P08 correction, validation, tracking reconciliation, commit, immutable push gate, and push
-* Current revision author: Bender
-* Immutable start evidence: remote `refs/heads/squad/incident-provider-terminal-truth` and isolated worktree both started at `86f96bb03c006bf0b307cd461b15cd18cfab5ed1`
-* Approved write boundary: distribution worker/outbox/provider helpers, directly related tests, and this plan/details/changes record in the isolated worktree
-* Validation intent: focused crash/replay, approval, RSS, Spotify, poison, and playlist tests plus Ruff first; broader applicable and full pytest only after focused gates pass; mocks/fakes only
-* Delivery constraints: keep #684 draft, preserve #682 context, no comments/merge/deploy/live mutation/ready action, and push only after the immutable remote head is re-verified
-
-## 2026-09-22 P08 provider-terminal correction
-
-### Durable identity-bound approval and authoritative YouTube completion
-
-* Related phase or task: P08-T01.
-* Files: `podcaster/distribution_outbox.py`, `podcaster/distribution_worker.py`, `tests/test_distribution_worker.py`.
-* What changed and why: public promotion now requires a persisted v1 operator-approval envelope bound to accepted job, publish run, manifest hash, artifact hash, provider, approver, approval time, and approved decision. Automatic/system identities, missing/mismatched audit evidence, and malformed identities fail to manual handoff before promotion intent. Promotion success requires a fresh authoritative public/processed readback.
-* Completion evidence: human approval permits one fenced promotion; missing and `system:auto-publish` approval never call promotion.
-* Validation: passed.
-
-### Spotify RSS, video upload, and live promotion
-
-* Related phase or task: P08-T02.
-* Files: `podcaster/distribution_worker.py`, `podcaster/distribution_outbox.py`, `podcaster/video/job_runner.py`, `tests/test_distribution_worker.py`.
-* What changed and why: outbox routing now includes Spotify RSS explicitly; RSS insertion uses a stable outbox GUID, storage CAS, pre-read, durable intent, receipt, and post-read. Spotify video upload creates/reconciles a separate video draft, preserves the audio anchor as read-only context, records upload intent/receipt, honors draft/live plus existing protected-ID/operator gates, and requires exact post-promotion item readback. Ambiguous upload/promotion outcomes are terminal unknown and replay is read-only.
-* Completion evidence: RSS replay inserts once; Spotify upload/promotion records ordered intents and exact item proof; ambiguous upload replay does not upload twice. Existing MP3 `uploadType=default` and video multipart coverage remains green in `tests/test_publish.py`.
-* Validation: passed.
-
-### Bounded poison exhaustion and manual handoff
-
-* Related phase or task: P08-T03.
-* Files: `podcaster/distribution_worker.py`, `tests/test_distribution_worker.py`.
-* What changed and why: malformed distribution messages are sanitized and deleted immediately. Missing outbox/transient processing remains retryable below five dequeues; at exhaustion the worker persists per-provider `poisoned` evidence with safe IDs/count-derived codes, releases terminal state, and deletes the message.
-* Completion evidence: malformed and dequeue-exhaustion tests assert deletion, durable exhaustion reason, and non-green terminal result.
-* Validation: passed.
-
-### Fenced idempotent playlist transition
-
-* Related phase or task: P08-T04.
-* Files: `podcaster/distribution_worker.py`, `podcaster/distribution_outbox.py`, `tests/test_distribution_worker.py`.
-* What changed and why: configured playlist membership is strictly read before insertion, insertion receives its own consumed fenced intent, successful insertion is read back before public success, and ambiguous insertion replay only reconciles membership without a second insert.
-* Completion evidence: success path orders playlist insertion before promotion; ambiguous replay makes one insert call and converges read-only.
-* Validation: passed.
-
-### Validation record
-
-| Check | Status | Evidence |
-|---|---|---|
-| `python3 -m pytest tests/test_distribution_worker.py -q` | Passed | `17 passed` |
-| `python3 -m pytest tests/test_distribution_outbox.py tests/test_distribution_telemetry.py tests/test_video_distribution.py tests/test_youtube_publish.py -q` | Passed | `325 passed` |
-| `python3 -m pytest tests/test_video_job_runner.py -q` | Passed | `114 passed` |
-| `python3 -m pytest tests/test_publish.py -q` | Passed | `259 passed` |
-| `python3 -m pytest tests/ -q` | Passed | `3284 passed, 2 skipped, 2 deselected, 1 warning` |
-| `ruff check podcaster tests` | Passed | no findings |
-| `ruff format --check podcaster tests` | Passed | `192 files already formatted` |
-| `python3 -m compileall -q podcaster` | Passed | no output |
-| `git diff --check` | Passed | no output |
-
-P08-T01 through P08-T05 and P08 are complete. P05 production delivery and P06 elapsed-cycle gates remain outside this implementation scope, so PR #684 remains draft.
+* Status: Leela completed the sole-author final-media integrity correction after Rusty rejected head `d050d68c3590f9a00b60dee925452f971cbaf0d2`; Basher acceptance is pending
+* Declared invocation scope: P05-T03 final-media validation, exact #682 evidence replies, full required validation, delivery reconciliation, commit, and push
+* Sole current revision author: Leela
+* Independent reviewer: Basher is reserved and has not contributed
 * Completed markers preserved from prior cycles: P07-T02–P07-T05
 * Completed marker retained for this cycle: P07-T06
 * Review marker: P05-T03 remains open pending implementation evidence and Basher's exact-SHA acceptance

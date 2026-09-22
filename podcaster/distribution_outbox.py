@@ -70,7 +70,6 @@ RECOVERY_MUTATION_OPERATION_TYPES = {
     "youtube": {
         "upload": "create",
         "draft_upload": "create",
-        "playlist_insert": "insert",
         "public_promotion": "publish",
         "recovery_mutation": "recovery_fixture",
         "recovery_readback": "readback",
@@ -80,16 +79,9 @@ RECOVERY_MUTATION_OPERATION_TYPES = {
     "spotify": {
         "create": "create",
         "create_episode_intent": "create",
-        "create_video_draft": "create",
-        "live_promotion": "publish",
         "recovery_mutation": "recovery_fixture",
         "recovery_readback": "readback",
         "fixture_readback": "readback",
-        "historical_reconciliation": "historical",
-    },
-    "spotify_rss": {
-        "rss_insert": "insert",
-        "recovery_readback": "readback",
         "historical_reconciliation": "historical",
     },
 }
@@ -1815,51 +1807,6 @@ class DistributionOutboxRepository:
             captured.update(intent)
 
         self._update(claim.outbox_id, _persist)
-        return captured
-
-    def record_operator_approval(
-        self,
-        claim: Claim,
-        *,
-        provider: str,
-        evidence: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        captured: dict[str, Any] = {}
-
-        def _record(document: dict[str, Any]) -> None:
-            self._require_claim(document, claim, mutation=True)
-            leg = self._provider(document, provider)
-            expected = {
-                "schema_version": "distribution-operator-approval-v1",
-                "provider": provider,
-                "operation": "public_promotion",
-                "accepted_job_id": document["publication_identity"]["accepted_job_id"],
-                "publish_run_id": document["publication_identity"]["publish_run_id"],
-                "manifest_sha256": document["publication_identity"]["manifest_sha256"],
-                "artifact_sha256": document["artifact"]["sha256"],
-                "approved_by": _require_token(
-                    "approved_by", str(evidence.get("approved_by") or "")
-                ),
-                "approved_at": evidence.get("approved_at"),
-                "decision": evidence.get("decision"),
-            }
-            if (
-                not isinstance(expected["approved_by"], str)
-                or not expected["approved_by"].strip()
-                or expected["approved_by"].startswith("system:")
-                or not isinstance(expected["approved_at"], str)
-                or not expected["approved_at"].strip()
-                or expected["decision"] != "approved"
-            ):
-                raise DistributionOutboxError("operator approval evidence is invalid")
-            safe = _safe_value(expected, key="operator_approval")
-            existing = leg.get("operator_approval")
-            if existing is not None and not _exact_canonical_equal(existing, safe):
-                raise OutboxConflictError("operator approval evidence conflicts")
-            leg["operator_approval"] = safe
-            captured.update(safe)
-
-        self._update(claim.outbox_id, _record)
         return captured
 
     def consume_intent(
