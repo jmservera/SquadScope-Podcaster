@@ -33,6 +33,12 @@
 * Retained blockers: P00-T01 upstream W39 prevention/detection, P05 deployment/canary/provenance, and P06 four future elapsed cycles remain open. PR #684 must remain draft and blocked.
 * Historical evidence: Fry's rejection and the Leela-authored revision record are preserved unchanged as history; current sections append and reconcile the new cycle.
 
+### Delivered the validated correction on the existing branch
+
+* Source/tests/artifacts commit: `0f489b12ae93b8e5f479fb9278f369f99e89190f`.
+* Push result: existing branch `squad/incident-provider-terminal-truth` advanced from `2e87d9b` to `0f489b1`; no branch or PR replacement was created.
+* Review state: Livingston's independent review is still pending, so P07-T07 and P05 remain open.
+
 ## P07 Review-Follow-Up Opening
 
 ### Opened Leela's sole-author P07 implementation boundary

@@ -3,6 +3,8 @@
 > [!WARNING]
 > **OPEN / DRAFT / BLOCKED — Farnsworth correction validated; Livingston review pending.** Fry's rejection of Leela's revision `02241a1` remains historical evidence. This PR is not merge-ready, deployment-ready, canary-accepted, or production-accepted.
 
+Current corrected source commit: `0f489b12ae93b8e5f479fb9278f369f99e89190f`.
+
 ## Incident and acceptance truth
 
 Attempt-level truth is immutable and distinct from weekly identity delivery. Every failed, partial, unknown, manual-action, or conflicting attempt must remain visible beneath any later weekly recovery; a later success must not overwrite attempt history.
