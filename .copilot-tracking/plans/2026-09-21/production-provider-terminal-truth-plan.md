@@ -5,7 +5,7 @@
 
 * Task ID: `2026-09-21 production-provider-terminal-truth`
 * Task slug: `production-provider-terminal-truth`
-* Planning status: Frank is the sole author of the ordered-history RV-008 revision from review/tracking head `1b057c0ea9073fb195c56cc884625216e18e49a7`; Livingston independently rejected source candidate `601d36afc62d745c6a67d917b63bcd89e8c18737` for one remaining High RV-008 recovery-authorization defect; RV-002, RV-003, RV-004, RV-007, and RV-009 are resolved, while P00-T01, P05, and P06 remain blocked
+* Planning status: Rusty independently rejected Frank's exact head `1efa74956e23b51512b7eff1ded4e809b79566e1`; RV-008 remains High because failed-terminal readback of the latest unknown attempt is not bound to that attempt's exact provider item identity. RV-002, RV-003, RV-004, RV-007, and RV-009 remain resolved; P07-T01 is reopened, while P00-T01, P05, and P06 remain blocked
 * Plan date: 2026-09-21
 * Phase details: `.copilot-tracking/details/2026-09-21/production-provider-terminal-truth-phase-details.md`
 * Plan critique: `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md`
@@ -43,7 +43,7 @@ P07 requires atomic scheduler notification ownership, one telemetry vocabulary s
 
 ### Unresolved Decisions or Blockers
 
-* No planning decision is open. Frank's P07-T01 revision binds authorization to the complete current ordered attempt history and latest relevant state. Any later possibly mutated, unknown, manual-action, identity-conflict, unresolved, omitted, or reordered attempt permanently withholds mutation authority until exact authoritative readback resolves that attempt into the specifically authorized safe continuation. P00-T01, P05 deployment/canary, and P06 elapsed cycles remain acceptance blockers. No second critique was run; the original critique and its dispositions remain historical evidence.
+* No planning decision is open. Frank's revision binds authorization to the complete ordered history and latest attempt, but Rusty's exact-head review proves the latest unknown readback is not bound to the provider item implicated by that unknown mutation. P07-T01 must additionally reject mismatched readback identities before safe continuation. P00-T01, P05 deployment/canary, and P06 elapsed cycles remain acceptance blockers. No second critique was run; the original critique and its dispositions remain historical evidence.
 
 ## User Decisions and Requirements
 
@@ -253,21 +253,21 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Latest critique | `.copilot-tracking/critiques/2026-09-21/production-provider-terminal-truth-plan-critique.md` (`Revise`: 1 Critical, 4 High, 4 Medium; PC-001–PC-009 were resolved by the original planner revision and remain historical) |
 | Relevant research | `.copilot-tracking/research/2026-09-21/production-provider-terminal-truth-research.md` |
 | Changes-record role | `.copilot-tracking/changes/2026-09-21/production-provider-terminal-truth-changes.md` is created and maintained by implementation as the evidence record |
-| Planning execution and readiness | Exactly one critique remains historical; Livingston review leaves one surgical RV-008 implementation correction |
-| Continuation context | Correct P07-T01 history-order authorization, revalidate/re-review, then retain P00-T01/P05/P06 as explicit residual gates |
+| Planning execution and readiness | Exactly one critique remains historical; Rusty's final review leaves one surgical RV-008 provider-item readback-binding correction |
+| Continuation context | Bind latest-unknown readback to the exact provider item, revalidate/re-review, then retain P00-T01/P05/P06 as explicit residual gates |
 
 ## Implementation Status
 
-* Execution status: Livingston independently reviewed final head `601d36a`; RV-002/RV-003/RV-004/RV-007/RV-009 are resolved, RV-008 remains High, and P07 is not accepted
+* Execution status: Rusty independently reviewed final head `1efa749`; RV-002/RV-003/RV-004/RV-007/RV-009 remain resolved, RV-008 remains High, and P07 is not accepted
 * Declared scope: P07-T01–P07-T07 only, followed by residual P00-T01, P05, and P06 gates
-* Revision author: Farnsworth only
-* Fresh independent reviewer: Livingston, completed after implementation and locked validation without source/test contribution
-* Excluded contributors: Bender, Hermes, Amy, Leela, and Fry did not author, advise, pair, or contribute to the Farnsworth revision/review cycle
+* Revision author: Frank only
+* Fresh independent reviewer: Rusty, completed after implementation and locked validation without source/test contribution
+* Excluded contributors: Bender, Hermes, Amy, Leela, Fry, Farnsworth, and Livingston did not author, advise, pair, or contribute to the Frank revision/Rusty review cycle
 * Delivery restrictions: commit and push only the existing branch and update existing draft PR #684; no deployment, issue mutation, replacement branch/PR, or changes to `/home/azureuser/source/SquadScope`
 * Active implementation boundary: P07 review-follow-up defects only; P00-T01, P05, and P06 remain outside P07 and block final acceptance
 * Approved implementation write boundary: this worktree's downstream source, tests, infrastructure, workflows, operator documentation, and RPI tracking artifacts only; do not modify `/home/azureuser/source/SquadScope`, git state, GitHub, PR text, issue threads, deployment, or production
 * Validation intent: deterministic P07 negative probes, locked owner suites, full suite, Ruff check/format, compileall, Bicep, Checkov, diff check, container build, and applicable container/exit smoke without weakening
-* Current blockers: High RV-008 implementation finding, P00-T01 upstream prevention, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles
+* Current blockers: High RV-008 exact readback-binding finding, P00-T01 upstream prevention evidence, P05 delivery/deployment/canary authority, and P06 four elapsed production cycles
 
 ## Sources
 
@@ -275,7 +275,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * `jmservera/SquadScope-Podcaster#681`: required atomic/fenced outbox boundary.
 * `jmservera/SquadScope-Podcaster#680`: merged canonical publication identity, evidence, and reconciliation baseline.
 * `jmservera/SquadScope-Podcaster#682`: replacement/supersession target with W17–W29, six RV-006, and later current unresolved safety threads.
-* `.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md`: Livingston's current dispositions are RV-008 High open; RV-002/RV-003/RV-004/RV-007/RV-009 resolved; RV-001/RV-005 previously resolved; and RV-006 resolved at planning level.
+* `.copilot-tracking/reviews/logs/2026-09-21/production-provider-terminal-truth-review.md`: Rusty's current disposition is RV-008 High open for exact latest-unknown provider-item readback binding; RV-002/RV-003/RV-004/RV-007/RV-009 remain resolved; RV-001/RV-005 remain resolved; and RV-006 remains resolved at planning level.
 * Authoritative QA correction dated 2026-09-21: immutable attempt truth; deterministic weekly aggregation; evidence-conditional W38 recovery classification; W39 missed/not-dispatched; exact external-readback and four-cycle gates.
 
 ## Phase Checklist
@@ -430,7 +430,7 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Ownership: Frank is sole author of the current RV-008 correction. Rusty is reserved for P07-T07 independent review. Bender, Hermes, Amy, Leela, Fry, Farnsworth, and Livingston are excluded entirely from contribution or advice.
 
 <!-- rpi:task id=P07-T01 -->
-#### [x] P07-T01: Enforce exact proof and durable recovery authorization
+#### [ ] P07-T01: Enforce exact proof and durable recovery authorization
 
 * Finding: RV-008.
 * Expected result: green requires exact week, publication, manifest, publication digest, canonical artifact digest/selection, expected provider identity, authoritative terminal readback source/state, and explicit duplicate resolution. Recovery authorization is durable, evidence-referenced, bound to the complete ordered attempt history/latest relevant state, and cannot arise from an unresolved unknown mutation or caller boolean alone.
@@ -476,12 +476,12 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 * Closure evidence: exact commands, counts, exit statuses, SHA/image digest where applicable, and any generated-artifact cleanup are recorded in the implementation delivery update.
 
 <!-- rpi:task id=P07-T07 -->
-#### [ ] P07-T07: Reconcile delivery evidence and obtain Rusty's independent review
+#### [x] P07-T07: Reconcile delivery evidence and obtain Rusty's independent review
 
 * Finding: RV-007 and cross-finding closure.
 * Dependencies: P07-T06.
-* Expected result: plan/details remain current; implementation updates changes/review-status summary/PR #684 with Frank's revision SHA, exact counts, pending Rusty disposition, validation commands, and residual gates without rewriting either historical rejection cycle.
-* Closure evidence: the existing branch is committed and pushed, PR #684 remains open/draft/blocked, and Rusty independently reviews the final validated SHA. Fry's rejection of `02241a1` and Livingston's rejection of `601d36a` remain immutable historical evidence.
+* Expected result: plan/details remain current; review records Frank's revision SHA, exact counts, Rusty's disposition, validation commands, and residual gates without rewriting either historical rejection cycle.
+* Closure evidence: the existing branch is committed and pushed, PR #684 remains open/draft/blocked, and Rusty independently reviewed final validated head `1efa749` with verdict Not accepted. Fry's rejection of `02241a1` and Livingston's rejection of `601d36a` remain immutable historical evidence.
 
 <!-- rpi:phase id=P05 -->
 ### [ ] P05: Deliver reviewed, reversible implementation
@@ -561,13 +561,13 @@ Controlled recovery is allowed only after bounded reconciliation proves a new mu
 | Marker(s) | Revised disposition | Required next evidence |
 |---|---|---|
 | P00-T01 | Preserved external gate | Exact W39 blocked-stage evidence and upstream prevention/detection remain owned by `jmservera/SquadScope`; W39 stays `missed_not_dispatched` |
-| P07-T01 | High RV-008 in Frank revision | Bind authorization to the complete ordered attempt history and latest relevant state; reject stale, omitted, reordered, unknown, manual, conflicting, or otherwise unresolved later attempts until exact authoritative terminal readback establishes the specifically authorized safe continuation |
+| P07-T01 | High RV-008 remains after Rusty review | Bind latest-unknown authoritative readback to the exact persisted provider item/intent/receipt identity; reject mismatched, missing, duplicate, or conflicting identities before any succeeding mutation-capable attempt |
 | P07-T02 | Complete; RV-002 resolved | Expired `reserved` and `enqueue_started` leases become due; CAS fencing preserves a single current owner and rejects stale completion/release |
 | P07-T03 | Complete; RV-004 resolved | Cleanup completes a bounded resumable pre-index outbox migration before deletion; incomplete scans fail closed and current references retain CAS priority |
 | P07-T04 | Complete; RV-003 resolved | Canonical emitted/query vocabulary and active-depth absence semantics independently passed |
 | P07-T05 | Complete; RV-009 resolved | Stored proof booleans are rebound to raw exact evidence and the current weekly record; label-only, tampered, mismatched, and unauthorized recovered cycles fail closed |
 | P07-T06 | Reopened for Frank revision validation | Preserve the accepted Farnsworth validation history and rerun the complete locked validation contract for the new final source SHA |
-| P07-T07; P05-T01 | Pending Rusty review; delivery blocked | Preserve Livingston's rejection and all earlier cycles; refresh PR #684 after validation and require Rusty's fresh independent final-SHA review while the PR remains draft/blocked |
+| P07-T07; P05-T01 | Rusty review complete; delivery blocked | Preserve every rejection cycle; refresh PR #684 with Rusty's rejection while the PR remains draft/blocked pending corrected P07-T01 and a new accepted final-SHA review |
 | P05-T03 | Expanded by RV-006 and refreshed current metadata | Closure evidence for W17–W29, the six RV-006 threads, and four later unresolved threads found during revision; do not claim resolution without GitHub evidence |
 | P01-T04, P02-T01–P02-T02 | Implemented surfaces; dependency verification | Preserve safe behavior unless the new receipt/attempt schema requires minimal compatible updates |
 | Existing W38 references in plan/PR handoff | Evidence-conditional correction | Use `published_verified_recovered` only with full exact proof; otherwise label it an allowed candidate and retain all attempt history |
@@ -585,7 +585,7 @@ Frank alone authors the current P07-T01 correction. Rusty alone performs the fre
 | RV-003 High | P07-T04, P07-T06, P07-T07 | Remains resolved by canonical emitted/query/test/runbook vocabulary and representative query fire/clear proof |
 | RV-004 High | P07-T03, P07-T06, P07-T07 | Explicit run/page/item/time budgets, durable legacy-reference migration, fenced/conditional deletion, concurrent-reference negative probe; validation and Livingston disposition |
 | RV-007 Medium | P07-T07, P05-T01 | Exact current counts/statuses/commands in delivery update and PR #684; historical review unchanged; residual gates explicit |
-| RV-008 High | P07-T01, P07-T06, P07-T07 | Require latest/complete attempt-history binding and reject later unknown/ambiguous/conflicting attempts so no mutation-capable claim follows `provider_unknown`; revalidate and obtain fresh disposition |
+| RV-008 High | P07-T01, P07-T06, P07-T07 | Preserve latest/complete history binding and additionally bind post-terminal readback to the exact provider item implicated by the latest unknown attempt; reject mismatched identity so no mutation-capable claim follows unresolved state |
 | RV-009 High | P07-T05, P07-T06, P07-T07 | Resolved by authoritative proof-envelope reload/rebinding, label-only and incomplete proof rejection, and Livingston disposition |
 
 ### Implemented Surface Disposition

@@ -16,6 +16,8 @@ W39 remains `missed_not_dispatched`: it has no synth, recorder, video, outbox, o
 
 The canonical review subsequently proved six active defects: RV-002, RV-003, RV-004, RV-007, RV-008, and RV-009. P07 is a distinct review-follow-up lifecycle phase and is the only current in-repository implementation boundary. Historical P01–P04 completion is retained as context, not accepted as closure for those findings.
 
+Rusty's 2026-09-22 exact-head review of Frank's revision preserves RV-002/RV-003/RV-004/RV-007/RV-009 as resolved but rejects P07 because RV-008 remains High: failed-terminal post-readback of a latest `provider_unknown` attempt is not bound to that attempt's exact persisted provider item identity. A different failed item can currently authorize a new mutation-capable attempt.
+
 ## Cross-Phase Invariants
 
 1. **Recoverably atomic visibility:** upload an immutable content-addressed artifact, verify integrity/readability, then conditionally create the single authoritative outbox record referencing its hash. Queue notification is an idempotent hint; claim revalidates the artifact; verified orphan artifacts are repaired or garbage-collected without provider mutation.
@@ -99,13 +101,13 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 | P02 | Implement reconcile-first provider state machines | Complete in Amy correction cycle | P02, P02-T01–P02-T03 |
 | P03 | Make execution, cleanup, and weekly aggregation truthful | Complete in Amy correction cycle | P03, P03-T01–P03-T03 |
 | P04 | Prove safety with focused tests and repository validation | Complete in Amy correction cycle | P04, P04-T01–P04-T03 |
-| P07 | Review-follow-up closure for terminal truth | Livingston review complete: Not accepted; High RV-008 remains, all other reviewed RVs resolved | P07, P07-T01–P07-T07 |
+| P07 | Review-follow-up closure for terminal truth | Rusty review complete: Not accepted; High RV-008 exact readback-binding defect remains, all other reviewed RVs resolved | P07, P07-T01–P07-T07 |
 | P05 | Deliver reviewed, reversible implementation | Blocked by P00 and delivery authority; RV-007 PR narrative pending | P05, P05-T01–P05-T05 |
 | P06 | Verify four consecutive post-fix production cycles | Blocked by accepted P05 canary and elapsed cycles | P06, P06-T01–P06-T02 |
 
 ## Implementation Execution Boundary
 
-* Declared scope: P07-T01 plus the validation and delivery reconciliation needed for the new source SHA. Livingston completed independent review of source candidate `601d36a`; RV-002/RV-003/RV-004/RV-007/RV-009 are resolved and RV-008 remains High.
+* Declared scope: P07-T01 plus validation and delivery reconciliation. Rusty completed independent review of exact head `1efa749`; RV-002/RV-003/RV-004/RV-007/RV-009 remain resolved and RV-008 remains High.
 * Current task: Frank alone must bind recovery authorization to the complete ordered attempt history and latest relevant state. Any later possibly mutated, unknown, manual-action, identity-conflict, unresolved, omitted, or reordered attempt withholds mutation authority until exact authoritative terminal readback resolves that attempt into the specifically authorized safe continuation.
 * Revision author: Farnsworth only for the reopened correction cycle.
 * Fresh independent reviewer: Rusty is reserved and may not contribute before final-SHA review. Livingston's completed rejection remains historical evidence.
@@ -120,21 +122,21 @@ Recovery requires bounded reconciliation proving the prior attempt safe for a ne
 |---|---|---|
 | P00-T01 | Blocked upstream | Podcaster can receive and diagnose the boundary; exact prevention/fix remains owned by `jmservera/SquadScope` |
 | P00-T02–P00-T03 | Complete | Durable sanitized intent/arrival correlation, missing-arrival signal/alerts, API and terminal-provider fixture proof |
-| P07-T01 | Complete for Frank revision; Rusty review pending | Authorization matches the complete ordered history/latest relevant state; stale, omitted, reordered, unknown, manual, conflicting, or unresolved later attempts cannot restore mutation authority |
+| P07-T01 | Reopened after Rusty rejection | Complete ordered-history/latest-state checks pass, but latest-unknown failed readback must additionally match the exact provider item implicated by the unknown mutation |
 | P07-T02 | Complete; RV-002 resolved | Expired/abandoned `enqueue_started` reservations are due again while CAS fencing leaves one current owner |
 | P07-T03 | Complete; RV-004 resolved | Bounded resumable migration backfills pre-index references and cleanup fails closed until completeness is proven |
 | P02-T01, P04-T01–P04-T02 | Complete for RV-001/RV-005; regression required | Preserve read-only promotion convergence and accurate unprovable identity evidence |
 | P07-T04 | Complete; RV-003 resolved | Emitted/query vocabulary and active-depth absence semantics independently verified |
 | P07-T05 | Complete; RV-009 resolved | Four-cycle evaluation recomputes proof from raw evidence and rejects identity/readback/duplicate/auth mismatch |
 | P07-T06 | Complete for Frank revision | Focused 107, locked 782, and full 3112 tests passed with all static, Bicep, Checkov, container, exit, diff, and secret/PII gates preserved |
-| P07-T07; P05-T01 | Pending Rusty review; blocked | Update the existing branch and PR #684 after validation; High RV-008 is not resolved until Rusty independently reviews the exact pushed SHA, and P00-T01/P05/P06 remain open |
+| P07-T07; P05-T01 | Rusty review complete; blocked | Record Rusty's rejection on the existing branch and PR #684; P07-T01, P00-T01, P05, and P06 remain open |
 | P05-T03 | Expanded | W17–W29, six RV-006 rows, and later current unresolved rows require evidence and actual state |
 | P01-T04, P02-T02 | Implemented; dependency verification | Preserve safe migration and Spotify fail-closed behavior; extend only for schema compatibility |
 | W38 classification | Evidence-conditional | `published_verified_recovered` only with exact proof; otherwise retain candidate status and all attempt evidence |
 | W39 classification | Settled | `missed_not_dispatched` |
 | Original PC-001–PC-009 | Historical; no change | Preserve existing critique and dispositions; no second critique |
 
-Frank alone authors the current P07-T01 correction. Rusty alone performs fresh independent review after implementation and validation. Bender, Hermes, Amy, Leela, Fry, Farnsworth, and Livingston are excluded entirely from contribution or advice.
+Frank alone authored the reviewed P07-T01 correction. Rusty alone performed the fresh independent review after implementation and validation. Bender, Hermes, Amy, Leela, Fry, Farnsworth, and Livingston were excluded entirely from contribution or advice.
 
 ### Implemented Surface Disposition
 
