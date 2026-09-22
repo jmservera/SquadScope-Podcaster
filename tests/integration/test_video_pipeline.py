@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -28,6 +29,16 @@ class FakeCommandRunner:
 
     def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         self.commands.append(command[:])
+        if command[0] == "ffprobe":
+            streams = [{"codec_type": "video"}]
+            if str(command[-1]).endswith(".staged.mp4") and "with-audio" in str(command[-1]):
+                streams.append({"codec_type": "audio"})
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"streams": streams, "format": {"duration": "11.0"}}),
+                stderr="",
+            )
         output_path = Path(command[-1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(_mp4_bytes())
@@ -100,13 +111,13 @@ def test_video_pipeline_generates_mp4_output(
     assert result.has_audio is with_audio
     assert result.output_path.read_bytes().startswith(b"\x00\x00\x00\x18ftyp")
 
-    # The final command is always the h264_metadata BSF stream-copy pass.
-    final_command = runner.commands[-1]
+    # The metadata pass writes a staged MP4, followed by exact ffprobe validation.
+    final_command = runner.commands[-2]
     assert any("h264_metadata" in str(a) for a in final_command)
     assert str(fake_mp3) not in final_command
     if with_audio:
-        # The audio overlay (penultimate command) carries the podcast MP3.
-        overlay_command = runner.commands[-2]
+        # The audio overlay before finalization carries the podcast MP3.
+        overlay_command = runner.commands[-3]
         assert str(fake_mp3) in overlay_command
     else:
         assert all(str(fake_mp3) not in cmd for cmd in runner.commands)
