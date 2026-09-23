@@ -1649,8 +1649,9 @@ class TestUploadVideoToEpisode:
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
         monkeypatch.setenv("SP_DC", "dc")
         monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setattr(pub.time, "sleep", lambda _seconds: None)
         failed_session = MagicMock()
-        failed_session.request.return_value = _mock_error_resp(400, "listing unavailable")
+        failed_session.request.return_value = _mock_error_resp(503, "listing unavailable")
         successful_session = MagicMock()
         successful_session.request.return_value = _mock_graphql_listing_resp()
         monkeypatch.setattr(
@@ -1674,6 +1675,7 @@ class TestUploadVideoToEpisode:
 
         assert first.status == "failed"
         assert first.anchor_episode_id is None
+        assert failed_session.request.call_count == pub._MAX_RETRIES
         assert create.call_count == 0
         assert storage.get_bytes(evidence_path) is None
 
