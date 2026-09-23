@@ -2623,6 +2623,12 @@ def upload_video_to_episode(
             )
         else:
             _persist_create_intent(set(), False)
+            if unresolved_create_intent_snapshot is not None:
+                raise SpotifyMutationEvidenceError(
+                    "Spotify video create intent remains unresolved and reconciliation is "
+                    "disabled; refusing blind create.",
+                    code="unresolved_create_intent",
+                )
             video_anchor_id, needs_title = _create_episode(session, station_id), True
             create_resolved = True
 

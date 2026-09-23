@@ -1784,6 +1784,57 @@ class TestUploadVideoToEpisode:
         assert records[0]["details"]["pre_create_episode_ids"] == []
         assert records[0]["details"]["pre_create_snapshot_complete"] is False
 
+    def test_reconcile_disabled_blocks_unresolved_create_intent(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome=pub.PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=False,
+            code="mutation_intent",
+            details={
+                "show_id": "show1",
+                "station_id": "99",
+                "pre_create_episode_ids": [111222],
+                "pre_create_snapshot_complete": True,
+            },
+        )
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(return_value=777001)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert result.status == "failed"
+        assert result.anchor_episode_id is None
+        assert result.outcome == pub.PUBLICATION_UNKNOWN
+        assert result.details == {"retry_blocked": True, "code": "unresolved_create_intent"}
+        assert "reconciliation is disabled" in result.error
+        create.assert_not_called()
+        records = _evidence_records(storage)
+        assert [record["operation"] for record in records] == ["create_episode_intent"]
+        assert records[0]["details"]["pre_create_episode_ids"] == [111222]
+        assert records[0]["details"]["pre_create_snapshot_complete"] is True
+
     def test_credential_expiry_during_create_keeps_recoverable_intent(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
 
