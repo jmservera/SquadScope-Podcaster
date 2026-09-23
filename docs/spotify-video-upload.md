@@ -395,6 +395,15 @@ client-side: the Anchor v5 API exposes no idempotency key. What is closed is the
 common case — a crash during the multi-minute upload — because the draft is
 titled before the upload starts and reconcile finds it on the next run.
 
+Later upload, processing or metadata failures are not claimed as a zero-risk
+window. Once this client has observed a video draft id, failures after that
+point return `publication_unknown` with `retry_blocked=true` and the observed
+`anchor_episode_id`, and the provider id is durably written before upload work
+continues when publication evidence storage is available. That preserves
+duplicate safety by forcing reconciliation/manual handoff instead of presenting
+the failed call as "no draft was created"; the remaining risk is operational
+recovery of a known draft, not blind re-create permission.
+
 #### Pagination
 
 The production GraphQL listing uses numbered pages. `_fetch_episode_listing`

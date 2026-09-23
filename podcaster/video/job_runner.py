@@ -526,6 +526,41 @@ def _record_video_publish(
     storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
 
 
+def _is_non_mutating_upload_intent(record: dict[str, Any]) -> bool:
+    return (
+        record.get("operation") == "upload_intent"
+        and record.get("mutation_attempted") is False
+        and not record.get("provider_id")
+        and not record.get("provider_artifact_id")
+        and record.get("code") == "mutation_intent"
+    )
+
+
+def _only_non_mutating_upload_intents(
+    evidence: dict[str, Any] | None,
+    *,
+    platform: str,
+    media_kind: str,
+) -> bool:
+    records = evidence.get("records") if isinstance(evidence, dict) else None
+    if not isinstance(records, list):
+        return False
+    matched = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and record.get("platform") == platform
+        and record.get("media_kind") == media_kind
+    ]
+    return bool(matched) and all(_is_non_mutating_upload_intent(record) for record in matched)
+
+
+def _video_dispatch_retry_is_blocked(evidence: dict[str, Any] | None, *, platform: str) -> bool:
+    if _only_non_mutating_upload_intents(evidence, platform=platform, media_kind="video"):
+        return False
+    return retry_is_blocked(evidence, platform=platform, media_kind="video")
+
+
 def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
     from podcaster.generation import manifest_bytes
 
@@ -1192,7 +1227,7 @@ def run_video_generation(
                     ("spotify", dist_config.spotify_upload_enabled),
                 ):
                     record_key = "spotify_upload" if platform == "spotify" else platform
-                    if retry_is_blocked(evidence, platform=platform, media_kind="video"):
+                    if _video_dispatch_retry_is_blocked(evidence, platform=platform):
                         prior = latest.get(f"{platform}:video", {})
                         published_for_attempt[record_key] = {
                             "status": "published",
@@ -1229,11 +1264,16 @@ def run_video_generation(
                                 code="mutation_intent",
                             )
                             if claim is None:
-                                published_for_attempt[record_key] = {
-                                    "status": "published",
-                                    "outcome": "publication_unknown",
-                                    "publish_run_id": publish_run_id,
-                                }
+                                if not _only_non_mutating_upload_intents(
+                                    evidence,
+                                    platform=platform,
+                                    media_kind="video",
+                                ):
+                                    published_for_attempt[record_key] = {
+                                        "status": "published",
+                                        "outcome": "publication_unknown",
+                                        "publish_run_id": publish_run_id,
+                                    }
                         except Exception:
                             published_for_attempt[record_key] = {
                                 "status": "published",

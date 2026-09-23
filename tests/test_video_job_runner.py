@@ -981,6 +981,117 @@ class TestRunVideoGeneration:
             "spotify_rss",
         }
 
+    @pytest.mark.parametrize("preexisting_intent", [False, True])
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_spotify_video_upload_intent_allows_successful_first_publish(
+        self, mock_compose, mock_record, preexisting_intent, storage, monkeypatch
+    ):
+        import podcaster.publish as pub
+        from podcaster.publication_state import PublicationIdentity, append_evidence, read_evidence
+
+        job_id = "video-spotify-upload-intent-success"
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {
+                    "validation": {"duration_seconds": 60.0},
+                    "publish_result": {"anchor_id": 555},
+                },
+                "request": {
+                    "article_title": "Intent allows first publish",
+                    "week": "2026-W37",
+                    "publish_run_id": "123",
+                    "article_sha256": "a" * 64,
+                    "manifest_sha256": "b" * 64,
+                    "publication_identity_mode": "canonical",
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        if preexisting_intent:
+            append_evidence(
+                storage,
+                PublicationIdentity(job_id, "2026-W37", "123", "a" * 64, "b" * 64),
+                platform="spotify",
+                media_kind="video",
+                operation="upload_intent",
+                outcome="publication_unknown",
+                mutation_attempted=False,
+                retry_blocked=True,
+                code="mutation_intent",
+            )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            lambda *args, **kwargs: ([{"partNumber": 1, "url": "https://gcs/part"}], "up1"),
+        )
+        monkeypatch.setattr(
+            pub,
+            "_upload_video_multipart",
+            lambda *args, **kwargs: [{"partNumber": 1, "etag": "e1"}],
+        )
+        monkeypatch.setattr(pub, "_process_upload", lambda *args, **kwargs: None)
+        monkeypatch.setattr(pub, "_set_metadata", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            pub,
+            "promote_spotify_video_draft",
+            MagicMock(
+                return_value=pub.VideoPromoteResult(
+                    anchor_episode_id=777,
+                    audio_anchor_id=555,
+                    terminal_state="published",
+                    is_published=True,
+                    authorized=True,
+                )
+            ),
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+                dry_run=False,
+            ),
+        )
+
+        assert outcome.status == STATUS_COMPLETED
+        create.assert_called_once()
+        evidence = read_evidence(storage, job_id)
+        operations = [record["operation"] for record in evidence["records"]]
+        assert operations == [
+            "upload_intent",
+            "create_episode_intent",
+            "create_episode",
+            "distribution",
+        ]
+        assert evidence["records"][0]["mutation_attempted"] is False
+        assert evidence["records"][2]["provider_artifact_id"] == "777"
+        assert evidence["records"][3]["provider_artifact_id"] == "777"
+
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")

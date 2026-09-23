@@ -2417,6 +2417,8 @@ def upload_video_to_episode(
     if not video_path.exists() or video_path.stat().st_size == 0:
         return PublishResult(status="failed", error=f"Video file not found or empty: {video_path}")
 
+    video_anchor_id: int | None = None
+
     try:
         env_show_id, env_sp_dc, env_sp_key = _get_credentials()
         show_id = show_id or env_show_id
@@ -2652,6 +2654,19 @@ def upload_video_to_episode(
         )
     except SpotifyPublishError as exc:
         logger.error("Spotify video upload failed: %s", exc)
+        if video_anchor_id is not None:
+            return PublishResult(
+                anchor_episode_id=video_anchor_id,
+                status="failed",
+                error=str(exc),
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=(
+                    publication_identity_context.publish_run_id
+                    if publication_identity_context is not None
+                    else None
+                ),
+                details={"retry_blocked": True, "code": "post_create_failure"},
+            )
         return PublishResult(
             status="failed",
             error=str(exc),
@@ -2664,6 +2679,19 @@ def upload_video_to_episode(
     except Exception as exc:
         safe_msg = re.sub(r"https?://\S+", lambda m: _safe_url(m.group()), str(exc))
         logger.error("Unexpected error during Spotify video upload: %s", safe_msg)
+        if video_anchor_id is not None:
+            return PublishResult(
+                anchor_episode_id=video_anchor_id,
+                status="failed",
+                error=f"Unexpected: {safe_msg}",
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=(
+                    publication_identity_context.publish_run_id
+                    if publication_identity_context is not None
+                    else None
+                ),
+                details={"retry_blocked": True, "code": "post_create_failure"},
+            )
         return PublishResult(
             status="failed",
             error=f"Unexpected: {safe_msg}",

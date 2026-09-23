@@ -1585,6 +1585,9 @@ class TestUploadVideoToEpisode:
         )
 
         assert result.status == "failed"
+        assert result.anchor_episode_id == 777
+        assert result.outcome == "publication_unknown"
+        assert result.details == {"retry_blocked": True, "code": "post_create_failure"}
         records = _evidence_records(storage)
         assert [record["operation"] for record in records] == [
             "create_episode_intent",
