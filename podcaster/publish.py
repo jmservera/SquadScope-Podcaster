@@ -2504,7 +2504,7 @@ def upload_video_to_episode(
             create_resolved = True
 
         if (
-            create_resolved
+            video_anchor_id is not None
             and publication_storage is not None
             and publication_identity_context is not None
         ):
@@ -2514,12 +2514,16 @@ def upload_video_to_episode(
                     publication_identity_context,
                     platform="spotify",
                     media_kind="video",
-                    operation="create_episode",
+                    operation="create_episode" if create_resolved else "reconcile_episode",
                     outcome=PUBLICATION_UNKNOWN,
                     provider_artifact_id=video_anchor_id,
-                    mutation_attempted=True,
+                    mutation_attempted=create_resolved,
                     retry_blocked=True,
-                    code="provider_artifact_created",
+                    code=(
+                        "provider_artifact_created"
+                        if create_resolved
+                        else "provider_artifact_reconciled"
+                    ),
                     details={"show_id": show_id, "station_id": station_id},
                 )
             except Exception:
@@ -2527,7 +2531,7 @@ def upload_video_to_episode(
                     anchor_episode_id=video_anchor_id,
                     status="failed",
                     error=(
-                        "Publication evidence failed after Spotify video draft create; "
+                        "Publication evidence failed after Spotify video draft resolution; "
                         "reconciliation required."
                     ),
                     outcome=PUBLICATION_UNKNOWN,

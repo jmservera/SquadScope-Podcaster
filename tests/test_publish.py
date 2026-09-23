@@ -2025,6 +2025,59 @@ class TestUploadVideoToEpisode:
         assert seen["metadata_anchor"] == 888
         assert seen["metadata_title"] == "My Show"
 
+    def test_reconciled_titled_draft_blocks_blind_create_retry(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        session = MagicMock()
+        session.request.return_value = _mock_graphql_listing_resp(
+            [{"episodeId": 888, "title": "My Show", "status": "draft"}]
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            MagicMock(side_effect=pub.SpotifyPublishError("signed URL failed")),
+        )
+
+        first = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert first.status == "failed"
+        assert first.anchor_episode_id == 888
+        records = _evidence_records(storage)
+        assert [record["operation"] for record in records] == ["reconcile_episode"]
+        assert records[0]["provider_artifact_id"] == "888"
+        assert records[0]["mutation_attempted"] is False
+        assert records[0]["retry_blocked"] is True
+        create.assert_not_called()
+
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        second = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert second.status == "failed"
+        assert second.outcome == "publication_unknown"
+        assert second.details == {"retry_blocked": True}
+        create.assert_not_called()
+
     def test_reconcile_rejects_multiple_exact_title_drafts_before_mutation(
         self, tmp_path, monkeypatch
     ):
