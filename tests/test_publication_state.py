@@ -656,7 +656,8 @@ def test_complete_provider_snapshot_rejects_format_only_evidence_source():
         ProviderSnapshot.complete([1], evidence_source="\u200b")
 
 
-def test_append_evidence_rejects_raw_create_safety_details():
+@pytest.mark.parametrize("source", ["\u200b", None, 123])
+def test_append_evidence_rejects_invalid_raw_observed_snapshot_without_writing(source):
     storage = MemoryStorage()
 
     with pytest.raises(PublicationStateError, match="through create_safety_state"):
@@ -669,11 +670,12 @@ def test_append_evidence_rejects_raw_create_safety_details():
             outcome=PUBLICATION_UNKNOWN,
             details={
                 "snapshot_completeness": "complete",
-                "snapshot_evidence_source": "\u200b",
+                "snapshot_evidence_source": source,
                 "pre_create_episode_ids": [1],
             },
         )
 
+    assert storage.data == {}
     assert read_evidence(storage, identity().accepted_job_id) is None
 
 

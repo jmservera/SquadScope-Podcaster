@@ -1867,8 +1867,11 @@ class TestUploadVideoToEpisode:
         monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
         create = MagicMock(return_value=777001)
+        claim_title = MagicMock()
+        upload = MagicMock()
         monkeypatch.setattr(pub, "_create_episode", create)
-        self._patch_successful_video_upload(monkeypatch, pub, {})
+        monkeypatch.setattr(pub, "_claim_draft_title", claim_title)
+        monkeypatch.setattr(pub, "_get_upload_url", upload)
 
         result = pub.upload_video_to_episode(
             self._video(tmp_path),
@@ -1884,6 +1887,8 @@ class TestUploadVideoToEpisode:
         assert result.details == {"retry_blocked": True, "code": "unresolved_create_intent"}
         assert "reconciliation is disabled" in result.error
         create.assert_not_called()
+        claim_title.assert_not_called()
+        upload.assert_not_called()
         records = _evidence_records(storage)
         assert [record["operation"] for record in records] == [
             "create_episode_intent",
