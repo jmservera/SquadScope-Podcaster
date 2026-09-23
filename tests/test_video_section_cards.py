@@ -7,12 +7,14 @@ not require ffmpeg or a browser.
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from podcaster.video.budget import VideoStageBudget
+from podcaster.video.process import OwnedProcessTimeout
 from podcaster.video.section_cards import (
     DEFAULT_ACCENT,
     KNOWN_SECTIONS,
@@ -333,6 +335,21 @@ class TestGenerateSectionCard:
                 runner=failed_runner,
                 budget=VideoStageBudget.start(),
             )
+
+        assert not out.exists()
+
+    def test_initial_render_admission_failure_removes_stale_output(self, tmp_path):
+        out = tmp_path / "stale.mp4"
+        out.write_bytes(b"stale")
+        started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+        budget = VideoStageBudget.start(
+            now_utc=started,
+            monotonic=lambda: 3300.0,
+            utcnow=lambda: started + timedelta(seconds=3300),
+        )
+
+        with pytest.raises(OwnedProcessTimeout):
+            generate_section_card("Trends", out, budget=budget)
 
         assert not out.exists()
 

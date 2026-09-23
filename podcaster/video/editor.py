@@ -702,15 +702,15 @@ def record_via_fanout(
     ``RecordingResult`` shape ``record_episode`` returns. *heartbeat* (when given)
     is invoked on every barrier poll so the caller can renew the editor lease.
     """
+    if budget is None:
+        raise ClipsetBudgetError("queued fan-out recording requires a shared video budget")
     clipset = plan_or_load_clipset(scratch, job_id, segments, budget=budget)
-    if budget is None or budget.admit(VideoStage.FANIN).allowed:
+    if budget.admit(VideoStage.FANIN).allowed:
         enqueue_missing_clips(
             scratch,
             clipset,
             producer=producer,
-            admission_check=(
-                None if budget is None else lambda: budget.remaining_seconds(VideoStage.FANIN)
-            ),
+            admission_check=lambda: budget.remaining_seconds(VideoStage.FANIN),
             operation_runner=operation_runner,
         )
     else:
@@ -739,14 +739,13 @@ def record_via_fanout(
             len(present),
             clipset.count,
         )
-        if budget is not None:
-            terminalize_missing_clips(
-                scratch,
-                clipset,
-                budget=budget,
-                renderer=fallback_renderer,
-                operation_runner=operation_runner,
-            )
+        terminalize_missing_clips(
+            scratch,
+            clipset,
+            budget=budget,
+            renderer=fallback_renderer,
+            operation_runner=operation_runner,
+        )
     validation_timeout = (
         min(30.0, budget.remaining_seconds(VideoStage.FALLBACK)) if budget is not None else 30.0
     )

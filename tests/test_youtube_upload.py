@@ -329,6 +329,42 @@ def test_upload_chunked_308_without_range_header_re_queries_offset(tmp_path):
     assert result.bytes_uploaded == total
 
 
+def test_upload_chunked_308_without_range_preserves_completed_id(tmp_path):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+
+    class _CompletedOnResumeQuery:
+        def __init__(self):
+            self.calls = 0
+
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            self.calls += 1
+            content_range = (headers or {}).get("Content-Range")
+            if self.calls == 1:
+                assert content_range == f"bytes 0-{total - 1}/{total}"
+                return 308, {}, b""
+            if self.calls == 2:
+                assert content_range == f"bytes */{total}"
+                return 200, {}, b'{"id":"vid-completed-during-query"}'
+            raise AssertionError("completed resume query must short-circuit further provider calls")
+
+    transport = _CompletedOnResumeQuery()
+    result = upload_chunked(
+        transport,
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result.succeeded
+    assert result.video_id == "vid-completed-during-query"
+    assert result.bytes_uploaded == total
+    assert transport.calls == 2
+
+
 def test_upload_chunked_non_retryable_fails(tmp_path):
     class _Forbidden:
         def request_with_headers(self, url, *, method="GET", headers=None, data=None):

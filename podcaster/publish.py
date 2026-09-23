@@ -344,6 +344,7 @@ def _retry_request(
     *,
     max_attempts: int = _MAX_RETRIES,
     request_context: _SpotifyRequestContext = "api",
+    provider_mutation: bool | None = None,
     **kwargs: Any,
 ) -> requests.Response:
     """Execute an HTTP request with exponential backoff retry.
@@ -369,7 +370,12 @@ def _retry_request(
     for attempt in range(attempts):
         try:
             before_mutation = getattr(session, "_before_provider_mutation", None)
-            if method.upper() not in {"GET", "HEAD", "OPTIONS"} and callable(before_mutation):
+            is_mutation = (
+                method.upper() not in {"GET", "HEAD", "OPTIONS"}
+                if provider_mutation is None
+                else provider_mutation
+            )
+            if is_mutation and callable(before_mutation):
                 before_mutation()
             resp = session.request(method, url, **kwargs)
             resp.raise_for_status()
@@ -1141,6 +1147,7 @@ def _fetch_episode_listing_page(
             },
             timeout=15,
             request_context="draft_episode_readback",
+            provider_mutation=False,
         )
         return _normalise_episode_listing_page(resp.json(), expected_page=current_page)
     except SpotifyCredentialExpiredError:

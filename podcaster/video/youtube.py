@@ -328,7 +328,7 @@ def upload_chunked(
                     )
                 sleep(_RETRY_BACKOFF_BASE ** (transient_retries - 1))
                 try:
-                    start = _resume_after_failure(
+                    start, completed_id = _resume_after_failure(
                         http,
                         session_uri,
                         access_token,
@@ -337,6 +337,8 @@ def upload_chunked(
                         budget=budget,
                         mutation_started=mutation_started,
                     )
+                    if completed_id:
+                        return _success_result(completed_id, total_size)
                 except YouTubeCompletionAmbiguous as exc:
                     return _ambiguous_completion_result(start, exc)
                 continue
@@ -352,7 +354,7 @@ def upload_chunked(
                     # unknown (could be 0).  Query the real offset rather than
                     # blindly advancing past the chunk we just sent.
                     try:
-                        start = _resume_after_failure(
+                        start, completed_id = _resume_after_failure(
                             http,
                             session_uri,
                             access_token,
@@ -361,6 +363,8 @@ def upload_chunked(
                             budget=budget,
                             mutation_started=mutation_started,
                         )
+                        if completed_id:
+                            return _success_result(completed_id, total_size)
                     except YouTubeCompletionAmbiguous as exc:
                         return _ambiguous_completion_result(start, exc)
                 transient_retries = 0
@@ -386,7 +390,7 @@ def upload_chunked(
                     )
                 sleep(_RETRY_BACKOFF_BASE ** (transient_retries - 1))
                 try:
-                    start = _resume_after_failure(
+                    start, completed_id = _resume_after_failure(
                         http,
                         session_uri,
                         access_token,
@@ -395,6 +399,8 @@ def upload_chunked(
                         budget=budget,
                         mutation_started=mutation_started,
                     )
+                    if completed_id:
+                        return _success_result(completed_id, total_size)
                 except YouTubeCompletionAmbiguous as exc:
                     return _ambiguous_completion_result(start, exc)
                 continue
@@ -450,9 +456,9 @@ def _resume_after_failure(
     fallback: int,
     budget: VideoStageBudget | None = None,
     mutation_started: bool = True,
-) -> int:
+) -> tuple[int, str | None]:
     try:
-        offset, _ = _query_resume_offset(
+        return _query_resume_offset(
             http,
             session_uri,
             access_token,
@@ -460,14 +466,13 @@ def _resume_after_failure(
             budget=budget,
             mutation_started=mutation_started,
         )
-        return offset
     except ProviderMutationAdmissionError:
         raise
     except YouTubeCompletionAmbiguous:
         raise
     except Exception as exc:  # noqa: BLE001 - keep retrying from last offset
         logger.warning("Resume-offset query failed, retrying from %d: %s", fallback, exc)
-        return fallback
+        return fallback, None
 
 
 def _parse_video_id(body: bytes) -> str | None:

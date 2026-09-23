@@ -14,6 +14,7 @@ import pytest
 
 from podcaster.queue import parse_clip_job
 from podcaster.video.budget import VideoStageBudget
+from podcaster.video.clip_manifest import CLIP_MANIFEST_SCHEMA_VERSION
 from podcaster.video.clipset import (
     CLIPSET_SCHEMA_VERSION,
     LEGACY_CLIPSET_SCHEMA_VERSION,
@@ -24,6 +25,7 @@ from podcaster.video.clipset import (
     clip_content_blob_path,
     clip_manifest_blob_path,
     clips_prefix,
+    clipset_blob_path,
 )
 from podcaster.video.editor import (
     EditorLease,
@@ -148,6 +150,7 @@ def _write_manifest(
     has_pages: bool = False,
     website_url: str | None = None,
     write_clip: bool = True,
+    schema_version: str | None = None,
 ) -> None:
     payload = b"WEBMDATA"
     evidence = MediaEvidence(
@@ -169,6 +172,8 @@ def _write_manifest(
         "media_blob_path": content_path,
         "media": evidence.to_dict(),
     }
+    if schema_version is not None:
+        body["schema_version"] = schema_version
     storage.put_bytes(
         clip_manifest_blob_path(job_id, index),
         json.dumps(body).encode(),
@@ -979,7 +984,12 @@ def test_record_via_fanout_end_to_end(tmp_path):
     # Simulate recorders completing all clips on the first barrier poll.
     def _sleep(_s: float) -> None:
         for i in range(3):
-            _write_manifest(storage, job_id, i)
+            _write_manifest(
+                storage,
+                job_id,
+                i,
+                schema_version=CLIP_MANIFEST_SCHEMA_VERSION,
+            )
 
     result = record_via_fanout(
         job_id,
@@ -991,6 +1001,7 @@ def test_record_via_fanout_end_to_end(tmp_path):
         poll_seconds=1,
         sleep=_sleep,
         monotonic=lambda: 0.0,
+        budget=VideoStageBudget.start(),
     )
     assert len(result.recorded) == 3
     assert len(producer.sent) == 3  # all fanned out
@@ -1006,7 +1017,12 @@ def test_record_via_fanout_renews_lease_via_heartbeat(tmp_path):
     # All clips present immediately so the barrier completes on the first poll
     # (which fires the heartbeat) without sleeping.
     for i in range(2):
-        _write_manifest(storage, job_id, i)
+        _write_manifest(
+            storage,
+            job_id,
+            i,
+            schema_version=CLIP_MANIFEST_SCHEMA_VERSION,
+        )
 
     def _heartbeat() -> None:
         beats.append(1)
@@ -1020,6 +1036,7 @@ def test_record_via_fanout_renews_lease_via_heartbeat(tmp_path):
         sleep=lambda _s: None,
         monotonic=lambda: 0.0,
         heartbeat=_heartbeat,
+        budget=VideoStageBudget.start(),
     )
     assert len(result.recorded) == 2
     assert beats  # heartbeat fired at least once on the barrier poll
@@ -1047,7 +1064,25 @@ def test_record_via_fanout_aborts_when_heartbeat_raises(tmp_path):
             sleep=lambda _s: None,
             monotonic=lambda: 0.0,
             heartbeat=_heartbeat,
+            budget=VideoStageBudget.start(),
         )
+
+
+def test_record_via_fanout_requires_shared_budget_before_enqueue(tmp_path):
+    storage = FakeStorage()
+    producer = FakeProducer()
+
+    with pytest.raises(ClipsetBudgetError, match="requires a shared video budget"):
+        record_via_fanout(
+            "job1",
+            _segments(1),
+            tmp_path,
+            scratch=storage,
+            producer=producer,
+        )
+
+    assert producer.sent == []
+    assert storage.get_bytes(clipset_blob_path("job1")) is None
 
 
 class _Clock:

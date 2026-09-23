@@ -511,6 +511,7 @@ def generate_section_card(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if budget is not None and not budget.admit(VideoStage.RENDER).allowed:
+        output_path.unlink(missing_ok=True)
         raise OwnedProcessTimeout(
             ["ffmpeg"],
             0.0,
