@@ -1912,6 +1912,90 @@ class TestUploadVideoToEpisode:
         assert result.details["code"] == "create_evidence_persistence_failed"
         upload.assert_not_called()
 
+    def test_recovered_titled_draft_persists_provider_id_before_upload(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        session = MagicMock()
+        session.request.side_effect = [
+            _mock_graphql_listing_resp([]),
+            _mock_graphql_listing_resp([{"episodeId": 888, "title": "My Show", "status": "draft"}]),
+        ]
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(
+            side_effect=pub.SpotifyDraftCreateAmbiguousError("created but response was unparseable")
+        )
+        monkeypatch.setattr(pub, "_create_episode", create)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 888
+        create.assert_called_once()
+        records = _evidence_records(storage)
+        assert [
+            (record["operation"], record.get("provider_artifact_id")) for record in records
+        ] == [
+            ("create_episode_intent", None),
+            ("create_episode", "888"),
+        ]
+
+    def test_recovered_untitled_draft_persists_provider_id_before_upload(
+        self, tmp_path, monkeypatch
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        session = MagicMock()
+        session.request.side_effect = [
+            _mock_graphql_listing_resp([]),
+            _mock_graphql_listing_resp([{"episodeId": 889, "title": None, "status": "draft"}]),
+        ]
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        monkeypatch.setattr(
+            pub,
+            "_create_episode",
+            MagicMock(
+                side_effect=pub.SpotifyDraftCreateAmbiguousError(
+                    "created but response was unparseable"
+                )
+            ),
+        )
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 889
+        records = _evidence_records(storage)
+        assert records[1]["operation"] == "create_episode"
+        assert records[1]["provider_artifact_id"] == "889"
+
     def test_reconcile_reuses_existing_draft_by_title(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
 
@@ -2382,6 +2466,41 @@ class TestUploadVideoToEpisode:
         assert result.anchor_episode_id is None
         create.assert_not_called()
         assert "reconcile" in result.error.lower()
+
+    def test_reconcile_lookup_failure_with_storage_leaves_no_create_intent(
+        self, tmp_path, monkeypatch
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+        session = MagicMock()
+        session.request.return_value = _mock_error_resp(
+            400, '{"property":"query.userId","message":"is required"}'
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "failed"
+        assert result.anchor_episode_id is None
+        create.assert_not_called()
+        assert storage.get_bytes("publication-evidence/job-1.json") is None
 
 
 class TestVideoLivePublishGuard:
