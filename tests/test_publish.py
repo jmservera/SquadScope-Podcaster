@@ -2700,6 +2700,56 @@ class TestFindExistingDraft:
         second_call_vars = session.request.call_args_list[1].kwargs["json"]["variables"]
         assert second_call_vars["currentPage"] == 2
 
+    @pytest.mark.parametrize(
+        ("final_episode", "message"),
+        [
+            pytest.param(
+                {"anchorId": "1000", "title": "Other", "status": "draft"},
+                "repeated canonical episode id 1000",
+                id="repeated-canonical-identity",
+            ),
+            pytest.param(
+                {"title": "Other", "status": "draft"},
+                "exactly one unambiguous canonical episode id",
+                id="omitted-canonical-identity",
+            ),
+        ],
+    )
+    def test_numerically_complete_pages_with_repeated_or_omitted_identity_fail_closed(
+        self, monkeypatch, final_episode, message
+    ):
+        from podcaster import publish as pub
+
+        first_page = [
+            {"episodeId": 1000 + index, "title": "Other", "status": "draft"}
+            for index in range(pub._EPISODE_LIST_PAGE_SIZE)
+        ]
+        session = MagicMock()
+        session.request.side_effect = [
+            _mock_graphql_listing_resp(first_page, totalItems=51, totalPages=2),
+            _mock_graphql_listing_resp(
+                [final_episode],
+                currentPage=2,
+                totalItems=51,
+                totalPages=2,
+            ),
+        ]
+        create = MagicMock()
+        monkeypatch.setattr(pub, "_create_episode", create)
+
+        with pytest.raises(
+            pub.SpotifyDraftReconcileError,
+            match=message,
+        ):
+            pub._reconcile_or_create_draft(
+                session,
+                "99",
+                user_id="7",
+                show_id="show1",
+                title="Missing Target",
+            )
+        create.assert_not_called()
+
     def test_paginated_listing_second_page_failure_raises_without_partial_absence(
         self, monkeypatch
     ):
@@ -2860,11 +2910,66 @@ class TestEpisodeListingSchema:
         assert self._lookup(_graphql_listing_payload([])) is None
 
     @pytest.mark.parametrize(
+        "episode",
+        [
+            pytest.param(
+                {"title": "Other", "status": "draft"},
+                id="missing-identity",
+            ),
+            pytest.param(
+                {"episodeId": "not-a-number", "title": "Other", "status": "draft"},
+                id="malformed-identity",
+            ),
+            pytest.param(
+                {
+                    "episodeId": 101,
+                    "anchorId": 202,
+                    "title": "Other",
+                    "status": "draft",
+                },
+                id="conflicting-identity-aliases",
+            ),
+        ],
+    )
+    def test_numeric_page_with_ambiguous_identity_never_authorizes_create(
+        self, monkeypatch, episode
+    ):
+        from podcaster import publish as pub
+
+        session = self._session(_graphql_listing_payload([episode], totalItems=1, totalPages=1))
+        create = MagicMock()
+        monkeypatch.setattr(pub, "_create_episode", create)
+
+        with pytest.raises(
+            pub.SpotifyDraftReconcileError,
+            match="exactly one unambiguous canonical episode id",
+        ):
+            pub._reconcile_or_create_draft(
+                session,
+                "99",
+                user_id="7",
+                show_id="show1",
+                title="Missing Target",
+            )
+        create.assert_not_called()
+
+    @pytest.mark.parametrize(
         ("episodes", "pagination"),
         [
             ([], {"totalItems": 1, "totalPages": 0}),
             ([], {"totalItems": 1, "totalPages": 1}),
             ([], {"totalItems": 0, "totalPages": 2}),
+            (
+                [{"episodeId": 1, "title": "Other", "status": "draft"}],
+                {"totalItems": 0, "totalPages": 1},
+            ),
+            (
+                [
+                    {"episodeId": 1000 + index, "title": "Other", "status": "draft"}
+                    for index in range(50)
+                ],
+                {"totalItems": 50, "totalPages": 2},
+            ),
             (
                 [
                     {"episodeId": 1000 + index, "title": "Other", "status": "draft"}
@@ -2881,6 +2986,26 @@ class TestEpisodeListingSchema:
 
         payload = _graphql_listing_payload(episodes, **pagination)
         session = self._session(payload)
+        create = MagicMock()
+        monkeypatch.setattr(pub, "_create_episode", create)
+
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="pagination is inconsistent"):
+            pub._reconcile_or_create_draft(
+                session,
+                "99",
+                user_id="7",
+                show_id="show1",
+                title="My Show",
+            )
+        create.assert_not_called()
+
+    @pytest.mark.parametrize("page_size", [0, 1, 49, 51])
+    def test_response_page_size_must_match_numeric_request_contract(self, monkeypatch, page_size):
+        from podcaster import publish as pub
+
+        session = self._session(
+            _graphql_listing_payload([], pageSize=page_size, totalItems=0, totalPages=1)
+        )
         create = MagicMock()
         monkeypatch.setattr(pub, "_create_episode", create)
 
@@ -3328,7 +3453,6 @@ class TestEpisodeAnchorId:
             ("id fallback", {"id": 42}),
             ("anchorId fallback", {"anchorId": "42"}),
             ("null episodeId falls through", {"episodeId": None, "id": 42}),
-            ("bool episodeId falls through", {"episodeId": True, "anchorId": 42}),
             ("agreeing keys", {"episodeId": 42, "id": "42", "anchorId": 42.0}),
         ],
     )
@@ -3343,6 +3467,7 @@ class TestEpisodeAnchorId:
             ("object id", {"id": {"value": 42}}),
             ("list id", {"id": [42]}),
             ("fractional float id", {"id": 42.5}),
+            ("boolean alias hides valid id", {"episodeId": True, "anchorId": 42}),
         ],
     )
     def test_malformed_id_fields_fail_closed(self, label, episode):
@@ -3369,7 +3494,7 @@ class TestEpisodeAnchorId:
         )
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
             pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
-        assert "no usable episode id" in str(exc.value)
+        assert "exactly one unambiguous canonical episode id" in str(exc.value)
 
 
 def _scripted_session(steps):
@@ -3715,19 +3840,29 @@ class TestAmbiguousCreateRecovery:
             )
         assert "unclassifiable entries: 1" in str(exc.value)
 
-    def test_incomplete_snapshot_blocks_the_retry(self):
-        """Without an id for every pre-create entry, 'new' cannot be established."""
+    def test_incomplete_snapshot_blocks_create_before_retry(self):
+        """A pre-create listing without every id cannot establish absence."""
         from podcaster import publish as pub
 
-        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            self._reconcile(
-                [
-                    self._listing({"title": "Some other show", "status": "draft"}),
-                    _mock_error_resp(504, "gateway timeout"),
-                    self._listing({"title": "Some other show", "status": "draft"}),
-                ]
+        session, calls = _scripted_session(
+            [
+                self._listing({"title": "Some other show", "status": "draft"}),
+                _mock_error_resp(504, "gateway timeout"),
+                self._listing({"title": "Some other show", "status": "draft"}),
+            ]
+        )
+        with pytest.raises(
+            pub.SpotifyDraftReconcileError,
+            match="exactly one unambiguous canonical episode id",
+        ):
+            pub._reconcile_or_create_draft(
+                session,
+                "99",
+                user_id="7",
+                show_id="show1",
+                title="My Show",
             )
-        assert "snapshot complete: False" in str(exc.value)
+        assert not _create_posts(calls)
 
     def test_unreadable_recovery_listing_fails_closed(self):
         from podcaster import publish as pub

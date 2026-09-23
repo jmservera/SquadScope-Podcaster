@@ -805,7 +805,10 @@ def _episode_anchor_id(episode: dict[Any, Any]) -> int | None:
     malformed: list[str] = []
     for key in _ID_KEYS:
         raw = episode.get(key)
-        if raw is None or isinstance(raw, bool):
+        if raw is None:
+            continue
+        if isinstance(raw, bool):
+            malformed.append(key)
             continue
         if isinstance(raw, float) and not raw.is_integer():
             malformed.append(key)
@@ -1045,25 +1048,28 @@ def _normalise_episode_listing_page(
     page_size = values["pageSize"]
     total_items = values["totalItems"]
     total_pages = values["totalPages"]
-    calculated_total_pages = max(
-        1,
-        (total_items + _EPISODE_LIST_PAGE_SIZE - 1) // _EPISODE_LIST_PAGE_SIZE,
-    )
+    if (
+        current_page != expected_page
+        or page_size != _EPISODE_LIST_PAGE_SIZE
+        or total_items < 0
+        or total_pages < 1
+    ):
+        raise SpotifyDraftReconcileError(
+            f"Spotify episode listing GraphQL pagination is inconsistent; {_FAIL_CLOSED_SUFFIX}."
+        )
+    calculated_total_pages = max(1, (total_items + page_size - 1) // page_size)
     expected_page_items = (
         min(
-            _EPISODE_LIST_PAGE_SIZE,
-            total_items - ((current_page - 1) * _EPISODE_LIST_PAGE_SIZE),
+            page_size,
+            total_items - ((current_page - 1) * page_size),
         )
         if total_items
         else 0
     )
     if (
-        current_page != expected_page
-        or page_size != _EPISODE_LIST_PAGE_SIZE
-        or total_items < 0
-        or total_pages < 0
-        or calculated_total_pages != total_pages
+        calculated_total_pages != total_pages
         or not 1 <= current_page <= total_pages
+        or (not items and total_items > (current_page - 1) * page_size)
         or len(items) != expected_page_items
     ):
         raise SpotifyDraftReconcileError(
@@ -1185,6 +1191,7 @@ def _fetch_episode_listing(
         )
 
     all_items: list[Any] = []
+    seen_episode_ids: set[int] = set()
     current_page = 1
     expected_total_items: int | None = None
     expected_total_pages: int | None = None
@@ -1194,7 +1201,22 @@ def _fetch_episode_listing(
             resolved_show_id,
             current_page=current_page,
         )
-        all_items.extend(_episode_items(page))
+        page_items = _episode_items(page)
+        for episode in page_items:
+            episode_id = _episode_anchor_id(episode)
+            if episode_id is None:
+                raise SpotifyDraftReconcileError(
+                    "Spotify episode listing entry does not expose exactly one "
+                    "unambiguous canonical episode id "
+                    f"(keys: {_safe_keys(episode)}); {_FAIL_CLOSED_SUFFIX}."
+                )
+            if episode_id in seen_episode_ids:
+                raise SpotifyDraftReconcileError(
+                    "Spotify episode listing repeated canonical episode id "
+                    f"{episode_id} within or across numbered pages; {_FAIL_CLOSED_SUFFIX}."
+                )
+            seen_episode_ids.add(episode_id)
+        all_items.extend(page_items)
         total_items = page["totalItems"]
         total_pages = page["totalPages"]
         if expected_total_items is None:
@@ -1297,8 +1319,9 @@ def _find_existing_draft(
     draft.
 
     ``None`` is a complete-read proof of absence for the recognised listing
-    schema: :func:`_fetch_episode_listing` follows cursors until exhausted, and
-    any page-fetch or schema failure raises before this matcher can return.
+    schema: :func:`_fetch_episode_listing` validates and fetches every declared
+    numbered production page, and any page-fetch, schema, or canonical-identity
+    failure raises before this matcher can return.
     """
     data = _fetch_episode_listing(session, station_id, user_id=user_id, show_id=show_id)
     return _match_existing_draft(data, station_id, title, exclude_id=exclude_id)
