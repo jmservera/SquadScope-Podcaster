@@ -1320,6 +1320,69 @@ class TestUploadVideoToEpisode:
         assert seen["metadata_anchor"] == 888
         assert seen["metadata_title"] == "My Show"
 
+    @pytest.mark.parametrize(
+        ("raw_title", "env_value"),
+        [
+            (None, None),
+            ("", None),
+            ("   ", None),
+            (None, "1"),
+        ],
+    )
+    def test_defaulted_title_still_reconciles_before_create(
+        self, tmp_path, monkeypatch, raw_title, env_value
+    ):
+        """None/empty/blank titles use the effective default for the reconcile gate."""
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        if env_value is not None:
+            monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", env_value)
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {"episodes": [{"episodeId": 888, "title": "Video Episode", "status": "draft"}]}
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        seen = {}
+        self._patch_successful_video_upload(monkeypatch, pub, seen)
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title=raw_title)
+
+        assert result.status == "draft"
+        assert result.anchor_episode_id == 888
+        create.assert_not_called()
+        assert seen["metadata_title"] == "Video Episode"
+
+    def test_reconcile_disabled_with_default_title_fails_closed(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+
+        session = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        upload = MagicMock()
+        monkeypatch.setattr(pub, "_get_upload_url", upload)
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title=None)
+
+        assert result.status == "failed"
+        assert "refusing blind create" in result.error
+        create.assert_not_called()
+        upload.assert_not_called()
+        session.request.assert_not_called()
+
     def test_reconcile_never_reuses_audio_anchor_episode(self, tmp_path, monkeypatch):
         """A same-titled audio draft (the anchor_id) must never be reused as the
         video draft — doing so would attach video to the audio episode (#564)."""
@@ -1538,8 +1601,8 @@ class TestUploadVideoToEpisode:
         assert "777" in result.error
         assert "secret-token-abc" not in result.error
 
-    def test_reconcile_disabled_skips_title_claim(self, tmp_path, monkeypatch):
-        """The escape hatch restores the exact pre-#656 blind-create behaviour."""
+    def test_reconcile_disabled_fails_closed_before_create(self, tmp_path, monkeypatch):
+        """Disabling reconcile cannot reopen the blind-create duplicate path."""
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
@@ -1550,7 +1613,8 @@ class TestUploadVideoToEpisode:
         session = MagicMock()
         monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
-        monkeypatch.setattr(pub, "_create_episode", lambda s, station_id: 777)
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
 
         metadata_calls: list[int] = []
         monkeypatch.setattr(
@@ -1572,8 +1636,10 @@ class TestUploadVideoToEpisode:
 
         result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
 
-        assert result.status == "draft"
-        assert metadata_calls == [777]
+        assert result.status == "failed"
+        assert "refusing blind create" in result.error
+        create.assert_not_called()
+        assert metadata_calls == []
         assert session.request.call_count == 0
 
     def test_credential_expiry_opens_notification(self, tmp_path, monkeypatch):
@@ -1604,7 +1670,7 @@ class TestUploadVideoToEpisode:
         assert result.details["notification_issue"] == 4242
         create.assert_not_called()
 
-    def test_reconcile_disabled_falls_back_to_create(self, tmp_path, monkeypatch):
+    def test_reconcile_disabled_does_not_fallback_to_create(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
@@ -1623,9 +1689,9 @@ class TestUploadVideoToEpisode:
 
         result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
 
-        assert result.status == "draft"
-        assert result.anchor_episode_id == 777
-        create.assert_called_once_with(session, "99")
+        assert result.status == "failed"
+        assert result.anchor_episode_id is None
+        create.assert_not_called()
         assert session.request.call_count == 0
 
     def test_reconcile_sends_resolved_user_id(self, tmp_path, monkeypatch):

@@ -233,7 +233,8 @@ warns, so `None` then means "no match on the page that was read"); a recognised
 but null is understood as an untitled draft (no match). Entries whose id is the
 excluded audio anchor are skipped *before* any state or title classification, so
 a scheduled or processing audio episode can never fail the video lookup.
-Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
+If `PODCASTER_SPOTIFY_RECONCILE=0` disables this lookup, video draft creation
+fails closed instead of blind-creating.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
 inspected — a malformed `episodeId` never hides a usable `id` — but the entry
@@ -296,8 +297,9 @@ before uploading and names the orphan draft id so an operator can delete it.
 Only drafts known to be *untitled* are claimed: `_reconcile_or_create_draft`
 returns `(anchor_id, needs_title)` and `needs_title` is `False` for a
 reconciled draft **and** for a draft adopted during ambiguous-create recovery
-because it already carried the target title. The claim is skipped entirely when
-`PODCASTER_SPOTIFY_RECONCILE=0`.
+because it already carried the target title. If
+`PODCASTER_SPOTIFY_RECONCILE=0`, the publish aborts before create rather than
+skipping the title claim and blind-creating.
 
 #### The create POST is never retried blindly
 
@@ -339,9 +341,10 @@ make it provable.
 At most **two** create POSTs are ever sent for one publish attempt, and the
 second only after a settled, twice-observed listing that still shows nothing the
 first create could have produced. A second ambiguous create is not recovered
-again. With `PODCASTER_SPOTIFY_RECONCILE=0` (and on the audio path in
-`publish_episode`, which never reconciles) there is no listing to reason from,
-so the single POST simply fails — a failed publish, not an orphaned duplicate.
+again. With `PODCASTER_SPOTIFY_RECONCILE=0`, video draft creation is blocked
+before any create POST because there is no listing to reason from. On the audio
+path in `publish_episode`, which never reconciles, the single POST simply fails
+if its outcome is ambiguous — a failed publish, not an orphaned duplicate.
 
 Residual, irreducible windows — stated precisely, because neither one loses the
 draft server-side:
@@ -890,7 +893,7 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` skips the existing-draft lookup *and* the immediate title claim, restoring blind create (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` disables the existing-draft lookup, so video draft creation fails closed before any create POST (§5). |
 | `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults off. `1`/`true`/`yes`/`on` makes an explicitly paginated listing with no first-page match fail closed instead of warning (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 

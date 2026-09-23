@@ -131,9 +131,8 @@ class SpotifyDraftReconcileError(SpotifyPublishError):
     Reconcile-before-create only prevents duplicate Spotify drafts when the
     lookup is known to be complete. A failed or truncated lookup must never be
     reported as "no draft exists", because the caller would then create a
-    second draft for an episode that already has one. Callers that genuinely
-    prefer a blind create can disable reconcile with
-    ``PODCASTER_SPOTIFY_RECONCILE=0``.
+    second draft for an episode that already has one. Video draft creation must
+    fail closed if reconcile is unavailable or explicitly disabled.
     """
 
 
@@ -576,6 +575,13 @@ def _spotify_reconcile_enabled() -> bool:
     if raw is None:
         return True
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _effective_video_title(title: str | None) -> str:
+    """Title used for Spotify video creation, reconcile, and metadata."""
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    return "Video Episode"
 
 
 def _spotify_strict_paging_enabled() -> bool:
@@ -1184,8 +1190,7 @@ def _recover_ambiguous_create(
         f"{candidates or 'none'}, unclassifiable entries: {opaque}, pre-create "
         f"snapshot complete: {snapshot_complete}). Refusing to send a second "
         "create that could orphan an untitled duplicate; inspect the drafts for "
-        "this show in the Spotify creator UI and retry, or set "
-        "PODCASTER_SPOTIFY_RECONCILE=0 to fall back to blind create."
+        "this show in the Spotify creator UI and retry."
     ) from cause
 
 
@@ -1283,8 +1288,8 @@ def _claim_draft_title(
             f"Spotify draft {anchor_id} was created but could not be titled "
             f"({type(exc).__name__}), so reconcile can never reuse it. Aborting "
             "before upload rather than orphaning a second untitled draft; delete "
-            f"draft {anchor_id} in the Spotify creator UI, or set "
-            "PODCASTER_SPOTIFY_RECONCILE=0 to fall back to blind create."
+            f"draft {anchor_id} in the Spotify creator UI, then retry after the "
+            "existing draft is recoverable."
         ) from exc
     logger.info("Claimed title=%r on new Spotify draft anchorId=%d", title, anchor_id)
 
@@ -2030,7 +2035,7 @@ def upload_video_to_episode(
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
     status is "draft" on success and "failed" otherwise.
     """
-    video_title = title or "Video Episode"
+    video_title = _effective_video_title(title)
     video_description = description or ""
 
     if _is_dry_run():
@@ -2070,23 +2075,29 @@ def upload_video_to_episode(
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         # Create or reconcile a separate video draft — never touch the audio one.
-        reconcile_enabled = bool(title) and _spotify_reconcile_enabled()
-        if reconcile_enabled:
-            try:
-                exclude_audio_id = int(anchor_id) if anchor_id is not None else None
-            except (TypeError, ValueError):
-                exclude_audio_id = None
-            video_anchor_id, needs_title = _reconcile_or_create_draft(
-                session,
-                station_id,
-                user_id=user_id,
-                title=video_title,
-                exclude_id=exclude_audio_id,
+        # The gate must use the same effective title that metadata will use; raw
+        # ``title`` may be None/empty while ``video_title`` still has a safe default.
+        if not _spotify_reconcile_enabled():
+            return PublishResult(
+                status="failed",
+                error=(
+                    "Spotify video draft reconcile is disabled; refusing blind "
+                    "create that could duplicate an existing episode."
+                ),
             )
-        else:
-            video_anchor_id, needs_title = _create_episode(session, station_id), True
+        try:
+            exclude_audio_id = int(anchor_id) if anchor_id is not None else None
+        except (TypeError, ValueError):
+            exclude_audio_id = None
+        video_anchor_id, needs_title = _reconcile_or_create_draft(
+            session,
+            station_id,
+            user_id=user_id,
+            title=video_title,
+            exclude_id=exclude_audio_id,
+        )
 
-        if needs_title and reconcile_enabled:
+        if needs_title:
             # A new draft is created untitled; title it now — with the real
             # metadata, so nothing is cleared — so a crash during the upload
             # below leaves a draft reconcile can find on retry.
