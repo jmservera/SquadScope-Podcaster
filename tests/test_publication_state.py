@@ -264,6 +264,86 @@ def test_claim_rearms_once_after_explicit_retry_authorization():
     ]
 
 
+def test_retry_authorization_is_consumed_by_any_later_claim_type():
+    storage = MemoryStorage()
+    ident = identity()
+    assert (
+        claim_evidence(
+            storage,
+            ident,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+        )
+        is not None
+    )
+    append_evidence(
+        storage,
+        ident,
+        platform="spotify",
+        media_kind="video",
+        operation="credential_failure",
+        outcome=MANUAL_HANDOFF_REQUIRED,
+        mutation_attempted=False,
+        retry_blocked=False,
+    )
+    assert (
+        claim_evidence(
+            storage,
+            ident,
+            platform="spotify",
+            media_kind="video",
+            operation="upload_intent",
+        )
+        is not None
+    )
+
+    assert (
+        claim_evidence(
+            storage,
+            ident,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+        )
+        is None
+    )
+
+
+def test_identical_credential_failures_rearm_consecutive_claim_attempts():
+    storage = MemoryStorage()
+    ident = identity()
+    claim_kwargs = {
+        "platform": "spotify",
+        "media_kind": "video",
+        "operation": "create_episode_intent",
+    }
+    failure_kwargs = {
+        "platform": "spotify",
+        "media_kind": "video",
+        "operation": "credential_failure",
+        "outcome": MANUAL_HANDOFF_REQUIRED,
+        "mutation_attempted": False,
+        "retry_blocked": False,
+    }
+
+    assert claim_evidence(storage, ident, **claim_kwargs) is not None
+    assert append_evidence(storage, ident, **failure_kwargs) is not None
+    assert claim_evidence(storage, ident, **claim_kwargs) is not None
+    assert append_evidence(storage, ident, **failure_kwargs) is not None
+    assert claim_evidence(storage, ident, **claim_kwargs) is not None
+
+    assert [
+        record["operation"] for record in read_evidence(storage, ident.accepted_job_id)["records"]
+    ] == [
+        "create_episode_intent",
+        "credential_failure",
+        "create_episode_intent",
+        "credential_failure",
+        "create_episode_intent",
+    ]
+
+
 def test_claim_does_not_rearm_after_retry_blocking_evidence():
     storage = MemoryStorage()
     ident = identity()

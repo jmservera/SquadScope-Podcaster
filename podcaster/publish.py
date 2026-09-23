@@ -1551,6 +1551,7 @@ def _reconcile_or_create_draft(
     exclude_id: int | None = None,
     before_create: Callable[[set[int], bool], None] | None = None,
     on_create_resolved: Callable[[int, bool], None] | None = None,
+    on_create_ambiguous: Callable[[], None] | None = None,
     unresolved_create_intent_snapshot: tuple[set[int], bool] | None = None,
 ) -> tuple[int, bool]:
     """Return ``(anchor_id, needs_title)`` for the video draft carrying *title*.
@@ -1592,6 +1593,8 @@ def _reconcile_or_create_draft(
             on_create_resolved(anchor_id, True)
         return anchor_id, True
     except SpotifyDraftCreateAmbiguousError as exc:
+        if on_create_ambiguous is not None:
+            on_create_ambiguous()
         return _recover_ambiguous_create(
             session,
             station_id,
@@ -2450,7 +2453,10 @@ def _spotify_video_unresolved_create_intent_snapshot(
     return None
 
 
-def _spotify_video_create_retry_authorized(document: Mapping[str, Any] | None) -> bool:
+def _spotify_video_create_retry_authorized(
+    document: Mapping[str, Any] | None,
+    identity: PublicationIdentity,
+) -> bool:
     records = document.get("records") if isinstance(document, Mapping) else None
     if not isinstance(records, list):
         return False
@@ -2459,10 +2465,15 @@ def _spotify_video_create_retry_authorized(document: Mapping[str, Any] | None) -
             not isinstance(record, Mapping)
             or record.get("platform") != "spotify"
             or record.get("media_kind") != "video"
+            or record.get("job_id") != identity.accepted_job_id
+            or record.get("week") != identity.week
+            or record.get("publish_run_id") != identity.publish_run_id
+            or record.get("article_sha256") != identity.article_sha256
+            or record.get("manifest_sha256") != identity.manifest_sha256
         ):
             continue
         if record.get("operation") in {"upload_intent", "create_episode_intent"}:
-            continue
+            return False
         return record.get("retry_blocked") is False
     return False
 
@@ -2539,6 +2550,7 @@ def upload_video_to_episode(
     created_by_attempt = False
     create_intent_persisted = False
     create_attempted = False
+    create_became_ambiguous = False
 
     try:
         env_show_id, env_sp_dc, env_sp_key = _get_credentials()
@@ -2574,7 +2586,10 @@ def upload_video_to_episode(
                     publish_run_id=publication_identity_context.publish_run_id,
                     details={"retry_blocked": True},
                 )
-            create_retry_authorized = _spotify_video_create_retry_authorized(prior_evidence)
+            create_retry_authorized = _spotify_video_create_retry_authorized(
+                prior_evidence,
+                publication_identity_context,
+            )
             if not create_retry_authorized:
                 try:
                     unresolved_create_intent_snapshot = (
@@ -2623,7 +2638,16 @@ def upload_video_to_episode(
             nonlocal created_by_attempt
             created_by_attempt = was_created_by_attempt
 
-        def _persist_pre_create_failure(code: str) -> bool:
+        def _mark_create_ambiguous() -> None:
+            nonlocal create_became_ambiguous
+            create_became_ambiguous = True
+
+        def _persist_create_failure(
+            code: str,
+            *,
+            retry_blocked: bool,
+            outcome: str,
+        ) -> bool:
             if (
                 not create_intent_persisted
                 or publication_storage is None
@@ -2637,9 +2661,9 @@ def upload_video_to_episode(
                     platform="spotify",
                     media_kind="video",
                     operation="create_episode_failure",
-                    outcome=MANUAL_HANDOFF_REQUIRED,
+                    outcome=outcome,
                     mutation_attempted=False,
-                    retry_blocked=False,
+                    retry_blocked=retry_blocked,
                     code=code,
                     details={"show_id": show_id, "station_id": station_id},
                 )
@@ -2663,6 +2687,7 @@ def upload_video_to_episode(
                 exclude_id=exclude_audio_id,
                 before_create=_persist_create_intent,
                 on_create_resolved=_mark_create_resolved,
+                on_create_ambiguous=_mark_create_ambiguous,
                 unresolved_create_intent_snapshot=unresolved_create_intent_snapshot,
             )
         else:
@@ -2806,9 +2831,24 @@ def upload_video_to_episode(
         except Exception:  # pragma: no cover - defensive; notify never raises
             logger.warning("credential-expiry notification failed", exc_info=True)
             issue_number = None
-        pre_create_retryable = video_anchor_id is None and create_attempted
+        pre_create_retryable = (
+            video_anchor_id is None and create_attempted and not create_became_ambiguous
+        )
+        ambiguous_recovery_blocked = video_anchor_id is None and create_became_ambiguous
         evidence_persisted = (
-            _persist_pre_create_failure("credentials_expired") if pre_create_retryable else True
+            _persist_create_failure(
+                (
+                    "ambiguous_recovery_credentials_expired"
+                    if ambiguous_recovery_blocked
+                    else "credentials_expired"
+                ),
+                retry_blocked=ambiguous_recovery_blocked,
+                outcome=(
+                    PUBLICATION_UNKNOWN if ambiguous_recovery_blocked else MANUAL_HANDOFF_REQUIRED
+                ),
+            )
+            if pre_create_retryable or ambiguous_recovery_blocked
+            else True
         )
         return PublishResult(
             status="failed",
@@ -2824,7 +2864,7 @@ def upload_video_to_episode(
                 "audio_anchor_id": anchor_id,
                 **(
                     {"retry_blocked": True, "code": "post_create_failure"}
-                    if video_anchor_id is not None
+                    if video_anchor_id is not None or ambiguous_recovery_blocked
                     else {
                         "retry_blocked": not evidence_persisted,
                         "code": "credentials_expired",
@@ -2836,7 +2876,9 @@ def upload_video_to_episode(
             anchor_episode_id=video_anchor_id,
             outcome=(
                 PUBLICATION_UNKNOWN
-                if video_anchor_id is not None or not evidence_persisted
+                if video_anchor_id is not None
+                or ambiguous_recovery_blocked
+                or not evidence_persisted
                 else MANUAL_HANDOFF_REQUIRED
                 if pre_create_retryable
                 else None
@@ -2886,6 +2928,11 @@ def upload_video_to_episode(
                 details={"retry_blocked": True, "code": "post_create_failure"},
             )
         if create_attempted:
+            evidence_persisted = _persist_create_failure(
+                "create_rejected",
+                retry_blocked=True,
+                outcome=PUBLICATION_UNKNOWN,
+            )
             return PublishResult(
                 status="failed",
                 error=str(exc),
@@ -2897,7 +2944,11 @@ def upload_video_to_episode(
                 ),
                 details={
                     "retry_blocked": True,
-                    "code": "create_rejected",
+                    "code": (
+                        "create_rejected"
+                        if evidence_persisted
+                        else "create_evidence_persistence_failed"
+                    ),
                 },
             )
         return PublishResult(

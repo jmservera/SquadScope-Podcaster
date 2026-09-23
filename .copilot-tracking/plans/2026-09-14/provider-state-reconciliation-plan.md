@@ -5,7 +5,7 @@
 
 * Task ID: provider-state-reconciliation
 * Task slug: provider-state-reconciliation
-* Planning status: P07 post-delivery retry-safety correction complete; PR open and unmerged
+* Planning status: P08 PR #693 retry-safe claim correction complete; awaiting independent review
 * Plan date: 2026-09-14
 * Phase details: .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
 * Changes record: .copilot-tracking/changes/2026-09-14/provider-state-reconciliation-changes.md
@@ -438,6 +438,33 @@ ensure uploaded markers suppress mutation without counting as successful.
 #### [x] P07-T03: Validate, commit, push, resolve the new threads, and restore a
 green, thread-clean, open, unmerged PR.
 
+<!-- rpi:phase id=P08 -->
+### [x] P08: PR #693 Retry-Safe Claim Correction
+
+<!-- rpi:task id=P08-T01 -->
+#### [x] P08-T01: Bind retry authorization to one exact claim attempt
+
+Consume retry authorization when any later re-armable claim is appended, retain
+identical retryable credential failures after a later claim, and require all
+canonical publication identity fields when reading video create authorization.
+
+<!-- rpi:task id=P08-T02 -->
+#### [x] P08-T02: Preserve deterministic and post-POST failure fences
+
+Persist distinct retry-blocking evidence for deterministic video create
+rejection and for credential expiry encountered while recovering an ambiguous
+create after the POST, while keeping explicit pre-create credential rejection
+retryable.
+
+<!-- rpi:task id=P08-T03 -->
+#### [x] P08-T03: Add focused regressions and validate the correction
+
+Add one focused regression for each supplied review finding, including two
+consecutive credential failures, then run the caller-required publication,
+publish, and video-runner pytest selection, Ruff checks, formatting check, and
+Git whitespace validation. Leave commit, push, thread replies, and resolution
+to the independent reviewer workflow.
+
 ## Dependencies
 
 * P01-T02 depends on P01-T01.
@@ -452,6 +479,9 @@ green, thread-clean, open, unmerged PR.
   pushed P05 baseline and exact accepted-job namespace remaining intact.
 * P07 is a post-delivery retry-safety correction of P06 and depends on
   preserving its durable prefix and normalized provider-state contract.
+* P08 is a review-finding correction of the re-armable claim behavior introduced
+  after P07 and depends on preserving exact canonical identity, atomic evidence
+  updates, and the existing ambiguous-create reconciliation boundary.
 
 ## Critique Disposition
 
@@ -471,6 +501,7 @@ green, thread-clean, open, unmerged PR.
 ## Handoff
 
 * Implementation artifact: .copilot-tracking/changes/2026-09-14/provider-state-reconciliation-changes.md
-* Ready phase or task: P05 is implementation-complete and ready for Livingston review.
-* Marker order: P05-T01 → P05-T02 → P05-T03 → P05-T04, all complete.
-* Remaining provisional question or blocker: None.
+* Completed phase: P08-T01 through P08-T03.
+* Remaining active-plan markers: None.
+* Delivery blocker: independent Fry review is required before commit, push, or
+  review-thread actions.

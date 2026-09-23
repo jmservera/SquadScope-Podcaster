@@ -386,24 +386,45 @@ def append_evidence(
                 duplicate_index = index
         if duplicate_index is not None:
             if not _rearmable_claim:
-                return raw if raw is not None else legacy_raw or b""
-            retry_authorization: Mapping[str, Any] | None = None
-            for candidate in records[duplicate_index + 1 :]:
-                if not isinstance(candidate, Mapping):
-                    raise PublicationStateError("publication evidence contains a malformed record")
-                if (
-                    candidate.get("job_id") == identity.accepted_job_id
+                later_claim = any(
+                    isinstance(candidate, Mapping)
+                    and candidate.get("job_id") == identity.accepted_job_id
                     and candidate.get("week") == identity.week
                     and candidate.get("article_sha256") == identity.article_sha256
                     and candidate.get("manifest_sha256") == identity.manifest_sha256
                     and candidate.get("publish_run_id") == identity.publish_run_id
                     and candidate.get("platform") == platform
                     and candidate.get("media_kind") == media_kind
-                    and candidate.get("operation") not in REARMABLE_CLAIM_OPERATIONS
+                    and candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS
+                    for candidate in records[duplicate_index + 1 :]
+                )
+                if retry_blocked or not later_claim:
+                    return raw if raw is not None else legacy_raw or b""
+            else:
+                retry_authorization: Mapping[str, Any] | None = None
+                for candidate in records[duplicate_index + 1 :]:
+                    if not isinstance(candidate, Mapping):
+                        raise PublicationStateError(
+                            "publication evidence contains a malformed record"
+                        )
+                    if (
+                        candidate.get("job_id") == identity.accepted_job_id
+                        and candidate.get("week") == identity.week
+                        and candidate.get("article_sha256") == identity.article_sha256
+                        and candidate.get("manifest_sha256") == identity.manifest_sha256
+                        and candidate.get("publish_run_id") == identity.publish_run_id
+                        and candidate.get("platform") == platform
+                        and candidate.get("media_kind") == media_kind
+                    ):
+                        if candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS:
+                            retry_authorization = None
+                        else:
+                            retry_authorization = candidate
+                if (
+                    retry_authorization is None
+                    or retry_authorization.get("retry_blocked") is not False
                 ):
-                    retry_authorization = candidate
-            if retry_authorization is None or retry_authorization.get("retry_blocked") is not False:
-                return raw if raw is not None else legacy_raw or b""
+                    return raw if raw is not None else legacy_raw or b""
         next_seq = (
             max(
                 (
