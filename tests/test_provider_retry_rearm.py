@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -28,7 +28,7 @@ from podcaster.publication_state import (
 JOB_ID = "podcast-2026-W39-abc"
 TITLE = "Why Agents Ship Matters for AI | W39"
 TOKEN = "ya29.never-print-me"
-INTENT_AT = datetime(2026, 9, 23, 22, 0, tzinfo=timezone.utc)
+INTENT_AT = datetime(2026, 9, 20, 22, 0, tzinfo=timezone.utc)
 
 
 class MemoryStorage:
@@ -42,15 +42,21 @@ class MemoryStorage:
         self.data[path] = update(self.data.get(path))
 
 
-def _manifest():
+def _manifest(runner_status="failed", youtube_id=None, title=TITLE):
     return {
+        "generation": {
+            "video_runner": {
+                "status": runner_status,
+                "distribution": {"youtube_id": youtube_id},
+            }
+        },
         "job_id": JOB_ID,
         "request": {
             "week": "2026-W39",
             "publish_run_id": "35561779454",
             "article_sha256": "a" * 64,
             "manifest_sha256": "b" * 64,
-            "article_title": TITLE,
+            "article_title": title,
         },
         "lifecycle": {"transitions": [{"to": "accepted"}]},
     }
@@ -60,9 +66,9 @@ def _identity():
     return publication_identity(_manifest(), JOB_ID, "")
 
 
-def _storage(*, claim=True):
+def _storage(*, claim=True, claim_at=INTENT_AT, **manifest_kwargs):
     storage = MemoryStorage()
-    storage.data[f"jobs/{JOB_ID}/manifest.json"] = json.dumps(_manifest()).encode()
+    storage.data[f"jobs/{JOB_ID}/manifest.json"] = json.dumps(_manifest(**manifest_kwargs)).encode()
     append_evidence(
         storage,
         _identity(),
@@ -79,7 +85,7 @@ def _storage(*, claim=True):
             platform="youtube",
             media_kind="video",
             operation="upload_intent",
-            at=INTENT_AT,
+            at=claim_at,
         )
     return storage
 
@@ -144,7 +150,7 @@ _CHANNEL_BODY = json.dumps(
 
 OTHER = [
     _video("aaaaaaaa1", "Old one | W37"),
-    _video("aaaaaaaa2", "Old two | W38", published="2026-09-24T09:00:00Z"),
+    _video("aaaaaaaa2", "Old two | W38", published="2026-09-15T17:38:14Z"),
     _video("aaaaaaaa3", "Private thing", privacy="private"),
     _video("aaaaaaaa4", "Claracle weekly report", published="2026-08-01T00:00:00Z"),
     _video("aaaaaaaa5", "Failed upload | W36", privacy="private", upload="failed"),
@@ -240,7 +246,12 @@ def test_consumed_rearm_can_be_rearmed_again_only_after_new_proof():
     storage = _storage()
     assert _run(storage, FakeYouTube(OTHER), "--apply") == EXIT_OK
     claim_evidence(
-        storage, _identity(), platform="youtube", media_kind="video", operation="upload_intent"
+        storage,
+        _identity(),
+        platform="youtube",
+        media_kind="video",
+        operation="upload_intent",
+        at=INTENT_AT + timedelta(hours=1),
     )
     fake = FakeYouTube(OTHER)
     assert _run(storage, fake, "--apply") == EXIT_OK
@@ -251,11 +262,14 @@ def test_consumed_rearm_can_be_rearmed_again_only_after_new_proof():
 @pytest.mark.parametrize(
     "candidate",
     [
-        _video("zzzzzzzz1", TITLE, privacy="unlisted", published="2026-09-23T22:05:00Z"),
+        _video("zzzzzzzz1", TITLE, privacy="unlisted", published="2026-09-20T22:05:00Z"),
         _video("zzzzzzzz1", "  why agents SHIP matters for ai | w39 ", privacy="private"),
         _video("zzzzzzzz1", TITLE.upper(), privacy="private", published="2025-01-01T00:00:00Z"),
+        _video(
+            "zzzzzzzz1", "Something else | W38", privacy="private", published="2026-09-20T23:00:00Z"
+        ),
         _video("zzzzzzzz1", "Renamed | W39", privacy="private", upload="uploaded"),
-        _video("zzzzzzzz1", "Untitled", privacy="private", published="2026-09-23T22:10:00Z"),
+        _video("zzzzzzzz1", "Untitled", privacy="private", published="2026-09-20T22:10:00Z"),
         _video("zzzzzzzz1", "Untitled", privacy="private", upload="failed", published=""),
         {
             "id": "zzzzzzzz1",
@@ -418,3 +432,44 @@ def test_match_reasons_title_rule_is_independent():
     video = _video("zzzzzzzz1", TITLE, published="2025-01-01T00:00:00Z")
     assert rearm.match_reasons(video, expected) == ["title"]
     assert rearm.match_reasons(_video("x", "Old two | W38"), expected) == []
+
+
+LONG_TITLE = "A" * 60 + " agents, governance and the long tail of platform engineering | W38 recap"
+
+
+def test_truncated_long_title_is_a_candidate(capsys):
+    assert len(LONG_TITLE) > 100
+    storage = _storage(title=LONG_TITLE)
+    uploaded = _video("zzzzzzzz1", LONG_TITLE[:100], privacy="unlisted")
+    assert _run(storage, FakeYouTube([*OTHER, uploaded]), "--apply") == EXIT_CANDIDATE
+    assert "zzzzzzzz1" in capsys.readouterr().out
+    expected = rearm.ExpectedArtifact(JOB_ID, "2026-W39", LONG_TITLE, INTENT_AT)
+    assert rearm.match_reasons(uploaded, expected) == ["title"]
+    edited = _video("zzzzzzzz2", LONG_TITLE[:40])
+    assert rearm.match_reasons(edited, expected) == ["title_prefix"]
+
+
+def test_iso_year_boundary_week_rule():
+    expected = rearm.ExpectedArtifact(JOB_ID, "2027-W01", "t", INTENT_AT)
+    video = _video("x", "Show | W01", published="2026-12-29T09:00:00Z")
+    assert "week" in rearm.match_reasons(video, expected)
+
+
+def test_refuses_recent_claim_without_readback():
+    storage = _storage(claim_at=datetime.now(timezone.utc))
+    before = dict(storage.data)
+    fake = FakeYouTube(OTHER)
+    assert _run(storage, fake, "--apply") == EXIT_REFUSED
+    assert storage.data == before and fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"runner_status": "running"}, {"runner_status": None}, {"youtube_id": "abcdefgh9"}],
+)
+def test_refuses_non_terminal_run_or_manifest_video_id(kwargs):
+    storage = _storage(**kwargs)
+    before = dict(storage.data)
+    fake = FakeYouTube(OTHER)
+    assert _run(storage, fake, "--apply") == EXIT_REFUSED
+    assert storage.data == before and fake.calls == []

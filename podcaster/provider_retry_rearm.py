@@ -36,7 +36,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode
 
@@ -66,6 +66,13 @@ YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 _PAGE_SIZE = 50
 _MAX_PAGES = 200
 _WINDOW_SLACK = timedelta(minutes=30)
+# Longer than the video job's replica timeout (5400s): the claim is written
+# after the run starts, so no attempt that wrote it can still be uploading, and
+# the uploads playlist has had ample time to reflect a finalized upload.
+MIN_CLAIM_AGE = timedelta(hours=2)
+_YOUTUBE_TITLE_LIMIT = 100
+_MIN_PREFIX_MATCH = 20
+_TERMINAL_VIDEO_STATUSES = ("failed", "partial", "completed", "skipped")
 _WEEK_TOKEN_RE = re.compile(r"\bW(\d{2})\b", re.IGNORECASE)
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 
@@ -161,6 +168,8 @@ def check_preconditions(
     platform: str,
     media_kind: str,
     claim_operation: str,
+    manifest: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> tuple[str, Mapping[str, Any]]:
     """Return ``("rearm", claim)`` or ``("already_armed", record)``; else refuse."""
     if not isinstance(document, Mapping) or document.get("corrupt"):
@@ -204,6 +213,36 @@ def check_preconditions(
             f"latest {platform}:{media_kind} record (seq={latest.get('seq')}, "
             f"operation={latest.get('operation')}, outcome={latest.get('outcome')}) "
             "is not a retry-blocked claim",
+        )
+    claim_at = _parse_time(latest.get("at"))
+    if claim_at is None:
+        raise RearmRefused("claim_time_unknown", "claim timestamp is missing or malformed")
+    current = now or datetime.now(timezone.utc)
+    if current - claim_at < MIN_CLAIM_AGE:
+        raise RearmRefused(
+            "claim_too_recent",
+            f"claim seq={latest.get('seq')} is younger than {MIN_CLAIM_AGE}; "
+            "an attempt may still be running or not yet listed",
+        )
+    generation = manifest.get("generation") if isinstance(manifest, Mapping) else None
+    runner = generation.get("video_runner") if isinstance(generation, Mapping) else None
+    if not isinstance(runner, Mapping) or runner.get("status") not in _TERMINAL_VIDEO_STATUSES:
+        raise RearmRefused(
+            "video_run_not_terminal", "video runner state is missing or not terminal"
+        )
+    distribution = runner.get("distribution")
+    if isinstance(distribution, Mapping) and distribution.get("youtube_id"):
+        raise RearmRefused(
+            "provider_id_recorded",
+            f"manifest records YouTube video {distribution.get('youtube_id')}; adopt it",
+        )
+    video_publish = generation.get("video_publish") if isinstance(generation, Mapping) else None
+    prior_publish = video_publish.get(platform) if isinstance(video_publish, Mapping) else None
+    if isinstance(prior_publish, Mapping) and (
+        prior_publish.get("video_id") or prior_publish.get("provider_id")
+    ):
+        raise RearmRefused(
+            "provider_id_recorded", "manifest video_publish records a provider artifact; adopt it"
         )
     return "rearm", latest
 
@@ -357,22 +396,37 @@ def match_reasons(video: Mapping[str, Any], expected: ExpectedArtifact) -> list[
     title = str(snippet.get("title") or "")
     description = str(snippet.get("description") or "")
     reasons: list[str] = []
-    if expected.title and _normalize_title(title) == _normalize_title(expected.title):
+    actual_title = _normalize_title(title)
+    expected_title = _normalize_title(expected.title)
+    uploaded_title = _normalize_title(expected.title[:_YOUTUBE_TITLE_LIMIT])
+    if expected_title and actual_title in (expected_title, uploaded_title):
         reasons.append("title")
+    elif (
+        expected_title
+        and min(len(actual_title), len(expected_title)) >= _MIN_PREFIX_MATCH
+        and (expected_title.startswith(actual_title) or actual_title.startswith(expected_title))
+    ):
+        reasons.append("title_prefix")
     if expected.job_id and (expected.job_id in title or expected.job_id in description):
         reasons.append("job_id")
     year, _, week_part = expected.week.partition("-W")
     week_tokens = {match.group(1) for match in _WEEK_TOKEN_RE.finditer(title)}
     published_at = _parse_time(snippet.get("publishedAt"))
-    if week_part in week_tokens and (published_at is None or published_at.year >= int(year)):
+    try:
+        week_start = datetime.combine(
+            date.fromisocalendar(int(year), int(week_part), 1), datetime.min.time(), timezone.utc
+        )
+    except ValueError:
+        week_start = None
+    if week_part in week_tokens and (
+        week_start is None
+        or published_at is None
+        or published_at >= week_start - timedelta(days=180)
+    ):
         reasons.append("week")
     if published_at is None:
         reasons.append("no_published_at")
-    elif (
-        expected.intent_at is not None
-        and published_at >= expected.intent_at - _WINDOW_SLACK
-        and not (week_tokens - {week_part})
-    ):
+    elif expected.intent_at is None or published_at >= expected.intent_at - _WINDOW_SLACK:
         reasons.append("uploaded_after_intent")
     return reasons
 
@@ -380,11 +434,13 @@ def match_reasons(video: Mapping[str, Any], expected: ExpectedArtifact) -> list[
 def expected_artifact(
     manifest: Mapping[str, Any], job_id: str, claim: Mapping[str, Any]
 ) -> ExpectedArtifact:
+    from podcaster.config import PodcastConfig
     from podcaster.video.job_runner import _resolve_video_title
 
     request = manifest.get("request")
     request = request if isinstance(request, dict) else {}
-    title, _ = _resolve_video_title(request, brand_name="", job_id=job_id)
+    brand_name = PodcastConfig.from_payload(request).name
+    title, _ = _resolve_video_title(request, brand_name=brand_name, job_id=job_id)
     return ExpectedArtifact(
         job_id=job_id,
         week=str(request.get("week") or ""),
@@ -426,6 +482,7 @@ def rearm_provider_retry(
         platform=platform,
         media_kind=media_kind,
         claim_operation=claim_operation,
+        manifest=manifest,
     )
     if state == "already_armed":
         return RearmResult(status="already_armed", record_seq=record.get("seq"))

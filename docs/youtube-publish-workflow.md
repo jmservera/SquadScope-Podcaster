@@ -137,18 +137,24 @@ What the command guarantees:
 
 - **Preconditions.** The latest `youtube:video` evidence must be a retry-blocked
   `upload_intent` claim with no provider ID. No `youtube:video` record for the
-  job may ever have carried a provider ID. Otherwise it refuses.
+  job may ever have carried a provider ID, and neither may the manifest
+  (`video_runner.distribution.youtube_id` / `video_publish.youtube`). The claim
+  must be at least 2 hours old (longer than the video job's 5400s replica
+  timeout, so no attempt can still be uploading and the uploads listing has
+  caught up), and the manifest's `video_runner` state must be terminal.
+  Otherwise it refuses without calling YouTube.
 - **Authoritative absence proof.** It uses the job's OAuth credentials
   (`VIDEO_YOUTUBE_CLIENT_ID`/`_CLIENT_SECRET`/`_REFRESH_TOKEN`) to read the
   channel's own uploads playlist (`channels?mine=true`) with full pagination.
   It resolves every upload with `videos.list` (`snippet,status,processingDetails`),
   so private, unlisted, public, processing, failed and rejected videos are all
   covered. A video is a candidate if any of these hold:
-  - its title matches the expected title;
+  - its title matches the expected title, including YouTube's 100-character
+    truncation, or either title is a prefix (at least 20 characters) of the other;
   - its title or description contains the job ID;
   - its title carries the same `Wnn` week token;
   - it has no publish time;
-  - it was uploaded after the claim and carries no other week token.
+  - it was uploaded after the claim (minus 30 minutes of slack), whatever its title.
 - **Fail closed.** Any HTTP or transport error, invalid JSON, missing page field,
   scanned-count mismatch with `totalResults`, or unresolved video refuses with
   exit code 1. A candidate refuses with exit code 3 and prints the video ID(s);
