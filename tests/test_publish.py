@@ -2215,6 +2215,16 @@ class TestFindExistingDraft:
             pub._find_existing_draft(session, "99", "My Show", user_id="7")
         assert "cursor" in str(exc.value)
 
+    def test_drifted_pagination_flag_raises_instead_of_returning_absence(self):
+        from podcaster import publish as pub
+
+        session = self._session({"episodes": [], "hasMore": "true"})
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pytest.fail(f"drifted pagination flag returned partial result: {result!r}")
+        assert "hasMore" in str(exc.value)
+        assert "boolean" in str(exc.value)
+
     def test_paginated_listing_fetches_all_pages_before_absence(self):
         from podcaster import publish as pub
 
@@ -2226,6 +2236,24 @@ class TestFindExistingDraft:
             ),
         ]
         assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
+        second_call_vars = session.request.call_args_list[1].kwargs["json"]["variables"]
+        assert second_call_vars["pageToken"] == "cursor-2"
+
+    def test_paginated_listing_second_page_failure_raises_without_partial_absence(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.side_effect = [
+            _mock_json_resp({"episodes": [], "nextPageToken": "cursor-2"}),
+            _mock_error_resp(500, "provider error"),
+        ]
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pytest.fail(f"truncated paginated listing returned partial result: {result!r}")
+
+        assert "HTTP 500" in str(exc.value)
+        assert len(session.request.call_args_list) == 2
         second_call_vars = session.request.call_args_list[1].kwargs["json"]["variables"]
         assert second_call_vars["pageToken"] == "cursor-2"
 

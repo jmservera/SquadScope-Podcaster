@@ -882,6 +882,51 @@ def _pagination_hint(data: Any) -> str | None:
     return None
 
 
+def _pagination_flag(data: dict[Any, Any], key: str, *, context: str) -> bool | None:
+    if key not in data:
+        return None
+    value = data[key]
+    if isinstance(value, bool):
+        return value
+    raise SpotifyDraftReconcileError(
+        f"Spotify episode listing {context} field '{key}' is a "
+        f"{type(value).__name__}, not a boolean; {_FAIL_CLOSED_SUFFIX}."
+    )
+
+
+def _pagination_cursor(data: dict[Any, Any], key: str, *, context: str) -> str | None:
+    if key not in data or data[key] is None:
+        return None
+    value = data[key]
+    if isinstance(value, str) and value:
+        return value
+    raise SpotifyDraftReconcileError(
+        f"Spotify episode listing {context} field '{key}' is a "
+        f"{type(value).__name__}, not a non-empty string cursor; {_FAIL_CLOSED_SUFFIX}."
+    )
+
+
+def _first_pagination_cursor(data: dict[Any, Any], *, context: str) -> str | None:
+    for key in ("nextPageToken", "nextPage"):
+        token = _pagination_cursor(data, key, context=context)
+        if token is not None:
+            return token
+    return None
+
+
+def _pagination_has_more(data: dict[Any, Any], *, context: str) -> bool | None:
+    values = [
+        value
+        for key in ("hasMore", "hasNextPage")
+        if (value := _pagination_flag(data, key, context=context)) is not None
+    ]
+    if True in values:
+        return True
+    if False in values:
+        return False
+    return None
+
+
 def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
     """Return ``{"episodes": [...], "nextPageToken": ...}`` from GraphQL.
 
@@ -899,16 +944,15 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
         )
     if payload.get("errors"):
         raise SpotifyDraftReconcileError(
-            "Spotify episode listing GraphQL returned errors; "
-            f"{_FAIL_CLOSED_SUFFIX}."
+            f"Spotify episode listing GraphQL returned errors; {_FAIL_CLOSED_SUFFIX}."
         )
     if any(key in payload for key in ("episodes", "items", "results")) or isinstance(
         payload.get("data"), list
     ):
         # Unit tests and any temporary REST-compatible probe fixtures can still
         # use the already-normalised listing shape.
-        next_token = payload.get("nextPageToken") or payload.get("nextPage")
-        has_more = payload.get("hasMore") is True or payload.get("hasNextPage") is True
+        next_token = _first_pagination_cursor(payload, context="top-level")
+        has_more = _pagination_has_more(payload, context="top-level")
         if has_more and not next_token:
             raise SpotifyDraftReconcileError(
                 "Spotify episode listing signalled another page without a "
@@ -917,7 +961,7 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
         return {
             "episodes": _episode_items(payload),
             "nextPageToken": next_token,
-            "hasMore": has_more,
+            "hasMore": bool(has_more or next_token),
         }
     data = payload.get("data")
     if not isinstance(data, dict):
@@ -933,8 +977,10 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
         if isinstance(value, dict):
             candidates.append((key, value))
     for key, value in data.items():
-        if isinstance(key, str) and isinstance(value, dict) and any(
-            list_key in value for list_key in _EPISODE_LIST_KEYS
+        if (
+            isinstance(key, str)
+            and isinstance(value, dict)
+            and any(list_key in value for list_key in _EPISODE_LIST_KEYS)
         ):
             candidates.append((key, value))
 
@@ -962,21 +1008,29 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
                 )
 
             next_token = None
-            has_next = False
+            has_next: bool | None = None
             if isinstance(page_info, dict):
-                has_next = page_info.get("hasNextPage") is True
+                has_next = _pagination_flag(
+                    page_info, "hasNextPage", context=f"field '{name}.{list_key}.pageInfo'"
+                )
                 for token_key in ("endCursor", "nextPageToken", "nextPage"):
-                    token = page_info.get(token_key)
-                    if isinstance(token, str) and token:
+                    token = _pagination_cursor(
+                        page_info,
+                        token_key,
+                        context=f"field '{name}.{list_key}.pageInfo'",
+                    )
+                    if token is not None:
                         next_token = token
                         break
-            for token_key in ("nextPageToken", "nextPage"):
-                token = candidate.get(token_key)
-                if isinstance(token, str) and token:
-                    next_token = token
-                    has_next = True
-                    break
-            if candidate.get("hasMore") is True or candidate.get("hasNextPage") is True:
+            candidate_token = _first_pagination_cursor(candidate, context=f"field '{name}'")
+            if candidate_token is not None:
+                next_token = candidate_token
+            candidate_has_next = _pagination_has_more(candidate, context=f"field '{name}'")
+            if candidate_has_next is True:
+                has_next = True
+            elif has_next is None:
+                has_next = candidate_has_next
+            if next_token is not None and has_next is None:
                 has_next = True
 
             if has_next and not next_token:
@@ -985,7 +1039,7 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
                     "without a usable cursor; refusing to treat a truncated "
                     f"listing as complete. {_FAIL_CLOSED_SUFFIX}."
                 )
-            return {"episodes": items, "nextPageToken": next_token, "hasMore": has_next}
+            return {"episodes": items, "nextPageToken": next_token, "hasMore": bool(has_next)}
 
     raise SpotifyDraftReconcileError(
         "Spotify episode listing GraphQL exposes no recognised episode array "
