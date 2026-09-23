@@ -9,7 +9,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Mapping, final
+from typing import TYPE_CHECKING, Any, Mapping, TypeVar, final
 
 from podcaster.job_logs import LogLevel, emit_log
 
@@ -139,13 +139,36 @@ def _snapshot_evidence_source(value: Any) -> SnapshotEvidenceSource | None:
     return value if type(value) is SnapshotEvidenceSource else None
 
 
-def _snapshot_evidence_source_from_record(value: Any) -> SnapshotEvidenceSource | None:
-    if not isinstance(value, str):
+_ClosedMember = TypeVar("_ClosedMember", bound=Enum)
+
+
+def _closed_set_member(enum_cls: type[_ClosedMember], value: Any) -> _ClosedMember | None:
+    """Map a persisted value onto a closed set, or ``None``; never coerce.
+
+    The single parser for every closed-set create-safety field: only an exact
+    ``str`` naming a member is accepted, so non-string, look-alike, zero-width
+    and control-character values can never be read as a valid member.
+    """
+    if type(value) is not str:
         return None
     try:
-        return SnapshotEvidenceSource(value)
+        return enum_cls(value)
     except ValueError:
         return None
+
+
+def _snapshot_evidence_source_from_record(value: Any) -> SnapshotEvidenceSource | None:
+    return _closed_set_member(SnapshotEvidenceSource, value)
+
+
+# Each create-intent operation may only carry the provenance its writer records.
+_OPERATION_PROVENANCE: dict[str, frozenset[CreateIntentProvenance]] = {
+    "create_episode_intent": frozenset(
+        {CreateIntentProvenance.RECONCILIATION_BACKED, CreateIntentProvenance.UPLOAD_DISPATCH}
+    ),
+    "unreconciled_create_intent": frozenset({CreateIntentProvenance.BLIND_UNRECONCILED}),
+    "upload_intent": frozenset({CreateIntentProvenance.UPLOAD_DISPATCH}),
+}
 
 
 def _classify_untrusted_evidence_source(value: Any) -> str:
@@ -416,12 +439,16 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
     if not isinstance(details, Mapping):
         details = {}
 
-    raw_provenance = details.get("create_provenance")
-    if isinstance(raw_provenance, str):
-        try:
-            provenance = CreateIntentProvenance(raw_provenance)
-        except ValueError as exc:
-            raise PublicationStateError("create safety evidence has unknown provenance") from exc
+    operation = record.get("operation")
+    if "create_provenance" in details:
+        provenance = _closed_set_member(CreateIntentProvenance, details.get("create_provenance"))
+        if provenance is None:
+            raise PublicationStateError("create safety evidence has unknown provenance")
+        allowed = _OPERATION_PROVENANCE.get(operation) if isinstance(operation, str) else None
+        if allowed is not None and provenance not in allowed:
+            raise PublicationStateError(
+                "create safety evidence provenance does not match its recording operation"
+            )
     elif record.get("operation") == "upload_intent":
         provenance = CreateIntentProvenance.UPLOAD_DISPATCH
     elif record.get("operation") == "unreconciled_create_intent":
@@ -433,15 +460,11 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
 
     snapshot_degraded = False
     if "snapshot_completeness" in details:
-        raw_completeness = details.get("snapshot_completeness")
-        if not isinstance(raw_completeness, str):
+        completeness = _closed_set_member(
+            SnapshotCompleteness, details.get("snapshot_completeness")
+        )
+        if completeness is None:
             raise PublicationStateError("create safety evidence has unknown snapshot state")
-        try:
-            completeness = SnapshotCompleteness(raw_completeness)
-        except ValueError as exc:
-            raise PublicationStateError(
-                "create safety evidence has unknown snapshot state"
-            ) from exc
         if completeness == SnapshotCompleteness.ABSENT:
             snapshot = ProviderSnapshot.absent()
         else:
@@ -478,14 +501,12 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
     else:
         snapshot = ProviderSnapshot.absent()
 
-    raw_mutation = details.get("mutation_possibility")
-    if isinstance(raw_mutation, str):
-        try:
-            mutation_possibility = MutationPossibility(raw_mutation)
-        except ValueError as exc:
-            raise PublicationStateError(
-                "create safety evidence has unknown mutation state"
-            ) from exc
+    if "mutation_possibility" in details:
+        mutation_possibility = _closed_set_member(
+            MutationPossibility, details.get("mutation_possibility")
+        )
+        if mutation_possibility is None:
+            raise PublicationStateError("create safety evidence has unknown mutation state")
     elif record.get("provider_artifact_id") or record.get("provider_id"):
         mutation_possibility = MutationPossibility.CONFIRMED
     elif provenance in (
@@ -887,6 +908,7 @@ def claim_evidence(
     operation: str,
     details: Mapping[str, Any] | None = None,
     create_safety_state: CreateSafetyState | None = None,
+    retry_blocked: bool = True,
     at: datetime | None = None,
 ) -> PublicationEvidence | None:
     """Atomically acquire or re-arm a provider mutation claim.
@@ -894,7 +916,10 @@ def claim_evidence(
     A historical claim can only be acquired again after later evidence for the
     same publication identity and provider explicitly records
     ``retry_blocked=false``. The newly appended claim consumes that
-    authorization, so concurrent contenders cannot both proceed.
+    authorization, so concurrent contenders cannot both proceed. The claim's
+    own ``retry_blocked`` never authorizes a re-arm: only evidence recorded
+    *after* the claim does, so ``retry_blocked=False`` is safe for intents the
+    publication gate must not treat as blocking while still single-claiming.
     """
     if operation not in REARMABLE_CLAIM_OPERATIONS:
         raise PublicationStateError(f"operation is not a re-armable claim: {operation!r}")
@@ -906,7 +931,7 @@ def claim_evidence(
         operation=operation,
         outcome=PUBLICATION_UNKNOWN,
         mutation_attempted=False,
-        retry_blocked=True,
+        retry_blocked=retry_blocked,
         code="mutation_intent",
         details=details,
         create_safety_state=create_safety_state,
