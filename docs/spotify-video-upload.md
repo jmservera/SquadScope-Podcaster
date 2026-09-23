@@ -472,6 +472,32 @@ presenting the failed call as "no draft was created"; the remaining risk is
 operational recovery of a known draft or of an ambiguous candidate set, not
 blind re-create permission.
 
+A *definite* rejection of the create POST itself is different from an unknown
+outcome, because it proves no draft was created. A 401 from `_create_episode`
+writes `create_episode_failure` with `code=credentials_expired`,
+`retry_blocked=false` (outcome `manual_handoff_required`), which re-arms exactly
+one corrected-credential create for the identity (#693). A deterministic 4xx
+writes `create_episode_failure` with `code=create_rejected`, `retry_blocked=true`,
+because the same request would be rejected again. Only these two codes resolve a
+pending create intent. A resolved intent is never used for adoption, so an
+unrelated untitled draft that appears later is not uploaded onto. If the rejection
+record cannot be written, a retry-blocking `create_episode_failure_fence` is
+attempted instead. If both writes fail, the intent stays unknown: retries reconcile
+read-only and never create. Failures raised while recovering an ambiguous create,
+or while resolving an earlier intent, stay unknown (`publication_unknown`,
+`retry_blocked=false`, never "failed").
+
+Persisted create-safety fields (`create_provenance`, `snapshot_completeness`,
+`mutation_possibility`, `snapshot_evidence_source`) are parsed through one
+closed-set parser that accepts only an exact string naming a member. A present
+field that is non-string, unknown, or carries look-alike or invisible characters
+fails closed as an unresolved intent. Each intent operation accepts only its own
+provenance (`create_episode_intent`: `reconciliation_backed` or
+`upload_dispatch`; `unreconciled_create_intent`: `blind_unreconciled`;
+`upload_intent`: `upload_dispatch`). One exception: an untrusted
+`snapshot_evidence_source` on a present snapshot degrades that snapshot to
+`absent`, with a single `WARNING`, and the intent stays blocking.
+
 #### Pagination
 
 The production GraphQL listing uses numbered pages. `_fetch_episode_listing`
