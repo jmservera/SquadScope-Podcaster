@@ -473,7 +473,9 @@ class TestPublishEpisode:
         assert records[1]["provider_artifact_id"] == "12345"
         assert records[1]["retry_blocked"] is True
 
-    def test_spotify_mp4_routing_uses_language_resolved_credentials(self, monkeypatch, mp3_file):
+    def test_spotify_mp4_routing_uses_language_resolved_credentials(
+        self, monkeypatch, mp3_file, spotify_env
+    ):
         """#694 thread 4086767456: MP4 routing must not re-read default-language env."""
         import podcaster.publish as pub
 

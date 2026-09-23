@@ -2694,13 +2694,16 @@ def upload_video_to_episode(
                 },
             )
 
-    try:
-        env_show_id, env_sp_dc, env_sp_key = _get_credentials()
-        show_id = show_id or env_show_id
-        sp_dc = sp_dc or env_sp_dc
-        sp_key = sp_key or env_sp_key
-    except ValueError as exc:
-        return PublishResult(status="failed", error=str(exc))
+    if not (show_id and sp_dc and sp_key):
+        # publish_episode passes language-resolved credentials; only a direct
+        # caller that omitted some falls back to the default-language env.
+        try:
+            env_show_id, env_sp_dc, env_sp_key = _get_credentials()
+            show_id = show_id or env_show_id
+            sp_dc = sp_dc or env_sp_dc
+            sp_key = sp_key or env_sp_key
+        except ValueError as exc:
+            return PublishResult(status="failed", error=str(exc))
 
     try:
         session = _build_session(sp_dc, sp_key, show_id)
