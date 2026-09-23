@@ -378,7 +378,8 @@ The GraphQL listing is cursor-paginated. `_fetch_episode_listing` follows
 `nextPageToken` / `nextPage` / `pageInfo.endCursor` only while
 `hasMore` / `hasNextPage` is explicitly `true`. A terminal page may retain an
 `endCursor`; it is ignored when `hasNextPage` is `false`. Any page-fetch error,
-missing cursor for a true flag, non-string cursor, or repeated cursor raises
+missing explicit boolean pagination flag, missing cursor for a true flag,
+non-string cursor, or repeated cursor raises
 `SpotifyDraftReconcileError`; a
 partial read is never returned as a complete empty listing.
 
@@ -950,6 +951,9 @@ Spotify video upload reports `outcome: draft_created` after the separate video
 episode is uploaded and configured as a draft. Promotion reports `published`
 only after state read-back; ambiguous read-back is `publication_unknown`, and a
 known operator/capability stop is `manual_handoff_required`.
+An overview HTTP 403 is permission/readback denial, not evidence that the
+episode is unpublished or still a draft, so promotion aborts as
+`publication_unknown` without sending a publish mutation.
 
 The video publish run ID is threaded into promotion telemetry and durable
 accepted-job evidence. An existing `draft_created`, `published`,

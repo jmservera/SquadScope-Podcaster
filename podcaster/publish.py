@@ -1021,7 +1021,28 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
             )
         for list_key in present_list_keys:
             raw_items = candidate[list_key]
-            if isinstance(raw_items, dict) and isinstance(raw_items.get("nodes"), list):
+            if isinstance(raw_items, dict):
+                nested_list_keys = [
+                    nested_key
+                    for nested_key in ("nodes", *_EPISODE_LIST_KEYS)
+                    if nested_key in raw_items
+                ]
+                if len(nested_list_keys) > 1:
+                    raise SpotifyDraftReconcileError(
+                        "Spotify episode listing GraphQL field "
+                        f"'{name}.{list_key}' exposes multiple recognised nested "
+                        f"episode arrays ({sorted(nested_list_keys)}); "
+                        f"{_FAIL_CLOSED_SUFFIX}."
+                    )
+                if nested_list_keys != ["nodes"] or not isinstance(raw_items["nodes"], list):
+                    nested_key = nested_list_keys[0] if nested_list_keys else "nodes"
+                    nested_value = raw_items.get(nested_key)
+                    raise SpotifyDraftReconcileError(
+                        "Spotify episode listing GraphQL field "
+                        f"'{name}.{list_key}.{nested_key}' is a "
+                        f"{type(nested_value).__name__}, not an array; "
+                        f"{_FAIL_CLOSED_SUFFIX}."
+                    )
                 items = raw_items["nodes"]
                 page_info_containers = [raw_items, candidate]
             elif isinstance(raw_items, list):
@@ -1090,7 +1111,7 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
                 has_next = True
             elif has_next is None:
                 has_next = candidate_has_next
-            if has_next is not False:
+            if has_next is True:
                 candidate_token = _first_pagination_cursor(
                     candidate,
                     context=f"field '{name}'",
@@ -1099,9 +1120,14 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
                     next_token = candidate_token
             else:
                 next_token = None
-            if next_token is not None and has_next is None:
-                has_next = True
 
+            if has_next is None:
+                raise SpotifyDraftReconcileError(
+                    "Spotify episode listing GraphQL field "
+                    f"'{name}.{list_key}' exposes no explicit boolean pagination "
+                    "flag; cursor presence alone never proves another page exists. "
+                    f"{_FAIL_CLOSED_SUFFIX}."
+                )
             if has_next and not next_token:
                 raise SpotifyDraftReconcileError(
                     "Spotify episode listing GraphQL signalled another page "
@@ -1147,30 +1173,32 @@ def _fetch_episode_listing_page(
         "query": "",
     }
     try:
-        resp = session.request(
+        resp = _retry_request(
+            session,
             "POST",
             _SPOTIFY_CREATORS_GRAPHQL_URL,
             json=payload,
             headers={"Content-Type": "application/json", "Accept": "application/json"},
             timeout=15,
+            request_context="draft_episode_readback",
         )
-        resp.raise_for_status()
         return _normalise_episode_listing_page(resp.json())
-    except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else None
-        if status == 401:
-            raise SpotifyCredentialExpiredError(
-                "Spotify rejected the episode listing request (HTTP 401) — "
-                "SP_DC/SP_KEY credentials expired. Operator must refresh them."
-            ) from exc
-        # #685: 403 is not classified as credential expiry for readback/listing;
-        # draft or route permissions can legitimately return Forbidden.
+    except SpotifyCredentialExpiredError:
+        raise
+    except SpotifyDraftReconcileError:
+        raise
+    except SpotifyPublishError as exc:
+        cause = exc.__cause__
+        response = getattr(cause, "response", None)
+        status = getattr(response, "status_code", None)
+        status_suffix = f" (HTTP {status})" if isinstance(status, int) else ""
         raise SpotifyDraftReconcileError(
-            "Spotify draft reconcile episode listing request returned HTTP "
-            f"{status}; refusing to infer absence from an error. Refusing to "
+            "Spotify draft reconcile episode listing request failed"
+            f"{status_suffix}; refusing "
+            "to infer absence from an error. Refusing to "
             "create a new draft because an existing one may already exist."
         ) from exc
-    except (requests.RequestException, ValueError) as exc:
+    except ValueError as exc:
         raise SpotifyDraftReconcileError(
             f"Spotify draft reconcile episode listing request failed ({type(exc).__name__}); "
             "refusing to infer absence from an error. Refusing to create a new "
@@ -1970,14 +1998,12 @@ def _get_episode_publication_state(
                 "SP_DC/SP_KEY credentials expired. Operator must refresh them."
             ) from exc
         if status == 403:
-            # #685: Anchor returns 403 for draft/unpublished overview readback;
-            # it is not, by itself, evidence that credentials expired.
             logger.info(
                 "Spotify episode %s overview returned HTTP 403; treating as "
-                "unpublished/draft readback denial, not credential expiry.",
+                "unknown publication state, not credential expiry.",
                 anchor_id,
             )
-            return False
+            return None
         logger.warning(
             "Spotify episode %s overview request failed with HTTP %s",
             anchor_id,

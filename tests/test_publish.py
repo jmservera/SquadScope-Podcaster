@@ -964,6 +964,14 @@ def _mock_json_resp(data) -> MagicMock:
 
 def _graphql_listing_payload(episodes=None, **listing):
     candidate = {"episodes": [] if episodes is None else episodes, **listing}
+    has_top_level_pagination = any(
+        key in candidate for key in ("hasMore", "hasNextPage", "nextPageToken", "nextPage")
+    )
+    has_nested_page_info = isinstance(candidate["episodes"], dict) and (
+        "pageInfo" in candidate["episodes"]
+    )
+    if not has_top_level_pagination and not has_nested_page_info:
+        candidate["hasNextPage"] = False
     return {"data": {"webGetIndexedEpisodeList": candidate}}
 
 
@@ -1858,6 +1866,29 @@ class TestPromoteSpotifyVideoDraft:
         assert result.is_published is None
         publish_live.assert_not_called()
 
+    def test_overview_403_aborts_without_publish_mutation(self, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+        session = MagicMock()
+        session.request.return_value = _mock_error_resp(403, "forbidden")
+        monkeypatch.setattr(pub, "_get_credentials", lambda: ("show-id", "sp_dc", "sp_key"))
+        monkeypatch.setattr(pub, "_build_session", MagicMock(return_value=session))
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        publish_live = MagicMock()
+        monkeypatch.setattr(pub, "_publish_episode_live", publish_live)
+
+        result = pub.promote_spotify_video_draft(
+            self.VIDEO_ANCHOR_ID,
+            audio_anchor_id=self.AUDIO_ANCHOR_ID,
+            spotify_video_publish_mode="live",
+        )
+
+        assert result.terminal_state == "publication_state_unknown"
+        assert result.outcome == "publication_unknown"
+        assert result.is_published is None
+        publish_live.assert_not_called()
+
     def test_spotify_ambiguous_publish_reports_publication_unknown_without_retry(self, monkeypatch):
         import podcaster.publish as pub
 
@@ -2058,14 +2089,14 @@ class TestGetEpisodePublicationState:
 
         assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is None
 
-    def test_overview_route_and_403_unpublished_not_expired(self):
-        """jmservera/SquadScope-Podcaster#685: overview 403 is draft/unpublished readback."""
+    def test_overview_route_and_403_is_unknown_not_expired(self):
+        """A readback 403 is unknown state, not draft evidence or credential expiry."""
         from podcaster import publish as pub
 
         session = MagicMock()
         session.request.return_value = _mock_error_resp(403, "forbidden")
 
-        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is False
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is None
         args, kwargs = session.request.call_args
         assert args[0] == "GET"
         assert args[1].endswith(f"/v3/episodes/{self.ANCHOR_ID}/overview")
@@ -2095,6 +2126,23 @@ class TestFindExistingDraft:
             any(key in payload for key in ("episodes", "items", "results"))
             or isinstance(payload.get("data"), list)
         ):
+            payload = dict(payload)
+            has_top_level_pagination = any(
+                key in payload for key in ("hasMore", "hasNextPage", "nextPageToken", "nextPage")
+            )
+            episode_container = next(
+                (
+                    payload[key]
+                    for key in ("episodes", "items", "results")
+                    if isinstance(payload.get(key), dict)
+                ),
+                None,
+            )
+            has_nested_page_info = isinstance(episode_container, dict) and (
+                "pageInfo" in episode_container
+            )
+            if not has_top_level_pagination and not has_nested_page_info:
+                payload["hasNextPage"] = False
             payload = {"data": {"webGetIndexedEpisodeList": payload}}
         session.request.return_value = _mock_json_resp(payload)
         return session
@@ -2160,7 +2208,16 @@ class TestFindExistingDraft:
     def test_empty_listing_is_distinct_from_graphql_error(self):
         from podcaster import publish as pub
 
-        empty = self._session({"data": {"webGetIndexedEpisodeList": {"episodes": []}}})
+        empty = self._session(
+            {
+                "data": {
+                    "webGetIndexedEpisodeList": {
+                        "episodes": [],
+                        "hasNextPage": False,
+                    }
+                }
+            }
+        )
         assert pub._find_existing_draft(empty, "99", "My Show", user_id="7") is None
 
         errored = self._session({"errors": [{"message": "boom"}]})
@@ -2202,14 +2259,16 @@ class TestFindExistingDraft:
         assert "query.userId" not in message
 
     @pytest.mark.parametrize("status_code", [400, 403, 500])
-    def test_listing_http_errors_fail_closed_and_are_not_empty(self, status_code):
+    def test_listing_http_errors_fail_closed_and_are_not_empty(self, monkeypatch, status_code):
         from podcaster import publish as pub
 
+        monkeypatch.setattr(pub.time, "sleep", lambda *args, **kwargs: None)
         session = MagicMock()
         session.request.return_value = _mock_error_resp(status_code, "provider error")
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
             pub._find_existing_draft(session, "99", "My Show", user_id="7")
         assert f"HTTP {status_code}" in str(exc.value)
+        assert session.request.call_count == (3 if status_code == 500 else 1)
 
     def test_listing_403_is_not_classified_as_expired_credentials(self):
         """jmservera/SquadScope-Podcaster#685: 403 readback/listing can be state/permission."""
@@ -2281,6 +2340,48 @@ class TestFindExistingDraft:
             pytest.fail(f"null GraphQL endCursor returned partial result: {result!r}")
         assert "cursor" in str(exc.value)
         assert "hasNextPage" in str(exc.value)
+
+    @pytest.mark.parametrize("cursor_key", ["nextPageToken", "nextPage"])
+    def test_top_level_cursor_without_explicit_true_flag_raises(self, cursor_key):
+        from podcaster import publish as pub
+
+        session = self._session({"episodes": [], cursor_key: "cursor-2"})
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+        assert "explicit boolean pagination flag" in str(exc.value)
+        session.request.assert_called_once()
+
+    def test_missing_pagination_metadata_raises(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {"data": {"webGetIndexedEpisodeList": {"episodes": []}}}
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+        assert "explicit boolean pagination flag" in str(exc.value)
+
+    def test_nested_multiple_episode_arrays_raise(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp(
+            {
+                "data": {
+                    "webGetIndexedEpisodeList": {
+                        "episodes": {
+                            "nodes": [],
+                            "items": [],
+                            "pageInfo": {"hasNextPage": False},
+                        }
+                    }
+                }
+            }
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+        assert "multiple recognised nested episode arrays" in str(exc.value)
 
     @pytest.mark.parametrize(
         ("label", "cursor_value"),
@@ -2381,13 +2482,19 @@ class TestFindExistingDraft:
         second_call_vars = session.request.call_args_list[1].kwargs["json"]["variables"]
         assert second_call_vars["pageToken"] == "cursor-2"
 
-    def test_paginated_listing_second_page_failure_raises_without_partial_absence(self):
+    def test_paginated_listing_second_page_failure_raises_without_partial_absence(
+        self, monkeypatch
+    ):
         from podcaster import publish as pub
 
+        monkeypatch.setattr(pub.time, "sleep", lambda *args, **kwargs: None)
         session = MagicMock()
+        provider_error = _mock_error_resp(500, "provider error")
         session.request.side_effect = [
             _mock_graphql_listing_resp([], hasMore=True, nextPageToken="cursor-2"),
-            _mock_error_resp(500, "provider error"),
+            provider_error,
+            provider_error,
+            provider_error,
         ]
 
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
@@ -2395,7 +2502,7 @@ class TestFindExistingDraft:
             pytest.fail(f"truncated paginated listing returned partial result: {result!r}")
 
         assert "HTTP 500" in str(exc.value)
-        assert len(session.request.call_args_list) == 2
+        assert len(session.request.call_args_list) == 4
         second_call_vars = session.request.call_args_list[1].kwargs["json"]["variables"]
         assert second_call_vars["pageToken"] == "cursor-2"
 
@@ -2486,6 +2593,11 @@ class TestEpisodeListingSchema:
             any(key in payload for key in ("episodes", "items", "results"))
             or isinstance(payload.get("data"), list)
         ):
+            payload = dict(payload)
+            if not any(
+                key in payload for key in ("hasMore", "hasNextPage", "nextPageToken", "nextPage")
+            ):
+                payload["hasNextPage"] = False
             payload = {"data": {"webGetIndexedEpisodeList": payload}}
         session.request.return_value = _mock_json_resp(payload)
         return session
@@ -2595,9 +2707,13 @@ class TestEpisodeListingSchema:
 
         payload = {
             "data": {
-                "webGetIndexedEpisodeList": {"episodes": []},
+                "webGetIndexedEpisodeList": {
+                    "episodes": [],
+                    "hasNextPage": False,
+                },
                 "shadowEpisodeList": {
-                    "episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}]
+                    "episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}],
+                    "hasNextPage": False,
                 },
             }
         }
@@ -3855,7 +3971,7 @@ class TestCredentialExpiryDetection:
         assert "403" in str(exc.value)
         assert session.request.call_count == 1
 
-    def test_draft_readback_403_returns_unpublished_on_overview_route(self, caplog):
+    def test_draft_readback_403_returns_unknown_on_overview_route(self, caplog):
         import logging
 
         from podcaster import publish as pub
@@ -3877,7 +3993,7 @@ class TestCredentialExpiryDetection:
         with caplog.at_level(logging.INFO, logger="podcaster.publish"):
             state = pub._get_episode_publication_state(session, 12345, user_id="7")
 
-        assert state is False
+        assert state is None
         session.request.assert_called_once()
         args, kwargs = session.request.call_args
         assert args == ("GET", "https://api-v5.anchor.fm/v3/episodes/12345/overview")
