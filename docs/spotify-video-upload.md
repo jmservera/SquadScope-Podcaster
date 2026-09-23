@@ -263,10 +263,11 @@ selected and no create or upload follows.
 Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
-inspected — a malformed `episodeId` never hides a usable `id` — but the entry
-only yields an id when the readable keys agree on one value. A malformed id or
-two keys naming different episodes is a contradictory identity: the entry is
-treated as having no usable id (logged, never silent), which every caller
+inspected, and the entry only yields an id when at least one canonical identity
+alias is present with a valid non-boolean identifier; all aliases that are
+present must be valid non-boolean identifiers and agree on one value. A
+malformed, boolean, or conflicting alias is a contradictory identity: the entry
+is treated as having no usable id (logged, never silent), which every caller
 already handles fail-closed.
 
 ##### Draft state is read from evidence, never from truthiness
