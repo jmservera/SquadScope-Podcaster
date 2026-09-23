@@ -69,6 +69,9 @@ _SPOTIFY_CLIENT_ID = (
     os.environ.get("SPOTIFY_CLIENT_ID") or ""
 ).strip() or "05a1371ee5194c27860b3ff3ff3979d2"
 _SPOTIFY_CONNECTOR_BASE_URL = "https://generic.wg.spotify.com/podcasters/v0"
+_SPOTIFY_CREATORS_GRAPHQL_URL = "https://creators-graph.spotify.com/v2/graph-pq"
+_SPOTIFY_EPISODE_LIST_OPERATION = "WebGetIndexedEpisodeList"
+_SPOTIFY_EPISODE_LIST_HASH = "da95dd0d5c5e3ffed3150f34f1d9674b6cd3548cdf59a49a37e1a65b325c9e98"
 
 # Required headers for mutation requests
 _MUTATION_HEADERS = {
@@ -578,17 +581,6 @@ def _spotify_reconcile_enabled() -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _spotify_strict_paging_enabled() -> bool:
-    """Whether an explicitly paginated listing should fail closed (opt-in).
-
-    The Anchor v5 paging contract is unverified (see :data:`_PAGINATION_HINT_KEYS`),
-    so failing closed on a *guessed* key name could block every new video publish.
-    Operators who have confirmed the contract for their show can opt in.
-    """
-    raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING", "")
-    return raw.strip().lower() in _TRUTHY
-
-
 _EPISODE_LIST_KEYS = ("episodes", "items", "data", "results")
 _TITLE_KEYS = ("title", "name")
 _ID_KEYS = ("episodeId", "id", "anchorId")
@@ -600,30 +592,30 @@ _STATUS_KEYS = ("status", "state", "publishStatus", "publishState")
 # (:func:`_set_metadata`), so ``true`` reliably means "not a draft" — but
 # ``false`` only means "not published": a scheduled, processing or errored
 # episode is unpublished without being a draft, so ``isPublished: false`` is
-# *not* evidence of a draft and needs a corroborating signal. Both must be a
-# real JSON boolean — a string ``"false"`` is *not* a boolean and is treated as
-# schema drift, never as truthiness.
+# *not* evidence of a draft and needs explicit ``isDraft: true`` or ``draft``
+# status evidence before reuse. Both must be a real JSON boolean — a string
+# ``"false"`` is *not* a boolean and is treated as schema drift, never as
+# truthiness.
 _BOOL_STATE_KEYS: tuple[str, ...] = ("isDraft", "isPublished")
 # ``{key: reading that means "draft"}`` for fields whose two readings are both
 # evidence.
 _BOOL_TWO_WAY_STATE_KEYS: dict[str, bool] = {"isDraft": True}
 # ``{key: reading that is evidence of *not* a draft}``; the opposite reading
-# contributes nothing.
+# carries no reusable-draft evidence.
 _BOOL_NON_DRAFT_ONLY_KEYS: dict[str, bool] = {"isPublished": True}
 
 # String state tokens with evidence, deliberately minimal. ``draft`` is the
 # value this integration itself drives episodes into (``publish_behavior``) and
 # the only token the previous revision recognised; ``published`` is its
-# observed opposite. Every other token — ``scheduled``, ``processing``,
-# ``error``, anything new — is *unknown*, and unknown is an error rather than a
-# guessed "not a draft", because guessing wrong either reuses a published
-# episode or creates a duplicate draft. Extend only with observed evidence.
+# observed opposite. ``scheduled`` and ``unpublished`` only establish that an
+# episode is non-public, not that it is a reusable video draft. Every other
+# token — ``processing``, ``error``, anything new — is *unknown*, and unknown
+# is an error rather than a guessed state. Extend only with observed evidence.
 _DRAFT_STATE_TOKENS = frozenset({"draft"})
 _NON_DRAFT_STATE_TOKENS = frozenset({"published"})
+_NON_PUBLIC_STATE_TOKENS = frozenset({"scheduled", "unpublished"})
 
-# Unverified: no successful listing response has ever been observed (every call
-# 400'd on the missing userId), so these key names are informed guesses only.
-_PAGINATION_HINT_KEYS = ("hasMore", "hasNextPage", "nextPageToken", "nextPage")
+_EPISODE_LIST_PAGE_SIZE = 50
 
 _FAIL_CLOSED_SUFFIX = (
     "refusing to report 'no draft exists' from a listing this code cannot read, "
@@ -631,6 +623,7 @@ _FAIL_CLOSED_SUFFIX = (
 )
 
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
+_CURSOR_TRIM_RE = re.compile(r"^[\s\u200b\u200c\u200d\ufeff]+|[\s\u200b\u200c\u200d\ufeff]+$")
 
 # Recovering an ambiguous create must not treat an *immediately* unchanged
 # listing as proof that the create did nothing: a client-side timeout or a
@@ -698,6 +691,10 @@ def _safe_token(value: str) -> str:
     return value if _SAFE_KEY_RE.match(value) else "<unprintable>"
 
 
+def _strip_pagination_cursor(value: str) -> str:
+    return _CURSOR_TRIM_RE.sub("", value)
+
+
 def _episode_is_draft(episode: dict[Any, Any]) -> bool:
     """Whether *episode* is a draft, decided from explicit evidence only.
 
@@ -708,14 +705,13 @@ def _episode_is_draft(episode: dict[Any, Any]) -> bool:
       drift, not truthiness — ``bool("false")`` is ``True``, which would have
       made a published episode look like a draft and got it overwritten.
       ``isDraft`` is evidence in both directions; ``isPublished: true`` is
-      evidence of *not* a draft, but ``isPublished: false`` on its own is not
-      evidence of a draft (a scheduled or still-processing episode is also
-      unpublished) and needs a corroborating ``isDraft``/status signal.
+      evidence of *not* a draft, while ``isPublished: false`` only establishes
+      that the episode is non-public and is not reusable-draft evidence.
     - a string state field (:data:`_STATUS_KEYS`) must carry a token this code
-      has evidence for. An unknown token (``"scheduled"``, ``"processing"``, a
-      value invented by a future API version) is **not** silently treated as
-      "not a draft": that answer would create a duplicate draft, or, if wrong
-      in the other direction, reuse an episode that is already live.
+      has evidence for. ``"scheduled"`` and ``"unpublished"`` are non-public
+      but not reusable-draft evidence. Unknown tokens (``"processing"``,
+      ``"error"``, values invented by a future API version) are **not**
+      silently treated as any known state.
     - fields that disagree with each other are drift as well.
 
     An explicit ``null`` carries no state and is skipped, exactly like an
@@ -758,11 +754,15 @@ def _episode_is_draft(episode: dict[Any, Any]) -> bool:
             evidence[key] = True
         elif token in _NON_DRAFT_STATE_TOKENS:
             evidence[key] = False
+        elif token in _NON_PUBLIC_STATE_TOKENS:
+            continue
         else:
+            known_tokens = sorted(
+                _DRAFT_STATE_TOKENS | _NON_DRAFT_STATE_TOKENS | _NON_PUBLIC_STATE_TOKENS
+            )
             raise SpotifyDraftReconcileError(
                 f"Spotify episode listing entry has an unrecognised '{key}' value "
-                f"'{_safe_token(token)}' (known: "
-                f"{sorted(_DRAFT_STATE_TOKENS | _NON_DRAFT_STATE_TOKENS)}); an "
+                f"'{_safe_token(token)}' (known: {known_tokens}); an "
                 f"unknown state is never assumed to be 'not a draft'; "
                 f"{_FAIL_CLOSED_SUFFIX}."
             )
@@ -770,9 +770,9 @@ def _episode_is_draft(episode: dict[Any, Any]) -> bool:
     if not evidence:
         raise SpotifyDraftReconcileError(
             "Spotify episode listing entry exposes no recognised draft/published "
-            f"state (keys: {_safe_keys(episode)}); note that 'isPublished': false "
-            "alone is not evidence of a draft — a scheduled or processing episode "
-            f"is unpublished too; {_FAIL_CLOSED_SUFFIX}."
+            f"state (keys: {_safe_keys(episode)}); only explicit 'isDraft': true "
+            "or a 'draft' status permits reuse. 'isPublished': false, 'scheduled', "
+            f"and 'unpublished' alone are not draft evidence; {_FAIL_CLOSED_SUFFIX}."
         )
     if len(set(evidence.values())) > 1:
         raise SpotifyDraftReconcileError(
@@ -885,13 +885,274 @@ def _draft_episode_id(episode: Any, title: str) -> int | None:
 
 
 def _pagination_hint(data: Any) -> str | None:
-    """Name of the key by which the listing appears to signal further pages."""
+    """Name of the key by which a normalised listing signals further pages."""
     if not isinstance(data, dict):
         return None
-    for key in _PAGINATION_HINT_KEYS:
-        if data.get(key):
-            return key
+    has_more = _pagination_has_more(data, context="normalised listing")
+    next_token = _first_pagination_cursor(
+        data,
+        context="normalised listing",
+        allow_null=has_more is False,
+    )
+    if has_more is True:
+        return "hasMore"
+    if next_token is not None:
+        return "nextPageToken"
     return None
+
+
+def _pagination_flag(data: dict[Any, Any], key: str, *, context: str) -> bool | None:
+    if key not in data:
+        return None
+    value = data[key]
+    if isinstance(value, bool):
+        return value
+    raise SpotifyDraftReconcileError(
+        f"Spotify episode listing {context} field '{key}' is a "
+        f"{type(value).__name__}, not a boolean; {_FAIL_CLOSED_SUFFIX}."
+    )
+
+
+def _pagination_cursor(
+    data: dict[Any, Any],
+    key: str,
+    *,
+    context: str,
+    allow_null: bool = False,
+) -> str | None:
+    if key not in data:
+        return None
+    value = data[key]
+    if value is None:
+        if allow_null:
+            return None
+        raise SpotifyDraftReconcileError(
+            f"Spotify episode listing {context} field '{key}' is null without "
+            f"an explicit false pagination flag; {_FAIL_CLOSED_SUFFIX}."
+        )
+    if isinstance(value, str):
+        token = _strip_pagination_cursor(value)
+        if token:
+            return token
+    raise SpotifyDraftReconcileError(
+        f"Spotify episode listing {context} field '{key}' is a "
+        f"{type(value).__name__}, not a non-empty string cursor; {_FAIL_CLOSED_SUFFIX}."
+    )
+
+
+def _first_pagination_cursor(
+    data: dict[Any, Any],
+    *,
+    context: str,
+    allow_null: bool = False,
+) -> str | None:
+    for key in ("nextPageToken", "nextPage"):
+        token = _pagination_cursor(data, key, context=context, allow_null=allow_null)
+        if token is not None:
+            return token
+    return None
+
+
+def _pagination_has_more(data: dict[Any, Any], *, context: str) -> bool | None:
+    values = [
+        value
+        for key in ("hasMore", "hasNextPage")
+        if (value := _pagination_flag(data, key, context=context)) is not None
+    ]
+    if True in values:
+        return True
+    if False in values:
+        return False
+    return None
+
+
+def _normalise_episode_listing_page(
+    payload: Any,
+    *,
+    expected_page: int,
+) -> dict[str, Any]:
+    """Return a validated draft page from the observed persisted query.
+
+    The request uses the provider's explicit ``DRAFT_EPISODES`` filter, so every
+    returned item is annotated as a draft only after the exact response path,
+    completed index state, and numeric pagination metadata are validated.
+    """
+    if not isinstance(payload, dict):
+        raise SpotifyDraftReconcileError(
+            f"Spotify episode listing GraphQL returned a {type(payload).__name__} "
+            f"payload; {_FAIL_CLOSED_SUFFIX}."
+        )
+    if payload.get("errors"):
+        raise SpotifyDraftReconcileError(
+            f"Spotify episode listing GraphQL returned errors; {_FAIL_CLOSED_SUFFIX}."
+        )
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL response has no object-valued data field "
+            f"(top-level keys: {_safe_keys(payload)}); "
+            f"{_FAIL_CLOSED_SUFFIX}."
+        )
+
+    if set(data) != {"showByShowUri"}:
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL response exposes unexpected data "
+            f"fields ({_safe_keys(data)}); {_FAIL_CLOSED_SUFFIX}."
+        )
+    show = data.get("showByShowUri")
+    if not isinstance(show, dict) or set(show) != {"episodesV2"}:
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL response has no object-valued "
+            "data.showByShowUri.episodesV2 field; "
+            f"{_FAIL_CLOSED_SUFFIX}."
+        )
+    listing = show["episodesV2"]
+    if not isinstance(listing, dict):
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL data.showByShowUri.episodesV2 is "
+            f"a {type(listing).__name__}, not an object; {_FAIL_CLOSED_SUFFIX}."
+        )
+    required_listing_fields = {"indexStatus", "items", "pagination"}
+    if set(listing) != required_listing_fields:
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL episodesV2 fields changed "
+            f"({_safe_keys(listing)}); {_FAIL_CLOSED_SUFFIX}."
+        )
+    if listing.get("indexStatus") != "COMPLETED":
+        raise SpotifyDraftReconcileError(
+            f"Spotify episode listing index is not complete; {_FAIL_CLOSED_SUFFIX}."
+        )
+    items = listing.get("items")
+    pagination = listing.get("pagination")
+    if not isinstance(items, list) or not isinstance(pagination, dict):
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL response has invalid items or "
+            f"pagination fields; {_FAIL_CLOSED_SUFFIX}."
+        )
+    required_pagination = {"currentPage", "pageSize", "totalItems", "totalPages"}
+    if set(pagination) != required_pagination:
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL pagination fields changed "
+            f"({_safe_keys(pagination)}); {_FAIL_CLOSED_SUFFIX}."
+        )
+    values = {key: pagination[key] for key in required_pagination}
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in values.values()):
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL pagination values are not integers; "
+            f"{_FAIL_CLOSED_SUFFIX}."
+        )
+    current_page = values["currentPage"]
+    page_size = values["pageSize"]
+    total_items = values["totalItems"]
+    total_pages = values["totalPages"]
+    calculated_total_pages = max(
+        1,
+        (total_items + _EPISODE_LIST_PAGE_SIZE - 1) // _EPISODE_LIST_PAGE_SIZE,
+    )
+    expected_page_items = (
+        min(
+            _EPISODE_LIST_PAGE_SIZE,
+            total_items - ((current_page - 1) * _EPISODE_LIST_PAGE_SIZE),
+        )
+        if total_items
+        else 0
+    )
+    if (
+        current_page != expected_page
+        or page_size != _EPISODE_LIST_PAGE_SIZE
+        or total_items < 0
+        or total_pages < 0
+        or calculated_total_pages != total_pages
+        or not 1 <= current_page <= total_pages
+        or len(items) != expected_page_items
+    ):
+        raise SpotifyDraftReconcileError(
+            f"Spotify episode listing GraphQL pagination is inconsistent; {_FAIL_CLOSED_SUFFIX}."
+        )
+
+    draft_items: list[dict[Any, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise SpotifyDraftReconcileError(
+                "Spotify episode listing GraphQL returned a non-object draft item; "
+                f"{_FAIL_CLOSED_SUFFIX}."
+            )
+        if any(key in item for key in (*_BOOL_STATE_KEYS, *_STATUS_KEYS)):
+            draft_items.append(item)
+        else:
+            draft_items.append({**item, "isDraft": True})
+    return {
+        "episodes": draft_items,
+        "currentPage": current_page,
+        "totalItems": total_items,
+        "totalPages": total_pages,
+    }
+
+
+def _fetch_episode_listing_page(
+    session: requests.Session,
+    show_id: str,
+    *,
+    current_page: int,
+) -> dict[str, Any]:
+    payload = {
+        "operationName": _SPOTIFY_EPISODE_LIST_OPERATION,
+        "variables": {
+            "showUri": f"spotify:show:{show_id}",
+            "currentPage": current_page,
+            "pageSize": _EPISODE_LIST_PAGE_SIZE,
+            "sortOrder": None,
+            "sortBy": None,
+            "search": None,
+            "filter": "DRAFT_EPISODES",
+            "includeMembershipTiers": False,
+            "analyticsWindow": "WINDOW_ALL_TIME",
+        },
+        "extensions": {
+            "persistedQuery": {
+                "version": 1,
+                "sha256Hash": _SPOTIFY_EPISODE_LIST_HASH,
+            }
+        },
+    }
+    try:
+        resp = _retry_request(
+            session,
+            "POST",
+            _SPOTIFY_CREATORS_GRAPHQL_URL,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Origin": "https://creators.spotify.com",
+                "Referer": "https://creators.spotify.com/",
+                "x-creator-client": "public-website",
+            },
+            timeout=15,
+            request_context="draft_episode_readback",
+        )
+        return _normalise_episode_listing_page(resp.json(), expected_page=current_page)
+    except SpotifyCredentialExpiredError:
+        raise
+    except SpotifyDraftReconcileError:
+        raise
+    except SpotifyPublishError as exc:
+        cause = exc.__cause__
+        response = getattr(cause, "response", None)
+        status = getattr(response, "status_code", None)
+        status_suffix = f" (HTTP {status})" if isinstance(status, int) else ""
+        raise SpotifyDraftReconcileError(
+            "Spotify draft reconcile episode listing request failed"
+            f"{status_suffix}; refusing "
+            "to infer absence from an error. Refusing to "
+            "create a new draft because an existing one may already exist."
+        ) from exc
+    except ValueError as exc:
+        raise SpotifyDraftReconcileError(
+            f"Spotify draft reconcile episode listing request failed ({type(exc).__name__}); "
+            "refusing to infer absence from an error. Refusing to create a new "
+            "draft because an existing one may already exist."
+        ) from exc
 
 
 def _fetch_episode_listing(
@@ -899,12 +1160,15 @@ def _fetch_episode_listing(
     station_id: str,
     *,
     user_id: str,
+    show_id: str | None = None,
 ) -> Any:
-    """GET the station episode listing, failing **closed** on any problem.
+    """POST and validate the strict GraphQL draft-listing readback contract.
 
-    The Anchor v5 episode listing requires ``userId`` as a query parameter;
-    omitting it returns HTTP 400 ``query.userId is required``. ``user_id`` comes
-    from :func:`_resolve_legacy_ids` alongside ``station_id``.
+    The provider-confirmed path is the persisted ``WebGetIndexedEpisodeList``
+    operation keyed by ``spotify:show:{show_id}``, with results only at
+    ``data.showByShowUri.episodesV2``. ``station_id`` and ``user_id`` remain in
+    the signature for validation and diagnostics; neither is substituted for
+    the required Spotify show id.
     """
     resolved_user_id = str(user_id).strip()
     if not resolved_user_id:
@@ -912,27 +1176,43 @@ def _fetch_episode_listing(
             "Spotify draft reconcile requires a userId, but none was resolved "
             f"for station {station_id}."
         )
-
-    url = f"{_BASE_URL}/v3/stations/{station_id}/episodes"
-    try:
-        resp = _retry_request(
-            session,
-            "GET",
-            url,
-            params=_mums_params(userId=resolved_user_id),
-            timeout=15,
-        )
-        return resp.json()
-    except SpotifyCredentialExpiredError:
-        raise
-    except (SpotifyPublishError, requests.RequestException, ValueError) as exc:
-        # Never echo the response body or session cookies — only the request
-        # shape and the failure type.
+    resolved_show_id = (show_id or os.environ.get("SPOTIFY_SHOW_ID") or "").strip()
+    if not resolved_show_id:
         raise SpotifyDraftReconcileError(
-            f"Spotify draft reconcile lookup failed for station {station_id} "
-            f"({_safe_url(url)}): {type(exc).__name__}. Refusing to create a new "
-            "draft because an existing one may already exist."
-        ) from exc
+            "Spotify draft reconcile requires the Spotify show id for the current "
+            "episode-list GraphQL contract; the legacy station id is not a safe "
+            "show-id substitute."
+        )
+
+    all_items: list[Any] = []
+    current_page = 1
+    expected_total_items: int | None = None
+    expected_total_pages: int | None = None
+    while True:
+        page = _fetch_episode_listing_page(
+            session,
+            resolved_show_id,
+            current_page=current_page,
+        )
+        all_items.extend(_episode_items(page))
+        total_items = page["totalItems"]
+        total_pages = page["totalPages"]
+        if expected_total_items is None:
+            expected_total_items = total_items
+            expected_total_pages = total_pages
+        elif total_items != expected_total_items or total_pages != expected_total_pages:
+            raise SpotifyDraftReconcileError(
+                "Spotify episode listing count metadata changed during pagination; "
+                f"{_FAIL_CLOSED_SUFFIX}."
+            )
+        if current_page >= total_pages:
+            if len(all_items) != total_items:
+                raise SpotifyDraftReconcileError(
+                    "Spotify episode listing item count does not match pagination metadata; "
+                    f"{_FAIL_CLOSED_SUFFIX}."
+                )
+            return {"episodes": all_items}
+        current_page += 1
 
 
 def _match_existing_draft(
@@ -946,14 +1226,15 @@ def _match_existing_draft(
 
     ``None`` is a *proof of absence* only when a recognised container was read,
     every entry that could still be the target was understood, and the listing
-    carried no pagination hint. When a hint *is* present the default is to warn
-    and continue (see :func:`_find_existing_draft`).
+    was fully paginated. A next-page hint in this normalised data is schema
+    drift and fails closed.
 
     Entries whose id is ``exclude_id`` are skipped **before** any state or title
     classification: the audio anchor is explicitly not the episode being looked
     for, so its state — ``scheduled``, ``processing``, or anything else this
     code has no evidence for — must never fail the lookup for the video draft.
     """
+    matched_ids: list[int] = []
     for episode in _episode_items(data):
         if (
             exclude_id is not None
@@ -963,31 +1244,30 @@ def _match_existing_draft(
             continue
         episode_id = _draft_episode_id(episode, title)
         if episode_id is not None and episode_id != exclude_id:
-            logger.info(
-                "Reconciled existing Spotify draft anchorId=%d for title=%r",
-                episode_id,
-                title,
-            )
-            return episode_id
+            matched_ids.append(episode_id)
+
+    if len(matched_ids) > 1:
+        raise SpotifyDraftReconcileError(
+            "Spotify draft reconcile found multiple reusable drafts with the exact "
+            f"target title (anchor ids: {sorted(matched_ids)}); refusing to choose "
+            "one arbitrarily or create another draft."
+        )
+    if matched_ids:
+        matched_id = matched_ids[0]
+        logger.info(
+            "Reconciled existing Spotify draft anchorId=%d for title=%r",
+            matched_id,
+            title,
+        )
+        return matched_id
 
     hint_key = _pagination_hint(data)
     if hint_key is not None:
-        if _spotify_strict_paging_enabled():
-            raise SpotifyDraftReconcileError(
-                f"Spotify draft reconcile lookup for station {station_id} signalled "
-                f"further pages via '{hint_key}' and found no match on the first "
-                "page; strict paging is enabled, so a possibly incomplete read "
-                "will not be used to justify creating a new draft."
-            )
-        logger.warning(
-            "Spotify episode listing for station %s carries a truthy '%s' key and "
-            "contained no match for title=%r. Pagination is NOT implemented (the "
-            "real paging contract is unverified), so this read may be incomplete "
-            "and a duplicate draft is possible. Set "
-            "PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1 to fail closed instead.",
-            station_id,
-            hint_key,
-            title,
+        raise SpotifyDraftReconcileError(
+            f"Spotify draft reconcile lookup for station {station_id} still "
+            f"signals further pages via '{hint_key}' after listing fetch; a "
+            "possibly incomplete read will not be used to justify creating a "
+            "new draft."
         )
 
     logger.info("No existing Spotify draft matched title=%r; a new draft is needed.", title)
@@ -1000,6 +1280,7 @@ def _find_existing_draft(
     title: str,
     *,
     user_id: str,
+    show_id: str | None = None,
     exclude_id: int | None = None,
 ) -> int | None:
     """Look up an existing draft episode with an exact title match.
@@ -1015,18 +1296,11 @@ def _find_existing_draft(
     broken lookup can never be mistaken for "no draft exists" and duplicate a
     draft.
 
-    ``None`` is **not** unconditional proof of absence. The listing is fetched
-    with a single unpaginated GET, and by default a response that carries a
-    truthy pagination hint (:data:`_PAGINATION_HINT_KEYS`) but no match only
-    logs a warning and still returns ``None`` — the read may be incomplete,
-    because those key names are informed guesses and hard-failing on a guess
-    could block every video publish. Callers must therefore treat ``None`` as
-    "no match on the page that was read". Setting
-    ``PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1`` opts into raising
-    :class:`SpotifyDraftReconcileError` in that case instead, which is the only
-    configuration where ``None`` is a complete-read proof of absence.
+    ``None`` is a complete-read proof of absence for the recognised listing
+    schema: :func:`_fetch_episode_listing` follows cursors until exhausted, and
+    any page-fetch or schema failure raises before this matcher can return.
     """
-    data = _fetch_episode_listing(session, station_id, user_id=user_id)
+    data = _fetch_episode_listing(session, station_id, user_id=user_id, show_id=show_id)
     return _match_existing_draft(data, station_id, title, exclude_id=exclude_id)
 
 
@@ -1093,6 +1367,7 @@ def _recover_ambiguous_create(
     station_id: str,
     *,
     user_id: str,
+    show_id: str | None,
     title: str,
     exclude_id: int | None,
     known_ids: set[int],
@@ -1131,7 +1406,7 @@ def _recover_ambiguous_create(
     candidates: list[int] = []
     opaque = 0
     for read in range(_AMBIGUOUS_CREATE_READS):
-        data = _fetch_episode_listing(session, station_id, user_id=user_id)
+        data = _fetch_episode_listing(session, station_id, user_id=user_id, show_id=show_id)
 
         titled_match = _match_existing_draft(data, station_id, title, exclude_id=exclude_id)
         if titled_match is not None:
@@ -1194,6 +1469,7 @@ def _reconcile_or_create_draft(
     station_id: str,
     *,
     user_id: str,
+    show_id: str | None = None,
     title: str,
     exclude_id: int | None = None,
 ) -> tuple[int, bool]:
@@ -1209,7 +1485,7 @@ def _reconcile_or_create_draft(
     — when there is none — it is the pre-create snapshot that makes an
     ambiguous create recoverable without a blind retry.
     """
-    data = _fetch_episode_listing(session, station_id, user_id=user_id)
+    data = _fetch_episode_listing(session, station_id, user_id=user_id, show_id=show_id)
     match = _match_existing_draft(data, station_id, title, exclude_id=exclude_id)
     if match is not None:
         return match, False
@@ -1224,6 +1500,7 @@ def _reconcile_or_create_draft(
             session,
             station_id,
             user_id=user_id,
+            show_id=show_id,
             title=title,
             exclude_id=exclude_id,
             known_ids=known_ids,
@@ -1684,13 +1961,35 @@ def _get_episode_publication_state(
             session,
             "GET",
             url,
-            request_context="draft_episode_readback",
-            params=_mums_params(**{"userId": user_id} if user_id else {}),
+            params=_mums_params(returnWebIds="true"),
             timeout=15,
+            request_context="draft_episode_readback",
         )
     except SpotifyCredentialExpiredError:
         raise
     except SpotifyPublishError as exc:
+        cause = exc.__cause__
+        response = getattr(cause, "response", None)
+        status = getattr(response, "status_code", None)
+        if status == 401:
+            raise SpotifyCredentialExpiredError(
+                "Spotify rejected the episode overview request (HTTP 401) — "
+                "SP_DC/SP_KEY credentials expired. Operator must refresh them."
+            ) from exc
+        if status == 403:
+            logger.info(
+                "Spotify episode %s overview returned HTTP 403; treating as "
+                "unknown publication state, not credential expiry.",
+                anchor_id,
+            )
+            return None
+        logger.warning(
+            "Spotify episode %s overview request failed with HTTP %s",
+            anchor_id,
+            status,
+        )
+        return None
+    except requests.RequestException as exc:
         logger.warning(
             "Spotify episode %s publication state request failed: %s",
             anchor_id,
@@ -2030,7 +2329,16 @@ def upload_video_to_episode(
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
     status is "draft" on success and "failed" otherwise.
     """
-    video_title = title or "Video Episode"
+    identity_title = title.strip() if isinstance(title, str) else ""
+    if not identity_title:
+        return PublishResult(
+            status="failed",
+            error=(
+                "Spotify video draft creation requires a non-blank title so an "
+                "existing draft can be reconciled before any create or upload."
+            ),
+        )
+    video_title = identity_title
     video_description = description or ""
 
     if _is_dry_run():
@@ -2070,7 +2378,7 @@ def upload_video_to_episode(
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         # Create or reconcile a separate video draft — never touch the audio one.
-        reconcile_enabled = bool(title) and _spotify_reconcile_enabled()
+        reconcile_enabled = _spotify_reconcile_enabled()
         if reconcile_enabled:
             try:
                 exclude_audio_id = int(anchor_id) if anchor_id is not None else None
@@ -2080,6 +2388,7 @@ def upload_video_to_episode(
                 session,
                 station_id,
                 user_id=user_id,
+                show_id=show_id,
                 title=video_title,
                 exclude_id=exclude_audio_id,
             )

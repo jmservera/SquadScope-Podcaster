@@ -212,27 +212,49 @@ episode (`anchor_id`) is always excluded from the match.
 > invariant holds against listing schemas this code understands; anything it
 > cannot read fails the publish closed instead of guessing.
 
-The listing endpoint **requires `userId` as a query parameter**:
+The current readback listing contract is the Spotify for Creators GraphQL
+persisted-query endpoint:
 
 ```text
-GET /v3/stations/{stationId}/episodes?userId={userId}&isMumsCompatible=true
+POST https://creators-graph.spotify.com/v2/graph-pq
+operationName=WebGetIndexedEpisodeList
+variables.showUri=spotify:show:{SPOTIFY_SHOW_ID}
+variables.currentPage=1
+variables.pageSize=50
+variables.filter=DRAFT_EPISODES
+extensions.persistedQuery.sha256Hash=da95dd0d…c9e98
+x-creator-client=public-website
 ```
 
-Omitting it returns `HTTP 400 {"property":"query.userId","message":"is required"}`.
-`userId` comes from `_resolve_legacy_ids` together with `stationId`.
+This exact persisted-query contract was verified live on 2026-09-23. The
+earlier request failed because it omitted the persisted-query hash and creator
+client header, used cursor variables that the operation does not accept, and
+sent an empty `query` field. The verified response path is
+`data.showByShowUri.episodesV2`; the index must report `COMPLETED`, and numeric
+`currentPage`/`pageSize`/`totalItems`/`totalPages` metadata drives pagination.
+The implementation requires the page count to equal the ceiling implied by
+`totalItems` and the fixed page size, requires each page to contain exactly its
+declared share of those items, and requires count metadata to remain unchanged
+across pages. Reconciliation therefore defaults on again. The explicit `false`
+setting remains the operator-authorized blind-create escape hatch.
+
+The older Anchor REST station listing (`GET /v3/stations/{stationId}/episodes`,
+with or without `userId`) is stale for this workflow and must not be treated as
+proof of absence when it errors.
 
 A lookup that fails (HTTP error, transport error, malformed JSON, missing
 identity) raises `SpotifyDraftReconcileError` and fails the publish. So does a
-listing whose *schema* this code cannot read — an unknown container, an error
-body, a non-array episode field, a renamed title/id/state field, or a non-object
-entry. `None` ("no draft exists") is only sound when every entry of a recognised
-container was understood **and** the listing carried no pagination hint (see
-[Pagination](#pagination-unimplemented-unverified) — by default a hint only
-warns, so `None` then means "no match on the page that was read"); a recognised
-**empty** array is still a legitimate no-match. An entry whose title is present
-but null is understood as an untitled draft (no match). Entries whose id is the
-excluded audio anchor are skipped *before* any state or title classification, so
-a scheduled or processing audio episode can never fail the video lookup.
+listing whose *schema* this code cannot read — an unknown container, incomplete
+index, malformed pagination, non-array episode field, renamed title/id field, or
+non-object entry. `None` ("no draft exists") is only sound when every entry of
+the provider-filtered draft collection was understood and all numbered pages
+were fetched. A recognised empty draft page is still a legitimate no-match. A
+failed later page or a changing total-page count fails closed rather than
+returning a partial list. An entry whose title is present but null is understood
+as an untitled draft (no match). Entries whose id is the excluded audio anchor
+are skipped before title classification. More than one reusable draft with the
+exact target title is ambiguous identity and fails closed; no candidate is
+selected and no create or upload follows.
 Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
@@ -253,7 +275,7 @@ duplicate.
 |-------|----------|----------|
 | `isDraft` | JSON `true`/`false` (`true` ⇒ draft) | any non-boolean: `"false"`, `"true"`, `0`, `1`, `1.0`, `{}`, `[]` |
 | `isPublished` | JSON `true`/`false`. `true` ⇒ **not** a draft; `false` alone is **not** evidence of a draft and needs a corroborating `isDraft`/status signal | any non-boolean |
-| `status` / `state` / `publishStatus` / `publishState` | `"draft"`, `"published"` (trimmed, case-insensitive) | any other token, and any non-string |
+| `status` / `state` / `publishStatus` / `publishState` | `"draft"`, `"published"` (trimmed, case-insensitive). `"scheduled"` and `"unpublished"` are understood only as non-public, never as reusable-draft evidence | any other token, and any non-string |
 
 `isPublished` is asymmetric on purpose: it is the field this integration itself
 writes, so `true` reliably means "not a draft", but `false` only means "not
@@ -262,19 +284,21 @@ being a draft, and reusing one as the video draft would overwrite it. An entry
 whose *only* state signal is `isPublished: false` therefore fails closed.
 
 `bool("false")` is `True`, so a string is *never* truth-tested — it is schema
-drift. An **unknown** status token (`"scheduled"`, `"processing"`, anything a
-future API version invents) is an error, not an implied "not a draft"; the
+drift. A non-public token (`"scheduled"` or `"unpublished"`) does not permit
+reuse without explicit draft evidence. An **unknown** token (`"processing"`,
+anything a future API version invents) is an error, not an implied state; the
 allow-list is deliberately minimal and is only extended from observed evidence.
 An explicit `null` carries no state and is skipped, exactly like an absent
 field; if nothing is left, or if two fields disagree, the entry fails closed.
 Entries whose title does **not** match are never state-checked.
 
-> No successful response from this endpoint has ever been observed (every call
-> 400'd on the missing `userId`), so the container shape is **unverified**. The
-> first deploy may therefore fail closed until the real schema is confirmed from
-> the `SpotifyDraftReconcileError` message, which reports the top-level key
-> *names* (never values), and — for an unrecognised state — the offending token
-> when it is identifier-shaped.
+The live query requests `DRAFT_EPISODES`, so an item without an individual state
+field is draft evidence only after the exact response path, completed index, and
+pagination contract have been validated. If Spotify later includes explicit
+state fields, contradictory or unknown values still fail closed. Verification is
+limited to this strict persisted-query request and envelope; aliases, alternate
+nesting, arrays, REST response shapes, omitted identities, and undocumented
+state values remain intentionally unsupported rather than being guessed.
 
 #### Titling the new draft immediately (idempotency)
 
@@ -365,19 +389,20 @@ client-side: the Anchor v5 API exposes no idempotency key. What is closed is the
 common case — a crash during the multi-minute upload — because the draft is
 titled before the upload starts and reconcile finds it on the next run.
 
-#### Pagination (unimplemented, unverified)
+#### Pagination
 
-The listing is fetched with a single unpaginated GET. Whether the endpoint pages
-at all — and under which key — is unknown. When the response carries a truthy
-`hasMore`/`hasNextPage`/`nextPageToken`/`nextPage` key **and** no match was
-found, a warning is logged naming the key; the publish is *not* blocked, because
-hard-failing on a guessed key name could block every new video publish. Operators
-who have confirmed the contract for their show can opt into fail-closed
-behaviour with `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1`.
+The GraphQL listing is cursor-paginated. `_fetch_episode_listing` follows
+`nextPageToken` / `nextPage` / `pageInfo.endCursor` only while
+`hasMore` / `hasNextPage` is explicitly `true`. A terminal page may retain an
+`endCursor`; it is ignored when `hasNextPage` is `false`. Any page-fetch error,
+missing explicit boolean pagination flag, missing cursor for a true flag,
+non-string cursor, or repeated cursor raises
+`SpotifyDraftReconcileError`; a
+partial read is never returned as a complete empty listing.
 
 #### Credential expiry
 
-A 401/403 anywhere in the video path raises `SpotifyCredentialExpiredError`,
+A 401 in the video path raises `SpotifyCredentialExpiredError`,
 which `upload_video_to_episode` converts into an operator credential-expiry
 notification (`notify_credential_expiry`, #364) and a result carrying
 `details.credentials_expired` — the same handling the audio publish path has.
@@ -890,8 +915,7 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` skips the existing-draft lookup *and* the immediate title claim, restoring blind create (§5). |
-| `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults off. `1`/`true`/`yes`/`on` makes an explicitly paginated listing with no first-page match fail closed instead of warning (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on with the verified persisted-query draft listing. `0`/`false`/`no`/`off` explicitly authorize the blind-create escape hatch (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,
@@ -944,6 +968,9 @@ Spotify video upload reports `outcome: draft_created` after the separate video
 episode is uploaded and configured as a draft. Promotion reports `published`
 only after state read-back; ambiguous read-back is `publication_unknown`, and a
 known operator/capability stop is `manual_handoff_required`.
+An overview HTTP 403 is permission/readback denial, not evidence that the
+episode is unpublished or still a draft, so promotion aborts as
+`publication_unknown` without sending a publish mutation.
 
 The video publish run ID is threaded into promotion telemetry and durable
 accepted-job evidence. An existing `draft_created`, `published`,
