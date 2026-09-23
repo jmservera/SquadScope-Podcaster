@@ -2568,6 +2568,89 @@ def upload_video_to_episode(
     provider_resolution_persisted = False
     create_provenance = CreateIntentProvenance.RECONCILIATION_BACKED
     create_retry_authorized = False
+    unresolved_create_intent_snapshot: ProviderSnapshot | None = None
+    reconcile_enabled = _spotify_reconcile_enabled()
+
+    if publication_storage is not None and publication_identity_context is not None:
+        try:
+            prior_evidence = read_evidence(
+                publication_storage, publication_identity_context.accepted_job_id
+            )
+        except Exception:
+            return PublishResult(
+                status="failed",
+                error="Publication evidence could not be read before Spotify mutation.",
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=publication_identity_context.publish_run_id,
+                details={"retry_blocked": True},
+            )
+        if spotify_video_retry_is_blocked(prior_evidence):
+            return PublishResult(
+                status="failed",
+                error="Spotify video mutation blocked pending publication reconciliation.",
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=publication_identity_context.publish_run_id,
+                details={"retry_blocked": True},
+            )
+        create_retry_authorized = _spotify_video_create_retry_authorized(
+            prior_evidence,
+            publication_identity_context,
+        )
+        try:
+            unresolved_create_intent_snapshot = _spotify_video_unresolved_create_intent_snapshot(
+                prior_evidence,
+                publication_identity_context,
+            )
+        except SpotifyDraftReconcileError as exc:
+            return PublishResult(
+                status="failed",
+                error=str(exc),
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=publication_identity_context.publish_run_id,
+                details={"retry_blocked": True, "code": "unresolved_create_intent"},
+            )
+
+    if not reconcile_enabled:
+        if unresolved_create_intent_snapshot is not None:
+            return PublishResult(
+                status="failed",
+                error=(
+                    "Spotify video create intent remains unresolved and reconciliation is "
+                    "disabled; refusing blind create."
+                ),
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=(
+                    publication_identity_context.publish_run_id
+                    if publication_identity_context is not None
+                    else None
+                ),
+                details={"retry_blocked": True, "code": "unresolved_create_intent"},
+            )
+        if publication_storage is None or publication_identity_context is None:
+            return PublishResult(
+                status="failed",
+                error=(
+                    "Spotify unreconciled video create override requires durable "
+                    "publication evidence identity."
+                ),
+                details={"code": "unreconciled_create_requires_evidence"},
+            )
+        if not _spotify_unreconciled_create_allowed():
+            return PublishResult(
+                status="failed",
+                error=(
+                    "Spotify video draft reconcile is unavailable; refusing blind create "
+                    "that could duplicate an existing episode. Set "
+                    "PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE to a truthy value "
+                    "(1/true/yes/on) only for a deliberate, bounded operator override."
+                ),
+                outcome=PUBLICATION_UNKNOWN if create_retry_authorized else None,
+                publish_run_id=publication_identity_context.publish_run_id,
+                details={
+                    "retry_blocked": True,
+                    "code": "unreconciled_create_not_authorized",
+                },
+            )
 
     try:
         env_show_id, env_sp_dc, env_sp_key = _get_credentials()
@@ -2580,47 +2663,6 @@ def upload_video_to_episode(
     try:
         session = _build_session(sp_dc, sp_key, show_id)
         station_id, user_id = _resolve_legacy_ids(session, show_id)
-        unresolved_create_intent_snapshot: ProviderSnapshot | None = None
-        if publication_storage is not None and publication_identity_context is not None:
-            try:
-                prior_evidence = read_evidence(
-                    publication_storage, publication_identity_context.accepted_job_id
-                )
-            except Exception:
-                return PublishResult(
-                    status="failed",
-                    error="Publication evidence could not be read before Spotify mutation.",
-                    outcome=PUBLICATION_UNKNOWN,
-                    publish_run_id=publication_identity_context.publish_run_id,
-                    details={"retry_blocked": True},
-                )
-            if spotify_video_retry_is_blocked(prior_evidence):
-                return PublishResult(
-                    status="failed",
-                    error="Spotify video mutation blocked pending publication reconciliation.",
-                    outcome=PUBLICATION_UNKNOWN,
-                    publish_run_id=publication_identity_context.publish_run_id,
-                    details={"retry_blocked": True},
-                )
-            create_retry_authorized = _spotify_video_create_retry_authorized(
-                prior_evidence,
-                publication_identity_context,
-            )
-            try:
-                unresolved_create_intent_snapshot = (
-                    _spotify_video_unresolved_create_intent_snapshot(
-                        prior_evidence,
-                        publication_identity_context,
-                    )
-                )
-            except SpotifyDraftReconcileError as exc:
-                return PublishResult(
-                    status="failed",
-                    error=str(exc),
-                    outcome=PUBLICATION_UNKNOWN,
-                    publish_run_id=publication_identity_context.publish_run_id,
-                    details={"retry_blocked": True, "code": "unresolved_create_intent"},
-                )
 
         def _persist_create_intent(snapshot: ProviderSnapshot) -> None:
             nonlocal create_intent_persisted
@@ -2726,6 +2768,11 @@ def upload_video_to_episode(
                     "Spotify retry authorization requires durable publication evidence.",
                     code="retry_authorization_requires_evidence",
                 )
+            if not _spotify_unreconciled_create_allowed():
+                raise SpotifyDraftReconcileError(
+                    "Spotify video retry authorization cannot permit a blind create without "
+                    "PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE."
+                )
             safety = CreateSafetyState.unreconciled_override()
             try:
                 claim = claim_evidence(
@@ -2803,7 +2850,6 @@ def upload_video_to_episode(
             _persist_provider_resolution(anchor_id, created_by_attempt)
 
         # Create or reconcile a separate video draft — never touch the audio one.
-        reconcile_enabled = _spotify_reconcile_enabled()
         if reconcile_enabled:
             try:
                 exclude_audio_id = int(anchor_id) if anchor_id is not None else None
@@ -2834,12 +2880,6 @@ def upload_video_to_episode(
                 create_resolved = True
                 _persist_provider_resolution(video_anchor_id, True)
         else:
-            if unresolved_create_intent_snapshot is not None:
-                raise SpotifyMutationEvidenceError(
-                    "Spotify video create intent remains unresolved and reconciliation is "
-                    "disabled; refusing blind create.",
-                    code="unresolved_create_intent",
-                )
             if create_retry_authorized:
                 _persist_retry_authorized_create_intent(
                     "retry explicitly authorized by later publication evidence"
@@ -3378,6 +3418,21 @@ def publish_episode(
         return PublishResult(status="failed", error=f"{format_label} file not found: {upload_path}")
 
     media_kind = "video" if content_type.startswith("video/") else "audio"
+
+    if video_path is not None:
+        return upload_video_to_episode(
+            video_path,
+            title=resolved_title,
+            description=resolved_description,
+            content_type=content_type,
+            show_id=show_id,
+            sp_dc=sp_dc,
+            sp_key=sp_key,
+            season_number=season_number,
+            episode_number=episode_number,
+            publication_storage=publication_storage,
+            publication_identity_context=publication_identity_context,
+        )
 
     if publication_storage is not None and publication_identity_context is not None:
         try:

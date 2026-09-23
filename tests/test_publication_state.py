@@ -550,6 +550,23 @@ def test_provider_snapshot_subclasses_cannot_widen_evidence_source_behavior():
             pass
 
 
+def test_concrete_provider_snapshot_type_rejects_public_boolean_subclass_escape():
+    snapshot_type = type(ProviderSnapshot.complete([1], evidence_source="test_listing"))
+
+    with pytest.raises(TypeError, match="ProviderSnapshot cannot be subclassed"):
+
+        class ForgedSnapshot(snapshot_type, _provider_snapshot_state=True):
+            @property
+            def completeness(self):
+                return SnapshotCompleteness.ABSENT
+
+            def require_evidence_source(self):
+                return "\u200b"
+
+            def to_details(self):
+                return {}
+
+
 def test_complete_snapshot_deserialization_without_evidence_is_rejected():
     with pytest.raises(PublicationStateError, match="no valid persisted evidence source"):
         create_safety_state_from_record(

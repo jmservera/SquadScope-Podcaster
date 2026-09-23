@@ -62,6 +62,7 @@ _CREATE_SAFETY_DETAIL_KEYS = frozenset(
         "snapshot_evidence_source",
     }
 )
+_PROVIDER_SNAPSHOT_STATE_CAPABILITY = object()
 
 
 class PublicationStateError(ValueError):
@@ -150,10 +151,10 @@ class ProviderSnapshot:
     def __init_subclass__(
         cls,
         *,
-        _provider_snapshot_state: bool = False,
+        _provider_snapshot_state_capability: object | None = None,
         **kwargs: Any,
     ) -> None:
-        if not _provider_snapshot_state:
+        if _provider_snapshot_state_capability is not _PROVIDER_SNAPSHOT_STATE_CAPABILITY:
             raise TypeError("ProviderSnapshot cannot be subclassed")
         super().__init_subclass__(**kwargs)
 
@@ -249,7 +250,7 @@ def _normalize_snapshot_ids(raw_ids: Any) -> tuple[int, ...]:
 class _AbsentProviderSnapshot(
     tuple,
     ProviderSnapshot,
-    _provider_snapshot_state=True,
+    _provider_snapshot_state_capability=_PROVIDER_SNAPSHOT_STATE_CAPABILITY,
 ):
     __slots__ = ()
 
@@ -274,7 +275,7 @@ class _AbsentProviderSnapshot(
 class _ObservedProviderSnapshot(
     tuple,
     ProviderSnapshot,
-    _provider_snapshot_state=True,
+    _provider_snapshot_state_capability=_PROVIDER_SNAPSHOT_STATE_CAPABILITY,
 ):
     __slots__ = ()
 
@@ -308,7 +309,7 @@ class _ObservedProviderSnapshot(
 
 class _TruncatedProviderSnapshot(
     _ObservedProviderSnapshot,
-    _provider_snapshot_state=True,
+    _provider_snapshot_state_capability=_PROVIDER_SNAPSHOT_STATE_CAPABILITY,
 ):
     __slots__ = ()
 
@@ -319,7 +320,7 @@ class _TruncatedProviderSnapshot(
 
 class _CompleteProviderSnapshot(
     _ObservedProviderSnapshot,
-    _provider_snapshot_state=True,
+    _provider_snapshot_state_capability=_PROVIDER_SNAPSHOT_STATE_CAPABILITY,
 ):
     __slots__ = ()
 
