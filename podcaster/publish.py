@@ -2403,6 +2403,26 @@ def upload_video_to_episode(
         station_id, user_id = _resolve_legacy_ids(session, show_id)
         if publication_storage is not None and publication_identity_context is not None:
             try:
+                prior_evidence = read_evidence(
+                    publication_storage, publication_identity_context.accepted_job_id
+                )
+            except Exception:
+                return PublishResult(
+                    status="failed",
+                    error="Publication evidence could not be read before Spotify mutation.",
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True},
+                )
+            if retry_is_blocked(prior_evidence, platform="spotify", media_kind="video"):
+                return PublishResult(
+                    status="failed",
+                    error="Spotify video mutation blocked pending publication reconciliation.",
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True},
+                )
+            try:
                 claim = append_evidence(
                     publication_storage,
                     publication_identity_context,
@@ -2589,6 +2609,19 @@ def upload_video_to_episode(
                 "notification_issue": issue_number,
                 "audio_anchor_id": anchor_id,
             },
+        )
+    except SpotifyDraftCreateAmbiguousError as exc:
+        logger.error("Spotify video draft create state unknown: %s", exc)
+        return PublishResult(
+            status="failed",
+            error=str(exc),
+            outcome=PUBLICATION_UNKNOWN,
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
+            details={"retry_blocked": True, "code": "ambiguous_create"},
         )
     except SpotifyPublishError as exc:
         logger.error("Spotify video upload failed: %s", exc)

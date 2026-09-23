@@ -563,9 +563,9 @@ def _record_video_publication(
     platform: str,
     record: dict[str, Any],
 ) -> bool:
-    _record_video_publish(storage, job_id, platform, record)
     outcome = record.get("outcome")
     if identity is None or not isinstance(outcome, str):
+        _record_video_publish(storage, job_id, platform, record)
         return True
     provider_artifact_id = (
         record.get("provider_id") or record.get("video_id") or record.get("episode_id")
@@ -611,6 +611,7 @@ def _record_video_publication(
             exc_info=True,
         )
         return False
+    _record_video_publish(storage, job_id, platform, record)
     try:
         emit_publication_signal(
             storage,

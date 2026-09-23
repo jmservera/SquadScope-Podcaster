@@ -1626,10 +1626,49 @@ class TestUploadVideoToEpisode:
         )
 
         assert result.status == "failed"
+        assert result.outcome == "publication_unknown"
+        assert result.details == {"retry_blocked": True, "code": "ambiguous_create"}
         records = _evidence_records(storage)
         assert records[0]["operation"] == "create_episode_intent"
         assert records[0].get("provider_artifact_id") is None
         assert records[0]["details"]["show_id"] == "show1"
+
+    def test_video_retry_blocked_evidence_prevents_second_create(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome="publication_unknown",
+            retry_blocked=True,
+        )
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock()
+        monkeypatch.setattr(pub, "_create_episode", create)
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert result.status == "failed"
+        assert result.outcome == "publication_unknown"
+        assert result.details == {"retry_blocked": True}
+        create.assert_not_called()
+        assert len(_evidence_records(storage)) == 1
 
     def test_video_evidence_failure_after_create_surfaces_with_anchor_id(
         self, tmp_path, monkeypatch

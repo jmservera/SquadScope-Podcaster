@@ -129,6 +129,30 @@ def test_record_video_publish_storage_failure_surfaces():
         )
 
 
+def test_video_publication_evidence_precedes_manifest_failure(monkeypatch):
+    from podcaster.video import job_runner
+
+    storage = FailingUpdateStorage()
+    append = MagicMock()
+    monkeypatch.setattr(job_runner, "append_evidence", append)
+
+    with pytest.raises(RuntimeError, match="manifest storage unavailable"):
+        _record_video_publication(
+            storage,
+            "video-storage-failure",
+            PublicationIdentity("video-storage-failure", "2026-W37", "1", "a" * 64, "b" * 64),
+            "youtube",
+            {
+                "status": "published",
+                "outcome": "draft_created",
+                "video_id": "yt-123",
+            },
+        )
+
+    append.assert_called_once()
+    assert append.call_args.kwargs["provider_artifact_id"] == "yt-123"
+
+
 def test_video_publication_evidence_failure_overwrites_snapshot_unknown(monkeypatch, caplog):
     from podcaster.video import job_runner
 
