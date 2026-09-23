@@ -2569,7 +2569,6 @@ def upload_video_to_episode(
     try:
         session = _build_session(sp_dc, sp_key, show_id)
         station_id, user_id = _resolve_legacy_ids(session, show_id)
-        unresolved_create_intent_snapshot: tuple[set[int], bool] | None = None
         create_retry_authorized = False
         if publication_storage is not None and publication_identity_context is not None:
             try:
@@ -2608,6 +2607,17 @@ def upload_video_to_episode(
                     return PublishResult(
                         status="failed",
                         error=str(exc),
+                        outcome=PUBLICATION_UNKNOWN,
+                        publish_run_id=publication_identity_context.publish_run_id,
+                        details={"retry_blocked": True, "code": "unresolved_create_intent"},
+                    )
+                if unresolved_create_intent_snapshot is not None:
+                    return PublishResult(
+                        status="failed",
+                        error=(
+                            "Spotify video create intent remains unresolved; refusing "
+                            "provider access or mutation."
+                        ),
                         outcome=PUBLICATION_UNKNOWN,
                         publish_run_id=publication_identity_context.publish_run_id,
                         details={"retry_blocked": True, "code": "unresolved_create_intent"},
@@ -2695,12 +2705,8 @@ def upload_video_to_episode(
                             "failed_evidence_code": code,
                         },
                     )
-                except Exception as fence_exc:
-                    raise SpotifyMutationEvidenceError(
-                        "Publication evidence could not record the Spotify create "
-                        "failure; retry remains unsafe.",
-                        code="create_evidence_persistence_failed",
-                    ) from fence_exc
+                except Exception:
+                    return False
                 return False
             return True
 
@@ -2721,15 +2727,8 @@ def upload_video_to_episode(
                 before_create=_persist_create_intent,
                 on_create_resolved=_mark_create_resolved,
                 on_create_ambiguous=_mark_create_ambiguous,
-                unresolved_create_intent_snapshot=unresolved_create_intent_snapshot,
             )
         else:
-            if unresolved_create_intent_snapshot is not None and not create_retry_authorized:
-                raise SpotifyMutationEvidenceError(
-                    "Spotify video create intent remains unresolved and reconciliation is "
-                    "disabled; refusing blind create.",
-                    code="unresolved_create_intent",
-                )
             _persist_create_intent(set(), False)
             video_anchor_id, needs_title = _create_episode(session, station_id), True
             created_by_attempt = True
