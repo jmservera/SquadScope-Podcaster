@@ -110,6 +110,72 @@ Credentials are read from the standard environment variables:
 The script exits 0 on success, 1 on verification failure or promotion error,
 and 2 on credential/argument error. It never prints or logs the access token.
 
+## Re-arming a fenced upload after a failed attempt
+
+Before every YouTube upload the video job durably claims `upload_intent`
+(`publication_unknown`, `retry_blocked=true`). If the attempt then fails without
+persisting an outcome (for example a pre-network privacy rejection, or a crash
+after the upload), the claim stays and every later video run skips YouTube, so
+the job can never upload a second copy. To upload again, an operator must prove
+that no video exists and record an explicit, single-use retry authorization.
+
+Use `podcaster.provider_retry_rearm`. The same module also runs locally as
+`scripts/rearm_provider_retry.py`, but the container image only ships the
+`podcaster` package, so use the module form in-boundary:
+
+```bash
+# Dry-run (default): check preconditions and prove absence, write nothing
+python -m podcaster.provider_retry_rearm \
+  --job-id <JOB_ID> --provider youtube \
+  --approved-by <github-actor> --reason "<why the fenced attempt did not upload>"
+
+# Write exactly one retry_blocked=false authorization record
+python -m podcaster.provider_retry_rearm ... --apply
+```
+
+What the command guarantees:
+
+- **Preconditions.** The latest `youtube:video` evidence must be a retry-blocked
+  `upload_intent` claim with no provider ID. No `youtube:video` record for the
+  job may ever have carried a provider ID, and neither may the manifest
+  (`video_runner.distribution.youtube_id` / `video_publish.youtube`). The claim
+  must be at least 2 hours old (longer than the video job's 5400s replica
+  timeout, so no attempt can still be uploading and the uploads listing has
+  caught up; this age check is the liveness guarantee), and the manifest's
+  `video_runner` state must be terminal (defence in depth only).
+  Otherwise it refuses without calling YouTube.
+- **Authoritative absence proof.** It uses the job's OAuth credentials
+  (`VIDEO_YOUTUBE_CLIENT_ID`/`_CLIENT_SECRET`/`_REFRESH_TOKEN`) to read the
+  channel's own uploads playlist (`channels?mine=true`) with full pagination.
+  It resolves every upload with `videos.list` (`snippet,status,processingDetails`),
+  so private, unlisted, public, processing, failed and rejected videos are all
+  covered. A video is a candidate if any of these hold:
+  - its title matches the expected title, including YouTube's 100-character
+    truncation, or either title is a prefix (at least 20 characters) of the other;
+  - its title or description contains the job ID;
+  - its title carries the same `Wnn` week token;
+  - it has no publish time;
+  - it was uploaded after the claim (minus 30 minutes of slack), whatever its title.
+- **Fail closed.** Any HTTP or transport error, invalid JSON, missing page field,
+  scanned-count mismatch with `totalResults`, or unresolved video refuses with
+  exit code 1. A candidate refuses with exit code 3 and prints the video ID(s);
+  adopt that video instead of re-uploading.
+- **Single use.** `--apply` appends one `operator_retry_rearm` record with
+  `retry_blocked=false`, `approved_by`, `reason`, the absence-proof summary and
+  timestamps. The append is conditional on the claim still being the latest
+  record. The next video run's `upload_intent` claim consumes it exactly once. A
+  second `--apply` before that is a no-op (`already_armed`). No token or secret is
+  printed or stored.
+
+After re-arming, re-drive only the video stage:
+`POST /api/jobs/<JOB_ID>/video/generate` (header `X-Podcaster-Api-Key`). This
+enqueues a `video-jobs` message and never re-runs synthesis or the audio
+publish. When the new draft exists, promote it with `scripts/youtube_promote.py`
+as above.
+
+Spotify video is not supported by the re-arm command yet. Its absence proof
+depends on the Anchor listing readback and must be added explicitly.
+
 ## Scheduled publishing
 
 Provide `scheduled_publish_at` (a `datetime` or RFC-3339 string) when building
