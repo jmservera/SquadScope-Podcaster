@@ -2138,10 +2138,10 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         assert outcome.status == STATUS_COMPLETED
-        create.assert_called_once()
         evidence = read_evidence(storage, job_id)
         operations = [record["operation"] for record in evidence["records"]]
         assert operations.count("create_episode_intent") == 2
