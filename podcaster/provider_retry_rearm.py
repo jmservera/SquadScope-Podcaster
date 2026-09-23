@@ -214,6 +214,9 @@ def check_preconditions(
             f"operation={latest.get('operation')}, outcome={latest.get('outcome')}) "
             "is not a retry-blocked claim",
         )
+    claim_seq = latest.get("seq")
+    if not isinstance(claim_seq, int) or isinstance(claim_seq, bool):
+        raise RearmRefused("evidence_malformed", "latest claim has no integer seq")
     claim_at = _parse_time(latest.get("at"))
     if claim_at is None:
         raise RearmRefused("claim_time_unknown", "claim timestamp is missing or malformed")

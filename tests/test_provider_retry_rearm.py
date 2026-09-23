@@ -473,3 +473,25 @@ def test_refuses_non_terminal_run_or_manifest_video_id(kwargs):
     fake = FakeYouTube(OTHER)
     assert _run(storage, fake, "--apply") == EXIT_REFUSED
     assert storage.data == before and fake.calls == []
+
+
+def test_min_claim_age_exceeds_video_job_replica_timeout():
+    import re
+    from pathlib import Path
+
+    bicep = Path(__file__).resolve().parents[1] / "infra/modules/aca-video.bicep"
+    text = bicep.read_text(encoding="utf-8")
+    timeouts = [int(v) for v in re.findall(r"replicaTimeout\D{0,40}?(\d{3,})", text)]
+    assert timeouts, "replica timeout not found in aca-video.bicep"
+    assert rearm.MIN_CLAIM_AGE.total_seconds() > max(timeouts)
+
+
+def test_refuses_claim_without_integer_seq():
+    storage = _storage()
+    path = f"publication-evidence/{JOB_ID}.json"
+    doc = json.loads(storage.data[path])
+    doc["records"][-1]["seq"] = "2"
+    storage.data[path] = json.dumps(doc).encode()
+    fake = FakeYouTube(OTHER)
+    assert _run(storage, fake, "--apply") == EXIT_REFUSED
+    assert fake.calls == []

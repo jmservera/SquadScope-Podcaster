@@ -141,7 +141,8 @@ What the command guarantees:
   (`video_runner.distribution.youtube_id` / `video_publish.youtube`). The claim
   must be at least 2 hours old (longer than the video job's 5400s replica
   timeout, so no attempt can still be uploading and the uploads listing has
-  caught up), and the manifest's `video_runner` state must be terminal.
+  caught up; this age check is the liveness guarantee), and the manifest's
+  `video_runner` state must be terminal (defence in depth only).
   Otherwise it refuses without calling YouTube.
 - **Authoritative absence proof.** It uses the job's OAuth credentials
   (`VIDEO_YOUTUBE_CLIENT_ID`/`_CLIENT_SECRET`/`_REFRESH_TOKEN`) to read the
