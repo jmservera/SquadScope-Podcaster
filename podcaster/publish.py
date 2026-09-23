@@ -1045,14 +1045,26 @@ def _normalise_episode_listing_page(
     page_size = values["pageSize"]
     total_items = values["totalItems"]
     total_pages = values["totalPages"]
+    calculated_total_pages = max(
+        1,
+        (total_items + _EPISODE_LIST_PAGE_SIZE - 1) // _EPISODE_LIST_PAGE_SIZE,
+    )
+    expected_page_items = (
+        min(
+            _EPISODE_LIST_PAGE_SIZE,
+            total_items - ((current_page - 1) * _EPISODE_LIST_PAGE_SIZE),
+        )
+        if total_items
+        else 0
+    )
     if (
         current_page != expected_page
         or page_size != _EPISODE_LIST_PAGE_SIZE
         or total_items < 0
         or total_pages < 0
-        or (total_pages == 0 and (current_page != 1 or items))
-        or (total_pages > 0 and not 1 <= current_page <= total_pages)
-        or len(items) > page_size
+        or calculated_total_pages != total_pages
+        or not 1 <= current_page <= total_pages
+        or len(items) != expected_page_items
     ):
         raise SpotifyDraftReconcileError(
             f"Spotify episode listing GraphQL pagination is inconsistent; {_FAIL_CLOSED_SUFFIX}."
@@ -1072,6 +1084,7 @@ def _normalise_episode_listing_page(
     return {
         "episodes": draft_items,
         "currentPage": current_page,
+        "totalItems": total_items,
         "totalPages": total_pages,
     }
 
@@ -1173,6 +1186,7 @@ def _fetch_episode_listing(
 
     all_items: list[Any] = []
     current_page = 1
+    expected_total_items: int | None = None
     expected_total_pages: int | None = None
     while True:
         page = _fetch_episode_listing_page(
@@ -1181,15 +1195,22 @@ def _fetch_episode_listing(
             current_page=current_page,
         )
         all_items.extend(_episode_items(page))
+        total_items = page["totalItems"]
         total_pages = page["totalPages"]
-        if expected_total_pages is None:
+        if expected_total_items is None:
+            expected_total_items = total_items
             expected_total_pages = total_pages
-        elif total_pages != expected_total_pages:
+        elif total_items != expected_total_items or total_pages != expected_total_pages:
             raise SpotifyDraftReconcileError(
-                "Spotify episode listing total page count changed during pagination; "
+                "Spotify episode listing count metadata changed during pagination; "
                 f"{_FAIL_CLOSED_SUFFIX}."
             )
         if current_page >= total_pages:
+            if len(all_items) != total_items:
+                raise SpotifyDraftReconcileError(
+                    "Spotify episode listing item count does not match pagination metadata; "
+                    f"{_FAIL_CLOSED_SUFFIX}."
+                )
             return {"episodes": all_items}
         current_page += 1
 
@@ -1213,6 +1234,7 @@ def _match_existing_draft(
     for, so its state — ``scheduled``, ``processing``, or anything else this
     code has no evidence for — must never fail the lookup for the video draft.
     """
+    matched_ids: list[int] = []
     for episode in _episode_items(data):
         if (
             exclude_id is not None
@@ -1222,12 +1244,22 @@ def _match_existing_draft(
             continue
         episode_id = _draft_episode_id(episode, title)
         if episode_id is not None and episode_id != exclude_id:
-            logger.info(
-                "Reconciled existing Spotify draft anchorId=%d for title=%r",
-                episode_id,
-                title,
-            )
-            return episode_id
+            matched_ids.append(episode_id)
+
+    if len(matched_ids) > 1:
+        raise SpotifyDraftReconcileError(
+            "Spotify draft reconcile found multiple reusable drafts with the exact "
+            f"target title (anchor ids: {sorted(matched_ids)}); refusing to choose "
+            "one arbitrarily or create another draft."
+        )
+    if matched_ids:
+        matched_id = matched_ids[0]
+        logger.info(
+            "Reconciled existing Spotify draft anchorId=%d for title=%r",
+            matched_id,
+            title,
+        )
+        return matched_id
 
     hint_key = _pagination_hint(data)
     if hint_key is not None:

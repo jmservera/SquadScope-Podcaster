@@ -231,9 +231,12 @@ earlier request failed because it omitted the persisted-query hash and creator
 client header, used cursor variables that the operation does not accept, and
 sent an empty `query` field. The verified response path is
 `data.showByShowUri.episodesV2`; the index must report `COMPLETED`, and numeric
-`currentPage`/`totalPages` metadata drives pagination. Reconciliation therefore
-defaults on again. The explicit `false` setting remains the operator-authorized
-blind-create escape hatch.
+`currentPage`/`pageSize`/`totalItems`/`totalPages` metadata drives pagination.
+The implementation requires the page count to equal the ceiling implied by
+`totalItems` and the fixed page size, requires each page to contain exactly its
+declared share of those items, and requires count metadata to remain unchanged
+across pages. Reconciliation therefore defaults on again. The explicit `false`
+setting remains the operator-authorized blind-create escape hatch.
 
 The older Anchor REST station listing (`GET /v3/stations/{stationId}/episodes`,
 with or without `userId`) is stale for this workflow and must not be treated as
@@ -249,7 +252,9 @@ were fetched. A recognised empty draft page is still a legitimate no-match. A
 failed later page or a changing total-page count fails closed rather than
 returning a partial list. An entry whose title is present but null is understood
 as an untitled draft (no match). Entries whose id is the excluded audio anchor
-are skipped before title classification.
+are skipped before title classification. More than one reusable draft with the
+exact target title is ambiguous identity and fails closed; no candidate is
+selected and no create or upload follows.
 Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
@@ -290,7 +295,10 @@ Entries whose title does **not** match are never state-checked.
 The live query requests `DRAFT_EPISODES`, so an item without an individual state
 field is draft evidence only after the exact response path, completed index, and
 pagination contract have been validated. If Spotify later includes explicit
-state fields, contradictory or unknown values still fail closed.
+state fields, contradictory or unknown values still fail closed. Verification is
+limited to this strict persisted-query request and envelope; aliases, alternate
+nesting, arrays, REST response shapes, omitted identities, and undocumented
+state values remain intentionally unsupported rather than being guessed.
 
 #### Titling the new draft immediately (idempotency)
 
