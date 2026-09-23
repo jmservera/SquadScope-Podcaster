@@ -1193,3 +1193,10 @@ No test, assertion, validation gate, security gate, or baseline was weakened.
 | P06 | Production verification owner | Four consecutive future post-fix cycles with complete authoritative external proof |
 
 No issue, PR, review thread, deployment, canary, or production state was resolved, closed, or mutated by this review.
+
+---
+
+## Supersession Notice — 2026-09-23 Fry Final-SHA Review
+
+The prior acceptance at `905a890c6a2176c799a5cd5f54fbb01d4c791aa9` is superseded for PR #684 by Fry's fresh independent final-SHA review of `6096d37052ca26e4205595fe74f4fbacd72d36c4`:
+`.copilot-tracking/reviews/logs/2026-09-23/production-provider-terminal-truth-review.md`.
