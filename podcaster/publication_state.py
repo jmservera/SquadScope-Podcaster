@@ -472,11 +472,19 @@ def retry_is_blocked(
 
 
 def is_spotify_video_dispatch_intent(record: Mapping[str, Any] | None) -> bool:
+    operation = record.get("operation") if record else None
+    details = record.get("details") if record else None
+    is_reconciliation_create_intent = (
+        operation == "create_episode_intent"
+        and isinstance(details, Mapping)
+        and isinstance(details.get("pre_create_episode_ids"), list)
+        and isinstance(details.get("pre_create_snapshot_complete"), bool)
+    )
     return bool(
         record
         and record.get("platform") == "spotify"
         and record.get("media_kind") == "video"
-        and record.get("operation") in {"upload_intent", "create_episode_intent"}
+        and (operation == "upload_intent" or is_reconciliation_create_intent)
         and record.get("mutation_attempted") is False
         and not record.get("provider_id")
         and not record.get("provider_artifact_id")
