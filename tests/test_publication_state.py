@@ -25,6 +25,7 @@ from podcaster.publication_state import (
     publication_identity,
     read_evidence,
     retry_is_blocked,
+    spotify_video_retry_is_blocked,
     validate_outcome,
 )
 
@@ -449,3 +450,65 @@ def test_uploaded_evidence_blocks_blind_retry():
         platform="spotify",
         media_kind="audio",
     )
+
+
+def test_direct_spotify_video_create_intent_blocks_retry_without_reconciliation_snapshot():
+    direct_publish_intent = {
+        "platform": "spotify",
+        "media_kind": "video",
+        "operation": "create_episode_intent",
+        "outcome": PUBLICATION_UNKNOWN,
+        "mutation_attempted": False,
+        "retry_blocked": True,
+        "code": "mutation_intent",
+        "details": {"show_id": "show1"},
+    }
+
+    assert "pre_create_episode_ids" not in direct_publish_intent["details"]
+    assert spotify_video_retry_is_blocked({"records": [direct_publish_intent]})
+
+
+def test_reconciliation_spotify_video_create_intent_snapshot_does_not_block_retry():
+    reconciliation_intent = {
+        "platform": "spotify",
+        "media_kind": "video",
+        "operation": "create_episode_intent",
+        "outcome": PUBLICATION_UNKNOWN,
+        "mutation_attempted": False,
+        "retry_blocked": False,
+        "code": "mutation_intent",
+        "details": {
+            "show_id": "show1",
+            "pre_create_episode_ids": [555],
+            "pre_create_snapshot_complete": True,
+        },
+    }
+
+    assert isinstance(reconciliation_intent["details"]["pre_create_episode_ids"], list)
+    assert spotify_video_retry_is_blocked({"records": [reconciliation_intent]}) is False
+
+
+def test_pre_create_episode_ids_are_not_truncated_when_snapshot_is_complete():
+    storage = MemoryStorage()
+    pre_create_ids = list(range(150))
+
+    append_evidence(
+        storage,
+        identity(),
+        platform="spotify",
+        media_kind="video",
+        operation="create_episode_intent",
+        outcome=PUBLICATION_UNKNOWN,
+        mutation_attempted=False,
+        retry_blocked=False,
+        code="mutation_intent",
+        details={
+            "pre_create_episode_ids": pre_create_ids,
+            "pre_create_snapshot_complete": True,
+        },
+    )
+
+    records = read_evidence(storage, identity().accepted_job_id)["records"]
+    details = records[0]["details"]
+    assert details["pre_create_snapshot_complete"] is True
+    assert details["pre_create_episode_ids"] == pre_create_ids

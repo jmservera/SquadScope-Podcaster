@@ -395,6 +395,34 @@ client-side: the Anchor v5 API exposes no idempotency key. What is closed is the
 common case — a crash during the multi-minute upload — because the draft is
 titled before the upload starts and reconcile finds it on the next run.
 
+Later upload, processing or metadata failures are not claimed as a zero-risk
+window. On the video path with reconciliation enabled, create intent evidence
+is written only after the listing has proven there is no reusable draft and
+immediately before a create POST is attempted. That intent records the
+pre-create episode-id snapshot and is explicitly non-terminal
+(`publication_unknown`, `retry_blocked=false`): if credentials expire while the
+create outcome is unknown, a later run reuses the snapshot to adopt exactly one
+new untitled draft, persist its provider id, title it, and continue without a
+duplicate create. If the snapshot is incomplete, the follow-up listing is
+unreadable, or more than one candidate appears, the retry fails closed for
+manual cleanup instead of guessing. With
+`PODCASTER_SPOTIFY_RECONCILE=0`, the intent is still written immediately before
+the create POST, but no listing-based absence proof is available, so an unknown
+create outcome remains a fail-closed/manual recovery condition. Once this client
+has observed a video draft id — from a normal create response, from recovery of
+an ambiguous create, or from a later run resolving a durable create intent,
+whether the recovered draft is already titled or still untitled — the provider
+id is durably written as `create_episode`/`reconcile_episode` evidence before
+upload work continues when publication evidence storage is available. If that
+write fails, the call fails closed with
+`publication_unknown`, `retry_blocked=true`, and the observed
+`anchor_episode_id`. Subsequent failures after that point also return
+`publication_unknown` with `retry_blocked=true` and the observed id. That
+preserves duplicate safety by forcing reconciliation/manual handoff instead of
+presenting the failed call as "no draft was created"; the remaining risk is
+operational recovery of a known draft or of an ambiguous candidate set, not
+blind re-create permission.
+
 #### Pagination
 
 The production GraphQL listing uses numbered pages. `_fetch_episode_listing`

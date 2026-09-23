@@ -49,6 +49,7 @@ from podcaster.publication_state import (
     publication_identity,
     read_evidence,
     retry_is_blocked,
+    spotify_video_retry_blocking_record,
 )
 from podcaster.queue import (
     QueueBackend,
@@ -523,15 +524,7 @@ def _record_video_publish(
         video_publish[platform] = record
         return manifest_bytes(doc)
 
-    try:
-        storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
-    except Exception:
-        logger.warning(
-            "failed to record video publish state for job_id=%s platform=%s",
-            job_id,
-            platform,
-            exc_info=True,
-        )
+    storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
 
 
 def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
@@ -571,9 +564,9 @@ def _record_video_publication(
     platform: str,
     record: dict[str, Any],
 ) -> bool:
-    _record_video_publish(storage, job_id, platform, record)
     outcome = record.get("outcome")
     if identity is None or not isinstance(outcome, str):
+        _record_video_publish(storage, job_id, platform, record)
         return True
     provider_artifact_id = (
         record.get("provider_id") or record.get("video_id") or record.get("episode_id")
@@ -619,6 +612,7 @@ def _record_video_publication(
             exc_info=True,
         )
         return False
+    _record_video_publish(storage, job_id, platform, record)
     try:
         emit_publication_signal(
             storage,
@@ -1199,8 +1193,16 @@ def run_video_generation(
                     ("spotify", dist_config.spotify_upload_enabled),
                 ):
                     record_key = "spotify_upload" if platform == "spotify" else platform
-                    if retry_is_blocked(evidence, platform=platform, media_kind="video"):
-                        prior = latest.get(f"{platform}:video", {})
+                    prior = (
+                        spotify_video_retry_blocking_record(evidence)
+                        if platform == "spotify"
+                        else latest.get(f"{platform}:video")
+                    )
+                    if platform != "spotify" and not retry_is_blocked(
+                        evidence, platform=platform, media_kind="video"
+                    ):
+                        prior = None
+                    if prior is not None:
                         published_for_attempt[record_key] = {
                             "status": "published",
                             "outcome": prior.get("outcome", "publication_unknown"),
@@ -1223,6 +1225,8 @@ def run_video_generation(
                             else None,
                         }
                     elif enabled and not dist_config.dry_run:
+                        if platform == "spotify":
+                            continue
                         try:
                             claim = append_evidence(
                                 storage,
@@ -1276,6 +1280,8 @@ def run_video_generation(
                     published=published_for_attempt,
                     publish_run_id=publish_run_id,
                     on_published=record_publication,
+                    publication_storage=storage,
+                    publication_identity_context=publication_context,
                 )
             result_publish_run_id = getattr(dist_result, "publish_run_id", None)
             if not isinstance(result_publish_run_id, str):
