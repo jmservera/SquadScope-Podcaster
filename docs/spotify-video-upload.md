@@ -226,17 +226,22 @@ extensions.persistedQuery.sha256Hash=da95dd0d…c9e98
 x-creator-client=public-website
 ```
 
-This exact persisted-query contract was verified live on 2026-09-23. The
-earlier request failed because it omitted the persisted-query hash and creator
-client header, used cursor variables that the operation does not accept, and
-sent an empty `query` field. The verified response path is
+This persisted-query request and response shape was observed in one successful
+read-only probe on 2026-09-23. That observation establishes the schema used by
+the integration; it is not a guarantee that the endpoint is continuously
+available to every deployed account or credential. The earlier request failed
+because it omitted the persisted-query hash and creator client header, used
+cursor variables that the operation does not accept, and sent an empty `query`
+field. The observed response path is
 `data.showByShowUri.episodesV2`; the index must report `COMPLETED`, and numeric
 `currentPage`/`pageSize`/`totalItems`/`totalPages` metadata drives pagination.
 The implementation requires the page count to equal the ceiling implied by
 `totalItems` and the fixed page size, requires each page to contain exactly its
-declared share of those items, and requires count metadata to remain unchanged
-across pages. Reconciliation therefore defaults on again. The explicit `false`
-setting remains the operator-authorized blind-create escape hatch.
+declared share of those items, requires count metadata to remain unchanged
+across pages, and rejects repeated canonical episode identities. Reconciliation
+defaults on and fails closed if the readback is unavailable or inconsistent.
+The explicit `false` setting remains the operator-authorized blind-create
+escape hatch.
 
 The older Anchor REST station listing (`GET /v3/stations/{stationId}/episodes`,
 with or without `userId`) is stale for this workflow and must not be treated as
@@ -258,10 +263,11 @@ selected and no create or upload follows.
 Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
-inspected — a malformed `episodeId` never hides a usable `id` — but the entry
-only yields an id when the readable keys agree on one value. A malformed id or
-two keys naming different episodes is a contradictory identity: the entry is
-treated as having no usable id (logged, never silent), which every caller
+inspected, and the entry only yields an id when at least one canonical identity
+alias is present with a valid non-boolean identifier; all aliases that are
+present must be valid non-boolean identifiers and agree on one value. A
+malformed, boolean, or conflicting alias is a contradictory identity: the entry
+is treated as having no usable id (logged, never silent), which every caller
 already handles fail-closed.
 
 ##### Draft state is read from evidence, never from truthiness
@@ -391,14 +397,15 @@ titled before the upload starts and reconcile finds it on the next run.
 
 #### Pagination
 
-The GraphQL listing is cursor-paginated. `_fetch_episode_listing` follows
-`nextPageToken` / `nextPage` / `pageInfo.endCursor` only while
-`hasMore` / `hasNextPage` is explicitly `true`. A terminal page may retain an
-`endCursor`; it is ignored when `hasNextPage` is `false`. Any page-fetch error,
-missing explicit boolean pagination flag, missing cursor for a true flag,
-non-string cursor, or repeated cursor raises
-`SpotifyDraftReconcileError`; a
-partial read is never returned as a complete empty listing.
+The production GraphQL listing uses numbered pages. `_fetch_episode_listing`
+requests `currentPage=1` with the fixed `pageSize=50`, validates
+`currentPage`/`pageSize`/`totalItems`/`totalPages`, and increments
+`currentPage` until the declared final page. Every page must contain exactly
+the share implied by the stable count metadata. Empty pages with remaining
+items, contradictory totals/page counts, changed metadata, repeated canonical
+episode identities, or any page-fetch error raise
+`SpotifyDraftReconcileError`; a partial or identity-ambiguous read is never
+returned as a complete empty listing.
 
 #### Credential expiry
 
@@ -915,7 +922,7 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on with the verified persisted-query draft listing. `0`/`false`/`no`/`off` explicitly authorize the blind-create escape hatch (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on with the observed persisted-query draft listing contract. `0`/`false`/`no`/`off` explicitly authorize the blind-create escape hatch (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,
