@@ -231,10 +231,9 @@ earlier request failed because it omitted the persisted-query hash and creator
 client header, used cursor variables that the operation does not accept, and
 sent an empty `query` field. The verified response path is
 `data.showByShowUri.episodesV2`; the index must report `COMPLETED`, and numeric
-`currentPage`/`totalPages` metadata drives pagination. Reconciliation still
-requires explicit `PODCASTER_SPOTIFY_RECONCILE=true`; an unset or unrecognised
-value fails before listing or create. The explicit `false` setting remains the
-operator-authorized blind-create escape hatch.
+`currentPage`/`totalPages` metadata drives pagination. Reconciliation therefore
+defaults on again. The explicit `false` setting remains the operator-authorized
+blind-create escape hatch.
 
 The older Anchor REST station listing (`GET /v3/stations/{stationId}/episodes`,
 with or without `userId`) is stale for this workflow and must not be treated as
@@ -288,12 +287,10 @@ An explicit `null` carries no state and is skipped, exactly like an absent
 field; if nothing is left, or if two fields disagree, the entry fails closed.
 Entries whose title does **not** match are never state-checked.
 
-> No successful response from this endpoint has ever been observed (every call
-> 400'd on the missing `userId`), so the container shape is **unverified**. The
-> first deploy may therefore fail closed until the real schema is confirmed from
-> the `SpotifyDraftReconcileError` message, which reports the top-level key
-> *names* (never values), and — for an unrecognised state — the offending token
-> when it is identifier-shaped.
+The live query requests `DRAFT_EPISODES`, so an item without an individual state
+field is draft evidence only after the exact response path, completed index, and
+pagination contract have been validated. If Spotify later includes explicit
+state fields, contradictory or unknown values still fail closed.
 
 #### Titling the new draft immediately (idempotency)
 
@@ -910,7 +907,7 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | `true` explicitly enables the verified persisted-query draft listing. Unset/unrecognised values fail before listing or create; `0`/`false`/`no`/`off` explicitly authorize the blind-create escape hatch (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on with the verified persisted-query draft listing. `0`/`false`/`no`/`off` explicitly authorize the blind-create escape hatch (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,

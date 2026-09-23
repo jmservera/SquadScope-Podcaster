@@ -573,17 +573,12 @@ def _create_episode(session: requests.Session, station_id: str) -> int:
     return anchor_id
 
 
-def _spotify_reconcile_enabled() -> bool | None:
-    """Whether the provider-verified listing contract is explicitly enabled."""
+def _spotify_reconcile_enabled() -> bool:
+    """Whether video draft reconcile-before-create is enabled (default on)."""
     raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE")
     if raw is None:
-        return None
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
         return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return None
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 _EPISODE_LIST_KEYS = ("episodes", "items", "data", "results")
@@ -2351,19 +2346,7 @@ def upload_video_to_episode(
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         # Create or reconcile a separate video draft — never touch the audio one.
-        reconcile_setting = _spotify_reconcile_enabled()
-        if reconcile_setting is None:
-            return PublishResult(
-                status="failed",
-                error=(
-                    "Spotify video draft reconciliation is not enabled because "
-                    "the current episode-listing contract is not provider-verified. "
-                    "Set PODCASTER_SPOTIFY_RECONCILE=true only after verifying the "
-                    "listing endpoint, or explicitly set it to false to authorize "
-                    "the legacy blind-create escape hatch."
-                ),
-            )
-        reconcile_enabled = reconcile_setting is True
+        reconcile_enabled = _spotify_reconcile_enabled()
         if reconcile_enabled:
             try:
                 exclude_audio_id = int(anchor_id) if anchor_id is not None else None

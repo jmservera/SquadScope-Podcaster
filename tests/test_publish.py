@@ -1301,7 +1301,7 @@ class TestUploadVideoToEpisode:
         assert result.status == "failed"
         assert "credentials" in result.error.lower()
 
-    def test_unverified_listing_default_blocks_create_and_upload(self, tmp_path, monkeypatch):
+    def test_default_reconcile_fails_closed_on_unreadable_listing(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
 
         monkeypatch.delenv("PODCASTER_SPOTIFY_RECONCILE", raising=False)
@@ -1310,6 +1310,7 @@ class TestUploadVideoToEpisode:
         monkeypatch.setenv("SP_KEY", "key")
 
         session = MagicMock()
+        session.request.return_value = _mock_json_resp([])
         monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
         create = MagicMock()
@@ -1320,8 +1321,8 @@ class TestUploadVideoToEpisode:
         result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
 
         assert result.status == "failed"
-        assert "not provider-verified" in result.error
-        session.request.assert_not_called()
+        assert "duplicate draft" in result.error
+        session.request.assert_called()
         create.assert_not_called()
         upload.assert_not_called()
 
