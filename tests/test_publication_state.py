@@ -514,9 +514,7 @@ def test_pre_create_episode_ids_are_not_truncated_when_snapshot_is_complete():
         mutation_attempted=False,
         retry_blocked=False,
         code="mutation_intent",
-        details={
-            **safety.to_details(),
-        },
+        create_safety_state=safety,
     )
 
     records = read_evidence(storage, identity().accepted_job_id)["records"]
@@ -645,7 +643,7 @@ def test_complete_provider_snapshot_rejects_format_character_object_setattr_atta
         mutation_attempted=False,
         retry_blocked=False,
         code="mutation_intent",
-        details=CreateSafetyState.reconciliation_backed(snapshot).to_details(),
+        create_safety_state=CreateSafetyState.reconciliation_backed(snapshot),
     )
 
     details = read_evidence(storage, identity().accepted_job_id)["records"][0]["details"]
@@ -656,6 +654,27 @@ def test_complete_provider_snapshot_rejects_format_character_object_setattr_atta
 def test_complete_provider_snapshot_rejects_format_only_evidence_source():
     with pytest.raises(PublicationStateError, match="requires an evidence source"):
         ProviderSnapshot.complete([1], evidence_source="\u200b")
+
+
+def test_append_evidence_rejects_raw_create_safety_details():
+    storage = MemoryStorage()
+
+    with pytest.raises(PublicationStateError, match="through create_safety_state"):
+        append_evidence(
+            storage,
+            identity(),
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome=PUBLICATION_UNKNOWN,
+            details={
+                "snapshot_completeness": "complete",
+                "snapshot_evidence_source": "\u200b",
+                "pre_create_episode_ids": [1],
+            },
+        )
+
+    assert read_evidence(storage, identity().accepted_job_id) is None
 
 
 def test_absent_provider_snapshot_cannot_carry_episode_ids():

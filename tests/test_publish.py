@@ -1844,9 +1844,21 @@ class TestUploadVideoToEpisode:
             details={
                 "show_id": "show1",
                 "station_id": "99",
-                "pre_create_episode_ids": [111222],
-                "pre_create_snapshot_complete": True,
             },
+            create_safety_state=pub.CreateSafetyState.reconciliation_backed(
+                pub.ProviderSnapshot.complete(
+                    [111222], evidence_source="legacy_pre_create_snapshot"
+                )
+            ),
+        )
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="retry_authorization",
+            outcome=pub.PUBLICATION_UNKNOWN,
+            retry_blocked=False,
         )
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
         monkeypatch.setenv("SP_DC", "dc")
@@ -1873,9 +1885,12 @@ class TestUploadVideoToEpisode:
         assert "reconciliation is disabled" in result.error
         create.assert_not_called()
         records = _evidence_records(storage)
-        assert [record["operation"] for record in records] == ["create_episode_intent"]
+        assert [record["operation"] for record in records] == [
+            "create_episode_intent",
+            "retry_authorization",
+        ]
         assert records[0]["details"]["pre_create_episode_ids"] == [111222]
-        assert records[0]["details"]["pre_create_snapshot_complete"] is True
+        assert records[0]["details"]["snapshot_completeness"] == "complete"
 
     def test_unresolved_create_intent_blocks_override_fallback_after_reconcile_failure(
         self, tmp_path, monkeypatch
@@ -1897,12 +1912,10 @@ class TestUploadVideoToEpisode:
             details={
                 "show_id": "show1",
                 "station_id": "99",
-                "create_provenance": "reconciliation_backed",
-                "mutation_possibility": "not_possible",
-                "snapshot_completeness": "complete",
-                "snapshot_evidence_source": "test_listing",
-                "pre_create_episode_ids": [111222],
             },
+            create_safety_state=pub.CreateSafetyState.reconciliation_backed(
+                pub.ProviderSnapshot.complete([111222], evidence_source="test_listing")
+            ),
         )
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
         monkeypatch.setenv("SP_DC", "dc")

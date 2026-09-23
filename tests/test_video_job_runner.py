@@ -13,7 +13,12 @@ from urllib.error import HTTPError
 import pytest
 
 from podcaster import ssrf
-from podcaster.publication_state import PublicationIdentity, append_evidence
+from podcaster.publication_state import (
+    CreateSafetyState,
+    ProviderSnapshot,
+    PublicationIdentity,
+    append_evidence,
+)
 from podcaster.queue import QueueMessage
 from podcaster.video.distribution import DistributionResult, VideoDistributionConfig
 from podcaster.video.job_runner import (
@@ -908,10 +913,9 @@ class TestRunVideoGeneration:
             mutation_attempted=False,
             retry_blocked=False,
             code="mutation_intent",
-            details={
-                "pre_create_episode_ids": [555],
-                "pre_create_snapshot_complete": True,
-            },
+            create_safety_state=CreateSafetyState.reconciliation_backed(
+                ProviderSnapshot.complete([555], evidence_source="legacy_pre_create_snapshot")
+            ),
         )
         mock_record.return_value = MagicMock(recorded=[])
         mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
@@ -1148,7 +1152,7 @@ class TestRunVideoGeneration:
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
-    def test_spotify_video_credential_rejection_retries_same_publication_identity(
+    def test_spotify_video_credential_rejection_does_not_override_unresolved_create(
         self, mock_compose, mock_record, storage, monkeypatch
     ):
         import podcaster.publish as pub
@@ -1253,13 +1257,11 @@ class TestRunVideoGeneration:
             ),
         )
 
-        assert outcome.status == STATUS_COMPLETED
-        create.assert_called_once()
+        assert outcome.status == STATUS_FAILED
+        create.assert_not_called()
         evidence = read_evidence(storage, job_id)
         operations = [record["operation"] for record in evidence["records"]]
-        assert operations.count("create_episode_intent") == 2
-        assert evidence["records"][-2]["provider_artifact_id"] == "777"
-        assert evidence["records"][-1]["provider_artifact_id"] == "777"
+        assert operations == ["create_episode_intent", "create_episode_failure"]
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")

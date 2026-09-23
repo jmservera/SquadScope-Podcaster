@@ -52,6 +52,16 @@ _UNSAFE_DETAIL_KEY = re.compile(
     r"(authorization|bearer|cookie|credential|secret|token|signed.?url|body|content)",
     re.IGNORECASE,
 )
+_CREATE_SAFETY_DETAIL_KEYS = frozenset(
+    {
+        "create_provenance",
+        "mutation_possibility",
+        "pre_create_episode_ids",
+        "pre_create_snapshot_complete",
+        "snapshot_completeness",
+        "snapshot_evidence_source",
+    }
+)
 
 
 class PublicationStateError(ValueError):
@@ -702,10 +712,20 @@ def append_evidence(
     retry_blocked: bool = False,
     code: str | None = None,
     details: Mapping[str, Any] | None = None,
+    create_safety_state: CreateSafetyState | None = None,
     at: datetime | None = None,
     _rearmable_claim: bool = False,
 ) -> PublicationEvidence | None:
     validate_outcome(outcome)
+    if create_safety_state is not None and not isinstance(create_safety_state, CreateSafetyState):
+        raise PublicationStateError("create safety state must be validated")
+    if details and _CREATE_SAFETY_DETAIL_KEYS.intersection(details):
+        raise PublicationStateError(
+            "create safety details must be persisted through create_safety_state"
+        )
+    safe_details = _safe_details(details) or {}
+    if create_safety_state is not None:
+        safe_details.update(create_safety_state.to_details())
     effective_verification = (
         "provider_readback" if confirmation_source and verification == "none" else verification
     )
@@ -841,7 +861,7 @@ def append_evidence(
             code=str(code)[:64] if code else None,
             checked_at=timestamp,
             last_error_code=str(code)[:64] if code else None,
-            details=_safe_details(details),
+            details=safe_details or None,
         ).to_dict()
         records.append(record)
         document["minimum_retention_days"] = MIN_EVIDENCE_RETENTION_DAYS
@@ -867,6 +887,7 @@ def claim_evidence(
     media_kind: str,
     operation: str,
     details: Mapping[str, Any] | None = None,
+    create_safety_state: CreateSafetyState | None = None,
     at: datetime | None = None,
 ) -> PublicationEvidence | None:
     """Atomically acquire or re-arm a provider mutation claim.
@@ -889,6 +910,7 @@ def claim_evidence(
         retry_blocked=True,
         code="mutation_intent",
         details=details,
+        create_safety_state=create_safety_state,
         at=at,
         _rearmable_claim=True,
     )

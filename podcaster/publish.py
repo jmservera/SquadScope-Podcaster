@@ -2428,19 +2428,27 @@ def promote_spotify_video_draft(
 
 def _spotify_video_unresolved_create_intent_snapshot(
     document: Mapping[str, Any] | None,
+    identity: PublicationIdentity,
 ) -> ProviderSnapshot | None:
     records = document.get("records") if isinstance(document, Mapping) else None
     if not isinstance(records, list):
         return None
-    for record in reversed(records):
+    unresolved_snapshot: ProviderSnapshot | None = None
+    for record in records:
         if (
             not isinstance(record, Mapping)
             or record.get("platform") != "spotify"
             or record.get("media_kind") != "video"
+            or record.get("job_id") != identity.accepted_job_id
+            or record.get("week") != identity.week
+            or record.get("publish_run_id") != identity.publish_run_id
+            or record.get("article_sha256") != identity.article_sha256
+            or record.get("manifest_sha256") != identity.manifest_sha256
         ):
             continue
         if record.get("provider_artifact_id") or record.get("provider_id"):
-            return None
+            unresolved_snapshot = None
+            continue
         if record.get("operation") != "create_episode_intent":
             continue
         if (
@@ -2457,8 +2465,8 @@ def _spotify_video_unresolved_create_intent_snapshot(
             raise SpotifyDraftReconcileError(
                 "Spotify video create intent evidence has no reconciliation provenance."
             )
-        return state.snapshot
-    return None
+        unresolved_snapshot = state.snapshot
+    return unresolved_snapshot
 
 
 def _spotify_video_create_retry_authorized(
@@ -2598,19 +2606,21 @@ def upload_video_to_episode(
                 prior_evidence,
                 publication_identity_context,
             )
-            if not create_retry_authorized:
-                try:
-                    unresolved_create_intent_snapshot = (
-                        _spotify_video_unresolved_create_intent_snapshot(prior_evidence)
+            try:
+                unresolved_create_intent_snapshot = (
+                    _spotify_video_unresolved_create_intent_snapshot(
+                        prior_evidence,
+                        publication_identity_context,
                     )
-                except SpotifyDraftReconcileError as exc:
-                    return PublishResult(
-                        status="failed",
-                        error=str(exc),
-                        outcome=PUBLICATION_UNKNOWN,
-                        publish_run_id=publication_identity_context.publish_run_id,
-                        details={"retry_blocked": True, "code": "unresolved_create_intent"},
-                    )
+                )
+            except SpotifyDraftReconcileError as exc:
+                return PublishResult(
+                    status="failed",
+                    error=str(exc),
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True, "code": "unresolved_create_intent"},
+                )
 
         def _persist_create_intent(snapshot: ProviderSnapshot) -> None:
             nonlocal create_intent_persisted
@@ -2631,8 +2641,8 @@ def upload_video_to_episode(
                     details={
                         "show_id": show_id,
                         "station_id": station_id,
-                        **safety.to_details(),
                     },
+                    create_safety_state=safety,
                 )
             except Exception:
                 raise SpotifyMutationEvidenceError(
@@ -2682,8 +2692,8 @@ def upload_video_to_episode(
                         "audio_anchor_id": anchor_id,
                         "reason": reason,
                         "override_env": "PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE",
-                        **safety.to_details(),
                     },
+                    create_safety_state=safety,
                 )
             except Exception:
                 raise SpotifyMutationEvidenceError(
@@ -2730,8 +2740,8 @@ def upload_video_to_episode(
                         "title": video_title,
                         "audio_anchor_id": anchor_id,
                         "reason": reason,
-                        **safety.to_details(),
                     },
+                    create_safety_state=safety,
                 )
             except Exception as exc:
                 raise SpotifyMutationEvidenceError(
@@ -2775,8 +2785,8 @@ def upload_video_to_episode(
                     details={
                         "show_id": show_id,
                         "station_id": station_id,
-                        **CreateSafetyState.provider_confirmed(create_provenance).to_details(),
                     },
+                    create_safety_state=CreateSafetyState.provider_confirmed(create_provenance),
                 )
             except Exception as exc:
                 raise SpotifyMutationEvidenceError(
