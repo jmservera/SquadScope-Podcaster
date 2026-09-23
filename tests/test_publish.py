@@ -1935,6 +1935,47 @@ class TestUploadVideoToEpisode:
             "create_episode_intent"
         ]
 
+    def test_provider_id_evidence_callback_failure_stops_before_title_or_upload(
+        self, tmp_path, monkeypatch
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage(fail_on_update=2)
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        session = MagicMock()
+        session.request.return_value = _mock_graphql_listing_resp(episodes=[])
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        monkeypatch.setattr(pub, "_create_episode", MagicMock(return_value=777001))
+        claim_title = MagicMock()
+        upload = MagicMock()
+        monkeypatch.setattr(pub, "_claim_draft_title", claim_title)
+        monkeypatch.setattr(pub, "_get_upload_url", upload)
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert result.status == "failed"
+        assert result.anchor_episode_id == 777001
+        assert result.outcome == pub.PUBLICATION_UNKNOWN
+        assert result.details == {
+            "retry_blocked": True,
+            "code": "create_evidence_persistence_failed",
+        }
+        claim_title.assert_not_called()
+        upload.assert_not_called()
+        assert [record["operation"] for record in _evidence_records(storage)] == [
+            "create_episode_intent"
+        ]
+
     def test_credential_expiry_during_create_keeps_recoverable_intent(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
 

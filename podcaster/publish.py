@@ -174,9 +174,16 @@ class SpotifyCredentialExpiredError(SpotifyPublishError):
 class SpotifyMutationEvidenceError(Exception):
     """Raised when durable mutation evidence cannot safely authorize a create."""
 
-    def __init__(self, message: str, *, code: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        anchor_id: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.anchor_id = anchor_id
 
 
 def _is_enabled() -> bool:
@@ -1600,12 +1607,12 @@ def _reconcile_or_create_draft(
         snapshot = (
             ProviderSnapshot.complete(
                 snapshot_ids,
-                evidence_source=snapshot.evidence_source or "spotify_episode_listing",
+                evidence_source=snapshot.require_evidence_source(),
             )
             if snapshot.completeness == SnapshotCompleteness.COMPLETE
             else ProviderSnapshot.truncated(
                 snapshot_ids,
-                evidence_source=snapshot.evidence_source or "spotify_episode_listing",
+                evidence_source=snapshot.require_evidence_source(),
             )
         )
     if before_create is not None:
@@ -2524,6 +2531,7 @@ def upload_video_to_episode(
     video_anchor_id: int | None = None
     create_resolved = False
     create_intent_persisted = False
+    provider_resolution_persisted = False
     create_provenance = CreateIntentProvenance.RECONCILIATION_BACKED
 
     try:
@@ -2669,9 +2677,51 @@ def upload_video_to_episode(
             create_provenance = CreateIntentProvenance.BLIND_UNRECONCILED
             create_intent_persisted = True
 
-        def _mark_create_resolved(_anchor_id: int, created_by_attempt: bool) -> None:
+        def _persist_provider_resolution(anchor_id: int, created_by_attempt: bool) -> None:
+            nonlocal provider_resolution_persisted
+            if publication_storage is None or publication_identity_context is None:
+                return
+            try:
+                append_evidence(
+                    publication_storage,
+                    publication_identity_context,
+                    platform="spotify",
+                    media_kind="video",
+                    operation=(
+                        "unreconciled_create"
+                        if create_provenance == CreateIntentProvenance.BLIND_UNRECONCILED
+                        else "create_episode"
+                        if created_by_attempt
+                        else "reconcile_episode"
+                    ),
+                    outcome=PUBLICATION_UNKNOWN,
+                    provider_artifact_id=anchor_id,
+                    mutation_attempted=created_by_attempt,
+                    retry_blocked=True,
+                    code=(
+                        "provider_artifact_created"
+                        if created_by_attempt
+                        else "provider_artifact_reconciled"
+                    ),
+                    details={
+                        "show_id": show_id,
+                        "station_id": station_id,
+                        **CreateSafetyState.provider_confirmed(create_provenance).to_details(),
+                    },
+                )
+            except Exception as exc:
+                raise SpotifyMutationEvidenceError(
+                    "Publication evidence failed after Spotify video draft resolution; "
+                    "reconciliation required.",
+                    code="create_evidence_persistence_failed",
+                    anchor_id=anchor_id,
+                ) from exc
+            provider_resolution_persisted = True
+
+        def _mark_create_resolved(anchor_id: int, created_by_attempt: bool) -> None:
             nonlocal create_resolved
             create_resolved = created_by_attempt
+            _persist_provider_resolution(anchor_id, created_by_attempt)
 
         # Create or reconcile a separate video draft — never touch the audio one.
         reconcile_enabled = _spotify_reconcile_enabled()
@@ -2703,6 +2753,7 @@ def upload_video_to_episode(
                 _persist_unreconciled_create_intent(reason)
                 video_anchor_id, needs_title = _create_episode(session, station_id), True
                 create_resolved = True
+                _persist_provider_resolution(video_anchor_id, True)
         else:
             if unresolved_create_intent_snapshot is not None:
                 raise SpotifyMutationEvidenceError(
@@ -2713,55 +2764,15 @@ def upload_video_to_episode(
             _persist_unreconciled_create_intent("PODCASTER_SPOTIFY_RECONCILE disabled")
             video_anchor_id, needs_title = _create_episode(session, station_id), True
             create_resolved = True
+            _persist_provider_resolution(video_anchor_id, True)
 
         if (
             video_anchor_id is not None
             and publication_storage is not None
             and publication_identity_context is not None
+            and not provider_resolution_persisted
         ):
-            try:
-                append_evidence(
-                    publication_storage,
-                    publication_identity_context,
-                    platform="spotify",
-                    media_kind="video",
-                    operation=(
-                        "unreconciled_create"
-                        if create_provenance == CreateIntentProvenance.BLIND_UNRECONCILED
-                        else "create_episode"
-                        if create_resolved
-                        else "reconcile_episode"
-                    ),
-                    outcome=PUBLICATION_UNKNOWN,
-                    provider_artifact_id=video_anchor_id,
-                    mutation_attempted=create_resolved,
-                    retry_blocked=True,
-                    code=(
-                        "provider_artifact_created"
-                        if create_resolved
-                        else "provider_artifact_reconciled"
-                    ),
-                    details={
-                        "show_id": show_id,
-                        "station_id": station_id,
-                        **CreateSafetyState.provider_confirmed(create_provenance).to_details(),
-                    },
-                )
-            except Exception:
-                return PublishResult(
-                    anchor_episode_id=video_anchor_id,
-                    status="failed",
-                    error=(
-                        "Publication evidence failed after Spotify video draft resolution; "
-                        "reconciliation required."
-                    ),
-                    outcome=PUBLICATION_UNKNOWN,
-                    publish_run_id=publication_identity_context.publish_run_id,
-                    details={
-                        "retry_blocked": True,
-                        "code": "create_evidence_persistence_failed",
-                    },
-                )
+            _persist_provider_resolution(video_anchor_id, create_resolved)
 
         if needs_title:
             # A new draft is created untitled; title it now — with the real
@@ -2885,6 +2896,7 @@ def upload_video_to_episode(
         )
     except SpotifyMutationEvidenceError as exc:
         return PublishResult(
+            anchor_episode_id=exc.anchor_id or video_anchor_id,
             status="failed",
             error=str(exc),
             outcome=PUBLICATION_UNKNOWN,
