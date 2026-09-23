@@ -45,6 +45,7 @@ from podcaster.publication_state import (
     PublicationStateError,
     append_evidence,
     canonical_identity_requested,
+    claim_evidence,
     emit_publication_signal,
     latest_outcomes,
     new_publish_run_id,
@@ -2719,16 +2720,12 @@ def run_video_generation(
                         if platform == "spotify":
                             continue
                         try:
-                            claim = append_evidence(
+                            claim = claim_evidence(
                                 storage,
                                 publication_context,
                                 platform=platform,
                                 media_kind="video",
                                 operation="upload_intent",
-                                outcome="publication_unknown",
-                                mutation_attempted=False,
-                                retry_blocked=True,
-                                code="mutation_intent",
                             )
                             if claim is None:
                                 published_for_attempt[record_key] = {

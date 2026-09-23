@@ -15,6 +15,7 @@ from podcaster.publication_state import (
     UPLOADED,
     PublicationStateError,
     append_evidence,
+    claim_evidence,
     emit_publication_signal,
     evidence_path,
     latest_outcomes,
@@ -201,6 +202,180 @@ def test_evidence_duplicate_key_is_a_noop():
     assert append_evidence(storage, identity(), **kwargs) is not None
     assert append_evidence(storage, identity(), **kwargs) is None
     assert len(read_evidence(storage, identity().accepted_job_id)["records"]) == 1
+
+
+def test_claim_rearms_once_after_explicit_retry_authorization():
+    storage = MemoryStorage()
+    ident = identity()
+
+    first = claim_evidence(
+        storage,
+        ident,
+        platform="spotify",
+        media_kind="audio",
+        operation="create_episode_intent",
+    )
+    assert first is not None
+    assert (
+        claim_evidence(
+            storage,
+            ident,
+            platform="spotify",
+            media_kind="audio",
+            operation="create_episode_intent",
+        )
+        is None
+    )
+
+    append_evidence(
+        storage,
+        ident,
+        platform="spotify",
+        media_kind="audio",
+        operation="credential_failure",
+        outcome=MANUAL_HANDOFF_REQUIRED,
+        mutation_attempted=False,
+        retry_blocked=False,
+    )
+
+    rearmed = claim_evidence(
+        storage,
+        ident,
+        platform="spotify",
+        media_kind="audio",
+        operation="create_episode_intent",
+    )
+    contender = claim_evidence(
+        storage,
+        ident,
+        platform="spotify",
+        media_kind="audio",
+        operation="create_episode_intent",
+    )
+
+    assert rearmed is not None
+    assert contender is None
+    assert [
+        record["operation"] for record in read_evidence(storage, ident.accepted_job_id)["records"]
+    ] == [
+        "create_episode_intent",
+        "credential_failure",
+        "create_episode_intent",
+    ]
+
+
+def test_retry_authorization_is_consumed_by_any_later_claim_type():
+    storage = MemoryStorage()
+    ident = identity()
+    assert (
+        claim_evidence(
+            storage,
+            ident,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+        )
+        is not None
+    )
+    append_evidence(
+        storage,
+        ident,
+        platform="spotify",
+        media_kind="video",
+        operation="credential_failure",
+        outcome=MANUAL_HANDOFF_REQUIRED,
+        mutation_attempted=False,
+        retry_blocked=False,
+    )
+    assert (
+        claim_evidence(
+            storage,
+            ident,
+            platform="spotify",
+            media_kind="video",
+            operation="upload_intent",
+        )
+        is not None
+    )
+
+    assert (
+        claim_evidence(
+            storage,
+            ident,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+        )
+        is None
+    )
+
+
+def test_identical_credential_failures_rearm_consecutive_claim_attempts():
+    storage = MemoryStorage()
+    ident = identity()
+    claim_kwargs = {
+        "platform": "spotify",
+        "media_kind": "video",
+        "operation": "create_episode_intent",
+    }
+    failure_kwargs = {
+        "platform": "spotify",
+        "media_kind": "video",
+        "operation": "credential_failure",
+        "outcome": MANUAL_HANDOFF_REQUIRED,
+        "mutation_attempted": False,
+        "retry_blocked": False,
+    }
+
+    assert claim_evidence(storage, ident, **claim_kwargs) is not None
+    assert append_evidence(storage, ident, **failure_kwargs) is not None
+    assert claim_evidence(storage, ident, **claim_kwargs) is not None
+    assert append_evidence(storage, ident, **failure_kwargs) is not None
+    assert claim_evidence(storage, ident, **claim_kwargs) is not None
+
+    assert [
+        record["operation"] for record in read_evidence(storage, ident.accepted_job_id)["records"]
+    ] == [
+        "create_episode_intent",
+        "credential_failure",
+        "create_episode_intent",
+        "credential_failure",
+        "create_episode_intent",
+    ]
+
+
+def test_claim_does_not_rearm_after_retry_blocking_evidence():
+    storage = MemoryStorage()
+    ident = identity()
+    claim_evidence(
+        storage,
+        ident,
+        platform="spotify",
+        media_kind="video",
+        operation="upload_intent",
+    )
+    append_evidence(
+        storage,
+        ident,
+        platform="spotify",
+        media_kind="video",
+        operation="create_episode",
+        outcome=PUBLICATION_UNKNOWN,
+        provider_artifact_id="777",
+        mutation_attempted=False,
+        retry_blocked=True,
+    )
+
+    assert (
+        claim_evidence(
+            storage,
+            ident,
+            platform="spotify",
+            media_kind="video",
+            operation="upload_intent",
+        )
+        is None
+    )
 
 
 def test_evidence_retains_more_than_four_weeks_without_eviction():
@@ -452,7 +627,7 @@ def test_uploaded_evidence_blocks_blind_retry():
     )
 
 
-def test_direct_spotify_video_create_intent_blocks_retry_without_reconciliation_snapshot():
+def test_blind_spotify_video_create_intent_blocks_retry():
     direct_publish_intent = {
         "platform": "spotify",
         "media_kind": "video",
@@ -461,10 +636,13 @@ def test_direct_spotify_video_create_intent_blocks_retry_without_reconciliation_
         "mutation_attempted": False,
         "retry_blocked": True,
         "code": "mutation_intent",
-        "details": {"show_id": "show1"},
+        "details": {
+            "show_id": "show1",
+            "pre_create_episode_ids": [],
+            "pre_create_snapshot_complete": False,
+        },
     }
 
-    assert "pre_create_episode_ids" not in direct_publish_intent["details"]
     assert spotify_video_retry_is_blocked({"records": [direct_publish_intent]})
 
 

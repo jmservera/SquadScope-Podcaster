@@ -7,7 +7,7 @@
 * Task slug: provider-state-reconciliation
 * Related plan: .copilot-tracking/plans/2026-09-14/provider-state-reconciliation-plan.md
 * Phase details: .copilot-tracking/details/2026-09-14/provider-state-reconciliation-phase-details.md
-* Status: Complete — P06 correction committed and pushed for unmerged review
+* Status: Complete — P08 correction validated; awaiting independent review
 
 ## Implementation Opening
 
@@ -83,6 +83,66 @@
   `49b9c6e9f204d04c3d7fab2e68292b66b52c153e`; focused suite **212 passed**;
   full suite **3027 passed, 2 skipped, 2 deselected**; Ruff and diff checks
   passed; both triggering review threads were answered and resolved.
+
+## PR #693 Retry-Safe Claim Correction Opening
+
+* Active scope: P08-T01 through P08-T03.
+* Approved write boundary: this plan/details/changes set,
+  `podcaster/publication_state.py`, `podcaster/publish.py`,
+  `tests/test_publication_state.py`, and `tests/test_publish.py`.
+* First execution boundary: make retry authorization exact-identity,
+  single-claim, and repeatable only after a later retryable failure.
+* Required behavior: preserve deterministic create rejection as blocked;
+  preserve credential expiry during post-POST ambiguous recovery as blocked;
+  retain explicit pre-create credential rejection as retryable.
+* Validation intent: run exactly the caller-required targeted pytest command,
+  full Ruff check, Ruff format check, and `git diff --check`.
+* Excluded operations: commit, push, review-thread reply/resolution, branch
+  changes, live provider calls, and production mutation.
+* Current blockers: None.
+
+### Exact single-use claim authorization — P08-T01
+
+* `append_evidence` now treats any later re-armable claim as consuming earlier
+  authorization, regardless of claim operation.
+* A duplicate retryable failure is retained when a later claim proves it belongs
+  to a new attempt, allowing two consecutive credential failures to authorize
+  two distinct retry claims without authorizing concurrent contenders.
+* Spotify video retry authorization now requires exact accepted job ID, week,
+  publish run ID, article digest, and manifest digest.
+
+### Deterministic and post-POST failure fences — P08-T02
+
+* Deterministic create rejection appends `create_episode_failure` with
+  `code=create_rejected` and `retry_blocked=true`, so its complete pre-create
+  snapshot cannot be interpreted as an ambiguous create on the next attempt.
+* The video reconcile path marks entry into ambiguous-create recovery. Credential
+  expiry during its follow-up listing appends
+  `ambiguous_recovery_credentials_expired` with `retry_blocked=true` and returns
+  `publication_unknown`; direct credential rejection from the create request
+  remains retryable.
+
+### Focused regression implementation — P08-T03
+
+* Added one regression for cross-claim authorization consumption, one for two
+  consecutive identical credential failures, one for exact identity binding,
+  one for deterministic create rejection with a later untitled draft, and one
+  for credential expiry during post-POST ambiguous recovery.
+* Initial targeted validation passed **523 tests** before formatting.
+* Ruff lint and Git whitespace checks passed; the first format check identified
+  two changed files, which were formatted before the required clean rerun.
+
+### Final P08 validation and handoff
+
+* `pytest tests/test_publication_state.py tests/test_publish.py
+  tests/test_video_job_runner.py -q` — passed, **523 passed in 53.40s**.
+* `ruff check podcaster tests` — passed, **All checks passed**.
+* `ruff format --check podcaster tests` — passed, **183 files already
+  formatted**.
+* `git diff --check` — passed with no output.
+* P08-T01, P08-T02, P08-T03, and P08 are complete. Commit, push, and
+  review-thread actions were not performed; Fry owns the independent review
+  gate.
 
 ### Infrastructure-backed durable publication evidence — P06-T01
 

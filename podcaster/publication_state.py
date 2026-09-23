@@ -42,6 +42,7 @@ PROVIDER_STATUSES = (
     "unknown",
 )
 VERIFICATION_STATES = ("none", "provider_readback", "external_verified")
+REARMABLE_CLAIM_OPERATIONS = ("upload_intent", "create_episode_intent")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _WEEK_RE = re.compile(r"^\d{4}-W(?:0[1-9]|[1-4]\d|5[0-3])$")
 _RUN_RE = re.compile(r"^[0-9]+$")
@@ -327,6 +328,7 @@ def append_evidence(
     code: str | None = None,
     details: Mapping[str, Any] | None = None,
     at: datetime | None = None,
+    _rearmable_claim: bool = False,
 ) -> PublicationEvidence | None:
     validate_outcome(outcome)
     effective_verification = (
@@ -364,7 +366,8 @@ def append_evidence(
             strict=True,
         )
         records = document["records"]
-        for existing in records:
+        duplicate_index: int | None = None
+        for index, existing in enumerate(records):
             if not isinstance(existing, dict):
                 raise PublicationStateError("publication evidence contains a malformed record")
             existing_key = (
@@ -380,7 +383,48 @@ def append_evidence(
                 existing.get("provider_artifact_id") or "",
             )
             if existing_key == dedupe_key:
-                return raw if raw is not None else legacy_raw or b""
+                duplicate_index = index
+        if duplicate_index is not None:
+            if not _rearmable_claim:
+                later_claim = any(
+                    isinstance(candidate, Mapping)
+                    and candidate.get("job_id") == identity.accepted_job_id
+                    and candidate.get("week") == identity.week
+                    and candidate.get("article_sha256") == identity.article_sha256
+                    and candidate.get("manifest_sha256") == identity.manifest_sha256
+                    and candidate.get("publish_run_id") == identity.publish_run_id
+                    and candidate.get("platform") == platform
+                    and candidate.get("media_kind") == media_kind
+                    and candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS
+                    for candidate in records[duplicate_index + 1 :]
+                )
+                if retry_blocked or not later_claim:
+                    return raw if raw is not None else legacy_raw or b""
+            else:
+                retry_authorization: Mapping[str, Any] | None = None
+                for candidate in records[duplicate_index + 1 :]:
+                    if not isinstance(candidate, Mapping):
+                        raise PublicationStateError(
+                            "publication evidence contains a malformed record"
+                        )
+                    if (
+                        candidate.get("job_id") == identity.accepted_job_id
+                        and candidate.get("week") == identity.week
+                        and candidate.get("article_sha256") == identity.article_sha256
+                        and candidate.get("manifest_sha256") == identity.manifest_sha256
+                        and candidate.get("publish_run_id") == identity.publish_run_id
+                        and candidate.get("platform") == platform
+                        and candidate.get("media_kind") == media_kind
+                    ):
+                        if candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS:
+                            retry_authorization = None
+                        else:
+                            retry_authorization = candidate
+                if (
+                    retry_authorization is None
+                    or retry_authorization.get("retry_blocked") is not False
+                ):
+                    return raw if raw is not None else legacy_raw or b""
         next_seq = (
             max(
                 (
@@ -440,6 +484,41 @@ def append_evidence(
     return PublicationEvidence(**captured) if captured else None
 
 
+def claim_evidence(
+    storage: StorageBackend,
+    identity: PublicationIdentity,
+    *,
+    platform: str,
+    media_kind: str,
+    operation: str,
+    details: Mapping[str, Any] | None = None,
+    at: datetime | None = None,
+) -> PublicationEvidence | None:
+    """Atomically acquire or re-arm a provider mutation claim.
+
+    A historical claim can only be acquired again after later evidence for the
+    same publication identity and provider explicitly records
+    ``retry_blocked=false``. The newly appended claim consumes that
+    authorization, so concurrent contenders cannot both proceed.
+    """
+    if operation not in REARMABLE_CLAIM_OPERATIONS:
+        raise PublicationStateError(f"operation is not a re-armable claim: {operation!r}")
+    return append_evidence(
+        storage,
+        identity,
+        platform=platform,
+        media_kind=media_kind,
+        operation=operation,
+        outcome=PUBLICATION_UNKNOWN,
+        mutation_attempted=False,
+        retry_blocked=True,
+        code="mutation_intent",
+        details=details,
+        at=at,
+        _rearmable_claim=True,
+    )
+
+
 def read_evidence(storage: StorageBackend, job_id: str) -> dict[str, Any] | None:
     raw = storage.get_bytes(evidence_path(job_id))
     if raw is None:
@@ -490,6 +569,20 @@ def spotify_video_retry_blocking_record(
             or record.get("media_kind") != "video"
         ):
             continue
+        details = record.get("details")
+        safe_reconciliation_intent = (
+            record.get("operation") == "create_episode_intent"
+            and record.get("outcome") == PUBLICATION_UNKNOWN
+            and record.get("mutation_attempted") is False
+            and not record.get("provider_id")
+            and not record.get("provider_artifact_id")
+            and record.get("code") == "mutation_intent"
+            and isinstance(details, Mapping)
+            and isinstance(details.get("pre_create_episode_ids"), list)
+            and details.get("pre_create_snapshot_complete") is True
+        )
+        if safe_reconciliation_intent:
+            return None
         if record.get("outcome") in (
             UPLOADED,
             PUBLICATION_UNKNOWN,

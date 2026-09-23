@@ -1908,8 +1908,8 @@ class TestRunVideoGeneration:
                 has_audio=False,
             ),
         )[1]
-        append_evidence = MagicMock(return_value=None)
-        monkeypatch.setattr(job_runner, "append_evidence", append_evidence)
+        claim_evidence = MagicMock(return_value=None)
+        monkeypatch.setattr(job_runner, "claim_evidence", claim_evidence)
         mock_distribute.return_value = DistributionResult(status="failed")
 
         run_video_generation(
@@ -1930,7 +1930,7 @@ class TestRunVideoGeneration:
         assert mock_distribute.call_args.kwargs["published"]["spotify_rss"]["outcome"] == (
             "publication_unknown"
         )
-        assert {call.kwargs["platform"] for call in append_evidence.call_args_list} == {
+        assert {call.kwargs["platform"] for call in claim_evidence.call_args_list} == {
             "youtube",
             "spotify_rss",
         }
@@ -2032,6 +2032,121 @@ class TestRunVideoGeneration:
         assert evidence["records"][0]["mutation_attempted"] is False
         assert evidence["records"][1]["provider_artifact_id"] == "777"
         assert evidence["records"][2]["provider_artifact_id"] == "777"
+
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_spotify_video_credential_rejection_retries_same_publication_identity(
+        self, mock_compose, mock_record, storage, monkeypatch
+    ):
+        import podcaster.publish as pub
+        from podcaster.publication_state import PublicationIdentity, append_evidence, read_evidence
+
+        job_id = "video-spotify-credential-retry"
+        identity = PublicationIdentity(job_id, "2026-W37", "123", "a" * 64, "b" * 64)
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {
+                    "validation": {"duration_seconds": 60.0},
+                    "publish_result": {"anchor_id": 555},
+                },
+                "request": {
+                    "article_title": "Credential retry",
+                    "week": identity.week,
+                    "publish_run_id": identity.publish_run_id,
+                    "article_sha256": identity.article_sha256,
+                    "manifest_sha256": identity.manifest_sha256,
+                    "publication_identity_mode": "canonical",
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome="publication_unknown",
+            mutation_attempted=False,
+            retry_blocked=True,
+            code="mutation_intent",
+        )
+        append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_failure",
+            outcome="manual_handoff_required",
+            mutation_attempted=False,
+            retry_blocked=False,
+            code="credentials_expired",
+        )
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "corrected-dc")
+        monkeypatch.setenv("SP_KEY", "corrected-key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            lambda *args, **kwargs: ([{"partNumber": 1, "url": "https://gcs/part"}], "up1"),
+        )
+        monkeypatch.setattr(
+            pub,
+            "_upload_video_multipart",
+            lambda *args, **kwargs: [{"partNumber": 1, "etag": "e1"}],
+        )
+        monkeypatch.setattr(pub, "_process_upload", lambda *args, **kwargs: None)
+        monkeypatch.setattr(pub, "_set_metadata", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            pub,
+            "promote_spotify_video_draft",
+            MagicMock(
+                return_value=pub.VideoPromoteResult(
+                    anchor_episode_id=777,
+                    audio_anchor_id=555,
+                    terminal_state="published",
+                    is_published=True,
+                    authorized=True,
+                )
+            ),
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+                dry_run=False,
+            ),
+        )
+
+        assert outcome.status == STATUS_COMPLETED
+        create.assert_called_once()
+        evidence = read_evidence(storage, job_id)
+        operations = [record["operation"] for record in evidence["records"]]
+        assert operations.count("create_episode_intent") == 2
+        assert evidence["records"][-2]["provider_artifact_id"] == "777"
+        assert evidence["records"][-1]["provider_artifact_id"] == "777"
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")

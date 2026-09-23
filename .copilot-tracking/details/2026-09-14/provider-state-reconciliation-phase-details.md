@@ -30,6 +30,7 @@
 | P05 | Independent contract revision | Complete | P05, P05-T01, P05-T02, P05-T03, P05-T04 |
 | P06 | Reviewer-lockout correction | Complete | P06, P06-T01, P06-T02, P06-T03, P06-T04 |
 | P07 | Post-delivery retry-safety correction | Complete | P07, P07-T01, P07-T02, P07-T03 |
+| P08 | PR #693 retry-safe claim correction | Complete | P08, P08-T01, P08-T02, P08-T03 |
 
 <!-- rpi:phase id=P01 -->
 ## P01: Establish canonical outcomes and durable evidence
@@ -840,3 +841,67 @@ Completion evidence: commit
 `49b9c6e9f204d04c3d7fab2e68292b66b52c153e`; focused suite 212 passed; full
 suite 3027 passed, 2 skipped, 2 deselected; Ruff and diff checks passed; both
 triggering review threads were answered and resolved.
+
+<!-- rpi:phase id=P08 -->
+## P08: PR #693 Retry-Safe Claim Correction
+
+### Context
+
+Five unresolved review findings show that retry authorization can currently
+cross claim types or canonical identities, identical credential failures can be
+deduplicated across attempts, and complete pre-create snapshots can be reused
+after failures that are deterministic or occur during post-POST recovery.
+
+### Intent
+
+Keep retry authorization atomic, identity-bound, and single-use, and preserve a
+durable retry fence whenever provider-side create state is deterministic or
+ambiguous after the POST.
+
+### Boundaries
+
+* Included: claim authorization scanning/deduplication, exact identity matching,
+  deterministic create-failure evidence, ambiguous-recovery credential
+  evidence, and focused regressions.
+* Excluded: provider contract changes, new endpoints, branch delivery, review
+  thread mutation, and unrelated publication-state redesign.
+
+### Validation Expectations
+
+* A retryable record cannot authorize both create and upload claims.
+* Two identical credential failures separated by their claim attempts each
+  authorize exactly one later claim.
+* Video create authorization matches every `PublicationIdentity` field.
+* Deterministic create rejection never enables untitled-draft recovery.
+* Credential expiry during recovery after an ambiguous create remains blocked.
+* The exact caller-required pytest, Ruff, format, and diff checks pass.
+
+<!-- rpi:task id=P08-T01 -->
+### P08-T01: Bind retry authorization to one exact claim attempt
+
+Status: Complete. Atomic authorization is reset by every later claim, identical
+retryable failures are retained after a later claim, and video authorization
+requires all five canonical identity fields.
+
+Targets: `podcaster/publication_state.py`, `podcaster/publish.py`,
+`tests/test_publication_state.py`, and `tests/test_publish.py`.
+
+<!-- rpi:task id=P08-T02 -->
+### P08-T02: Preserve deterministic and post-POST failure fences
+
+Status: Complete. Deterministic create rejection now appends distinct blocking
+failure evidence, while credential expiry after an ambiguous POST appends
+blocking ambiguous-recovery evidence. Pre-POST credential rejection remains
+retryable.
+
+Targets: `podcaster/publish.py` and `tests/test_publish.py`.
+
+<!-- rpi:task id=P08-T03 -->
+### P08-T03: Add focused regressions and validate the correction
+
+Status: Complete. All five focused regressions and the exact caller-required
+validation commands pass. Delivery operations remain excluded pending
+independent Fry review.
+
+Validation is limited to the exact commands requested by the caller. Commit,
+push, and review-thread operations remain excluded pending Fry review.
