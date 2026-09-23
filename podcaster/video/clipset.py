@@ -19,11 +19,26 @@ import json
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from podcaster.video.budget import BudgetProjection
 from podcaster.video.sync_plan import RepoReference, VideoSegment
 
-#: Schema marker for the serialised fan-out plan. Bump the minor for
-#: backward-compatible additions, the major for breaking changes.
-CLIPSET_SCHEMA_VERSION = "squadscope-podcaster-clipset-v1"
+#: Schema markers for the serialised fan-out plan. V1 always serialized
+#: ``video_budget`` as either an object or null; V2 requires an object.
+LEGACY_CLIPSET_SCHEMA_VERSION = "squadscope-podcaster-clipset-v1"
+CLIPSET_SCHEMA_VERSION = "squadscope-podcaster-clipset-v2"
+
+
+class ClipsetJobMismatchError(ValueError):
+    """Raised when a clipset is loaded from another job's storage path."""
+
+
+class ClipsetSchemaVersionError(ValueError):
+    """Raised when a persisted clipset uses an unsupported schema."""
+
+
+class ClipsetBudgetError(ValueError):
+    """Raised when a budget-bearing clipset has an invalid parent budget."""
+
 
 #: Root prefix for per-job scratch artifacts (matches
 #: :data:`podcaster.video.intermediates.SCRATCH_ROOT`).
@@ -61,6 +76,24 @@ def clip_manifest_blob_path(job_id: str, clip_index: int) -> str:
     presence.
     """
     return f"{clips_prefix(job_id)}{_index(clip_index):03d}.manifest.json"
+
+
+def clip_admission_blob_path(job_id: str, clip_index: int) -> str:
+    """Durable first-admission timing facts for one clip."""
+    return f"{clips_prefix(job_id)}{_index(clip_index):03d}.admission.json"
+
+
+def clip_attempts_blob_path(job_id: str, clip_index: int) -> str:
+    """Durable dequeued-execution history for one clip."""
+    return f"{clips_prefix(job_id)}{_index(clip_index):03d}.attempts.json"
+
+
+def clip_content_blob_path(job_id: str, clip_index: int, sha256: str) -> str:
+    """Immutable content-addressed media path for one terminal clip."""
+    digest = str(sha256).strip().lower()
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("sha256 must be a lowercase 64-character hex digest")
+    return f"{clips_prefix(job_id)}{_index(clip_index):03d}/{digest}.webm"
 
 
 def _clean_job_id(job_id: str) -> str:
@@ -157,6 +190,7 @@ class Clipset:
 
     job_id: str
     clips: tuple[ClipPlanEntry, ...]
+    budget: BudgetProjection | None = None
     schema_version: str = CLIPSET_SCHEMA_VERSION
 
     @property
@@ -179,42 +213,159 @@ class Clipset:
         raise KeyError(f"clip_index {clip_index} is not in clipset for job {self.job_id}")
 
     @classmethod
-    def from_segments(cls, job_id: str, segments: Sequence[VideoSegment]) -> "Clipset":
+    def from_segments(
+        cls,
+        job_id: str,
+        segments: Sequence[VideoSegment],
+        *,
+        budget: BudgetProjection | None = None,
+    ) -> "Clipset":
         clips = tuple(
             ClipPlanEntry.from_segment(index, segment) for index, segment in enumerate(segments)
         )
-        return cls(job_id=_clean_job_id(job_id), clips=clips)
+        return cls(
+            job_id=_clean_job_id(job_id),
+            clips=clips,
+            budget=budget,
+            schema_version=(
+                CLIPSET_SCHEMA_VERSION if budget is not None else LEGACY_CLIPSET_SCHEMA_VERSION
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "schema_version": self.schema_version,
             "job_id": self.job_id,
             "count": self.count,
             "clips": [c.to_dict() for c in self.clips],
         }
+        if self.schema_version == CLIPSET_SCHEMA_VERSION:
+            if self.budget is None:
+                raise ClipsetBudgetError("current clipset schema requires video_budget")
+            data["video_budget"] = self.budget.to_dict()
+        elif self.schema_version == LEGACY_CLIPSET_SCHEMA_VERSION:
+            data["video_budget"] = self.budget.to_dict() if self.budget is not None else None
+        else:
+            raise ClipsetSchemaVersionError(
+                f"unsupported clipset schema version {self.schema_version!r}"
+            )
+        return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Clipset":
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        expected_job_id: str,
+    ) -> "Clipset":
         if not isinstance(data, dict):
             raise ValueError("clipset payload must be a JSON object")
+        schema_version = data.get("schema_version")
+        if not isinstance(schema_version, str):
+            raise ClipsetSchemaVersionError(
+                f"unsupported clipset schema version {schema_version!r}"
+            )
+        if schema_version not in {
+            LEGACY_CLIPSET_SCHEMA_VERSION,
+            CLIPSET_SCHEMA_VERSION,
+        }:
+            raise ClipsetSchemaVersionError(
+                f"unsupported clipset schema version {schema_version!r}"
+            )
+        if "video_budget" not in data:
+            raise ClipsetBudgetError("clipset video_budget is missing")
+        raw_budget = data["video_budget"]
+        if schema_version == LEGACY_CLIPSET_SCHEMA_VERSION and raw_budget is None:
+            budget = None
+        elif not isinstance(raw_budget, dict):
+            requirement = (
+                "current clipset schema requires object video_budget"
+                if schema_version == CLIPSET_SCHEMA_VERSION
+                else "legacy clipset video_budget must be an object or null"
+            )
+            raise ClipsetBudgetError(requirement)
+        else:
+            try:
+                budget = BudgetProjection.from_dict(raw_budget)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ClipsetBudgetError("clipset video_budget is invalid") from exc
+        return cls._from_validated_dict(
+            data,
+            expected_job_id=expected_job_id,
+            budget=budget,
+            schema_version=str(schema_version),
+        )
+
+    @classmethod
+    def from_legacy_v1_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        expected_job_id: str,
+    ) -> "Clipset":
+        """Parse an authentic v1 document with an object or null budget."""
+        if not isinstance(data, dict):
+            raise ValueError("clipset payload must be a JSON object")
+        if data.get("schema_version") != LEGACY_CLIPSET_SCHEMA_VERSION:
+            raise ClipsetSchemaVersionError("clipset is not a legacy v1 document")
+        return cls.from_dict(data, expected_job_id=expected_job_id)
+
+    @classmethod
+    def _from_validated_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        expected_job_id: str,
+        budget: BudgetProjection | None,
+        schema_version: str,
+    ) -> "Clipset":
+        job_id = _clean_job_id(str(data["job_id"]))
+        expected = _clean_job_id(expected_job_id)
+        if job_id != expected:
+            raise ClipsetJobMismatchError(
+                f"clipset job_id {job_id!r} does not match expected job_id {expected!r}"
+            )
         clips = tuple(ClipPlanEntry.from_dict(c) for c in data.get("clips", []))
         declared = data.get("count")
         if declared is not None and int(declared) != len(clips):
             raise ValueError(f"clipset count {declared} does not match {len(clips)} clip entries")
         return cls(
-            job_id=_clean_job_id(str(data["job_id"])),
+            job_id=job_id,
             clips=clips,
-            schema_version=str(data.get("schema_version", CLIPSET_SCHEMA_VERSION)),
+            budget=budget,
+            schema_version=schema_version,
         )
 
     def to_json_bytes(self) -> bytes:
         return json.dumps(self.to_dict(), separators=(",", ":")).encode("utf-8")
 
     @classmethod
-    def from_bytes(cls, payload: bytes | None) -> "Clipset":
+    def from_bytes(
+        cls,
+        payload: bytes | None,
+        *,
+        expected_job_id: str,
+    ) -> "Clipset":
         if not payload:
             raise ValueError("clipset.json was empty or missing")
-        return cls.from_dict(json.loads(payload.decode("utf-8")))
+        return cls.from_dict(
+            json.loads(payload.decode("utf-8")),
+            expected_job_id=expected_job_id,
+        )
+
+    @classmethod
+    def from_legacy_v1_bytes(
+        cls,
+        payload: bytes | None,
+        *,
+        expected_job_id: str,
+    ) -> "Clipset":
+        if not payload:
+            raise ValueError("clipset.json was empty or missing")
+        return cls.from_legacy_v1_dict(
+            json.loads(payload.decode("utf-8")),
+            expected_job_id=expected_job_id,
+        )
 
 
 def _opt_str(value: Any) -> str | None:

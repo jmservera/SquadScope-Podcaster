@@ -6,7 +6,10 @@ Unit tests mock Playwright and requests; the integration test class
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -14,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from podcaster.video.budget import VideoStage, VideoStageBudget
 from podcaster.video.sync_plan import (
     EpisodePlan,
     RepoReference,
@@ -65,6 +69,7 @@ from podcaster.video.video_gen import (
     _render_fallback_page,
     _render_removed_card,
     _render_url_card,
+    _resume_recorded_segment,
     _scroll_github_readme,
     _scroll_positions,
     _smooth_scroll,
@@ -2326,6 +2331,21 @@ class TestComposeScreenshotSegment:
         assert out.exists()
         assert out.stat().st_size > 0
 
+    def test_failed_ffmpeg_removes_partial_screenshot_output(self, tmp_path):
+        page = _make_screenshot_page()
+        cap = _Capturer(tmp_path / "frames")
+        cap.still(page)
+        out = tmp_path / "partial.mp4"
+
+        def failed_runner(cmd):
+            out.write_bytes(b"partial")
+            return subprocess.CompletedProcess(cmd, 1, "", "encode failed")
+
+        with pytest.raises(RuntimeError, match="ffmpeg failed"):
+            _compose_screenshot_segment(cap, 1.0, out, runner=failed_runner)
+
+        assert not out.exists()
+
 
 # --- Per-segment checkpoint/resume against blob (issue #410) ------------------
 
@@ -2340,7 +2360,39 @@ class TestRecordEpisodeCheckpointResume:
         )
         return IntermediateStore(backend, "job-rec")
 
-    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    def test_budgeted_resume_applies_fanin_budget_to_metadata_and_media(self, tmp_path):
+        budget = VideoStageBudget.start()
+        segment = _make_segment(duration=2.0)
+        calls: list[tuple[str, dict]] = []
+
+        class Store:
+            enabled = True
+
+            def read_text(self, name, **kwargs):
+                calls.append(("read_text", kwargs))
+                return '{"suffix": ".mp4", "recovery_path": "direct"}'
+
+            def download_validated(self, name, dest, **kwargs):
+                calls.append(("download_validated", kwargs))
+                return None
+
+        assert (
+            _resume_recorded_segment(
+                0,
+                segment,
+                tmp_path,
+                Store(),
+                budget=budget,
+            )
+            is None
+        )
+        assert calls[0] == ("read_text", {"budget": budget, "stage": VideoStage.FANIN})
+        assert calls[1][0] == "download_validated"
+        assert calls[1][1]["budget"] is budget
+        assert calls[1][1]["stage"] is VideoStage.FANIN
+        assert calls[1][1]["artifact_kind"] == "recorded_segment"
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
     @patch("podcaster.video.video_gen._record_segment")
     def test_full_resume_skips_browser(self, mock_record, mock_pw, tmp_path):
@@ -2368,6 +2420,22 @@ class TestRecordEpisodeCheckpointResume:
         assert rec.has_pages is True
         assert rec.website_url == "https://x.test"
         assert rec.video_path.exists()
+
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", False)
+    def test_partial_resume_still_requires_playwright(self, tmp_path):
+        store = self._store(tmp_path)
+        rec_file = tmp_path / "seed.mp4"
+        rec_file.write_bytes(b"\x00\x00\x00\x18ftypmp42seed")
+        store.upload("recording_000.mp4", rec_file, "video/mp4")
+        store.write_text("recording_000.json", '{"suffix": ".mp4", "recovery_path": "direct"}')
+        plan = _make_plan(
+            _make_segment("a", "b", 0, 10),
+            _make_segment("c", "d", 10, 10),
+            total=20.0,
+        )
+
+        with pytest.raises(RuntimeError, match="Playwright is not installed"):
+            record_episode(plan, output_dir=tmp_path / "out", intermediates=store)
 
     @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
     @patch("podcaster.video.video_gen.sync_playwright", create=True)
@@ -2475,6 +2543,88 @@ class TestRecordEpisodeCheckpointResume:
         # … and the local copy was deleted (disk holds only the current file).
         assert recorded_paths and not recorded_paths[0].exists()
 
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    @patch("podcaster.video.video_gen.sync_playwright", create=True)
+    def test_budgeted_recording_uses_owned_browser_boundary(self, mock_pw, tmp_path):
+        calls = []
+
+        def owned(segment, output_dir, timeout):
+            calls.append(timeout)
+            path = output_dir / "owned.webm"
+            path.write_bytes(b"owned-browser-result")
+            return RecordedSegment(segment=segment, video_path=path)
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        result = record_episode(
+            plan,
+            output_dir=tmp_path / "out",
+            budget=VideoStageBudget.start(),
+            owned_record_segment=owned,
+        )
+
+        assert len(result.recorded) == 1
+        assert calls and calls[0] > 0
+        mock_pw.assert_not_called()
+
+    @patch("podcaster.video.video_gen._validate_recording")
+    @patch("podcaster.video.intermediates.collect_media_evidence")
+    @patch("podcaster.video.recorder._owned_production_record_segment")
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    def test_budgeted_recording_wraps_default_owned_result(
+        self,
+        owned_record,
+        collect_media_evidence,
+        validate_recording,
+        tmp_path,
+    ):
+        from podcaster.video.process import MediaEvidence, ProbeEvidence
+        from podcaster.video.recorder import RecordResult
+
+        store = self._store(tmp_path)
+        output_path = tmp_path / "out" / "owned.webm"
+        output_path.parent.mkdir(parents=True)
+        payload = b"owned-browser-result"
+        output_path.write_bytes(payload)
+        evidence = MediaEvidence(
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            probe=ProbeEvidence("matroska,webm", 2.0),
+        )
+        validate_recording.return_value = evidence
+        collect_media_evidence.return_value = evidence
+        owned_record.return_value = RecordResult(
+            video_path=output_path,
+            duration_ms=2000,
+            is_fallback=True,
+            has_pages=True,
+            website_url="https://example.test",
+            is_removed=True,
+            recovery_path="website",
+        )
+        segment = _make_segment(duration=2.0)
+
+        result = record_episode(
+            _make_plan(segment, total=2.0),
+            output_dir=output_path.parent,
+            budget=VideoStageBudget.start(),
+            intermediates=store,
+        )
+
+        recorded = result.recorded[0]
+        assert recorded.segment == segment
+        assert recorded.is_fallback is True
+        assert recorded.has_pages is True
+        assert recorded.website_url == "https://example.test"
+        assert recorded.is_removed is True
+        assert recorded.recovery_path == "website"
+        checkpoint = json.loads(store.read_text("recording_000.json"))
+        assert checkpoint["is_fallback"] is True
+        assert checkpoint["has_pages"] is True
+        assert checkpoint["website_url"] == "https://example.test"
+        assert checkpoint["is_removed"] is True
+        assert checkpoint["recovery_path"] == "website"
+        owned_record.assert_called_once()
+
 
 # --- Per-task recording retry (issue #483) ---
 
@@ -2549,3 +2699,24 @@ class TestRecordEpisodeTaskRetry:
         with pytest.raises(RuntimeError, match="persistent failure"):
             record_episode(plan, output_dir=tmp_path / "out")
         assert calls["n"] == 2
+
+    @patch("podcaster.video.video_gen.RECORD_TASK_RETRIES", 3)
+    @patch("podcaster.video.video_gen._PLAYWRIGHT_AVAILABLE", True)
+    def test_owned_recording_timeout_is_not_retried_past_fanin_deadline(self, tmp_path):
+        calls = 0
+
+        def timed_out_recording(_segment, _output_dir, _timeout):
+            nonlocal calls
+            calls += 1
+            raise TimeoutError("owned recording consumed the fan-in budget")
+
+        plan = _make_plan(_make_segment(duration=2.0), total=2.0)
+        with pytest.raises(TimeoutError, match="consumed the fan-in budget"):
+            record_episode(
+                plan,
+                output_dir=tmp_path / "out",
+                budget=VideoStageBudget.start(),
+                owned_record_segment=timed_out_recording,
+            )
+
+        assert calls == 1

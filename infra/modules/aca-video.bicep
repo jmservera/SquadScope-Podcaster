@@ -65,12 +65,12 @@ param jobCpu string = '4.0'
 @description('Memory allocated to the video replica (video compose is ffmpeg-heavy).')
 param jobMemory string = '8.0Gi'
 
-@description('Replica timeout (seconds) sized for the editor: fan-in wait + ffmpeg compose + distribution. 90 min covers ~65 min typical run with headroom.')
+@description('ACA hard-kill timeout (seconds). The application owns a 5100-second monotonic deadline and finishes durable disposition five minutes before this 5400-second platform limit.')
 @minValue(60)
 @maxValue(172800)
 param replicaTimeoutSeconds int = 5400
 
-@description('video-jobs receive visibility timeout (seconds) the editor applies while it holds a job. Must be >= the editor worst-case runtime (fan-in wait + compose + publish) so the message is not redelivered to a second editor mid-run (RFC §8). Defaults to the replica timeout.')
+@description('video-jobs receive visibility timeout (seconds). It remains aligned with the ACA hard limit; the editor lease and 5100-second application deadline provide normal completion and redelivery control.')
 @minValue(60)
 @maxValue(172800)
 param videoVisibilityTimeoutSeconds int = 5400
@@ -236,6 +236,10 @@ resource videoJob 'Microsoft.App/jobs@2025-01-01' = {
             'python'
             '-m'
             'podcaster.video.job_runner'
+          ]
+          args: [
+            '--max-messages'
+            '1'
           ]
           resources: {
             cpu: json(jobCpu)

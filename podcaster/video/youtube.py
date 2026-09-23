@@ -27,8 +27,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
+from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import (
     _MIN_VALID_MP4_BYTES,
     HttpTransport,
@@ -40,6 +41,13 @@ from podcaster.video.distribution import (
 logger = logging.getLogger(__name__)
 
 _YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+_YOUTUBE_RESUMABLE_UPLOAD_HOSTS = frozenset(
+    {
+        "upload.youtube.com",
+        "www.googleapis.com",
+        "youtube.googleapis.com",
+    }
+)
 
 #: Resumable chunk size. Must be a multiple of 256 KiB per the Google spec.
 _CHUNK_GRANULARITY = 256 * 1024
@@ -54,11 +62,19 @@ _MAX_TRANSIENT_RETRIES = 5
 _RETRY_BACKOFF_BASE = 2.0
 
 
+class YouTubeSessionInitiationUnknown(RuntimeError):
+    """The session POST may have succeeded without a usable session URI."""
+
+
+class YouTubeCompletionAmbiguous(RuntimeError):
+    """YouTube reported success without a usable provider video id."""
+
+
 @dataclass
 class YouTubeUploadResult:
     """Outcome of a resumable upload."""
 
-    status: str  # "completed" | "failed" | "dry_run" | "disabled"
+    status: str  # "completed" | "failed" | "unknown" | "dry_run" | "disabled"
     video_id: str | None = None
     video_url: str | None = None
     bytes_uploaded: int = 0
@@ -144,6 +160,21 @@ def parse_range_end(range_header: str | None) -> int | None:
         return None
 
 
+def _is_allowed_resumable_session_uri(session_uri: str) -> bool:
+    parsed = urlparse(session_uri)
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.hostname in _YOUTUBE_RESUMABLE_UPLOAD_HOSTS
+        and port in {None, 443}
+    )
+
+
 # --- resumable upload ---------------------------------------------------------
 
 
@@ -154,31 +185,52 @@ def initiate_resumable_session(
     *,
     file_size: int,
     content_type: str = "video/mp4",
+    budget: VideoStageBudget | None = None,
 ) -> str:
     """Start a resumable session and return the session URI.
 
-    Raises RuntimeError if the API does not return a session URI.
+    Raises YouTubeSessionInitiationUnknown when the mutating request may have
+    succeeded but no usable session URI is available.
     """
 
     params = urlencode({"uploadType": "resumable", "part": "snippet,status"})
     init_url = f"{_YOUTUBE_UPLOAD_URL}?{params}"
-    status, resp_headers, _ = http.request_with_headers(
-        init_url,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json; charset=utf-8",
-            "X-Upload-Content-Length": str(file_size),
-            "X-Upload-Content-Type": content_type,
-        },
-        data=json.dumps(metadata).encode("utf-8"),
-    )
+    if budget is not None:
+        try:
+            budget.require_provider_mutation()
+        except ProviderMutationAdmissionError as exc:
+            exc.provider = "youtube"
+            exc.mutation_started = False
+            raise
+    try:
+        status, resp_headers, _ = http.request_with_headers(
+            init_url,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; charset=utf-8",
+                "X-Upload-Content-Length": str(file_size),
+                "X-Upload-Content-Type": content_type,
+            },
+            data=json.dumps(metadata).encode("utf-8"),
+        )
+    except Exception as exc:
+        raise YouTubeSessionInitiationUnknown(
+            "YouTube resumable session initiation outcome is unknown"
+        ) from exc
+    if status in _TRANSIENT_STATUSES:
+        raise YouTubeSessionInitiationUnknown(
+            f"YouTube resumable session initiation outcome is unknown: HTTP {status}"
+        )
     if status not in (200, 308):
         raise RuntimeError(f"YouTube resumable init failed: HTTP {status}")
-
-    session_uri = resp_headers.get("location")
-    if not session_uri:
-        raise RuntimeError("YouTube resumable init returned no session URI")
+    session_uri = resp_headers.get("location", "").strip()
+    session_uri = resp_headers.get("location", "").strip()
+    if not _is_allowed_resumable_session_uri(session_uri):
+        raise YouTubeSessionInitiationUnknown(
+            f"YouTube resumable session initiation outcome is unknown: "
+            f"HTTP {status} returned no valid session URI"
+        )
     return session_uri
 
 
@@ -187,6 +239,9 @@ def _query_resume_offset(
     session_uri: str,
     access_token: str,
     total_size: int,
+    *,
+    budget: VideoStageBudget | None = None,
+    mutation_started: bool = True,
 ) -> tuple[int, str | None]:
     """Ask the server how many bytes it has. Returns (next_offset, completed_id).
 
@@ -194,6 +249,13 @@ def _query_resume_offset(
     already finished server-side.
     """
 
+    if budget is not None:
+        try:
+            budget.require_provider_mutation()
+        except ProviderMutationAdmissionError as exc:
+            exc.provider = "youtube"
+            exc.mutation_started = mutation_started
+            raise
     status, headers, body = http.request_with_headers(
         session_uri,
         method="PUT",
@@ -205,12 +267,12 @@ def _query_resume_offset(
         data=b"",
     )
     if status in (200, 201):
-        video_id = ""
-        try:
-            video_id = json.loads(body).get("id", "")
-        except (ValueError, AttributeError):
-            pass
-        return total_size, video_id or None
+        video_id = _parse_video_id(body)
+        if video_id is None:
+            raise YouTubeCompletionAmbiguous(
+                "YouTube reported resumable completion without a valid video id"
+            )
+        return total_size, video_id
     if status == 308:
         end = parse_range_end(headers.get("range"))
         return (end + 1 if end is not None else 0), None
@@ -228,6 +290,8 @@ def upload_chunked(
     content_type: str = "video/mp4",
     max_retries: int = _MAX_TRANSIENT_RETRIES,
     sleep: Callable[[float], None] = time.sleep,
+    budget: VideoStageBudget | None = None,
+    mutation_started: bool = False,
 ) -> YouTubeUploadResult:
     """Upload a file in resumable chunks, resuming over transient failures."""
 
@@ -243,6 +307,14 @@ def upload_chunked(
                 break
             end = start + len(chunk) - 1
             try:
+                if budget is not None:
+                    try:
+                        budget.require_provider_mutation()
+                    except ProviderMutationAdmissionError as exc:
+                        exc.provider = "youtube"
+                        exc.mutation_started = mutation_started
+                        raise
+                mutation_started = True
                 status, headers, body = http.request_with_headers(
                     session_uri,
                     method="PUT",
@@ -254,18 +326,42 @@ def upload_chunked(
                     },
                     data=chunk,
                 )
+            except ProviderMutationAdmissionError:
+                raise
             except Exception as exc:  # noqa: BLE001 - network error → resume
                 transient_retries += 1
                 if transient_retries > max_retries:
+                    if mutation_started:
+                        return YouTubeUploadResult(
+                            status="unknown",
+                            bytes_uploaded=start,
+                            error=f"network error after {max_retries} retries: {exc}",
+                            details={
+                                "retry_blocked": True,
+                                "mutation_ambiguous": True,
+                                "code": "youtube_resumable_chunk_outcome_ambiguous",
+                            },
+                        )
                     return YouTubeUploadResult(
                         status="failed",
                         bytes_uploaded=start,
                         error=f"network error after {max_retries} retries: {exc}",
                     )
                 sleep(_RETRY_BACKOFF_BASE ** (transient_retries - 1))
-                start = _resume_after_failure(
-                    http, session_uri, access_token, total_size, fallback=start
-                )
+                try:
+                    start, completed_id = _resume_after_failure(
+                        http,
+                        session_uri,
+                        access_token,
+                        total_size,
+                        fallback=start,
+                        budget=budget,
+                        mutation_started=mutation_started,
+                    )
+                    if completed_id:
+                        return _success_result(completed_id, total_size)
+                except YouTubeCompletionAmbiguous as exc:
+                    return _ambiguous_completion_result(start, exc)
                 continue
 
             if status in (200, 201):
@@ -278,23 +374,56 @@ def upload_chunked(
                     # No Range header means the server's acknowledged offset is
                     # unknown (could be 0).  Query the real offset rather than
                     # blindly advancing past the chunk we just sent.
-                    start = _resume_after_failure(
-                        http, session_uri, access_token, total_size, fallback=start
-                    )
+                    try:
+                        start, completed_id = _resume_after_failure(
+                            http,
+                            session_uri,
+                            access_token,
+                            total_size,
+                            fallback=start,
+                            budget=budget,
+                            mutation_started=mutation_started,
+                        )
+                        if completed_id:
+                            return _success_result(completed_id, total_size)
+                    except YouTubeCompletionAmbiguous as exc:
+                        return _ambiguous_completion_result(start, exc)
                 transient_retries = 0
                 continue
             if status in _TRANSIENT_STATUSES:
                 transient_retries += 1
                 if transient_retries > max_retries:
+                    if mutation_started:
+                        return YouTubeUploadResult(
+                            status="unknown",
+                            bytes_uploaded=start,
+                            error=f"HTTP {status} after {max_retries} retries",
+                            details={
+                                "retry_blocked": True,
+                                "mutation_ambiguous": True,
+                                "code": "youtube_resumable_chunk_outcome_ambiguous",
+                            },
+                        )
                     return YouTubeUploadResult(
                         status="failed",
                         bytes_uploaded=start,
                         error=f"HTTP {status} after {max_retries} retries",
                     )
                 sleep(_RETRY_BACKOFF_BASE ** (transient_retries - 1))
-                start = _resume_after_failure(
-                    http, session_uri, access_token, total_size, fallback=start
-                )
+                try:
+                    start, completed_id = _resume_after_failure(
+                        http,
+                        session_uri,
+                        access_token,
+                        total_size,
+                        fallback=start,
+                        budget=budget,
+                        mutation_started=mutation_started,
+                    )
+                    if completed_id:
+                        return _success_result(completed_id, total_size)
+                except YouTubeCompletionAmbiguous as exc:
+                    return _ambiguous_completion_result(start, exc)
                 continue
 
             return YouTubeUploadResult(
@@ -304,7 +433,32 @@ def upload_chunked(
             )
 
     # Loop completed without a 200/201 — query the server for a final id.
-    offset, completed_id = _query_resume_offset(http, session_uri, access_token, total_size)
+    try:
+        offset, completed_id = _query_resume_offset(
+            http,
+            session_uri,
+            access_token,
+            total_size,
+            budget=budget,
+            mutation_started=mutation_started,
+        )
+    except ProviderMutationAdmissionError:
+        raise
+    except YouTubeCompletionAmbiguous as exc:
+        logger.error("Final YouTube resumable status is ambiguous: %s", exc)
+        return _ambiguous_completion_result(start, exc)
+    except Exception as exc:  # noqa: BLE001 - provider outcome is ambiguous after mutation
+        logger.error("Final YouTube resumable status query outcome is unknown: %s", exc)
+        return YouTubeUploadResult(
+            status="unknown",
+            bytes_uploaded=start,
+            error=f"final resumable status query outcome is unknown: {exc}",
+            details={
+                "retry_blocked": True,
+                "mutation_ambiguous": mutation_started,
+                "code": "youtube_resumable_final_status_ambiguous",
+            },
+        )
     if completed_id:
         return _success_result(completed_id, total_size)
     return YouTubeUploadResult(
@@ -321,25 +475,62 @@ def _resume_after_failure(
     total_size: int,
     *,
     fallback: int,
-) -> int:
+    budget: VideoStageBudget | None = None,
+    mutation_started: bool = True,
+) -> tuple[int, str | None]:
     try:
-        offset, _ = _query_resume_offset(http, session_uri, access_token, total_size)
-        return offset
+        return _query_resume_offset(
+            http,
+            session_uri,
+            access_token,
+            total_size,
+            budget=budget,
+            mutation_started=mutation_started,
+        )
+    except ProviderMutationAdmissionError:
+        raise
+    except YouTubeCompletionAmbiguous:
+        raise
     except Exception as exc:  # noqa: BLE001 - keep retrying from last offset
         logger.warning("Resume-offset query failed, retrying from %d: %s", fallback, exc)
-        return fallback
+        return fallback, None
+
+
+def _parse_video_id(body: bytes) -> str | None:
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    video_id = payload.get("id")
+    if not isinstance(video_id, str) or not video_id.strip():
+        return None
+    return video_id.strip()
+
+
+def _ambiguous_completion_result(
+    bytes_uploaded: int,
+    error: BaseException | str,
+) -> YouTubeUploadResult:
+    return YouTubeUploadResult(
+        status="unknown",
+        bytes_uploaded=bytes_uploaded,
+        error=f"resumable completion outcome is ambiguous: {error}",
+        details={
+            "retry_blocked": True,
+            "mutation_ambiguous": True,
+            "code": "youtube_resumable_completion_ambiguous",
+        },
+    )
 
 
 def _finalize(body: bytes, total_size: int) -> YouTubeUploadResult:
-    try:
-        video_id = json.loads(body).get("id", "")
-    except (ValueError, AttributeError):
-        video_id = ""
-    if not video_id:
-        return YouTubeUploadResult(
-            status="failed",
-            bytes_uploaded=total_size,
-            error="upload completed but response had no video id",
+    video_id = _parse_video_id(body)
+    if video_id is None:
+        return _ambiguous_completion_result(
+            total_size,
+            "YouTube reported upload completion without a valid video id",
         )
     return _success_result(video_id, total_size)
 
@@ -367,6 +558,7 @@ def upload_video(
     transport: HttpTransport | None = None,
     chunk_size: int = RESUMABLE_CHUNK_SIZE,
     sleep: Callable[[float], None] = time.sleep,
+    budget: VideoStageBudget | None = None,
 ) -> YouTubeUploadResult:
     """Upload *video_path* to YouTube via resumable chunked upload.
 
@@ -408,7 +600,26 @@ def upload_video(
     )
 
     try:
-        session_uri = initiate_resumable_session(http, access_token, metadata, file_size=file_size)
+        session_uri = initiate_resumable_session(
+            http,
+            access_token,
+            metadata,
+            file_size=file_size,
+            budget=budget,
+        )
+    except ProviderMutationAdmissionError:
+        raise
+    except YouTubeSessionInitiationUnknown as exc:
+        logger.error("%s", exc)
+        return YouTubeUploadResult(
+            status="unknown",
+            error=str(exc),
+            details={
+                "retry_blocked": True,
+                "mutation_ambiguous": True,
+                "code": "youtube_resumable_init_ambiguous",
+            },
+        )
     except RuntimeError as exc:
         logger.error("YouTube resumable init failed: %s", exc)
         return YouTubeUploadResult(status="failed", error=str(exc))
@@ -422,4 +633,6 @@ def upload_video(
         chunk_size=chunk_size,
         max_retries=_MAX_TRANSIENT_RETRIES,
         sleep=sleep,
+        budget=budget,
+        mutation_started=True,
     )

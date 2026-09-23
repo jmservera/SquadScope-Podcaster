@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -11,18 +13,26 @@ import pytest
 from podcaster.queue import QueueMessage, encode_clip_message
 from podcaster.storage import LocalStorageBackend
 from podcaster.video import recorder
+from podcaster.video.budget import VideoStageBudget
 from podcaster.video.clipset import (
+    LEGACY_CLIPSET_SCHEMA_VERSION,
     Clipset,
     clip_blob_path,
+    clip_content_blob_path,
     clip_manifest_blob_path,
     clipset_blob_path,
 )
+from podcaster.video.intermediates import StorageOperationTimeout
+from podcaster.video.process import MediaEvidence, ProbeEvidence
 from podcaster.video.recorder import (
+    FAILED_EXECUTION_LIMIT,
     MAX_DEQUEUE_COUNT,
     OUTCOME_FALLBACK,
+    OUTCOME_INSUFFICIENT,
     OUTCOME_RECORDED,
     OUTCOME_RETRY,
     OUTCOME_SKIPPED,
+    PermanentRecorderSetupError,
     RecordResult,
     process_clip_message,
     record_clip,
@@ -62,7 +72,11 @@ def _stage_clipset(scratch: LocalStorageBackend) -> None:
             repo=RepoReference(owner="octo", name="api"),
         ),
     ]
-    clipset = Clipset.from_segments(JOB_ID, segments)
+    clipset = Clipset.from_segments(
+        JOB_ID,
+        segments,
+        budget=VideoStageBudget.start().projection,
+    )
     scratch.put_bytes(clipset_blob_path(JOB_ID), clipset.to_json_bytes(), "application/json")
 
 
@@ -78,6 +92,20 @@ def _recorder(payload: bytes = b"clip-bytes", *, is_fallback: bool = False):
     return _record, calls
 
 
+def _media(path: Path, _timeout: float) -> MediaEvidence:
+    payload = path.read_bytes()
+    return MediaEvidence(
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        probe=ProbeEvidence(format_name="matroska,webm", duration_seconds=1.0),
+    )
+
+
+def _fallback(path: Path, _timeout: float) -> MediaEvidence:
+    path.write_bytes(b"deterministic-fallback")
+    return _media(path, 1.0)
+
+
 def _message(clip_index: int, *, dequeue_count: int = 1) -> QueueMessage:
     return QueueMessage(
         message_id=f"m-{clip_index}",
@@ -85,6 +113,11 @@ def _message(clip_index: int, *, dequeue_count: int = 1) -> QueueMessage:
         body=encode_clip_message(JOB_ID, clip_index),
         dequeue_count=dequeue_count,
     )
+
+
+@pytest.fixture(autouse=True)
+def _stub_recording_probe(monkeypatch):
+    monkeypatch.setattr(recorder, "_validate_media", _media)
 
 
 def test_record_clip_writes_clip_then_manifest(tmp_path) -> None:
@@ -104,6 +137,189 @@ def test_record_clip_writes_clip_then_manifest(tmp_path) -> None:
     assert manifest["is_fallback"] is False
     assert manifest["repo_url"] == "https://github.com/octo/api"
     assert manifest["duration_ms"] == 12345
+    assert manifest["media_blob_path"].endswith(f"/{manifest['media']['sha256']}.webm")
+
+
+def test_record_clip_rejects_cross_job_clipset_before_recording(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    foreign = Clipset.from_segments(
+        "another-job",
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+        budget=VideoStageBudget.start().projection,
+    )
+    scratch.put_bytes(
+        clipset_blob_path(JOB_ID),
+        foreign.to_json_bytes(),
+        "application/json",
+    )
+    record, calls = _recorder()
+
+    with pytest.raises(PermanentRecorderSetupError, match="invalid recorder clipset"):
+        record_clip(JOB_ID, 0, scratch=scratch, record_segment=record)
+
+    assert calls == []
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+    assert not scratch.blob_exists(clip_blob_path("another-job", 0))
+
+
+def test_process_message_foreign_clipset_terminalizes_expected_job_and_deletes(
+    tmp_path,
+) -> None:
+    scratch = _scratch(tmp_path)
+    foreign_job_id = "another-job"
+    foreign = Clipset.from_segments(
+        foreign_job_id,
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+        budget=VideoStageBudget.start().projection,
+    )
+    scratch.put_bytes(
+        clipset_blob_path(JOB_ID),
+        foreign.to_json_bytes(),
+        "application/json",
+    )
+    record, calls = _recorder()
+    queue = FakeQueue()
+    message = _message(0)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert calls == []
+    assert queue.deleted == [message]
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+    assert not scratch.blob_exists(clip_manifest_blob_path(foreign_job_id, 0))
+    assert not scratch.blob_exists(clip_blob_path(foreign_job_id, 0))
+
+
+def test_process_message_malformed_clipset_terminalizes_and_deletes(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    scratch.put_bytes(clipset_blob_path(JOB_ID), b"{not-json", "application/json")
+    record, calls = _recorder()
+    queue = FakeQueue()
+    message = _message(0)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_INSUFFICIENT
+    assert calls == []
+    assert queue.deleted == [message]
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+
+
+@pytest.mark.parametrize(
+    "budget_value",
+    [
+        pytest.param("missing", id="missing"),
+        pytest.param("invalid", id="string"),
+        pytest.param([], id="list"),
+        pytest.param(42, id="numeric"),
+        pytest.param({"schema_version": 1}, id="invalid-object"),
+    ],
+)
+def test_process_message_retries_rollout_incompatible_clipset(tmp_path, budget_value) -> None:
+    scratch = _scratch(tmp_path)
+    persisted = Clipset.from_segments(
+        JOB_ID,
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+    ).to_dict()
+    persisted["schema_version"] = LEGACY_CLIPSET_SCHEMA_VERSION
+    if budget_value == "missing":
+        persisted.pop("video_budget")
+    else:
+        persisted["video_budget"] = budget_value
+    scratch.put_bytes(
+        clipset_blob_path(JOB_ID),
+        json.dumps(persisted).encode("utf-8"),
+        "application/json",
+    )
+    record, calls = _recorder()
+    queue = FakeQueue()
+    message = _message(0)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_RETRY
+    assert calls == []
+    assert queue.deleted == []
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+
+
+def test_process_message_retries_authentic_null_budget_v1(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    persisted = Clipset.from_segments(
+        JOB_ID,
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+    ).to_dict()
+    scratch.put_bytes(
+        clipset_blob_path(JOB_ID),
+        json.dumps(persisted).encode("utf-8"),
+        "application/json",
+    )
+    record, calls = _recorder()
+    queue = FakeQueue()
+
+    outcome = process_clip_message(
+        _message(0),
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_RETRY
+    assert calls == []
+    assert queue.deleted == []
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 0))
+
+
+@pytest.mark.parametrize("stop_at", range(1, 9))
+def test_record_clip_finalization_operations_are_budgeted_and_stop_on_timeout(
+    tmp_path, stop_at
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    record, _ = _recorder()
+    calls = 0
+
+    def operation_runner(call, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 30
+        if calls == stop_at:
+            raise StorageOperationTimeout("blocked")
+        return call()
+
+    with pytest.raises(StorageOperationTimeout, match="blocked"):
+        record_clip(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            record_segment=record,
+            media_validator=_media,
+            admission_check=lambda: 30,
+            operation_runner=operation_runner,
+        )
+
+    assert calls == stop_at
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
 
 
 def test_record_clip_skips_when_manifest_present(tmp_path) -> None:
@@ -202,7 +418,9 @@ def test_write_fallback_manifest_is_terminal_and_never_overwrites(tmp_path) -> N
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)
 
-    outcome = write_fallback_manifest(JOB_ID, 1, scratch=scratch, reason="poison")
+    outcome = write_fallback_manifest(
+        JOB_ID, 1, scratch=scratch, reason="poison", renderer=_fallback
+    )
     assert outcome.status == OUTCOME_FALLBACK
     manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
     assert manifest["is_fallback"] is True
@@ -215,7 +433,7 @@ def test_write_fallback_manifest_is_terminal_and_never_overwrites(tmp_path) -> N
         b'{"clip_id":"clip-001","sentinel":true}',
         "application/json",
     )
-    write_fallback_manifest(JOB_ID, 1, scratch=scratch, reason="again")
+    write_fallback_manifest(JOB_ID, 1, scratch=scratch, reason="again", renderer=_fallback)
     preserved = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
     assert preserved.get("sentinel") is True
 
@@ -234,6 +452,29 @@ def test_process_message_malformed_body_is_deleted(tmp_path) -> None:
 
     assert outcome.status == recorder.OUTCOME_MALFORMED
     assert queue.deleted == [message]  # poison removed, no crash-loop
+
+
+def test_process_message_malformed_delete_timeout_retains_message(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    queue = FakeQueue()
+    message = QueueMessage(
+        message_id="bad-2",
+        pop_receipt="pr",
+        body="not-base64-or-json",
+        dequeue_count=1,
+    )
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        queue_operation_runner=lambda _call, _timeout: (_ for _ in ()).throw(
+            TimeoutError("blocked")
+        ),
+    )
+
+    assert outcome.status == recorder.OUTCOME_MALFORMED
+    assert queue.deleted == []
 
 
 def test_write_manifest_if_absent_never_overwrites(tmp_path) -> None:
@@ -276,11 +517,68 @@ def test_process_message_records_and_deletes(tmp_path) -> None:
     queue = FakeQueue()
     message = _message(1)
 
-    outcome = process_clip_message(message, scratch=scratch, queue=queue, record_segment=record)
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
 
     assert outcome.status == OUTCOME_RECORDED
     assert queue.deleted == [message]
     assert len(calls) == 1
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["attempts"]["executions"][0]["status"] == "succeeded"
+
+
+def test_process_message_terminal_delete_timeout_retains_message(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+    message = _message(1, dequeue_count=MAX_DEQUEUE_COUNT)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        fallback_renderer=_fallback,
+        queue_operation_runner=lambda _call, _timeout: (_ for _ in ()).throw(
+            TimeoutError("queue hung")
+        ),
+    )
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert queue.deleted == []
+    assert scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_process_message_existing_terminal_manifest_retains_message_on_delete_failure(
+    tmp_path,
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    _write_manifest_if_missing = recorder._write_manifest_if_absent
+    _write_manifest_if_missing(
+        scratch,
+        clip_manifest_blob_path(JOB_ID, 1),
+        b'{"clip_id":"clip-001","status":"success"}',
+        "application/json",
+    )
+    queue = FakeQueue()
+    message = _message(1)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        queue_operation_runner=lambda _call, _timeout: (_ for _ in ()).throw(
+            RuntimeError("queue unavailable")
+        ),
+    )
+
+    assert outcome.status == OUTCOME_SKIPPED
+    assert queue.deleted == []
 
 
 def test_process_message_poison_writes_fallback_and_deletes(tmp_path) -> None:
@@ -290,7 +588,13 @@ def test_process_message_poison_writes_fallback_and_deletes(tmp_path) -> None:
     queue = FakeQueue()
     message = _message(1, dequeue_count=MAX_DEQUEUE_COUNT)
 
-    outcome = process_clip_message(message, scratch=scratch, queue=queue, record_segment=record)
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=record,
+        fallback_renderer=_fallback,
+    )
 
     assert outcome.status == OUTCOME_FALLBACK
     assert calls == []  # never attempted a real record
@@ -314,6 +618,136 @@ def test_process_message_transient_error_leaves_message(tmp_path) -> None:
     assert queue.deleted == []  # left for redelivery / eventual poison
 
 
+@pytest.mark.parametrize(
+    "failure_call",
+    [1, 2, 3],
+    ids=["clipset-load", "admission-blob", "attempt-history"],
+)
+def test_process_message_transient_setup_storage_failure_leaves_message(
+    tmp_path, failure_call
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+    message = _message(1)
+    started = datetime(2026, 9, 21, tzinfo=timezone.utc)
+    calls = 0
+
+    def setup_operation_runner(call, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 30.0
+        if calls == failure_call:
+            raise StorageOperationTimeout("storage unavailable")
+        return call()
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        utcnow=lambda: started,
+        monotonic=lambda: 0.0,
+        setup_operation_runner=setup_operation_runner,
+    )
+
+    assert outcome.status == OUTCOME_RETRY
+    assert queue.deleted == []
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+@pytest.mark.parametrize(
+    "failure_site",
+    ["clipset-schema", "admission-schema", "timing-envelope"],
+)
+def test_process_message_permanent_setup_failure_terminalizes(
+    tmp_path, monkeypatch, failure_site
+) -> None:
+    scratch = _scratch(tmp_path)
+    if failure_site == "clipset-schema":
+        scratch.put_bytes(clipset_blob_path(JOB_ID), b"{malformed", "application/json")
+    else:
+        _stage_clipset(scratch)
+    if failure_site == "admission-schema":
+        scratch.put_bytes(
+            recorder.clip_admission_blob_path(JOB_ID, 1),
+            b"{malformed",
+            "application/json",
+        )
+    elif failure_site == "timing-envelope":
+        monkeypatch.setattr(
+            recorder,
+            "_timing_envelope",
+            lambda *_args: (_ for _ in ()).throw(ValueError("invalid timing envelope")),
+        )
+    queue = FakeQueue()
+    message = _message(1)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_INSUFFICIENT
+    assert queue.deleted == [message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["status"] == recorder.STATUS_RECORDING_INSUFFICIENT
+
+
+def test_process_message_malformed_attempt_entry_terminalizes(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    scratch.put_bytes(
+        recorder.clip_attempts_blob_path(JOB_ID, 1),
+        json.dumps(
+            {
+                "schema_version": recorder.ATTEMPT_STATE_SCHEMA_VERSION,
+                "executions": ["not-an-object"],
+            }
+        ).encode(),
+        "application/json",
+    )
+    queue = FakeQueue()
+    message = _message(1)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_INSUFFICIENT
+    assert queue.deleted == [message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["status"] == recorder.STATUS_RECORDING_INSUFFICIENT
+
+
+def test_process_message_overflow_attempt_schema_terminalizes(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    scratch.put_bytes(
+        recorder.clip_attempts_blob_path(JOB_ID, 1),
+        b'{"schema_version":1e400,"executions":[]}',
+        "application/json",
+    )
+    queue = FakeQueue()
+    message = _message(1)
+
+    outcome = process_clip_message(
+        message,
+        scratch=scratch,
+        queue=queue,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_INSUFFICIENT
+    assert queue.deleted == [message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["status"] == recorder.STATUS_RECORDING_INSUFFICIENT
+
+
 def test_drain_processes_until_empty(tmp_path) -> None:
     scratch = _scratch(tmp_path)
     _stage_clipset(scratch)
@@ -335,7 +769,8 @@ def test_fake_browser_env_selects_fake_recorder(monkeypatch) -> None:
     assert fn is recorder._fake_record_segment
 
     fn2 = recorder._select_record_segment({})
-    assert fn2 is recorder._production_record_segment
+    assert fn2 is not recorder._production_record_segment
+    assert callable(fn2)
 
 
 def test_fake_record_segment_writes_clip(tmp_path) -> None:
@@ -356,3 +791,555 @@ def test_fake_record_segment_caps_long_duration(tmp_path, monkeypatch) -> None:
     segment = VideoSegment(start_seconds=0.0, duration_seconds=1440.0)
     result = recorder._fake_record_segment(segment, tmp_path)
     assert result.duration_ms == 600_000
+
+
+def test_two_failed_dequeued_executions_terminalize_without_waiting_for_poison(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+
+    def _crash(_segment, _output_dir):
+        raise RuntimeError("browser crashed")
+
+    first = process_clip_message(
+        _message(1, dequeue_count=1),
+        scratch=scratch,
+        queue=queue,
+        record_segment=_crash,
+        fallback_renderer=_fallback,
+    )
+    second_message = _message(1, dequeue_count=2)
+    second = process_clip_message(
+        second_message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=_crash,
+        fallback_renderer=_fallback,
+    )
+
+    assert first.status == OUTCOME_RETRY
+    assert second.status == OUTCOME_FALLBACK
+    assert FAILED_EXECUTION_LIMIT == 2
+    assert queue.deleted == [second_message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["status"] == "fallback"
+    assert len([e for e in manifest["attempts"]["executions"] if e["status"] == "failed"]) == 2
+
+
+def test_cumulative_failures_survive_bounded_execution_log_rotation(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    queue = FakeQueue()
+
+    def _crash(_segment, _output_dir):
+        raise RuntimeError("browser crashed")
+
+    first = process_clip_message(
+        _message(1, dequeue_count=1),
+        scratch=scratch,
+        queue=queue,
+        record_segment=_crash,
+        fallback_renderer=_fallback,
+    )
+    assert first.status == OUTCOME_RETRY
+
+    now = datetime(2026, 9, 22, tzinfo=timezone.utc)
+    for index in range(8):
+        execution_key = f"completed-{index}"
+        recorder._begin_execution(
+            scratch,
+            JOB_ID,
+            1,
+            execution_key,
+            now_utc=now,
+        )
+        recorder._finish_execution(
+            scratch,
+            JOB_ID,
+            1,
+            execution_key,
+            status="succeeded",
+            reason=None,
+            now_utc=now,
+        )
+
+    rotated = recorder._load_attempts(scratch, JOB_ID, 1)
+    assert rotated["failure_count"] == 1
+    assert all(item["status"] == "succeeded" for item in rotated["executions"])
+
+    second_message = _message(1, dequeue_count=2)
+    second = process_clip_message(
+        second_message,
+        scratch=scratch,
+        queue=queue,
+        record_segment=_crash,
+        fallback_renderer=_fallback,
+    )
+
+    assert second.status == OUTCOME_FALLBACK
+    assert queue.deleted == [second_message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["attempts"]["failure_count"] == 2
+
+
+def test_overlapping_delivery_does_not_displace_active_successful_recorder(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    outer_queue = FakeQueue()
+    inner_queue = FakeQueue()
+    inner_outcomes = []
+
+    def _outer_record(_segment, output_dir):
+        def _inner_crash(_inner_segment, _inner_output_dir):
+            raise RuntimeError("overlapping recorder crashed")
+
+        inner_outcomes.append(
+            process_clip_message(
+                _message(1, dequeue_count=2),
+                scratch=scratch,
+                queue=inner_queue,
+                record_segment=_inner_crash,
+                fallback_renderer=_fallback,
+            )
+        )
+        path = output_dir / "clip.webm"
+        path.write_bytes(b"active-recorder-wins")
+        return RecordResult(video_path=path, duration_ms=1000)
+
+    outer_message = _message(1, dequeue_count=1)
+    outer = process_clip_message(
+        outer_message,
+        scratch=scratch,
+        queue=outer_queue,
+        record_segment=_outer_record,
+        fallback_renderer=_fallback,
+    )
+
+    assert inner_outcomes[0].status == OUTCOME_RETRY
+    assert inner_queue.deleted == []
+    assert outer.status == OUTCOME_RECORDED
+    assert outer_queue.deleted == [outer_message]
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert manifest["status"] == "success"
+    statuses = {item["key"]: item["status"] for item in manifest["attempts"]["executions"]}
+    assert statuses == {"m-1:1": "succeeded", "m-1:2": "failed"}
+
+
+def test_first_admission_survives_redelivery_and_720_second_deadline(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    segments = [VideoSegment(start_seconds=0.0, duration_seconds=30.0)]
+    clipset = Clipset.from_segments(
+        JOB_ID,
+        segments,
+        budget=VideoStageBudget.start(now_utc=started, utcnow=lambda: started).projection,
+    )
+    scratch.put_bytes(clipset_blob_path(JOB_ID), clipset.to_json_bytes(), "application/json")
+    now = {"utc": started + timedelta(seconds=100), "mono": 10.0}
+
+    def _utcnow():
+        return now["utc"]
+
+    def _mono():
+        return now["mono"]
+
+    def _crash(_segment, _output_dir):
+        raise RuntimeError("crash")
+
+    first = process_clip_message(
+        _message(0, dequeue_count=1),
+        scratch=scratch,
+        queue=FakeQueue(),
+        record_segment=_crash,
+        env={
+            "VIDEO_MAX_CLIP_RECORD_SECONDS": "0",
+            "PODCASTER_CLIP_VISIBILITY_TIMEOUT": "900",
+            "PODCASTER_RECORDER_TIMEOUT": "900",
+        },
+        utcnow=_utcnow,
+        monotonic=_mono,
+        fallback_renderer=_fallback,
+    )
+    admission_before = scratch.get_bytes(recorder.clip_admission_blob_path(JOB_ID, 0))
+    now["utc"] = started + timedelta(seconds=820)
+    now["mono"] += 720
+    calls: list[int] = []
+
+    def _must_not_launch(_segment, _output_dir):
+        calls.append(1)
+        raise AssertionError("browser launched after clip deadline")
+
+    queue = FakeQueue()
+    second = process_clip_message(
+        _message(0, dequeue_count=2),
+        scratch=scratch,
+        queue=queue,
+        record_segment=_must_not_launch,
+        env={
+            "VIDEO_MAX_CLIP_RECORD_SECONDS": "0",
+            "PODCASTER_CLIP_VISIBILITY_TIMEOUT": "900",
+            "PODCASTER_RECORDER_TIMEOUT": "900",
+        },
+        utcnow=_utcnow,
+        monotonic=_mono,
+        fallback_renderer=_fallback,
+    )
+
+    assert first.status == OUTCOME_RETRY
+    assert second.status == OUTCOME_FALLBACK
+    assert calls == []
+    assert scratch.get_bytes(recorder.clip_admission_blob_path(JOB_ID, 0)) == admission_before
+
+
+def test_local_monotonic_skew_stops_slow_capture_before_finalization(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    started = datetime.now(timezone.utc)
+    segments = [VideoSegment(start_seconds=0.0, duration_seconds=30.0)]
+    clipset = Clipset.from_segments(
+        JOB_ID,
+        segments,
+        budget=VideoStageBudget.start(now_utc=started, utcnow=lambda: started).projection,
+    )
+    scratch.put_bytes(clipset_blob_path(JOB_ID), clipset.to_json_bytes(), "application/json")
+    clock = {"utc": started, "mono": 0.0}
+
+    def _slow(_segment, output_dir):
+        path = output_dir / "clip.webm"
+        path.write_bytes(b"late-recording")
+        clock["mono"] += 601
+        return RecordResult(video_path=path, duration_ms=1000)
+
+    queue = FakeQueue()
+    outcome = process_clip_message(
+        _message(0),
+        scratch=scratch,
+        queue=queue,
+        record_segment=_slow,
+        utcnow=lambda: clock["utc"],
+        monotonic=lambda: clock["mono"],
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert queue.deleted
+    assert json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 0)))["status"] == "fallback"
+
+
+def test_parent_t_plus_1200_denies_browser_launch(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    clipset = Clipset.from_segments(
+        JOB_ID,
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+        budget=VideoStageBudget.start(now_utc=started, utcnow=lambda: started).projection,
+    )
+    scratch.put_bytes(clipset_blob_path(JOB_ID), clipset.to_json_bytes(), "application/json")
+    now = started + timedelta(seconds=1200)
+    launched: list[int] = []
+
+    outcome = process_clip_message(
+        _message(0),
+        scratch=scratch,
+        queue=FakeQueue(),
+        record_segment=lambda *_args: launched.append(1),
+        utcnow=lambda: now,
+        monotonic=lambda: 1200.0,
+        fallback_renderer=_fallback,
+    )
+
+    assert outcome.status == OUTCOME_FALLBACK
+    assert launched == []
+
+
+def test_static_fallback_is_deterministic_probe_valid_and_browser_free(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        recorder,
+        "_production_record_segment",
+        lambda *_args, **_kwargs: pytest.fail("Chromium path used"),
+    )
+    first = tmp_path / "first.webm"
+    second = tmp_path / "second.webm"
+
+    first_evidence = recorder._render_static_fallback(first, 30)
+    second_evidence = recorder._render_static_fallback(second, 30)
+
+    assert first.read_bytes() == second.read_bytes()
+    assert first_evidence == second_evidence
+    assert first_evidence.probe.format_name == "matroska,webm"
+    assert first_evidence.probe.duration_seconds == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "renderer",
+    [
+        lambda _path, _timeout: (_ for _ in ()).throw(FileNotFoundError("asset")),
+        lambda _path, _timeout: (_ for _ in ()).throw(TimeoutError("ffmpeg hung")),
+    ],
+)
+def test_missing_asset_or_renderer_timeout_is_recording_insufficient(tmp_path, renderer) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+
+    outcome = write_fallback_manifest(
+        JOB_ID,
+        1,
+        scratch=scratch,
+        reason="fanin_deadline_reached",
+        renderer=renderer,
+    )
+
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert outcome.status == recorder.OUTCOME_INSUFFICIENT
+    assert manifest["status"] == recorder.STATUS_RECORDING_INSUFFICIENT
+    assert "media_blob_path" not in manifest
+
+
+@pytest.mark.parametrize("stop_at", range(1, 9))
+def test_fallback_finalization_operations_are_budgeted_and_stop_on_timeout(
+    tmp_path, stop_at
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    calls = 0
+
+    def operation_runner(call, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 30
+        if calls == stop_at:
+            raise StorageOperationTimeout("blocked")
+        return call()
+
+    with pytest.raises(StorageOperationTimeout, match="blocked"):
+        write_fallback_manifest(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            reason="fanin_deadline_reached",
+            renderer=_fallback,
+            admission_check=lambda: 30,
+            operation_runner=operation_runner,
+        )
+
+    assert calls == stop_at
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_fallback_storage_failure_is_retryable_and_does_not_write_terminal_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    original_upload = scratch.upload_file
+    uploads = 0
+
+    def fail_content_upload(path, source, content_type):
+        nonlocal uploads
+        uploads += 1
+        if uploads == 1:
+            raise OSError("blob service unavailable")
+        return original_upload(path, source, content_type)
+
+    monkeypatch.setattr(scratch, "upload_file", fail_content_upload)
+
+    with pytest.raises(OSError, match="blob service unavailable"):
+        write_fallback_manifest(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            reason="fanin_deadline_reached",
+            renderer=_fallback,
+        )
+
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_fallback_pre_finalization_work_stops_at_shared_deadline(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    elapsed = 1498.0
+    timeouts: list[float] = []
+    rendered = False
+
+    def remaining() -> float:
+        return max(0.0, 1500.0 - elapsed)
+
+    def renderer(_path, _timeout):
+        nonlocal rendered
+        rendered = True
+        pytest.fail("stalled render escaped the owned operation runner")
+
+    def operation_runner(call, timeout):
+        nonlocal elapsed
+        timeouts.append(timeout)
+        if len(timeouts) < 3:
+            result = call()
+            elapsed += 0.25
+            return result
+        elapsed += timeout
+        raise StorageOperationTimeout("render stalled")
+
+    with pytest.raises(StorageOperationTimeout, match="render stalled"):
+        write_fallback_manifest(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            reason="fanin_deadline_reached",
+            renderer=renderer,
+            admission_check=remaining,
+            operation_runner=operation_runner,
+        )
+
+    assert timeouts == [2.0, 1.75, 1.5]
+    assert elapsed == 1500.0
+    assert rendered is False
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_fallback_rejects_late_pre_finalization_without_starting_work(tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    _stage_clipset(scratch)
+    operations = 0
+
+    def operation_runner(_call, _timeout):
+        nonlocal operations
+        operations += 1
+        pytest.fail("operation runner started after fallback deadline")
+
+    with pytest.raises(StorageOperationTimeout, match="fallback finalization"):
+        write_fallback_manifest(
+            JOB_ID,
+            1,
+            scratch=scratch,
+            reason="fanin_deadline_reached",
+            renderer=_fallback,
+            admission_check=lambda: 0,
+            operation_runner=operation_runner,
+        )
+
+    assert operations == 0
+    assert not scratch.blob_exists(clip_manifest_blob_path(JOB_ID, 1))
+
+
+def test_owned_browser_timeout_removes_partial_capture(tmp_path, monkeypatch) -> None:
+    output = tmp_path / "owned"
+    output.mkdir()
+    partial = output / "partial.webm"
+
+    def _hung(*_args, **_kwargs):
+        partial.write_bytes(b"partial")
+        raise TimeoutError("browser hung")
+
+    monkeypatch.setattr(recorder, "run_owned_process", _hung)
+
+    with pytest.raises(TimeoutError, match="browser hung"):
+        recorder._owned_production_record_segment(
+            VideoSegment(start_seconds=0.0, duration_seconds=1.0),
+            output,
+            timeout_seconds=1,
+        )
+    assert not partial.exists()
+
+
+def test_browser_deadline_uses_earliest_hard_visibility_replica_clip_and_parent() -> None:
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    clipset = Clipset.from_segments(
+        JOB_ID,
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+        budget=VideoStageBudget.start(now_utc=started, utcnow=lambda: started).projection,
+    )
+    admission = recorder.ClipAdmission.first_or_existing(
+        "clip-000",
+        now_utc=started + timedelta(seconds=100),
+    )
+
+    deadline = recorder._browser_deadline(
+        admission,
+        clipset,
+        {
+            "VIDEO_MAX_CLIP_RECORD_SECONDS": "600",
+            "PODCASTER_CLIP_VISIBILITY_TIMEOUT": "500",
+            "PODCASTER_RECORDER_TIMEOUT": "400",
+        },
+    )
+
+    assert deadline == started + timedelta(seconds=440)
+
+
+def test_late_recorder_cannot_replace_terminal_manifest_or_hash_bound_blob(tmp_path) -> None:
+    winner = b"winner-static-bytes"
+    winner_evidence = MediaEvidence(
+        size_bytes=len(winner),
+        sha256=hashlib.sha256(winner).hexdigest(),
+        probe=ProbeEvidence(format_name="matroska,webm", duration_seconds=1.0),
+    )
+    winner_path = clip_content_blob_path(JOB_ID, 1, winner_evidence.sha256)
+
+    class RacingStorage(LocalStorageBackend):
+        def upload_file(self, path, source, content_type):
+            stored = super().upload_file(path, source, content_type)
+            if path == clip_blob_path(JOB_ID, 1):
+                self.put_bytes(winner_path, winner, "video/webm")
+                self.put_bytes(
+                    clip_manifest_blob_path(JOB_ID, 1),
+                    json.dumps(
+                        {
+                            "clip_id": "clip-001",
+                            "duration_ms": 1000,
+                            "is_fallback": True,
+                            "status": "fallback",
+                            "media_blob_path": winner_path,
+                            "media": winner_evidence.to_dict(),
+                        }
+                    ).encode(),
+                    "application/json",
+                )
+            return stored
+
+    scratch = RacingStorage(tmp_path / "race", "https://example.invalid/scratch")
+    _stage_clipset(scratch)
+    record, _ = _recorder(payload=b"late-recorder-bytes")
+
+    outcome = record_clip(JOB_ID, 1, scratch=scratch, record_segment=record)
+
+    manifest = json.loads(scratch.get_bytes(clip_manifest_blob_path(JOB_ID, 1)))
+    assert outcome.status == OUTCOME_SKIPPED
+    assert manifest["media_blob_path"] == winner_path
+    assert scratch.get_bytes(winner_path) == winner
+    loser_path = clip_content_blob_path(
+        JOB_ID,
+        1,
+        hashlib.sha256(b"late-recorder-bytes").hexdigest(),
+    )
+    assert not scratch.blob_exists(loser_path)
+
+
+def test_recorder_infra_preserves_parent_reserve_contract() -> None:
+    bicep = Path("infra/modules/aca-recorder.bicep").read_text(encoding="utf-8")
+
+    assert "param replicaTimeoutSeconds int = 840" in bicep
+    assert "param clipVisibilityTimeoutSeconds int = 840" in bicep
+    assert "param maxClipRecordSeconds int = 600" in bicep
+    assert "name: 'PODCASTER_RECORDER_TIMEOUT'" in bicep
+
+
+def test_main_consumes_exactly_one_queue_message(monkeypatch, tmp_path) -> None:
+    scratch = _scratch(tmp_path)
+    queue = FakeQueue()
+    seen: list[int] = []
+
+    monkeypatch.setattr(recorder, "create_scratch_storage_backend", lambda: scratch)
+    monkeypatch.setattr(recorder, "create_clip_queue_backend", lambda: queue)
+
+    def fake_drain(actual_queue, actual_scratch, *, max_messages=256, env=None):
+        assert actual_queue is queue
+        assert actual_scratch is scratch
+        seen.append(max_messages)
+        return []
+
+    monkeypatch.setattr(recorder, "drain", fake_drain)
+
+    assert recorder.main([]) == 0
+    assert seen == [1]

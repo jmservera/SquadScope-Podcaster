@@ -6,6 +6,9 @@ import hashlib
 import json
 import logging
 import socket
+import time
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
@@ -15,32 +18,46 @@ import pytest
 from podcaster import ssrf
 from podcaster.publication_state import PublicationIdentity, append_evidence
 from podcaster.queue import QueueMessage
-from podcaster.video.distribution import DistributionResult, VideoDistributionConfig
+from podcaster.video.budget import TimingEvidenceKind, VideoStage, VideoStageBudget
+from podcaster.video.clipset import Clipset, clipset_blob_path
+from podcaster.video.distribution import ArchiveResult, DistributionResult, VideoDistributionConfig
 from podcaster.video.job_runner import (
     _DEFAULT_MUSIC_CREDITS,
     MAX_DEQUEUE_COUNT,
     REASON_ALREADY_PROCESSED,
     REASON_EDITOR_LEASE_HELD,
     REASON_NO_REPOS,
+    REASON_RECORDING_INSUFFICIENT,
     REASON_REQUIRED_YOUTUBE_FAILURE,
     REASON_RETRY_EXHAUSTED,
     REASON_WATERMARK_TRANSIENT,
     REASON_WATERMARK_UNAVAILABLE,
     STATUS_COMPLETED,
     STATUS_FAILED,
+    STATUS_RENDERED_PENDING_DISTRIBUTION,
     STATUS_SKIPPED,
     PermanentVideoError,
+    QueueDispositionError,
+    QueueDispositionTimeout,
+    TerminalStatePersistenceError,
     TransientVideoError,
     VideoOutcome,
     _already_processed,
+    _append_video_timing_evidence,
     _build_section_cards,
     _build_video_description,
+    _current_render_input_facts,
     _record_video_publication,
     _record_video_publish,
+    _record_video_state,
+    _release_editor_lease,
+    _rendered_pending_payload,
     _resolve_anchor_id,
     _resolve_dog_logo,
     _resolve_video_title,
+    _resume_rendered_pending_distribution,
     _section_card_duration_seconds,
+    _stable_sha256,
     drain,
     manifest_path,
     process_message,
@@ -50,6 +67,8 @@ from podcaster.video.job_runner import (
     show_notes_path,
     video_artifact_path,
 )
+from podcaster.video.process import MediaEvidence, MediaValidationRecord, ProbeEvidence
+from podcaster.video.sync_plan import VideoSegment, generate_generic_plan, prepend_weekly_segment
 
 
 @pytest.fixture(autouse=True)
@@ -106,6 +125,547 @@ class FakeStorage:
 
     def set_script(self, job_id: str, script: str):
         self._data[script_path(job_id)] = script.encode()
+
+
+class _P04Clock:
+    def __init__(self) -> None:
+        self.started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+        self.elapsed = 0.0
+
+    def monotonic(self) -> float:
+        return self.elapsed
+
+    def utcnow(self) -> datetime:
+        return self.started + timedelta(seconds=self.elapsed)
+
+    def budget(self) -> VideoStageBudget:
+        return VideoStageBudget.start(
+            now_utc=self.started,
+            monotonic=self.monotonic,
+            utcnow=self.utcnow,
+        )
+
+
+def test_record_video_state_fail_closed_for_terminal_status(monkeypatch):
+    storage = FakeStorage()
+    storage.set_manifest("job-terminal", {"generation": {}})
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr(storage, "update_bytes", _boom)
+
+    with pytest.raises(TerminalStatePersistenceError, match="failed to persist terminal"):
+        _record_video_state(storage, "job-terminal", {"status": STATUS_COMPLETED})
+
+
+def test_record_video_state_nonterminal_logs_without_raising(monkeypatch):
+    storage = FakeStorage()
+    storage.set_manifest("job-nonterminal", {"generation": {}})
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr(storage, "update_bytes", _boom)
+
+    _record_video_state(
+        storage,
+        "job-nonterminal",
+        {"status": STATUS_RENDERED_PENDING_DISTRIBUTION},
+    )
+
+
+def test_record_video_state_terminal_raises_with_no_shutdown_budget():
+    storage = FakeStorage()
+    storage.set_manifest("job-terminal-expired", {"generation": {}})
+    clock = _P04Clock()
+    clock.elapsed = 5100.0
+
+    with pytest.raises(TerminalStatePersistenceError, match="failed to persist terminal"):
+        _record_video_state(
+            storage,
+            "job-terminal-expired",
+            {"status": STATUS_COMPLETED},
+            budget=clock.budget(),
+            operation_runner=lambda call, timeout: call(),
+        )
+
+    manifest = json.loads(storage.get_bytes(manifest_path("job-terminal-expired")))
+    assert "video_runner" not in manifest["generation"]
+
+
+def _p04_archive_result(
+    job_id: str,
+    *,
+    elapsed: float,
+    pending_only: bool,
+    content: bytes | None = None,
+) -> ArchiveResult:
+    media = content if content is not None else b""
+    evidence = MediaEvidence(
+        size_bytes=len(media) if media else 2048,
+        sha256=hashlib.sha256(media).hexdigest() if media else "f" * 64,
+        probe=ProbeEvidence(format_name="mov,mp4", duration_seconds=60.0),
+    )
+    return ArchiveResult(
+        blob_path=f"jobs/{job_id}/video/{job_id}.mp4",
+        blob_url=f"https://blob/jobs/{job_id}/video/{job_id}.mp4",
+        validation=MediaValidationRecord(
+            artifact_kind="video_archive",
+            identity={"job_id": job_id, "source_sha256": evidence.sha256},
+            media=evidence,
+        ),
+        completed_elapsed_seconds=elapsed,
+        pending_only=pending_only,
+    )
+
+
+def _p04_probe(path: Path, timeout: float) -> ProbeEvidence:
+    assert path.stat().st_size >= 1024
+    assert timeout > 0
+    return ProbeEvidence(format_name="mov,mp4", duration_seconds=60.0)
+
+
+def _pending_manifest(job_id: str, budget: VideoStageBudget) -> tuple[dict, str]:
+    script = "A script without repositories"
+    plan = prepend_weekly_segment(
+        generate_generic_plan(300.0),
+        job_id,
+        use_live_source=True,
+    )
+    pending = _rendered_pending_payload(
+        job_id=job_id,
+        manifest={"generation": {}},
+        script=script,
+        plan=plan,
+        audio_path=None,
+        audio_duration=300.0,
+        archive_result=_p04_archive_result(
+            job_id,
+            elapsed=100,
+            pending_only=True,
+        ),
+        run_id="test-run",
+        budget=budget,
+    )
+    return {"generation": {STATUS_RENDERED_PENDING_DISTRIBUTION: pending}}, script
+
+
+def test_rendered_pending_rejects_cross_job_archive_path_before_effects(
+    storage,
+    monkeypatch,
+):
+    job_id = "pending-current-job"
+    foreign_job_id = "pending-foreign-job"
+    budget = _P04Clock().budget()
+    script = "A script without repositories"
+    content = b"v" * 2048
+    plan = prepend_weekly_segment(
+        generate_generic_plan(300.0),
+        job_id,
+        use_live_source=True,
+    )
+    pending = _rendered_pending_payload(
+        job_id=job_id,
+        manifest={"generation": {}},
+        script=script,
+        plan=plan,
+        audio_path=None,
+        audio_duration=300.0,
+        archive_result=_p04_archive_result(
+            job_id,
+            elapsed=100,
+            pending_only=True,
+            content=content,
+        ),
+        run_id="test-run",
+        budget=budget,
+    )
+    foreign_path = video_artifact_path(foreign_job_id)
+    pending["artifact"]["blob_path"] = foreign_path
+    core = {key: value for key, value in pending.items() if key != "record_sha256"}
+    pending["record_sha256"] = _stable_sha256(core)
+    manifest = {"generation": {STATUS_RENDERED_PENDING_DISTRIBUTION: pending}}
+    storage.set_manifest(job_id, manifest)
+    storage.set_script(job_id, script)
+    storage.put_bytes(foreign_path, content, "video/mp4")
+    download = MagicMock(side_effect=AssertionError("pending archive download attempted"))
+    distribute = MagicMock(side_effect=AssertionError("distribution attempted"))
+    monkeypatch.setattr("podcaster.video.job_runner._download_rendered_pending", download)
+    monkeypatch.setattr("podcaster.video.job_runner.distribute_video", distribute)
+
+    with pytest.raises(TransientVideoError, match="blob path is not canonical"):
+        _resume_rendered_pending_distribution(
+            job_id,
+            manifest,
+            storage,
+            VideoDistributionConfig(blob_archive_enabled=True, dry_run=True),
+            budget,
+            media_probe=None,
+            storage_operation_runner=None,
+        )
+
+    download.assert_not_called()
+    distribute.assert_not_called()
+
+
+def test_pending_replay_after_preflight_cutoff_reuses_persisted_clipset(storage):
+    job_id = "pending-removed-repo"
+    script = "Ada: https://github.com/octo/removed"
+    clock = _P04Clock()
+    budget = clock.budget()
+    clock.elapsed = 301.0
+    persisted_clipset = {"count": 1, "sha256": "a" * 64}
+
+    current_clipset, current_audio = _current_render_input_facts(
+        job_id=job_id,
+        manifest={"generation": {}},
+        script=script,
+        storage=storage,
+        budget=budget,
+        recorded_audio={"present": False},
+        clipset_storage=None,
+        persisted_clipset=persisted_clipset,
+    )
+
+    assert current_clipset == persisted_clipset
+    assert current_audio == {"present": False}
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda record: record.pop("clipset"), "clipset identity is missing"),
+        (
+            lambda record: record["clipset"].update({"sha256": "0" * 64}),
+            "clipset identity mismatch",
+        ),
+        (lambda record: record.pop("audio"), "audio identity is missing"),
+        (
+            lambda record: record["audio"].update(
+                {
+                    "present": True,
+                    "blob_path": f"jobs/{record['job_id']}/audio/{record['job_id']}.mp3",
+                    "size_bytes": 2048,
+                    "sha256": "1" * 64,
+                    "duration_seconds": 300.0,
+                }
+            ),
+            "audio identity mismatch",
+        ),
+    ],
+)
+def test_rendered_pending_redelivery_rejects_missing_or_stale_input_identity_before_effects(
+    storage,
+    monkeypatch,
+    mutate,
+    message,
+):
+    job_id = f"pending-identity-{message.split()[0]}"
+    budget = _P04Clock().budget()
+    manifest, script = _pending_manifest(job_id, budget)
+    record = manifest["generation"][STATUS_RENDERED_PENDING_DISTRIBUTION]
+    mutate(record)
+    core = {key: value for key, value in record.items() if key != "record_sha256"}
+    record["record_sha256"] = _stable_sha256(core)
+    storage.set_manifest(job_id, manifest)
+    storage.set_script(job_id, script)
+    download = MagicMock(side_effect=AssertionError("pending archive download attempted"))
+    distribute = MagicMock(side_effect=AssertionError("distribution attempted"))
+    publish = MagicMock(side_effect=AssertionError("provider mutation attempted"))
+    monkeypatch.setattr("podcaster.video.job_runner._download_rendered_pending", download)
+    monkeypatch.setattr("podcaster.video.job_runner.distribute_video", distribute)
+    monkeypatch.setattr("podcaster.video.job_runner._ensure_video_publish_run", publish)
+
+    with pytest.raises(PermanentVideoError, match=message):
+        _resume_rendered_pending_distribution(
+            job_id,
+            manifest,
+            storage,
+            VideoDistributionConfig(
+                youtube_enabled=True,
+                blob_archive_enabled=True,
+                dry_run=False,
+            ),
+            budget,
+            media_probe=None,
+            storage_operation_runner=None,
+        )
+
+    download.assert_not_called()
+    distribute.assert_not_called()
+    publish.assert_not_called()
+    persisted = json.loads(storage.get_bytes(manifest_path(job_id)))
+    assert persisted["generation"]["video_runner"]["status"] == STATUS_FAILED
+    assert (
+        persisted["generation"]["video_runner"]["reason"]
+        == "rendered_pending_input_identity_mismatch"
+    )
+
+
+def test_rendered_pending_redelivery_rejects_authoritatively_changed_clipset_before_effects(
+    storage,
+    monkeypatch,
+):
+    job_id = "pending-stale-clipset"
+    budget = _P04Clock().budget()
+    manifest, script = _pending_manifest(job_id, budget)
+    manifest["generation"]["validation"] = {"duration_seconds": 600.0}
+    storage.set_manifest(job_id, manifest)
+    storage.set_script(job_id, script)
+    download = MagicMock(side_effect=AssertionError("pending archive download attempted"))
+    distribute = MagicMock(side_effect=AssertionError("distribution attempted"))
+    publish = MagicMock(side_effect=AssertionError("provider mutation attempted"))
+    monkeypatch.setattr("podcaster.video.job_runner._download_rendered_pending", download)
+    monkeypatch.setattr("podcaster.video.job_runner.distribute_video", distribute)
+    monkeypatch.setattr("podcaster.video.job_runner._ensure_video_publish_run", publish)
+
+    with pytest.raises(PermanentVideoError, match="clipset identity mismatch"):
+        _resume_rendered_pending_distribution(
+            job_id,
+            manifest,
+            storage,
+            VideoDistributionConfig(
+                youtube_enabled=True,
+                blob_archive_enabled=True,
+                dry_run=False,
+            ),
+            budget,
+            media_probe=None,
+            storage_operation_runner=None,
+        )
+
+    download.assert_not_called()
+    distribute.assert_not_called()
+    publish.assert_not_called()
+
+
+def test_rendered_pending_redelivery_rejects_authoritatively_changed_audio_before_effects(
+    storage,
+    monkeypatch,
+    tmp_path,
+):
+    job_id = "pending-stale-audio"
+    budget = _P04Clock().budget()
+    script = "A script without repositories"
+    audio_bytes = b"a" * 2048
+    audio_path = tmp_path / "episode.mp3"
+    audio_path.write_bytes(audio_bytes)
+    blob_path = f"jobs/{job_id}/audio/{job_id}.mp3"
+    manifest = {
+        "artifacts": {
+            blob_path: {
+                "size_bytes": len(audio_bytes),
+                "sha256": hashlib.sha256(audio_bytes).hexdigest(),
+            }
+        },
+        "generation": {},
+    }
+    plan = prepend_weekly_segment(
+        generate_generic_plan(300.0),
+        job_id,
+        use_live_source=True,
+    )
+    pending = _rendered_pending_payload(
+        job_id=job_id,
+        manifest=manifest,
+        script=script,
+        plan=plan,
+        audio_path=audio_path,
+        audio_duration=300.0,
+        archive_result=_p04_archive_result(job_id, elapsed=100, pending_only=True),
+        run_id="test-run",
+        budget=budget,
+    )
+    manifest["generation"][STATUS_RENDERED_PENDING_DISTRIBUTION] = pending
+    manifest["artifacts"][blob_path]["sha256"] = "0" * 64
+    storage.set_manifest(job_id, manifest)
+    storage.set_script(job_id, script)
+    download = MagicMock(side_effect=AssertionError("pending archive download attempted"))
+    distribute = MagicMock(side_effect=AssertionError("distribution attempted"))
+    publish = MagicMock(side_effect=AssertionError("provider mutation attempted"))
+    monkeypatch.setattr("podcaster.video.job_runner._download_rendered_pending", download)
+    monkeypatch.setattr("podcaster.video.job_runner.distribute_video", distribute)
+    monkeypatch.setattr("podcaster.video.job_runner._ensure_video_publish_run", publish)
+
+    with pytest.raises(PermanentVideoError, match="audio identity mismatch"):
+        _resume_rendered_pending_distribution(
+            job_id,
+            manifest,
+            storage,
+            VideoDistributionConfig(
+                youtube_enabled=True,
+                blob_archive_enabled=True,
+                dry_run=False,
+            ),
+            budget,
+            media_probe=None,
+            storage_operation_runner=None,
+        )
+
+    download.assert_not_called()
+    distribute.assert_not_called()
+    publish.assert_not_called()
+
+
+def test_rendered_pending_redelivery_accepts_unchanged_audio_and_fanout_clipset(
+    storage,
+    monkeypatch,
+    tmp_path,
+):
+    job_id = "pending-fanout-replay"
+    budget = _P04Clock().budget()
+    script = "A script whose newly generated plan differs from the selected clipset"
+    audio_bytes = b"real-audio" * 256
+    audio_path = tmp_path / "episode.mp3"
+    audio_path.write_bytes(audio_bytes)
+    audio_blob_path = f"jobs/{job_id}/audio/{job_id}.mp3"
+    selected = Clipset.from_segments(
+        job_id,
+        [
+            VideoSegment(
+                start_seconds=17.0,
+                duration_seconds=43.0,
+            )
+        ],
+        budget=budget.projection,
+    )
+    manifest = {
+        "artifacts": {
+            audio_blob_path: {
+                "size_bytes": len(audio_bytes),
+                "sha256": hashlib.sha256(audio_bytes).hexdigest(),
+            }
+        },
+        "generation": {"validation": {"duration_seconds": 600.0}},
+    }
+    pending = _rendered_pending_payload(
+        job_id=job_id,
+        manifest=manifest,
+        script=script,
+        plan=selected,
+        audio_path=audio_path,
+        audio_duration=300.0,
+        archive_result=_p04_archive_result(job_id, elapsed=100, pending_only=True),
+        run_id="fanout-run",
+        budget=budget,
+    )
+    manifest["generation"][STATUS_RENDERED_PENDING_DISTRIBUTION] = pending
+    storage.set_manifest(job_id, manifest)
+    storage.set_script(job_id, script)
+    scratch = _ScratchStorage()
+    scratch.put_bytes(
+        clipset_blob_path(job_id),
+        selected.to_json_bytes(),
+        "application/json",
+    )
+    download = MagicMock()
+    monkeypatch.setattr("podcaster.video.job_runner._download_rendered_pending", download)
+
+    outcome = _resume_rendered_pending_distribution(
+        job_id,
+        manifest,
+        storage,
+        VideoDistributionConfig(blob_archive_enabled=True, dry_run=False),
+        budget,
+        media_probe=None,
+        storage_operation_runner=None,
+        clipset_storage=scratch,
+    )
+
+    assert outcome is not None
+    assert outcome.status == STATUS_COMPLETED
+    assert outcome.segment_count == selected.count
+    download.assert_called_once()
+
+
+def test_rendered_pending_foreign_fanout_clipset_is_permanent_before_effects(
+    storage,
+    monkeypatch,
+):
+    job_id = "pending-foreign-fanout"
+    budget = _P04Clock().budget()
+    manifest, script = _pending_manifest(job_id, budget)
+    storage.set_manifest(job_id, manifest)
+    storage.set_script(job_id, script)
+    scratch = _ScratchStorage()
+    foreign = Clipset.from_segments(
+        "foreign-job",
+        [VideoSegment(start_seconds=0.0, duration_seconds=30.0)],
+        budget=budget.projection,
+    )
+    scratch.put_bytes(
+        clipset_blob_path(job_id),
+        foreign.to_json_bytes(),
+        "application/json",
+    )
+    download = MagicMock(side_effect=AssertionError("pending archive download attempted"))
+    monkeypatch.setattr("podcaster.video.job_runner._download_rendered_pending", download)
+
+    with pytest.raises(PermanentVideoError, match="belongs to another job") as captured:
+        _resume_rendered_pending_distribution(
+            job_id,
+            manifest,
+            storage,
+            VideoDistributionConfig(blob_archive_enabled=True, dry_run=False),
+            budget,
+            media_probe=None,
+            storage_operation_runner=None,
+            clipset_storage=scratch,
+        )
+
+    assert captured.value.reason == "rendered_pending_input_identity_mismatch"
+    download.assert_not_called()
+    persisted = json.loads(storage.get_bytes(manifest_path(job_id)))
+    assert persisted["generation"]["video_runner"]["status"] == STATUS_FAILED
+
+
+def test_t85_shutdown_evidence_and_owned_lease_release_are_bounded(storage, monkeypatch):
+    job_id = "shutdown-boundary"
+    storage.set_manifest(job_id, {"generation": {}})
+    clock = _P04Clock()
+    budget = clock.budget()
+    clock.elapsed = 5099
+    released = MagicMock()
+    monkeypatch.setattr("podcaster.video.editor.release_lease", released)
+    timeouts: list[float] = []
+
+    def runner(call, timeout):
+        timeouts.append(timeout)
+        return call()
+
+    _append_video_timing_evidence(
+        storage,
+        job_id,
+        budget,
+        kind=TimingEvidenceKind.CANCELLATION,
+        stage=VideoStage.SHUTDOWN,
+        reason="graceful_stop",
+        details={"heartbeat_stopped": True},
+    )
+    _release_editor_lease(
+        storage,
+        job_id,
+        "owned-run",
+        budget=budget,
+        operation_runner=runner,
+    )
+    clock.elapsed = 5100
+    _append_video_timing_evidence(
+        storage,
+        job_id,
+        budget,
+        kind=TimingEvidenceKind.CANCELLATION,
+        stage=VideoStage.SHUTDOWN,
+        reason="too_late",
+    )
+
+    manifest = json.loads(storage._data[manifest_path(job_id)])
+    events = manifest["generation"]["video_timing_evidence"]["events"]
+    assert [event["reason"] for event in events] == ["graceful_stop"]
+    assert events[0]["remaining_seconds"] == 1.0
+    assert timeouts == [1.0]
+    released.assert_called_once_with(storage, job_id, "owned-run")
 
 
 class FailingUpdateStorage(FakeStorage):
@@ -257,6 +817,42 @@ def test_video_publication_evidence_preserves_normalized_provider_fields(monkeyp
     assert append.call_args.kwargs["retry_blocked"] is True
 
 
+def test_youtube_unknown_publication_evidence_is_retry_blocked(monkeypatch):
+    from podcaster.video import job_runner
+
+    storage = FakeStorage()
+    job_id = "video-youtube-unknown"
+    storage.set_manifest(job_id, {"generation": {}})
+    append = MagicMock()
+    monkeypatch.setattr(job_runner, "append_evidence", append)
+    monkeypatch.setattr(job_runner, "emit_publication_signal", MagicMock())
+
+    _record_video_publication(
+        storage,
+        job_id,
+        PublicationIdentity(job_id, "2026-W37", "1", "a" * 64, "b" * 64),
+        "youtube",
+        {
+            "status": "published",
+            "provider_status": "unknown",
+            "outcome": "publication_unknown",
+            "transport_status": "not_attempted",
+            "verification": "none",
+            "evidence_source": "provider_mutation_admission",
+            "last_error_code": "provider_deadline_reached",
+            "retry_blocked": True,
+        },
+    )
+
+    manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+    snapshot = manifest["generation"]["video_publish"]["youtube"]
+    assert snapshot["outcome"] == "publication_unknown"
+    assert snapshot["retry_blocked"] is True
+    assert append.call_args.kwargs["outcome"] == "publication_unknown"
+    assert append.call_args.kwargs["retry_blocked"] is True
+    assert append.call_args.kwargs["code"] == "provider_deadline_reached"
+
+
 def test_spotify_rss_evidence_key_stays_distinct_from_spotify_upload(monkeypatch):
     from podcaster.video import job_runner
 
@@ -295,6 +891,24 @@ class FakeQueue:
 
     def delete_message(self, message: QueueMessage):
         self.deleted.append(message)
+
+
+class HandoffQueue(FakeQueue):
+    def __init__(self, *, fail_delete: bool = False):
+        super().__init__()
+        self.sent: list[str] = []
+        self.events: list[str] = []
+        self.fail_delete = fail_delete
+
+    def send_message(self, body: str):
+        self.events.append("send")
+        self.sent.append(body)
+
+    def delete_message(self, message: QueueMessage):
+        self.events.append("delete")
+        if self.fail_delete:
+            raise RuntimeError("delete response lost")
+        super().delete_message(message)
 
 
 def _make_message(job_id: str, dequeue_count: int = 1) -> QueueMessage:
@@ -660,6 +1274,276 @@ class TestRunVideoGeneration:
         with pytest.raises(TransientVideoError, match="no script"):
             run_video_generation("no-script", storage, config=dry_config)
 
+    @patch("podcaster.video.job_runner._ensure_video_publish_run")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.job_runner.archive_video_verified")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_late_verified_archive_returns_pending_without_provider_intent(
+        self,
+        mock_compose,
+        mock_record,
+        mock_archive,
+        mock_distribute,
+        mock_publish_run,
+        storage,
+    ):
+        job_id = "late-archive"
+        storage.set_manifest(job_id, {"generation": {}})
+        storage.set_script(job_id, "A script without repositories")
+        mock_record.return_value = MagicMock(recorded=[])
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            output_path.write_bytes(b"x" * 2048)
+            return MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=1,
+                has_audio=False,
+            )
+
+        mock_compose.side_effect = fake_compose
+        mock_archive.return_value = _p04_archive_result(
+            job_id,
+            elapsed=3301,
+            pending_only=True,
+        )
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            blob_archive_enabled=True,
+            dry_run=False,
+        )
+
+        outcome = run_video_generation(job_id, storage, config=config)
+
+        assert outcome.status == "rendered_pending_distribution"
+        mock_distribute.assert_not_called()
+        mock_publish_run.assert_not_called()
+        manifest = json.loads(storage._data[manifest_path(job_id)])
+        pending = manifest["generation"]["rendered_pending_distribution"]
+        assert pending["artifact"]["validation"]["media"]["size_bytes"] == 2048
+        assert pending["artifact"]["validation"]["media"]["sha256"] == "f" * 64
+        assert pending["record_sha256"]
+        events = manifest["generation"]["video_timing_evidence"]["events"]
+        assert {event["kind"] for event in events} >= {"attempt", "artifact", "cancellation"}
+        artifact_event = next(event for event in events if event["kind"] == "artifact")
+        assert artifact_event["details"]["artifact_sha256"] == "f" * 64
+        assert artifact_event["details"]["stage_deadline_seconds"] == "3600"
+        assert float(artifact_event["details"]["elapsed_seconds"]) >= 0
+
+    @patch("podcaster.video.job_runner._ensure_video_publish_run")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.job_runner.archive_video_verified")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_crash_before_render_boundary_creates_no_intent_or_pending_record(
+        self,
+        mock_compose,
+        mock_record,
+        mock_archive,
+        mock_distribute,
+        mock_publish_run,
+        storage,
+    ):
+        job_id = "crash-before-boundary"
+        storage.set_manifest(job_id, {"generation": {}})
+        storage.set_script(job_id, "A script without repositories")
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"x" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=1,
+                has_audio=False,
+            ),
+        )[1]
+        mock_archive.side_effect = TimeoutError("archive readback interrupted")
+
+        with pytest.raises(TransientVideoError):
+            run_video_generation(
+                job_id,
+                storage,
+                config=VideoDistributionConfig(
+                    youtube_enabled=True,
+                    blob_archive_enabled=True,
+                    dry_run=False,
+                ),
+            )
+
+        manifest = json.loads(storage._data[manifest_path(job_id)])
+        assert "rendered_pending_distribution" not in manifest["generation"]
+        mock_publish_run.assert_not_called()
+        mock_distribute.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "archive_elapsed,expected_distribution",
+        [(3299.0, True), (3300.0, True), (3301.0, False), (3600.0, False)],
+    )
+    @patch("podcaster.video.job_runner._ensure_video_publish_run", return_value="7")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.job_runner.archive_video_verified")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_archive_completion_and_provider_admission_are_integrated(
+        self,
+        mock_compose,
+        mock_record,
+        mock_archive,
+        mock_distribute,
+        mock_publish_run,
+        archive_elapsed,
+        expected_distribution,
+        storage,
+    ):
+        job_id = f"admission-{int(archive_elapsed)}"
+        storage.set_manifest(job_id, {"generation": {}})
+        storage.set_script(job_id, "A script without repositories")
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_distribute.return_value = DistributionResult(status="completed")
+        clock = _P04Clock()
+        budget = clock.budget()
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            output_path.write_bytes(b"x" * 2048)
+            return MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=1,
+                has_audio=False,
+            )
+
+        def fake_archive(*args, **kwargs):
+            clock.elapsed = archive_elapsed
+            return _p04_archive_result(
+                job_id,
+                elapsed=archive_elapsed,
+                pending_only=archive_elapsed > 3300,
+            )
+
+        mock_compose.side_effect = fake_compose
+        mock_archive.side_effect = fake_archive
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            blob_archive_enabled=True,
+            dry_run=False,
+        )
+
+        outcome = run_video_generation(job_id, storage, config=config, budget=budget)
+
+        assert mock_distribute.called is expected_distribution
+        assert mock_publish_run.called is expected_distribution
+        manifest = json.loads(storage._data[manifest_path(job_id)])
+        assert "rendered_pending_distribution" in manifest["generation"]
+        if expected_distribution:
+            assert outcome.status == STATUS_COMPLETED
+        else:
+            assert outcome.status == "rendered_pending_distribution"
+
+    @patch("podcaster.video.job_runner._ensure_video_publish_run")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.job_runner.archive_video_verified")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_crash_after_boundary_redelivery_validates_archive_without_rerender(
+        self,
+        mock_compose,
+        mock_record,
+        mock_archive,
+        mock_distribute,
+        mock_publish_run,
+        storage,
+    ):
+        job_id = "resume-render-boundary"
+        video_bytes = b"v" * 2048
+        blob_path = f"jobs/{job_id}/video/{job_id}.mp4"
+        storage.set_manifest(job_id, {"generation": {}})
+        storage.set_script(job_id, "A script without repositories")
+        storage._data[blob_path] = video_bytes
+        mock_record.return_value = MagicMock(recorded=[])
+        clock = _P04Clock()
+        budget = clock.budget()
+
+        def fake_compose(segments, audio_path=None, output_path=None, runner=None, **kwargs):
+            output_path.write_bytes(video_bytes)
+            return MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=1,
+                has_audio=False,
+            )
+
+        mock_compose.side_effect = fake_compose
+        mock_archive.return_value = _p04_archive_result(
+            job_id,
+            elapsed=100,
+            pending_only=False,
+            content=video_bytes,
+        )
+        mock_publish_run.side_effect = [RuntimeError("crash before intent"), "9"]
+        mock_distribute.return_value = DistributionResult(status="completed")
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            blob_archive_enabled=True,
+            dry_run=False,
+        )
+
+        with pytest.raises(TransientVideoError):
+            run_video_generation(job_id, storage, config=config, budget=budget)
+
+        first_record_calls = mock_record.call_count
+        first_compose_calls = mock_compose.call_count
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=config,
+            budget=budget,
+            media_probe=lambda path, timeout: ProbeEvidence(
+                format_name="mov,mp4",
+                duration_seconds=60.0,
+            ),
+        )
+
+        assert outcome.status == STATUS_COMPLETED
+        assert mock_record.call_count == first_record_calls
+        assert mock_compose.call_count == first_compose_calls
+        assert mock_archive.call_count == 1
+        assert mock_distribute.call_count == 1
+
+    def test_non_fanout_pending_resume_honors_durable_editor_lease(
+        self,
+        storage,
+        dry_config,
+    ):
+        from podcaster.video.editor import EditorLease, editor_lease_blob_path
+
+        job_id = "resume-lease-non-fanout"
+        now = datetime(2026, 9, 15, tzinfo=timezone.utc)
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {
+                    STATUS_RENDERED_PENDING_DISTRIBUTION: {"sentinel": True},
+                },
+            },
+        )
+        storage.put_bytes(
+            editor_lease_blob_path(job_id),
+            EditorLease("other-run", now, now + timedelta(seconds=900)).to_bytes(),
+            "application/json",
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            now=now,
+            fanout=False,
+        )
+
+        assert outcome.status == STATUS_SKIPPED
+        assert outcome.reason == REASON_EDITOR_LEASE_HELD
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_no_repos_generates_generic_video(self, mock_compose, mock_record, storage, dry_config):
@@ -867,6 +1751,7 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         prior = mock_distribute.call_args.kwargs["published"]["spotify_upload"]
@@ -933,6 +1818,7 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         mock_distribute.assert_called_once()
@@ -981,6 +1867,7 @@ class TestRunVideoGeneration:
                     blob_archive_enabled=False,
                     dry_run=False,
                 ),
+                media_probe=_p04_probe,
             )
 
         mock_distribute.assert_not_called()
@@ -1034,6 +1921,7 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         assert mock_distribute.call_args.kwargs["published"]["youtube"]["outcome"] == (
@@ -1091,6 +1979,7 @@ class TestRunVideoGeneration:
         monkeypatch.setenv("SP_DC", "dc")
         monkeypatch.setenv("SP_KEY", "key")
         monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "false")
         monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
         create = MagicMock(return_value=777)
@@ -1129,10 +2018,10 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         assert outcome.status == STATUS_COMPLETED
-        create.assert_called_once()
         evidence = read_evidence(storage, job_id)
         operations = [record["operation"] for record in evidence["records"]]
         assert operations == [
@@ -1249,10 +2138,10 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         assert outcome.status == STATUS_COMPLETED
-        create.assert_called_once()
         evidence = read_evidence(storage, job_id)
         operations = [record["operation"] for record in evidence["records"]]
         assert operations.count("create_episode_intent") == 2
@@ -1330,6 +2219,7 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         assert outcome.status == STATUS_FAILED
@@ -1373,6 +2263,7 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         assert outcome.status == "partial"
@@ -2014,7 +2905,12 @@ class TestRunVideoGeneration:
 
         mock_compose.side_effect = fake_compose
 
-        outcome = run_video_generation(job_id, storage, config=dry_config)
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            media_probe=lambda path, timeout: ProbeEvidence("mp3", 123.0),
+        )
         assert outcome.status == STATUS_COMPLETED
         mock_probe.assert_called_once()
         # The plan total duration must reflect the probed 123s, not 300s.
@@ -2056,7 +2952,12 @@ class TestRunVideoGeneration:
 
         mock_compose.side_effect = fake_compose
 
-        outcome = run_video_generation(job_id, storage, config=dry_config)
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            media_probe=lambda path, timeout: ProbeEvidence("mp3", 222.0),
+        )
         assert outcome.status == STATUS_COMPLETED
         plan = mock_record.call_args.args[0]
         assert plan.total_duration_seconds == pytest.approx(222.0)
@@ -2178,6 +3079,24 @@ class TestProcessMessage:
         assert outcome.reason == REASON_RETRY_EXHAUSTED
         assert len(queue.deleted) == 1
 
+    @pytest.mark.parametrize("dequeue_count", [MAX_DEQUEUE_COUNT, MAX_DEQUEUE_COUNT + 1])
+    def test_terminal_state_persistence_failure_never_deletes_at_retry_limit(
+        self, storage, queue, dry_config, dequeue_count
+    ):
+        msg = _make_message("terminal-state-missing", dequeue_count=dequeue_count)
+        with (
+            patch("podcaster.video.job_runner.report_failure") as mock_report,
+            patch(
+                "podcaster.video.job_runner.run_video_generation",
+                side_effect=TerminalStatePersistenceError("terminal state was not persisted"),
+            ),
+            pytest.raises(TerminalStatePersistenceError, match="was not persisted"),
+        ):
+            process_message(msg, storage=storage, queue=queue, config=dry_config)
+
+        assert queue.deleted == []
+        mock_report.assert_not_called()
+
     def test_successful_processing_deletes(self, storage, queue, dry_config):
         job_id = "success-job"
         storage.set_manifest(
@@ -2208,6 +3127,119 @@ class TestProcessMessage:
         assert outcome.reason == REASON_EDITOR_LEASE_HELD
         assert len(queue.deleted) == 0
 
+    def test_rendered_pending_distribution_leaves_message_for_redelivery(
+        self, storage, queue, dry_config
+    ):
+        msg = _make_message("pending-distribution")
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=VideoOutcome(
+                "pending-distribution",
+                "rendered_pending_distribution",
+                reason="provider_reserve_insufficient",
+            ),
+        ):
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+        assert outcome.status == "rendered_pending_distribution"
+        assert queue.deleted == []
+
+    def test_rendered_pending_distribution_requeues_before_delete_when_admitted(
+        self, storage, dry_config
+    ):
+        queue = HandoffQueue()
+        msg = _make_message("pending-handoff")
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=VideoOutcome(
+                "pending-handoff",
+                "rendered_pending_distribution",
+                reason="provider_reserve_insufficient",
+            ),
+        ):
+            outcome = process_message(
+                msg,
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                queue_operation_runner=lambda call, timeout: call(),
+            )
+
+        assert outcome.status == "rendered_pending_distribution"
+        assert queue.events == ["send", "delete"]
+        assert len(queue.sent) == 1
+        assert queue.deleted == [msg]
+
+    def test_rendered_pending_distribution_send_delete_ambiguity_is_fail_closed(
+        self, storage, dry_config
+    ):
+        queue = HandoffQueue(fail_delete=True)
+        msg = _make_message("pending-ambiguous-handoff")
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=VideoOutcome(
+                "pending-ambiguous-handoff",
+                "rendered_pending_distribution",
+                reason="provider_reserve_insufficient",
+            ),
+        ):
+            outcome = process_message(
+                msg,
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                queue_operation_runner=lambda call, timeout: call(),
+            )
+
+        assert outcome.status == "rendered_pending_distribution"
+        assert queue.events == ["send", "delete"]
+        assert len(queue.sent) == 1
+        assert queue.deleted == []
+
+    def test_rendered_pending_distribution_does_not_hot_loop_after_admission_closes(
+        self, storage, dry_config
+    ):
+        queue = HandoffQueue()
+        msg = _make_message("pending-exhausted")
+        clock = _P04Clock()
+        clock.elapsed = 3301
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=VideoOutcome(
+                "pending-exhausted",
+                "rendered_pending_distribution",
+                reason="provider_deadline_reached",
+            ),
+        ):
+            outcome = process_message(
+                msg,
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                budget=clock.budget(),
+                queue_operation_runner=lambda call, timeout: call(),
+            )
+
+        assert outcome.status == "rendered_pending_distribution"
+        assert queue.events == []
+        assert queue.sent == []
+        assert queue.deleted == []
+
+    def test_rendered_pending_distribution_retains_poison_delete_semantics(
+        self, storage, queue, dry_config
+    ):
+        msg = _make_message("pending-poison", dequeue_count=MAX_DEQUEUE_COUNT)
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=VideoOutcome(
+                "pending-poison",
+                "rendered_pending_distribution",
+                reason="provider_deadline_reached",
+            ),
+        ):
+            outcome = process_message(msg, storage=storage, queue=queue, config=dry_config)
+        assert outcome.status == "rendered_pending_distribution"
+        assert len(queue.deleted) == 1
+
     def test_permanent_failure_deletes_message_without_retry(self, storage, queue, dry_config):
         msg = _make_message("permanent-youtube-failure", dequeue_count=1)
         with (
@@ -2231,6 +3263,179 @@ class TestProcessMessage:
         assert (
             mock_report.call_args.kwargs["details"]["youtube_oauth_error_subtype"] == "invalid_rapt"
         )
+
+    def test_terminal_delete_precedes_optional_cleanup(self, storage, dry_config):
+        clock = _P04Clock()
+        budget = clock.budget()
+        events: list[str] = []
+
+        class OrderedQueue(FakeQueue):
+            def delete_message(self, message):
+                events.append("delete")
+                super().delete_message(message)
+
+        queue = OrderedQueue()
+        outcome = VideoOutcome(
+            "terminal-order",
+            STATUS_COMPLETED,
+            _optional_cleanup=lambda: events.append("cleanup"),
+        )
+        with patch("podcaster.video.job_runner.run_video_generation", return_value=outcome):
+            result = process_message(
+                _make_message("terminal-order"),
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                budget=budget,
+                queue_operation_runner=lambda call, timeout: call(),
+            )
+
+        assert result.status == STATUS_COMPLETED
+        assert events == ["delete", "cleanup"]
+
+    @pytest.mark.parametrize(
+        ("outcome", "side_effect"),
+        [
+            (
+                VideoOutcome(
+                    "pending-retained",
+                    STATUS_RENDERED_PENDING_DISTRIBUTION,
+                    _optional_cleanup=lambda: None,
+                ),
+                None,
+            ),
+            (None, TransientVideoError("retry")),
+        ],
+    )
+    def test_nonterminal_outcomes_are_retained_without_cleanup(
+        self,
+        storage,
+        queue,
+        dry_config,
+        outcome,
+        side_effect,
+    ):
+        clock = _P04Clock()
+        budget = clock.budget()
+        cleanup = MagicMock()
+        if outcome is not None:
+            outcome = replace(outcome, _optional_cleanup=cleanup)
+        with patch(
+            "podcaster.video.job_runner.run_video_generation",
+            return_value=outcome,
+            side_effect=side_effect,
+        ):
+            result = process_message(
+                _make_message("pending-retained"),
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                budget=budget,
+                queue_operation_runner=lambda call, timeout: call(),
+            )
+
+        assert result.status in (STATUS_FAILED, STATUS_RENDERED_PENDING_DISTRIBUTION)
+        assert queue.deleted == []
+        cleanup.assert_not_called()
+
+    def test_zero_shutdown_budget_blocks_terminal_delete_and_cleanup(
+        self,
+        storage,
+        queue,
+        dry_config,
+    ):
+        clock = _P04Clock()
+        budget = clock.budget()
+        clock.elapsed = 5100.0
+        cleanup = MagicMock()
+        outcome = VideoOutcome(
+            "expired-delete",
+            STATUS_COMPLETED,
+            _optional_cleanup=cleanup,
+        )
+
+        with (
+            patch("podcaster.video.job_runner.run_video_generation", return_value=outcome),
+            pytest.raises(QueueDispositionTimeout, match="no shutdown budget"),
+        ):
+            process_message(
+                _make_message("expired-delete"),
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                budget=budget,
+            )
+
+        assert queue.deleted == []
+        cleanup.assert_not_called()
+
+    def test_queue_delete_failure_surfaces_without_success(
+        self,
+        storage,
+        queue,
+        dry_config,
+    ):
+        clock = _P04Clock()
+        budget = clock.budget()
+        cleanup = MagicMock()
+        outcome = VideoOutcome(
+            "delete-failed",
+            STATUS_COMPLETED,
+            _optional_cleanup=cleanup,
+        )
+
+        def fail_delete(call, timeout):
+            raise RuntimeError("queue unavailable")
+
+        with (
+            patch("podcaster.video.job_runner.run_video_generation", return_value=outcome),
+            pytest.raises(QueueDispositionError, match="message retained"),
+        ):
+            process_message(
+                _make_message("delete-failed"),
+                storage=storage,
+                queue=queue,
+                config=dry_config,
+                budget=budget,
+                queue_operation_runner=fail_delete,
+            )
+
+        assert queue.deleted == []
+        cleanup.assert_not_called()
+
+    def test_blocking_delete_is_killed_without_late_side_effect(
+        self,
+        storage,
+        dry_config,
+        tmp_path,
+    ):
+        clock = _P04Clock()
+        budget = clock.budget()
+        clock.elapsed = 5099.9
+        marker = tmp_path / "late-delete"
+
+        class BlockingQueue(FakeQueue):
+            def delete_message(self, message):
+                time.sleep(0.5)
+                marker.write_text(message.pop_receipt, encoding="utf-8")
+
+        with (
+            patch(
+                "podcaster.video.job_runner.run_video_generation",
+                return_value=VideoOutcome("blocking-delete", STATUS_COMPLETED),
+            ),
+            pytest.raises(QueueDispositionTimeout),
+        ):
+            process_message(
+                _make_message("blocking-delete"),
+                storage=storage,
+                queue=BlockingQueue(),
+                config=dry_config,
+                budget=budget,
+            )
+
+        time.sleep(0.6)
+        assert not marker.exists()
 
 
 # --- Watermark failure classification (W36 review follow-up) ---
@@ -2969,6 +4174,11 @@ class _ScratchStorage:
         return len(keys)
 
 
+class _FailingCleanupScratchStorage(_ScratchStorage):
+    def delete_prefix(self, prefix):
+        raise TimeoutError(f"blocked cleanup for {prefix}")
+
+
 class _RecordingProducer:
     def __init__(self) -> None:
         self.sent: list[str] = []
@@ -2997,6 +4207,67 @@ class TestFanoutGating:
         if output_path:
             output_path.write_bytes(b"\x00" * 2048)
         return MagicMock(output_path=output_path, duration_seconds=60.0, segment_count=2)
+
+    def test_resumed_distribution_is_owned_by_editor_lease(self, storage, dry_config, monkeypatch):
+        from podcaster.video.editor import EditorLease, editor_lease_blob_path
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        producer = _RecordingProducer()
+        resumed = MagicMock(
+            return_value=VideoOutcome(job_id, STATUS_COMPLETED, distribution=DistributionResult())
+        )
+        monkeypatch.setattr(
+            "podcaster.video.job_runner._resume_rendered_pending_distribution",
+            resumed,
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            fanout=True,
+            fanout_scratch=scratch,
+            clip_producer=producer,
+            storage_operation_runner=lambda call, timeout: call(),
+        )
+
+        assert outcome.status == STATUS_COMPLETED
+        resumed.assert_called_once()
+        assert EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id))) is None
+
+    def test_foreign_editor_lease_blocks_resumed_distribution(
+        self, storage, dry_config, monkeypatch
+    ):
+        from podcaster.video.editor import acquire_or_renew_lease
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        producer = _RecordingProducer()
+        assert acquire_or_renew_lease(
+            scratch,
+            job_id,
+            "foreign-owner",
+            now=datetime.now(timezone.utc),
+        )
+        resumed = MagicMock()
+        monkeypatch.setattr(
+            "podcaster.video.job_runner._resume_rendered_pending_distribution",
+            resumed,
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            fanout=True,
+            fanout_scratch=scratch,
+            clip_producer=producer,
+        )
+
+        assert outcome.status == STATUS_SKIPPED
+        assert outcome.reason == REASON_EDITOR_LEASE_HELD
+        resumed.assert_not_called()
 
     @patch("podcaster.video.editor.record_via_fanout")
     @patch("podcaster.video.video_gen.record_episode")
@@ -3032,6 +4303,182 @@ class TestFanoutGating:
         # Lease released (reads as free) and clips cleaned on success.
         assert EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id))) is None
         assert not scratch.blob_exists(clip_blob_path(job_id, 0))
+
+    @patch("podcaster.video.job_runner.archive_video_verified")
+    @patch("podcaster.video.editor.record_via_fanout")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_pending_identity_uses_cas_selected_fanout_clipset(
+        self,
+        mock_compose,
+        mock_record_episode,
+        mock_fanout,
+        mock_archive,
+        storage,
+    ):
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        selected = Clipset.from_segments(
+            job_id,
+            [VideoSegment(start_seconds=17.0, duration_seconds=43.0)],
+            budget=VideoStageBudget.start().projection,
+        )
+        scratch.put_bytes(
+            clipset_blob_path(job_id),
+            selected.to_json_bytes(),
+            "application/json",
+        )
+        mock_fanout.return_value = MagicMock(recorded=[], output_dir=Path("."))
+        mock_compose.side_effect = self._fake_compose
+        mock_archive.return_value = _p04_archive_result(
+            job_id,
+            elapsed=3301,
+            pending_only=True,
+        )
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=VideoDistributionConfig(
+                youtube_enabled=True,
+                blob_archive_enabled=True,
+                dry_run=False,
+            ),
+            fanout=True,
+            fanout_scratch=scratch,
+            clip_producer=_RecordingProducer(),
+        )
+
+        assert outcome.status == STATUS_RENDERED_PENDING_DISTRIBUTION
+        pending = json.loads(storage.get_bytes(manifest_path(job_id)))["generation"][
+            STATUS_RENDERED_PENDING_DISTRIBUTION
+        ]
+        assert pending["clipset"]["count"] == selected.count
+        assert pending["clipset"]["sha256"] == _stable_sha256(
+            [
+                {
+                    "start_seconds": 17.0,
+                    "duration_seconds": 43.0,
+                    "repo": None,
+                    "source_url": None,
+                    "removed_reason": None,
+                }
+            ]
+        )
+        mock_fanout.assert_called_once()
+        mock_record_episode.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            VideoDistributionConfig(
+                youtube_enabled=True,
+                spotify_rss_enabled=True,
+                blob_archive_enabled=True,
+                dry_run=True,
+            ),
+            VideoDistributionConfig(blob_archive_enabled=True, dry_run=True),
+        ],
+        ids=["distributed", "archive-only"],
+    )
+    @patch("podcaster.video.editor.record_via_fanout")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_terminal_evidence_and_lease_release_complete_before_cleanup(
+        self,
+        mock_compose,
+        mock_record_episode,
+        mock_fanout,
+        storage,
+        config,
+        monkeypatch,
+    ):
+        from podcaster.video import editor, job_runner
+        from podcaster.video.intermediates import IntermediateStore
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        producer = _RecordingProducer()
+        events: list[str] = []
+        original_evidence = job_runner._append_video_timing_evidence
+        original_release = job_runner._release_editor_lease
+        original_intermediate_cleanup = IntermediateStore.cleanup
+        original_clip_cleanup = editor.cleanup_clips
+
+        def append_evidence(*args, **kwargs):
+            result = original_evidence(*args, **kwargs)
+            if (
+                kwargs.get("stage") is VideoStage.SHUTDOWN
+                and kwargs.get("reason") == STATUS_COMPLETED
+            ):
+                events.append("terminal_evidence")
+            return result
+
+        def release_lease(*args, **kwargs):
+            result = original_release(*args, **kwargs)
+            events.append("lease_released")
+            return result
+
+        def cleanup_intermediates(store, **kwargs):
+            events.append("intermediate_cleanup")
+            return original_intermediate_cleanup(store, **kwargs)
+
+        def cleanup_fanout(*args, **kwargs):
+            events.append("fanout_cleanup")
+            return original_clip_cleanup(*args, **kwargs)
+
+        monkeypatch.setattr(job_runner, "_append_video_timing_evidence", append_evidence)
+        monkeypatch.setattr(job_runner, "_release_editor_lease", release_lease)
+        monkeypatch.setattr(IntermediateStore, "cleanup", cleanup_intermediates)
+        monkeypatch.setattr(editor, "cleanup_clips", cleanup_fanout)
+        mock_fanout.return_value = MagicMock(recorded=[], output_dir=Path("."))
+        mock_compose.side_effect = self._fake_compose
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=config,
+            fanout=True,
+            fanout_scratch=scratch,
+            clip_producer=producer,
+            storage_operation_runner=lambda call, timeout: call(),
+        )
+
+        assert outcome.status == STATUS_COMPLETED
+        assert events[-4:] == [
+            "terminal_evidence",
+            "lease_released",
+            "intermediate_cleanup",
+            "fanout_cleanup",
+        ]
+        mock_record_episode.assert_not_called()
+
+    @patch("podcaster.video.editor.record_via_fanout")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_cleanup_timeout_does_not_retry_successful_distribution(
+        self, mock_compose, mock_record_episode, mock_fanout, storage, dry_config
+    ):
+        from podcaster.video.editor import EditorLease, editor_lease_blob_path
+
+        job_id = self._seed(storage)
+        scratch = _FailingCleanupScratchStorage()
+        mock_fanout.return_value = MagicMock(recorded=[], output_dir=Path("."))
+        mock_compose.side_effect = self._fake_compose
+
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=dry_config,
+            fanout=True,
+            fanout_scratch=scratch,
+            clip_producer=_RecordingProducer(),
+            storage_operation_runner=lambda call, timeout: call(),
+        )
+
+        assert outcome.status == STATUS_COMPLETED
+        assert EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id))) is None
+        mock_record_episode.assert_not_called()
 
     @patch("podcaster.video.editor.record_via_fanout")
     @patch("podcaster.video.video_gen.record_episode")
@@ -3093,6 +4540,38 @@ class TestFanoutGating:
             )
 
         assert EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id))) is None
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.editor.record_via_fanout")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_recording_insufficient_is_durable_before_compose_or_provider(
+        self, mock_compose, mock_fanout, mock_distribute, storage, dry_config
+    ):
+        from podcaster.video.editor import RecordingInsufficientError
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        mock_fanout.side_effect = RecordingInsufficientError(
+            job_id,
+            1,
+            "fallback renderer unavailable",
+        )
+
+        with pytest.raises(PermanentVideoError) as captured:
+            run_video_generation(
+                job_id,
+                storage,
+                config=dry_config,
+                fanout=True,
+                fanout_scratch=scratch,
+                clip_producer=_RecordingProducer(),
+            )
+
+        assert captured.value.reason == REASON_RECORDING_INSUFFICIENT
+        mock_compose.assert_not_called()
+        mock_distribute.assert_not_called()
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)))
+        assert manifest["generation"]["video_runner"]["reason"] == REASON_RECORDING_INSUFFICIENT
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")

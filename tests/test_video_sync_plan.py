@@ -1093,6 +1093,80 @@ class TestAnnotateRemovedRepos:
         assert calls == []  # not re-checked
         assert result.segments[0].removed_reason == "pre-set"
 
+    def test_preflight_clamps_each_network_check_to_t_plus_300_budget(self):
+        remaining = iter([2.5, 0.0])
+        timeouts: list[float] = []
+
+        def checker(_url, timeout=5.0):
+            timeouts.append(timeout)
+            return False
+
+        result = annotate_removed_repos(
+            self._plan(),
+            checker=checker,
+            remaining_seconds=lambda: next(remaining),
+        )
+
+        assert timeouts == [2.5]
+        assert result.segments == self._plan().segments
+
+    def test_preflight_at_cutoff_launches_no_network(self):
+        calls: list[str] = []
+
+        result = annotate_removed_repos(
+            self._plan(),
+            checker=lambda url, timeout=5.0: calls.append(url),
+            remaining_seconds=lambda: 0.0,
+        )
+
+        assert calls == []
+        assert result.segments == self._plan().segments
+
+    def test_preflight_cutoff_after_generic_preserves_remaining_segments_once(self):
+        plan = EpisodePlan(
+            total_duration_seconds=30.0,
+            segments=(
+                VideoSegment(
+                    repo=None,
+                    source_url="https://claracle.com/x",
+                    start_seconds=0.0,
+                    duration_seconds=10.0,
+                ),
+                VideoSegment(
+                    repo=RepoReference("microsoft", "vscode"),
+                    start_seconds=10.0,
+                    duration_seconds=10.0,
+                ),
+                VideoSegment(
+                    repo=RepoReference("astral-sh", "ruff"),
+                    start_seconds=20.0,
+                    duration_seconds=10.0,
+                ),
+            ),
+        )
+        checker_calls: list[str] = []
+        budget_calls = 0
+
+        def remaining_seconds():
+            nonlocal budget_calls
+            budget_calls += 1
+            return 0.0
+
+        result = annotate_removed_repos(
+            plan,
+            checker=lambda url, timeout=5.0: checker_calls.append(url),
+            remaining_seconds=remaining_seconds,
+        )
+
+        assert checker_calls == []
+        assert budget_calls == 1
+        assert result.segments == plan.segments
+        assert [segment.repo.name if segment.repo else None for segment in result.segments] == [
+            None,
+            "vscode",
+            "ruff",
+        ]
+
 
 class TestRemovedRepoSpeakerNotes:
     def test_notes_for_removed_repos_only(self):

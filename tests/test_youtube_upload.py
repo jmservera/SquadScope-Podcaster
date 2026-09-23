@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import VideoDistributionConfig
 from podcaster.video.youtube import (
     RESUMABLE_CHUNK_SIZE,
+    YouTubeSessionInitiationUnknown,
     align_chunk_size,
     build_video_metadata,
     initiate_resumable_session,
@@ -70,7 +73,7 @@ class _FakeTransport:
 
     total: int
     chunk: int
-    session_uri: str = "https://upload.example/session-123"
+    session_uri: str = "https://www.googleapis.com/upload/youtube/v3/videos?upload_id=session-123"
     video_id: str = "vid-OK"
     fail_at_offset: int | None = None  # inject one transient 503 at this offset
     received: int = 0
@@ -136,13 +139,71 @@ def test_initiate_resumable_session_returns_uri():
     assert uri == t.session_uri
 
 
-def test_initiate_resumable_session_raises_without_location():
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://www.googleapis.com/upload/youtube/v3/videos?upload_id=x",
+        "https://attacker.example/upload/youtube/v3/videos?upload_id=x",
+        "https://www.googleapis.com.attacker.example/upload?upload_id=x",
+        "https://token@www.googleapis.com/upload/youtube/v3/videos?upload_id=x",
+        "https://www.googleapis.com:444/upload/youtube/v3/videos?upload_id=x",
+    ],
+)
+def test_initiate_resumable_session_rejects_untrusted_location(location):
+    class _UntrustedLocation:
+        def request_with_headers(self, *args, **kwargs):
+            return 200, {"location": location}, b""
+
+    with pytest.raises(YouTubeSessionInitiationUnknown, match="no valid session URI"):
+        initiate_resumable_session(_UntrustedLocation(), "tok", {}, file_size=10)
+
+
+@pytest.mark.parametrize("status", [200, 308])
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"location": ""}, {"location": " \t "}],
+    ids=["missing", "empty", "whitespace"],
+)
+def test_initiate_resumable_session_blank_location_is_ambiguous(status, headers):
     class _NoLoc:
         def request_with_headers(self, *a, **k):
-            return 200, {}, b""
+            return status, headers, b""
 
-    with pytest.raises(RuntimeError, match="no session URI"):
+    with pytest.raises(
+        YouTubeSessionInitiationUnknown,
+        match="no valid session URI",
+    ):
         initiate_resumable_session(_NoLoc(), "tok", {}, file_size=10)
+
+
+def test_initiate_resumable_session_transport_loss_is_ambiguous():
+    class _LostResponse:
+        def request_with_headers(self, *args, **kwargs):
+            raise TimeoutError("response lost")
+
+    with pytest.raises(
+        RuntimeError,
+        match="session initiation outcome is unknown",
+    ):
+        initiate_resumable_session(_LostResponse(), "tok", {}, file_size=10)
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_initiate_resumable_session_transient_status_is_ambiguous(status):
+    class _TransientResponse:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            return status, {}, b""
+
+    with pytest.raises(
+        RuntimeError,
+        match="session initiation outcome is unknown",
+    ):
+        initiate_resumable_session(
+            _TransientResponse(),
+            "token",
+            build_video_metadata("title", "description"),
+            file_size=2048,
+        )
 
 
 # --- chunked upload happy path ------------------------------------------------
@@ -168,13 +229,68 @@ def test_upload_chunked_resumes_after_transient_failure(tmp_path):
     # Fail once when the chunk starting at offset 2*GRANULE is first attempted.
     t = _FakeTransport(total=total, chunk=_GRANULE, fail_at_offset=2 * _GRANULE)
     path = _make_file(tmp_path, total)
+    admission_calls = 0
+
+    class CountingBudget:
+        def require_provider_mutation(self):
+            nonlocal admission_calls
+            admission_calls += 1
+
     result = upload_chunked(
-        t, t.session_uri, "tok", path, total, chunk_size=_GRANULE, sleep=lambda s: None
+        t,
+        t.session_uri,
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda s: None,
+        budget=CountingBudget(),
     )
     assert result.succeeded
     assert result.bytes_uploaded == total
     # The status-query ("bytes */total") must have been used to resume.
     assert any(r[1].get("Content-Range") == f"bytes */{total}" for r in t.requests)
+    assert admission_calls == len(t.requests)
+
+
+def test_upload_chunked_rechecks_admission_before_resume_query(tmp_path):
+    total = 2 * _GRANULE
+    t = _FakeTransport(total=total, chunk=_GRANULE, fail_at_offset=0)
+    path = _make_file(tmp_path, total)
+    started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    elapsed = 3299.0
+
+    def monotonic() -> float:
+        return elapsed
+
+    def utcnow() -> datetime:
+        return started + timedelta(seconds=elapsed)
+
+    budget = VideoStageBudget.start(
+        now_utc=started,
+        monotonic=monotonic,
+        utcnow=utcnow,
+    )
+
+    def advance_past_reserve(_: float) -> None:
+        nonlocal elapsed
+        elapsed = 3301.0
+
+    with pytest.raises(ProviderMutationAdmissionError) as captured:
+        upload_chunked(
+            t,
+            t.session_uri,
+            "tok",
+            path,
+            total,
+            chunk_size=_GRANULE,
+            sleep=advance_past_reserve,
+            budget=budget,
+        )
+
+    assert captured.value.mutation_started is True
+    assert captured.value.provider == "youtube"
+    assert len(t.requests) == 1
 
 
 def test_upload_chunked_308_without_range_header_re_queries_offset(tmp_path):
@@ -232,6 +348,42 @@ def test_upload_chunked_308_without_range_header_re_queries_offset(tmp_path):
     assert result.bytes_uploaded == total
 
 
+def test_upload_chunked_308_without_range_preserves_completed_id(tmp_path):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+
+    class _CompletedOnResumeQuery:
+        def __init__(self):
+            self.calls = 0
+
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            self.calls += 1
+            content_range = (headers or {}).get("Content-Range")
+            if self.calls == 1:
+                assert content_range == f"bytes 0-{total - 1}/{total}"
+                return 308, {}, b""
+            if self.calls == 2:
+                assert content_range == f"bytes */{total}"
+                return 200, {}, b'{"id":"vid-completed-during-query"}'
+            raise AssertionError("completed resume query must short-circuit further provider calls")
+
+    transport = _CompletedOnResumeQuery()
+    result = upload_chunked(
+        transport,
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result.succeeded
+    assert result.video_id == "vid-completed-during-query"
+    assert result.bytes_uploaded == total
+    assert transport.calls == 2
+
+
 def test_upload_chunked_non_retryable_fails(tmp_path):
     class _Forbidden:
         def request_with_headers(self, url, *, method="GET", headers=None, data=None):
@@ -243,6 +395,202 @@ def test_upload_chunked_non_retryable_fails(tmp_path):
     )
     assert result.status == "failed"
     assert "403" in result.error
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("response lost"), 503])
+def test_upload_chunked_exhausted_post_mutation_retry_is_unknown(tmp_path, failure):
+    class _Exhausted:
+        def __init__(self):
+            self.calls = 0
+
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            self.calls += 1
+            if isinstance(failure, BaseException):
+                raise failure
+            return failure, {}, b""
+
+    path = _make_file(tmp_path, _GRANULE)
+    transport = _Exhausted()
+    result = upload_chunked(
+        transport,
+        "https://upload.example/session",
+        "tok",
+        path,
+        _GRANULE,
+        chunk_size=_GRANULE,
+        max_retries=2,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result.status == "unknown"
+    assert result.bytes_uploaded == 0
+    assert result.details == {
+        "retry_blocked": True,
+        "mutation_ambiguous": True,
+        "code": "youtube_resumable_chunk_outcome_ambiguous",
+    }
+    assert transport.calls == 5
+
+
+def test_upload_chunked_exhausted_inconclusive_resume_status_is_unknown(tmp_path):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+    content_ranges: list[str | None] = []
+
+    class _InconclusiveStatus:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            content_range = (headers or {}).get("Content-Range")
+            content_ranges.append(content_range)
+            if content_range == f"bytes 0-{total - 1}/{total}":
+                return 503, {}, b""
+            if content_range == f"bytes */{total}":
+                raise TimeoutError("resume status unavailable")
+            raise AssertionError(f"unexpected request: {method} {content_range}")
+
+    result = upload_chunked(
+        _InconclusiveStatus(),
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        max_retries=1,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result.status == "unknown"
+    assert result.details == {
+        "retry_blocked": True,
+        "mutation_ambiguous": True,
+        "code": "youtube_resumable_chunk_outcome_ambiguous",
+    }
+    assert content_ranges == [
+        f"bytes 0-{total - 1}/{total}",
+        f"bytes */{total}",
+        f"bytes 0-{total - 1}/{total}",
+    ]
+
+
+def test_upload_chunked_blocks_retry_when_final_status_response_is_lost(tmp_path):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+
+    class _LostFinalStatus:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            content_range = (headers or {}).get("Content-Range")
+            if content_range == f"bytes 0-{total - 1}/{total}":
+                return 308, {"range": f"bytes=0-{total - 1}"}, b""
+            if content_range == f"bytes */{total}":
+                raise TimeoutError("final status response lost")
+            raise AssertionError(f"unexpected request: {method} {content_range}")
+
+    result = upload_chunked(
+        _LostFinalStatus(),
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda _seconds: None,
+        mutation_started=True,
+    )
+
+    assert result.status == "unknown"
+    assert result.bytes_uploaded == total
+    assert result.details == {
+        "retry_blocked": True,
+        "mutation_ambiguous": True,
+        "code": "youtube_resumable_final_status_ambiguous",
+    }
+    assert "final resumable status query outcome is unknown" in result.error
+
+
+@pytest.mark.parametrize(
+    "completion_body",
+    [
+        b"",
+        b"{not-json",
+        b'{"kind":"youtube#video"}',
+    ],
+    ids=["empty", "malformed-json", "missing-id"],
+)
+def test_upload_chunked_identifierless_success_is_retry_blocked_unknown(tmp_path, completion_body):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+
+    class _IdentifierlessCompletion:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            content_range = (headers or {}).get("Content-Range")
+            if content_range == f"bytes 0-{total - 1}/{total}":
+                return 308, {"range": f"bytes=0-{total - 1}"}, b""
+            if content_range == f"bytes */{total}":
+                return 200, {}, completion_body
+            raise AssertionError(f"unexpected request: {method} {content_range}")
+
+    result = upload_chunked(
+        _IdentifierlessCompletion(),
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda _seconds: None,
+        mutation_started=True,
+    )
+
+    assert result.status == "unknown"
+    assert result.bytes_uploaded == total
+    assert result.details == {
+        "retry_blocked": True,
+        "mutation_ambiguous": True,
+        "code": "youtube_resumable_completion_ambiguous",
+    }
+    assert "valid video id" in result.error
+
+
+@pytest.mark.parametrize(
+    "completion_body",
+    [
+        b"",
+        b"{not-json",
+        b'{"kind":"youtube#video"}',
+    ],
+    ids=["empty", "malformed-json", "missing-id"],
+)
+def test_upload_chunked_transient_resume_completion_without_id_is_unknown(
+    tmp_path, completion_body
+):
+    total = _GRANULE
+    path = _make_file(tmp_path, total)
+
+    class _AmbiguousResumeCompletion:
+        def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+            content_range = (headers or {}).get("Content-Range")
+            if content_range == f"bytes 0-{total - 1}/{total}":
+                return 503, {}, b""
+            if content_range == f"bytes */{total}":
+                return 200, {}, completion_body
+            raise AssertionError(f"unexpected request: {method} {content_range}")
+
+    result = upload_chunked(
+        _AmbiguousResumeCompletion(),
+        "https://upload.example/session",
+        "tok",
+        path,
+        total,
+        chunk_size=_GRANULE,
+        sleep=lambda _seconds: None,
+        mutation_started=True,
+    )
+
+    assert result.status == "unknown"
+    assert result.bytes_uploaded == 0
+    assert result.details == {
+        "retry_blocked": True,
+        "mutation_ambiguous": True,
+        "code": "youtube_resumable_completion_ambiguous",
+    }
+    assert "valid video id" in result.error
 
 
 # --- upload_video top-level ---------------------------------------------------
@@ -295,3 +643,46 @@ def test_upload_video_full_flow(tmp_path, monkeypatch):
     assert res.succeeded
     assert res.video_id == "vid-OK"
     assert res.bytes_uploaded == total
+
+
+def test_upload_video_blocks_retry_when_session_init_response_is_lost(tmp_path, monkeypatch):
+    path = _make_file(tmp_path, 2 * _GRANULE)
+
+    class _LostResponse:
+        def request_with_headers(self, *args, **kwargs):
+            raise TimeoutError("response lost")
+
+    monkeypatch.setattr("podcaster.video.youtube._get_youtube_access_token", lambda c, h: "tok")
+    res = upload_video(path, "Title", "Desc", _config(), transport=_LostResponse())
+
+    assert res.status == "unknown"
+    assert res.details == {
+        "retry_blocked": True,
+        "mutation_ambiguous": True,
+        "code": "youtube_resumable_init_ambiguous",
+    }
+
+
+@pytest.mark.parametrize("status", [200, 308])
+def test_upload_video_blocks_retry_when_session_init_has_no_location(tmp_path, monkeypatch, status):
+    path = _make_file(tmp_path, 2 * _GRANULE)
+
+    class _NoLocation:
+        def __init__(self):
+            self.methods = []
+
+        def request_with_headers(self, *args, method="GET", **kwargs):
+            self.methods.append(method)
+            return status, {}, b""
+
+    transport = _NoLocation()
+    monkeypatch.setattr("podcaster.video.youtube._get_youtube_access_token", lambda c, h: "tok")
+    res = upload_video(path, "Title", "Desc", _config(), transport=transport)
+
+    assert res.status == "unknown"
+    assert res.details == {
+        "retry_blocked": True,
+        "mutation_ambiguous": True,
+        "code": "youtube_resumable_init_ambiguous",
+    }
+    assert transport.methods == ["POST"]

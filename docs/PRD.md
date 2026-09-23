@@ -34,7 +34,7 @@ SquadScope Podcaster is a separate Azure-hosted service that turns a published S
 4. Return `job_id`, `status`, artifact URLs, expiration time, warnings, and errors.
 5. Stage artifacts in Azure Blob Storage when generation is implemented.
 6. Preserve traceability from article URL and hash to podcast artifacts.
-7. Auto-publish episodes as Spotify drafts after successful synthesis and audio validation; humans review directly on the Spotify platform.
+7. Stage validated audio for publication and require an explicit approved review or operator publication request before any Spotify mutation.
 8. Record a cost ledger for every episode and block non-dry-run synthesis or packet readiness when monthly guardrails are unknown or exceeded.
 
 ## Quality requirements
@@ -51,6 +51,6 @@ SquadScope Podcaster is a separate Azure-hosted service that turns a published S
 1. Contract scaffold: API validates input and returns stub accepted/completed responses.
 2. Blob staging: write manifest and packet placeholders to Azure Blob Storage.
 3. TTS bakeoff: compare providers, cost, quality, rights, and operational fit.
-4. Draft publishing: after successful synthesis and audio validation, episodes are automatically published as Spotify drafts. Humans review directly on the Spotify platform before promoting to public.
+4. Gated publishing: successful synthesis stages validated audio and publication readiness; an approved review or explicit operator request owns Spotify draft/live publication.
 5. Publishing packet: package all content needed for distribution, blocked only until audio validation passes.
 6. Distribution research: evaluate Spotify and podcast-host automation options.

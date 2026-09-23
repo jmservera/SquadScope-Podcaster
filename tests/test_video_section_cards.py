@@ -7,11 +7,14 @@ not require ffmpeg or a browser.
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
+from podcaster.video.budget import VideoStageBudget
+from podcaster.video.process import OwnedProcessTimeout
 from podcaster.video.section_cards import (
     DEFAULT_ACCENT,
     KNOWN_SECTIONS,
@@ -295,12 +298,71 @@ class TestGenerateSectionCard:
         assert marker.name == "Blind Spots"
         assert marker.emoji == "🫣"
 
+    def test_budgeted_render_uses_drawtext_capable_ffmpeg(self, tmp_path, monkeypatch):
+        selected = "/opt/ffmpeg-drawtext"
+        monkeypatch.setattr(
+            "podcaster.video.section_cards._get_drawtext_ffmpeg",
+            lambda: selected,
+        )
+        commands: list[list[str]] = []
+
+        def runner(cmd):
+            commands.append(cmd)
+            Path(cmd[-1]).write_bytes(b"rendered")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        generate_section_card(
+            "Trends",
+            tmp_path / "card.mp4",
+            runner=runner,
+            budget=VideoStageBudget.start(),
+        )
+
+        assert commands[0][0] == selected
+
+    def test_budgeted_custom_runner_failure_removes_partial_output(self, tmp_path):
+        out = tmp_path / "partial.mp4"
+
+        def failed_runner(cmd):
+            out.write_bytes(b"partial")
+            return subprocess.CompletedProcess(cmd, 1, "", "render failed")
+
+        with pytest.raises(subprocess.CalledProcessError):
+            generate_section_card(
+                "Trends",
+                out,
+                ffmpeg_bin="ffmpeg",
+                runner=failed_runner,
+                budget=VideoStageBudget.start(),
+            )
+
+        assert not out.exists()
+
+    def test_initial_render_admission_failure_removes_stale_output(self, tmp_path):
+        out = tmp_path / "stale.mp4"
+        out.write_bytes(b"stale")
+        started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+        budget = VideoStageBudget.start(
+            now_utc=started,
+            monotonic=lambda: 3300.0,
+            utcnow=lambda: started + timedelta(seconds=3300),
+        )
+
+        with pytest.raises(OwnedProcessTimeout):
+            generate_section_card("Trends", out, budget=budget)
+
+        assert not out.exists()
+
 
 # --- build_section_card_inserts ---
 
 
 class TestBuildSectionCardInserts:
-    def test_end_to_end_produces_inserts(self, tmp_path):
+    def test_end_to_end_produces_inserts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "podcaster.video.section_cards._get_drawtext_ffmpeg",
+            lambda: pytest.fail("explicit ffmpeg override must bypass auto-detection"),
+        )
         runner = _mock_runner()
         inserts = build_section_card_inserts(
             SCRIPT_WITH_SECTIONS,
@@ -315,6 +377,31 @@ class TestBuildSectionCardInserts:
         assert all(i.duration_seconds == SECTION_CARD_DURATION_MS / 1000.0 for i in inserts)
         # One render per card.
         assert runner.call_count == 3
+        assert all(call.args[0][0] == "ffmpeg" for call in runner.call_args_list)
+
+    def test_budgeted_render_uses_drawtext_capable_ffmpeg(self, tmp_path, monkeypatch):
+        selected = "/opt/ffmpeg-drawtext"
+        monkeypatch.setattr(
+            "podcaster.video.section_cards._get_drawtext_ffmpeg",
+            lambda: selected,
+        )
+        commands: list[list[str]] = []
+
+        def runner(cmd):
+            commands.append(cmd)
+            Path(cmd[-1]).write_bytes(b"rendered")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        inserts = build_section_card_inserts(
+            SCRIPT_WITH_SECTIONS,
+            SEGMENT_URLS,
+            tmp_path,
+            runner=runner,
+            budget=VideoStageBudget.start(),
+        )
+
+        assert len(inserts) == 3
+        assert [cmd[0] for cmd in commands] == [selected, selected, selected]
 
     def test_no_sections_returns_empty(self, tmp_path):
         runner = _mock_runner()

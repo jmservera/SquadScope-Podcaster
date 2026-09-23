@@ -28,10 +28,11 @@ import logging
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -54,6 +55,7 @@ from podcaster.publication_state import (
     spotify_video_retry_is_blocked,
 )
 from podcaster.spotify_shows import resolve_show_target
+from podcaster.video.budget import ProviderMutationAdmissionError
 
 if TYPE_CHECKING:
     from podcaster.storage import StorageBackend
@@ -352,6 +354,7 @@ def _retry_request(
     *,
     max_attempts: int = _MAX_RETRIES,
     request_context: _SpotifyRequestContext = "api",
+    provider_mutation: bool | None = None,
     **kwargs: Any,
 ) -> requests.Response:
     """Execute an HTTP request with exponential backoff retry.
@@ -376,6 +379,14 @@ def _retry_request(
     attempts = max(1, int(max_attempts))
     for attempt in range(attempts):
         try:
+            before_mutation = getattr(session, "_before_provider_mutation", None)
+            is_mutation = (
+                method.upper() not in {"GET", "HEAD", "OPTIONS"}
+                if provider_mutation is None
+                else provider_mutation
+            )
+            if is_mutation and callable(before_mutation):
+                before_mutation()
             resp = session.request(method, url, **kwargs)
             resp.raise_for_status()
             return resp
@@ -1146,6 +1157,7 @@ def _fetch_episode_listing_page(
             },
             timeout=15,
             request_context="draft_episode_readback",
+            provider_mutation=False,
         )
         return _normalise_episode_listing_page(resp.json(), expected_page=current_page)
     except SpotifyCredentialExpiredError:
@@ -2118,6 +2130,7 @@ def promote_spotify_video_draft(
     sp_dc: str | None = None,
     sp_key: str | None = None,
     show_id: str | None = None,
+    before_mutation: Callable[[], object] | None = None,
 ) -> VideoPromoteResult:
     """Promote the current job's Spotify video draft to live behind two gates."""
 
@@ -2283,6 +2296,8 @@ def promote_spotify_video_draft(
 
     try:
         session = _build_session(sp_dc, sp_key, show_id)
+        if before_mutation is not None:
+            setattr(session, "_before_provider_mutation", before_mutation)
         _station_id, user_id = _resolve_legacy_ids(session, show_id)
         current_state = _get_episode_publication_state(
             session,
@@ -2496,6 +2511,7 @@ def upload_video_to_episode(
     sp_key: str | None = None,
     season_number: int | None = None,
     episode_number: int | None = None,
+    before_mutation: Callable[[], object] | None = None,
     publication_storage: StorageBackend | None = None,
     publication_identity_context: PublicationIdentity | None = None,
 ) -> PublishResult:
@@ -2620,6 +2636,8 @@ def upload_video_to_episode(
 
     try:
         session = _build_session(sp_dc, sp_key, show_id)
+        if before_mutation is not None:
+            setattr(session, "_before_provider_mutation", before_mutation)
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         def _persist_create_intent(known_ids: set[int], snapshot_complete: bool) -> None:
@@ -2849,6 +2867,8 @@ def upload_video_to_episode(
                 "title": video_title,
             },
         )
+    except ProviderMutationAdmissionError:
+        raise
     except SpotifyCredentialExpiredError as exc:
         logger.error(
             "Spotify video upload failed — credentials expired: %s. "

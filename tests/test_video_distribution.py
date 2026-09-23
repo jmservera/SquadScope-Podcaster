@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 from urllib.error import URLError
 
 import pytest
 
+from podcaster.publication_state import PUBLICATION_UNKNOWN
+from podcaster.storage import LocalStorageBackend
+from podcaster.video.budget import ProviderMutationAdmissionError, VideoStageBudget
 from podcaster.video.distribution import (
+    ArchiveResult,
     DistributionResult,
     VideoDistributionConfig,
     YouTubeDeliveryError,
@@ -18,11 +23,14 @@ from podcaster.video.distribution import (
     _escape_xml,
     _try_chunked_upload,
     archive_to_blob,
+    archive_video_verified,
     distribute_video,
     update_spotify_rss,
     upload_to_spotify_episode,
     upload_to_youtube,
 )
+from podcaster.video.intermediates import StorageOperationTimeout
+from podcaster.video.process import ProbeEvidence
 
 
 @pytest.fixture
@@ -250,6 +258,78 @@ class TestUploadToYouTube:
         )
         assert vid_id == "yt-abc123"
         assert "yt-abc123" in vid_url
+        resumable_inits = [
+            request
+            for request in transport.requests
+            if request["method"] == "POST" and "uploadType=resumable" in request["url"]
+        ]
+        assert len(resumable_inits) == 1
+
+    def test_large_upload_initializes_one_resumable_session(self, tmp_path, youtube_config):
+        video = tmp_path / "large.mp4"
+        with video.open("wb") as stream:
+            stream.truncate(128 * 1024 * 1024 + 1)
+
+        class LargeUploadTransport(FakeTransport):
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                self.requests.append(
+                    {"url": url, "method": method, "headers": headers, "data": data}
+                )
+                if method == "POST" and "uploadType=resumable" in url:
+                    return (
+                        200,
+                        {
+                            "location": (
+                                "https://www.googleapis.com/upload/youtube/v3/videos"
+                                "?upload_id=large-session"
+                            )
+                        },
+                        b"",
+                    )
+                return 200, {}, b'{"id":"large-video-id"}'
+
+        transport = LargeUploadTransport(
+            responses=[(200, b'{"access_token":"token"}')],
+        )
+
+        video_id, video_url = upload_to_youtube(
+            video,
+            "title",
+            "description",
+            youtube_config,
+            transport=transport,
+        )
+
+        assert video_id == "large-video-id"
+        assert video_url == "https://youtube.com/watch?v=large-video-id"
+        resumable_inits = [
+            request
+            for request in transport.requests
+            if request["method"] == "POST" and "uploadType=resumable" in request["url"]
+        ]
+        assert len(resumable_inits) == 1
+
+    def test_budgeted_small_upload_uses_ambiguity_aware_uploader(
+        self, video_file, youtube_config, monkeypatch
+    ):
+        captured = []
+
+        def chunked(*args, **kwargs):
+            captured.append(kwargs["budget"])
+            return "yt-safe", "https://youtube.com/watch?v=yt-safe"
+
+        monkeypatch.setattr("podcaster.video.distribution._try_chunked_upload", chunked)
+        budget = VideoStageBudget.start()
+
+        assert upload_to_youtube(
+            video_file,
+            "title",
+            "description",
+            youtube_config,
+            transport=FakeTransport(),
+            budget=budget,
+        ) == ("yt-safe", "https://youtube.com/watch?v=yt-safe")
+        assert captured == [budget]
 
     def test_file_not_found(self, youtube_config):
         with pytest.raises(FileNotFoundError):
@@ -411,6 +491,63 @@ class TestUploadToYouTube:
         assert raised.value.code == "youtube_chunked_network_error"
         assert raised.value.retryable is True
 
+    def test_chunked_session_init_ambiguity_is_not_retryable(
+        self, video_file, youtube_config, monkeypatch
+    ):
+        from podcaster.video.youtube import YouTubeUploadResult
+
+        monkeypatch.setattr(
+            "podcaster.video.youtube.upload_video",
+            lambda *args, **kwargs: YouTubeUploadResult(
+                status="unknown",
+                error="response lost",
+                details={
+                    "retry_blocked": True,
+                    "code": "youtube_resumable_init_ambiguous",
+                },
+            ),
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            _try_chunked_upload(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                tags=None,
+                transport=FakeTransport(),
+            )
+        assert raised.value.code == "youtube_resumable_init_ambiguous"
+        assert raised.value.retryable is False
+
+    def test_chunked_final_status_ambiguity_is_not_retryable(
+        self, video_file, youtube_config, monkeypatch
+    ):
+        from podcaster.video.youtube import YouTubeUploadResult
+
+        monkeypatch.setattr(
+            "podcaster.video.youtube.upload_video",
+            lambda *args, **kwargs: YouTubeUploadResult(
+                status="unknown",
+                error="final status response lost",
+                details={
+                    "retry_blocked": True,
+                    "code": "youtube_resumable_final_status_ambiguous",
+                },
+            ),
+        )
+        with pytest.raises(YouTubeDeliveryError) as raised:
+            _try_chunked_upload(
+                video_file,
+                "title",
+                "desc",
+                youtube_config,
+                tags=None,
+                transport=FakeTransport(),
+            )
+        assert raised.value.code == "youtube_resumable_final_status_ambiguous"
+        assert raised.value.stage == "resumable_final_status"
+        assert raised.value.retryable is False
+
 
 # --- Spotify RSS Tests ---
 
@@ -505,6 +642,424 @@ class TestArchiveToBlob:
         storage = FakeStorage()
         result = archive_to_blob(tmp_path / "missing.mp4", "job1", storage=storage)
         assert result is None
+
+
+class _ArchiveClock:
+    def __init__(self, elapsed: float) -> None:
+        self.elapsed = elapsed
+        self.started = datetime(2026, 9, 15, tzinfo=timezone.utc)
+
+    def monotonic(self) -> float:
+        return self.elapsed
+
+    def utcnow(self) -> datetime:
+        return self.started + timedelta(seconds=self.elapsed)
+
+    def budget(self) -> VideoStageBudget:
+        self.elapsed = 0
+        budget = VideoStageBudget.start(
+            now_utc=self.started,
+            monotonic=self.monotonic,
+            utcnow=self.utcnow,
+        )
+        return budget
+
+
+def _archive_probe(path: Path, timeout: float) -> ProbeEvidence:
+    assert timeout > 0
+    assert path.stat().st_size > 0
+    return ProbeEvidence(format_name="mov,mp4,m4a,3gp,3g2,mj2", duration_seconds=12.0)
+
+
+class TestVerifiedArchive:
+    def test_valid_replay_and_equal_size_corruption_recompute(self, tmp_path):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 100
+
+        first = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        assert isinstance(first, ArchiveResult)
+        assert first.reused is False
+
+        replay = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        assert replay.reused is True
+
+        storage.put_bytes(first.blob_path, b"b" * 2048, "video/mp4")
+        repaired = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        assert repaired.reused is False
+        assert storage.get_bytes(first.blob_path) == video.read_bytes()
+
+    @pytest.mark.parametrize(
+        ("completion", "pending_only"),
+        [(3300.0, False), (3300.001, True), (3600.0, True)],
+    )
+    def test_archive_completion_boundaries(self, tmp_path, completion, pending_only):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299
+        calls = 0
+
+        def operation_runner(call, timeout):
+            nonlocal calls
+            assert timeout > 0
+            calls += 1
+            value = call()
+            if calls == 4:
+                clock.elapsed = completion
+            return value
+
+        result = archive_video_verified(
+            video,
+            "job",
+            storage=storage,
+            budget=budget,
+            probe=_archive_probe,
+            operation_runner=operation_runner,
+        )
+        assert result.completed_elapsed_seconds == completion
+        assert result.pending_only is pending_only
+
+    def test_archive_after_3600_fails_without_unbounded_cleanup_or_false_success(self, tmp_path):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299
+        calls = 0
+
+        def operation_runner(call, timeout):
+            nonlocal calls
+            calls += 1
+            value = call()
+            if calls == 4:
+                clock.elapsed = 3600.001
+            return value
+
+        with pytest.raises(StorageOperationTimeout, match=r"T\+3600"):
+            archive_video_verified(
+                video,
+                "job",
+                storage=storage,
+                budget=budget,
+                probe=_archive_probe,
+                operation_runner=operation_runner,
+            )
+        validation_path = "jobs/job/video/job.mp4.validation.json"
+        assert calls == 4
+        assert storage.get_bytes(validation_path) is not None
+
+        replay = archive_video_verified(
+            video,
+            "job",
+            storage=storage,
+            budget=_ArchiveClock(0).budget(),
+            probe=_archive_probe,
+        )
+        assert replay.reused is True
+
+    def test_storage_timeout_fails_closed(self, tmp_path):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 100
+
+        def timeout_runner(call, timeout):
+            raise StorageOperationTimeout("blocked")
+
+        with pytest.raises(StorageOperationTimeout):
+            archive_video_verified(
+                video,
+                "job",
+                storage=storage,
+                budget=budget,
+                probe=_archive_probe,
+                operation_runner=timeout_runner,
+            )
+        assert storage.get_bytes("jobs/job/video/job.mp4.validation.json") is None
+
+    @pytest.mark.parametrize(
+        "sidecar",
+        [b"{not-json", json.dumps({"schema_version": 999}).encode()],
+    )
+    def test_malformed_or_unknown_archive_record_recomputes(self, tmp_path, sidecar):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 100
+        first = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        storage.put_bytes(
+            f"{first.blob_path}.validation.json",
+            sidecar,
+            "application/json",
+        )
+
+        result = archive_video_verified(
+            video, "job", storage=storage, budget=budget, probe=_archive_probe
+        )
+        assert result.reused is False
+
+    def test_corrupt_readback_is_rejected_and_removed(self, tmp_path):
+        storage = LocalStorageBackend(tmp_path / "storage", "https://blob.test")
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"a" * 2048)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 100
+        calls = 0
+
+        def probe(path, timeout):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise ValueError("not decodable")
+            return _archive_probe(path, timeout)
+
+        with pytest.raises(RuntimeError, match="readback"):
+            archive_video_verified(
+                video,
+                "job",
+                storage=storage,
+                budget=budget,
+                probe=probe,
+            )
+        assert storage.get_bytes("jobs/job/video/job.mp4") is None
+        assert storage.get_bytes("jobs/job/video/job.mp4.validation.json") is None
+
+
+class TestDistributionBudget:
+    @pytest.mark.parametrize("denied_elapsed", [3301.0, 4500.0, 4501.0])
+    def test_youtube_rechecks_admission_before_later_put(
+        self,
+        video_file,
+        youtube_config,
+        denied_elapsed,
+    ):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299.0
+
+        class AdvancingTransport(FakeTransport):
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                response = super().request_with_headers(
+                    url,
+                    method=method,
+                    headers=headers,
+                    data=data,
+                )
+                if method == "POST" and "uploadType=resumable" in url:
+                    clock.elapsed = denied_elapsed
+                return response
+
+        transport = AdvancingTransport(
+            responses=[
+                (200, b'{"access_token":"token"}'),
+                (200, b""),
+            ]
+        )
+
+        with pytest.raises(ProviderMutationAdmissionError) as captured:
+            upload_to_youtube(
+                video_file,
+                "title",
+                "description",
+                youtube_config,
+                transport=transport,
+                budget=budget,
+            )
+
+        assert captured.value.mutation_started is True
+        assert captured.value.provider == "youtube"
+        assert [request["method"] for request in transport.requests] == ["POST", "POST"]
+
+    def test_ambiguous_youtube_denial_persists_no_repeat_evidence(
+        self,
+        video_file,
+        youtube_config,
+    ):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299.0
+
+        class AdvancingTransport(FakeTransport):
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                response = super().request_with_headers(
+                    url,
+                    method=method,
+                    headers=headers,
+                    data=data,
+                )
+                if method == "POST" and "uploadType=resumable" in url:
+                    clock.elapsed = 4500.0
+                return response
+
+        snapshots: list[tuple[str, dict]] = []
+        result = distribute_video(
+            video_file,
+            "ambiguous-youtube",
+            "title",
+            "description",
+            60.0,
+            replace(youtube_config, blob_archive_enabled=False),
+            transport=AdvancingTransport(
+                responses=[
+                    (200, b'{"access_token":"token"}'),
+                    (200, b""),
+                ]
+            ),
+            budget=budget,
+            operation_runner=lambda call, timeout: call(),
+            on_published=lambda platform, record: snapshots.append((platform, record)),
+        )
+
+        assert result.provider_outcomes["youtube"] == "publication_unknown"
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert snapshots[0][0] == "youtube"
+        assert snapshots[0][1]["outcome"] == "publication_unknown"
+        assert snapshots[0][1]["retry_blocked"] is True
+
+    @pytest.mark.parametrize("denied_elapsed", [3301.0, 4500.0])
+    def test_large_youtube_post_init_denial_persists_no_repeat_evidence(
+        self,
+        tmp_path,
+        youtube_config,
+        denied_elapsed,
+    ):
+        video = tmp_path / "large.mp4"
+        with video.open("wb") as stream:
+            stream.truncate(128 * 1024 * 1024 + 1)
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 3299.0
+
+        class AdvancingLargeTransport(FakeTransport):
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                self.requests.append(
+                    {"url": url, "method": method, "headers": headers, "data": data}
+                )
+                if method == "POST" and "uploadType=resumable" in url:
+                    clock.elapsed = denied_elapsed
+                    return (
+                        200,
+                        {
+                            "location": (
+                                "https://www.googleapis.com/upload/youtube/v3/videos"
+                                "?upload_id=large-session"
+                            )
+                        },
+                        b"",
+                    )
+                raise AssertionError("chunk request must be denied before provider I/O")
+
+        transport = AdvancingLargeTransport(
+            responses=[(200, b'{"access_token":"token"}')],
+        )
+        snapshots: list[tuple[str, dict]] = []
+
+        result = distribute_video(
+            video,
+            "ambiguous-large-youtube",
+            "title",
+            "description",
+            60.0,
+            replace(youtube_config, blob_archive_enabled=False),
+            transport=transport,
+            budget=budget,
+            operation_runner=lambda call, timeout: call(),
+            on_published=lambda platform, record: snapshots.append((platform, record)),
+        )
+
+        assert result.provider_outcomes["youtube"] == "publication_unknown"
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert result.youtube_failure_retryable is False
+        assert snapshots[0][0] == "youtube"
+        assert snapshots[0][1]["outcome"] == "publication_unknown"
+        assert snapshots[0][1]["retry_blocked"] is True
+        resumable_inits = [
+            request
+            for request in transport.requests
+            if request["method"] == "POST" and "uploadType=resumable" in request["url"]
+        ]
+        assert len(resumable_inits) == 1
+
+    def test_hanging_provider_operation_is_cancelled_at_t82(self, video_file, monkeypatch):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 4919
+        provider = MagicMock()
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_spotify_episode",
+            provider,
+        )
+        timeouts: list[float] = []
+
+        def hanging_runner(call, timeout):
+            timeouts.append(timeout)
+            clock.elapsed = 4920
+            raise TimeoutError("cancelled at evidence deadline")
+
+        result = distribute_video(
+            video_file,
+            "job-t82",
+            "Title",
+            "Description",
+            60.0,
+            VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+            ),
+            budget=budget,
+            operation_runner=hanging_runner,
+        )
+
+        assert timeouts == [1.0]
+        assert provider.call_count == 0
+        assert result.provider_outcomes["spotify_upload"] == "publication_unknown"
+        assert result.provider_records["spotify_video"]["retry_blocked"] is True
+
+    def test_no_provider_operation_starts_at_t82(self, video_file, monkeypatch):
+        clock = _ArchiveClock(0)
+        budget = clock.budget()
+        clock.elapsed = 4920
+        provider = MagicMock()
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_spotify_episode",
+            provider,
+        )
+
+        result = distribute_video(
+            video_file,
+            "job-t82-exact",
+            "Title",
+            "Description",
+            60.0,
+            VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+            ),
+            budget=budget,
+        )
+
+        assert result.status == "failed"
+        assert provider.call_count == 0
 
 
 # --- Distribute Video Tests ---
@@ -644,6 +1199,244 @@ class TestDistributeVideo:
         assert result.youtube_required_failed is True
         assert result.youtube_failure_retryable is True
         assert result.youtube_failure_code == "youtube_oauth_http_503"
+
+    def test_youtube_session_init_ambiguity_persists_unknown_and_blocks_retry(
+        self, video_file, monkeypatch
+    ):
+        recorded: list[tuple[str, dict]] = []
+
+        def fail_youtube(*args, **kwargs):
+            raise YouTubeDeliveryError(
+                "YouTube resumable session initiation outcome is unknown",
+                code="youtube_resumable_init_ambiguous",
+                stage="resumable_session_init",
+                retryable=False,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        result = distribute_video(
+            video_file,
+            "job-init-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            VideoDistributionConfig(youtube_enabled=True, dry_run=False),
+            storage=FakeStorage(),
+            on_published=lambda platform, record: recorded.append((platform, record)),
+            publish_run_id="7",
+        )
+
+        assert result.provider_outcomes["youtube"] == "publication_unknown"
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert result.provider_records["youtube"]["transport_status"] == "response_lost"
+        assert recorded[0][0] == "youtube"
+        assert recorded[0][1]["outcome"] == "publication_unknown"
+        assert recorded[0][1]["retry_blocked"] is True
+
+    def test_youtube_final_status_ambiguity_persists_unknown_and_blocks_retry(
+        self, video_file, monkeypatch
+    ):
+        from podcaster.video.youtube import upload_chunked
+
+        recorded: list[tuple[str, dict]] = []
+        requests: list[str | None] = []
+
+        class LostFinalStatusTransport:
+            def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+                content_range = (headers or {}).get("Content-Range")
+                requests.append(content_range)
+                total = video_file.stat().st_size
+                if content_range == f"bytes 0-{total - 1}/{total}":
+                    return 308, {"range": f"bytes=0-{total - 1}"}, b""
+                if content_range == f"bytes */{total}":
+                    raise TimeoutError("final status response lost")
+                raise AssertionError(f"unexpected request: {method} {content_range}")
+
+        transport = LostFinalStatusTransport()
+
+        def lose_final_status(path, *args, **kwargs):
+            return upload_chunked(
+                transport,
+                "https://upload.example/session",
+                "token",
+                path,
+                path.stat().st_size,
+                sleep=lambda _seconds: None,
+                mutation_started=True,
+            )
+
+        monkeypatch.setattr("podcaster.video.youtube.upload_video", lose_final_status)
+
+        def chunked_upload(path, title, description, config, **kwargs):
+            return _try_chunked_upload(
+                path,
+                title,
+                description,
+                config,
+                tags=kwargs.get("tags"),
+                transport=transport,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", chunked_upload)
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+        result = distribute_video(
+            video_file,
+            "job-final-status-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            on_published=lambda platform, record: recorded.append((platform, record)),
+            publish_run_id="8",
+        )
+
+        assert result.provider_outcomes["youtube"] == "publication_unknown"
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert result.provider_records["youtube"]["evidence_source"] == "resumable_final_status"
+        assert recorded[0][0] == "youtube"
+        assert recorded[0][1]["outcome"] == "publication_unknown"
+        assert recorded[0][1]["retry_blocked"] is True
+        total = video_file.stat().st_size
+        assert requests == [f"bytes 0-{total - 1}/{total}", f"bytes */{total}"]
+
+        request_count = len(requests)
+        redelivery = distribute_video(
+            video_file,
+            "job-final-status-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            published={"youtube": recorded[0][1]},
+            publish_run_id="8",
+        )
+
+        assert len(requests) == request_count
+        assert redelivery.provider_outcomes["youtube"] == "publication_unknown"
+        assert redelivery.provider_records["youtube"]["retry_blocked"] is True
+
+    def test_youtube_exhausted_chunk_ambiguity_blocks_redelivery_mutation(
+        self, video_file, monkeypatch
+    ):
+        recorded: list[tuple[str, dict]] = []
+        upload_calls = 0
+
+        def fail_youtube(*args, **kwargs):
+            nonlocal upload_calls
+            upload_calls += 1
+            raise YouTubeDeliveryError(
+                "YouTube chunk transport outcome is unknown after retries",
+                code="youtube_resumable_chunk_outcome_ambiguous",
+                stage="resumable_chunk_upload",
+                retryable=False,
+                mutation_ambiguous=True,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_required=True,
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+
+        result = distribute_video(
+            video_file,
+            "job-chunk-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            on_published=lambda platform, record: recorded.append((platform, record)),
+            publish_run_id="10",
+        )
+
+        assert upload_calls == 1
+        assert result.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert result.youtube_required_failed is False
+        assert recorded[0][1]["outcome"] == PUBLICATION_UNKNOWN
+        assert recorded[0][1]["retry_blocked"] is True
+
+        redelivery = distribute_video(
+            video_file,
+            "job-chunk-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            published={"youtube": recorded[0][1]},
+            publish_run_id="10",
+        )
+
+        assert upload_calls == 1
+        assert redelivery.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN
+        assert redelivery.provider_records["youtube"]["retry_blocked"] is True
+
+    def test_youtube_completion_ambiguity_persists_unknown_and_blocks_retry(
+        self, video_file, monkeypatch
+    ):
+        recorded: list[tuple[str, dict]] = []
+        upload_calls = 0
+
+        def fail_youtube(*args, **kwargs):
+            nonlocal upload_calls
+            upload_calls += 1
+            raise YouTubeDeliveryError(
+                "YouTube reported completion without a valid video id",
+                code="youtube_resumable_completion_ambiguous",
+                stage="resumable_final_status",
+                retryable=False,
+            )
+
+        monkeypatch.setattr("podcaster.video.distribution.upload_to_youtube", fail_youtube)
+        config = VideoDistributionConfig(youtube_enabled=True, dry_run=False)
+        result = distribute_video(
+            video_file,
+            "job-completion-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            on_published=lambda platform, record: recorded.append((platform, record)),
+            publish_run_id="9",
+        )
+
+        assert upload_calls == 1
+        assert result.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN
+        assert result.provider_records["youtube"]["retry_blocked"] is True
+        assert (
+            result.provider_records["youtube"]["last_error_code"]
+            == "youtube_resumable_completion_ambiguous"
+        )
+        assert recorded[0][0] == "youtube"
+        assert recorded[0][1]["outcome"] == PUBLICATION_UNKNOWN
+        assert recorded[0][1]["retry_blocked"] is True
+
+        redelivery = distribute_video(
+            video_file,
+            "job-completion-ambiguous",
+            "title",
+            "desc",
+            120.0,
+            config,
+            storage=FakeStorage(),
+            published={"youtube": recorded[0][1]},
+            publish_run_id="9",
+        )
+
+        assert upload_calls == 1
+        assert redelivery.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN
+        assert redelivery.provider_records["youtube"]["retry_blocked"] is True
 
     def test_required_youtube_but_disabled_is_terminal_config_failure(
         self, video_file, monkeypatch
@@ -1546,6 +2339,167 @@ class TestPlaylistIntegration:
         # Playlist audit fields must be captured in the distribution result (#649)
         assert result.youtube_playlist_id == "PLes"
         assert result.youtube_playlist_succeeded is True
+
+    @pytest.mark.parametrize("status", [200, 201])
+    @pytest.mark.parametrize(
+        "body",
+        [b"{not-json", b"{}", b'{"id": "   "}'],
+        ids=["malformed-json", "missing-id", "blank-id"],
+    )
+    def test_playlist_ambiguous_outcome_is_persisted_and_blocks_redelivery(
+        self, video_file, monkeypatch, status, body
+    ):
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: ("yt-vid-001", "https://youtube.com/watch?v=yt-vid-001"),
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token",
+            lambda cfg, http: "fake-access-token",
+        )
+        transport = FakeTransport(
+            responses=[
+                (200, b'{"items": []}'),
+                (status, body),
+            ]
+        )
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_client_id="id",
+            youtube_client_secret="sec",
+            youtube_refresh_token="ref",
+            youtube_playlist_id="PLshow",
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+        snapshots: list[tuple[str, dict]] = []
+
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            transport=transport,
+            on_published=lambda platform, record: snapshots.append((platform, record)),
+            publish_run_id="playlist-ambiguous",
+        )
+
+        assert result.youtube_playlist_succeeded is False
+        assert result.provider_outcomes["youtube_playlist"] == PUBLICATION_UNKNOWN
+        assert result.provider_records["youtube_playlist"]["retry_blocked"] is True
+        assert (
+            result.provider_records["youtube_playlist"]["last_error_code"]
+            == "youtube_playlist_outcome_ambiguous"
+        )
+        playlist_snapshot = next(
+            record for platform, record in snapshots if platform == "youtube_playlist"
+        )
+        youtube_snapshot = next(record for platform, record in snapshots if platform == "youtube")
+        assert playlist_snapshot["outcome"] == PUBLICATION_UNKNOWN
+        assert playlist_snapshot["retry_blocked"] is True
+        assert playlist_snapshot["provider_id"] == "PLshow"
+        assert [request["method"] for request in transport.requests].count("POST") == 1
+
+        redelivery = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            transport=transport,
+            published={
+                "youtube": youtube_snapshot,
+                "youtube_playlist": playlist_snapshot,
+            },
+            publish_run_id="playlist-ambiguous",
+        )
+
+        assert [request["method"] for request in transport.requests].count("POST") == 1
+        assert redelivery.provider_outcomes["youtube_playlist"] == PUBLICATION_UNKNOWN
+        assert redelivery.provider_records["youtube_playlist"]["retry_blocked"] is True
+        assert redelivery.youtube_playlist_id == "PLshow"
+        assert redelivery.youtube_playlist_succeeded is False
+
+    @pytest.mark.parametrize("body", [b"[]", b"null"], ids=["array", "null"])
+    def test_non_object_playlist_membership_persists_unknown_and_blocks_redelivery(
+        self, video_file, monkeypatch, body
+    ):
+        monkeypatch.setattr(
+            "podcaster.video.distribution.upload_to_youtube",
+            lambda *args, **kwargs: ("yt-vid-001", "https://youtube.com/watch?v=yt-vid-001"),
+        )
+        monkeypatch.setattr(
+            "podcaster.video.distribution._get_youtube_access_token",
+            lambda cfg, http: "fake-access-token",
+        )
+        transport = FakeTransport(responses=[(200, body)])
+        config = VideoDistributionConfig(
+            youtube_enabled=True,
+            youtube_client_id="id",
+            youtube_client_secret="sec",
+            youtube_refresh_token="ref",
+            youtube_playlist_id="PLshow",
+            blob_archive_enabled=False,
+            dry_run=False,
+        )
+        snapshots: list[tuple[str, dict]] = []
+
+        result = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            transport=transport,
+            on_published=lambda platform, record: snapshots.append((platform, record)),
+            publish_run_id="playlist-non-object-membership",
+        )
+
+        assert [request["method"] for request in transport.requests] == ["GET"]
+        assert result.youtube_playlist_succeeded is False
+        assert result.provider_outcomes["youtube_playlist"] == PUBLICATION_UNKNOWN
+        assert result.provider_records["youtube_playlist"]["retry_blocked"] is True
+        assert (
+            result.provider_records["youtube_playlist"]["last_error_code"]
+            == "youtube_playlist_outcome_ambiguous"
+        )
+        playlist_snapshot = next(
+            record for platform, record in snapshots if platform == "youtube_playlist"
+        )
+        youtube_snapshot = next(record for platform, record in snapshots if platform == "youtube")
+        assert playlist_snapshot["outcome"] == PUBLICATION_UNKNOWN
+        assert playlist_snapshot["retry_blocked"] is True
+        assert playlist_snapshot["provider_id"] == "PLshow"
+
+        redelivery = distribute_video(
+            video_file,
+            "job1",
+            "title",
+            "desc",
+            120.0,
+            config,
+            transport=transport,
+            published={
+                "youtube": youtube_snapshot,
+                "youtube_playlist": playlist_snapshot,
+            },
+            publish_run_id="playlist-non-object-membership",
+        )
+
+        assert [request["method"] for request in transport.requests] == ["GET"]
+        assert redelivery.provider_outcomes["youtube_playlist"] == PUBLICATION_UNKNOWN
+        assert redelivery.provider_records["youtube_playlist"]["retry_blocked"] is True
+        assert redelivery.provider_records["youtube_playlist"]["provider_id"] == "PLshow"
+        assert (
+            redelivery.provider_records["youtube_playlist"]["last_error_code"]
+            == "youtube_playlist_outcome_ambiguous"
+        )
+        assert redelivery.youtube_playlist_id == "PLshow"
+        assert redelivery.youtube_playlist_succeeded is False
 
     def test_playlist_skipped_on_dry_run(self, video_file, monkeypatch):
         """Playlist add is not called when dry_run=True."""

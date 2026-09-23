@@ -28,14 +28,15 @@ Responsibilities (RFC §5, §6, §8):
 * **Per-index fan-in barrier** (§5). Poll ``blob_exists`` on each expected clip's
   manifest — **not** ``list_blobs`` (which caps at 10). Complete iff every index has
   a terminal manifest (success *or* fallback).
-* **Gap fill** (§8). A poison index has a terminal *fallback* manifest but no
-  ``.webm`` (the recorder gave up before recording). The editor fills that gap with
-  a locally-recorded fallback card so the composed timeline still has one clip per
-  expected segment.
+* **Bounded fallback** (§8). At fan-in cutoff the editor creates a deterministic
+  local static clip and hash-bound terminal manifest, or records
+  ``recording_insufficient`` before composition. It never launches Chromium or
+  network work from the fallback path.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -45,14 +46,25 @@ from typing import Any, Callable, Mapping, Sequence
 
 from podcaster.queue import QueueProducer, enqueue_clip_job
 from podcaster.storage import StorageBackend
+from podcaster.video.budget import VideoStage, VideoStageBudget
+from podcaster.video.clip_manifest import CLIP_MANIFEST_SCHEMA_VERSION
 from podcaster.video.clipset import (
+    CLIPSET_SCHEMA_VERSION,
+    LEGACY_CLIPSET_SCHEMA_VERSION,
     Clipset,
+    ClipsetBudgetError,
+    ClipsetJobMismatchError,
+    ClipsetSchemaVersionError,
     clip_blob_path,
+    clip_content_blob_path,
     clip_manifest_blob_path,
     clips_prefix,
     clipset_blob_path,
     job_prefix,
 )
+from podcaster.video.intermediates import StorageOperationTimeout, run_storage_operation
+from podcaster.video.process import MediaEvidence, MediaValidationError, collect_media_evidence
+from podcaster.video.recorder import STATUS_FALLBACK, STATUS_RECORDING_INSUFFICIENT, STATUS_SUCCESS
 from podcaster.video.sync_plan import VideoSegment
 from podcaster.video.video_gen import RecordedSegment, RecordingResult
 
@@ -68,14 +80,27 @@ DEFAULT_LEASE_TTL_SECONDS = 1800
 
 #: Default bound on the fan-in wait (seconds). On timeout the editor composes with
 #: whatever terminal manifests exist (fallbacks fill the gaps) rather than hanging.
-DEFAULT_FANIN_TIMEOUT_SECONDS = 5400
+DEFAULT_FANIN_TIMEOUT_SECONDS = 1200
 
 #: Seconds between fan-in barrier polls.
 DEFAULT_FANIN_POLL_SECONDS = 15
 
-#: Gap filler: record one fallback clip locally for a poison index missing its
-#: ``.webm``. Injectable so tests need no Playwright/Chromium.
+#: Legacy injectable gap filler retained for callers that explicitly provide one.
+#: Production terminalization uses the hash-bound static fallback path instead.
 FillGapFn = Callable[[VideoSegment, Path, int], RecordedSegment]
+MediaValidator = Callable[[Path, MediaEvidence | None, float], MediaEvidence]
+
+
+class RecordingInsufficientError(RuntimeError):
+    """A terminal clip cannot provide validated media for composition."""
+
+    def __init__(self, job_id: str, clip_index: int, reason: str) -> None:
+        super().__init__(
+            f"recording insufficient for job_id={job_id} clip_index={clip_index}: {reason}"
+        )
+        self.job_id = job_id
+        self.clip_index = clip_index
+        self.reason = reason
 
 
 def editor_lease_blob_path(job_id: str) -> str:
@@ -180,6 +205,8 @@ def plan_or_load_clipset(
     scratch: StorageBackend,
     job_id: str,
     segments: Sequence[VideoSegment],
+    *,
+    budget: VideoStageBudget | None = None,
 ) -> Clipset:
     """Return the immutable ``clipset.json`` for *job_id*, creating it if absent.
 
@@ -188,7 +215,11 @@ def plan_or_load_clipset(
     can't drift (RFC §6.3).
     """
     path = clipset_blob_path(job_id)
-    planned = Clipset.from_segments(job_id, segments)
+    planned = Clipset.from_segments(
+        job_id,
+        segments,
+        budget=budget.projection if budget is not None else None,
+    )
     written = planned.to_json_bytes()
 
     def _update(current: bytes | None) -> bytes:
@@ -198,10 +229,41 @@ def plan_or_load_clipset(
     # Re-read the authoritative bytes the CAS settled on: an existing plan wins
     # over our freshly-planned one (immutability), our plan wins when absent.
     raw = scratch.get_bytes(path) or written
-    clipset = Clipset.from_bytes(raw)
-    if clipset.count != planned.count:
+    try:
+        clipset = Clipset.from_bytes(raw, expected_job_id=job_id)
+    except ClipsetJobMismatchError:
+        raise
+    except (ClipsetBudgetError, ClipsetSchemaVersionError):
+        raise
+    except (TypeError, ValueError):
+        if budget is None or not budget.admit(VideoStage.PREFLIGHT).allowed:
+            raise
+        scratch.delete_blob(path)
+        scratch.delete_prefix(clips_prefix(job_id))
+        scratch.update_bytes(path, _JSON_CONTENT_TYPE, lambda _current: written)
+        clipset = planned
+    if clipset.schema_version == LEGACY_CLIPSET_SCHEMA_VERSION:
+        migrated_budget = clipset.budget or (budget.projection if budget is not None else None)
+        if migrated_budget is not None:
+            migration_document = json.loads(raw.decode("utf-8"))
+            migration_document["schema_version"] = CLIPSET_SCHEMA_VERSION
+            migration_document["video_budget"] = migrated_budget.to_dict()
+            migrated_bytes = json.dumps(
+                migration_document,
+                separators=(",", ":"),
+            ).encode("utf-8")
+
+            def _migrate(current: bytes | None) -> bytes:
+                if current == raw:
+                    return migrated_bytes
+                return current if current is not None else migrated_bytes
+
+            scratch.update_bytes(path, _JSON_CONTENT_TYPE, _migrate)
+            authoritative = scratch.get_bytes(path) or migrated_bytes
+            clipset = Clipset.from_bytes(authoritative, expected_job_id=job_id)
+    if clipset != planned:
         logger.warning(
-            "reusing existing clipset job_id=%s existing_count=%d planned_count=%d",
+            "reusing immutable existing clipset job_id=%s existing_count=%d planned_count=%d",
             job_id,
             clipset.count,
             planned.count,
@@ -209,11 +271,27 @@ def plan_or_load_clipset(
     return clipset
 
 
-def missing_indices(scratch: StorageBackend, clipset: Clipset) -> list[int]:
+def missing_indices(
+    scratch: StorageBackend,
+    clipset: Clipset,
+    *,
+    admission_check: Callable[[], float] | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+) -> list[int]:
     """Expected indices with no terminal manifest yet (fan-in incomplete)."""
     pending: list[int] = []
     for index in clipset.indices():
-        if not scratch.blob_exists(clip_manifest_blob_path(clipset.job_id, index)):
+        path = clip_manifest_blob_path(clipset.job_id, index)
+        if admission_check is None:
+            exists = scratch.blob_exists(path)
+        else:
+            remaining = admission_check()
+            if remaining <= 0:
+                raise StorageOperationTimeout(
+                    "fallback deadline reached during missing clip inspection"
+                )
+            exists = operation_runner(lambda path=path: scratch.blob_exists(path), remaining)
+        if not exists:
             pending.append(index)
     return pending
 
@@ -223,6 +301,8 @@ def enqueue_missing_clips(
     clipset: Clipset,
     *,
     producer: QueueProducer | None = None,
+    admission_check: Callable[[], float] | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> list[int]:
     """Enqueue ``video-clip-jobs`` messages **additively** for pending indices.
 
@@ -230,16 +310,59 @@ def enqueue_missing_clips(
     idempotency (manifest sentinel + content-addressed paths) makes a duplicate
     in-flight recorder harmless (RFC §6.3).
     """
-    pending = missing_indices(scratch, clipset)
-    for index in pending:
-        enqueue_clip_job(clipset.job_id, index, producer=producer)
+    enqueued: list[int] = []
+    for index in clipset.indices():
+        path = clip_manifest_blob_path(clipset.job_id, index)
+        if admission_check is None:
+            exists = scratch.blob_exists(path)
+        else:
+            remaining = admission_check()
+            if remaining <= 0:
+                break
+            try:
+                exists = operation_runner(
+                    lambda path=path: scratch.blob_exists(path),
+                    remaining,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "fan-out manifest probe timed out job_id=%s clip_index=%d",
+                    clipset.job_id,
+                    index,
+                )
+                break
+        if exists:
+            continue
+        if admission_check is None:
+            enqueue_clip_job(clipset.job_id, index, producer=producer)
+        else:
+            remaining = admission_check()
+            if remaining <= 0:
+                break
+            try:
+                operation_runner(
+                    lambda index=index: enqueue_clip_job(
+                        clipset.job_id,
+                        index,
+                        producer=producer,
+                    ),
+                    remaining,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "fan-out queue send timed out job_id=%s clip_index=%d",
+                    clipset.job_id,
+                    index,
+                )
+                break
+        enqueued.append(index)
     logger.info(
         "fan-out job_id=%s enqueued=%d total=%d",
         clipset.job_id,
-        len(pending),
+        len(enqueued),
         clipset.count,
     )
-    return pending
+    return enqueued
 
 
 def wait_for_fanin(
@@ -251,6 +374,8 @@ def wait_for_fanin(
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     on_poll: Callable[[set[int]], None] | None = None,
+    budget: VideoStageBudget | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> tuple[bool, set[int]]:
     """Block until every expected index has a terminal manifest, or timeout.
 
@@ -259,14 +384,40 @@ def wait_for_fanin(
     caps at 10 and mixes ``.webm`` with ``.manifest.json``) (RFC §5).
     """
     expected = set(clipset.indices())
-    deadline = monotonic() + timeout_seconds
+    effective_timeout = (
+        min(timeout_seconds, budget.remaining_seconds(VideoStage.FANIN))
+        if budget is not None
+        else timeout_seconds
+    )
+    deadline = monotonic() + max(0.0, effective_timeout)
     present: set[int] = set()
     while True:
-        present = {
-            index
-            for index in expected
-            if scratch.blob_exists(clip_manifest_blob_path(clipset.job_id, index))
-        }
+        present = set()
+        for index in expected:
+            path = clip_manifest_blob_path(clipset.job_id, index)
+            if budget is None:
+                exists = scratch.blob_exists(path)
+            else:
+                remaining = min(
+                    deadline - monotonic(),
+                    budget.remaining_seconds(VideoStage.FANIN),
+                )
+                if remaining <= 0:
+                    return False, present
+                try:
+                    exists = operation_runner(
+                        lambda path=path: scratch.blob_exists(path),
+                        remaining,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "fan-in probe timed out job_id=%s clip_index=%d",
+                        clipset.job_id,
+                        index,
+                    )
+                    return False, present
+            if exists:
+                present.add(index)
         logger.info(
             "fan-in barrier job_id=%s present=%d expected=%d",
             clipset.job_id,
@@ -277,7 +428,10 @@ def wait_for_fanin(
             on_poll(present)
         if present >= expected:
             return True, present
-        if monotonic() >= deadline:
+        remaining = deadline - monotonic()
+        if budget is not None:
+            remaining = min(remaining, budget.remaining_seconds(VideoStage.FANIN))
+        if remaining <= 0:
             logger.warning(
                 "fan-in barrier timed out job_id=%s present=%d expected=%d",
                 clipset.job_id,
@@ -285,7 +439,7 @@ def wait_for_fanin(
                 len(expected),
             )
             return False, present
-        sleep(poll_seconds)
+        sleep(min(poll_seconds, remaining))
 
 
 def assemble_recording(
@@ -294,53 +448,233 @@ def assemble_recording(
     output_dir: Path,
     *,
     fill_gap: FillGapFn | None = None,
+    media_validator: MediaValidator | None = None,
+    validation_timeout_seconds: float = 30.0,
+    budget: VideoStageBudget | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> RecordingResult:
     """Download terminal clips into *output_dir* as a :class:`RecordingResult`.
 
-    For each expected index, download its ``.webm`` and read the per-clip manifest
-    to reconstruct the recording-outcome metadata, producing a
-    :class:`RecordedSegment` in plan order. A poison index (terminal *fallback*
-    manifest but no ``.webm``) is filled with a locally-recorded fallback card via
-    *fill_gap* so the composed timeline keeps one clip per segment (RFC §8).
+    For each expected index, download the exact blob referenced by its terminal
+    manifest and validate size, SHA-256, and media decodability before rebuilding
+    the :class:`RecordedSegment`. Missing/invalid terminal media fails closed as
+    ``recording_insufficient``. *fill_gap* remains only as an explicit legacy/test
+    injection seam; production does not use it.
     """
-    if fill_gap is None:
-        fill_gap = _production_fill_gap
+    if media_validator is None:
+        media_validator = _validate_downloaded_media
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     recorded: list[RecordedSegment] = []
+
+    def _storage_call(call: Callable[[], Any]) -> Any:
+        if budget is None:
+            return call()
+        timeout = budget.operation_timeout(VideoStage.FALLBACK)
+        if timeout <= 0:
+            raise TimeoutError("fallback deadline reached during recording assembly")
+        return operation_runner(call, timeout)
+
     for entry in clipset.clips:
         index = entry.clip_index
         segment = entry.to_segment()
-        manifest = _read_clip_manifest(scratch, clipset.job_id, index)
-        clip_path = clip_blob_path(clipset.job_id, index)
+        try:
+            manifest = _read_clip_manifest(
+                scratch,
+                clipset.job_id,
+                index,
+                storage_call=_storage_call,
+            )
+        except TimeoutError as exc:
+            raise RecordingInsufficientError(
+                clipset.job_id,
+                index,
+                "terminal manifest read timed out",
+            ) from exc
+        if budget is not None and manifest.get("schema_version") != CLIP_MANIFEST_SCHEMA_VERSION:
+            raise RecordingInsufficientError(
+                clipset.job_id,
+                index,
+                "terminal manifest has unknown or legacy schema",
+            )
+        status = str(manifest.get("status", ""))
+        if status == STATUS_RECORDING_INSUFFICIENT:
+            raise RecordingInsufficientError(
+                clipset.job_id,
+                index,
+                str(manifest.get("failure_reason", "local fallback unavailable")),
+            )
+        if manifest and status not in {STATUS_SUCCESS, STATUS_FALLBACK}:
+            raise RecordingInsufficientError(
+                clipset.job_id,
+                index,
+                f"terminal manifest has invalid recorder status: {status or '<empty>'}",
+            )
+        media_data = manifest.get("media")
+        try:
+            expected_media = (
+                MediaEvidence.from_dict(media_data) if isinstance(media_data, Mapping) else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise RecordingInsufficientError(
+                clipset.job_id,
+                index,
+                "terminal manifest has invalid media evidence",
+            ) from exc
+        raw_media_path = manifest.get("media_blob_path")
         manifest_path = clip_manifest_blob_path(clipset.job_id, index)
+        manifest_exists = _storage_call(lambda: scratch.blob_exists(manifest_path))
+        if manifest_exists and not manifest:
+            raise RecordingInsufficientError(
+                clipset.job_id,
+                index,
+                "terminal manifest is empty or malformed",
+            )
+        if manifest:
+            if expected_media is None:
+                raise RecordingInsufficientError(
+                    clipset.job_id,
+                    index,
+                    "terminal manifest is missing media evidence",
+                )
+            expected_clip_id = f"clip-{index:03d}"
+            if manifest.get("clip_id") != expected_clip_id:
+                raise RecordingInsufficientError(
+                    clipset.job_id,
+                    index,
+                    "terminal manifest clip_id does not match clip index",
+                )
+            expected_media_path = clip_content_blob_path(
+                clipset.job_id,
+                index,
+                expected_media.sha256,
+            )
+            if raw_media_path != expected_media_path:
+                raise RecordingInsufficientError(
+                    clipset.job_id,
+                    index,
+                    "terminal manifest media path does not match clip identity",
+                )
+            clip_path = expected_media_path
+        else:
+            clip_path = clip_blob_path(clipset.job_id, index)
         dest = output_dir / f"clip_{index:03d}.webm"
+
         # Only treat a clip as terminal when its manifest sentinel is present
         # (RFC §5). On the normal path the fan-in barrier already waited for it;
         # on a timeout a half-written ``.webm`` may exist without a manifest, in
         # which case we fill the gap rather than compose an unverified clip.
         if (
-            scratch.blob_exists(manifest_path)
-            and scratch.blob_exists(clip_path)
-            and scratch.download_file(clip_path, dest)
+            manifest_exists
+            and _storage_call(lambda: scratch.blob_exists(clip_path))
+            and _storage_call(lambda: scratch.download_file(clip_path, dest))
         ):
-            recorded.append(_recorded_from_manifest(segment, dest, manifest))
+            try:
+                media_validator(dest, expected_media, validation_timeout_seconds)
+            except (MediaValidationError, OSError, ValueError) as exc:
+                dest.unlink(missing_ok=True)
+                reason = getattr(exc, "reason", type(exc).__name__)
+                reason_value = getattr(reason, "value", str(reason))
+                raise RecordingInsufficientError(
+                    clipset.job_id,
+                    index,
+                    f"terminal media validation failed: {reason_value}",
+                ) from exc
+            recorded.append(
+                _recorded_from_manifest(
+                    segment,
+                    dest,
+                    manifest,
+                    media_evidence=expected_media,
+                )
+            )
         else:
-            logger.warning(
-                "clip missing/incomplete for job_id=%s clip_index=%d; filling gap",
+            if fill_gap is not None:
+                recorded.append(fill_gap(segment, output_dir, index))
+                continue
+            raise RecordingInsufficientError(
                 clipset.job_id,
                 index,
+                "terminal manifest does not reference available media",
             )
-            recorded.append(fill_gap(segment, output_dir, index))
     return RecordingResult(recorded=recorded, output_dir=output_dir)
 
 
-def cleanup_clips(scratch: StorageBackend, job_id: str) -> int:
+def terminalize_missing_clips(
+    scratch: StorageBackend,
+    clipset: Clipset,
+    *,
+    budget: VideoStageBudget,
+    renderer=None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+) -> None:
+    """After fan-in cutoff, resolve every missing index without browser/network."""
+    from podcaster.video.recorder import write_fallback_manifest
+
+    if budget.remaining_seconds(VideoStage.FALLBACK) <= 0:
+        return
+    pending = missing_indices(
+        scratch,
+        clipset,
+        admission_check=lambda: budget.remaining_seconds(VideoStage.FALLBACK),
+        operation_runner=operation_runner,
+    )
+    for index in pending:
+        remaining = budget.remaining_seconds(VideoStage.FALLBACK)
+        if remaining <= 0:
+            break
+        write_fallback_manifest(
+            clipset.job_id,
+            index,
+            scratch=scratch,
+            reason="fanin_deadline_reached",
+            timeout_seconds=min(30.0, remaining),
+            renderer=renderer,
+            admission_check=lambda: budget.remaining_seconds(VideoStage.FALLBACK),
+            operation_runner=operation_runner,
+        )
+
+
+def _validate_downloaded_media(
+    path: Path,
+    expected: MediaEvidence | None,
+    timeout_seconds: float,
+) -> MediaEvidence:
+    return collect_media_evidence(
+        path,
+        expected=expected,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def cleanup_clips(
+    scratch: StorageBackend,
+    job_id: str,
+    *,
+    budget: VideoStageBudget | None = None,
+    timeout_seconds: float | None = 30.0,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
+) -> int:
     """Delete the per-job ``clips/**`` scratch after a successful compose (RFC §5)."""
-    try:
+    timeout = (
+        None if budget is None else budget.operation_timeout(VideoStage.SHUTDOWN, timeout_seconds)
+    )
+    if timeout is not None and timeout <= 0:
+        logger.warning("clip cleanup skipped with no shutdown budget job_id=%s", job_id)
+        return 0
+
+    def operation() -> int:
         return scratch.delete_prefix(clips_prefix(job_id))
+
+    try:
+        return operation() if timeout is None else operation_runner(operation, timeout)
     except Exception:  # pragma: no cover - best-effort; lifecycle rule is the backstop
-        logger.debug("failed to clean up clips for job_id=%s", job_id, exc_info=True)
+        logger.warning(
+            "clip cleanup failed job_id=%s; lifecycle policy will reclaim",
+            job_id,
+            exc_info=True,
+        )
         return 0
 
 
@@ -357,6 +691,10 @@ def record_via_fanout(
     monotonic: Callable[[], float] = time.monotonic,
     fill_gap: FillGapFn | None = None,
     heartbeat: Callable[[], None] | None = None,
+    budget: VideoStageBudget,
+    fallback_renderer=None,
+    media_validator: MediaValidator | None = None,
+    operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
 ) -> RecordingResult:
     """Plan → fan out → fan in → assemble, returning a ``RecordingResult``.
 
@@ -364,8 +702,19 @@ def record_via_fanout(
     ``RecordingResult`` shape ``record_episode`` returns. *heartbeat* (when given)
     is invoked on every barrier poll so the caller can renew the editor lease.
     """
-    clipset = plan_or_load_clipset(scratch, job_id, segments)
-    enqueue_missing_clips(scratch, clipset, producer=producer)
+    if budget is None:
+        raise ClipsetBudgetError("queued fan-out recording requires a shared video budget")
+    clipset = plan_or_load_clipset(scratch, job_id, segments, budget=budget)
+    if budget.admit(VideoStage.FANIN).allowed:
+        enqueue_missing_clips(
+            scratch,
+            clipset,
+            producer=producer,
+            admission_check=lambda: budget.remaining_seconds(VideoStage.FANIN),
+            operation_runner=operation_runner,
+        )
+    else:
+        logger.warning("fan-out cutoff reached; no clip jobs enqueued job_id=%s", job_id)
 
     def _on_poll(_present: set[int]) -> None:
         if heartbeat is not None:
@@ -379,6 +728,8 @@ def record_via_fanout(
         sleep=sleep,
         monotonic=monotonic,
         on_poll=_on_poll,
+        budget=budget,
+        operation_runner=operation_runner,
     )
     if not complete:
         logger.warning(
@@ -388,11 +739,39 @@ def record_via_fanout(
             len(present),
             clipset.count,
         )
-    return assemble_recording(scratch, clipset, output_dir, fill_gap=fill_gap)
+        terminalize_missing_clips(
+            scratch,
+            clipset,
+            budget=budget,
+            renderer=fallback_renderer,
+            operation_runner=operation_runner,
+        )
+    validation_timeout = (
+        min(30.0, budget.remaining_seconds(VideoStage.FALLBACK)) if budget is not None else 30.0
+    )
+    return assemble_recording(
+        scratch,
+        clipset,
+        output_dir,
+        fill_gap=fill_gap,
+        media_validator=media_validator,
+        validation_timeout_seconds=validation_timeout,
+        budget=budget,
+        operation_runner=operation_runner,
+    )
 
 
-def _read_clip_manifest(scratch: StorageBackend, job_id: str, clip_index: int) -> Mapping[str, Any]:
-    raw = scratch.get_bytes(clip_manifest_blob_path(job_id, clip_index))
+def _read_clip_manifest(
+    scratch: StorageBackend,
+    job_id: str,
+    clip_index: int,
+    *,
+    storage_call: Callable[[Callable[[], Any]], Any] | None = None,
+) -> Mapping[str, Any]:
+    def read() -> bytes | None:
+        return scratch.get_bytes(clip_manifest_blob_path(job_id, clip_index))
+
+    raw = read() if storage_call is None else storage_call(read)
     if not raw:
         return {}
     import json
@@ -405,7 +784,11 @@ def _read_clip_manifest(scratch: StorageBackend, job_id: str, clip_index: int) -
 
 
 def _recorded_from_manifest(
-    segment: VideoSegment, video_path: Path, manifest: Mapping[str, Any]
+    segment: VideoSegment,
+    video_path: Path,
+    manifest: Mapping[str, Any],
+    *,
+    media_evidence: MediaEvidence | None = None,
 ) -> RecordedSegment:
     """Rebuild a :class:`RecordedSegment` from a downloaded clip + its manifest.
 
@@ -422,24 +805,21 @@ def _recorded_from_manifest(
         website_url=_opt_str(manifest.get("website_url")),
         is_removed=bool(manifest.get("is_removed", False)),
         recovery_path=str(manifest.get("recovery_path", "direct")),
+        media_evidence=media_evidence,
     )
 
 
 def _production_fill_gap(
     segment: VideoSegment, output_dir: Path, clip_index: int
 ) -> RecordedSegment:
-    """Record one fallback card locally for a poison gap (no ``.webm``).
+    """Render a browser-free fixed local fallback for compatibility callers."""
+    from podcaster.video.recorder import _render_static_fallback
 
-    Reuses the recorder's production single-segment path; ``_record_segment``
-    renders a clean fallback card when navigation fails, so this reliably yields a
-    usable clip without hanging the compose.
-    """
-    from podcaster.video.recorder import _production_record_segment
-
-    result = _production_record_segment(segment, output_dir)
+    path = Path(output_dir) / f"gap_{clip_index:03d}.webm"
+    _render_static_fallback(path, 30.0)
     return RecordedSegment(
         segment=segment,
-        video_path=Path(result.video_path),
+        video_path=path,
         is_fallback=True,
         recovery_path="fallback",
     )

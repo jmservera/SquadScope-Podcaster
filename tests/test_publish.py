@@ -3793,6 +3793,22 @@ class TestFindExistingDraft:
         assert "query" not in kwargs["json"]
         assert kwargs["headers"]["x-creator-client"] == "public-website"
 
+    def test_graphql_episode_index_post_is_read_only_for_stage_admission(self):
+        from podcaster import publish as pub
+
+        session = self._session({"episodes": []})
+        session._before_provider_mutation = MagicMock(
+            side_effect=AssertionError("readback must not require mutation admission")
+        )
+
+        assert (
+            pub._find_existing_draft(
+                session, "99", "My Show", user_id="7", show_id="show1", exclude_id=None
+            )
+            is None
+        )
+        session._before_provider_mutation.assert_not_called()
+
     def test_returns_matching_draft(self):
         from podcaster import publish as pub
 
