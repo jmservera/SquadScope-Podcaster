@@ -3248,6 +3248,39 @@ class TestRetryRequestLogging:
         assert "bad request" not in logged
         assert "HTTP 400" in logged
 
+    def test_forbidden_failure_logs_never_echo_auth_secrets(self, caplog):
+        """A 403 body may repeat every credential presented by the browser."""
+        import logging
+
+        from podcaster import publish as pub
+
+        sentinels = (
+            "response-body-sentinel",
+            "cookie-sentinel",
+            "sp-dc-sentinel",
+            "sp-key-sentinel",
+            "authorization-sentinel",
+        )
+        body = " ".join(sentinels)
+        session, _calls = _scripted_session([_mock_error_resp(403, body)])
+
+        with caplog.at_level(logging.ERROR, logger="podcaster.publish"):
+            with pytest.raises(pub.SpotifyPublishError):
+                pub._retry_request(
+                    session,
+                    "GET",
+                    "https://api-v5.anchor.fm/v3/x?token=response-body-sentinel",
+                    max_attempts=1,
+                    headers={
+                        "Authorization": "Bearer authorization-sentinel",
+                        "Cookie": "sp_dc=sp-dc-sentinel; sp_key=sp-key-sentinel",
+                    },
+                )
+
+        logged = " ".join(record.getMessage() for record in caplog.records)
+        assert "HTTP 403" in logged
+        assert all(secret not in logged for secret in sentinels)
+
 
 class TestClaimDraftTitleIsNonDestructive:
     """#656 review: the early title claim must never clear metadata."""
@@ -3446,7 +3479,7 @@ class TestPollUploadErrorExtraction:
 
 
 class TestCredentialExpiryDetection:
-    """#364: detect Spotify 401/403 as credential expiry and notify."""
+    """#364/#685: distinguish credential expiry from ordinary forbidden responses."""
 
     def _http_error(self, status_code):
         import requests
@@ -3456,21 +3489,83 @@ class TestCredentialExpiryDetection:
         resp.text = "Unauthorized"
         return requests.HTTPError("auth", response=resp)
 
-    @pytest.mark.parametrize("status_code", [401, 403])
-    def test_retry_request_raises_credential_expired(self, status_code, monkeypatch):
+    def test_retry_request_401_raises_credential_expired_without_retry(self, monkeypatch):
         from podcaster import publish as pub
 
         session = MagicMock()
         resp = MagicMock()
-        resp.raise_for_status.side_effect = self._http_error(status_code)
+        resp.raise_for_status.side_effect = self._http_error(401)
         session.request.return_value = resp
 
         monkeypatch.setattr(pub.time, "sleep", lambda *a, **k: None)
         with pytest.raises(pub.SpotifyCredentialExpiredError) as exc:
             pub._retry_request(session, "GET", "https://api-v5.anchor.fm/x")
-        assert str(status_code) in str(exc.value)
+        assert "401" in str(exc.value)
         # Must not retry on auth failure.
         assert session.request.call_count == 1
+
+    def test_retry_request_generic_403_is_ordinary_http_failure_without_retry(self, monkeypatch):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        resp = MagicMock()
+        resp.raise_for_status.side_effect = self._http_error(403)
+        session.request.return_value = resp
+
+        monkeypatch.setattr(pub.time, "sleep", lambda *a, **k: None)
+        with pytest.raises(pub.SpotifyPublishError) as exc:
+            pub._retry_request(session, "GET", "https://api-v5.anchor.fm/x")
+        assert not isinstance(exc.value, pub.SpotifyCredentialExpiredError)
+        assert session.request.call_count == 1
+
+    def test_retry_request_auth_check_403_is_credential_expired_without_retry(self, monkeypatch):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        resp = MagicMock()
+        resp.raise_for_status.side_effect = self._http_error(403)
+        session.request.return_value = resp
+
+        monkeypatch.setattr(pub.time, "sleep", lambda *a, **k: None)
+        with pytest.raises(pub.SpotifyCredentialExpiredError) as exc:
+            pub._retry_request(
+                session,
+                "GET",
+                "https://api-v5.anchor.fm/v3/shows/show/legacyIds",
+                request_context="auth_check",
+            )
+        assert "403" in str(exc.value)
+        assert session.request.call_count == 1
+
+    def test_draft_readback_403_returns_unknown_on_overview_route(self, caplog):
+        import logging
+
+        from podcaster import publish as pub
+
+        secrets = (
+            "readback-body-sentinel",
+            "cookie-sentinel",
+            "sp-dc-sentinel",
+            "sp-key-sentinel",
+            "authorization-sentinel",
+        )
+        session = MagicMock()
+        session.headers = {
+            "Authorization": "Bearer authorization-sentinel",
+            "Cookie": "sp_dc=sp-dc-sentinel; sp_key=sp-key-sentinel",
+        }
+        session.request.return_value = _mock_error_resp(403, " ".join(secrets))
+
+        with caplog.at_level(logging.WARNING, logger="podcaster.publish"):
+            state = pub._get_episode_publication_state(session, 12345, user_id="7")
+
+        assert state is None
+        session.request.assert_called_once()
+        args, kwargs = session.request.call_args
+        assert args == ("GET", "https://api-v5.anchor.fm/v3/episodes/12345/overview")
+        assert kwargs["params"] == {"userId": "7", "isMumsCompatible": "true"}
+        logged = " ".join(record.getMessage() for record in caplog.records)
+        assert all(secret not in logged for secret in secrets)
 
     def test_retry_request_still_retries_500(self, monkeypatch):
         from podcaster import publish as pub
