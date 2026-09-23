@@ -41,6 +41,13 @@ from podcaster.video.distribution import (
 logger = logging.getLogger(__name__)
 
 _YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+_YOUTUBE_RESUMABLE_UPLOAD_HOSTS = frozenset(
+    {
+        "upload.youtube.com",
+        "www.googleapis.com",
+        "youtube.googleapis.com",
+    }
+)
 
 #: Resumable chunk size. Must be a multiple of 256 KiB per the Google spec.
 _CHUNK_GRANULARITY = 256 * 1024
@@ -153,6 +160,21 @@ def parse_range_end(range_header: str | None) -> int | None:
         return None
 
 
+def _is_allowed_resumable_session_uri(session_uri: str) -> bool:
+    parsed = urlparse(session_uri)
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.hostname in _YOUTUBE_RESUMABLE_UPLOAD_HOSTS
+        and port in {None, 443}
+    )
+
+
 # --- resumable upload ---------------------------------------------------------
 
 
@@ -202,10 +224,9 @@ def initiate_resumable_session(
         )
     if status not in (200, 308):
         raise RuntimeError(f"YouTube resumable init failed: HTTP {status}")
-
     session_uri = resp_headers.get("location", "").strip()
-    parsed_session_uri = urlparse(session_uri)
-    if parsed_session_uri.scheme not in {"http", "https"} or not parsed_session_uri.netloc:
+    session_uri = resp_headers.get("location", "").strip()
+    if not _is_allowed_resumable_session_uri(session_uri):
         raise YouTubeSessionInitiationUnknown(
             f"YouTube resumable session initiation outcome is unknown: "
             f"HTTP {status} returned no valid session URI"

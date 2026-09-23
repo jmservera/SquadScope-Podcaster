@@ -73,7 +73,7 @@ class _FakeTransport:
 
     total: int
     chunk: int
-    session_uri: str = "https://upload.example/session-123"
+    session_uri: str = "https://www.googleapis.com/upload/youtube/v3/videos?upload_id=session-123"
     video_id: str = "vid-OK"
     fail_at_offset: int | None = None  # inject one transient 503 at this offset
     received: int = 0
@@ -137,6 +137,25 @@ def test_initiate_resumable_session_returns_uri():
     t = _FakeTransport(total=1000, chunk=512)
     uri = initiate_resumable_session(t, "tok", {"snippet": {}}, file_size=1000)
     assert uri == t.session_uri
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://www.googleapis.com/upload/youtube/v3/videos?upload_id=x",
+        "https://attacker.example/upload/youtube/v3/videos?upload_id=x",
+        "https://www.googleapis.com.attacker.example/upload?upload_id=x",
+        "https://token@www.googleapis.com/upload/youtube/v3/videos?upload_id=x",
+        "https://www.googleapis.com:444/upload/youtube/v3/videos?upload_id=x",
+    ],
+)
+def test_initiate_resumable_session_rejects_untrusted_location(location):
+    class _UntrustedLocation:
+        def request_with_headers(self, *args, **kwargs):
+            return 200, {"location": location}, b""
+
+    with pytest.raises(YouTubeSessionInitiationUnknown, match="no valid session URI"):
+        initiate_resumable_session(_UntrustedLocation(), "tok", {}, file_size=10)
 
 
 @pytest.mark.parametrize("status", [200, 308])

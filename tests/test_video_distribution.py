@@ -276,7 +276,16 @@ class TestUploadToYouTube:
                     {"url": url, "method": method, "headers": headers, "data": data}
                 )
                 if method == "POST" and "uploadType=resumable" in url:
-                    return 200, {"location": "https://upload.example/large-session"}, b""
+                    return (
+                        200,
+                        {
+                            "location": (
+                                "https://www.googleapis.com/upload/youtube/v3/videos"
+                                "?upload_id=large-session"
+                            )
+                        },
+                        b"",
+                    )
                 return 200, {}, b'{"id":"large-video-id"}'
 
         transport = LargeUploadTransport(
@@ -948,7 +957,16 @@ class TestDistributionBudget:
                 )
                 if method == "POST" and "uploadType=resumable" in url:
                     clock.elapsed = denied_elapsed
-                    return 200, {"location": "https://upload.example/large-session"}, b""
+                    return (
+                        200,
+                        {
+                            "location": (
+                                "https://www.googleapis.com/upload/youtube/v3/videos"
+                                "?upload_id=large-session"
+                            )
+                        },
+                        b"",
+                    )
                 raise AssertionError("chunk request must be denied before provider I/O")
 
         transport = AdvancingLargeTransport(
