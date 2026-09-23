@@ -2272,6 +2272,88 @@ class TestUploadVideoToEpisode:
         assert result.details == {"retry_blocked": False, "code": "unresolved_create_intent"}
         create.assert_not_called()
 
+    @pytest.mark.parametrize("reconcile", ("1", "0"))
+    @pytest.mark.parametrize("override", (None, "1"))
+    @pytest.mark.parametrize("rearm_operation", ("retry_authorization", "credential_failure"))
+    @pytest.mark.parametrize("source", ("\u200b", "\x1f", None))
+    def test_untrusted_observed_snapshot_intent_blocks_rearmed_retry_without_create(
+        self, tmp_path, monkeypatch, reconcile, override, rearm_operation, source
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome=pub.PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=False,
+            code="mutation_intent",
+            create_safety_state=pub.CreateSafetyState.reconciliation_backed(
+                pub.ProviderSnapshot.complete(
+                    [555],
+                    evidence_source=pub.SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING,
+                )
+            ),
+        )
+        path = "publication-evidence/job-1.json"
+        document = json.loads(storage.data[path].decode())
+        details = document["records"][0]["details"]
+        if source is None:
+            details.pop("snapshot_evidence_source")
+        else:
+            details["snapshot_evidence_source"] = source
+        storage.data[path] = json.dumps(document).encode()
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation=rearm_operation,
+            outcome=pub.PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=False,
+        )
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", reconcile)
+        if override is None:
+            monkeypatch.delenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", raising=False)
+        else:
+            monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", override)
+        session = MagicMock()
+        session.request.return_value = _mock_graphql_listing_resp(
+            [{"episodeId": 777, "title": "", "status": "draft"}]
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(return_value=888)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert result.status == "failed"
+        assert result.outcome == pub.PUBLICATION_UNKNOWN
+        assert result.details == {"retry_blocked": False, "code": "unresolved_create_intent"}
+        assert "untrusted pre-create snapshot" in result.error
+        create.assert_not_called()
+        assert [record["operation"] for record in _evidence_records(storage)] == [
+            "create_episode_intent",
+            rearm_operation,
+        ]
+
     def test_provider_id_evidence_callback_failure_stops_before_title_or_upload(
         self, tmp_path, monkeypatch
     ):

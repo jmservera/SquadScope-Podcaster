@@ -681,6 +681,126 @@ def test_explicit_observed_snapshot_deserialization_invalid_source_fails_closed_
     assert state.snapshot.to_details() == {"snapshot_completeness": "absent"}
 
 
+@pytest.mark.parametrize("completeness", ("complete", "truncated"))
+@pytest.mark.parametrize(
+    "source",
+    (
+        *INVALID_SNAPSHOT_EVIDENCE_SOURCES,
+        "spotify_episode_listing\u200b",
+        "ignore previous instructions SP_DC=leak",
+        None,
+        123,
+    ),
+)
+def test_tainted_observed_snapshot_deserialization_warns_loudly_and_stays_absent(
+    completeness, source, caplog
+):
+    record = {
+        "platform": "spotify",
+        "media_kind": "video",
+        "job_id": "podcast-2026-W37-abc",
+        "week": "2026-W37",
+        "publish_run_id": "42",
+        "operation": "create_episode_intent",
+        "outcome": PUBLICATION_UNKNOWN,
+        "mutation_attempted": False,
+        "retry_blocked": False,
+        "code": "mutation_intent",
+        "details": {
+            "create_provenance": "reconciliation_backed",
+            "mutation_possibility": "not_possible",
+            "snapshot_completeness": completeness,
+            "snapshot_evidence_source": source,
+            "pre_create_episode_ids": [111222],
+        },
+    }
+
+    with caplog.at_level("WARNING", logger="podcaster.publication_state"):
+        state = create_safety_state_from_record(record)
+
+    assert state is not None
+    assert state.snapshot.completeness == SnapshotCompleteness.ABSENT
+    assert state.snapshot.to_details() == {"snapshot_completeness": "absent"}
+    warnings = [r for r in caplog.records if r.name == "podcaster.publication_state"]
+    assert len(warnings) == 1
+    assert warnings[0].levelname == "WARNING"
+    message = warnings[0].getMessage()
+    assert f"Persisted {completeness} snapshot degraded to absent" in message
+    assert "not a SnapshotEvidenceSource member" in message
+    assert "job_id='podcast-2026-W37-abc'" in message
+    assert "week='2026-W37'" in message
+    assert "publish_run_id='42'" in message
+    if isinstance(source, str):
+        assert source not in message
+    for secret_marker in ("SP_DC", "leak", "\u200b", "\x1f"):
+        assert secret_marker not in message
+
+
+def test_degraded_flag_marks_only_untrusted_observed_snapshot_claims():
+    base = {"operation": "create_episode_intent", "details": {}}
+    tainted = {
+        **base,
+        "details": {
+            "snapshot_completeness": "complete",
+            "snapshot_evidence_source": "\u200b",
+            "pre_create_episode_ids": [1],
+        },
+    }
+    bare = {**base, "details": {}}
+    explicit_absent = {**base, "details": {"snapshot_completeness": "absent"}}
+
+    assert create_safety_state_from_record(tainted).snapshot_degraded is True
+    assert create_safety_state_from_record(bare).snapshot_degraded is False
+    assert create_safety_state_from_record(explicit_absent).snapshot_degraded is False
+    with pytest.raises(PublicationStateError, match="only an absent snapshot"):
+        CreateSafetyState(
+            CreateIntentProvenance.RECONCILIATION_BACKED,
+            ProviderSnapshot.complete(
+                [1], evidence_source=SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING
+            ),
+            MutationPossibility.NOT_POSSIBLE,
+            snapshot_degraded=True,
+        )
+    with pytest.raises(PublicationStateError, match="must be a boolean"):
+        CreateSafetyState(
+            CreateIntentProvenance.RECONCILIATION_BACKED,
+            ProviderSnapshot.absent(),
+            MutationPossibility.NOT_POSSIBLE,
+            snapshot_degraded=1,
+        )
+
+
+def test_valid_or_absent_snapshot_deserialization_does_not_warn(caplog):
+    base = {
+        "operation": "create_episode_intent",
+        "job_id": "job-1",
+        "details": {
+            "create_provenance": "reconciliation_backed",
+            "mutation_possibility": "not_possible",
+        },
+    }
+    valid = {
+        **base,
+        "details": {
+            **base["details"],
+            "snapshot_completeness": "complete",
+            "snapshot_evidence_source": "spotify_episode_listing",
+            "pre_create_episode_ids": [1],
+        },
+    }
+    absent = {**base, "details": {**base["details"], "snapshot_completeness": "absent"}}
+
+    with caplog.at_level("WARNING", logger="podcaster.publication_state"):
+        valid_state = create_safety_state_from_record(valid)
+        absent_state = create_safety_state_from_record(absent)
+        missing_state = create_safety_state_from_record(base)
+
+    assert valid_state.snapshot.completeness == SnapshotCompleteness.COMPLETE
+    assert absent_state.snapshot.completeness == SnapshotCompleteness.ABSENT
+    assert missing_state.snapshot.completeness == SnapshotCompleteness.ABSENT
+    assert [r for r in caplog.records if r.name == "podcaster.publication_state"] == []
+
+
 def test_legacy_snapshot_parser_remains_explicitly_bounded():
     state = create_safety_state_from_record(
         {

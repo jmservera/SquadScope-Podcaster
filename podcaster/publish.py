@@ -2470,9 +2470,22 @@ def _spotify_video_unresolved_create_intent_snapshot(
             raise SpotifyDraftReconcileError(
                 "Spotify video create intent evidence has no reconciliation provenance."
             )
+        if state.snapshot_degraded:
+            # The record claimed an observed pre-create snapshot that could not be
+            # trusted: it stays a blocking unresolved intent, never "no intent".
+            unresolved_snapshot = state.snapshot
+            continue
         if state.snapshot.completeness == SnapshotCompleteness.ABSENT:
             continue
         unresolved_snapshot = state.snapshot
+    if (
+        unresolved_snapshot is not None
+        and unresolved_snapshot.completeness == SnapshotCompleteness.ABSENT
+    ):
+        raise SpotifyDraftReconcileError(
+            "Spotify video create intent evidence has an untrusted pre-create snapshot; "
+            "refusing to treat the unresolved create as absent."
+        )
     return unresolved_snapshot
 
 

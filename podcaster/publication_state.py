@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Mapping, final
@@ -44,6 +45,8 @@ PROVIDER_STATUSES = (
 )
 VERIFICATION_STATES = ("none", "provider_readback", "external_verified")
 REARMABLE_CLAIM_OPERATIONS = ("upload_intent", "create_episode_intent")
+logger = logging.getLogger(__name__)
+
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _WEEK_RE = re.compile(r"^\d{4}-W(?:0[1-9]|[1-4]\d|5[0-3])$")
 _RUN_RE = re.compile(r"^[0-9]+$")
@@ -143,6 +146,43 @@ def _snapshot_evidence_source_from_record(value: Any) -> SnapshotEvidenceSource 
         return SnapshotEvidenceSource(value)
     except ValueError:
         return None
+
+
+def _classify_untrusted_evidence_source(value: Any) -> str:
+    """Describe a rejected persisted source without echoing its (untrusted) content."""
+    if value is None:
+        return "missing_or_null"
+    if not isinstance(value, str):
+        return f"non_string:{type(value).__name__}"
+    if not value:
+        return "empty_string"
+    if not value.strip():
+        return f"whitespace_only(len={len(value)})"
+    if any(not ch.isprintable() for ch in value):
+        return f"contains_invisible_or_control_chars(len={len(value)})"
+    return f"unrecognized_string(len={len(value)})"
+
+
+def _warn_degraded_snapshot(
+    record: Mapping[str, Any], completeness: SnapshotCompleteness, raw_source: Any
+) -> None:
+    logger.warning(
+        "Persisted %s snapshot degraded to absent (fail closed): "
+        "snapshot_evidence_source is not a SnapshotEvidenceSource member "
+        "[%s]; job_id=%s week=%s publish_run_id=%s operation=%s",
+        completeness.value,
+        _classify_untrusted_evidence_source(raw_source),
+        _safe_identity_field(record.get("job_id")),
+        _safe_identity_field(record.get("week")),
+        _safe_identity_field(record.get("publish_run_id")),
+        _safe_identity_field(record.get("operation")),
+    )
+
+
+def _safe_identity_field(value: Any) -> str:
+    if not isinstance(value, str):
+        return "<invalid>"
+    return ascii(value[:80])
 
 
 @final
@@ -275,6 +315,9 @@ class CreateSafetyState:
     provenance: CreateIntentProvenance
     snapshot: ProviderSnapshot
     mutation_possibility: MutationPossibility
+    # True only when a persisted record claimed an observed snapshot whose
+    # evidence source was untrusted and was therefore degraded to absent.
+    snapshot_degraded: bool = field(default=False, compare=False)
 
     def __post_init__(self) -> None:
         if type(self) is not CreateSafetyState:
@@ -284,6 +327,12 @@ class CreateSafetyState:
         _trusted_provider_snapshot_values(self.snapshot)
         if type(self.mutation_possibility) is not MutationPossibility:
             raise PublicationStateError("mutation possibility must be explicit")
+        if type(self.snapshot_degraded) is not bool:
+            raise PublicationStateError("snapshot degradation flag must be a boolean")
+        if self.snapshot_degraded and (
+            _trusted_provider_snapshot_values(self.snapshot)[0] != SnapshotCompleteness.ABSENT
+        ):
+            raise PublicationStateError("only an absent snapshot can be marked degraded")
 
     @classmethod
     def reconciliation_backed(cls, snapshot: ProviderSnapshot) -> "CreateSafetyState":
@@ -382,6 +431,7 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
     else:
         return None
 
+    snapshot_degraded = False
     if "snapshot_completeness" in details:
         raw_completeness = details.get("snapshot_completeness")
         if not isinstance(raw_completeness, str):
@@ -395,18 +445,18 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
         if completeness == SnapshotCompleteness.ABSENT:
             snapshot = ProviderSnapshot.absent()
         else:
-            evidence_source = _snapshot_evidence_source_from_record(
-                details.get("snapshot_evidence_source")
-            )
-            snapshot = (
-                ProviderSnapshot(
+            raw_source = details.get("snapshot_evidence_source")
+            evidence_source = _snapshot_evidence_source_from_record(raw_source)
+            if evidence_source is None:
+                _warn_degraded_snapshot(record, completeness, raw_source)
+                snapshot = ProviderSnapshot.absent()
+                snapshot_degraded = True
+            else:
+                snapshot = ProviderSnapshot(
                     _parse_snapshot_ids(details.get("pre_create_episode_ids")),
                     completeness,
                     evidence_source,
                 )
-                if evidence_source
-                else ProviderSnapshot.absent()
-            )
     elif "pre_create_snapshot_complete" in details:
         raw_complete = details.get("pre_create_snapshot_complete")
         if not isinstance(raw_complete, bool):
@@ -446,7 +496,9 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
     else:
         mutation_possibility = MutationPossibility.NOT_POSSIBLE
 
-    return CreateSafetyState(provenance, snapshot, mutation_possibility)
+    return CreateSafetyState(
+        provenance, snapshot, mutation_possibility, snapshot_degraded=snapshot_degraded
+    )
 
 
 def validate_outcome(outcome: str) -> str:
