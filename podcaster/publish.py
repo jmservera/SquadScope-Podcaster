@@ -3044,7 +3044,12 @@ def publish_episode(
                 publish_run_id=publication_identity_context.publish_run_id,
                 details={"retry_blocked": True},
             )
-        if retry_is_blocked(prior_evidence, platform="spotify", media_kind=media_kind):
+        retry_blocked = (
+            spotify_video_retry_is_blocked(prior_evidence)
+            if media_kind == "video"
+            else retry_is_blocked(prior_evidence, platform="spotify", media_kind=media_kind)
+        )
+        if retry_blocked:
             return PublishResult(
                 status="failed",
                 error="Spotify mutation blocked pending publication reconciliation.",
