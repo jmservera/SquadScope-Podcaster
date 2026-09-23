@@ -396,14 +396,16 @@ common case — a crash during the multi-minute upload — because the draft is
 titled before the upload starts and reconcile finds it on the next run.
 
 Later upload, processing or metadata failures are not claimed as a zero-risk
-window. On the video path, create intent evidence is written only after the
-reconciliation listing has proven there is no reusable draft and immediately
-before a create POST is attempted. Once this client has observed a video draft
-id — from a normal create response or from recovery of an ambiguous create,
-whether the recovered draft is already titled or still untitled — the provider
-id is durably written as `create_episode` evidence before upload work continues
-when publication evidence storage is available. If that write fails, the call
-fails closed with
+window. On the video path with reconciliation enabled, create intent evidence
+is written only after the listing has proven there is no reusable draft and
+immediately before a create POST is attempted. With
+`PODCASTER_SPOTIFY_RECONCILE=0`, the intent is still written immediately before
+the create POST, but no listing-based absence proof is available. Once this
+client has observed a video draft id — from a normal create response or from
+recovery of an ambiguous create, whether the recovered draft is already titled
+or still untitled — the provider id is durably written as `create_episode`
+evidence before upload work continues when publication evidence storage is
+available. If that write fails, the call fails closed with
 `publication_unknown`, `retry_blocked=true`, and the observed
 `anchor_episode_id`. Subsequent failures after that point also return
 `publication_unknown` with `retry_blocked=true` and the observed id. That
