@@ -571,12 +571,17 @@ def _create_episode(session: requests.Session, station_id: str) -> int:
     return anchor_id
 
 
-def _spotify_reconcile_enabled() -> bool:
-    """Whether video draft reconcile-before-create is enabled (default on)."""
+def _spotify_reconcile_enabled() -> bool | None:
+    """Whether the live-disconfirmed video listing contract is explicitly enabled."""
     raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE")
     if raw is None:
+        return None
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
         return True
-    return raw.strip().lower() not in {"0", "false", "no", "off"}
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 
 _EPISODE_LIST_KEYS = ("episodes", "items", "data", "results")
@@ -989,18 +994,32 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
             f"{_FAIL_CLOSED_SUFFIX}."
         )
 
-    candidates: list[tuple[str, dict[Any, Any]]] = []
-    for key in ("webGetIndexedEpisodeList", "WebGetIndexedEpisodeList", "getEpisodesForShow"):
-        value = data.get(key)
-        if isinstance(value, dict):
-            candidates.append((key, value))
-    for key, value in data.items():
+    operation_name = "webGetIndexedEpisodeList"
+    operation = data.get(operation_name)
+    unexpected_episode_like_fields = [
+        key
+        for key, value in data.items()
         if (
-            isinstance(key, str)
+            key != operation_name
+            and isinstance(key, str)
             and isinstance(value, dict)
             and any(list_key in value for list_key in _EPISODE_LIST_KEYS)
-        ):
-            candidates.append((key, value))
+        )
+    ]
+    if unexpected_episode_like_fields:
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL response exposes unsupported "
+            "episode-like field(s) "
+            f"{sorted(unexpected_episode_like_fields)} outside the expected "
+            f"data.{operation_name} path; {_FAIL_CLOSED_SUFFIX}."
+        )
+    if not isinstance(operation, dict):
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL response has no object-valued "
+            f"data.{operation_name} field (data keys: {_safe_keys(data)}); "
+            f"{_FAIL_CLOSED_SUFFIX}."
+        )
+    candidates = [(operation_name, operation)]
 
     seen: set[int] = set()
     normalised_candidate: dict[str, Any] | None = None
@@ -1227,11 +1246,12 @@ def _fetch_episode_listing(
             "Spotify draft reconcile requires a userId, but none was resolved "
             f"for station {station_id}."
         )
-    resolved_show_id = (show_id or os.environ.get("SPOTIFY_SHOW_ID") or station_id).strip()
+    resolved_show_id = (show_id or os.environ.get("SPOTIFY_SHOW_ID") or "").strip()
     if not resolved_show_id:
         raise SpotifyDraftReconcileError(
             "Spotify draft reconcile requires the Spotify show id for the current "
-            "episode-list GraphQL contract."
+            "episode-list GraphQL contract; the legacy station id is not a safe "
+            "show-id substitute."
         )
 
     all_items: list[Any] = []
@@ -1983,15 +2003,20 @@ def _get_episode_publication_state(
 
     url = f"{_BASE_URL}/v3/episodes/{anchor_id}/overview"
     try:
-        resp = session.request(
+        resp = _retry_request(
+            session,
             "GET",
             url,
             params=_mums_params(returnWebIds="true"),
             timeout=15,
+            request_context="draft_episode_readback",
         )
-        resp.raise_for_status()
-    except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else None
+    except SpotifyCredentialExpiredError:
+        raise
+    except SpotifyPublishError as exc:
+        cause = exc.__cause__
+        response = getattr(cause, "response", None)
+        status = getattr(response, "status_code", None)
         if status == 401:
             raise SpotifyCredentialExpiredError(
                 "Spotify rejected the episode overview request (HTTP 401) — "
@@ -2390,7 +2415,19 @@ def upload_video_to_episode(
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         # Create or reconcile a separate video draft — never touch the audio one.
-        reconcile_enabled = bool(title) and _spotify_reconcile_enabled()
+        reconcile_setting = _spotify_reconcile_enabled()
+        if title and reconcile_setting is None:
+            return PublishResult(
+                status="failed",
+                error=(
+                    "Spotify video draft reconciliation is not enabled because "
+                    "the current episode-listing contract is not provider-verified. "
+                    "Set PODCASTER_SPOTIFY_RECONCILE=true only after verifying the "
+                    "listing endpoint, or explicitly set it to false to authorize "
+                    "the legacy blind-create escape hatch."
+                ),
+            )
+        reconcile_enabled = bool(title) and reconcile_setting is True
         if reconcile_enabled:
             try:
                 exclude_audio_id = int(anchor_id) if anchor_id is not None else None

@@ -1195,6 +1195,10 @@ class TestSpotifyClientId:
 class TestUploadVideoToEpisode:
     """Tests for upload_video_to_episode — attaching an MP4 to an existing draft (#337)."""
 
+    @pytest.fixture(autouse=True)
+    def _enable_verified_listing(self, monkeypatch):
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "true")
+
     def _video(self, tmp_path):
         v = tmp_path / "ep.mp4"
         v.write_bytes(b"\x00" * 4096)
@@ -1250,6 +1254,30 @@ class TestUploadVideoToEpisode:
         result = upload_video_to_episode(self._video(tmp_path), 42)
         assert result.status == "failed"
         assert "credentials" in result.error.lower()
+
+    def test_unverified_listing_default_blocks_create_and_upload(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.delenv("PODCASTER_SPOTIFY_RECONCILE", raising=False)
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+        session = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        create = MagicMock()
+        upload = MagicMock()
+        monkeypatch.setattr(pub, "_create_episode", create)
+        monkeypatch.setattr(pub, "_get_upload_url", upload)
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.status == "failed"
+        assert "not provider-verified" in result.error
+        assert session.request.call_count == 0
+        create.assert_not_called()
+        upload.assert_not_called()
 
     def test_success_creates_new_video_episode(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
@@ -2102,6 +2130,27 @@ class TestGetEpisodePublicationState:
         assert args[1].endswith(f"/v3/episodes/{self.ANCHOR_ID}/overview")
         assert kwargs["params"] == {"returnWebIds": "true", "isMumsCompatible": "true"}
 
+    def test_overview_route_retries_transient_failures(self, monkeypatch):
+        from podcaster import publish as pub
+
+        monkeypatch.setattr(pub.time, "sleep", lambda *args, **kwargs: None)
+        session = MagicMock()
+        session.request.side_effect = [
+            _mock_error_resp(500, "provider error"),
+            _mock_json_resp(
+                {
+                    "episodes": [
+                        {"episodeId": self.ANCHOR_ID, "isPublished": True},
+                    ],
+                    "audios": [],
+                    "users": [],
+                }
+            ),
+        ]
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is True
+        assert session.request.call_count == 2
+
 
 def _mock_error_resp(status_code: int, body: str) -> MagicMock:
     """A response whose raise_for_status raises an HTTPError, like requests does."""
@@ -2179,7 +2228,9 @@ class TestFindExistingDraft:
                 ]
             }
         )
-        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1") == 888
+        )
 
     def test_exclude_id_is_never_returned(self):
         from podcaster import publish as pub
@@ -2188,7 +2239,10 @@ class TestFindExistingDraft:
             {"episodes": [{"episodeId": 555, "title": "My Show", "status": "draft"}]}
         )
         assert (
-            pub._find_existing_draft(session, "99", "My Show", user_id="7", exclude_id=555) is None
+            pub._find_existing_draft(
+                session, "99", "My Show", user_id="7", show_id="show1", exclude_id=555
+            )
+            is None
         )
 
     def test_published_episode_is_not_reused(self):
@@ -2197,13 +2251,17 @@ class TestFindExistingDraft:
         session = self._session(
             {"episodes": [{"episodeId": 888, "title": "My Show", "status": "published"}]}
         )
-        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1") is None
+        )
 
     def test_empty_listing_returns_none(self):
         from podcaster import publish as pub
 
         session = self._session({"episodes": []})
-        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1") is None
+        )
 
     def test_empty_listing_is_distinct_from_graphql_error(self):
         from podcaster import publish as pub
@@ -2218,11 +2276,13 @@ class TestFindExistingDraft:
                 }
             }
         )
-        assert pub._find_existing_draft(empty, "99", "My Show", user_id="7") is None
+        assert (
+            pub._find_existing_draft(empty, "99", "My Show", user_id="7", show_id="show1") is None
+        )
 
         errored = self._session({"errors": [{"message": "boom"}]})
         with pytest.raises(pub.SpotifyDraftReconcileError):
-            pub._find_existing_draft(errored, "99", "My Show", user_id="7")
+            pub._find_existing_draft(errored, "99", "My Show", user_id="7", show_id="show1")
 
     @pytest.mark.parametrize("payload", [[], {"episodes": []}, {"data": []}])
     def test_non_graphql_listing_shapes_fail_closed(self, payload):
@@ -2231,7 +2291,7 @@ class TestFindExistingDraft:
         session = MagicMock()
         session.request.return_value = _mock_json_resp(payload)
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         assert "GraphQL" in str(exc.value)
         assert "duplicate draft" in str(exc.value)
 
@@ -2244,6 +2304,19 @@ class TestFindExistingDraft:
         assert "userId" in str(exc.value)
         session.request.assert_not_called()
 
+    def test_missing_show_id_is_explicit_and_makes_no_request(self, monkeypatch):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        create = MagicMock()
+        monkeypatch.setattr(pub, "_create_episode", create)
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+        assert "Spotify show id" in str(exc.value)
+        assert "station id" in str(exc.value)
+        session.request.assert_not_called()
+        create.assert_not_called()
+
     def test_http_error_raises_instead_of_reporting_no_draft(self):
         from podcaster import publish as pub
 
@@ -2252,7 +2325,7 @@ class TestFindExistingDraft:
             400, '{"property":"query.userId","message":"is required"}'
         )
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         message = str(exc.value)
         assert "Refusing to create a new draft" in message
         # Sanitized: no response body, cookies or tokens echoed into the message.
@@ -2266,7 +2339,7 @@ class TestFindExistingDraft:
         session = MagicMock()
         session.request.return_value = _mock_error_resp(status_code, "provider error")
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         assert f"HTTP {status_code}" in str(exc.value)
         assert session.request.call_count == (3 if status_code == 500 else 1)
 
@@ -2277,7 +2350,7 @@ class TestFindExistingDraft:
         session = MagicMock()
         session.request.return_value = _mock_error_resp(403, "forbidden")
         with pytest.raises(pub.SpotifyDraftReconcileError):
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
 
     def test_malformed_json_raises(self):
         from podcaster import publish as pub
@@ -2289,14 +2362,14 @@ class TestFindExistingDraft:
         session.request.return_value = resp
 
         with pytest.raises(pub.SpotifyDraftReconcileError):
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
 
     def test_truncated_listing_raises_instead_of_returning_partial_absence(self):
         from podcaster import publish as pub
 
         session = self._session({"episodes": [], "hasMore": True})
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         assert "cursor" in str(exc.value)
 
     def test_drifted_pagination_flag_raises_instead_of_returning_absence(self):
@@ -2304,7 +2377,9 @@ class TestFindExistingDraft:
 
         session = self._session({"episodes": [], "hasMore": "true"})
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            result = pub._find_existing_draft(
+                session, "99", "My Show", user_id="7", show_id="show1"
+            )
             pytest.fail(f"drifted pagination flag returned partial result: {result!r}")
         assert "hasMore" in str(exc.value)
         assert "boolean" in str(exc.value)
@@ -2315,7 +2390,9 @@ class TestFindExistingDraft:
 
         session = self._session({"episodes": [], "hasMore": True, cursor_key: None})
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            result = pub._find_existing_draft(
+                session, "99", "My Show", user_id="7", show_id="show1"
+            )
             pytest.fail(f"null {cursor_key} cursor returned partial result: {result!r}")
         assert cursor_key in str(exc.value)
         assert "null" in str(exc.value)
@@ -2336,7 +2413,9 @@ class TestFindExistingDraft:
             }
         )
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            result = pub._find_existing_draft(
+                session, "99", "My Show", user_id="7", show_id="show1"
+            )
             pytest.fail(f"null GraphQL endCursor returned partial result: {result!r}")
         assert "cursor" in str(exc.value)
         assert "hasNextPage" in str(exc.value)
@@ -2347,7 +2426,7 @@ class TestFindExistingDraft:
 
         session = self._session({"episodes": [], cursor_key: "cursor-2"})
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         assert "explicit boolean pagination flag" in str(exc.value)
         session.request.assert_called_once()
 
@@ -2359,7 +2438,7 @@ class TestFindExistingDraft:
             {"data": {"webGetIndexedEpisodeList": {"episodes": []}}}
         )
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         assert "explicit boolean pagination flag" in str(exc.value)
 
     def test_nested_multiple_episode_arrays_raise(self):
@@ -2380,7 +2459,7 @@ class TestFindExistingDraft:
             }
         )
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         assert "multiple recognised nested episode arrays" in str(exc.value)
 
     @pytest.mark.parametrize(
@@ -2405,7 +2484,9 @@ class TestFindExistingDraft:
 
         session = self._session({"episodes": [], "hasMore": True, cursor_key: cursor_value})
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            result = pub._find_existing_draft(
+                session, "99", "My Show", user_id="7", show_id="show1"
+            )
             pytest.fail(
                 f"{label} {cursor_key} cursor returned partial result instead of raising: "
                 f"{result!r}"
@@ -2443,7 +2524,9 @@ class TestFindExistingDraft:
             }
         )
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            result = pub._find_existing_draft(
+                session, "99", "My Show", user_id="7", show_id="show1"
+            )
             pytest.fail(
                 f"{label} GraphQL endCursor returned partial result instead of raising: {result!r}"
             )
@@ -2459,7 +2542,9 @@ class TestFindExistingDraft:
             _mock_graphql_listing_resp([{"episodeId": 888, "title": "My Show", "status": "draft"}]),
         ]
 
-        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1") == 888
+        )
         second_call_vars = session.request.call_args_list[1].kwargs["json"]["variables"]
         assert second_call_vars["pageToken"] == "cursor-2"
 
@@ -2468,7 +2553,9 @@ class TestFindExistingDraft:
         from podcaster import publish as pub
 
         session = self._session({"episodes": [], "hasMore": False, cursor_key: None})
-        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1") is None
+        )
 
     def test_paginated_listing_fetches_all_pages_before_absence(self):
         from podcaster import publish as pub
@@ -2478,7 +2565,9 @@ class TestFindExistingDraft:
             _mock_graphql_listing_resp([], hasMore=True, nextPageToken="cursor-2"),
             _mock_graphql_listing_resp([{"episodeId": 888, "title": "My Show", "status": "draft"}]),
         ]
-        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1") == 888
+        )
         second_call_vars = session.request.call_args_list[1].kwargs["json"]["variables"]
         assert second_call_vars["pageToken"] == "cursor-2"
 
@@ -2498,7 +2587,9 @@ class TestFindExistingDraft:
         ]
 
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            result = pub._find_existing_draft(
+                session, "99", "My Show", user_id="7", show_id="show1"
+            )
             pytest.fail(f"truncated paginated listing returned partial result: {result!r}")
 
         assert "HTTP 500" in str(exc.value)
@@ -2518,7 +2609,9 @@ class TestFindExistingDraft:
             ),
             _mock_graphql_listing_resp(),
         ]
-        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1") == 888
+        )
 
     def test_terminal_graphql_page_retaining_end_cursor_is_not_followed(self):
         from podcaster import publish as pub
@@ -2540,7 +2633,9 @@ class TestFindExistingDraft:
             }
         )
 
-        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
+        assert (
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1") is None
+        )
         session.request.assert_called_once()
 
     def test_present_non_object_page_info_fails_closed(self):
@@ -2556,7 +2651,7 @@ class TestFindExistingDraft:
             }
         )
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         assert "pageInfo" in str(exc.value)
         assert "not an object" in str(exc.value)
 
@@ -2568,7 +2663,7 @@ class TestFindExistingDraft:
         session = MagicMock()
         session.request.side_effect = requests.ConnectionError("dns")
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         assert "dns" not in str(exc.value)
 
     def test_credential_expiry_propagates(self):
@@ -2577,7 +2672,7 @@ class TestFindExistingDraft:
         session = MagicMock()
         session.request.return_value = _mock_error_resp(401, "unauthorized")
         with pytest.raises(pub.SpotifyCredentialExpiredError):
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
 
 
 class TestEpisodeListingSchema:
@@ -2606,7 +2701,7 @@ class TestEpisodeListingSchema:
         from podcaster import publish as pub
 
         return pub._find_existing_draft(
-            self._session(payload), "99", "My Show", user_id="7", **kwargs
+            self._session(payload), "99", "My Show", user_id="7", show_id="show1", **kwargs
         )
 
     @pytest.mark.parametrize(
@@ -2720,7 +2815,26 @@ class TestEpisodeListingSchema:
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
             result = self._lookup(payload)
             pytest.fail(f"multiple GraphQL containers returned partial result: {result!r}")
-        assert "multiple distinct" in str(exc.value)
+        assert "unsupported episode-like field" in str(exc.value)
+
+    def test_unexpected_episode_like_graphql_field_does_not_prove_absence(self, monkeypatch):
+        from podcaster import publish as pub
+
+        payload = {"data": {"viewer": {"items": [], "hasNextPage": False}}}
+        session = self._session(payload)
+        create = MagicMock()
+        monkeypatch.setattr(pub, "_create_episode", create)
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = pub._reconcile_or_create_draft(
+                session,
+                "99",
+                user_id="7",
+                show_id="show1",
+                title="My Show",
+            )
+            pytest.fail(f"unexpected GraphQL container returned absence: {result!r}")
+        assert "unsupported episode-like field" in str(exc.value)
+        create.assert_not_called()
 
     def test_multiple_graphql_list_fields_fail_closed(self):
         from podcaster import publish as pub
@@ -2753,7 +2867,9 @@ class TestEpisodeDraftState:
 
         session = MagicMock()
         session.request.return_value = _mock_graphql_listing_resp([episode])
-        return pub._find_existing_draft(session, "99", "My Show", user_id="7", **kwargs)
+        return pub._find_existing_draft(
+            session, "99", "My Show", user_id="7", show_id="show1", **kwargs
+        )
 
     @pytest.mark.parametrize(
         ("label", "episode"),
@@ -2916,7 +3032,7 @@ class TestEpisodeDraftState:
                 {"episodeId": 2, "title": "My Show", "status": "draft"},
             ]
         )
-        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 2
+        assert pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1") == 2
 
 
 class TestIsPublishedIsAsymmetricEvidence:
@@ -2927,7 +3043,9 @@ class TestIsPublishedIsAsymmetricEvidence:
 
         session = MagicMock()
         session.request.return_value = _mock_graphql_listing_resp([episode])
-        return pub._find_existing_draft(session, "99", "My Show", user_id="7", **kwargs)
+        return pub._find_existing_draft(
+            session, "99", "My Show", user_id="7", show_id="show1", **kwargs
+        )
 
     def test_is_published_false_alone_fails_closed(self):
         from podcaster import publish as pub
@@ -2971,7 +3089,9 @@ class TestExcludedEntriesAreSkippedBeforeClassification:
 
         session = MagicMock()
         session.request.return_value = _mock_graphql_listing_resp(payload["episodes"])
-        return pub._find_existing_draft(session, "99", "My Show", user_id="7", **kwargs)
+        return pub._find_existing_draft(
+            session, "99", "My Show", user_id="7", show_id="show1", **kwargs
+        )
 
     @pytest.mark.parametrize(
         ("label", "excluded"),
@@ -3065,7 +3185,7 @@ class TestEpisodeAnchorId:
             [{"episodeId": "abc", "id": 42, "title": "My Show", "isDraft": True}]
         )
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pub._find_existing_draft(session, "99", "My Show", user_id="7", show_id="show1")
         assert "no usable episode id" in str(exc.value)
 
 
@@ -3205,6 +3325,7 @@ class TestAmbiguousCreateRecovery:
         from podcaster import publish as pub
 
         monkeypatch.setattr(pub, "_AMBIGUOUS_CREATE_SETTLE_SECONDS", 0.0)
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
 
     def _listing(self, *episodes, **extra):
         return _mock_graphql_listing_resp(list(episodes), **extra)
@@ -3214,6 +3335,7 @@ class TestAmbiguousCreateRecovery:
 
         session, calls = _scripted_session(steps)
         kwargs.setdefault("user_id", "7")
+        kwargs.setdefault("show_id", "show1")
         kwargs.setdefault("title", "My Show")
         return pub._reconcile_or_create_draft(session, "99", **kwargs), calls
 
@@ -3320,7 +3442,7 @@ class TestAmbiguousCreateRecovery:
                 _mock_json_resp({"episodeId": 902}),
             ]
         )
-        pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+        pub._reconcile_or_create_draft(session, "99", user_id="7", show_id="show1", title="My Show")
         listings = [url for _m, url in calls if url == pub._SPOTIFY_CREATORS_GRAPHQL_URL]
         assert len(listings) == pub._AMBIGUOUS_CREATE_READS + 1
 
@@ -3339,7 +3461,9 @@ class TestAmbiguousCreateRecovery:
             ]
         )
         with pytest.raises(pub.SpotifyDraftReconcileError):
-            pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+            pub._reconcile_or_create_draft(
+                session, "99", user_id="7", show_id="show1", title="My Show"
+            )
         assert len([url for _m, url in calls if url == pub._SPOTIFY_CREATORS_GRAPHQL_URL]) == 2
 
     def test_second_create_is_never_retried_either(self):
@@ -3370,7 +3494,9 @@ class TestAmbiguousCreateRecovery:
             ]
         )
         with pytest.raises(pub.SpotifyPublishError):
-            pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+            pub._reconcile_or_create_draft(
+                session, "99", user_id="7", show_id="show1", title="My Show"
+            )
         assert len(_create_posts(calls)) == 2
 
     def test_several_candidate_drafts_fail_closed(self):
@@ -3431,7 +3557,9 @@ class TestAmbiguousCreateRecovery:
             ]
         )
         with pytest.raises(pub.SpotifyDraftReconcileError):
-            pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+            pub._reconcile_or_create_draft(
+                session, "99", user_id="7", show_id="show1", title="My Show"
+            )
         assert len(_create_posts(calls)) == 1
 
     def test_deterministic_create_failure_is_not_recovered(self):
@@ -3440,7 +3568,9 @@ class TestAmbiguousCreateRecovery:
 
         session, calls = _scripted_session([self._listing(), _mock_error_resp(400, "bad request")])
         with pytest.raises(pub.SpotifyPublishError):
-            pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
+            pub._reconcile_or_create_draft(
+                session, "99", user_id="7", show_id="show1", title="My Show"
+            )
         assert len(_create_posts(calls)) == 1
 
     def test_reconciled_draft_skips_the_create_entirely(self):
@@ -3483,6 +3613,7 @@ class TestAmbiguousCreateAtCallerLevel:
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
         monkeypatch.setenv("SP_DC", "dc")
         monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "true")
 
     def test_unrecoverable_ambiguous_create_fails_after_one_post(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
@@ -3718,6 +3849,10 @@ class TestRetryRequestLogging:
 
 class TestClaimDraftTitleIsNonDestructive:
     """#656 review: the early title claim must never clear metadata."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_verified_listing(self, monkeypatch):
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "true")
 
     def test_claim_sends_the_real_metadata_not_an_empty_description(self, monkeypatch):
         from podcaster import publish as pub

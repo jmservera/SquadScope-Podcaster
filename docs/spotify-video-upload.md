@@ -223,6 +223,13 @@ variables.pageSize=100
 variables.pageToken=""
 ```
 
+This contract was live-disconfirmed on 2026-09-23 (HTTP 500 with valid
+credentials), so it is not attempted by default. Set
+`PODCASTER_SPOTIFY_RECONCILE=true` only after verifying the endpoint for the
+target show. An unset or unrecognised value fails the video upload before any
+listing or create request. The explicit `false` setting remains the
+operator-authorized blind-create escape hatch.
+
 The older Anchor REST station listing (`GET /v3/stations/{stationId}/episodes`,
 with or without `userId`) is stale for this workflow and must not be treated as
 proof of absence when it errors.
@@ -898,7 +905,7 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` skips the existing-draft lookup *and* the immediate title claim, restoring blind create (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | No implicit default while the listing contract is live-disconfirmed. `true` explicitly enables reconcile; `false` explicitly authorizes the blind-create escape hatch. Unset/unrecognised values fail before listing or create (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,
