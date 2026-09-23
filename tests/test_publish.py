@@ -1779,7 +1779,75 @@ class TestUploadVideoToEpisode:
         records = _evidence_records(storage)
         assert records[0]["operation"] == "create_episode_intent"
         assert records[0].get("provider_artifact_id") is None
+        assert records[0]["retry_blocked"] is False
         assert records[0]["details"]["show_id"] == "show1"
+        assert records[0]["details"]["pre_create_episode_ids"] == []
+        assert records[0]["details"]["pre_create_snapshot_complete"] is False
+
+    def test_credential_expiry_during_create_keeps_recoverable_intent(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        first_session = MagicMock()
+        first_session.request.return_value = _mock_graphql_listing_resp()
+        second_session = MagicMock()
+        second_session.request.return_value = _mock_graphql_listing_resp(
+            [{"episodeId": 777, "title": None, "status": "draft"}]
+        )
+        monkeypatch.setattr(
+            pub, "_build_session", MagicMock(side_effect=[first_session, second_session])
+        )
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(side_effect=pub.SpotifyCredentialExpiredError("credentials expired"))
+        monkeypatch.setattr(pub, "_create_episode", create)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        with patch(
+            "podcaster.credential_expiry.notify_credential_expiry",
+            return_value=4242,
+        ):
+            first = pub.upload_video_to_episode(
+                self._video(tmp_path),
+                555,
+                title="My Show",
+                publication_storage=storage,
+                publication_identity_context=identity,
+            )
+
+        assert first.status == "failed"
+        assert first.outcome == "publication_unknown"
+        assert first.anchor_episode_id is None
+        assert first.details["credentials_expired"] is True
+        assert first.details["retry_blocked"] is False
+        assert first.details["code"] == "create_outcome_unknown"
+        records = _evidence_records(storage)
+        assert records[0]["operation"] == "create_episode_intent"
+        assert records[0]["retry_blocked"] is False
+        assert records[0]["details"]["pre_create_episode_ids"] == [555]
+        assert records[0]["details"]["pre_create_snapshot_complete"] is True
+
+        second = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert second.status == "draft"
+        assert second.anchor_episode_id == 777
+        create.assert_called_once()
+        records = _evidence_records(storage)
+        assert [
+            (record["operation"], record.get("provider_artifact_id")) for record in records
+        ] == [
+            ("create_episode_intent", None),
+            ("reconcile_episode", "777"),
+        ]
 
     def test_runner_dispatch_intent_allows_first_video_create(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
@@ -1827,7 +1895,6 @@ class TestUploadVideoToEpisode:
     @pytest.mark.parametrize(
         ("operation", "outcome", "provider_artifact_id"),
         [
-            ("create_episode_intent", "publication_unknown", None),
             ("create_episode", "publication_unknown", "777"),
             ("distribution", "draft_created", "777"),
             ("distribution", "published", "777"),

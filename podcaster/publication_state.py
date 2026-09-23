@@ -251,6 +251,10 @@ def _safe_details(details: Mapping[str, Any] | None) -> dict[str, Any] | None:
             safe[name] = value
         elif isinstance(value, str) and "://" not in value:
             safe[name] = value[:256]
+        elif isinstance(value, list) and all(
+            isinstance(item, (bool, int, float)) or item is None for item in value
+        ):
+            safe[name] = value[:100]
     return safe or None
 
 
@@ -472,7 +476,7 @@ def is_spotify_video_dispatch_intent(record: Mapping[str, Any] | None) -> bool:
         record
         and record.get("platform") == "spotify"
         and record.get("media_kind") == "video"
-        and record.get("operation") == "upload_intent"
+        and record.get("operation") in {"upload_intent", "create_episode_intent"}
         and record.get("mutation_attempted") is False
         and not record.get("provider_id")
         and not record.get("provider_artifact_id")
