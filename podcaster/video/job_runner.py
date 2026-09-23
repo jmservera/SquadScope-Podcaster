@@ -44,7 +44,6 @@ from podcaster.publication_state import (
     append_evidence,
     canonical_identity_requested,
     emit_publication_signal,
-    is_spotify_video_dispatch_intent,
     latest_outcomes,
     new_publish_run_id,
     publication_identity,
@@ -1226,10 +1225,7 @@ def run_video_generation(
                             else None,
                         }
                     elif enabled and not dist_config.dry_run:
-                        latest_record = latest.get(f"{platform}:video")
-                        if platform == "spotify" and is_spotify_video_dispatch_intent(
-                            latest_record
-                        ):
+                        if platform == "spotify":
                             continue
                         try:
                             claim = append_evidence(

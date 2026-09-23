@@ -115,7 +115,7 @@ pygments==2.21.0
     # via
     #   pytest
     #   sphinx
-pyjwt==2.15.0
+pyjwt==2.14.0
     # via
     #   squadscope-podcaster (pyproject.toml)
     #   msal

@@ -1533,7 +1533,11 @@ def _recover_unresolved_create_intent(
             f"resolved safely (new untitled draft candidates: {candidates or 'none'}, "
             f"unclassifiable entries: {opaque}). Refusing to create a duplicate."
         )
-    return None
+    raise SpotifyDraftReconcileError(
+        f"Spotify draft create intent for station {station_id} has no unique new "
+        "draft candidate; refusing to create another draft while the prior create "
+        "outcome is unresolved."
+    )
 
 
 def _reconcile_or_create_draft(

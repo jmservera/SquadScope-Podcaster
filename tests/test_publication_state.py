@@ -475,7 +475,7 @@ def test_reconciliation_spotify_video_create_intent_snapshot_does_not_block_retr
         "operation": "create_episode_intent",
         "outcome": PUBLICATION_UNKNOWN,
         "mutation_attempted": False,
-        "retry_blocked": True,
+        "retry_blocked": False,
         "code": "mutation_intent",
         "details": {
             "show_id": "show1",
@@ -486,3 +486,29 @@ def test_reconciliation_spotify_video_create_intent_snapshot_does_not_block_retr
 
     assert isinstance(reconciliation_intent["details"]["pre_create_episode_ids"], list)
     assert spotify_video_retry_is_blocked({"records": [reconciliation_intent]}) is False
+
+
+def test_pre_create_episode_ids_are_not_truncated_when_snapshot_is_complete():
+    storage = MemoryStorage()
+    pre_create_ids = list(range(150))
+
+    append_evidence(
+        storage,
+        identity(),
+        platform="spotify",
+        media_kind="video",
+        operation="create_episode_intent",
+        outcome=PUBLICATION_UNKNOWN,
+        mutation_attempted=False,
+        retry_blocked=False,
+        code="mutation_intent",
+        details={
+            "pre_create_episode_ids": pre_create_ids,
+            "pre_create_snapshot_complete": True,
+        },
+    )
+
+    records = read_evidence(storage, identity().accepted_job_id)["records"]
+    details = records[0]["details"]
+    assert details["pre_create_snapshot_complete"] is True
+    assert details["pre_create_episode_ids"] == pre_create_ids

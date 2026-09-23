@@ -251,6 +251,12 @@ def _safe_details(details: Mapping[str, Any] | None) -> dict[str, Any] | None:
             safe[name] = value
         elif isinstance(value, str) and "://" not in value:
             safe[name] = value[:256]
+        elif (
+            name == "pre_create_episode_ids"
+            and isinstance(value, list)
+            and all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+        ):
+            safe[name] = value
         elif isinstance(value, list) and all(
             isinstance(item, (bool, int, float)) or item is None for item in value
         ):
@@ -471,27 +477,6 @@ def retry_is_blocked(
     )
 
 
-def is_spotify_video_dispatch_intent(record: Mapping[str, Any] | None) -> bool:
-    operation = record.get("operation") if record else None
-    details = record.get("details") if record else None
-    is_reconciliation_create_intent = (
-        operation == "create_episode_intent"
-        and isinstance(details, Mapping)
-        and isinstance(details.get("pre_create_episode_ids"), list)
-        and isinstance(details.get("pre_create_snapshot_complete"), bool)
-    )
-    return bool(
-        record
-        and record.get("platform") == "spotify"
-        and record.get("media_kind") == "video"
-        and (operation == "upload_intent" or is_reconciliation_create_intent)
-        and record.get("mutation_attempted") is False
-        and not record.get("provider_id")
-        and not record.get("provider_artifact_id")
-        and record.get("code") == "mutation_intent"
-    )
-
-
 def spotify_video_retry_blocking_record(
     document: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
@@ -504,8 +489,6 @@ def spotify_video_retry_blocking_record(
             or record.get("platform") != "spotify"
             or record.get("media_kind") != "video"
         ):
-            continue
-        if is_spotify_video_dispatch_intent(record):
             continue
         if record.get("outcome") in (
             UPLOADED,
