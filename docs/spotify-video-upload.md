@@ -188,7 +188,7 @@ episode (`anchor_id`) is referenced only for logging and never modified.
 The flow has these steps:
 
 1. Create a new draft episode (never reuse the audio episode)
-2. Request per-part signed URLs (`uploadType=video`, `isMultipartUpload=true`,
+2. Request per-part signed URLs (`uploadType=default`, `isMultipartUpload=true`,
    `numParts = ceil(filesize / 30 MB)`)
 3. Upload each **30 MB chunk** (PUT) to its GCS signed URL, collecting ETags
 4. Notify Spotify that all parts are uploaded (`process_upload`)
@@ -233,7 +233,8 @@ warns, so `None` then means "no match on the page that was read"); a recognised
 but null is understood as an untitled draft (no match). Entries whose id is the
 excluded audio anchor are skipped *before* any state or title classification, so
 a scheduled or processing audio episode can never fail the video lookup.
-Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
+Reconciliation is mandatory. `PODCASTER_SPOTIFY_RECONCILE=0` is intentionally
+ignored and cannot restore blind create.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
 inspected — a malformed `episodeId` never hides a usable `id` — but the entry
@@ -296,8 +297,7 @@ before uploading and names the orphan draft id so an operator can delete it.
 Only drafts known to be *untitled* are claimed: `_reconcile_or_create_draft`
 returns `(anchor_id, needs_title)` and `needs_title` is `False` for a
 reconciled draft **and** for a draft adopted during ambiguous-create recovery
-because it already carried the target title. The claim is skipped entirely when
-`PODCASTER_SPOTIFY_RECONCILE=0`.
+because it already carried the target title.
 
 #### The create POST is never retried blindly
 
@@ -312,7 +312,7 @@ transient failure, or a `2xx` whose body does not yield an episode id (the draft
 exists; only its identifier was lost). A deterministic `4xx` is *not* ambiguous:
 nothing was created.
 
-When reconcile is enabled, `_reconcile_or_create_draft` resolves that ambiguity
+`_reconcile_or_create_draft` resolves that ambiguity
 with evidence rather than a retry. The listing read that looked for an existing
 draft doubles as a **pre-create snapshot** of episode ids (no extra request), and
 after an ambiguous create the listing is re-read:
@@ -339,9 +339,8 @@ make it provable.
 At most **two** create POSTs are ever sent for one publish attempt, and the
 second only after a settled, twice-observed listing that still shows nothing the
 first create could have produced. A second ambiguous create is not recovered
-again. With `PODCASTER_SPOTIFY_RECONCILE=0` (and on the audio path in
-`publish_episode`, which never reconciles) there is no listing to reason from,
-so the single POST simply fails — a failed publish, not an orphaned duplicate.
+again. `PODCASTER_SPOTIFY_RECONCILE=0` is ignored; the video path never falls
+back to a create without a complete listing.
 
 Residual, irreducible windows — stated precisely, because neither one loses the
 draft server-side:
@@ -424,8 +423,9 @@ ffmpeg -y -i input.mp4 \
 
 ##### Video MUST go to GCS (not S3)
 
-Without `uploadType=video` in the signedUrl request, the server routes the file
-to S3 storage. Even if the upload succeeds, `process_upload` will reject it with:
+The current Spotify contract requires `uploadType=default` together with the
+multipart flags in the signed-URL request. A different upload type can route the
+file through an incompatible processing path and fail with:
 
 ```
 "File is using invalid storage"
@@ -481,7 +481,7 @@ GET https://api-v5.anchor.fm/v3/episodes/{ANCHOR_ID}/upload/signedUrl
   &isMumsCompatible=true
   &isMultipartUpload=true
   &numParts=2
-  &uploadType=video
+  &uploadType=default
 Cookie: sp_dc=...; sp_key=...
 ```
 
@@ -493,7 +493,7 @@ Cookie: sp_dc=...; sp_key=...
 | `isMumsCompatible` | Yes | Always `true` |
 | `isMultipartUpload` | Yes | Must be `true` for video |
 | `numParts` | Yes | Number of chunks (ceil(filesize / chunk_size)) |
-| `uploadType` | Yes | Must be `video` — routes to GCS |
+| `uploadType` | Yes | Must be `default` for the current video upload contract |
 
 **Response:**
 ```json
@@ -802,7 +802,7 @@ if __name__ == "__main__":
 | `signedUrl` in response is not usable for multipart | Use `signedUrlParts[].url` instead |
 | Response field names are S3-era (`requestUuid` not `uploadId`) | Handle both: `data.get("uploadId") or data["requestUuid"]` |
 | Audio longer than video by even 0.01s → rejection | Always trim audio to exact video duration before upload |
-| Files must use GCS for video | Always pass `uploadType=video` in signedUrl request |
+| Video uses the current multipart contract | Pass `uploadType=default` with multipart flags |
 | `state=processed` (not `completed`) is success for video | Check both states for compatibility |
 
 #### Audio vs Video Upload Comparison
@@ -811,7 +811,7 @@ if __name__ == "__main__":
 |--------|-------------|-------------|
 | Storage | S3 | GCS |
 | Upload method | Single PUT | Multipart chunked |
-| `uploadType` param | (omitted) | `video` |
+| `uploadType` param | (omitted) | `default` |
 | `isMultipartUpload` | `false` or omitted | `true` |
 | Signed URL response | `signedUrl` (single URL) | `signedUrlParts` (array) |
 | PUT headers | Content-Type + Origin + Referer | Referer only |
@@ -854,7 +854,7 @@ the precise machine code from `mediaValidation.failureInfo.errorCode` (issue
 | `INCONSISTENT_COLOR_DETAILS` | The concatenated H.264 stream carries disagreeing SPS VUI colour metadata across intro/content/outro NAL units. | (a) every encode pass sets `-colorspace/-color_trc/-color_primaries bt709 -color_range tv`; (b) the final `h264_metadata` BSF rewrites VUI to a single BT.709/limited-range set (§3). |
 | `VIDEO_DURATION_LONGER_THAN_AUDIO` | The video stream outlasts the audio stream. | `_build_audio_overlay_cmd` pads the audio with `-af apad=whole_dur={video_duration}` when `0 < audio_duration < video_duration`, so audio ≥ video. |
 | `AUDIO_DURATION_LONGER_THAN_VIDEO` (legacy) | The audio stream outlasts the video stream. | When `audio_duration > video_duration`, the final frame is held (`tpad=stop_mode=clone:stop_duration={pad}`) + faded to black (`fade=t=out`, `OUTRO_VIDEO_FADE_SECONDS`), extending video to ≥ audio. The outro audio is **never** truncated (no `-shortest`). |
-| `"File is using invalid storage"` | The signed-URL request omitted `uploadType=video`, routing the file to S3 instead of GCS. | Always pass `uploadType=video` (and `isMultipartUpload=true`). |
+| `"File is using invalid storage"` | The signed-URL request used a provider-incompatible upload type or omitted multipart fields. | Pass `uploadType=default` with `isMultipartUpload=true`. |
 | `process_upload` HTTP 500 | A single-PUT upload was used for video. | Always use the multipart flow (`numParts = ceil(filesize / 30 MB)`), even for one chunk. |
 
 > **Audio/video duration reconciliation (the heart of error prevention).**
@@ -890,8 +890,8 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` skips the existing-draft lookup *and* the immediate title claim, restoring blind create (§5). |
-| `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults off. `1`/`true`/`yes`/`on` makes an explicitly paginated listing with no first-page match fail closed instead of warning (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Retained for compatibility but ignored; strict reconcile-before-create is mandatory (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults on; an explicitly paginated listing with no first-page match fails closed (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,

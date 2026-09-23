@@ -6,6 +6,10 @@ import hashlib
 import json
 import logging
 import socket
+import subprocess
+import time
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
@@ -18,6 +22,7 @@ from podcaster.queue import QueueMessage
 from podcaster.video.distribution import DistributionResult, VideoDistributionConfig
 from podcaster.video.job_runner import (
     _DEFAULT_MUSIC_CREDITS,
+    AUTHORITY_CLOCK_SKEW_RESERVE_SECONDS,
     MAX_DEQUEUE_COUNT,
     REASON_ALREADY_PROCESSED,
     REASON_EDITOR_LEASE_HELD,
@@ -33,6 +38,7 @@ from podcaster.video.job_runner import (
     TransientVideoError,
     VideoOutcome,
     _already_processed,
+    _authoritative_deadline_monotonic,
     _build_section_cards,
     _build_video_description,
     _record_video_publication,
@@ -614,6 +620,88 @@ class TestRunVideoGeneration:
         with pytest.raises(TransientVideoError, match="no script"):
             run_video_generation("no-script", storage, config=dry_config)
 
+    @patch("podcaster.video.job_runner.enqueue_distribution_job")
+    @patch("podcaster.video.job_runner.commit_immutable_artifact")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_final_media_failure_prevents_archive_outbox_and_provider_visibility(
+        self,
+        mock_compose,
+        mock_record,
+        mock_distribute,
+        mock_commit,
+        mock_enqueue,
+        storage,
+        dry_config,
+    ):
+        job_id = "invalid-final-media"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Invalid Final Media"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = RuntimeError(
+            "final media validation failed: complete decode exited 183"
+        )
+
+        with pytest.raises(TransientVideoError, match="video generation failed"):
+            run_video_generation(job_id, storage, config=dry_config)
+
+        mock_commit.assert_not_called()
+        mock_enqueue.assert_not_called()
+        mock_distribute.assert_not_called()
+
+    @patch("podcaster.video.job_runner.enqueue_distribution_job")
+    @patch("podcaster.video.job_runner.commit_immutable_artifact")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_expired_lifecycle_budget_prevents_archive_outbox_and_provider_visibility(
+        self,
+        mock_compose,
+        mock_record,
+        mock_distribute,
+        mock_commit,
+        mock_enqueue,
+        storage,
+        dry_config,
+    ):
+        job_id = "expired-media-validation-budget"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Expired Final Media Budget"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+
+        def fail_from_budget(*_args, **kwargs):
+            assert kwargs["media_validation_budget"]() <= 0
+            raise RuntimeError(
+                "final media validation failed: insufficient remaining lifecycle budget"
+            )
+
+        mock_compose.side_effect = fail_from_budget
+
+        with pytest.raises(TransientVideoError, match="video generation failed"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=dry_config,
+                lifecycle_deadline_monotonic=0.0,
+            )
+
+        mock_commit.assert_not_called()
+        mock_enqueue.assert_not_called()
+        mock_distribute.assert_not_called()
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_no_repos_generates_generic_video(self, mock_compose, mock_record, storage, dry_config):
@@ -1012,6 +1100,214 @@ class TestRunVideoGeneration:
         assert outcome.distribution.status == "failed"
         assert outcome.distribution.provider_outcomes["youtube"] == "publication_unknown"
         assert outcome.distribution.provider_records["youtube"]["status"] == "unknown"
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_provider_return_takeover_blocks_runner_publication_callback(
+        self, mock_compose, mock_record, mock_distribute, storage
+    ):
+        from podcaster.publication_state import evidence_path
+        from podcaster.video.ownership import OwnershipError, ownership_path
+
+        job_id = "video-provider-return-takeover"
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Provider return takeover",
+                    "week": "2026-W37",
+                    "publish_run_id": "123",
+                    "article_sha256": "a" * 64,
+                    "manifest_sha256": "b" * 64,
+                    "publication_identity_mode": "canonical",
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+
+        successor_state = {
+            "status": STATUS_COMPLETED,
+            "at": "2026-09-22T21:35:50+00:00",
+            "owner": "successor",
+        }
+
+        def force_takeover() -> None:
+            def replace(raw: bytes | None) -> bytes:
+                assert raw is not None
+                document = json.loads(raw.decode("utf-8"))
+                fence = int(document["fencing_token"]) + 1
+                document["fencing_token"] = fence
+                document["claim"] = {
+                    **document["claim"],
+                    "owner": "successor",
+                    "claim_id": "successor-claim",
+                    "execution_id": "successor-execution",
+                    "fencing_token": fence,
+                }
+                return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+
+            storage.update_bytes(ownership_path(job_id), "application/json", replace)
+            manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+            manifest["generation"]["video_runner"] = successor_state
+            storage.set_manifest(job_id, manifest)
+
+        def distribute(*args, on_published=None, before_mutation=None, **kwargs):
+            before_mutation("youtube", "draft_upload")
+            force_takeover()
+            on_published(
+                "youtube",
+                {
+                    "status": "published",
+                    "provider_status": "unlisted",
+                    "outcome": "draft_created",
+                    "video_id": "yt-123",
+                    "verification": "none",
+                    "retry_blocked": True,
+                },
+            )
+            return DistributionResult(status="completed")
+
+        mock_distribute.side_effect = distribute
+
+        with pytest.raises(OwnershipError, match="stale"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=VideoDistributionConfig(
+                    youtube_enabled=True,
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+            )
+
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        assert "video_publish" not in manifest["generation"]
+        assert manifest["generation"]["video_runner"] == successor_state
+        evidence = json.loads(storage.get_bytes(evidence_path(job_id)).decode())
+        assert all(record["operation"] != "distribution" for record in evidence["records"])
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_required_youtube_takeover_before_failure_persistence_writes_nothing(
+        self, mock_compose, mock_record, mock_distribute, storage, monkeypatch
+    ):
+        from podcaster.video.ownership import (
+            OwnershipClaim,
+            OwnershipError,
+            VideoOwnershipGuard,
+            ownership_path,
+        )
+
+        job_id = "video-required-youtube-takeover"
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Required YouTube takeover"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+        mock_distribute.return_value = DistributionResult(
+            status="failed",
+            errors=["YouTube token refresh failed: HTTP 503"],
+            provider_outcomes={"youtube": "publication_unknown"},
+            provider_records={"youtube": {"status": "unknown"}},
+            youtube_required_failed=True,
+            youtube_failure_retryable=True,
+            youtube_failure_code="youtube_oauth_http_503",
+            youtube_failure_stage="oauth_token",
+            youtube_failure_http_status=503,
+        )
+
+        original_begin = VideoOwnershipGuard.begin
+
+        def begin_with_takeover(self, name, *, allow_idempotent_takeover):
+            permit = original_begin(
+                self,
+                name,
+                allow_idempotent_takeover=allow_idempotent_takeover,
+            )
+            if name == "required_youtube_failure":
+                raw = storage.get_bytes(ownership_path(job_id))
+                assert raw is not None
+                document = json.loads(raw.decode())
+                fence = int(document["fencing_token"]) + 1
+                document["fencing_token"] = fence
+                document["claim"] = {
+                    **document["claim"],
+                    "owner": "successor",
+                    "claim_id": "successor-claim",
+                    "execution_id": "successor-execution",
+                    "fencing_token": fence,
+                }
+                storage.put_bytes(
+                    ownership_path(job_id),
+                    json.dumps(document, sort_keys=True, separators=(",", ":")).encode(),
+                    "application/json",
+                )
+            return permit
+
+        monkeypatch.setattr(VideoOwnershipGuard, "begin", begin_with_takeover)
+
+        with pytest.raises(OwnershipError, match="stale"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=VideoDistributionConfig(
+                    youtube_enabled=True,
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+            )
+
+        mock_distribute.assert_called_once()
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        assert "video_runner" not in manifest["generation"]
+
+        current = json.loads(storage.get_bytes(ownership_path(job_id)).decode())["claim"]
+        successor = VideoOwnershipGuard(
+            storage,
+            OwnershipClaim(
+                job_id=job_id,
+                owner=current["owner"],
+                claim_id=current["claim_id"],
+                execution_id=current["execution_id"],
+                fencing_token=current["fencing_token"],
+            ),
+        )
+        reconcile_only = successor.begin(
+            "direct_provider_intent",
+            allow_idempotent_takeover=False,
+        )
+        assert reconcile_only.reconcile_only is True
+        with pytest.raises(OwnershipError, match="reconciliation-only"):
+            successor.assert_permit(reconcile_only)
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")
@@ -2638,6 +2934,9 @@ class _ScratchStorage:
     def delete_blob(self, path):
         return self._data.pop(path, None) is not None
 
+    def list_blobs(self, prefix, *, limit=10):
+        return sorted(key for key in self._data if key.startswith(prefix))[:limit]
+
     def delete_prefix(self, prefix):
         keys = [k for k in self._data if k.startswith(prefix)]
         for k in keys:
@@ -2770,6 +3069,140 @@ class TestFanoutGating:
 
         assert EditorLease.from_bytes(scratch.get_bytes(editor_lease_blob_path(job_id))) is None
 
+    @patch("podcaster.video.job_runner.enqueue_distribution_job")
+    @patch("podcaster.video.job_runner.commit_immutable_artifact")
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.editor.record_via_fanout")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_concurrent_redelivery_takeover_blocks_promotion_and_distribution(
+        self,
+        mock_compose,
+        mock_record_episode,
+        mock_fanout,
+        mock_distribute,
+        mock_commit,
+        mock_enqueue,
+        storage,
+        dry_config,
+    ):
+        from podcaster.video import video_compose as vc
+        from podcaster.video.editor import (
+            EditorLease,
+            acquire_or_renew_lease,
+            editor_lease_blob_path,
+            read_lease,
+        )
+
+        job_id = self._seed(storage)
+        scratch = _ScratchStorage()
+        mock_fanout.return_value = MagicMock(recorded=[], output_dir=Path("."))
+        promoted = []
+
+        def compose(*_args, output_path, **kwargs):
+            source = output_path.parent / "video-only.mp4"
+            source.write_bytes(b"source")
+
+            def run(cmd):
+                if cmd[0] == "ffprobe":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        json.dumps(
+                            {
+                                "streams": [{"codec_type": "video"}],
+                                "format": {"duration": "1"},
+                            }
+                        ),
+                        "",
+                    )
+                Path(cmd[-1]).write_bytes(b"candidate-media")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            def decode(_path):
+                held = read_lease(scratch, job_id)
+                assert held is not None
+                expired_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                scratch.put_bytes(
+                    editor_lease_blob_path(job_id),
+                    EditorLease(held.run_id, held.claimed_at, expired_at).to_bytes(),
+                    "application/json",
+                )
+                takeover = acquire_or_renew_lease(scratch, job_id, "redelivery-run")
+                assert takeover is not None and takeover.run_id == "redelivery-run"
+
+            original_replace = vc.os.replace
+
+            def observe_replace(source_path, destination_path):
+                promoted.append((source_path, destination_path))
+                return original_replace(source_path, destination_path)
+
+            with patch.object(vc.os, "replace", observe_replace):
+                return vc._finalize_output(
+                    video_only_path=source,
+                    video_duration=1.0,
+                    audio_path=None,
+                    output_path=output_path,
+                    segment_count=1,
+                    run=run,
+                    decode=decode,
+                    media_validation_budget=kwargs["media_validation_budget"],
+                )
+
+        mock_compose.side_effect = compose
+
+        with pytest.raises(TransientVideoError, match="video generation failed"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=dry_config,
+                fanout=True,
+                fanout_scratch=scratch,
+                clip_producer=_RecordingProducer(),
+                lifecycle_deadline_monotonic=__import__("time").monotonic() + 300,
+            )
+
+        assert promoted == []
+        mock_record_episode.assert_not_called()
+        mock_commit.assert_not_called()
+        mock_enqueue.assert_not_called()
+        mock_distribute.assert_not_called()
+
+    def test_delayed_lease_renewal_consumes_persisted_budget(self):
+        from podcaster.video.editor import acquire_or_renew_lease, renew_lease
+
+        class DelayedReadStorage(_ScratchStorage):
+            def get_bytes(self, path):
+                time.sleep(0.08)
+                return super().get_bytes(path)
+
+        scratch = DelayedReadStorage()
+        assert (
+            acquire_or_renew_lease(
+                scratch,
+                "delayed-renew",
+                "run-A",
+                ttl_seconds=10,
+            )
+            is not None
+        )
+        started = time.monotonic()
+        renewed = renew_lease(
+            scratch,
+            "delayed-renew",
+            "run-A",
+            ttl_seconds=10,
+        )
+        assert renewed is not None
+        deadline = _authoritative_deadline_monotonic(renewed.expires_at)
+        assert deadline is not None
+
+        deadline_from_request_start = deadline - started
+        remaining_after_renew = deadline - time.monotonic()
+        assert 4.8 <= deadline_from_request_start <= 5.2
+        assert 0 < remaining_after_renew <= 4.95
+        assert remaining_after_renew <= deadline_from_request_start - 0.05
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_legacy_path_when_fanout_unconfigured(
@@ -2798,7 +3231,14 @@ class _VisibilityQueue:
     def receive_messages(self, max_messages=1, *, visibility_timeout=600):
         self.visibility_timeouts.append(visibility_timeout)
         if self._messages:
-            return [self._messages.pop(0)]
+            message = self._messages.pop(0)
+            if message.next_visible_on is None:
+                message = replace(
+                    message,
+                    next_visible_on=datetime.now(timezone.utc)
+                    + timedelta(seconds=visibility_timeout),
+                )
+            return [message]
         return []
 
     def delete_message(self, message):
@@ -2821,6 +3261,85 @@ class TestEditorVisibilityTimeout:
         queue = _VisibilityQueue([_make_message("j1")])
         drain(queue, storage, dry_config)
         assert queue.visibility_timeouts[0] == 1234
+
+    def test_drain_passes_visibility_deadline_to_job_context(
+        self,
+        storage,
+        dry_config,
+        monkeypatch,
+    ):
+        deadlines = []
+        queue = _VisibilityQueue([_make_message("j1")])
+
+        def process(_message, **kwargs):
+            deadlines.append(kwargs["lifecycle_deadline_monotonic"])
+            return VideoOutcome("j1", STATUS_COMPLETED)
+
+        monkeypatch.setenv("PODCASTER_VIDEO_VISIBILITY_TIMEOUT", "1234")
+        monkeypatch.setattr("podcaster.video.job_runner.process_message", process)
+        before = __import__("time").monotonic()
+        drain(queue, storage, dry_config)
+        after = __import__("time").monotonic()
+
+        assert len(deadlines) == 1
+        expected = 1234 - AUTHORITY_CLOCK_SKEW_RESERVE_SECONDS
+        assert before + expected - 0.1 <= deadlines[0] <= after + expected + 0.1
+
+    def test_delayed_receive_does_not_add_request_latency_back(
+        self,
+        storage,
+        dry_config,
+        monkeypatch,
+    ):
+        deadlines = []
+        message = _make_message("j1")
+
+        class DelayedQueue(_VisibilityQueue):
+            def receive_messages(self, max_messages=1, *, visibility_timeout=600):
+                self.visibility_timeouts.append(visibility_timeout)
+                if not self._messages:
+                    return []
+                next_visible = datetime.now(timezone.utc) + timedelta(seconds=10)
+                time.sleep(0.08)
+                return [replace(self._messages.pop(0), next_visible_on=next_visible)]
+
+        def process(_message, **kwargs):
+            deadlines.append(kwargs["lifecycle_deadline_monotonic"])
+            return VideoOutcome("j1", STATUS_COMPLETED)
+
+        queue = DelayedQueue([message])
+        monkeypatch.setattr("podcaster.video.job_runner.process_message", process)
+        started = time.monotonic()
+        drain(queue, storage, dry_config)
+        deadline_from_request_start = deadlines[0] - started
+        remaining_after_receive = deadlines[0] - time.monotonic()
+
+        assert 4.8 <= deadline_from_request_start <= 5.2
+        assert 0 < remaining_after_receive <= 4.95
+        assert remaining_after_receive <= deadline_from_request_start - 0.05
+
+    def test_missing_authoritative_timestamp_fails_closed(
+        self,
+        storage,
+        dry_config,
+        monkeypatch,
+    ):
+        deadlines = []
+
+        class MissingAuthorityQueue(_VisibilityQueue):
+            def receive_messages(self, max_messages=1, *, visibility_timeout=600):
+                self.visibility_timeouts.append(visibility_timeout)
+                return [self._messages.pop(0)] if self._messages else []
+
+        def process(_message, **kwargs):
+            deadlines.append(kwargs["lifecycle_deadline_monotonic"])
+            return VideoOutcome("j1", STATUS_COMPLETED)
+
+        queue = MissingAuthorityQueue([_make_message("j1")])
+        monkeypatch.setattr("podcaster.video.job_runner.process_message", process)
+        drain(queue, storage, dry_config)
+
+        assert deadlines == [float("-inf")]
 
 
 class TestWatermarkDnsLifecycle:
@@ -3096,3 +3615,13 @@ class TestInvalidUrlWatermarkLifecycle:
         # The failure report carries only the redacted URL, never the body or
         # the offending request line ``InvalidURL`` echoes back.
         assert kwargs["details"]["logo_url"] == "https://logo.example.com/images/partner-logo.png"
+
+
+def test_outcomes_exit_code_requires_nonempty_all_completed():
+    from podcaster.video.job_runner import outcomes_exit_code
+
+    assert outcomes_exit_code([]) == 1
+    assert outcomes_exit_code([VideoOutcome("ok", STATUS_COMPLETED)]) == 0
+    assert outcomes_exit_code([VideoOutcome("partial", "partial")]) == 1
+    assert outcomes_exit_code([VideoOutcome("unknown", STATUS_FAILED)]) == 1
+    assert outcomes_exit_code([VideoOutcome("manual", STATUS_SKIPPED)]) == 1

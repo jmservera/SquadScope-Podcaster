@@ -227,6 +227,67 @@ class TestAddToShowPlaylist:
         assert res.playlist_item_id == "item9"
         assert len(t.calls) == 2
 
+    def test_fences_once_after_readback_before_insert(self, monkeypatch):
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
+        events: list[str] = []
+
+        class OrderedTransport(_FakeTransport):
+            def request(self, url, *, method="GET", headers=None, data=None):
+                events.append("readback" if method == "GET" else "insert")
+                return super().request(
+                    url,
+                    method=method,
+                    headers=headers,
+                    data=data,
+                )
+
+        transport = OrderedTransport(
+            [
+                (200, b'{"items": []}'),
+                (200, b'{"id": "item9"}'),
+            ]
+        )
+
+        result = add_to_show_playlist(
+            None,
+            "en",
+            "vid",
+            "tok",
+            transport=transport,
+            before_mutation=lambda: events.append("fence"),
+        )
+
+        assert result.succeeded is True
+        assert events == ["readback", "fence", "insert"]
+
+    def test_existing_membership_does_not_consume_mutation_fence(self, monkeypatch):
+        monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
+        events: list[str] = []
+
+        class OrderedTransport(_FakeTransport):
+            def request(self, url, *, method="GET", headers=None, data=None):
+                events.append("readback")
+                return super().request(
+                    url,
+                    method=method,
+                    headers=headers,
+                    data=data,
+                )
+
+        transport = OrderedTransport([(200, b'{"items": [{"id": "item9"}]}')])
+
+        result = add_to_show_playlist(
+            None,
+            "en",
+            "vid",
+            "tok",
+            transport=transport,
+            before_mutation=lambda: events.append("fence"),
+        )
+
+        assert result.skipped is True
+        assert events == ["readback"]
+
     def test_locale_routing(self, monkeypatch):
         monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID", "PLen")
         monkeypatch.setenv("VIDEO_YOUTUBE_PLAYLIST_ID_ES", "PLes")

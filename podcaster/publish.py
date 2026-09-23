@@ -131,9 +131,8 @@ class SpotifyDraftReconcileError(SpotifyPublishError):
     Reconcile-before-create only prevents duplicate Spotify drafts when the
     lookup is known to be complete. A failed or truncated lookup must never be
     reported as "no draft exists", because the caller would then create a
-    second draft for an episode that already has one. Callers that genuinely
-    prefer a blind create can disable reconcile with
-    ``PODCASTER_SPOTIFY_RECONCILE=0``.
+    second draft for an episode that already has one. Reconciliation is
+    mandatory; configuration cannot restore blind create.
     """
 
 
@@ -550,21 +549,15 @@ def _create_episode(session: requests.Session, station_id: str) -> int:
 
 
 def _spotify_reconcile_enabled() -> bool:
-    """Whether video draft reconcile-before-create is enabled (default on)."""
-    raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE")
-    if raw is None:
-        return True
-    return raw.strip().lower() not in {"0", "false", "no", "off"}
+    """Video draft reconcile-before-create is mandatory."""
+    return True
 
 
 def _spotify_strict_paging_enabled() -> bool:
-    """Whether an explicitly paginated listing should fail closed (opt-in).
-
-    The Anchor v5 paging contract is unverified (see :data:`_PAGINATION_HINT_KEYS`),
-    so failing closed on a *guessed* key name could block every new video publish.
-    Operators who have confirmed the contract for their show can opt in.
-    """
-    raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING", "")
+    """Whether an explicitly paginated listing must fail closed."""
+    raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING")
+    if raw is None:
+        return True
     return raw.strip().lower() in _TRUTHY
 
 
@@ -951,22 +944,10 @@ def _match_existing_draft(
 
     hint_key = _pagination_hint(data)
     if hint_key is not None:
-        if _spotify_strict_paging_enabled():
-            raise SpotifyDraftReconcileError(
-                f"Spotify draft reconcile lookup for station {station_id} signalled "
-                f"further pages via '{hint_key}' and found no match on the first "
-                "page; strict paging is enabled, so a possibly incomplete read "
-                "will not be used to justify creating a new draft."
-            )
-        logger.warning(
-            "Spotify episode listing for station %s carries a truthy '%s' key and "
-            "contained no match for title=%r. Pagination is NOT implemented (the "
-            "real paging contract is unverified), so this read may be incomplete "
-            "and a duplicate draft is possible. Set "
-            "PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1 to fail closed instead.",
-            station_id,
-            hint_key,
-            title,
+        raise SpotifyDraftReconcileError(
+            f"Spotify draft reconcile lookup for station {station_id} signalled "
+            f"further pages via '{hint_key}' and found no match on the first "
+            "page; an incomplete read cannot authorize a new draft."
         )
 
     logger.info("No existing Spotify draft matched title=%r; a new draft is needed.", title)
@@ -1163,8 +1144,7 @@ def _recover_ambiguous_create(
         f"{candidates or 'none'}, unclassifiable entries: {opaque}, pre-create "
         f"snapshot complete: {snapshot_complete}). Refusing to send a second "
         "create that could orphan an untitled duplicate; inspect the drafts for "
-        "this show in the Spotify creator UI and retry, or set "
-        "PODCASTER_SPOTIFY_RECONCILE=0 to fall back to blind create."
+        "this show in the Spotify creator UI before retrying."
     ) from cause
 
 
@@ -1262,8 +1242,7 @@ def _claim_draft_title(
             f"Spotify draft {anchor_id} was created but could not be titled "
             f"({type(exc).__name__}), so reconcile can never reuse it. Aborting "
             "before upload rather than orphaning a second untitled draft; delete "
-            f"draft {anchor_id} in the Spotify creator UI, or set "
-            "PODCASTER_SPOTIFY_RECONCILE=0 to fall back to blind create."
+            f"draft {anchor_id} in the Spotify creator UI before retrying."
         ) from exc
     logger.info("Claimed title=%r on new Spotify draft anchorId=%d", title, anchor_id)
 
@@ -1292,7 +1271,7 @@ def _get_upload_url(
         import math
 
         num_parts = max(1, math.ceil(file_size / _VIDEO_CHUNK_SIZE))
-        params["uploadType"] = "video"
+        params["uploadType"] = "default"
         params["isMultipartUpload"] = "true"
         params["numParts"] = str(num_parts)
     resp = _retry_request(
@@ -1397,7 +1376,7 @@ def _process_upload(
     url = f"{_BASE_URL}/v3/upload/{upload_id}/process_upload"
     payload: dict[str, Any] = {
         "userId": int(user_id),
-        "uploadType": "video" if is_video else "default",
+        "uploadType": "default",
         "origin": "episode-media:upload",
         "caption": filename,
         "isExtractedFromVideo": False,
@@ -1682,6 +1661,32 @@ def _get_episode_publication_state(
         )
         return None
     return _extract_state(payload)
+
+
+def read_spotify_video_publication_state(
+    anchor_id: int,
+    *,
+    show_id: str | None = None,
+    sp_dc: str | None = None,
+    sp_key: str | None = None,
+) -> bool | None:
+    """Read one expected Spotify item without authorizing any mutation."""
+
+    try:
+        if not show_id or not sp_dc or not sp_key:
+            env_show_id, env_sp_dc, env_sp_key = _get_credentials()
+            show_id = show_id or env_show_id
+            sp_dc = sp_dc or env_sp_dc
+            sp_key = sp_key or env_sp_key
+        session = _build_session(sp_dc, sp_key, show_id)
+        _station_id, user_id = _resolve_legacy_ids(session, show_id)
+        return _get_episode_publication_state(session, anchor_id, user_id=user_id)
+    except (SpotifyCredentialExpiredError, SpotifyPublishError, ValueError):
+        logger.warning(
+            "Spotify read-only publication verification failed for expected item %s",
+            anchor_id,
+        )
+        return None
 
 
 def promote_spotify_video_draft(
@@ -2045,23 +2050,20 @@ def upload_video_to_episode(
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         # Create or reconcile a separate video draft — never touch the audio one.
-        reconcile_enabled = bool(title) and _spotify_reconcile_enabled()
-        if reconcile_enabled:
-            try:
-                exclude_audio_id = int(anchor_id) if anchor_id is not None else None
-            except (TypeError, ValueError):
-                exclude_audio_id = None
-            video_anchor_id, needs_title = _reconcile_or_create_draft(
-                session,
-                station_id,
-                user_id=user_id,
-                title=video_title,
-                exclude_id=exclude_audio_id,
-            )
-        else:
-            video_anchor_id, needs_title = _create_episode(session, station_id), True
+        _spotify_reconcile_enabled()
+        try:
+            exclude_audio_id = int(anchor_id) if anchor_id is not None else None
+        except (TypeError, ValueError):
+            exclude_audio_id = None
+        video_anchor_id, needs_title = _reconcile_or_create_draft(
+            session,
+            station_id,
+            user_id=user_id,
+            title=video_title,
+            exclude_id=exclude_audio_id,
+        )
 
-        if needs_title and reconcile_enabled:
+        if needs_title:
             # A new draft is created untitled; title it now — with the real
             # metadata, so nothing is cleared — so a crash during the upload
             # below leaves a draft reconcile can find on retry.

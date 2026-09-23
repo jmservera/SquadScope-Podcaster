@@ -30,6 +30,7 @@ from urllib.parse import unquote, urlparse
 
 from podcaster.auth_core import create_token, get_credentials, verify_token
 from podcaster.credentials import CredentialStore
+from podcaster.dispatch_receipts import DispatchReceiptError, DispatchReceiptRepository
 from podcaster.failure_reporting import report_failure
 from podcaster.jobs import ReplayCollisionError, failed_response, run_generation_job
 from podcaster.orchestration import process_review_decision
@@ -153,7 +154,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
             GenerateHandler._handle_podcast_config_save(self)
             return
 
-        if path not in {"/api/generate", "/api/review"}:
+        if path not in {"/api/generate", "/api/review", "/api/dispatch-intents"}:
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
 
@@ -187,6 +188,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
 
         if path == "/api/generate":
             GenerateHandler._handle_generate(self, payload)
+            return
+        if path == "/api/dispatch-intents":
+            GenerateHandler._handle_dispatch_intent(self, payload)
             return
         GenerateHandler._handle_review(self, payload)
 
@@ -481,6 +485,23 @@ class GenerateHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, response)
             return
 
+        correlation_id = payload.get("dispatch_correlation_id")
+        dispatch_repository: DispatchReceiptRepository | None = None
+        if isinstance(correlation_id, str):
+            dispatch_repository = DispatchReceiptRepository(create_storage_backend())
+            try:
+                dispatch_repository.require_arrival_eligible(
+                    correlation_id=correlation_id,
+                    week=str(payload.get("week") or ""),
+                )
+            except DispatchReceiptError:
+                _json_response(
+                    self,
+                    HTTPStatus.CONFLICT,
+                    {"error": "dispatch correlation is missing, terminal, or conflicts"},
+                )
+                return
+
         try:
             result = run_generation_job(payload, validation_warnings=validation.warnings or None)
         except ReplayCollisionError:
@@ -504,12 +525,58 @@ class GenerateHandler(BaseHTTPRequestHandler):
         elif result.response.get("status") == "dry_run":
             status_code = HTTPStatus.OK
 
+        accepted_job_id = result.response.get("job_id")
+        if (
+            status_code == HTTPStatus.ACCEPTED
+            and isinstance(correlation_id, str)
+            and isinstance(accepted_job_id, str)
+        ):
+            try:
+                assert dispatch_repository is not None
+                dispatch_repository.record_arrival(
+                    correlation_id=correlation_id,
+                    week=str(payload.get("week") or ""),
+                    accepted_job_id=accepted_job_id,
+                )
+            except DispatchReceiptError:
+                logger.exception(
+                    "dispatch arrival correlation failed correlation_present=true week=%s",
+                    payload.get("week"),
+                )
+                _json_response(
+                    self,
+                    HTTPStatus.CONFLICT,
+                    {"error": "dispatch correlation is missing or conflicts"},
+                )
+                return
+
         _json_response(self, status_code, result.response)
         logger.info(
             "api_generate job_id=%s status=%s dry_run=%s",
             result.response.get("job_id"),
             result.response.get("status"),
             bool(payload.get("dry_run")),
+        )
+
+    def _handle_dispatch_intent(self, payload: dict[str, Any]) -> None:
+        try:
+            document, created = DispatchReceiptRepository(create_storage_backend()).register_intent(
+                correlation_id=str(payload.get("dispatch_correlation_id") or ""),
+                week=str(payload.get("week") or ""),
+                dispatch_result=str(payload.get("dispatch_result") or "pending"),
+                source=str(payload.get("source") or "squadscope_weekly"),
+            )
+        except DispatchReceiptError as exc:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        _json_response(
+            self,
+            HTTPStatus.CREATED if created else HTTPStatus.OK,
+            {
+                "dispatch_correlation_id": document["dispatch_correlation_id"],
+                "week": document["week"],
+                "arrival_state": document["arrival_state"],
+            },
         )
 
     def _handle_review(self, payload: dict[str, Any]) -> None:

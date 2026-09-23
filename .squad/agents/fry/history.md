@@ -27,3 +27,5 @@
 - 2026-06-07T21:43:10Z: Final Issue #7 workflow/package QA review approved locally. `pytest` passed 24 tests, compileall clean, diff whitespace clean, package build simulation produced a valid app.zip, and `az bicep build` compiled `infra/main.bicep`. Workflow remains manual-only and uses private Blob run-from-package with managed identity; no deploy was triggered.
 
 📌 Team update (2026-06-07T21:43:10): Bender durable Function package deployment decision merged (private blob, managed identity, 24 tests passing) — Bender
+
+- 2026-09-23T12:01:49Z: PR #684 final-SHA terminal-truth review at `6096d37052ca26e4205595fe74f4fbacd72d36c4` accepted the in-repository quality gate. The key QA lesson: false-green probes must attack weekly aggregation, provider readback source, manual handoff, mixed processed/failure batches, and YouTube privacy readback disagreement directly; full/locked suites passed, but the gate is only credible when those negative probes fail closed too.

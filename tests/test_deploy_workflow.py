@@ -8,6 +8,7 @@ WORKFLOW = ROOT / ".github/workflows/deploy-azure.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 REUSABLE_WORKFLOW = ROOT / ".github/workflows/reusable-deploy-azure.yml"
 BICEP = ROOT / "infra/main.bicep"
+ALERTS_BICEP = ROOT / "infra/modules/distribution-alerts.bicep"
 
 
 def _workflow_text() -> str:
@@ -20,6 +21,71 @@ def _release_workflow_text() -> str:
 
 def _reusable_workflow_text() -> str:
     return REUSABLE_WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_distribution_alert_contract_has_routes_windows_and_missing_data() -> None:
+    alerts = ALERTS_BICEP.read_text(encoding="utf-8")
+    for alert in (
+        "distribution-pending-age-warning",
+        "distribution-pending-age-critical",
+        "dispatch-missing-azure-arrival-warning",
+        "dispatch-missing-azure-arrival-critical",
+        "distribution-provider-unknown",
+        "distribution-manual-handoff-warning",
+        "distribution-manual-handoff-critical",
+        "distribution-youtube-non-public-warning",
+        "distribution-youtube-non-public-critical",
+        "distribution-spotify-draft-warning",
+        "distribution-spotify-draft-critical",
+        "distribution-public-verification-lag-warning",
+        "distribution-public-verification-lag-critical",
+        "distribution-poisoned",
+        "distribution-identity-conflict",
+        "distribution-weekly-non-green",
+        "distribution-scheduler-telemetry-missing",
+        "distribution-active-depth-without-state",
+        "distribution-active-claim-heartbeat-missing",
+    ):
+        assert f"name: '{alert}'" in alerts
+    for route in (
+        "upstream-dispatch-owner",
+        "operations",
+        "publication-operator",
+        "production-owner",
+    ):
+        assert f"route: '{route}'" in alerts
+    assert "window: 'PT15M'" in alerts
+    assert "window: 'PT10M'" in alerts
+    assert "window: 'PT5M'" in alerts
+    assert "Missing data: ${alert.missingData}" in alerts
+    assert "dispatch_arrival_state" in alerts
+    for action_group in (
+        "operationsActionGroupResourceId",
+        "upstreamActionGroupResourceId",
+        "operatorActionGroupResourceId",
+        "productionActionGroupResourceId",
+    ):
+        assert action_group in alerts
+    assert "routeActionGroups[alert.route]" in alerts
+    assert "where observed == 0" in alerts
+    assert "distribution_active_outbox_depth" in alerts
+    assert "distribution_claim_heartbeat_missing" in alerts
+    assert alerts.count("event: 'distribution_weekly_state'") == 0
+    assert (
+        alerts.count(
+            "event: 'distribution_provider_state'\n    metric: 'distribution_identity_conflict'"
+        )
+        == 1
+    )
+    assert (
+        alerts.count(
+            "event: 'distribution_provider_state'\n    metric: 'distribution_weekly_non_green'"
+        )
+        == 1
+    )
+    assert "let activeDepth = toscalar" in alerts
+    assert "let stateRows = toscalar" in alerts
+    assert "where activeDepth > 0 and stateRows == 0" in alerts
 
 
 def test_deploy_workflow_stays_manual_only_for_pr_validation() -> None:

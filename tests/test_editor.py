@@ -24,6 +24,7 @@ from podcaster.video.editor import (
     plan_or_load_clipset,
     record_via_fanout,
     release_lease,
+    renew_lease,
     wait_for_fanin,
 )
 from podcaster.video.sync_plan import RepoReference, VideoSegment
@@ -72,6 +73,9 @@ class FakeStorage:
 
     def delete_blob(self, path: str) -> bool:
         return self._data.pop(path, None) is not None
+
+    def list_blobs(self, prefix: str, *, limit: int = 10) -> list[str]:
+        return sorted(key for key in self._data if key.startswith(prefix))[:limit]
 
     def delete_prefix(self, prefix: str) -> int:
         keys = [k for k in self._data if k.startswith(prefix)]
@@ -314,18 +318,19 @@ def test_assemble_recording_fills_clip_without_manifest(tmp_path):
 
 def test_acquire_lease_when_free():
     storage = FakeStorage()
-    assert acquire_or_renew_lease(storage, "job1", "run-A") is True
+    acquired = acquire_or_renew_lease(storage, "job1", "run-A")
+    assert acquired is not None
     lease = EditorLease.from_bytes(storage.get_bytes(editor_lease_blob_path("job1")))
-    assert lease is not None and lease.run_id == "run-A"
+    assert lease == acquired
 
 
 def test_foreign_unexpired_lease_blocks_second_editor():
     storage = FakeStorage()
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    assert acquire_or_renew_lease(storage, "job1", "run-A", now=now) is True
+    assert acquire_or_renew_lease(storage, "job1", "run-A", now=now) is not None
     # A second editor a moment later sees the unexpired foreign lease and no-ops.
     later = now + timedelta(seconds=5)
-    assert acquire_or_renew_lease(storage, "job1", "run-B", now=later) is False
+    assert acquire_or_renew_lease(storage, "job1", "run-B", now=later) is None
     lease = EditorLease.from_bytes(storage.get_bytes(editor_lease_blob_path("job1")))
     assert lease.run_id == "run-A"
 
@@ -336,7 +341,7 @@ def test_expired_foreign_lease_can_be_taken_over():
     acquire_or_renew_lease(storage, "job1", "run-A", now=now, ttl_seconds=10)
     # Long after run-A's lease expired, run-B takes over.
     later = now + timedelta(seconds=100)
-    assert acquire_or_renew_lease(storage, "job1", "run-B", now=later) is True
+    assert acquire_or_renew_lease(storage, "job1", "run-B", now=later) is not None
     lease = EditorLease.from_bytes(storage.get_bytes(editor_lease_blob_path("job1")))
     assert lease.run_id == "run-B"
 
@@ -346,9 +351,26 @@ def test_owner_can_renew_its_own_lease():
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     acquire_or_renew_lease(storage, "job1", "run-A", now=now, ttl_seconds=10)
     later = now + timedelta(seconds=5)
-    assert acquire_or_renew_lease(storage, "job1", "run-A", now=later, ttl_seconds=10) is True
+    assert renew_lease(storage, "job1", "run-A", now=later, ttl_seconds=10) is not None
     lease = EditorLease.from_bytes(storage.get_bytes(editor_lease_blob_path("job1")))
     assert lease.expires_at == later + timedelta(seconds=10)
+
+
+def test_expired_owner_cannot_renew_without_reacquiring():
+    storage = FakeStorage()
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    acquire_or_renew_lease(storage, "job1", "run-A", now=now, ttl_seconds=10)
+
+    assert (
+        renew_lease(
+            storage,
+            "job1",
+            "run-A",
+            now=now + timedelta(seconds=11),
+            ttl_seconds=10,
+        )
+        is None
+    )
 
 
 def test_heartbeat_renew_keeps_lease_past_original_ttl():
@@ -361,7 +383,7 @@ def test_heartbeat_renew_keeps_lease_past_original_ttl():
     # Heartbeat every 15s for 90s (3x the TTL): each beat advances expiry.
     for beat in range(15, 91, 15):
         moment = start + timedelta(seconds=beat)
-        assert acquire_or_renew_lease(storage, "job1", "run-A", now=moment, ttl_seconds=30) is True
+        assert renew_lease(storage, "job1", "run-A", now=moment, ttl_seconds=30) is not None
     lease = EditorLease.from_bytes(storage.get_bytes(editor_lease_blob_path("job1")))
     assert lease.run_id == "run-A"
     assert lease.expires_at == start + timedelta(seconds=90 + 30)

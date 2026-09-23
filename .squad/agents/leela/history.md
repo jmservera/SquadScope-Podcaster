@@ -9,6 +9,8 @@
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
+- 2026-09-22T16:27:05Z: Sole revision author for the PR #684 final-media correction from rejected head `d050d68c3590f9a00b60dee925452f971cbaf0d2`. Scope is complete bounded ffmpeg decode validation before atomic promotion, real corruption/truncation probes, and evidence reconciliation. Livingston and Rusty are locked out from contribution; Basher is reserved as fresh independent reviewer; Bender, Hermes, and Amy remain excluded. Keep #684 draft/blocked and #682 open; no merge, deploy, W39, workflow dispatch, or provider mutation.
+
 - 2026-06-07: Chartered as Producer Lead during the Podcaster squad rebuild (Futurama cast, continued from the SquadScope sister project). Prime directive: never change or block SquadScope article publishing. Milestones live in `docs/PRD.md`.
 - 2026-06-07: Triaged all 9 P1 open issues. Routed: #1 (review gate)→Leela, #2 (privacy/RAI)→Hermes, #3 (blob storage)→Bender, #4 (TTS bakeoff)→Farnsworth, #5 (Spotify research)→Amy, #6 (publishing packet)→Amy, #7 (deploy)→Bender, #8 (API contract)→Leela, #9 (Actions chore)→Bender.
 - 2026-06-07: Wave 1/2 local readiness review found the diff cohesive in direction but not releasable: pytest currently fails on publishing packet MANIFEST.json missing nested review metadata expected by tests; Azure subscription work remains gated until Bender fixes packet manifest parity and Fry re-runs the suite.
@@ -19,3 +21,5 @@
 - 2026-06-07T20:52:01.950+00:00: Reviewer revision for PR #11/#7 caps deployment Function App names at 35 characters in workflow/Bicep so derived App Service Plan (`-plan`) and Log Analytics (`-law`) names remain Azure-compliant; optional app/storage overrides remain supported but unsafe values fail before deploy.
 
 📌 Team update (2026-06-07T20:52:01Z): Non-Bender PR #11 revision approved; naming constraints prevent Azure silent failures. CI green; ready for live prod/OIDC deploy and endpoint smoke test. — consolidated by Scribe from Bender, Hermes, Fry
+
+📌 Team update (2026-09-23T12:01:49Z): Fry accepted PR #684 at final SHA `6096d37`; Basher's stale `905a890` acceptance is superseded. Residual gates remain P05 deployment/W39 and P06 elapsed-cycle — decided by Fry.

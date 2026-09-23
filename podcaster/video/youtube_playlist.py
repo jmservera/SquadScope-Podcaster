@@ -26,6 +26,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from typing import Callable
 from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,7 @@ def add_to_show_playlist(
     *,
     transport: object | None = None,
     position: int | None = None,
+    before_mutation: Callable[[], None] | None = None,
 ) -> PlaylistAddResult:
     """Resolve the locale's playlist and add ``video_id`` idempotently.
 
@@ -276,6 +278,8 @@ def add_to_show_playlist(
             skipped=True,
         )
 
+    if before_mutation is not None:
+        before_mutation()
     return add_video_to_playlist(
         playlist_id,
         video_id,

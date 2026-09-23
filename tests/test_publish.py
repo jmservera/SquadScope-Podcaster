@@ -1027,6 +1027,31 @@ class TestVideoArtifactDetection:
 class TestProcessUpload:
     """Tests for _process_upload payload and polling behaviour (#292)."""
 
+    def test_video_signed_url_request_uses_default_upload_type(self):
+        from podcaster.publish import _get_upload_url
+
+        response = _mock_json_resp(
+            {
+                "requestUuid": "upload-1",
+                "signedUrlParts": [{"partNumber": 1, "url": "https://gcs/part"}],
+            }
+        )
+        session = MagicMock()
+        session.request.return_value = response
+
+        _get_upload_url(
+            session,
+            777,
+            filename="episode.mp4",
+            content_type="video/mp4",
+            is_video=True,
+            file_size=4096,
+        )
+
+        params = session.request.call_args.kwargs["params"]
+        assert params["uploadType"] == "default"
+        assert params["isMultipartUpload"] == "true"
+
     def test_process_upload_audio_payload(self):
         """POST payload uses uploadType=default and isExtractedFromVideo=False for audio."""
         from podcaster.publish import _process_upload
@@ -1068,7 +1093,7 @@ class TestProcessUpload:
         assert "parts" not in captured["json"]
 
     def test_process_upload_video_payload(self):
-        """POST payload uses uploadType=video and isExtractedFromVideo=True for video."""
+        """Video processing preserves Spotify's required uploadType=default."""
         from podcaster.publish import _process_upload
 
         captured = {}
@@ -1102,7 +1127,7 @@ class TestProcessUpload:
                 parts_etags=[{"partNumber": 1, "etag": "etag456"}],
             )
 
-        assert captured["json"]["uploadType"] == "video"
+        assert captured["json"]["uploadType"] == "default"
         assert captured["json"]["isExtractedFromVideo"] is False
         assert captured["json"]["isMultipartUpload"] is True
         assert captured["json"]["parts"] == [{"partNumber": 1, "etag": "etag456"}]
@@ -1538,8 +1563,11 @@ class TestUploadVideoToEpisode:
         assert "777" in result.error
         assert "secret-token-abc" not in result.error
 
-    def test_reconcile_disabled_skips_title_claim(self, tmp_path, monkeypatch):
-        """The escape hatch restores the exact pre-#656 blind-create behaviour."""
+    def test_reconcile_cannot_be_disabled_and_new_draft_is_title_claimed(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
@@ -1548,6 +1576,7 @@ class TestUploadVideoToEpisode:
         monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
 
         session = MagicMock()
+        session.request.return_value = _mock_json_resp({"episodes": []})
         monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
         monkeypatch.setattr(pub, "_create_episode", lambda s, station_id: 777)
@@ -1573,8 +1602,8 @@ class TestUploadVideoToEpisode:
         result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
 
         assert result.status == "draft"
-        assert metadata_calls == [777]
-        assert session.request.call_count == 0
+        assert metadata_calls == [777, 777]
+        assert session.request.call_count == 1
 
     def test_credential_expiry_opens_notification(self, tmp_path, monkeypatch):
         """#656 follow-up: the video path must notify operators, like the audio path."""
@@ -1604,7 +1633,7 @@ class TestUploadVideoToEpisode:
         assert result.details["notification_issue"] == 4242
         create.assert_not_called()
 
-    def test_reconcile_disabled_falls_back_to_create(self, tmp_path, monkeypatch):
+    def test_reconcile_zero_still_requires_complete_absence_proof(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
@@ -1613,6 +1642,7 @@ class TestUploadVideoToEpisode:
         monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
 
         session = MagicMock()
+        session.request.return_value = _mock_json_resp({"episodes": []})
         monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
 
@@ -1626,7 +1656,7 @@ class TestUploadVideoToEpisode:
         assert result.status == "draft"
         assert result.anchor_episode_id == 777
         create.assert_called_once_with(session, "99")
-        assert session.request.call_count == 0
+        assert session.request.call_count == 1
 
     def test_reconcile_sends_resolved_user_id(self, tmp_path, monkeypatch):
         """The episode listing must carry the resolved userId (#656)."""
@@ -2157,17 +2187,12 @@ class TestFindExistingDraft:
         with pytest.raises(pub.SpotifyDraftReconcileError):
             pub._find_existing_draft(session, "99", "My Show", user_id="7")
 
-    def test_truncated_listing_warns_but_does_not_block_by_default(self, caplog):
-        """The paging contract is unverified — a guessed key must not gate publishes."""
-        import logging
-
+    def test_truncated_listing_blocks_by_default(self):
         from podcaster import publish as pub
 
         session = self._session({"episodes": [], "hasMore": True})
-        with caplog.at_level(logging.WARNING, logger="podcaster.publish"):
-            assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
-        assert "hasMore" in caplog.text
-        assert "Pagination is NOT implemented" in caplog.text
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="incomplete read"):
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
 
     def test_truncated_listing_raises_when_strict_paging_opted_in(self, monkeypatch):
         from podcaster import publish as pub

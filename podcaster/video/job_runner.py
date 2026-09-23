@@ -22,16 +22,23 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import subprocess
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from podcaster.config import PodcastConfig, SpotifyPublishConfig
+from podcaster.distribution_outbox import (
+    DistributionOutboxRepository,
+    commit_immutable_artifact,
+    outbox_routing_enabled,
+)
 from podcaster.failure_reporting import report_failure
 from podcaster.generation import PODCAST_NAME, PODCAST_SPOKEN_SITE, _plain_text_from_html
 from podcaster.music import TRACK_ATTRIBUTION
@@ -55,6 +62,7 @@ from podcaster.queue import (
     QueueMessage,
     QueueProducer,
     create_clip_queue_backend,
+    enqueue_distribution_job,
     parse_job_id,
 )
 from podcaster.sanitization import neutralize
@@ -71,6 +79,7 @@ from podcaster.video.distribution import (
     youtube_enabled_for_language,
 )
 from podcaster.video.intermediates import create_intermediate_store
+from podcaster.video.ownership import BoundaryPermit, OwnershipError, VideoOwnershipGuard
 from podcaster.video.perf import PipelineTimings
 from podcaster.video.sync_plan import (
     annotate_removed_repos,
@@ -130,6 +139,7 @@ ENV_FANOUT = "PODCASTER_VIDEO_FANOUT"
 #: compose + publish); the dedicated editor lease is the backstop if it is too low.
 ENV_VIDEO_VISIBILITY_TIMEOUT = "PODCASTER_VIDEO_VISIBILITY_TIMEOUT"
 DEFAULT_VIDEO_VISIBILITY_TIMEOUT = 5400
+AUTHORITY_CLOCK_SKEW_RESERVE_SECONDS = 5.0
 
 # Minimum valid MP4 byte size
 _MIN_VALID_MP4_BYTES = 1024
@@ -435,6 +445,37 @@ def _extract_week(manifest: dict[str, Any]) -> int | None:
     return parsed[1] if parsed is not None else None
 
 
+def _distribution_human_approval(manifest: dict[str, Any]) -> dict[str, Any]:
+    review = manifest.get("review")
+    if not isinstance(review, dict) or review.get("status") != "approved":
+        return {"approved": False}
+    approved_by = review.get("approved_by")
+    approved_at = review.get("approved_at")
+    if (
+        not isinstance(approved_by, str)
+        or not approved_by.strip()
+        or approved_by.strip().lower().startswith("system:")
+        or not isinstance(approved_at, str)
+        or not approved_at.strip()
+    ):
+        return {"approved": False}
+    audit_trail = review.get("audit_trail")
+    if not isinstance(audit_trail, list) or not any(
+        isinstance(entry, dict)
+        and entry.get("decision") == "approved"
+        and entry.get("actor") == approved_by
+        and entry.get("at") == approved_at
+        for entry in audit_trail
+    ):
+        return {"approved": False}
+    return {
+        "approved": True,
+        "approved_by": approved_by.strip(),
+        "approved_at": approved_at.strip(),
+        "source": "manifest_human_review",
+    }
+
+
 def _already_processed(manifest: dict[str, Any]) -> bool:
     """Check if video has already been generated for this job."""
     generation = manifest.get("generation")
@@ -484,11 +525,16 @@ def _record_video_state(
     storage: StorageBackend,
     job_id: str,
     state: dict[str, Any],
+    *,
+    authorize=None,
+    fail_closed: bool = False,
 ) -> None:
     """Record video runner state in the manifest."""
     from podcaster.generation import manifest_bytes
 
     def _apply(content: bytes | None) -> bytes:
+        if authorize is not None:
+            authorize()
         doc = json.loads(content.decode("utf-8")) if content else {}
         if not isinstance(doc, dict):
             doc = {}
@@ -499,6 +545,8 @@ def _record_video_state(
     try:
         storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
     except Exception:
+        if fail_closed:
+            raise
         logger.warning("failed to record video state for job_id=%s", job_id, exc_info=True)
 
 
@@ -507,11 +555,16 @@ def _record_video_publish(
     job_id: str,
     platform: str,
     record: dict[str, Any],
+    *,
+    authorize: Callable[[], None] | None = None,
+    fail_closed: bool = False,
 ) -> None:
     """Record one durable per-platform video publish result in the manifest."""
     from podcaster.generation import manifest_bytes
 
     def _apply(content: bytes | None) -> bytes:
+        if authorize is not None:
+            authorize()
         doc = json.loads(content.decode("utf-8")) if content else {}
         if not isinstance(doc, dict):
             doc = {}
@@ -526,6 +579,8 @@ def _record_video_publish(
     try:
         storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
     except Exception:
+        if fail_closed:
+            raise
         logger.warning(
             "failed to record video publish state for job_id=%s platform=%s",
             job_id,
@@ -570,8 +625,17 @@ def _record_video_publication(
     identity: PublicationIdentity | None,
     platform: str,
     record: dict[str, Any],
+    *,
+    authorize: Callable[[], None] | None = None,
 ) -> bool:
-    _record_video_publish(storage, job_id, platform, record)
+    _record_video_publish(
+        storage,
+        job_id,
+        platform,
+        record,
+        authorize=authorize,
+        fail_closed=authorize is not None,
+    )
     outcome = record.get("outcome")
     if identity is None or not isinstance(outcome, str):
         return True
@@ -603,14 +667,24 @@ def _record_video_publication(
             ),
             retry_blocked=bool(record.get("retry_blocked", True)),
             code=(str(record.get("last_error_code")) if record.get("last_error_code") else None),
+            authorize=authorize,
         )
+    except OwnershipError:
+        raise
     except Exception:
         unknown_record = {
             **record,
             "outcome": PUBLICATION_UNKNOWN,
             "retry_blocked": True,
         }
-        _record_video_publish(storage, job_id, platform, unknown_record)
+        _record_video_publish(
+            storage,
+            job_id,
+            platform,
+            unknown_record,
+            authorize=authorize,
+            fail_closed=authorize is not None,
+        )
         logger.error(
             "publication evidence failed after video provider mutation; "
             "retry blocked for job_id=%s platform=%s",
@@ -627,7 +701,11 @@ def _record_video_publication(
             media_kind="video",
             outcome=outcome,
             provider_artifact_id=provider_artifact_id,
+            authorize=authorize,
+            fail_closed=authorize is not None,
         )
+    except OwnershipError:
+        raise
     except Exception:
         logger.warning(
             "publication signal failed for job_id=%s platform=%s outcome=%s",
@@ -771,6 +849,21 @@ def _video_visibility_timeout(env: dict[str, str] | None = None) -> int:
     return value if value > 0 else DEFAULT_VIDEO_VISIBILITY_TIMEOUT
 
 
+def _authoritative_deadline_monotonic(expires_at: datetime | None) -> float | None:
+    """Convert a provider/storage wall expiry to a conservative monotonic deadline."""
+    if expires_at is None or expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        return None
+    wall_now = datetime.now(timezone.utc)
+    monotonic_now = time.monotonic()
+    try:
+        remaining = (expires_at.astimezone(timezone.utc) - wall_now).total_seconds()
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(remaining):
+        return None
+    return monotonic_now + remaining - AUTHORITY_CLOCK_SKEW_RESERVE_SECONDS
+
+
 def run_video_generation(
     job_id: str,
     storage: StorageBackend,
@@ -781,6 +874,9 @@ def run_video_generation(
     fanout: bool | None = None,
     fanout_scratch: StorageBackend | None = None,
     clip_producer: QueueProducer | None = None,
+    lifecycle_deadline_monotonic: float | None = None,
+    ownership_execution_id: str | None = None,
+    ownership_visibility_expires_at: datetime | None = None,
 ) -> VideoOutcome:
     """Generate video for a staged job_id and distribute to configured targets.
 
@@ -810,7 +906,49 @@ def run_video_generation(
     scratch = fanout_scratch if fanout_scratch is not None else create_scratch_storage_backend()
     producer = clip_producer if clip_producer is not None else create_clip_queue_backend()
     fanout_enabled = _resolve_fanout(fanout, scratch, producer)
-    run_id = uuid.uuid4().hex if fanout_enabled else None
+    execution_id = ownership_execution_id or uuid.uuid4().hex
+    run_id = execution_id if fanout_enabled else None
+    media_validation_lease = None
+    media_validation_admitted = False
+    ownership_guard: VideoOwnershipGuard | None = None
+    promotion_permit: BoundaryPermit | None = None
+
+    def _remaining_media_validation_budget() -> float:
+        nonlocal media_validation_admitted, media_validation_lease
+
+        current_monotonic = time.monotonic()
+        remaining: list[float] = []
+        if lifecycle_deadline_monotonic is not None:
+            remaining.append(lifecycle_deadline_monotonic - current_monotonic)
+        if fanout_enabled and run_id is not None:
+            from podcaster.video.editor import (
+                read_lease,
+                renew_lease,
+            )
+
+            media_validation_lease = (
+                renew_lease(scratch, job_id, run_id)
+                if not media_validation_admitted
+                else read_lease(scratch, job_id)
+            )
+            if media_validation_lease is None or media_validation_lease.run_id != run_id:
+                raise RuntimeError(
+                    f"final media validation failed: editor lease lost for job_id={job_id}"
+                )
+            if ownership_guard is not None:
+                ownership_guard.refresh_lease(media_validation_lease.expires_at)
+            lease_deadline = _authoritative_deadline_monotonic(media_validation_lease.expires_at)
+            if lease_deadline is None:
+                raise RuntimeError(
+                    "final media validation failed: editor lease expiry invalid "
+                    f"for job_id={job_id}"
+                )
+            media_validation_admitted = True
+            current_monotonic = time.monotonic()
+            remaining.append(lease_deadline - current_monotonic)
+        if not remaining:
+            return float("inf")
+        return min(remaining)
 
     # Load manifest
     raw_manifest = storage.get_bytes(manifest_path(job_id))
@@ -858,7 +996,8 @@ def run_video_generation(
     if fanout_enabled and run_id is not None:
         from podcaster.video.editor import acquire_or_renew_lease
 
-        if not acquire_or_renew_lease(scratch, job_id, run_id, now=current):
+        media_validation_lease = acquire_or_renew_lease(scratch, job_id, run_id)
+        if media_validation_lease is None:
             logger.info("video skipped job_id=%s reason=%s", job_id, REASON_EDITOR_LEASE_HELD)
             return VideoOutcome(job_id, STATUS_SKIPPED, reason=REASON_EDITOR_LEASE_HELD)
 
@@ -1029,8 +1168,8 @@ def run_video_generation(
             with timings.phase("recording"):
                 if fanout_enabled and run_id is not None:
                     from podcaster.video.editor import (
-                        acquire_or_renew_lease,
                         record_via_fanout,
+                        renew_lease,
                     )
 
                     def _heartbeat() -> None:
@@ -1043,7 +1182,7 @@ def run_video_generation(
                         # than risk a concurrent compose/publish for the same job_id.
                         # Raising TransientVideoError leaves the message for redelivery;
                         # our CAS release is a no-op since the successor owns the lease.
-                        if not acquire_or_renew_lease(scratch, job_id, run_id):
+                        if renew_lease(scratch, job_id, run_id) is None:
                             logger.warning(
                                 "editor lease lost during fan-in job_id=%s run_id=%s; "
                                 "aborting (another editor took over)",
@@ -1090,7 +1229,40 @@ def run_video_generation(
                 sections_metadata=sections_metadata,
             )
 
+            if fanout_enabled and run_id is not None:
+                from podcaster.video.editor import renew_lease
+
+                media_validation_lease = renew_lease(scratch, job_id, run_id)
+                if media_validation_lease is None:
+                    raise OwnershipError("editor lease lost before downstream ownership claim")
+            visibility_expires_at = ownership_visibility_expires_at or (
+                datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
+            )
+            ownership_guard = VideoOwnershipGuard.acquire(
+                storage,
+                job_id,
+                owner="video-runner",
+                execution_id=execution_id,
+                visibility_expires_at=visibility_expires_at,
+                lease_expires_at=(
+                    media_validation_lease.expires_at
+                    if media_validation_lease is not None
+                    else None
+                ),
+            )
+
             with timings.phase("composition"):
+
+                def _before_final_promotion() -> None:
+                    nonlocal promotion_permit
+                    if ownership_guard is None:
+                        raise OwnershipError("downstream ownership guard is unavailable")
+                    promotion_permit = ownership_guard.begin(
+                        "final_candidate_promotion",
+                        allow_idempotent_takeover=True,
+                    )
+                    ownership_guard.assert_permit(promotion_permit)
+
                 compose_result = compose_video(
                     recording.recorded,
                     audio_path=audio_path,
@@ -1103,10 +1275,30 @@ def run_video_generation(
                     section_cards=section_cards,
                     intermediates=intermediates,
                     task_reporter=normalize_reporter,
+                    media_validation_budget=(
+                        _remaining_media_validation_budget
+                        if lifecycle_deadline_monotonic is not None or fanout_enabled
+                        else None
+                    ),
+                    before_final_promotion=_before_final_promotion,
+                )
+                if promotion_permit is None:
+                    _before_final_promotion()
+                ownership_guard.complete(
+                    promotion_permit,
+                    target=output_path.name,
                 )
 
             if not output_path.exists() or output_path.stat().st_size < _MIN_VALID_MP4_BYTES:
                 raise RuntimeError(f"composition produced invalid output for job_id={job_id}")
+            if lifecycle_deadline_monotonic is not None or fanout_enabled:
+                from podcaster.video.video_compose import FINAL_MEDIA_PROMOTION_RESERVE_SECONDS
+
+                if _remaining_media_validation_budget() < FINAL_MEDIA_PROMOTION_RESERVE_SECONDS:
+                    raise RuntimeError(
+                        "final media validation failed: lifecycle or editor lease expired "
+                        "before distribution"
+                    )
 
             # Distribute
             request = manifest.get("request")
@@ -1222,7 +1414,7 @@ def run_video_generation(
                             if platform == "spotify"
                             else None,
                         }
-                    elif enabled and not dist_config.dry_run:
+                    elif enabled and not dist_config.dry_run and not outbox_routing_enabled():
                         try:
                             claim = append_evidence(
                                 storage,
@@ -1250,33 +1442,165 @@ def run_video_generation(
 
             evidence_failures: list[str] = []
 
-            def record_publication(platform: str, record: dict[str, Any]) -> None:
-                if not _record_video_publication(
-                    storage,
-                    job_id,
-                    publication_context,
-                    platform,
-                    record,
-                ):
-                    evidence_failures.append(platform)
-
             with timings.phase("distribution"):
-                dist_result = distribute_video(
-                    output_path,
-                    job_id,
-                    title,
-                    description,
-                    compose_result.duration_seconds,
-                    dist_config,
-                    storage=_StorageUploaderAdapter(storage),
-                    spotify_anchor_id=_resolve_anchor_id(manifest),
-                    season_number=season_number,
-                    episode_number=episode_number,
-                    language=job_language,
-                    published=published_for_attempt,
-                    publish_run_id=publish_run_id,
-                    on_published=record_publication,
-                )
+                if outbox_routing_enabled():
+                    if publication_context is None:
+                        raise PermanentVideoError(
+                            "distribution outbox requires canonical publication identity",
+                            reason=REASON_INVALID_PUBLICATION_IDENTITY,
+                            details={"job_id": job_id},
+                        )
+                    objectives: dict[str, str] = {}
+                    if youtube_enabled_for_language(dist_config, job_language):
+                        objectives["youtube"] = "public"
+                    if dist_config.spotify_upload_enabled:
+                        objectives["spotify"] = "public"
+                    if dist_config.spotify_rss_enabled:
+                        objectives["spotify_rss"] = "public"
+                    if not objectives:
+                        raise PermanentVideoError(
+                            "distribution outbox requires a requested production provider",
+                            reason="distribution_provider_not_requested",
+                            details={"job_id": job_id},
+                        )
+                    archive_permit = ownership_guard.begin(
+                        "immutable_archive",
+                        allow_idempotent_takeover=True,
+                    )
+                    archive_token = ownership_guard.source_token(archive_permit)
+                    artifact = commit_immutable_artifact(
+                        storage,
+                        output_path,
+                        media_kind="video",
+                        content_type="video/mp4",
+                        suffix=output_path.suffix,
+                        source_ownership=archive_token,
+                        authorize=lambda: ownership_guard.assert_permit(archive_permit),
+                    )
+                    ownership_guard.complete(archive_permit, target=artifact.path)
+                    repository = DistributionOutboxRepository(storage)
+                    approval = _distribution_human_approval(manifest)
+                    provider_approvals = {provider: approval for provider in objectives}
+                    provider_context: dict[str, dict[str, Any]] = {
+                        "youtube": {
+                            "locale": job_language,
+                            "playlist_id": dist_config.youtube_playlist_id,
+                        },
+                        "spotify": {
+                            "audio_anchor_id": _resolve_anchor_id(manifest),
+                            "season_number": season_number,
+                            "episode_number": episode_number,
+                        },
+                        "spotify_rss": {
+                            "feed_path": dist_config.spotify_rss_feed_path,
+                        },
+                    }
+                    outbox_permit = ownership_guard.begin(
+                        "distribution_outbox",
+                        allow_idempotent_takeover=True,
+                    )
+                    outbox_token = ownership_guard.source_token(outbox_permit)
+                    outbox_document, _created = repository.enqueue(
+                        publication_context,
+                        artifact,
+                        provider_objectives=objectives,
+                        enqueue_source="video_runner",
+                        enqueue_version="v1",
+                        source_ownership=outbox_token,
+                        authorize=lambda: ownership_guard.assert_permit(outbox_permit),
+                        provider_approvals=provider_approvals,
+                        provider_context={
+                            provider: provider_context[provider] for provider in objectives
+                        },
+                    )
+                    ownership_guard.complete(
+                        outbox_permit,
+                        target=outbox_document["outbox_id"],
+                    )
+                    notification_permit = ownership_guard.begin(
+                        "distribution_notification",
+                        allow_idempotent_takeover=True,
+                    )
+                    notification_token = ownership_guard.source_token(notification_permit)
+                    repository.reserve_notification(
+                        outbox_document["outbox_id"],
+                        source_ownership=notification_token,
+                        authorize=lambda: ownership_guard.assert_permit(notification_permit),
+                    )
+                    enqueue_distribution_job(
+                        outbox_document["outbox_id"],
+                        authorize_send=lambda: repository.authorize_notification_send(
+                            outbox_document["outbox_id"],
+                            source_ownership=notification_token,
+                            authorize=lambda: ownership_guard.assert_permit(notification_permit),
+                        ),
+                        mark_accepted=lambda: repository.accept_notification_send(
+                            outbox_document["outbox_id"],
+                            source_ownership=notification_token,
+                            authorize=lambda: ownership_guard.assert_permit(notification_permit),
+                        ),
+                    )
+                    ownership_guard.complete(
+                        notification_permit,
+                        target=outbox_document["outbox_id"],
+                    )
+                    dist_result = DistributionResult(
+                        status="partial",
+                        public_delivery_status="pending",
+                        outbox_id=outbox_document["outbox_id"],
+                        provider_outcomes={
+                            provider: "publication_unknown" for provider in objectives
+                        },
+                        provider_records={
+                            provider: {
+                                "provider": provider,
+                                "outcome": "publication_unknown",
+                                "status": "pending",
+                                "transport_status": "not_attempted",
+                                "verification": "none",
+                                "evidence_source": "distribution_outbox",
+                                "retry_blocked": True,
+                            }
+                            for provider in objectives
+                        },
+                    )
+                else:
+                    provider_permit = ownership_guard.begin(
+                        "direct_provider_intent",
+                        allow_idempotent_takeover=False,
+                    )
+
+                    def record_publication(platform: str, record: dict[str, Any]) -> None:
+                        if not _record_video_publication(
+                            storage,
+                            job_id,
+                            publication_context,
+                            platform,
+                            record,
+                            authorize=lambda: ownership_guard.assert_permit(provider_permit),
+                        ):
+                            evidence_failures.append(platform)
+
+                    dist_result = distribute_video(
+                        output_path,
+                        job_id,
+                        title,
+                        description,
+                        compose_result.duration_seconds,
+                        dist_config,
+                        storage=_StorageUploaderAdapter(storage),
+                        spotify_anchor_id=_resolve_anchor_id(manifest),
+                        season_number=season_number,
+                        episode_number=episode_number,
+                        language=job_language,
+                        published=published_for_attempt,
+                        publish_run_id=publish_run_id,
+                        on_published=record_publication,
+                        before_mutation=lambda _provider, _operation: ownership_guard.assert_permit(
+                            provider_permit
+                        ),
+                    )
+                    ownership_guard.complete(provider_permit, target="direct_distribution")
             result_publish_run_id = getattr(dist_result, "publish_run_id", None)
             if not isinstance(result_publish_run_id, str):
                 result_publish_run_id = publish_run_id
@@ -1337,6 +1661,10 @@ def run_video_generation(
                     "youtube_oauth_error": dist_result.youtube_oauth_error,
                     "youtube_oauth_error_subtype": dist_result.youtube_oauth_error_subtype,
                 }
+                failure_permit = ownership_guard.begin(
+                    "required_youtube_failure",
+                    allow_idempotent_takeover=True,
+                )
                 _record_video_state(
                     storage,
                     job_id,
@@ -1347,7 +1675,10 @@ def run_video_generation(
                         "performance": timings.to_dict(),
                         "distribution": distribution_state,
                     },
+                    authorize=lambda: ownership_guard.assert_permit(failure_permit),
+                    fail_closed=True,
                 )
+                ownership_guard.complete(failure_permit, target=manifest_path(job_id))
                 message = (
                     f"required YouTube delivery failed for job_id={job_id} "
                     f"code={dist_result.youtube_failure_code or 'unknown'} "
@@ -1373,6 +1704,10 @@ def run_video_generation(
             timings.log_summary(logger)
 
             # Record the aggregate terminal state in the manifest.
+            success_permit = ownership_guard.begin(
+                "terminal_success",
+                allow_idempotent_takeover=True,
+            )
             _record_video_state(
                 storage,
                 job_id,
@@ -1394,7 +1729,10 @@ def run_video_generation(
                         "public_delivery_status": public_delivery_status,
                     },
                 },
+                authorize=lambda: ownership_guard.assert_permit(success_permit),
+                fail_closed=True,
             )
+            ownership_guard.complete(success_permit, target=manifest_path(job_id))
 
             # Intermediates are no longer needed once the episode is published;
             # delete the job's scratch blobs (issue #410).  Best-effort — the
@@ -1417,6 +1755,9 @@ def run_video_generation(
                 distribution=dist_result,
             )
 
+    except OwnershipError:
+        _release_editor_lease(scratch, job_id, run_id)
+        raise
     except TransientVideoError:
         _release_editor_lease(scratch, job_id, run_id)
         raise
@@ -1681,6 +2022,7 @@ def process_message(
     queue: QueueBackend,
     config: VideoDistributionConfig | None = None,
     now: datetime | None = None,
+    lifecycle_deadline_monotonic: float | None = None,
 ) -> VideoOutcome:
     """Process one video queue message: generate, then delete on terminal outcome."""
     try:
@@ -1701,7 +2043,18 @@ def process_message(
     )
 
     try:
-        outcome = run_video_generation(job_id, storage, config=config, now=now)
+        outcome = run_video_generation(
+            job_id,
+            storage,
+            config=config,
+            now=now,
+            lifecycle_deadline_monotonic=lifecycle_deadline_monotonic,
+            ownership_execution_id=f"{message.message_id}:{message.pop_receipt}",
+            ownership_visibility_expires_at=(
+                message.next_visible_on
+                or datetime.now(timezone.utc) + timedelta(seconds=_video_visibility_timeout())
+            ),
+        )
     except PermanentVideoError as exc:
         logger.error("terminal video failure job_id=%s reason=%s", job_id, exc.reason)
         details: dict[str, Any] = {"job_id": job_id, "reason": exc.reason}
@@ -1769,8 +2122,38 @@ def drain(
         if not messages:
             break
         for message in messages:
-            outcomes.append(process_message(message, storage=storage, queue=queue, config=config))
+            lifecycle_deadline = _authoritative_deadline_monotonic(message.next_visible_on)
+            if lifecycle_deadline is None:
+                lifecycle_deadline = float("-inf")
+                logger.error(
+                    "video message missing authoritative next-visible timestamp "
+                    "message_id=%s; media promotion will fail closed",
+                    message.message_id,
+                )
+            outcomes.append(
+                process_message(
+                    message,
+                    storage=storage,
+                    queue=queue,
+                    config=config,
+                    lifecycle_deadline_monotonic=lifecycle_deadline,
+                )
+            )
     return outcomes
+
+
+def outcomes_exit_code(outcomes: list[VideoOutcome]) -> int:
+    """Return success only when expected work externally completed."""
+
+    if not outcomes:
+        return 1
+    for outcome in outcomes:
+        if outcome.status != STATUS_COMPLETED:
+            return 1
+        distribution = outcome.distribution
+        if distribution is not None and distribution.public_delivery_status != "completed":
+            return 1
+    return 0
 
 
 def main() -> int:
@@ -1797,10 +2180,10 @@ def main() -> int:
             logger.exception("managed identity token startup health check failed")
             return 3
 
-    outcomes = drain(queue, storage, config)
+    outcomes = drain(queue, storage, config, max_messages=1)
     completed = sum(1 for o in outcomes if o.status == STATUS_COMPLETED)
     skipped = sum(1 for o in outcomes if o.status == STATUS_SKIPPED)
-    failed = sum(1 for o in outcomes if o.status == STATUS_FAILED)
+    failed = sum(1 for o in outcomes if outcomes_exit_code([o]) != 0)
 
     logger.info(
         "video run finished processed=%s completed=%s skipped=%s failed=%s",
@@ -1811,7 +2194,7 @@ def main() -> int:
     )
 
     if failed:
-        failed_jobs = [o.job_id for o in outcomes if o.status == STATUS_FAILED and o.job_id]
+        failed_jobs = [o.job_id for o in outcomes if outcomes_exit_code([o]) != 0 and o.job_id]
         report_failure(
             container="podcaster-video",
             error_type="VideoRunFailure",
@@ -1819,7 +2202,7 @@ def main() -> int:
             details={"failed_jobs": failed_jobs, "completed": completed, "skipped": skipped},
         )
 
-    return 1 if failed else 0
+    return outcomes_exit_code(outcomes)
 
 
 if __name__ == "__main__":

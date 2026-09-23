@@ -33,6 +33,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from podcaster.storage import bounded_delete_prefix
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from podcaster.storage import StorageBackend
 
@@ -215,26 +217,27 @@ class IntermediateStore:
     def _verify_size(self, name: str, expected: int) -> bool:
         """Verify the uploaded blob's size equals ``expected`` local bytes.
 
-        Returns True when sizes match.  When the backend cannot report a size
-        (older backend) or the probe itself errors, the check passes (best
-        effort) — the upload itself already succeeded.
+        Returns True only when the backend reports the exact expected size.
+        Missing or failing probes are unverifiable and therefore fail closed:
+        callers retain the local source and recompute rather than trusting a
+        checkpoint that could be partial.
         """
         getter = getattr(self._backend, "blob_size", None)
         if getter is None:
-            return True
+            return False
         try:
             actual = getter(self.blob_path(name))
         except Exception:
-            logger.debug(
-                "blob size probe failed job_id=%s name=%s",
+            logger.warning(
+                "blob size probe failed job_id=%s name=%s; checkpoint is untrusted",
                 self._job_id,
                 name,
                 exc_info=True,
             )
-            return True
+            return False
         if actual is None:
             return False
-        return int(actual) == int(expected)
+        return type(actual) is int and actual == expected
 
     def read_text(self, name: str) -> str | None:
         """Return the UTF-8 text of intermediate ``name`` (sidecar metadata)."""
@@ -288,7 +291,7 @@ class IntermediateStore:
         if self._backend is None:
             return 0
         try:
-            deleted = self._backend.delete_prefix(self.prefix())
+            deleted = bounded_delete_prefix(self._backend, self.prefix())
         except Exception:
             logger.warning(
                 "intermediate cleanup failed job_id=%s; lifecycle policy will reclaim",

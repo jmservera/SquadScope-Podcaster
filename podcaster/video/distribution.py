@@ -38,6 +38,7 @@ from podcaster.publication_state import (
     UPLOADED,
     outcome_from_spotify_terminal_state,
 )
+from podcaster.video.ownership import OwnershipError
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
 from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
 
@@ -58,7 +59,7 @@ _TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
 _OAUTH_IDENTIFIER_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 _TRANSIENT_TRANSPORT_ERRORS = (ConnectionError, TimeoutError, URLError)
 
-_MAX_RETRIES = 3
+_MAX_RETRIES = 1
 _RETRY_BACKOFF_BASE = 2.0
 
 # Minimum valid MP4 size (header alone is ~30 bytes, real video much larger)
@@ -96,12 +97,20 @@ class VideoDistributionConfig:
 
     spotify_rss_enabled: bool = False
     spotify_rss_feed_path: str = ""
+    spotify_rss_public_media_origin: str = ""
+    spotify_rss_public_feed_url: str = ""
 
     spotify_upload_enabled: bool = False
     spotify_video_publish_mode: str = "draft"
 
     blob_archive_enabled: bool = True
     dry_run: bool = False
+
+    def __post_init__(self) -> None:
+        privacy = str(self.youtube_privacy).strip().lower()
+        if privacy not in ("private", "unlisted"):
+            raise ValueError("YouTube uploads must start as private or unlisted drafts")
+        object.__setattr__(self, "youtube_privacy", privacy)
 
     @classmethod
     def from_env(cls) -> "VideoDistributionConfig":
@@ -117,6 +126,10 @@ class VideoDistributionConfig:
             youtube_required=os.environ.get("VIDEO_YOUTUBE_REQUIRED", "").lower() == "true",
             spotify_rss_enabled=os.environ.get("VIDEO_SPOTIFY_RSS_ENABLED", "").lower() == "true",
             spotify_rss_feed_path=os.environ.get("VIDEO_SPOTIFY_RSS_FEED_PATH", ""),
+            spotify_rss_public_media_origin=os.environ.get(
+                "VIDEO_SPOTIFY_RSS_PUBLIC_MEDIA_ORIGIN", ""
+            ),
+            spotify_rss_public_feed_url=os.environ.get("VIDEO_SPOTIFY_RSS_PUBLIC_FEED_URL", ""),
             spotify_upload_enabled=(
                 os.environ.get("VIDEO_SPOTIFY_UPLOAD_ENABLED", "").lower() == "true"
             ),
@@ -143,6 +156,8 @@ class VideoDistributionConfig:
             youtube_required=bool(payload.get("youtube_required", False)),
             spotify_rss_enabled=bool(payload.get("spotify_rss_enabled", False)),
             spotify_rss_feed_path=str(payload.get("spotify_rss_feed_path", "")),
+            spotify_rss_public_media_origin=str(payload.get("spotify_rss_public_media_origin", "")),
+            spotify_rss_public_feed_url=str(payload.get("spotify_rss_public_feed_url", "")),
             spotify_upload_enabled=bool(payload.get("spotify_upload_enabled", False)),
             spotify_video_publish_mode=(
                 "draft"
@@ -179,6 +194,7 @@ class DistributionResult:
     publish_run_id: str | None = None
     provider_outcomes: dict[str, str] = field(default_factory=dict)
     provider_records: dict[str, dict[str, Any]] = field(default_factory=dict)
+    outbox_id: str | None = None
     public_delivery_status: str = "pending"
 
     @property
@@ -265,6 +281,7 @@ class YouTubeDeliveryError(RuntimeError):
         http_status: int | None = None,
         oauth_error: str | None = None,
         oauth_error_subtype: str | None = None,
+        mutation_ambiguous: bool = False,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -273,6 +290,7 @@ class YouTubeDeliveryError(RuntimeError):
         self.http_status = http_status
         self.oauth_error = oauth_error
         self.oauth_error_subtype = oauth_error_subtype
+        self.mutation_ambiguous = mutation_ambiguous
 
     def as_sanitized_dict(self) -> dict[str, Any]:
         details: dict[str, Any] = {
@@ -286,6 +304,8 @@ class YouTubeDeliveryError(RuntimeError):
             details["oauth_error"] = self.oauth_error
         if self.oauth_error_subtype:
             details["oauth_error_subtype"] = self.oauth_error_subtype
+        if self.mutation_ambiguous:
+            details["mutation_ambiguous"] = True
         return details
 
 
@@ -539,24 +559,31 @@ def upload_to_youtube(
             data=metadata_bytes,
         )
     except _TRANSIENT_TRANSPORT_ERRORS as exc:
-        if raise_on_failure:
-            raise YouTubeDeliveryError(
-                "YouTube resumable upload init failed: network error",
-                code="youtube_upload_init_network_error",
-                stage="upload_init",
-                retryable=True,
-            ) from exc
-        logger.error("YouTube resumable upload init failed: network error")
-        return None, None
+        raise YouTubeDeliveryError(
+            "YouTube resumable upload initiation is ambiguous after network failure",
+            code="youtube_upload_init_ambiguous",
+            stage="upload_init",
+            retryable=False,
+            mutation_ambiguous=True,
+        ) from exc
 
     if status not in (200, 308):
         logger.error("YouTube resumable upload init failed: HTTP %s", status)
+        if _is_transient_http_status(status):
+            raise YouTubeDeliveryError(
+                f"YouTube resumable upload initiation is ambiguous: HTTP {status}",
+                code=f"youtube_upload_init_ambiguous_http_{status}",
+                stage="upload_init",
+                retryable=False,
+                http_status=status,
+                mutation_ambiguous=True,
+            )
         if raise_on_failure:
             raise YouTubeDeliveryError(
                 f"YouTube resumable upload init failed: HTTP {status}",
                 code=f"youtube_upload_init_http_{status}",
                 stage="upload_init",
-                retryable=_is_transient_http_status(status),
+                retryable=False,
                 http_status=status,
             )
         return None, None
@@ -636,22 +663,32 @@ def upload_to_youtube(
             break
 
     logger.error("YouTube upload failed after %d attempts", _MAX_RETRIES)
+    if last_status is not None and _is_transient_http_status(last_status):
+        raise YouTubeDeliveryError(
+            f"YouTube upload result is ambiguous: HTTP {last_status}",
+            code=f"youtube_upload_ambiguous_http_{last_status}",
+            stage="upload_put",
+            retryable=False,
+            http_status=last_status,
+            mutation_ambiguous=True,
+        )
+    if last_error is not None:
+        raise YouTubeDeliveryError(
+            "YouTube upload result is ambiguous after network failure",
+            code="youtube_upload_ambiguous_network_error",
+            stage="upload_put",
+            retryable=False,
+            mutation_ambiguous=True,
+        ) from last_error
     if raise_on_failure:
         if last_status is not None:
             raise YouTubeDeliveryError(
                 f"YouTube upload failed after retries: HTTP {last_status}",
                 code=f"youtube_upload_http_{last_status}",
                 stage="upload_put",
-                retryable=_is_transient_http_status(last_status),
+                retryable=False,
                 http_status=last_status,
             )
-        if last_error is not None:
-            raise YouTubeDeliveryError(
-                "YouTube upload failed after retries: network error",
-                code="youtube_upload_network_error",
-                stage="upload_put",
-                retryable=True,
-            ) from last_error
         raise YouTubeDeliveryError(
             "YouTube upload failed after retries",
             code="youtube_upload_failed",
@@ -918,10 +955,11 @@ def _try_chunked_upload(
     except _TRANSIENT_TRANSPORT_ERRORS as exc:
         if raise_on_failure:
             raise YouTubeDeliveryError(
-                "YouTube chunked upload failed: network error",
-                code="youtube_chunked_network_error",
+                "YouTube chunked upload result is ambiguous after network failure",
+                code="youtube_chunked_ambiguous_network_error",
                 stage="upload_chunked",
-                retryable=True,
+                retryable=False,
+                mutation_ambiguous=True,
             ) from exc
         logger.error("YouTube chunked upload failed: network error", exc_info=True)
         return None, None
@@ -939,21 +977,37 @@ def _try_chunked_upload(
         retryable = (http_status is not None and _is_transient_http_status(http_status)) or (
             "network error" in lowered
         )
+        mutation_ambiguous = retryable or any(
+            marker in lowered
+            for marker in (
+                "upload ended without a completion response",
+                "upload completed but response had no video id",
+            )
+        )
         code = (
-            f"youtube_chunked_http_{http_status}"
-            if http_status is not None
+            f"youtube_chunked_ambiguous_http_{http_status}"
+            if http_status is not None and mutation_ambiguous
             else (
-                "youtube_chunked_network_error"
-                if "network error" in lowered
-                else "youtube_chunked_failed"
+                f"youtube_chunked_http_{http_status}"
+                if http_status is not None
+                else (
+                    "youtube_chunked_ambiguous_network_error"
+                    if "network error" in lowered
+                    else (
+                        "youtube_chunked_ambiguous_result"
+                        if mutation_ambiguous
+                        else "youtube_chunked_failed"
+                    )
+                )
             )
         )
         raise YouTubeDeliveryError(
             "YouTube chunked upload failed",
             code=code,
             stage="upload_chunked",
-            retryable=retryable,
+            retryable=False if mutation_ambiguous else retryable,
             http_status=http_status,
+            mutation_ambiguous=mutation_ambiguous,
         )
     logger.error("YouTube chunked upload failed: %s", result.error)
     return None, None
@@ -1001,6 +1055,7 @@ def distribute_video(
     published: Mapping[str, Any] | None = None,
     on_published: Callable[[str, dict[str, Any]], None] | None = None,
     publish_run_id: str | None = None,
+    before_mutation: Callable[[str, str], None] | None = None,
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
@@ -1062,6 +1117,8 @@ def distribute_video(
 
     # 1. Archive to blob — always done first so the video is stored even when no
     #    listener-facing target succeeds (#337). Also provides the RSS enclosure URL.
+    if config.blob_archive_enabled and before_mutation is not None:
+        before_mutation("blob", "archive_upload")
     blob_path = archive_to_blob(video_path, job_id, storage=storage, config=config)
     result.blob_path = blob_path
 
@@ -1101,6 +1158,8 @@ def distribute_video(
         )
     elif youtube_active:
         try:
+            if before_mutation is not None:
+                before_mutation("youtube", "draft_upload")
             video_id, video_url = upload_to_youtube(
                 video_path,
                 title,
@@ -1157,6 +1216,21 @@ def distribute_video(
                     )
         except YouTubeDeliveryError as exc:
             result.errors.append(str(exc))
+            if exc.mutation_ambiguous:
+                result.provider_outcomes["youtube"] = PUBLICATION_UNKNOWN
+                result.provider_records["youtube"] = {
+                    "provider": "youtube",
+                    "outcome": PUBLICATION_UNKNOWN,
+                    "status": "unknown",
+                    "provider_id": None,
+                    "native_state": None,
+                    "transport_status": "ambiguous",
+                    "verification": "none",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "evidence_source": "youtube_mutation_ambiguity",
+                    "last_error_code": exc.code,
+                    "retry_blocked": True,
+                }
             if config.youtube_required:
                 youtube_required_failure = exc
             logger.error(
@@ -1165,6 +1239,8 @@ def distribute_video(
                 exc.code,
                 exc.retryable,
             )
+        except OwnershipError:
+            raise
         except Exception as exc:
             result.errors.append(f"YouTube upload error: {exc}")
             logger.error("YouTube distribution failed: %s", exc)
@@ -1193,6 +1269,11 @@ def distribute_video(
                 result.youtube_id,
                 playlist_token,
                 transport=transport,
+                before_mutation=(
+                    (lambda: before_mutation("youtube", "playlist_insert"))
+                    if before_mutation is not None
+                    else None
+                ),
             )
             result.youtube_playlist_id = playlist_result.playlist_id
             result.youtube_playlist_succeeded = playlist_result.succeeded
@@ -1290,6 +1371,8 @@ def distribute_video(
                     "retry_blocked": False,
                 }
             else:
+                if before_mutation is not None:
+                    before_mutation("spotify_rss", "feed_update")
                 rss_ok = update_spotify_rss(
                     enclosure_url,
                     title,
@@ -1378,6 +1461,8 @@ def distribute_video(
                 provider_id_field="episode_id",
             )
         else:
+            if before_mutation is not None:
+                before_mutation("spotify", "episode_upload")
             upload_result = upload_to_spotify_episode(
                 video_path,
                 spotify_anchor_id,

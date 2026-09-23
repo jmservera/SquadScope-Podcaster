@@ -7,7 +7,7 @@ import re
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from podcaster.job_logs import LogLevel, emit_log
 
@@ -317,6 +317,7 @@ def append_evidence(
     code: str | None = None,
     details: Mapping[str, Any] | None = None,
     at: datetime | None = None,
+    authorize: Callable[[], None] | None = None,
 ) -> PublicationEvidence | None:
     validate_outcome(outcome)
     effective_verification = (
@@ -348,6 +349,8 @@ def append_evidence(
     legacy_raw = storage.get_bytes(legacy_evidence_path(identity.accepted_job_id))
 
     def _apply(raw: bytes | None) -> bytes:
+        if authorize is not None:
+            authorize()
         document = _load_evidence(
             raw if raw is not None else legacy_raw,
             identity.accepted_job_id,
@@ -476,6 +479,8 @@ def emit_publication_signal(
     outcome: str,
     provider_artifact_id: str | int | None = None,
     code: str | None = None,
+    authorize: Callable[[], None] | None = None,
+    fail_closed: bool = False,
 ) -> object | None:
     validate_outcome(outcome)
     artifact_id = str(provider_artifact_id) if provider_artifact_id is not None else ""
@@ -503,4 +508,6 @@ def emit_publication_signal(
         stage="publication",
         context={key: value for key, value in context.items() if value is not None},
         dedupe_key="|".join((identity.accepted_job_id, platform, media_kind, outcome, artifact_id)),
+        authorize=authorize,
+        fail_closed=fail_closed,
     )

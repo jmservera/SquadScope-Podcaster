@@ -43,7 +43,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from podcaster.storage import StorageBackend
@@ -216,6 +216,8 @@ def emit_log(
     context: dict[str, Any] | None = None,
     at: datetime | None = None,
     dedupe_key: str | None = None,
+    authorize: Callable[[], None] | None = None,
+    fail_closed: bool = False,
 ) -> LogRecord | None:
     """Append a structured log record to the job's durable store.
 
@@ -230,6 +232,8 @@ def emit_log(
     captured: dict[str, Any] = {}
 
     def _apply(content: bytes | None) -> bytes:
+        if authorize is not None:
+            authorize()
         document = _load_document(content, job_id)
         records = document["records"]
         if dedupe_key is not None and any(
@@ -259,6 +263,8 @@ def emit_log(
     try:
         storage.update_bytes(logs_path(job_id), "application/json; charset=utf-8", _apply)
     except Exception:  # noqa: BLE001 - log emission must never mask the real work
+        if fail_closed:
+            raise
         logger.warning(
             "could not emit log job_id=%s level=%s", job_id, normalized_level, exc_info=True
         )
