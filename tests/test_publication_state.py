@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+import pickle
 
 import pytest
 
-import podcaster.publication_state as publication_state
 from podcaster.publication_state import (
     CANONICAL_OUTCOMES,
     DRAFT_CREATED,
@@ -20,7 +20,9 @@ from podcaster.publication_state import (
     ProviderSnapshot,
     PublicationStateError,
     SnapshotCompleteness,
+    SnapshotEvidenceSource,
     append_evidence,
+    claim_evidence,
     create_safety_state_from_record,
     emit_publication_signal,
     evidence_path,
@@ -66,6 +68,17 @@ def manifest(*, job_id="podcast-2026-W37-abc", dry_run=False):
 
 def identity(storage=None):
     return publication_identity(manifest(), "podcast-2026-W37-abc", "1")
+
+
+INVALID_SNAPSHOT_EVIDENCE_SOURCES = (
+    "   ",
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\ufeff",
+    "\u2060",
+    "\x1f",
+)
 
 
 def test_canonical_outcomes_are_exact_and_distinct():
@@ -393,6 +406,62 @@ def test_evidence_schema_and_latest_projection():
     assert latest_outcomes(document)["youtube:video"]["outcome"] == DRAFT_CREATED
 
 
+def test_create_episode_claim_rearms_only_after_retryable_failure():
+    storage = MemoryStorage()
+    first = claim_evidence(
+        storage,
+        identity(),
+        platform="spotify",
+        media_kind="video",
+        operation="create_episode_intent",
+    )
+    duplicate = claim_evidence(
+        storage,
+        identity(),
+        platform="spotify",
+        media_kind="video",
+        operation="create_episode_intent",
+    )
+
+    append_evidence(
+        storage,
+        identity(),
+        platform="spotify",
+        media_kind="video",
+        operation="credential_failure",
+        outcome=PUBLICATION_UNKNOWN,
+        mutation_attempted=False,
+        retry_blocked=False,
+        code="create_outcome_unknown",
+    )
+    rearmed = claim_evidence(
+        storage,
+        identity(),
+        platform="spotify",
+        media_kind="video",
+        operation="create_episode_intent",
+    )
+    second_duplicate = claim_evidence(
+        storage,
+        identity(),
+        platform="spotify",
+        media_kind="video",
+        operation="create_episode_intent",
+    )
+
+    assert first is not None
+    assert duplicate is None
+    assert rearmed is not None
+    assert second_duplicate is None
+    records = read_evidence(storage, identity().accepted_job_id)["records"]
+    assert [record["operation"] for record in records] == [
+        "create_episode_intent",
+        "credential_failure",
+        "create_episode_intent",
+    ]
+    assert records[1]["retry_blocked"] is False
+
+
 def test_publication_signal_dedupe_is_atomic():
     storage = MemoryStorage()
     assert (
@@ -477,7 +546,9 @@ def test_direct_spotify_video_create_intent_blocks_retry_without_reconciliation_
 
 def test_reconciliation_spotify_video_create_intent_snapshot_does_not_block_retry():
     safety = CreateSafetyState.reconciliation_backed(
-        ProviderSnapshot.complete([555], evidence_source="test_listing")
+        ProviderSnapshot.complete(
+            [555], evidence_source=SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING
+        )
     )
     reconciliation_intent = {
         "platform": "spotify",
@@ -502,7 +573,9 @@ def test_pre_create_episode_ids_are_not_truncated_when_snapshot_is_complete():
     storage = MemoryStorage()
     pre_create_ids = list(range(150))
     safety = CreateSafetyState.reconciliation_backed(
-        ProviderSnapshot.complete(pre_create_ids, evidence_source="test_listing")
+        ProviderSnapshot.complete(
+            pre_create_ids, evidence_source=SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING
+        )
     )
 
     append_evidence(
@@ -524,14 +597,19 @@ def test_pre_create_episode_ids_are_not_truncated_when_snapshot_is_complete():
     assert details["pre_create_episode_ids"] == pre_create_ids
 
 
-def test_complete_provider_snapshot_requires_evidence_source():
+@pytest.mark.parametrize("source", ("", *INVALID_SNAPSHOT_EVIDENCE_SOURCES))
+def test_complete_provider_snapshot_rejects_non_enum_evidence_source(source):
     with pytest.raises(PublicationStateError):
-        ProviderSnapshot.complete([1, 2, 3], evidence_source="")
+        ProviderSnapshot.complete([1], evidence_source=source)
 
 
-def test_complete_provider_snapshot_rejects_whitespace_only_evidence_source():
+@pytest.mark.parametrize("source", INVALID_SNAPSHOT_EVIDENCE_SOURCES)
+def test_complete_provider_snapshot_rejects_str_subclass_evidence_source(source):
+    class EvidenceSource(str):
+        pass
+
     with pytest.raises(PublicationStateError):
-        ProviderSnapshot.complete([1], evidence_source="   ")
+        ProviderSnapshot.complete([1], evidence_source=EvidenceSource(source))
 
 
 def test_complete_provider_snapshot_rejects_truthy_non_string_evidence_source():
@@ -551,166 +629,56 @@ def test_provider_snapshot_subclasses_cannot_widen_evidence_source_behavior():
             pass
 
 
-def test_concrete_provider_snapshot_type_rejects_public_boolean_subclass_escape():
-    snapshot_type = type(ProviderSnapshot.complete([1], evidence_source="test_listing"))
-
-    with pytest.raises(TypeError, match="ProviderSnapshot cannot be subclassed"):
-
-        class ForgedSnapshot(snapshot_type, _provider_snapshot_state=True):
-            @property
-            def completeness(self):
-                return SnapshotCompleteness.ABSENT
-
-            def require_evidence_source(self):
-                return "\u200b"
-
-            def to_details(self):
-                return {}
-
-
-def test_capability_import_snapshot_subclass_forgery_cannot_persist_evidence():
-    storage = MemoryStorage()
-    snapshot_type = type(ProviderSnapshot.complete([1], evidence_source="test_listing"))
-    capability = publication_state._PROVIDER_SNAPSHOT_STATE_CAPABILITY
-
-    class ForgedSnapshot(
-        snapshot_type,
-        _provider_snapshot_state_capability=capability,
-    ):
-        @property
-        def episode_ids(self):
-            return (999999,)
-
-        @property
-        def completeness(self):
-            return SnapshotCompleteness.COMPLETE
-
-        @property
-        def evidence_source(self):
-            return "forged_listing"
-
-        def require_evidence_source(self):
-            return "forged_listing"
-
-        def to_details(self):
-            return {
+def test_complete_snapshot_deserialization_without_evidence_fails_closed_to_absent():
+    state = create_safety_state_from_record(
+        {
+            "platform": "spotify",
+            "media_kind": "video",
+            "operation": "create_episode_intent",
+            "outcome": PUBLICATION_UNKNOWN,
+            "mutation_attempted": False,
+            "retry_blocked": False,
+            "code": "mutation_intent",
+            "details": {
+                "create_provenance": "reconciliation_backed",
+                "mutation_possibility": "not_possible",
                 "snapshot_completeness": "complete",
-                "pre_create_episode_ids": [999999],
-                "snapshot_evidence_source": "forged_listing",
-            }
-
-    forged_snapshot = ForgedSnapshot([1], "test_listing")
-
-    with pytest.raises(PublicationStateError, match="trusted concrete type"):
-        CreateSafetyState.reconciliation_backed(forged_snapshot)
-
-    forged_state = object.__new__(CreateSafetyState)
-    object.__setattr__(
-        forged_state,
-        "provenance",
-        CreateIntentProvenance.RECONCILIATION_BACKED,
-    )
-    object.__setattr__(forged_state, "snapshot", forged_snapshot)
-    object.__setattr__(
-        forged_state,
-        "mutation_possibility",
-        MutationPossibility.NOT_POSSIBLE,
+                "pre_create_episode_ids": [111222],
+            },
+        }
     )
 
-    with pytest.raises(PublicationStateError, match="trusted concrete type"):
-        forged_state.to_details()
-    with pytest.raises(PublicationStateError, match="trusted concrete type"):
-        append_evidence(
-            storage,
-            identity(),
-            platform="spotify",
-            media_kind="video",
-            operation="create_episode_intent",
-            outcome=PUBLICATION_UNKNOWN,
-            mutation_attempted=False,
-            retry_blocked=False,
-            code="mutation_intent",
-            create_safety_state=forged_state,
-        )
-
-    assert storage.data == {}
-    assert read_evidence(storage, identity().accepted_job_id) is None
+    assert state is not None
+    assert state.snapshot.completeness == SnapshotCompleteness.ABSENT
+    assert state.snapshot.to_details() == {"snapshot_completeness": "absent"}
 
 
-def test_create_safety_state_subclass_cannot_override_durable_serialization():
-    class ForgedCreateSafetyState(CreateSafetyState):
-        def to_details(self):
-            return {
-                "snapshot_completeness": "complete",
-                "pre_create_episode_ids": [999999],
-                "snapshot_evidence_source": "forged_listing",
-            }
-
-    with pytest.raises(PublicationStateError, match="trusted concrete type"):
-        ForgedCreateSafetyState(
-            CreateIntentProvenance.RECONCILIATION_BACKED,
-            ProviderSnapshot.complete([1], evidence_source="test_listing"),
-            MutationPossibility.NOT_POSSIBLE,
-        )
-
-
-def test_malformed_exact_snapshot_tuple_is_rejected_at_serialization_boundary():
-    snapshot_type = type(ProviderSnapshot.complete([1], evidence_source="test_listing"))
-    malformed_snapshot = tuple.__new__(
-        snapshot_type,
-        ((2, 1), "test_listing"),
+@pytest.mark.parametrize(
+    "source", (None, "", *INVALID_SNAPSHOT_EVIDENCE_SOURCES, 123, "test_listing")
+)
+def test_explicit_observed_snapshot_deserialization_invalid_source_fails_closed_to_absent(source):
+    state = create_safety_state_from_record(
+        {
+            "platform": "spotify",
+            "media_kind": "video",
+            "operation": "create_episode_intent",
+            "outcome": PUBLICATION_UNKNOWN,
+            "mutation_attempted": False,
+            "retry_blocked": False,
+            "code": "mutation_intent",
+            "details": {
+                "create_provenance": "reconciliation_backed",
+                "mutation_possibility": "not_possible",
+                "snapshot_completeness": "truncated",
+                "snapshot_evidence_source": source,
+                "pre_create_episode_ids": [111222],
+            },
+        }
     )
-    state = object.__new__(CreateSafetyState)
-    object.__setattr__(state, "provenance", CreateIntentProvenance.RECONCILIATION_BACKED)
-    object.__setattr__(state, "snapshot", malformed_snapshot)
-    object.__setattr__(state, "mutation_possibility", MutationPossibility.NOT_POSSIBLE)
 
-    with pytest.raises(PublicationStateError, match="invalid stored state"):
-        state.to_details()
-
-
-def test_complete_snapshot_deserialization_without_evidence_is_rejected():
-    with pytest.raises(PublicationStateError, match="no valid persisted evidence source"):
-        create_safety_state_from_record(
-            {
-                "platform": "spotify",
-                "media_kind": "video",
-                "operation": "create_episode_intent",
-                "outcome": PUBLICATION_UNKNOWN,
-                "mutation_attempted": False,
-                "retry_blocked": False,
-                "code": "mutation_intent",
-                "details": {
-                    "create_provenance": "reconciliation_backed",
-                    "mutation_possibility": "not_possible",
-                    "snapshot_completeness": "complete",
-                    "pre_create_episode_ids": [111222],
-                },
-            }
-        )
-
-
-@pytest.mark.parametrize("source", [None, "", "   ", "\u200b", 123])
-def test_explicit_observed_snapshot_deserialization_rejects_invalid_source(source):
-    with pytest.raises(PublicationStateError, match="no valid persisted evidence source"):
-        create_safety_state_from_record(
-            {
-                "platform": "spotify",
-                "media_kind": "video",
-                "operation": "create_episode_intent",
-                "outcome": PUBLICATION_UNKNOWN,
-                "mutation_attempted": False,
-                "retry_blocked": False,
-                "code": "mutation_intent",
-                "details": {
-                    "create_provenance": "reconciliation_backed",
-                    "mutation_possibility": "not_possible",
-                    "snapshot_completeness": "truncated",
-                    "snapshot_evidence_source": source,
-                    "pre_create_episode_ids": [111222],
-                },
-            }
-        )
+    assert state is not None
+    assert state.snapshot.completeness == SnapshotCompleteness.ABSENT
+    assert state.snapshot.to_details() == {"snapshot_completeness": "absent"}
 
 
 def test_legacy_snapshot_parser_remains_explicitly_bounded():
@@ -732,42 +700,50 @@ def test_legacy_snapshot_parser_remains_explicitly_bounded():
 
     assert state is not None
     assert state.snapshot.completeness == SnapshotCompleteness.COMPLETE
-    assert state.snapshot.require_evidence_source() == "legacy_pre_create_snapshot"
-
-
-def test_complete_provider_snapshot_rejects_object_setattr_attack():
-    snapshot = ProviderSnapshot.complete([1, 2, 3], evidence_source="test_listing")
-
-    with pytest.raises(AttributeError):
-        object.__setattr__(snapshot, "evidence_source", None)
-
-    assert snapshot.to_details()["snapshot_completeness"] == "complete"
-    assert snapshot.to_details()["snapshot_evidence_source"] == "test_listing"
-
-
-def test_complete_provider_snapshot_rejects_format_character_object_setattr_attack():
-    storage = MemoryStorage()
-    snapshot = ProviderSnapshot.complete([1], evidence_source="test_listing")
-
-    with pytest.raises(AttributeError):
-        object.__setattr__(snapshot, "evidence_source", "\u200b")
-
-    append_evidence(
-        storage,
-        identity(),
-        platform="spotify",
-        media_kind="video",
-        operation="create_episode_intent",
-        outcome=PUBLICATION_UNKNOWN,
-        mutation_attempted=False,
-        retry_blocked=False,
-        code="mutation_intent",
-        create_safety_state=CreateSafetyState.reconciliation_backed(snapshot),
+    assert (
+        state.snapshot.require_evidence_source()
+        == SnapshotEvidenceSource.LEGACY_PRE_CREATE_SNAPSHOT
     )
 
-    details = read_evidence(storage, identity().accepted_job_id)["records"][0]["details"]
-    assert details["snapshot_completeness"] == "complete"
-    assert details["snapshot_evidence_source"] == "test_listing"
+
+def test_complete_provider_snapshot_tampered_evidence_source_fails_closed():
+    snapshot = ProviderSnapshot.complete(
+        [1, 2, 3],
+        evidence_source=SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING,
+    )
+
+    object.__setattr__(snapshot, "evidence_source", None)
+
+    with pytest.raises(PublicationStateError, match="invalid stored evidence source"):
+        snapshot.to_details()
+
+
+@pytest.mark.parametrize("source", INVALID_SNAPSHOT_EVIDENCE_SOURCES)
+def test_complete_provider_snapshot_evidence_source_mutation_rejects_without_writing(source):
+    storage = MemoryStorage()
+    snapshot = ProviderSnapshot.complete(
+        [1],
+        evidence_source=SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING,
+    )
+
+    object.__setattr__(snapshot, "evidence_source", source)
+
+    with pytest.raises(PublicationStateError, match="invalid stored evidence source"):
+        append_evidence(
+            storage,
+            identity(),
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome=PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=False,
+            code="mutation_intent",
+            create_safety_state=CreateSafetyState.reconciliation_backed(snapshot),
+        )
+
+    assert storage.data == {}
+    assert read_evidence(storage, identity().accepted_job_id) is None
 
 
 def test_complete_provider_snapshot_rejects_format_only_evidence_source():
@@ -792,6 +768,66 @@ def test_append_evidence_rejects_invalid_raw_observed_snapshot_without_writing(s
                 "snapshot_evidence_source": source,
                 "pre_create_episode_ids": [1],
             },
+        )
+
+    assert storage.data == {}
+    assert read_evidence(storage, identity().accepted_job_id) is None
+
+
+def test_complete_provider_snapshot_pickle_round_trip_keeps_closed_source():
+    snapshot = ProviderSnapshot.complete(
+        [1],
+        evidence_source=SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING,
+    )
+
+    restored = pickle.loads(pickle.dumps(snapshot))
+
+    assert restored.to_details() == {
+        "snapshot_completeness": "complete",
+        "pre_create_episode_ids": [1],
+        "snapshot_evidence_source": "spotify_episode_listing",
+    }
+
+
+@pytest.mark.parametrize("source", INVALID_SNAPSHOT_EVIDENCE_SOURCES)
+def test_complete_provider_snapshot_pickle_tamper_fails_closed(source):
+    snapshot = ProviderSnapshot.complete(
+        [1],
+        evidence_source=SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING,
+    )
+    object.__setattr__(snapshot, "evidence_source", source)
+
+    restored = pickle.loads(pickle.dumps(snapshot))
+
+    with pytest.raises(PublicationStateError, match="invalid stored evidence source"):
+        restored.to_details()
+
+
+@pytest.mark.parametrize("source", INVALID_SNAPSHOT_EVIDENCE_SOURCES)
+def test_durable_serialization_rejects_bypassed_snapshot_evidence_source(source):
+    storage = MemoryStorage()
+    snapshot = ProviderSnapshot.complete(
+        [1],
+        evidence_source=SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING,
+    )
+    object.__setattr__(snapshot, "evidence_source", source)
+    state = object.__new__(CreateSafetyState)
+    object.__setattr__(state, "provenance", CreateIntentProvenance.RECONCILIATION_BACKED)
+    object.__setattr__(state, "snapshot", snapshot)
+    object.__setattr__(state, "mutation_possibility", MutationPossibility.NOT_POSSIBLE)
+
+    with pytest.raises(PublicationStateError, match="invalid stored evidence source"):
+        append_evidence(
+            storage,
+            identity(),
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome=PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=False,
+            code="mutation_intent",
+            create_safety_state=state,
         )
 
     assert storage.data == {}

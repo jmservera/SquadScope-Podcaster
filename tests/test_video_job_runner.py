@@ -17,6 +17,7 @@ from podcaster.publication_state import (
     CreateSafetyState,
     ProviderSnapshot,
     PublicationIdentity,
+    SnapshotEvidenceSource,
     append_evidence,
 )
 from podcaster.queue import QueueMessage
@@ -914,7 +915,10 @@ class TestRunVideoGeneration:
             retry_blocked=False,
             code="mutation_intent",
             create_safety_state=CreateSafetyState.reconciliation_backed(
-                ProviderSnapshot.complete([555], evidence_source="legacy_pre_create_snapshot")
+                ProviderSnapshot.complete(
+                    [555],
+                    evidence_source=SnapshotEvidenceSource.LEGACY_PRE_CREATE_SNAPSHOT,
+                )
             ),
         )
         mock_record.return_value = MagicMock(recorded=[])
@@ -1188,8 +1192,14 @@ class TestRunVideoGeneration:
             operation="create_episode_intent",
             outcome="publication_unknown",
             mutation_attempted=False,
-            retry_blocked=True,
+            retry_blocked=False,
             code="mutation_intent",
+            create_safety_state=CreateSafetyState.reconciliation_backed(
+                ProviderSnapshot.complete(
+                    [555],
+                    evidence_source=SnapshotEvidenceSource.LEGACY_PRE_CREATE_SNAPSHOT,
+                )
+            ),
         )
         append_evidence(
             storage,

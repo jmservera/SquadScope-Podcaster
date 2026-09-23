@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, final
 
 from podcaster.job_logs import LogLevel, emit_log
 
@@ -62,7 +61,6 @@ _CREATE_SAFETY_DETAIL_KEYS = frozenset(
         "snapshot_evidence_source",
     }
 )
-_PROVIDER_SNAPSHOT_STATE_CAPABILITY = object()
 
 
 class PublicationStateError(ValueError):
@@ -123,75 +121,87 @@ class SnapshotCompleteness(str, Enum):
     COMPLETE = "complete"
 
 
+class SnapshotEvidenceSource(str, Enum):
+    SPOTIFY_EPISODE_LISTING = "spotify_episode_listing"
+    LEGACY_PRE_CREATE_SNAPSHOT = "legacy_pre_create_snapshot"
+
+
 class MutationPossibility(str, Enum):
     NOT_POSSIBLE = "not_possible"
     POSSIBLE = "possible"
     CONFIRMED = "confirmed"
 
 
-def _normalize_snapshot_evidence_source(value: Any) -> str | None:
+def _snapshot_evidence_source(value: Any) -> SnapshotEvidenceSource | None:
+    return value if type(value) is SnapshotEvidenceSource else None
+
+
+def _snapshot_evidence_source_from_record(value: Any) -> SnapshotEvidenceSource | None:
     if not isinstance(value, str):
         return None
-    normalized = value.strip()
-    if not normalized:
+    try:
+        return SnapshotEvidenceSource(value)
+    except ValueError:
         return None
-    if not any(
-        not character.isspace() and not unicodedata.category(character).startswith("C")
-        for character in normalized
-    ):
-        return None
-    return normalized
 
 
+@final
+@dataclass(frozen=True, init=False)
 class ProviderSnapshot:
-    """Immutable provider snapshot with state-specific tuple-backed values."""
+    """Closed provider snapshot; observed evidence sources are enum-only."""
 
-    __slots__ = ()
+    episode_ids: tuple[int, ...]
+    _completeness: SnapshotCompleteness
+    evidence_source: SnapshotEvidenceSource | None = None
 
-    def __init_subclass__(
-        cls,
-        *,
-        _provider_snapshot_state_capability: object | None = None,
-        **kwargs: Any,
-    ) -> None:
-        if _provider_snapshot_state_capability is not _PROVIDER_SNAPSHOT_STATE_CAPABILITY:
-            raise TypeError("ProviderSnapshot cannot be subclassed")
-        super().__init_subclass__(**kwargs)
-
-    def __new__(
-        cls,
-        episode_ids: tuple[int, ...],
-        completeness: SnapshotCompleteness,
-        evidence_source: str | None = None,
-    ) -> "ProviderSnapshot":
-        if cls is not ProviderSnapshot:
-            return super().__new__(cls)
-        if not isinstance(completeness, SnapshotCompleteness):
-            raise PublicationStateError("snapshot completeness must be explicit")
-        if completeness == SnapshotCompleteness.ABSENT:
-            return _AbsentProviderSnapshot(episode_ids)
-        if completeness == SnapshotCompleteness.TRUNCATED:
-            return _TruncatedProviderSnapshot(episode_ids, evidence_source)
-        return _CompleteProviderSnapshot(episode_ids, evidence_source)
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        raise TypeError("ProviderSnapshot cannot be subclassed")
 
     def __init__(
         self,
         episode_ids: tuple[int, ...],
         completeness: SnapshotCompleteness,
-        evidence_source: str | None = None,
+        evidence_source: SnapshotEvidenceSource | None = None,
     ) -> None:
-        pass
-
-    @property
-    def episode_ids(self) -> tuple[int, ...]:
-        raise NotImplementedError
+        object.__setattr__(self, "episode_ids", episode_ids)
+        object.__setattr__(self, "_completeness", completeness)
+        object.__setattr__(self, "evidence_source", evidence_source)
+        self.__post_init__()
 
     @property
     def completeness(self) -> SnapshotCompleteness:
-        raise NotImplementedError
+        completeness, _, _ = _trusted_provider_snapshot_values(self)
+        return completeness
 
-    def require_evidence_source(self) -> str:
-        raise PublicationStateError("absent snapshot has no evidence source")
+    def __post_init__(self) -> None:
+        if type(self._completeness) is not SnapshotCompleteness:
+            raise PublicationStateError("snapshot completeness must be explicit")
+        normalized_ids: list[int] = []
+        for raw_id in self.episode_ids:
+            if isinstance(raw_id, bool):
+                raise PublicationStateError("snapshot episode id cannot be a boolean")
+            try:
+                normalized_ids.append(int(raw_id))
+            except (TypeError, ValueError) as exc:
+                raise PublicationStateError("snapshot episode id is unreadable") from exc
+        unique_sorted_ids = tuple(sorted(set(normalized_ids)))
+        object.__setattr__(self, "episode_ids", unique_sorted_ids)
+        normalized_source = _snapshot_evidence_source(self.evidence_source)
+        object.__setattr__(self, "evidence_source", normalized_source)
+        if len(unique_sorted_ids) != len(normalized_ids):
+            raise PublicationStateError("snapshot episode ids must be unique")
+        if self._completeness == SnapshotCompleteness.ABSENT and unique_sorted_ids:
+            raise PublicationStateError("absent snapshot cannot carry episode ids")
+        if (
+            self._completeness
+            in (
+                SnapshotCompleteness.TRUNCATED,
+                SnapshotCompleteness.COMPLETE,
+            )
+            and normalized_source is None
+        ):
+            raise PublicationStateError("observed snapshot requires an evidence source")
+        _trusted_provider_snapshot_values(self)
 
     @classmethod
     def absent(cls) -> "ProviderSnapshot":
@@ -202,7 +212,7 @@ class ProviderSnapshot:
         cls,
         episode_ids: set[int] | list[int] | tuple[int, ...],
         *,
-        evidence_source: str,
+        evidence_source: SnapshotEvidenceSource,
     ) -> "ProviderSnapshot":
         return cls(tuple(episode_ids), SnapshotCompleteness.TRUNCATED, evidence_source)
 
@@ -211,156 +221,53 @@ class ProviderSnapshot:
         cls,
         episode_ids: set[int] | list[int] | tuple[int, ...],
         *,
-        evidence_source: str,
+        evidence_source: SnapshotEvidenceSource,
     ) -> "ProviderSnapshot":
         return cls(tuple(episode_ids), SnapshotCompleteness.COMPLETE, evidence_source)
 
+    def require_evidence_source(self) -> SnapshotEvidenceSource:
+        source = _snapshot_evidence_source(self.evidence_source)
+        if source is None:
+            raise PublicationStateError("absent snapshot has no evidence source")
+        return source
+
     def to_details(self) -> dict[str, Any]:
-        return _provider_snapshot_to_details(self)
-
-
-def _normalize_snapshot_ids(raw_ids: Any) -> tuple[int, ...]:
-    try:
-        values = tuple(raw_ids)
-    except TypeError as exc:
-        raise PublicationStateError("snapshot episode ids are unreadable") from exc
-    normalized_ids: list[int] = []
-    for raw_id in values:
-        if isinstance(raw_id, bool):
-            raise PublicationStateError("snapshot episode id cannot be a boolean")
-        try:
-            normalized_ids.append(int(raw_id))
-        except (TypeError, ValueError) as exc:
-            raise PublicationStateError("snapshot episode id is unreadable") from exc
-    unique_sorted_ids = tuple(sorted(set(normalized_ids)))
-    if len(unique_sorted_ids) != len(normalized_ids):
-        raise PublicationStateError("snapshot episode ids must be unique")
-    return unique_sorted_ids
-
-
-class _AbsentProviderSnapshot(
-    tuple,
-    ProviderSnapshot,
-    _provider_snapshot_state_capability=_PROVIDER_SNAPSHOT_STATE_CAPABILITY,
-):
-    __slots__ = ()
-
-    def __new__(cls, episode_ids: Any = ()) -> "_AbsentProviderSnapshot":
-        normalized_ids = _normalize_snapshot_ids(episode_ids)
-        if normalized_ids:
-            raise PublicationStateError("absent snapshot cannot carry episode ids")
-        return tuple.__new__(cls)
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    @property
-    def episode_ids(self) -> tuple[int, ...]:
-        return ()
-
-    @property
-    def completeness(self) -> SnapshotCompleteness:
-        return SnapshotCompleteness.ABSENT
-
-
-class _ObservedProviderSnapshot(
-    tuple,
-    ProviderSnapshot,
-    _provider_snapshot_state_capability=_PROVIDER_SNAPSHOT_STATE_CAPABILITY,
-):
-    __slots__ = ()
-
-    def __new__(
-        cls,
-        episode_ids: Any,
-        evidence_source: Any,
-    ) -> "_ObservedProviderSnapshot":
-        normalized_source = _normalize_snapshot_evidence_source(evidence_source)
-        if normalized_source is None:
-            raise PublicationStateError("observed snapshot requires an evidence source")
-        return tuple.__new__(
-            cls,
-            (_normalize_snapshot_ids(episode_ids), normalized_source),
-        )
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    @property
-    def episode_ids(self) -> tuple[int, ...]:
-        return self[0]
-
-    @property
-    def evidence_source(self) -> str:
-        return self[1]
-
-    def require_evidence_source(self) -> str:
-        return self.evidence_source
-
-
-class _TruncatedProviderSnapshot(
-    _ObservedProviderSnapshot,
-    _provider_snapshot_state_capability=_PROVIDER_SNAPSHOT_STATE_CAPABILITY,
-):
-    __slots__ = ()
-
-    @property
-    def completeness(self) -> SnapshotCompleteness:
-        return SnapshotCompleteness.TRUNCATED
-
-
-class _CompleteProviderSnapshot(
-    _ObservedProviderSnapshot,
-    _provider_snapshot_state_capability=_PROVIDER_SNAPSHOT_STATE_CAPABILITY,
-):
-    __slots__ = ()
-
-    @property
-    def completeness(self) -> SnapshotCompleteness:
-        return SnapshotCompleteness.COMPLETE
+        completeness, episode_ids, evidence_source = _trusted_provider_snapshot_values(self)
+        details: dict[str, Any] = {
+            "snapshot_completeness": completeness.value,
+        }
+        if episode_ids:
+            details["pre_create_episode_ids"] = list(episode_ids)
+        elif completeness != SnapshotCompleteness.ABSENT:
+            details["pre_create_episode_ids"] = []
+        if evidence_source is not None and completeness != SnapshotCompleteness.ABSENT:
+            details["snapshot_evidence_source"] = evidence_source.value
+        return details
 
 
 def _trusted_provider_snapshot_values(
     snapshot: ProviderSnapshot,
-) -> tuple[SnapshotCompleteness, tuple[int, ...], str | None]:
-    snapshot_type = type(snapshot)
-    if snapshot_type is _AbsentProviderSnapshot:
-        if tuple.__len__(snapshot) != 0:
-            raise PublicationStateError("absent snapshot has invalid stored state")
-        return SnapshotCompleteness.ABSENT, (), None
-    if snapshot_type is _TruncatedProviderSnapshot:
-        completeness = SnapshotCompleteness.TRUNCATED
-    elif snapshot_type is _CompleteProviderSnapshot:
-        completeness = SnapshotCompleteness.COMPLETE
-    else:
-        raise PublicationStateError("snapshot must use a trusted concrete type")
-
-    if tuple.__len__(snapshot) != 2:
-        raise PublicationStateError("observed snapshot has invalid stored state")
-    episode_ids = tuple.__getitem__(snapshot, 0)
-    evidence_source = tuple.__getitem__(snapshot, 1)
-    if (
-        type(episode_ids) is not tuple
-        or any(type(episode_id) is not int for episode_id in episode_ids)
-        or tuple(sorted(set(episode_ids))) != episode_ids
+) -> tuple[SnapshotCompleteness, tuple[int, ...], SnapshotEvidenceSource | None]:
+    if type(snapshot) is not ProviderSnapshot:
+        raise PublicationStateError("snapshot must use the trusted concrete type")
+    completeness = object.__getattribute__(snapshot, "_completeness")
+    episode_ids = object.__getattribute__(snapshot, "episode_ids")
+    evidence_source = object.__getattribute__(snapshot, "evidence_source")
+    if type(completeness) is not SnapshotCompleteness:
+        raise PublicationStateError("snapshot completeness has invalid stored state")
+    if type(episode_ids) is not tuple or any(
+        type(episode_id) is not int for episode_id in episode_ids
     ):
         raise PublicationStateError("snapshot episode ids have invalid stored state")
-    if (
-        type(evidence_source) is not str
-        or _normalize_snapshot_evidence_source(evidence_source) != evidence_source
-    ):
-        raise PublicationStateError("snapshot evidence source has invalid stored state")
+    if tuple(sorted(set(episode_ids))) != episode_ids:
+        raise PublicationStateError("snapshot episode ids have invalid stored state")
+    if completeness == SnapshotCompleteness.ABSENT:
+        if episode_ids or evidence_source is not None:
+            raise PublicationStateError("absent snapshot has invalid stored state")
+        return completeness, episode_ids, None
+    if type(evidence_source) is not SnapshotEvidenceSource:
+        raise PublicationStateError("observed snapshot has invalid stored evidence source")
     return completeness, episode_ids, evidence_source
-
-
-def _provider_snapshot_to_details(snapshot: ProviderSnapshot) -> dict[str, Any]:
-    completeness, episode_ids, evidence_source = _trusted_provider_snapshot_values(snapshot)
-    details: dict[str, Any] = {"snapshot_completeness": completeness.value}
-    if episode_ids or completeness != SnapshotCompleteness.ABSENT:
-        details["pre_create_episode_ids"] = list(episode_ids)
-    if evidence_source is not None:
-        details["snapshot_evidence_source"] = evidence_source
-    return details
 
 
 @dataclass(frozen=True)
@@ -415,24 +322,30 @@ class CreateSafetyState:
         )
 
     def to_details(self) -> dict[str, Any]:
-        return _create_safety_state_to_details(self)
+        if type(self) is not CreateSafetyState:
+            raise PublicationStateError("create safety state must use the trusted concrete type")
+        provenance = object.__getattribute__(self, "provenance")
+        snapshot = object.__getattribute__(self, "snapshot")
+        mutation_possibility = object.__getattribute__(self, "mutation_possibility")
+        if type(provenance) is not CreateIntentProvenance:
+            raise PublicationStateError("create provenance must be explicit")
+        if type(mutation_possibility) is not MutationPossibility:
+            raise PublicationStateError("mutation possibility must be explicit")
+        return {
+            "create_provenance": provenance.value,
+            "mutation_possibility": mutation_possibility.value,
+            **_provider_snapshot_to_details(snapshot),
+        }
 
 
-def _create_safety_state_to_details(state: CreateSafetyState) -> dict[str, Any]:
-    if type(state) is not CreateSafetyState:
-        raise PublicationStateError("create safety state must use the trusted concrete type")
-    provenance = object.__getattribute__(state, "provenance")
-    snapshot = object.__getattribute__(state, "snapshot")
-    mutation_possibility = object.__getattribute__(state, "mutation_possibility")
-    if type(provenance) is not CreateIntentProvenance:
-        raise PublicationStateError("create provenance must be explicit")
-    if type(mutation_possibility) is not MutationPossibility:
-        raise PublicationStateError("mutation possibility must be explicit")
-    return {
-        "create_provenance": provenance.value,
-        "mutation_possibility": mutation_possibility.value,
-        **_provider_snapshot_to_details(snapshot),
-    }
+def _provider_snapshot_to_details(snapshot: ProviderSnapshot) -> dict[str, Any]:
+    completeness, episode_ids, evidence_source = _trusted_provider_snapshot_values(snapshot)
+    details: dict[str, Any] = {"snapshot_completeness": completeness.value}
+    if episode_ids or completeness != SnapshotCompleteness.ABSENT:
+        details["pre_create_episode_ids"] = list(episode_ids)
+    if evidence_source is not None and completeness != SnapshotCompleteness.ABSENT:
+        details["snapshot_evidence_source"] = evidence_source.value
+    return details
 
 
 def _parse_snapshot_ids(raw_ids: Any) -> tuple[int, ...]:
@@ -447,18 +360,6 @@ def _parse_snapshot_ids(raw_ids: Any) -> tuple[int, ...]:
         except (TypeError, ValueError) as exc:
             raise PublicationStateError("create safety evidence contains an unreadable id") from exc
     return tuple(ids)
-
-
-def _legacy_snapshot_from_details(details: Mapping[str, Any]) -> ProviderSnapshot:
-    raw_complete = details.get("pre_create_snapshot_complete")
-    if not isinstance(raw_complete, bool):
-        raise PublicationStateError(
-            "legacy create safety evidence has no boolean snapshot completeness"
-        )
-    ids = _parse_snapshot_ids(details.get("pre_create_episode_ids"))
-    if raw_complete:
-        return ProviderSnapshot.complete(ids, evidence_source="legacy_pre_create_snapshot")
-    return ProviderSnapshot.truncated(ids, evidence_source="legacy_pre_create_snapshot")
 
 
 def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetyState | None:
@@ -494,20 +395,36 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
         if completeness == SnapshotCompleteness.ABSENT:
             snapshot = ProviderSnapshot.absent()
         else:
-            evidence_source = _normalize_snapshot_evidence_source(
+            evidence_source = _snapshot_evidence_source_from_record(
                 details.get("snapshot_evidence_source")
             )
-            if evidence_source is None:
-                raise PublicationStateError(
-                    "explicit observed snapshot has no valid persisted evidence source"
+            snapshot = (
+                ProviderSnapshot(
+                    _parse_snapshot_ids(details.get("pre_create_episode_ids")),
+                    completeness,
+                    evidence_source,
                 )
-            snapshot = ProviderSnapshot(
-                _parse_snapshot_ids(details.get("pre_create_episode_ids")),
-                completeness,
-                evidence_source,
+                if evidence_source
+                else ProviderSnapshot.absent()
             )
     elif "pre_create_snapshot_complete" in details:
-        snapshot = _legacy_snapshot_from_details(details)
+        raw_complete = details.get("pre_create_snapshot_complete")
+        if not isinstance(raw_complete, bool):
+            raise PublicationStateError(
+                "legacy create safety evidence has no boolean snapshot completeness"
+            )
+        ids = _parse_snapshot_ids(details.get("pre_create_episode_ids"))
+        snapshot = (
+            ProviderSnapshot.complete(
+                ids,
+                evidence_source=SnapshotEvidenceSource.LEGACY_PRE_CREATE_SNAPSHOT,
+            )
+            if raw_complete
+            else ProviderSnapshot.truncated(
+                ids,
+                evidence_source=SnapshotEvidenceSource.LEGACY_PRE_CREATE_SNAPSHOT,
+            )
+        )
     else:
         snapshot = ProviderSnapshot.absent()
 
@@ -767,14 +684,14 @@ def append_evidence(
 ) -> PublicationEvidence | None:
     validate_outcome(outcome)
     if create_safety_state is not None and type(create_safety_state) is not CreateSafetyState:
-        raise PublicationStateError("create safety state must use the trusted concrete type")
+        raise PublicationStateError("create safety state must be validated")
     if details and _CREATE_SAFETY_DETAIL_KEYS.intersection(details):
         raise PublicationStateError(
             "create safety details must be persisted through create_safety_state"
         )
     safe_details = _safe_details(details) or {}
     if create_safety_state is not None:
-        safe_details.update(_create_safety_state_to_details(create_safety_state))
+        safe_details.update(create_safety_state.to_details())
     effective_verification = (
         "provider_readback" if confirmation_source and verification == "none" else verification
     )
@@ -830,45 +747,26 @@ def append_evidence(
                 duplicate_index = index
         if duplicate_index is not None:
             if not _rearmable_claim:
-                later_claim = any(
-                    isinstance(candidate, Mapping)
-                    and candidate.get("job_id") == identity.accepted_job_id
+                return raw if raw is not None else legacy_raw or b""
+            retry_authorization: Mapping[str, Any] | None = None
+            for candidate in records[duplicate_index + 1 :]:
+                if not isinstance(candidate, Mapping):
+                    raise PublicationStateError("publication evidence contains a malformed record")
+                if (
+                    candidate.get("job_id") == identity.accepted_job_id
                     and candidate.get("week") == identity.week
                     and candidate.get("article_sha256") == identity.article_sha256
                     and candidate.get("manifest_sha256") == identity.manifest_sha256
                     and candidate.get("publish_run_id") == identity.publish_run_id
                     and candidate.get("platform") == platform
                     and candidate.get("media_kind") == media_kind
-                    and candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS
-                    for candidate in records[duplicate_index + 1 :]
-                )
-                if retry_blocked or not later_claim:
-                    return raw if raw is not None else legacy_raw or b""
-            else:
-                retry_authorization: Mapping[str, Any] | None = None
-                for candidate in records[duplicate_index + 1 :]:
-                    if not isinstance(candidate, Mapping):
-                        raise PublicationStateError(
-                            "publication evidence contains a malformed record"
-                        )
-                    if (
-                        candidate.get("job_id") == identity.accepted_job_id
-                        and candidate.get("week") == identity.week
-                        and candidate.get("article_sha256") == identity.article_sha256
-                        and candidate.get("manifest_sha256") == identity.manifest_sha256
-                        and candidate.get("publish_run_id") == identity.publish_run_id
-                        and candidate.get("platform") == platform
-                        and candidate.get("media_kind") == media_kind
-                    ):
-                        if candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS:
-                            retry_authorization = None
-                        else:
-                            retry_authorization = candidate
-                if (
-                    retry_authorization is None
-                    or retry_authorization.get("retry_blocked") is not False
                 ):
-                    return raw if raw is not None else legacy_raw or b""
+                    if candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS:
+                        retry_authorization = None
+                    else:
+                        retry_authorization = candidate
+            if retry_authorization is None or retry_authorization.get("retry_blocked") is not False:
+                return raw if raw is not None else legacy_raw or b""
         next_seq = (
             max(
                 (
