@@ -1072,17 +1072,20 @@ def test_record_via_fanout_requires_shared_budget_before_enqueue(tmp_path):
     storage = FakeStorage()
     producer = FakeProducer()
 
-    with pytest.raises(ClipsetBudgetError, match="requires a shared video budget"):
-        record_via_fanout(
-            "job1",
-            _segments(1),
-            tmp_path,
-            scratch=storage,
-            producer=producer,
-        )
+    for _attempt in range(2):
+        with pytest.raises(ClipsetBudgetError, match="requires a shared video budget"):
+            record_via_fanout(
+                "job1",
+                _segments(1),
+                tmp_path,
+                scratch=storage,
+                producer=producer,
+                budget=None,
+            )
 
     assert producer.sent == []
     assert storage.get_bytes(clipset_blob_path("job1")) is None
+    assert storage.get_bytes(clip_manifest_blob_path("job1", 0)) is None
 
 
 class _Clock:

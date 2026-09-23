@@ -251,6 +251,16 @@ def _safe_details(details: Mapping[str, Any] | None) -> dict[str, Any] | None:
             safe[name] = value
         elif isinstance(value, str) and "://" not in value:
             safe[name] = value[:256]
+        elif (
+            name == "pre_create_episode_ids"
+            and isinstance(value, list)
+            and all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+        ):
+            safe[name] = value
+        elif isinstance(value, list) and all(
+            isinstance(item, (bool, int, float)) or item is None for item in value
+        ):
+            safe[name] = value[:100]
     return safe or None
 
 
@@ -465,6 +475,35 @@ def retry_is_blocked(
         in (UPLOADED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED, DRAFT_CREATED, PUBLISHED)
         and record.get("retry_blocked", True)
     )
+
+
+def spotify_video_retry_blocking_record(
+    document: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    records = document.get("records") if isinstance(document, Mapping) else None
+    if not isinstance(records, list):
+        return None
+    for record in reversed(records):
+        if (
+            not isinstance(record, Mapping)
+            or record.get("platform") != "spotify"
+            or record.get("media_kind") != "video"
+        ):
+            continue
+        if record.get("outcome") in (
+            UPLOADED,
+            PUBLICATION_UNKNOWN,
+            MANUAL_HANDOFF_REQUIRED,
+            DRAFT_CREATED,
+            PUBLISHED,
+        ) and record.get("retry_blocked", True):
+            return record
+        return None
+    return None
+
+
+def spotify_video_retry_is_blocked(document: Mapping[str, Any] | None) -> bool:
+    return spotify_video_retry_blocking_record(document) is not None
 
 
 def emit_publication_signal(

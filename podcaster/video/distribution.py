@@ -1130,6 +1130,8 @@ def upload_to_spotify_episode(
     job_id: str | None = None,
     publish_run_id: str | None = None,
     budget: VideoStageBudget | None = None,
+    publication_storage: Any | None = None,
+    publication_identity_context: Any | None = None,
 ) -> bool | tuple[bool, int | None, str | None] | tuple[bool, int | None, str | None, str]:
     """Publish the MP4 as a NEW separate Spotify episode draft (#340).
 
@@ -1173,6 +1175,9 @@ def upload_to_spotify_episode(
         }
         if budget is not None:
             upload_kwargs["before_mutation"] = admit_mutation
+        if publication_storage is not None and publication_identity_context is not None:
+            upload_kwargs["publication_storage"] = publication_storage
+            upload_kwargs["publication_identity_context"] = publication_identity_context
         result = upload_video_to_episode(video_path, anchor_id, **upload_kwargs)
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)
@@ -1368,6 +1373,8 @@ def distribute_video(
     budget: VideoStageBudget | None = None,
     operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
     archived_blob_url: str | None = None,
+    publication_storage: Any | None = None,
+    publication_identity_context: Any | None = None,
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
@@ -1929,6 +1936,8 @@ def distribute_video(
                     job_id=job_id,
                     publish_run_id=publish_run_id,
                     budget=budget,
+                    publication_storage=publication_storage,
+                    publication_identity_context=publication_identity_context,
                 )
 
             if budget is None:

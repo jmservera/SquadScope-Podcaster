@@ -32,7 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -51,6 +51,7 @@ from podcaster.publication_state import (
     outcome_from_spotify_terminal_state,
     read_evidence,
     retry_is_blocked,
+    spotify_video_retry_is_blocked,
 )
 from podcaster.spotify_shows import resolve_show_target
 from podcaster.video.budget import ProviderMutationAdmissionError
@@ -164,6 +165,14 @@ class SpotifyCredentialExpiredError(SpotifyPublishError):
     so callers can trigger an explicit, actionable credential-expiry
     notification.
     """
+
+
+class SpotifyMutationEvidenceError(Exception):
+    """Raised when durable mutation evidence cannot safely authorize a create."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _is_enabled() -> bool:
@@ -1408,6 +1417,7 @@ def _recover_ambiguous_create(
     known_ids: set[int],
     snapshot_complete: bool,
     cause: SpotifyDraftCreateAmbiguousError,
+    on_create_resolved: Callable[[int, bool], None] | None = None,
 ) -> tuple[int, bool]:
     """Resolve a create whose server-side effect is unknown, using evidence.
 
@@ -1450,6 +1460,8 @@ def _recover_ambiguous_create(
                 "it is already titled, so it is reused as-is.",
                 titled_match,
             )
+            if on_create_resolved is not None:
+                on_create_resolved(titled_match, False)
             return titled_match, False
 
         candidates, opaque = _new_untitled_draft_ids(data, known_ids)
@@ -1461,6 +1473,8 @@ def _recover_ambiguous_create(
                 "anchorId=%d; adopting it instead of creating another.",
                 adopted,
             )
+            if on_create_resolved is not None:
+                on_create_resolved(adopted, True)
             return adopted, True
 
         if candidates or opaque or not snapshot_complete:
@@ -1485,7 +1499,10 @@ def _recover_ambiguous_create(
             _AMBIGUOUS_CREATE_READS,
             _AMBIGUOUS_CREATE_SETTLE_SECONDS,
         )
-        return _create_episode(session, station_id), True
+        anchor_id = _create_episode(session, station_id)
+        if on_create_resolved is not None:
+            on_create_resolved(anchor_id, True)
+        return anchor_id, True
 
     raise SpotifyDraftReconcileError(
         f"Spotify draft create for station {station_id} failed ambiguously "
@@ -1499,6 +1516,42 @@ def _recover_ambiguous_create(
     ) from cause
 
 
+def _recover_unresolved_create_intent(
+    data: Any,
+    station_id: str,
+    *,
+    known_ids: set[int],
+    snapshot_complete: bool,
+) -> int | None:
+    if not snapshot_complete:
+        raise SpotifyDraftReconcileError(
+            f"Spotify draft create intent for station {station_id} has an incomplete "
+            "pre-create snapshot; refusing to infer whether a later untitled draft "
+            "was already created."
+        )
+    candidates, opaque = _new_untitled_draft_ids(data, known_ids)
+    if len(candidates) == 1 and not opaque:
+        adopted = candidates[0]
+        logger.info(
+            "Spotify draft create intent for station %s resolved to new untitled "
+            "draft anchorId=%d; adopting it instead of creating another.",
+            station_id,
+            adopted,
+        )
+        return adopted
+    if candidates or opaque:
+        raise SpotifyDraftReconcileError(
+            f"Spotify draft create intent for station {station_id} cannot be "
+            f"resolved safely (new untitled draft candidates: {candidates or 'none'}, "
+            f"unclassifiable entries: {opaque}). Refusing to create a duplicate."
+        )
+    raise SpotifyDraftReconcileError(
+        f"Spotify draft create intent for station {station_id} has no unique new "
+        "draft candidate; refusing to create another draft while the prior create "
+        "outcome is unresolved."
+    )
+
+
 def _reconcile_or_create_draft(
     session: requests.Session,
     station_id: str,
@@ -1507,6 +1560,9 @@ def _reconcile_or_create_draft(
     show_id: str | None = None,
     title: str,
     exclude_id: int | None = None,
+    before_create: Callable[[set[int], bool], None] | None = None,
+    on_create_resolved: Callable[[int, bool], None] | None = None,
+    unresolved_create_intent_snapshot: tuple[set[int], bool] | None = None,
 ) -> tuple[int, bool]:
     """Return ``(anchor_id, needs_title)`` for the video draft carrying *title*.
 
@@ -1525,11 +1581,27 @@ def _reconcile_or_create_draft(
     if match is not None:
         return match, False
 
+    if unresolved_create_intent_snapshot is not None:
+        known_ids, snapshot_complete = unresolved_create_intent_snapshot
+        adopted = _recover_unresolved_create_intent(
+            data,
+            station_id,
+            known_ids=set(known_ids),
+            snapshot_complete=snapshot_complete,
+        )
+        if adopted is not None:
+            return adopted, True
+
     known_ids, snapshot_complete = _snapshot_episode_ids(data)
     if exclude_id is not None:
         known_ids.add(exclude_id)
+    if before_create is not None:
+        before_create(set(known_ids), snapshot_complete)
     try:
-        return _create_episode(session, station_id), True
+        anchor_id = _create_episode(session, station_id)
+        if on_create_resolved is not None:
+            on_create_resolved(anchor_id, True)
+        return anchor_id, True
     except SpotifyDraftCreateAmbiguousError as exc:
         return _recover_ambiguous_create(
             session,
@@ -1541,6 +1613,7 @@ def _reconcile_or_create_draft(
             known_ids=known_ids,
             snapshot_complete=snapshot_complete,
             cause=exc,
+            on_create_resolved=on_create_resolved,
         )
 
 
@@ -2337,6 +2410,60 @@ def promote_spotify_video_draft(
         )
 
 
+def _spotify_video_unresolved_create_intent_snapshot(
+    document: Mapping[str, Any] | None,
+) -> tuple[set[int], bool] | None:
+    records = document.get("records") if isinstance(document, Mapping) else None
+    if not isinstance(records, list):
+        return None
+    for record in reversed(records):
+        if (
+            not isinstance(record, Mapping)
+            or record.get("platform") != "spotify"
+            or record.get("media_kind") != "video"
+        ):
+            continue
+        if record.get("provider_artifact_id") or record.get("provider_id"):
+            return None
+        if record.get("operation") != "create_episode_intent":
+            continue
+        if (
+            record.get("outcome") != PUBLICATION_UNKNOWN
+            or record.get("mutation_attempted") is not False
+            or record.get("code") != "mutation_intent"
+        ):
+            return None
+        details = record.get("details")
+        if not isinstance(details, Mapping):
+            raise SpotifyDraftReconcileError(
+                "Spotify video create intent evidence has no readable details snapshot."
+            )
+        raw_ids = details.get("pre_create_episode_ids")
+        if not isinstance(raw_ids, list):
+            raise SpotifyDraftReconcileError(
+                "Spotify video create intent evidence has no pre-create episode id snapshot."
+            )
+        known_ids: set[int] = set()
+        for raw_id in raw_ids:
+            if isinstance(raw_id, bool):
+                raise SpotifyDraftReconcileError(
+                    "Spotify video create intent evidence contains an invalid boolean id."
+                )
+            try:
+                known_ids.add(int(raw_id))
+            except (TypeError, ValueError) as exc:
+                raise SpotifyDraftReconcileError(
+                    "Spotify video create intent evidence contains an unreadable id."
+                ) from exc
+        snapshot_complete = details.get("pre_create_snapshot_complete")
+        if not isinstance(snapshot_complete, bool):
+            raise SpotifyDraftReconcileError(
+                "Spotify video create intent evidence has no boolean snapshot completeness."
+            )
+        return known_ids, snapshot_complete
+    return None
+
+
 def upload_video_to_episode(
     video_path: Path,
     anchor_id: int | None = None,
@@ -2350,6 +2477,8 @@ def upload_video_to_episode(
     season_number: int | None = None,
     episode_number: int | None = None,
     before_mutation: Callable[[], object] | None = None,
+    publication_storage: StorageBackend | None = None,
+    publication_identity_context: PublicationIdentity | None = None,
 ) -> PublishResult:
     """Publish a video as a NEW separate Spotify episode draft (#340).
 
@@ -2404,6 +2533,10 @@ def upload_video_to_episode(
     if not video_path.exists() or video_path.stat().st_size == 0:
         return PublishResult(status="failed", error=f"Video file not found or empty: {video_path}")
 
+    video_anchor_id: int | None = None
+    create_resolved = False
+    create_intent_persisted = False
+
     try:
         env_show_id, env_sp_dc, env_sp_key = _get_credentials()
         show_id = show_id or env_show_id
@@ -2417,6 +2550,80 @@ def upload_video_to_episode(
         if before_mutation is not None:
             setattr(session, "_before_provider_mutation", before_mutation)
         station_id, user_id = _resolve_legacy_ids(session, show_id)
+        unresolved_create_intent_snapshot: tuple[set[int], bool] | None = None
+        if publication_storage is not None and publication_identity_context is not None:
+            try:
+                prior_evidence = read_evidence(
+                    publication_storage, publication_identity_context.accepted_job_id
+                )
+            except Exception:
+                return PublishResult(
+                    status="failed",
+                    error="Publication evidence could not be read before Spotify mutation.",
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True},
+                )
+            if spotify_video_retry_is_blocked(prior_evidence):
+                return PublishResult(
+                    status="failed",
+                    error="Spotify video mutation blocked pending publication reconciliation.",
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True},
+                )
+            try:
+                unresolved_create_intent_snapshot = (
+                    _spotify_video_unresolved_create_intent_snapshot(prior_evidence)
+                )
+            except SpotifyDraftReconcileError as exc:
+                return PublishResult(
+                    status="failed",
+                    error=str(exc),
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True, "code": "unresolved_create_intent"},
+                )
+
+        def _persist_create_intent(known_ids: set[int], snapshot_complete: bool) -> None:
+            nonlocal create_intent_persisted
+            if publication_storage is None or publication_identity_context is None:
+                return
+            try:
+                claim = append_evidence(
+                    publication_storage,
+                    publication_identity_context,
+                    platform="spotify",
+                    media_kind="video",
+                    operation="create_episode_intent",
+                    outcome=PUBLICATION_UNKNOWN,
+                    mutation_attempted=False,
+                    retry_blocked=False,
+                    code="mutation_intent",
+                    details={
+                        "show_id": show_id,
+                        "station_id": station_id,
+                        "pre_create_episode_ids": sorted(known_ids),
+                        "pre_create_snapshot_complete": snapshot_complete,
+                    },
+                )
+            except Exception:
+                raise SpotifyMutationEvidenceError(
+                    "Publication evidence could not be persisted before Spotify mutation."
+                )
+            if claim is None:
+                if unresolved_create_intent_snapshot is not None:
+                    create_intent_persisted = True
+                    return
+                raise SpotifyMutationEvidenceError(
+                    "Spotify video mutation already claimed for this publication identity.",
+                    code="mutation_claim_exists",
+                )
+            create_intent_persisted = True
+
+        def _mark_create_resolved(_anchor_id: int, created_by_attempt: bool) -> None:
+            nonlocal create_resolved
+            create_resolved = created_by_attempt
 
         # Create or reconcile a separate video draft — never touch the audio one.
         reconcile_enabled = _spotify_reconcile_enabled()
@@ -2432,9 +2639,59 @@ def upload_video_to_episode(
                 show_id=show_id,
                 title=video_title,
                 exclude_id=exclude_audio_id,
+                before_create=_persist_create_intent,
+                on_create_resolved=_mark_create_resolved,
+                unresolved_create_intent_snapshot=unresolved_create_intent_snapshot,
             )
         else:
+            _persist_create_intent(set(), False)
+            if unresolved_create_intent_snapshot is not None:
+                raise SpotifyMutationEvidenceError(
+                    "Spotify video create intent remains unresolved and reconciliation is "
+                    "disabled; refusing blind create.",
+                    code="unresolved_create_intent",
+                )
             video_anchor_id, needs_title = _create_episode(session, station_id), True
+            create_resolved = True
+
+        if (
+            video_anchor_id is not None
+            and publication_storage is not None
+            and publication_identity_context is not None
+        ):
+            try:
+                append_evidence(
+                    publication_storage,
+                    publication_identity_context,
+                    platform="spotify",
+                    media_kind="video",
+                    operation="create_episode" if create_resolved else "reconcile_episode",
+                    outcome=PUBLICATION_UNKNOWN,
+                    provider_artifact_id=video_anchor_id,
+                    mutation_attempted=create_resolved,
+                    retry_blocked=True,
+                    code=(
+                        "provider_artifact_created"
+                        if create_resolved
+                        else "provider_artifact_reconciled"
+                    ),
+                    details={"show_id": show_id, "station_id": station_id},
+                )
+            except Exception:
+                return PublishResult(
+                    anchor_episode_id=video_anchor_id,
+                    status="failed",
+                    error=(
+                        "Publication evidence failed after Spotify video draft resolution; "
+                        "reconciliation required."
+                    ),
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={
+                        "retry_blocked": True,
+                        "code": "create_evidence_persistence_failed",
+                    },
+                )
 
         if needs_title and reconcile_enabled:
             # A new draft is created untitled; title it now — with the real
@@ -2501,6 +2758,11 @@ def upload_video_to_episode(
         return PublishResult(
             anchor_episode_id=video_anchor_id,
             status="draft",
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
             details={
                 "station_id": station_id,
                 "upload_id": upload_id,
@@ -2527,19 +2789,109 @@ def upload_video_to_episode(
         return PublishResult(
             status="failed",
             error=str(exc),
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
             details={
                 "credentials_expired": True,
                 "notification_issue": issue_number,
                 "audio_anchor_id": anchor_id,
+                **(
+                    {"retry_blocked": True, "code": "post_create_failure"}
+                    if video_anchor_id is not None
+                    else (
+                        {"retry_blocked": False, "code": "create_outcome_unknown"}
+                        if create_intent_persisted
+                        else {}
+                    )
+                ),
             },
+            anchor_episode_id=video_anchor_id,
+            outcome=(
+                PUBLICATION_UNKNOWN
+                if video_anchor_id is not None or create_intent_persisted
+                else None
+            ),
+        )
+    except SpotifyMutationEvidenceError as exc:
+        return PublishResult(
+            status="failed",
+            error=str(exc),
+            outcome=PUBLICATION_UNKNOWN,
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
+            details={
+                "retry_blocked": True,
+                **({"code": exc.code} if exc.code else {}),
+            },
+        )
+    except SpotifyDraftCreateAmbiguousError as exc:
+        logger.error("Spotify video draft create state unknown: %s", exc)
+        return PublishResult(
+            status="failed",
+            error=str(exc),
+            outcome=PUBLICATION_UNKNOWN,
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
+            details={"retry_blocked": True, "code": "ambiguous_create"},
         )
     except SpotifyPublishError as exc:
         logger.error("Spotify video upload failed: %s", exc)
-        return PublishResult(status="failed", error=str(exc))
+        if video_anchor_id is not None:
+            return PublishResult(
+                anchor_episode_id=video_anchor_id,
+                status="failed",
+                error=str(exc),
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=(
+                    publication_identity_context.publish_run_id
+                    if publication_identity_context is not None
+                    else None
+                ),
+                details={"retry_blocked": True, "code": "post_create_failure"},
+            )
+        return PublishResult(
+            status="failed",
+            error=str(exc),
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
+        )
     except Exception as exc:
         safe_msg = re.sub(r"https?://\S+", lambda m: _safe_url(m.group()), str(exc))
         logger.error("Unexpected error during Spotify video upload: %s", safe_msg)
-        return PublishResult(status="failed", error=f"Unexpected: {safe_msg}")
+        if video_anchor_id is not None:
+            return PublishResult(
+                anchor_episode_id=video_anchor_id,
+                status="failed",
+                error=f"Unexpected: {safe_msg}",
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=(
+                    publication_identity_context.publish_run_id
+                    if publication_identity_context is not None
+                    else None
+                ),
+                details={"retry_blocked": True, "code": "post_create_failure"},
+            )
+        return PublishResult(
+            status="failed",
+            error=f"Unexpected: {safe_msg}",
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
+        )
 
 
 def _safe_resolve_number(
@@ -2838,6 +3190,8 @@ def publish_episode(
     if upload_path is None or not upload_path.exists():
         return PublishResult(status="failed", error=f"{format_label} file not found: {upload_path}")
 
+    media_kind = "video" if content_type.startswith("video/") else "audio"
+
     if publication_storage is not None and publication_identity_context is not None:
         try:
             prior_evidence = read_evidence(
@@ -2851,7 +3205,12 @@ def publish_episode(
                 publish_run_id=publication_identity_context.publish_run_id,
                 details={"retry_blocked": True},
             )
-        if retry_is_blocked(prior_evidence, platform="spotify", media_kind="audio"):
+        retry_blocked = (
+            spotify_video_retry_is_blocked(prior_evidence)
+            if media_kind == "video"
+            else retry_is_blocked(prior_evidence, platform="spotify", media_kind=media_kind)
+        )
+        if retry_blocked:
             return PublishResult(
                 status="failed",
                 error="Spotify mutation blocked pending publication reconciliation.",
@@ -2864,12 +3223,13 @@ def publish_episode(
                 publication_storage,
                 publication_identity_context,
                 platform="spotify",
-                media_kind="audio",
+                media_kind=media_kind,
                 operation="create_episode_intent",
                 outcome=PUBLICATION_UNKNOWN,
                 mutation_attempted=False,
                 retry_blocked=True,
                 code="mutation_intent",
+                details={"show_id": show_id},
             )
             if claim is None:
                 return PublishResult(
@@ -2906,7 +3266,7 @@ def publish_episode(
                 publication_storage,
                 publication_identity_context,
                 platform="spotify",
-                media_kind="audio",
+                media_kind=media_kind,
                 operation=operation,
                 outcome=result.outcome or PUBLICATION_UNKNOWN,
                 provider_artifact_id=result.anchor_episode_id,
@@ -2941,7 +3301,7 @@ def publish_episode(
                 publication_storage,
                 publication_identity_context,
                 platform="spotify",
-                media_kind="audio",
+                media_kind=media_kind,
                 outcome=result.outcome or PUBLICATION_UNKNOWN,
                 provider_artifact_id=result.anchor_episode_id,
             )
@@ -2964,9 +3324,39 @@ def publish_episode(
         # Step 2: Create draft episode
         anchor_id = _create_episode(session, station_id)
         mutation_started = True
+        if publication_storage is not None and publication_identity_context is not None:
+            try:
+                append_evidence(
+                    publication_storage,
+                    publication_identity_context,
+                    platform="spotify",
+                    media_kind=media_kind,
+                    operation="create_episode",
+                    outcome=PUBLICATION_UNKNOWN,
+                    provider_artifact_id=anchor_id,
+                    mutation_attempted=True,
+                    retry_blocked=True,
+                    code="provider_artifact_created",
+                    details={"show_id": show_id, "station_id": station_id},
+                )
+            except Exception:
+                return PublishResult(
+                    anchor_episode_id=anchor_id,
+                    status="failed",
+                    error=(
+                        "Publication evidence failed after Spotify draft create; "
+                        "reconciliation required."
+                    ),
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={
+                        "retry_blocked": True,
+                        "code": "create_evidence_persistence_failed",
+                    },
+                )
 
         # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
-        is_video = content_type.startswith("video/")
+        is_video = media_kind == "video"
         file_data = upload_path.read_bytes()
 
         if is_video:

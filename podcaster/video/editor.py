@@ -691,7 +691,7 @@ def record_via_fanout(
     monotonic: Callable[[], float] = time.monotonic,
     fill_gap: FillGapFn | None = None,
     heartbeat: Callable[[], None] | None = None,
-    budget: VideoStageBudget | None = None,
+    budget: VideoStageBudget,
     fallback_renderer=None,
     media_validator: MediaValidator | None = None,
     operation_runner: Callable[[Callable[[], Any], float], Any] = run_storage_operation,
