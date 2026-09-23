@@ -1025,11 +1025,21 @@ def _normalise_episode_listing_page(
             "Spotify episode listing GraphQL data.showByShowUri.episodesV2 is "
             f"a {type(listing).__name__}, not an object; {_FAIL_CLOSED_SUFFIX}."
         )
+    # ``sortable`` (observed 2026-09) lists the sort keys the UI may offer; it is
+    # descriptive metadata that cannot hide items, but must still be well formed.
     required_listing_fields = {"indexStatus", "items", "pagination"}
-    if set(listing) != required_listing_fields:
+    if set(listing) not in (required_listing_fields, required_listing_fields | {"sortable"}):
         raise SpotifyDraftReconcileError(
             "Spotify episode listing GraphQL episodesV2 fields changed "
             f"({_safe_keys(listing)}); {_FAIL_CLOSED_SUFFIX}."
+        )
+    if "sortable" in listing and (
+        not isinstance(listing["sortable"], list)
+        or not all(isinstance(key, str) for key in listing["sortable"])
+    ):
+        raise SpotifyDraftReconcileError(
+            "Spotify episode listing GraphQL episodesV2.sortable is not a list of "
+            f"strings; {_FAIL_CLOSED_SUFFIX}."
         )
     if listing.get("indexStatus") != "COMPLETED":
         raise SpotifyDraftReconcileError(
@@ -1058,6 +1068,10 @@ def _normalise_episode_listing_page(
     page_size = values["pageSize"]
     total_items = values["totalItems"]
     total_pages = values["totalPages"]
+    if total_items == 0 and total_pages == 0:
+        # The live provider reports an empty listing as zero pages; treat it as
+        # one empty page so every item/page consistency check below still runs.
+        total_pages = 1
     if (
         current_page != expected_page
         or page_size != _EPISODE_LIST_PAGE_SIZE
