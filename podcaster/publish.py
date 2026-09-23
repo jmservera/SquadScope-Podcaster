@@ -2624,17 +2624,6 @@ def upload_video_to_episode(
                     "(1/true/yes/on) only for a deliberate, bounded operator override."
                 )
             safety = CreateSafetyState.unreconciled_override()
-            logger.warning(
-                "Spotify unreconciled video create override active: creating title=%r "
-                "audio_anchor_id=%s station_id=%s show_id=%s publish_run_id=%s "
-                "without draft reconcile; reason=%s",
-                video_title,
-                anchor_id,
-                station_id,
-                show_id,
-                publication_identity_context.publish_run_id,
-                reason,
-            )
             try:
                 claim = append_evidence(
                     publication_storage,
@@ -2666,6 +2655,17 @@ def upload_video_to_episode(
                     "Spotify unreconciled create already claimed for this publication identity.",
                     code="unreconciled_create_claim_exists",
                 )
+            logger.warning(
+                "Spotify unreconciled video create override active: creating title=%r "
+                "audio_anchor_id=%s station_id=%s show_id=%s publish_run_id=%s "
+                "without draft reconcile; reason=%s",
+                video_title,
+                anchor_id,
+                station_id,
+                show_id,
+                publication_identity_context.publish_run_id,
+                reason,
+            )
             create_provenance = CreateIntentProvenance.BLIND_UNRECONCILED
             create_intent_persisted = True
 
@@ -2694,6 +2694,8 @@ def upload_video_to_episode(
                 )
             except SpotifyDraftReconcileError:
                 if create_intent_persisted:
+                    raise
+                if unresolved_create_intent_snapshot is not None:
                     raise
                 if not _spotify_unreconciled_create_allowed():
                     raise
@@ -2908,6 +2910,29 @@ def upload_video_to_episode(
                 else None
             ),
             details={"retry_blocked": True, "code": "ambiguous_create"},
+        )
+    except SpotifyDraftReconcileError as exc:
+        logger.error("Spotify video draft reconcile failed: %s", exc)
+        if unresolved_create_intent_snapshot is not None:
+            return PublishResult(
+                status="failed",
+                error=str(exc),
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=(
+                    publication_identity_context.publish_run_id
+                    if publication_identity_context is not None
+                    else None
+                ),
+                details={"retry_blocked": False, "code": "unresolved_create_intent"},
+            )
+        return PublishResult(
+            status="failed",
+            error=str(exc),
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
         )
     except SpotifyPublishError as exc:
         logger.error("Spotify video upload failed: %s", exc)

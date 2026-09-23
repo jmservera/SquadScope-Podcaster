@@ -530,6 +530,39 @@ def test_complete_provider_snapshot_requires_evidence_source():
         ProviderSnapshot.complete([1, 2, 3], evidence_source="")
 
 
+def test_complete_snapshot_deserialization_without_evidence_fails_closed_to_absent():
+    state = create_safety_state_from_record(
+        {
+            "platform": "spotify",
+            "media_kind": "video",
+            "operation": "create_episode_intent",
+            "outcome": PUBLICATION_UNKNOWN,
+            "mutation_attempted": False,
+            "retry_blocked": False,
+            "code": "mutation_intent",
+            "details": {
+                "create_provenance": "reconciliation_backed",
+                "mutation_possibility": "not_possible",
+                "snapshot_completeness": "complete",
+                "pre_create_episode_ids": [111222],
+            },
+        }
+    )
+
+    assert state is not None
+    assert state.snapshot.completeness == SnapshotCompleteness.ABSENT
+    assert state.snapshot.to_details() == {"snapshot_completeness": "absent"}
+
+
+def test_complete_provider_snapshot_tampered_evidence_source_fails_closed():
+    snapshot = ProviderSnapshot.complete([1, 2, 3], evidence_source="test_listing")
+
+    object.__setattr__(snapshot, "evidence_source", None)
+
+    assert snapshot.completeness == SnapshotCompleteness.TRUNCATED
+    assert snapshot.to_details()["snapshot_completeness"] == "truncated"
+
+
 def test_absent_provider_snapshot_cannot_carry_episode_ids():
     with pytest.raises(PublicationStateError):
         ProviderSnapshot((1,), SnapshotCompleteness.ABSENT)

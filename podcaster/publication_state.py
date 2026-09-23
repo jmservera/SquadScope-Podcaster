@@ -117,14 +117,33 @@ class MutationPossibility(str, Enum):
     CONFIRMED = "confirmed"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ProviderSnapshot:
     episode_ids: tuple[int, ...]
-    completeness: SnapshotCompleteness
+    _completeness: SnapshotCompleteness
     evidence_source: str | None = None
 
+    def __init__(
+        self,
+        episode_ids: tuple[int, ...],
+        completeness: SnapshotCompleteness,
+        evidence_source: str | None = None,
+    ) -> None:
+        object.__setattr__(self, "episode_ids", episode_ids)
+        object.__setattr__(self, "_completeness", completeness)
+        object.__setattr__(self, "evidence_source", evidence_source)
+        self.__post_init__()
+
+    @property
+    def completeness(self) -> SnapshotCompleteness:
+        if self._completeness == SnapshotCompleteness.COMPLETE and not self.evidence_source:
+            return (
+                SnapshotCompleteness.TRUNCATED if self.episode_ids else SnapshotCompleteness.ABSENT
+            )
+        return self._completeness
+
     def __post_init__(self) -> None:
-        if not isinstance(self.completeness, SnapshotCompleteness):
+        if not isinstance(self._completeness, SnapshotCompleteness):
             raise PublicationStateError("snapshot completeness must be explicit")
         normalized_ids: list[int] = []
         for raw_id in self.episode_ids:
@@ -138,10 +157,10 @@ class ProviderSnapshot:
         object.__setattr__(self, "episode_ids", unique_sorted_ids)
         if len(unique_sorted_ids) != len(normalized_ids):
             raise PublicationStateError("snapshot episode ids must be unique")
-        if self.completeness == SnapshotCompleteness.ABSENT and unique_sorted_ids:
+        if self._completeness == SnapshotCompleteness.ABSENT and unique_sorted_ids:
             raise PublicationStateError("absent snapshot cannot carry episode ids")
         if (
-            self.completeness
+            self._completeness
             in (
                 SnapshotCompleteness.TRUNCATED,
                 SnapshotCompleteness.COMPLETE,
@@ -288,10 +307,18 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
         if completeness == SnapshotCompleteness.ABSENT:
             snapshot = ProviderSnapshot.absent()
         else:
-            snapshot = ProviderSnapshot(
-                _parse_snapshot_ids(details.get("pre_create_episode_ids")),
-                completeness,
-                str(details.get("snapshot_evidence_source") or "legacy_evidence"),
+            raw_evidence_source = details.get("snapshot_evidence_source")
+            evidence_source = (
+                raw_evidence_source.strip() if isinstance(raw_evidence_source, str) else ""
+            )
+            snapshot = (
+                ProviderSnapshot(
+                    _parse_snapshot_ids(details.get("pre_create_episode_ids")),
+                    completeness,
+                    evidence_source,
+                )
+                if evidence_source
+                else ProviderSnapshot.absent()
             )
     elif "pre_create_snapshot_complete" in details:
         raw_complete = details.get("pre_create_snapshot_complete")
