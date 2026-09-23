@@ -620,6 +620,7 @@ _FAIL_CLOSED_SUFFIX = (
 )
 
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
+_CURSOR_TRIM_RE = re.compile(r"^[\s\u200b\u200c\u200d\ufeff]+|[\s\u200b\u200c\u200d\ufeff]+$")
 
 # Recovering an ambiguous create must not treat an *immediately* unchanged
 # listing as proof that the create did nothing: a client-side timeout or a
@@ -685,6 +686,10 @@ def _safe_token(value: str) -> str:
     identifier-shaped string is reported as ``<unprintable>`` instead.
     """
     return value if _SAFE_KEY_RE.match(value) else "<unprintable>"
+
+
+def _strip_pagination_cursor(value: str) -> str:
+    return _CURSOR_TRIM_RE.sub("", value)
 
 
 def _episode_is_draft(episode: dict[Any, Any]) -> bool:
@@ -876,9 +881,16 @@ def _pagination_hint(data: Any) -> str | None:
     """Name of the key by which a normalised listing signals further pages."""
     if not isinstance(data, dict):
         return None
-    for key in ("hasMore", "hasNextPage", "nextPageToken", "nextPage"):
-        if data.get(key):
-            return key
+    has_more = _pagination_has_more(data, context="normalised listing")
+    next_token = _first_pagination_cursor(
+        data,
+        context="normalised listing",
+        allow_null=has_more is False,
+    )
+    if has_more is True:
+        return "hasMore"
+    if next_token is not None:
+        return "nextPageToken"
     return None
 
 
@@ -911,8 +923,10 @@ def _pagination_cursor(
             f"Spotify episode listing {context} field '{key}' is null without "
             f"an explicit false pagination flag; {_FAIL_CLOSED_SUFFIX}."
         )
-    if isinstance(value, str) and value:
-        return value
+    if isinstance(value, str):
+        token = _strip_pagination_cursor(value)
+        if token:
+            return token
     raise SpotifyDraftReconcileError(
         f"Spotify episode listing {context} field '{key}' is a "
         f"{type(value).__name__}, not a non-empty string cursor; {_FAIL_CLOSED_SUFFIX}."
@@ -1005,14 +1019,23 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
             candidates.append((key, value))
 
     seen: set[int] = set()
+    normalised_candidate: dict[str, Any] | None = None
+    normalised_source: str | None = None
     for name, candidate in candidates:
         marker = id(candidate)
         if marker in seen:
             continue
         seen.add(marker)
-        for list_key in _EPISODE_LIST_KEYS:
-            if list_key not in candidate:
-                continue
+        present_list_keys = [list_key for list_key in _EPISODE_LIST_KEYS if list_key in candidate]
+        if not present_list_keys:
+            continue
+        if len(present_list_keys) > 1:
+            raise SpotifyDraftReconcileError(
+                "Spotify episode listing GraphQL field "
+                f"'{name}' exposes multiple recognised episode arrays "
+                f"({sorted(present_list_keys)}); {_FAIL_CLOSED_SUFFIX}."
+            )
+        for list_key in present_list_keys:
             raw_items = candidate[list_key]
             if isinstance(raw_items, dict) and isinstance(raw_items.get("nodes"), list):
                 items = raw_items["nodes"]
@@ -1064,7 +1087,22 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
                     "without a usable cursor; refusing to treat a truncated "
                     f"listing as complete. {_FAIL_CLOSED_SUFFIX}."
                 )
-            return {"episodes": items, "nextPageToken": next_token, "hasMore": bool(has_next)}
+            source = f"{name}.{list_key}"
+            if normalised_candidate is not None:
+                raise SpotifyDraftReconcileError(
+                    "Spotify episode listing GraphQL exposes multiple distinct "
+                    "recognised episode arrays "
+                    f"('{normalised_source}' and '{source}'); {_FAIL_CLOSED_SUFFIX}."
+                )
+            normalised_candidate = {
+                "episodes": items,
+                "nextPageToken": next_token,
+                "hasMore": bool(has_next),
+            }
+            normalised_source = source
+
+    if normalised_candidate is not None:
+        return normalised_candidate
 
     raise SpotifyDraftReconcileError(
         "Spotify episode listing GraphQL exposes no recognised episode array "

@@ -2257,6 +2257,88 @@ class TestFindExistingDraft:
         assert "endCursor" in str(exc.value)
         assert "null" in str(exc.value)
 
+    @pytest.mark.parametrize(
+        ("label", "cursor_value"),
+        [
+            ("spaces", "   "),
+            ("tab", "\t"),
+            ("newline", "\n"),
+            ("non-breaking space", "\u00a0"),
+            ("zero-width space", "\u200b"),
+            ("zero-width non-joiner", "\u200c"),
+            ("zero-width joiner", "\u200d"),
+            ("byte-order mark", "\ufeff"),
+            ("mixed whitespace", " \t\n\u00a0\u200b\u200c\u200d\ufeff "),
+        ],
+    )
+    @pytest.mark.parametrize("cursor_key", ["nextPageToken", "nextPage"])
+    def test_whitespace_only_top_level_pagination_cursor_raises(
+        self, cursor_key, label, cursor_value
+    ):
+        from podcaster import publish as pub
+
+        session = self._session({"episodes": [], cursor_key: cursor_value})
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pytest.fail(
+                f"{label} {cursor_key} cursor returned partial result instead of raising: "
+                f"{result!r}"
+            )
+        assert cursor_key in str(exc.value)
+        assert "cursor" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        ("label", "cursor_value"),
+        [
+            ("spaces", "   "),
+            ("tab", "\t"),
+            ("newline", "\n"),
+            ("non-breaking space", "\u00a0"),
+            ("zero-width space", "\u200b"),
+            ("zero-width non-joiner", "\u200c"),
+            ("zero-width joiner", "\u200d"),
+            ("byte-order mark", "\ufeff"),
+            ("mixed whitespace", " \t\n\u00a0\u200b\u200c\u200d\ufeff "),
+        ],
+    )
+    def test_whitespace_only_graphql_end_cursor_raises(self, label, cursor_value):
+        from podcaster import publish as pub
+
+        session = self._session(
+            {
+                "data": {
+                    "webGetIndexedEpisodeList": {
+                        "episodes": {
+                            "nodes": [],
+                            "pageInfo": {"endCursor": cursor_value},
+                        }
+                    }
+                }
+            }
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pytest.fail(
+                f"{label} GraphQL endCursor returned partial result instead of raising: {result!r}"
+            )
+        assert "endCursor" in str(exc.value)
+        assert "cursor" in str(exc.value)
+
+    def test_padded_real_cursor_is_stripped_before_next_page_fetch(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.side_effect = [
+            _mock_json_resp({"episodes": [], "nextPageToken": "\t cursor-2 \u00a0"}),
+            _mock_json_resp(
+                {"episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}]}
+            ),
+        ]
+
+        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
+        second_call_vars = session.request.call_args_list[1].kwargs["json"]["variables"]
+        assert second_call_vars["pageToken"] == "cursor-2"
+
     @pytest.mark.parametrize("cursor_key", ["nextPageToken", "nextPage"])
     def test_null_top_level_cursor_with_explicit_false_flag_is_terminal(self, cursor_key):
         from podcaster import publish as pub
@@ -2425,6 +2507,53 @@ class TestEpisodeListingSchema:
     def test_alternate_recognised_field_names_still_match(self):
         payload = {"items": [{"anchorId": "888", "name": "My Show", "isDraft": True}]}
         assert self._lookup(payload) == 888
+
+    @pytest.mark.parametrize(
+        ("label", "payload"),
+        [
+            ("empty top-level cursor", {"episodes": [], "nextPageToken": ""}),
+            ("falsey numeric pagination flag", {"episodes": [], "hasMore": 0}),
+        ],
+    )
+    def test_final_pagination_hint_drift_fails_closed(self, label, payload):
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = pub._match_existing_draft(payload, "99", "My Show")
+            pytest.fail(f"{label} returned partial result instead of raising: {result!r}")
+        assert "duplicate draft" in str(exc.value), label
+
+    def test_multiple_graphql_episode_containers_fail_closed(self):
+        from podcaster import publish as pub
+
+        payload = {
+            "data": {
+                "webGetIndexedEpisodeList": {"episodes": []},
+                "shadowEpisodeList": {
+                    "episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}]
+                },
+            }
+        }
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = self._lookup(payload)
+            pytest.fail(f"multiple GraphQL containers returned partial result: {result!r}")
+        assert "multiple distinct" in str(exc.value)
+
+    def test_multiple_graphql_list_fields_fail_closed(self):
+        from podcaster import publish as pub
+
+        payload = {
+            "data": {
+                "webGetIndexedEpisodeList": {
+                    "episodes": [],
+                    "items": [{"episodeId": 888, "title": "My Show", "status": "draft"}],
+                }
+            }
+        }
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = self._lookup(payload)
+            pytest.fail(f"multiple GraphQL list fields returned partial result: {result!r}")
+        assert "multiple recognised episode arrays" in str(exc.value)
 
 
 class TestEpisodeDraftState:
