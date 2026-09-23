@@ -219,15 +219,21 @@ persisted-query endpoint:
 POST https://creators-graph.spotify.com/v2/graph-pq
 operationName=WebGetIndexedEpisodeList
 variables.showUri=spotify:show:{SPOTIFY_SHOW_ID}
-variables.pageSize=100
-variables.pageToken=""
+variables.currentPage=1
+variables.pageSize=50
+variables.filter=DRAFT_EPISODES
+extensions.persistedQuery.sha256Hash=da95dd0d…c9e98
+x-creator-client=public-website
 ```
 
-This contract was live-disconfirmed on 2026-09-23 (HTTP 500 with valid
-credentials), so it is not attempted by default. Set
-`PODCASTER_SPOTIFY_RECONCILE=true` only after verifying the endpoint for the
-target show. An unset or unrecognised value fails the video upload before any
-listing or create request. The explicit `false` setting remains the
+This exact persisted-query contract was verified live on 2026-09-23. The
+earlier request failed because it omitted the persisted-query hash and creator
+client header, used cursor variables that the operation does not accept, and
+sent an empty `query` field. The verified response path is
+`data.showByShowUri.episodesV2`; the index must report `COMPLETED`, and numeric
+`currentPage`/`totalPages` metadata drives pagination. Reconciliation still
+requires explicit `PODCASTER_SPOTIFY_RECONCILE=true`; an unset or unrecognised
+value fails before listing or create. The explicit `false` setting remains the
 operator-authorized blind-create escape hatch.
 
 The older Anchor REST station listing (`GET /v3/stations/{stationId}/episodes`,
@@ -236,16 +242,15 @@ proof of absence when it errors.
 
 A lookup that fails (HTTP error, transport error, malformed JSON, missing
 identity) raises `SpotifyDraftReconcileError` and fails the publish. So does a
-listing whose *schema* this code cannot read — an unknown container, an error
-body, a non-array episode field, a renamed title/id/state field, or a non-object
-entry. `None` ("no draft exists") is only sound when every entry of a recognised
-container was understood **and** all cursor pages were fetched; a recognised
-**empty** array is still a legitimate no-match. A next-page signal without a
-usable cursor, a failed later page, or a repeated cursor fails closed rather than
+listing whose *schema* this code cannot read — an unknown container, incomplete
+index, malformed pagination, non-array episode field, renamed title/id field, or
+non-object entry. `None` ("no draft exists") is only sound when every entry of
+the provider-filtered draft collection was understood and all numbered pages
+were fetched. A recognised empty draft page is still a legitimate no-match. A
+failed later page or a changing total-page count fails closed rather than
 returning a partial list. An entry whose title is present but null is understood
 as an untitled draft (no match). Entries whose id is the excluded audio anchor
-are skipped *before* any state or title classification, so a scheduled or
-processing audio episode can never fail the video lookup.
+are skipped before title classification.
 Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
@@ -905,7 +910,7 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | No implicit default while the listing contract is live-disconfirmed. `true` explicitly enables reconcile; `false` explicitly authorizes the blind-create escape hatch. Unset/unrecognised values fail before listing or create (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | `true` explicitly enables the verified persisted-query draft listing. Unset/unrecognised values fail before listing or create; `0`/`false`/`no`/`off` explicitly authorize the blind-create escape hatch (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,
