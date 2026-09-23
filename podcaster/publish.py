@@ -590,27 +590,28 @@ _STATUS_KEYS = ("status", "state", "publishStatus", "publishState")
 # (:func:`_set_metadata`), so ``true`` reliably means "not a draft" — but
 # ``false`` only means "not published": a scheduled, processing or errored
 # episode is unpublished without being a draft, so ``isPublished: false`` is
-# *not* evidence of a draft and needs a corroborating signal. Both must be a
-# real JSON boolean — a string ``"false"`` is *not* a boolean and is treated as
-# schema drift, never as truthiness.
+# *not* evidence of a draft and needs explicit ``isDraft: true`` or ``draft``
+# status evidence before reuse. Both must be a real JSON boolean — a string
+# ``"false"`` is *not* a boolean and is treated as schema drift, never as
+# truthiness.
 _BOOL_STATE_KEYS: tuple[str, ...] = ("isDraft", "isPublished")
 # ``{key: reading that means "draft"}`` for fields whose two readings are both
 # evidence.
-_BOOL_TWO_WAY_STATE_KEYS: dict[str, bool] = {"isDraft": True, "isPublished": False}
-# ``{key: reading that is evidence of *not* a draft}``; the opposite reading is
-# handled by ``_BOOL_TWO_WAY_STATE_KEYS`` when the field is now confirmed to
-# carry unpublished state.
-_BOOL_NON_DRAFT_ONLY_KEYS: dict[str, bool] = {}
+_BOOL_TWO_WAY_STATE_KEYS: dict[str, bool] = {"isDraft": True}
+# ``{key: reading that is evidence of *not* a draft}``; the opposite reading
+# carries no reusable-draft evidence.
+_BOOL_NON_DRAFT_ONLY_KEYS: dict[str, bool] = {"isPublished": True}
 
 # String state tokens with evidence, deliberately minimal. ``draft`` is the
 # value this integration itself drives episodes into (``publish_behavior``) and
 # the only token the previous revision recognised; ``published`` is its
-# observed opposite. Every other token — ``scheduled``, ``processing``,
-# ``error``, anything new — is *unknown*, and unknown is an error rather than a
-# guessed "not a draft", because guessing wrong either reuses a published
-# episode or creates a duplicate draft. Extend only with observed evidence.
-_DRAFT_STATE_TOKENS = frozenset({"draft", "scheduled", "unpublished"})
+# observed opposite. ``scheduled`` and ``unpublished`` only establish that an
+# episode is non-public, not that it is a reusable video draft. Every other
+# token — ``processing``, ``error``, anything new — is *unknown*, and unknown
+# is an error rather than a guessed state. Extend only with observed evidence.
+_DRAFT_STATE_TOKENS = frozenset({"draft"})
 _NON_DRAFT_STATE_TOKENS = frozenset({"published"})
+_NON_PUBLIC_STATE_TOKENS = frozenset({"scheduled", "unpublished"})
 
 _EPISODE_LIST_PAGE_SIZE = 100
 
@@ -702,13 +703,13 @@ def _episode_is_draft(episode: dict[Any, Any]) -> bool:
       drift, not truthiness — ``bool("false")`` is ``True``, which would have
       made a published episode look like a draft and got it overwritten.
       ``isDraft`` is evidence in both directions; ``isPublished: true`` is
-      evidence of *not* a draft, and ``isPublished: false`` is evidence of a
-      non-public episode that must block duplicate creation.
+      evidence of *not* a draft, while ``isPublished: false`` only establishes
+      that the episode is non-public and is not reusable-draft evidence.
     - a string state field (:data:`_STATUS_KEYS`) must carry a token this code
-      has evidence for. Unknown tokens (``"processing"``, ``"error"``, values
-      invented by a future API version) are **not** silently treated as "not a
-      draft": that answer would create a duplicate draft, or, if wrong in the
-      other direction, reuse an episode that is already live.
+      has evidence for. ``"scheduled"`` and ``"unpublished"`` are non-public
+      but not reusable-draft evidence. Unknown tokens (``"processing"``,
+      ``"error"``, values invented by a future API version) are **not**
+      silently treated as any known state.
     - fields that disagree with each other are drift as well.
 
     An explicit ``null`` carries no state and is skipped, exactly like an
@@ -751,11 +752,15 @@ def _episode_is_draft(episode: dict[Any, Any]) -> bool:
             evidence[key] = True
         elif token in _NON_DRAFT_STATE_TOKENS:
             evidence[key] = False
+        elif token in _NON_PUBLIC_STATE_TOKENS:
+            continue
         else:
+            known_tokens = sorted(
+                _DRAFT_STATE_TOKENS | _NON_DRAFT_STATE_TOKENS | _NON_PUBLIC_STATE_TOKENS
+            )
             raise SpotifyDraftReconcileError(
                 f"Spotify episode listing entry has an unrecognised '{key}' value "
-                f"'{_safe_token(token)}' (known: "
-                f"{sorted(_DRAFT_STATE_TOKENS | _NON_DRAFT_STATE_TOKENS)}); an "
+                f"'{_safe_token(token)}' (known: {known_tokens}); an "
                 f"unknown state is never assumed to be 'not a draft'; "
                 f"{_FAIL_CLOSED_SUFFIX}."
             )
@@ -763,9 +768,9 @@ def _episode_is_draft(episode: dict[Any, Any]) -> bool:
     if not evidence:
         raise SpotifyDraftReconcileError(
             "Spotify episode listing entry exposes no recognised draft/published "
-            f"state (keys: {_safe_keys(episode)}); note that 'isPublished': false "
-            "alone is not evidence of a draft — a scheduled or processing episode "
-            f"is unpublished too; {_FAIL_CLOSED_SUFFIX}."
+            f"state (keys: {_safe_keys(episode)}); only explicit 'isDraft': true "
+            "or a 'draft' status permits reuse. 'isPublished': false, 'scheduled', "
+            f"and 'unpublished' alone are not draft evidence; {_FAIL_CLOSED_SUFFIX}."
         )
     if len(set(evidence.values())) > 1:
         raise SpotifyDraftReconcileError(
@@ -967,8 +972,6 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
     treated as a contract: a page must expose an episode array and pagination
     metadata. Anything else is schema drift and must not become an empty list.
     """
-    if isinstance(payload, list):
-        return {"episodes": payload, "nextPageToken": None, "hasMore": False}
     if not isinstance(payload, dict):
         raise SpotifyDraftReconcileError(
             f"Spotify episode listing GraphQL returned a {type(payload).__name__} "
@@ -978,29 +981,10 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
         raise SpotifyDraftReconcileError(
             f"Spotify episode listing GraphQL returned errors; {_FAIL_CLOSED_SUFFIX}."
         )
-    if any(key in payload for key in ("episodes", "items", "results")) or isinstance(
-        payload.get("data"), list
-    ):
-        # Unit tests and any temporary REST-compatible probe fixtures can still
-        # use the already-normalised listing shape.
-        has_more = _pagination_has_more(payload, context="top-level")
-        next_token = _first_pagination_cursor(
-            payload, context="top-level", allow_null=has_more is False
-        )
-        if has_more and not next_token:
-            raise SpotifyDraftReconcileError(
-                "Spotify episode listing signalled another page without a "
-                f"usable cursor; {_FAIL_CLOSED_SUFFIX}."
-            )
-        return {
-            "episodes": _episode_items(payload),
-            "nextPageToken": next_token,
-            "hasMore": bool(has_more or next_token),
-        }
     data = payload.get("data")
     if not isinstance(data, dict):
         raise SpotifyDraftReconcileError(
-            "Spotify episode listing GraphQL response has no data object "
+            "Spotify episode listing GraphQL response has no object-valued data field "
             f"(top-level keys: {_safe_keys(payload)}); "
             f"{_FAIL_CLOSED_SUFFIX}."
         )
@@ -1039,10 +1023,10 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
             raw_items = candidate[list_key]
             if isinstance(raw_items, dict) and isinstance(raw_items.get("nodes"), list):
                 items = raw_items["nodes"]
-                page_info = raw_items.get("pageInfo")
+                page_info_containers = [raw_items, candidate]
             elif isinstance(raw_items, list):
                 items = raw_items
-                page_info = candidate.get("pageInfo")
+                page_info_containers = [candidate]
             else:
                 raise SpotifyDraftReconcileError(
                     f"Spotify episode listing GraphQL field '{name}.{list_key}' "
@@ -1052,32 +1036,69 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
 
             next_token = None
             has_next: bool | None = None
-            if isinstance(page_info, dict):
+            page_infos = [
+                container["pageInfo"]
+                for container in page_info_containers
+                if "pageInfo" in container
+            ]
+            if len(page_infos) > 1:
+                raise SpotifyDraftReconcileError(
+                    "Spotify episode listing GraphQL field "
+                    f"'{name}.{list_key}' exposes multiple pageInfo fields; "
+                    f"{_FAIL_CLOSED_SUFFIX}."
+                )
+            if page_infos:
+                page_info = page_infos[0]
+                if not isinstance(page_info, dict):
+                    raise SpotifyDraftReconcileError(
+                        "Spotify episode listing GraphQL field "
+                        f"'{name}.{list_key}.pageInfo' is a "
+                        f"{type(page_info).__name__}, not an object; "
+                        f"{_FAIL_CLOSED_SUFFIX}."
+                    )
                 has_next = _pagination_flag(
                     page_info, "hasNextPage", context=f"field '{name}.{list_key}.pageInfo'"
                 )
-                for token_key in ("endCursor", "nextPageToken", "nextPage"):
-                    token = _pagination_cursor(
-                        page_info,
-                        token_key,
-                        context=f"field '{name}.{list_key}.pageInfo'",
-                        allow_null=has_next is False,
+                if has_next is True:
+                    for token_key in ("endCursor", "nextPageToken", "nextPage"):
+                        token = _pagination_cursor(
+                            page_info,
+                            token_key,
+                            context=f"field '{name}.{list_key}.pageInfo'",
+                        )
+                        if token is not None:
+                            next_token = token
+                            break
+                elif has_next is None and any(
+                    token_key in page_info
+                    for token_key in ("endCursor", "nextPageToken", "nextPage")
+                ):
+                    cursor_keys = [
+                        token_key
+                        for token_key in ("endCursor", "nextPageToken", "nextPage")
+                        if token_key in page_info
+                    ]
+                    raise SpotifyDraftReconcileError(
+                        "Spotify episode listing GraphQL field "
+                        f"'{name}.{list_key}.pageInfo' exposes cursor field(s) "
+                        f"{cursor_keys} without "
+                        "an explicit boolean hasNextPage; "
+                        f"{_FAIL_CLOSED_SUFFIX}."
                     )
-                    if token is not None:
-                        next_token = token
-                        break
             candidate_has_next = _pagination_has_more(candidate, context=f"field '{name}'")
-            candidate_token = _first_pagination_cursor(
-                candidate,
-                context=f"field '{name}'",
-                allow_null=candidate_has_next is False,
-            )
-            if candidate_token is not None:
-                next_token = candidate_token
             if candidate_has_next is True:
                 has_next = True
             elif has_next is None:
                 has_next = candidate_has_next
+            if has_next is not False:
+                candidate_token = _first_pagination_cursor(
+                    candidate,
+                    context=f"field '{name}'",
+                )
+                if candidate_token is not None:
+                    next_token = candidate_token
+            else:
+                next_token = None
             if next_token is not None and has_next is None:
                 has_next = True
 

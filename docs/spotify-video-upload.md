@@ -259,7 +259,7 @@ duplicate.
 |-------|----------|----------|
 | `isDraft` | JSON `true`/`false` (`true` ⇒ draft) | any non-boolean: `"false"`, `"true"`, `0`, `1`, `1.0`, `{}`, `[]` |
 | `isPublished` | JSON `true`/`false`. `true` ⇒ **not** a draft; `false` alone is **not** evidence of a draft and needs a corroborating `isDraft`/status signal | any non-boolean |
-| `status` / `state` / `publishStatus` / `publishState` | `"draft"`, `"published"` (trimmed, case-insensitive) | any other token, and any non-string |
+| `status` / `state` / `publishStatus` / `publishState` | `"draft"`, `"published"` (trimmed, case-insensitive). `"scheduled"` and `"unpublished"` are understood only as non-public, never as reusable-draft evidence | any other token, and any non-string |
 
 `isPublished` is asymmetric on purpose: it is the field this integration itself
 writes, so `true` reliably means "not a draft", but `false` only means "not
@@ -268,8 +268,9 @@ being a draft, and reusing one as the video draft would overwrite it. An entry
 whose *only* state signal is `isPublished: false` therefore fails closed.
 
 `bool("false")` is `True`, so a string is *never* truth-tested — it is schema
-drift. An **unknown** status token (`"scheduled"`, `"processing"`, anything a
-future API version invents) is an error, not an implied "not a draft"; the
+drift. A non-public token (`"scheduled"` or `"unpublished"`) does not permit
+reuse without explicit draft evidence. An **unknown** token (`"processing"`,
+anything a future API version invents) is an error, not an implied state; the
 allow-list is deliberately minimal and is only extended from observed evidence.
 An explicit `null` carries no state and is skipped, exactly like an absent
 field; if nothing is left, or if two fields disagree, the entry fails closed.
@@ -374,9 +375,11 @@ titled before the upload starts and reconcile finds it on the next run.
 #### Pagination
 
 The GraphQL listing is cursor-paginated. `_fetch_episode_listing` follows
-`nextPageToken` / `nextPage` / `pageInfo.endCursor` while
-`hasMore` / `hasNextPage` is true. Any page-fetch error, missing cursor,
-non-string cursor, or repeated cursor raises `SpotifyDraftReconcileError`; a
+`nextPageToken` / `nextPage` / `pageInfo.endCursor` only while
+`hasMore` / `hasNextPage` is explicitly `true`. A terminal page may retain an
+`endCursor`; it is ignored when `hasNextPage` is `false`. Any page-fetch error,
+missing cursor for a true flag, non-string cursor, or repeated cursor raises
+`SpotifyDraftReconcileError`; a
 partial read is never returned as a complete empty listing.
 
 #### Credential expiry
