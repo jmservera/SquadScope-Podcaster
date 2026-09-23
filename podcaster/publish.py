@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -163,6 +163,14 @@ class SpotifyCredentialExpiredError(SpotifyPublishError):
     so callers can trigger an explicit, actionable credential-expiry
     notification.
     """
+
+
+class SpotifyMutationEvidenceError(Exception):
+    """Raised when durable mutation evidence cannot safely authorize a create."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _is_enabled() -> bool:
@@ -1397,6 +1405,7 @@ def _recover_ambiguous_create(
     known_ids: set[int],
     snapshot_complete: bool,
     cause: SpotifyDraftCreateAmbiguousError,
+    on_create_resolved: Callable[[int], None] | None = None,
 ) -> tuple[int, bool]:
     """Resolve a create whose server-side effect is unknown, using evidence.
 
@@ -1439,6 +1448,8 @@ def _recover_ambiguous_create(
                 "it is already titled, so it is reused as-is.",
                 titled_match,
             )
+            if on_create_resolved is not None:
+                on_create_resolved(titled_match)
             return titled_match, False
 
         candidates, opaque = _new_untitled_draft_ids(data, known_ids)
@@ -1450,6 +1461,8 @@ def _recover_ambiguous_create(
                 "anchorId=%d; adopting it instead of creating another.",
                 adopted,
             )
+            if on_create_resolved is not None:
+                on_create_resolved(adopted)
             return adopted, True
 
         if candidates or opaque or not snapshot_complete:
@@ -1474,7 +1487,10 @@ def _recover_ambiguous_create(
             _AMBIGUOUS_CREATE_READS,
             _AMBIGUOUS_CREATE_SETTLE_SECONDS,
         )
-        return _create_episode(session, station_id), True
+        anchor_id = _create_episode(session, station_id)
+        if on_create_resolved is not None:
+            on_create_resolved(anchor_id)
+        return anchor_id, True
 
     raise SpotifyDraftReconcileError(
         f"Spotify draft create for station {station_id} failed ambiguously "
@@ -1496,6 +1512,8 @@ def _reconcile_or_create_draft(
     show_id: str | None = None,
     title: str,
     exclude_id: int | None = None,
+    before_create: Callable[[], None] | None = None,
+    on_create_resolved: Callable[[int], None] | None = None,
 ) -> tuple[int, bool]:
     """Return ``(anchor_id, needs_title)`` for the video draft carrying *title*.
 
@@ -1517,8 +1535,13 @@ def _reconcile_or_create_draft(
     known_ids, snapshot_complete = _snapshot_episode_ids(data)
     if exclude_id is not None:
         known_ids.add(exclude_id)
+    if before_create is not None:
+        before_create()
     try:
-        return _create_episode(session, station_id), True
+        anchor_id = _create_episode(session, station_id)
+        if on_create_resolved is not None:
+            on_create_resolved(anchor_id)
+        return anchor_id, True
     except SpotifyDraftCreateAmbiguousError as exc:
         return _recover_ambiguous_create(
             session,
@@ -1530,6 +1553,7 @@ def _reconcile_or_create_draft(
             known_ids=known_ids,
             snapshot_complete=snapshot_complete,
             cause=exc,
+            on_create_resolved=on_create_resolved,
         )
 
 
@@ -2392,6 +2416,7 @@ def upload_video_to_episode(
         return PublishResult(status="failed", error=f"Video file not found or empty: {video_path}")
 
     video_anchor_id: int | None = None
+    create_resolved = False
 
     try:
         env_show_id, env_sp_dc, env_sp_key = _get_credentials()
@@ -2425,6 +2450,10 @@ def upload_video_to_episode(
                     publish_run_id=publication_identity_context.publish_run_id,
                     details={"retry_blocked": True},
                 )
+
+        def _persist_create_intent() -> None:
+            if publication_storage is None or publication_identity_context is None:
+                return
             try:
                 claim = append_evidence(
                     publication_storage,
@@ -2439,21 +2468,18 @@ def upload_video_to_episode(
                     details={"show_id": show_id, "station_id": station_id},
                 )
             except Exception:
-                return PublishResult(
-                    status="failed",
-                    outcome=PUBLICATION_UNKNOWN,
-                    publish_run_id=publication_identity_context.publish_run_id,
-                    details={"retry_blocked": True},
-                    error="Publication evidence could not be persisted before Spotify mutation.",
+                raise SpotifyMutationEvidenceError(
+                    "Publication evidence could not be persisted before Spotify mutation."
                 )
             if claim is None:
-                return PublishResult(
-                    status="failed",
-                    outcome=PUBLICATION_UNKNOWN,
-                    publish_run_id=publication_identity_context.publish_run_id,
-                    details={"retry_blocked": True, "code": "mutation_claim_exists"},
-                    error="Spotify video mutation already claimed for this publication identity.",
+                raise SpotifyMutationEvidenceError(
+                    "Spotify video mutation already claimed for this publication identity.",
+                    code="mutation_claim_exists",
                 )
+
+        def _mark_create_resolved(_anchor_id: int) -> None:
+            nonlocal create_resolved
+            create_resolved = True
 
         # Create or reconcile a separate video draft — never touch the audio one.
         reconcile_enabled = _spotify_reconcile_enabled()
@@ -2469,12 +2495,16 @@ def upload_video_to_episode(
                 show_id=show_id,
                 title=video_title,
                 exclude_id=exclude_audio_id,
+                before_create=_persist_create_intent,
+                on_create_resolved=_mark_create_resolved,
             )
         else:
+            _persist_create_intent()
             video_anchor_id, needs_title = _create_episode(session, station_id), True
+            create_resolved = True
 
         if (
-            needs_title
+            create_resolved
             and publication_storage is not None
             and publication_identity_context is not None
         ):
@@ -2611,6 +2641,28 @@ def upload_video_to_episode(
                 "credentials_expired": True,
                 "notification_issue": issue_number,
                 "audio_anchor_id": anchor_id,
+                **(
+                    {"retry_blocked": True, "code": "post_create_failure"}
+                    if video_anchor_id is not None
+                    else {}
+                ),
+            },
+            anchor_episode_id=video_anchor_id,
+            outcome=PUBLICATION_UNKNOWN if video_anchor_id is not None else None,
+        )
+    except SpotifyMutationEvidenceError as exc:
+        return PublishResult(
+            status="failed",
+            error=str(exc),
+            outcome=PUBLICATION_UNKNOWN,
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
+            details={
+                "retry_blocked": True,
+                **({"code": exc.code} if exc.code else {}),
             },
         )
     except SpotifyDraftCreateAmbiguousError as exc:
