@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import podcaster.publication_state as publication_state
 from podcaster.publication_state import (
     CANONICAL_OUTCOMES,
     DRAFT_CREATED,
@@ -565,6 +566,107 @@ def test_concrete_provider_snapshot_type_rejects_public_boolean_subclass_escape(
 
             def to_details(self):
                 return {}
+
+
+def test_capability_import_snapshot_subclass_forgery_cannot_persist_evidence():
+    storage = MemoryStorage()
+    snapshot_type = type(ProviderSnapshot.complete([1], evidence_source="test_listing"))
+    capability = publication_state._PROVIDER_SNAPSHOT_STATE_CAPABILITY
+
+    class ForgedSnapshot(
+        snapshot_type,
+        _provider_snapshot_state_capability=capability,
+    ):
+        @property
+        def episode_ids(self):
+            return (999999,)
+
+        @property
+        def completeness(self):
+            return SnapshotCompleteness.COMPLETE
+
+        @property
+        def evidence_source(self):
+            return "forged_listing"
+
+        def require_evidence_source(self):
+            return "forged_listing"
+
+        def to_details(self):
+            return {
+                "snapshot_completeness": "complete",
+                "pre_create_episode_ids": [999999],
+                "snapshot_evidence_source": "forged_listing",
+            }
+
+    forged_snapshot = ForgedSnapshot([1], "test_listing")
+
+    with pytest.raises(PublicationStateError, match="trusted concrete type"):
+        CreateSafetyState.reconciliation_backed(forged_snapshot)
+
+    forged_state = object.__new__(CreateSafetyState)
+    object.__setattr__(
+        forged_state,
+        "provenance",
+        CreateIntentProvenance.RECONCILIATION_BACKED,
+    )
+    object.__setattr__(forged_state, "snapshot", forged_snapshot)
+    object.__setattr__(
+        forged_state,
+        "mutation_possibility",
+        MutationPossibility.NOT_POSSIBLE,
+    )
+
+    with pytest.raises(PublicationStateError, match="trusted concrete type"):
+        forged_state.to_details()
+    with pytest.raises(PublicationStateError, match="trusted concrete type"):
+        append_evidence(
+            storage,
+            identity(),
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome=PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=False,
+            code="mutation_intent",
+            create_safety_state=forged_state,
+        )
+
+    assert storage.data == {}
+    assert read_evidence(storage, identity().accepted_job_id) is None
+
+
+def test_create_safety_state_subclass_cannot_override_durable_serialization():
+    class ForgedCreateSafetyState(CreateSafetyState):
+        def to_details(self):
+            return {
+                "snapshot_completeness": "complete",
+                "pre_create_episode_ids": [999999],
+                "snapshot_evidence_source": "forged_listing",
+            }
+
+    with pytest.raises(PublicationStateError, match="trusted concrete type"):
+        ForgedCreateSafetyState(
+            CreateIntentProvenance.RECONCILIATION_BACKED,
+            ProviderSnapshot.complete([1], evidence_source="test_listing"),
+            MutationPossibility.NOT_POSSIBLE,
+        )
+
+
+def test_malformed_exact_snapshot_tuple_is_rejected_at_serialization_boundary():
+    snapshot_type = type(ProviderSnapshot.complete([1], evidence_source="test_listing"))
+    malformed_snapshot = tuple.__new__(
+        snapshot_type,
+        ((2, 1), "test_listing"),
+    )
+    state = object.__new__(CreateSafetyState)
+    object.__setattr__(state, "provenance", CreateIntentProvenance.RECONCILIATION_BACKED)
+    object.__setattr__(state, "snapshot", malformed_snapshot)
+    object.__setattr__(state, "mutation_possibility", MutationPossibility.NOT_POSSIBLE)
+
+    with pytest.raises(PublicationStateError, match="invalid stored state"):
+        state.to_details()
 
 
 def test_complete_snapshot_deserialization_without_evidence_is_rejected():

@@ -216,16 +216,7 @@ class ProviderSnapshot:
         return cls(tuple(episode_ids), SnapshotCompleteness.COMPLETE, evidence_source)
 
     def to_details(self) -> dict[str, Any]:
-        details: dict[str, Any] = {
-            "snapshot_completeness": self.completeness.value,
-        }
-        if self.episode_ids:
-            details["pre_create_episode_ids"] = list(self.episode_ids)
-        elif self.completeness != SnapshotCompleteness.ABSENT:
-            details["pre_create_episode_ids"] = []
-        if self.completeness != SnapshotCompleteness.ABSENT:
-            details["snapshot_evidence_source"] = self.require_evidence_source()
-        return details
+        return _provider_snapshot_to_details(self)
 
 
 def _normalize_snapshot_ids(raw_ids: Any) -> tuple[int, ...]:
@@ -329,6 +320,49 @@ class _CompleteProviderSnapshot(
         return SnapshotCompleteness.COMPLETE
 
 
+def _trusted_provider_snapshot_values(
+    snapshot: ProviderSnapshot,
+) -> tuple[SnapshotCompleteness, tuple[int, ...], str | None]:
+    snapshot_type = type(snapshot)
+    if snapshot_type is _AbsentProviderSnapshot:
+        if tuple.__len__(snapshot) != 0:
+            raise PublicationStateError("absent snapshot has invalid stored state")
+        return SnapshotCompleteness.ABSENT, (), None
+    if snapshot_type is _TruncatedProviderSnapshot:
+        completeness = SnapshotCompleteness.TRUNCATED
+    elif snapshot_type is _CompleteProviderSnapshot:
+        completeness = SnapshotCompleteness.COMPLETE
+    else:
+        raise PublicationStateError("snapshot must use a trusted concrete type")
+
+    if tuple.__len__(snapshot) != 2:
+        raise PublicationStateError("observed snapshot has invalid stored state")
+    episode_ids = tuple.__getitem__(snapshot, 0)
+    evidence_source = tuple.__getitem__(snapshot, 1)
+    if (
+        type(episode_ids) is not tuple
+        or any(type(episode_id) is not int for episode_id in episode_ids)
+        or tuple(sorted(set(episode_ids))) != episode_ids
+    ):
+        raise PublicationStateError("snapshot episode ids have invalid stored state")
+    if (
+        type(evidence_source) is not str
+        or _normalize_snapshot_evidence_source(evidence_source) != evidence_source
+    ):
+        raise PublicationStateError("snapshot evidence source has invalid stored state")
+    return completeness, episode_ids, evidence_source
+
+
+def _provider_snapshot_to_details(snapshot: ProviderSnapshot) -> dict[str, Any]:
+    completeness, episode_ids, evidence_source = _trusted_provider_snapshot_values(snapshot)
+    details: dict[str, Any] = {"snapshot_completeness": completeness.value}
+    if episode_ids or completeness != SnapshotCompleteness.ABSENT:
+        details["pre_create_episode_ids"] = list(episode_ids)
+    if evidence_source is not None:
+        details["snapshot_evidence_source"] = evidence_source
+    return details
+
+
 @dataclass(frozen=True)
 class CreateSafetyState:
     provenance: CreateIntentProvenance
@@ -336,11 +370,12 @@ class CreateSafetyState:
     mutation_possibility: MutationPossibility
 
     def __post_init__(self) -> None:
-        if not isinstance(self.provenance, CreateIntentProvenance):
+        if type(self) is not CreateSafetyState:
+            raise PublicationStateError("create safety state must use the trusted concrete type")
+        if type(self.provenance) is not CreateIntentProvenance:
             raise PublicationStateError("create provenance must be explicit")
-        if not isinstance(self.snapshot, ProviderSnapshot):
-            raise PublicationStateError("snapshot must be a ProviderSnapshot")
-        if not isinstance(self.mutation_possibility, MutationPossibility):
+        _trusted_provider_snapshot_values(self.snapshot)
+        if type(self.mutation_possibility) is not MutationPossibility:
             raise PublicationStateError("mutation possibility must be explicit")
 
     @classmethod
@@ -380,11 +415,24 @@ class CreateSafetyState:
         )
 
     def to_details(self) -> dict[str, Any]:
-        return {
-            "create_provenance": self.provenance.value,
-            "mutation_possibility": self.mutation_possibility.value,
-            **self.snapshot.to_details(),
-        }
+        return _create_safety_state_to_details(self)
+
+
+def _create_safety_state_to_details(state: CreateSafetyState) -> dict[str, Any]:
+    if type(state) is not CreateSafetyState:
+        raise PublicationStateError("create safety state must use the trusted concrete type")
+    provenance = object.__getattribute__(state, "provenance")
+    snapshot = object.__getattribute__(state, "snapshot")
+    mutation_possibility = object.__getattribute__(state, "mutation_possibility")
+    if type(provenance) is not CreateIntentProvenance:
+        raise PublicationStateError("create provenance must be explicit")
+    if type(mutation_possibility) is not MutationPossibility:
+        raise PublicationStateError("mutation possibility must be explicit")
+    return {
+        "create_provenance": provenance.value,
+        "mutation_possibility": mutation_possibility.value,
+        **_provider_snapshot_to_details(snapshot),
+    }
 
 
 def _parse_snapshot_ids(raw_ids: Any) -> tuple[int, ...]:
@@ -718,15 +766,15 @@ def append_evidence(
     _rearmable_claim: bool = False,
 ) -> PublicationEvidence | None:
     validate_outcome(outcome)
-    if create_safety_state is not None and not isinstance(create_safety_state, CreateSafetyState):
-        raise PublicationStateError("create safety state must be validated")
+    if create_safety_state is not None and type(create_safety_state) is not CreateSafetyState:
+        raise PublicationStateError("create safety state must use the trusted concrete type")
     if details and _CREATE_SAFETY_DETAIL_KEYS.intersection(details):
         raise PublicationStateError(
             "create safety details must be persisted through create_safety_state"
         )
     safe_details = _safe_details(details) or {}
     if create_safety_state is not None:
-        safe_details.update(create_safety_state.to_details())
+        safe_details.update(_create_safety_state_to_details(create_safety_state))
     effective_verification = (
         "provider_readback" if confirmation_source and verification == "none" else verification
     )
