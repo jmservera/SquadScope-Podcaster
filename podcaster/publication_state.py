@@ -819,27 +819,43 @@ def append_evidence(
             if existing_key == dedupe_key:
                 duplicate_index = index
         if duplicate_index is not None:
-            if not _rearmable_claim:
-                return raw if raw is not None else legacy_raw or b""
-            retry_authorization: Mapping[str, Any] | None = None
-            for candidate in records[duplicate_index + 1 :]:
+            later_records = records[duplicate_index + 1 :]
+            for candidate in later_records:
                 if not isinstance(candidate, Mapping):
                     raise PublicationStateError("publication evidence contains a malformed record")
-                if (
-                    candidate.get("job_id") == identity.accepted_job_id
-                    and candidate.get("week") == identity.week
-                    and candidate.get("article_sha256") == identity.article_sha256
-                    and candidate.get("manifest_sha256") == identity.manifest_sha256
-                    and candidate.get("publish_run_id") == identity.publish_run_id
-                    and candidate.get("platform") == platform
-                    and candidate.get("media_kind") == media_kind
-                ):
+            same_target = [
+                candidate
+                for candidate in later_records
+                if candidate.get("job_id") == identity.accepted_job_id
+                and candidate.get("week") == identity.week
+                and candidate.get("article_sha256") == identity.article_sha256
+                and candidate.get("manifest_sha256") == identity.manifest_sha256
+                and candidate.get("publish_run_id") == identity.publish_run_id
+                and candidate.get("platform") == platform
+                and candidate.get("media_kind") == media_kind
+            ]
+            if not _rearmable_claim:
+                # An identical retry-authorizing outcome after a *later* claim is a
+                # new fact (each failed attempt must re-arm the next claim), not a
+                # replay; anything else is an idempotent duplicate.
+                later_claim = any(
+                    candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS
+                    for candidate in same_target
+                )
+                if retry_blocked or not later_claim:
+                    return raw if raw is not None else legacy_raw or b""
+            else:
+                retry_authorization: Mapping[str, Any] | None = None
+                for candidate in same_target:
                     if candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS:
                         retry_authorization = None
                     else:
                         retry_authorization = candidate
-            if retry_authorization is None or retry_authorization.get("retry_blocked") is not False:
-                return raw if raw is not None else legacy_raw or b""
+                if (
+                    retry_authorization is None
+                    or retry_authorization.get("retry_blocked") is not False
+                ):
+                    return raw if raw is not None else legacy_raw or b""
         next_seq = (
             max(
                 (
