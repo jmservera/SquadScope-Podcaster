@@ -21,3 +21,5 @@
 - 2026-06-07T20:52:01.950+00:00: Reviewer revision for PR #11/#7 caps deployment Function App names at 35 characters in workflow/Bicep so derived App Service Plan (`-plan`) and Log Analytics (`-law`) names remain Azure-compliant; optional app/storage overrides remain supported but unsafe values fail before deploy.
 
 📌 Team update (2026-06-07T20:52:01Z): Non-Bender PR #11 revision approved; naming constraints prevent Azure silent failures. CI green; ready for live prod/OIDC deploy and endpoint smoke test. — consolidated by Scribe from Bender, Hermes, Fry
+
+📌 Team update (2026-09-23T12:01:49Z): Fry accepted PR #684 at final SHA `6096d37`; Basher's stale `905a890` acceptance is superseded. Residual gates remain P05 deployment/W39 and P06 elapsed-cycle — decided by Fry.
