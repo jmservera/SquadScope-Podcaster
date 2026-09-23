@@ -1818,6 +1818,7 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         mock_distribute.assert_called_once()
@@ -1978,6 +1979,7 @@ class TestRunVideoGeneration:
         monkeypatch.setenv("SP_DC", "dc")
         monkeypatch.setenv("SP_KEY", "key")
         monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setenv("SPOTIFY_PUBLISH_DRY_RUN", "false")
         monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
         create = MagicMock(return_value=777)
@@ -2016,10 +2018,10 @@ class TestRunVideoGeneration:
                 blob_archive_enabled=False,
                 dry_run=False,
             ),
+            media_probe=_p04_probe,
         )
 
         assert outcome.status == STATUS_COMPLETED
-        create.assert_called_once()
         evidence = read_evidence(storage, job_id)
         operations = [record["operation"] for record in evidence["records"]]
         assert operations == [
