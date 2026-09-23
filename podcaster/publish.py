@@ -1579,6 +1579,7 @@ def _reconcile_or_create_draft(
     exclude_id: int | None = None,
     before_create: Callable[[ProviderSnapshot], None] | None = None,
     on_create_resolved: Callable[[int, bool], None] | None = None,
+    on_create_rejected: Callable[[SpotifyPublishError], None] | None = None,
     unresolved_create_intent_snapshot: ProviderSnapshot | None = None,
 ) -> tuple[int, bool]:
     """Return ``(anchor_id, needs_title)`` for the video draft carrying *title*.
@@ -1625,9 +1626,6 @@ def _reconcile_or_create_draft(
         before_create(snapshot)
     try:
         anchor_id = _create_episode(session, station_id)
-        if on_create_resolved is not None:
-            on_create_resolved(anchor_id, True)
-        return anchor_id, True
     except SpotifyDraftCreateAmbiguousError as exc:
         return _recover_ambiguous_create(
             session,
@@ -1640,6 +1638,16 @@ def _reconcile_or_create_draft(
             cause=exc,
             on_create_resolved=on_create_resolved,
         )
+    except SpotifyPublishError as exc:
+        # A definite rejection (401 or deterministic 4xx) of the create itself:
+        # per _create_episode no draft was created. Failures raised while
+        # *recovering* an ambiguous create never reach here — they stay unknown.
+        if on_create_rejected is not None:
+            on_create_rejected(exc)
+        raise
+    if on_create_resolved is not None:
+        on_create_resolved(anchor_id, True)
+    return anchor_id, True
 
 
 def _claim_draft_title(
@@ -2431,6 +2439,11 @@ def promote_spotify_video_draft(
         )
 
 
+# Evidence codes recorded only when ``_create_episode`` itself was definitively
+# rejected (no draft created). Any other failure leaves a create intent unknown.
+_DEFINITE_CREATE_REJECTION_CODES = frozenset({"credentials_expired", "create_rejected"})
+
+
 def _spotify_video_unresolved_create_intent_snapshot(
     document: Mapping[str, Any] | None,
     identity: PublicationIdentity,
@@ -2452,6 +2465,14 @@ def _spotify_video_unresolved_create_intent_snapshot(
         ):
             continue
         if record.get("provider_artifact_id") or record.get("provider_id"):
+            unresolved_snapshot = None
+            continue
+        if (
+            record.get("operation") == "create_episode_failure"
+            and record.get("code") in _DEFINITE_CREATE_REJECTION_CODES
+        ):
+            # The provider definitively rejected the create: nothing was created,
+            # so there is no unresolved create to recover (and nothing to adopt).
             unresolved_snapshot = None
             continue
         if record.get("operation") != "create_episode_intent":
@@ -2588,6 +2609,7 @@ def upload_video_to_episode(
     provider_resolution_persisted = False
     create_provenance = CreateIntentProvenance.RECONCILIATION_BACKED
     create_retry_authorized = False
+    create_rejection: str | None = None
     unresolved_create_intent_snapshot: ProviderSnapshot | None = None
     reconcile_enabled = _spotify_reconcile_enabled()
 
@@ -2690,16 +2712,15 @@ def upload_video_to_episode(
                 return
             safety = CreateSafetyState.reconciliation_backed(snapshot)
             try:
-                claim = append_evidence(
+                # Re-armable: a later definite create rejection (#693) authorizes
+                # exactly one new claim; concurrent contenders still get one.
+                claim = claim_evidence(
                     publication_storage,
                     publication_identity_context,
                     platform="spotify",
                     media_kind="video",
                     operation="create_episode_intent",
-                    outcome=PUBLICATION_UNKNOWN,
-                    mutation_attempted=False,
                     retry_blocked=False,
-                    code="mutation_intent",
                     details={
                         "show_id": show_id,
                         "station_id": station_id,
@@ -2865,6 +2886,67 @@ def upload_video_to_episode(
             create_resolved = created_by_attempt
             _persist_provider_resolution(anchor_id, created_by_attempt)
 
+        def _note_create_rejected(exc: SpotifyPublishError) -> None:
+            nonlocal create_rejection
+            create_rejection = (
+                "credentials_expired"
+                if isinstance(exc, SpotifyCredentialExpiredError)
+                else "create_rejected"
+            )
+
+        def _create_draft_unreconciled() -> int:
+            try:
+                return _create_episode(session, station_id)
+            except SpotifyDraftCreateAmbiguousError:
+                raise
+            except SpotifyPublishError as exc:
+                _note_create_rejected(exc)
+                raise
+
+        def _persist_create_failure(code: str, *, retry_blocked: bool, outcome: str) -> bool:
+            """Record a definite create rejection; fence fail-closed if that write fails."""
+            if (
+                not create_intent_persisted
+                or publication_storage is None
+                or publication_identity_context is None
+            ):
+                return True
+            try:
+                append_evidence(
+                    publication_storage,
+                    publication_identity_context,
+                    platform="spotify",
+                    media_kind="video",
+                    operation="create_episode_failure",
+                    outcome=outcome,
+                    mutation_attempted=True,
+                    retry_blocked=retry_blocked,
+                    code=code,
+                    details={"show_id": show_id, "station_id": station_id},
+                )
+            except Exception:
+                try:
+                    append_evidence(
+                        publication_storage,
+                        publication_identity_context,
+                        platform="spotify",
+                        media_kind="video",
+                        operation="create_episode_failure_fence",
+                        outcome=PUBLICATION_UNKNOWN,
+                        mutation_attempted=True,
+                        retry_blocked=True,
+                        code="create_evidence_persistence_failed",
+                        details={
+                            "show_id": show_id,
+                            "station_id": station_id,
+                            "failed_evidence_code": code,
+                        },
+                    )
+                except Exception:
+                    return False
+                return False
+            return True
+
         # Create or reconcile a separate video draft — never touch the audio one.
         if reconcile_enabled:
             try:
@@ -2881,6 +2963,7 @@ def upload_video_to_episode(
                     exclude_id=exclude_audio_id,
                     before_create=_persist_create_intent,
                     on_create_resolved=_mark_create_resolved,
+                    on_create_rejected=_note_create_rejected,
                     unresolved_create_intent_snapshot=unresolved_create_intent_snapshot,
                 )
             except SpotifyDraftReconcileError:
@@ -2892,7 +2975,7 @@ def upload_video_to_episode(
                     raise
                 reason = "draft reconcile failed before create"
                 _persist_unreconciled_create_intent(reason)
-                video_anchor_id, needs_title = _create_episode(session, station_id), True
+                video_anchor_id, needs_title = _create_draft_unreconciled(), True
                 create_resolved = True
                 _persist_provider_resolution(video_anchor_id, True)
         else:
@@ -2907,7 +2990,7 @@ def upload_video_to_episode(
                 )
             else:
                 _persist_unreconciled_create_intent("PODCASTER_SPOTIFY_RECONCILE disabled")
-            video_anchor_id, needs_title = _create_episode(session, station_id), True
+            video_anchor_id, needs_title = _create_draft_unreconciled(), True
             create_resolved = True
             _persist_provider_resolution(video_anchor_id, True)
 
@@ -3010,6 +3093,21 @@ def upload_video_to_episode(
         except Exception:  # pragma: no cover - defensive; notify never raises
             logger.warning("credential-expiry notification failed", exc_info=True)
             issue_number = None
+        # #693: a credential rejection of the create itself means no draft was
+        # created, so the corrected-credential retry is re-armed. Anything else
+        # before a draft id is known stays unknown (R2), never failed.
+        create_definitely_rejected = (
+            video_anchor_id is None and create_rejection == "credentials_expired"
+        )
+        evidence_persisted = (
+            _persist_create_failure(
+                "credentials_expired",
+                retry_blocked=False,
+                outcome=MANUAL_HANDOFF_REQUIRED,
+            )
+            if create_definitely_rejected
+            else True
+        )
         return PublishResult(
             status="failed",
             error=str(exc),
@@ -3025,6 +3123,8 @@ def upload_video_to_episode(
                 **(
                     {"retry_blocked": True, "code": "post_create_failure"}
                     if video_anchor_id is not None
+                    else {"retry_blocked": not evidence_persisted, "code": "credentials_expired"}
+                    if create_definitely_rejected
                     else (
                         {"retry_blocked": False, "code": "create_outcome_unknown"}
                         if create_intent_persisted
@@ -3034,7 +3134,9 @@ def upload_video_to_episode(
             },
             anchor_episode_id=video_anchor_id,
             outcome=(
-                PUBLICATION_UNKNOWN
+                MANUAL_HANDOFF_REQUIRED
+                if create_definitely_rejected and evidence_persisted
+                else PUBLICATION_UNKNOWN
                 if video_anchor_id is not None or create_intent_persisted
                 else None
             ),
@@ -3105,6 +3207,32 @@ def upload_video_to_episode(
                     else None
                 ),
                 details={"retry_blocked": True, "code": "post_create_failure"},
+            )
+        if create_rejection == "create_rejected":
+            # A deterministic rejection created nothing, but it will recur: keep
+            # the identity retry-blocked with a durable fact, never an adoption.
+            evidence_persisted = _persist_create_failure(
+                "create_rejected",
+                retry_blocked=True,
+                outcome=PUBLICATION_UNKNOWN,
+            )
+            return PublishResult(
+                status="failed",
+                error=str(exc),
+                outcome=PUBLICATION_UNKNOWN,
+                publish_run_id=(
+                    publication_identity_context.publish_run_id
+                    if publication_identity_context is not None
+                    else None
+                ),
+                details={
+                    "retry_blocked": True,
+                    "code": (
+                        "create_rejected"
+                        if evidence_persisted
+                        else "create_evidence_persistence_failed"
+                    ),
+                },
             )
         return PublishResult(
             status="failed",

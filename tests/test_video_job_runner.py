@@ -1156,7 +1156,7 @@ class TestRunVideoGeneration:
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
-    def test_spotify_video_credential_rejection_does_not_override_unresolved_create(
+    def test_spotify_video_credential_rejection_resolves_reconciled_create_intent(
         self, mock_compose, mock_record, storage, monkeypatch
     ):
         import podcaster.publish as pub
@@ -1267,11 +1267,23 @@ class TestRunVideoGeneration:
             ),
         )
 
-        assert outcome.status == STATUS_FAILED
-        create.assert_not_called()
+        # #693 under the redesign: a definite credential rejection of the create
+        # means no draft exists, so it resolves even a reconciliation-backed
+        # intent and re-arms exactly one retry-authorized create. (Formerly
+        # ``..._does_not_override_unresolved_create``, which encoded the lost
+        # re-arm.) A fresh RECONCILE=0 create without the override still fails
+        # closed; see the unreconciled override tests.
+        assert outcome.status == STATUS_COMPLETED
+        create.assert_called_once()
         evidence = read_evidence(storage, job_id)
-        operations = [record["operation"] for record in evidence["records"]]
-        assert operations == ["create_episode_intent", "create_episode_failure"]
+        records = evidence["records"]
+        assert [record["operation"] for record in records[:3]] == [
+            "create_episode_intent",
+            "create_episode_failure",
+            "create_episode_intent",
+        ]
+        assert records[2]["details"]["create_provenance"] == "upload_dispatch"
+        assert records[3]["provider_artifact_id"] == "777"
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
