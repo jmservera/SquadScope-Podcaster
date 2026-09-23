@@ -212,27 +212,33 @@ episode (`anchor_id`) is always excluded from the match.
 > invariant holds against listing schemas this code understands; anything it
 > cannot read fails the publish closed instead of guessing.
 
-The listing endpoint **requires `userId` as a query parameter**:
+The current readback listing contract is the Spotify for Creators GraphQL
+persisted-query endpoint:
 
 ```text
-GET /v3/stations/{stationId}/episodes?userId={userId}&isMumsCompatible=true
+POST https://creators-graph.spotify.com/v2/graph-pq
+operationName=WebGetIndexedEpisodeList
+variables.showUri=spotify:show:{SPOTIFY_SHOW_ID}
+variables.pageSize=100
+variables.pageToken=""
 ```
 
-Omitting it returns `HTTP 400 {"property":"query.userId","message":"is required"}`.
-`userId` comes from `_resolve_legacy_ids` together with `stationId`.
+The older Anchor REST station listing (`GET /v3/stations/{stationId}/episodes`,
+with or without `userId`) is stale for this workflow and must not be treated as
+proof of absence when it errors.
 
 A lookup that fails (HTTP error, transport error, malformed JSON, missing
 identity) raises `SpotifyDraftReconcileError` and fails the publish. So does a
 listing whose *schema* this code cannot read — an unknown container, an error
 body, a non-array episode field, a renamed title/id/state field, or a non-object
 entry. `None` ("no draft exists") is only sound when every entry of a recognised
-container was understood **and** the listing carried no pagination hint (see
-[Pagination](#pagination-unimplemented-unverified) — by default a hint only
-warns, so `None` then means "no match on the page that was read"); a recognised
-**empty** array is still a legitimate no-match. An entry whose title is present
-but null is understood as an untitled draft (no match). Entries whose id is the
-excluded audio anchor are skipped *before* any state or title classification, so
-a scheduled or processing audio episode can never fail the video lookup.
+container was understood **and** all cursor pages were fetched; a recognised
+**empty** array is still a legitimate no-match. A next-page signal without a
+usable cursor, a failed later page, or a repeated cursor fails closed rather than
+returning a partial list. An entry whose title is present but null is understood
+as an untitled draft (no match). Entries whose id is the excluded audio anchor
+are skipped *before* any state or title classification, so a scheduled or
+processing audio episode can never fail the video lookup.
 Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
@@ -365,19 +371,17 @@ client-side: the Anchor v5 API exposes no idempotency key. What is closed is the
 common case — a crash during the multi-minute upload — because the draft is
 titled before the upload starts and reconcile finds it on the next run.
 
-#### Pagination (unimplemented, unverified)
+#### Pagination
 
-The listing is fetched with a single unpaginated GET. Whether the endpoint pages
-at all — and under which key — is unknown. When the response carries a truthy
-`hasMore`/`hasNextPage`/`nextPageToken`/`nextPage` key **and** no match was
-found, a warning is logged naming the key; the publish is *not* blocked, because
-hard-failing on a guessed key name could block every new video publish. Operators
-who have confirmed the contract for their show can opt into fail-closed
-behaviour with `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1`.
+The GraphQL listing is cursor-paginated. `_fetch_episode_listing` follows
+`nextPageToken` / `nextPage` / `pageInfo.endCursor` while
+`hasMore` / `hasNextPage` is true. Any page-fetch error, missing cursor,
+non-string cursor, or repeated cursor raises `SpotifyDraftReconcileError`; a
+partial read is never returned as a complete empty listing.
 
 #### Credential expiry
 
-A 401/403 anywhere in the video path raises `SpotifyCredentialExpiredError`,
+A 401 in the video path raises `SpotifyCredentialExpiredError`,
 which `upload_video_to_episode` converts into an operator credential-expiry
 notification (`notify_credential_expiry`, #364) and a result carrying
 `details.credentials_expired` — the same handling the audio publish path has.
@@ -891,7 +895,6 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
 | `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` skips the existing-draft lookup *and* the immediate title claim, restoring blind create (§5). |
-| `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults off. `1`/`true`/`yes`/`on` makes an explicitly paginated listing with no first-page match fail closed instead of warning (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,

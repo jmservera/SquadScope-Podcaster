@@ -1628,8 +1628,8 @@ class TestUploadVideoToEpisode:
         create.assert_called_once_with(session, "99")
         assert session.request.call_count == 0
 
-    def test_reconcile_sends_resolved_user_id(self, tmp_path, monkeypatch):
-        """The episode listing must carry the resolved userId (#656)."""
+    def test_reconcile_uses_resolved_show_id_for_listing(self, tmp_path, monkeypatch):
+        """The episode listing must carry the resolved show id for GraphQL."""
         import podcaster.publish as pub
 
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
@@ -1647,7 +1647,7 @@ class TestUploadVideoToEpisode:
 
         assert result.anchor_episode_id == 777
         _, kwargs = session.request.call_args
-        assert kwargs["params"]["userId"] == "7"
+        assert kwargs["json"]["variables"]["showUri"] == "spotify:show:show1"
 
     def test_reconcile_lookup_failure_does_not_create_duplicate(self, tmp_path, monkeypatch):
         """A failed lookup must fail the publish, never blind-create a duplicate."""
@@ -2049,6 +2049,19 @@ class TestGetEpisodePublicationState:
 
         assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is None
 
+    def test_overview_route_and_403_unpublished_not_expired(self):
+        """jmservera/SquadScope-Podcaster#685: overview 403 is draft/unpublished readback."""
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_error_resp(403, "forbidden")
+
+        assert pub._get_episode_publication_state(session, self.ANCHOR_ID, user_id="7") is False
+        args, kwargs = session.request.call_args
+        assert args[0] == "GET"
+        assert args[1].endswith(f"/v3/episodes/{self.ANCHOR_ID}/overview")
+        assert kwargs["params"] == {"returnWebIds": "true", "isMumsCompatible": "true"}
+
 
 def _mock_error_resp(status_code: int, body: str) -> MagicMock:
     """A response whose raise_for_status raises an HTTPError, like requests does."""
@@ -2072,18 +2085,26 @@ class TestFindExistingDraft:
         session.request.return_value = _mock_json_resp(payload)
         return session
 
-    def test_sends_user_id_in_query(self):
+    def test_uses_graphql_episode_index_contract(self):
         from podcaster import publish as pub
 
         session = self._session({"episodes": []})
         assert (
-            pub._find_existing_draft(session, "99", "My Show", user_id="7", exclude_id=None) is None
+            pub._find_existing_draft(
+                session, "99", "My Show", user_id="7", show_id="show1", exclude_id=None
+            )
+            is None
         )
 
         args, kwargs = session.request.call_args
-        assert args[0] == "GET"
-        assert args[1].endswith("/v3/stations/99/episodes")
-        assert kwargs["params"] == {"userId": "7", "isMumsCompatible": "true"}
+        assert args[0] == "POST"
+        assert args[1] == pub._SPOTIFY_CREATORS_GRAPHQL_URL
+        assert kwargs["json"]["operationName"] == "WebGetIndexedEpisodeList"
+        assert kwargs["json"]["variables"] == {
+            "showUri": "spotify:show:show1",
+            "pageSize": pub._EPISODE_LIST_PAGE_SIZE,
+            "pageToken": "",
+        }
 
     def test_returns_matching_draft(self):
         from podcaster import publish as pub
@@ -2122,6 +2143,16 @@ class TestFindExistingDraft:
         session = self._session({"episodes": []})
         assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
 
+    def test_empty_listing_is_distinct_from_graphql_error(self):
+        from podcaster import publish as pub
+
+        empty = self._session({"data": {"webGetIndexedEpisodeList": {"episodes": []}}})
+        assert pub._find_existing_draft(empty, "99", "My Show", user_id="7") is None
+
+        errored = self._session({"errors": [{"message": "boom"}]})
+        with pytest.raises(pub.SpotifyDraftReconcileError):
+            pub._find_existing_draft(errored, "99", "My Show", user_id="7")
+
     def test_missing_user_id_is_explicit_and_makes_no_request(self):
         from podcaster import publish as pub
 
@@ -2145,6 +2176,25 @@ class TestFindExistingDraft:
         # Sanitized: no response body, cookies or tokens echoed into the message.
         assert "query.userId" not in message
 
+    @pytest.mark.parametrize("status_code", [400, 403, 500])
+    def test_listing_http_errors_fail_closed_and_are_not_empty(self, status_code):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_error_resp(status_code, "provider error")
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+        assert f"HTTP {status_code}" in str(exc.value)
+
+    def test_listing_403_is_not_classified_as_expired_credentials(self):
+        """jmservera/SquadScope-Podcaster#685: 403 readback/listing can be state/permission."""
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.return_value = _mock_error_resp(403, "forbidden")
+        with pytest.raises(pub.SpotifyDraftReconcileError):
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+
     def test_malformed_json_raises(self):
         from podcaster import publish as pub
 
@@ -2157,37 +2207,41 @@ class TestFindExistingDraft:
         with pytest.raises(pub.SpotifyDraftReconcileError):
             pub._find_existing_draft(session, "99", "My Show", user_id="7")
 
-    def test_truncated_listing_warns_but_does_not_block_by_default(self, caplog):
-        """The paging contract is unverified — a guessed key must not gate publishes."""
-        import logging
-
+    def test_truncated_listing_raises_instead_of_returning_partial_absence(self):
         from podcaster import publish as pub
 
-        session = self._session({"episodes": [], "hasMore": True})
-        with caplog.at_level(logging.WARNING, logger="podcaster.publish"):
-            assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
-        assert "hasMore" in caplog.text
-        assert "Pagination is NOT implemented" in caplog.text
-
-    def test_truncated_listing_raises_when_strict_paging_opted_in(self, monkeypatch):
-        from podcaster import publish as pub
-
-        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING", "1")
         session = self._session({"episodes": [], "hasMore": True})
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
             pub._find_existing_draft(session, "99", "My Show", user_id="7")
-        assert "further pages" in str(exc.value)
+        assert "cursor" in str(exc.value)
 
-    def test_truncated_listing_still_returns_match_on_first_page(self, monkeypatch):
+    def test_paginated_listing_fetches_all_pages_before_absence(self):
         from podcaster import publish as pub
 
-        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING", "1")
-        session = self._session(
-            {
-                "episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}],
-                "nextPageToken": "abc",
-            }
-        )
+        session = MagicMock()
+        session.request.side_effect = [
+            _mock_json_resp({"episodes": [], "hasMore": True, "nextPageToken": "cursor-2"}),
+            _mock_json_resp(
+                {"episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}]}
+            ),
+        ]
+        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
+        second_call_vars = session.request.call_args_list[1].kwargs["json"]["variables"]
+        assert second_call_vars["pageToken"] == "cursor-2"
+
+    def test_paginated_listing_still_returns_match_on_first_page(self):
+        from podcaster import publish as pub
+
+        session = MagicMock()
+        session.request.side_effect = [
+            _mock_json_resp(
+                {
+                    "episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}],
+                    "nextPageToken": "abc",
+                }
+            ),
+            _mock_json_resp({"episodes": []}),
+        ]
         assert pub._find_existing_draft(session, "99", "My Show", user_id="7") == 888
 
     def test_transport_error_raises(self):
@@ -2347,7 +2401,7 @@ class TestEpisodeDraftState:
 
     @pytest.mark.parametrize(
         "token",
-        ["scheduled", "processing", "publishing", "archived", "error", "DRAFTED", "unpublished"],
+        ["processing", "publishing", "archived", "error", "DRAFTED"],
     )
     def test_unknown_status_token_fails_closed(self, token):
         """An unrecognised state is an error, not an implied 'not a draft'."""
@@ -2363,8 +2417,8 @@ class TestEpisodeDraftState:
         from podcaster import publish as pub
 
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            self._lookup({"episodeId": 1, "title": "My Show", "state": "scheduled"})
-        assert "scheduled" in str(exc.value)
+            self._lookup({"episodeId": 1, "title": "My Show", "state": "processing"})
+        assert "processing" in str(exc.value)
         assert "'state'" in str(exc.value)
 
     def test_unprintable_status_token_is_not_echoed(self):
@@ -2418,7 +2472,13 @@ class TestEpisodeDraftState:
         ("label", "episode"),
         [
             ("status draft", {"episodeId": 1, "title": "My Show", "status": "draft"}),
+            ("status scheduled", {"episodeId": 1, "title": "My Show", "status": "scheduled"}),
+            (
+                "state unpublished",
+                {"episodeId": 1, "title": "My Show", "state": "unpublished"},
+            ),
             ("isDraft true", {"episodeId": 1, "title": "My Show", "isDraft": True}),
+            ("isPublished false", {"episodeId": 1, "title": "My Show", "isPublished": False}),
             (
                 "isPublished false corroborated by isDraft",
                 {"episodeId": 1, "title": "My Show", "isPublished": False, "isDraft": True},
@@ -2474,12 +2534,12 @@ class TestEpisodeDraftState:
 
 
 class TestIsPublishedIsAsymmetricEvidence:
-    """#656 review: ``isPublished: false`` alone does not prove a draft.
+    """Current listing contract: ``isPublished: false`` is unpublished evidence.
 
     ``isPublished`` is the field this integration *writes*, so ``true``
-    reliably means "not a draft". ``false`` only means "not published": a
-    scheduled, processing or errored episode is unpublished without being a
-    draft, and reusing one of those as the video draft would overwrite it.
+    reliably means "not a draft". The repaired listing path is used to prevent
+    duplicate non-public episodes, so ``false`` is treated as a draft/scheduled/
+    unpublished match rather than as absence.
     """
 
     def _lookup(self, episode, **kwargs):
@@ -2489,15 +2549,8 @@ class TestIsPublishedIsAsymmetricEvidence:
         session.request.return_value = _mock_json_resp({"episodes": [episode]})
         return pub._find_existing_draft(session, "99", "My Show", user_id="7", **kwargs)
 
-    def test_is_published_false_alone_is_not_a_draft_signal(self):
-        from podcaster import publish as pub
-
-        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
-            self._lookup({"episodeId": 1, "title": "My Show", "isPublished": False})
-        message = str(exc.value)
-        assert "no recognised draft/published state" in message
-        assert "isPublished" in message
-        assert "duplicate draft" in message
+    def test_is_published_false_alone_matches_non_public_episode(self):
+        assert self._lookup({"episodeId": 1, "title": "My Show", "isPublished": False}) == 1
 
     @pytest.mark.parametrize(
         "corroboration",
@@ -2518,14 +2571,14 @@ class TestIsPublishedIsAsymmetricEvidence:
             self._lookup({"episodeId": 1, "title": "My Show", "isPublished": True, "isDraft": True})
         assert "contradictory" in str(exc.value)
 
-    def test_is_published_false_never_contradicts_a_published_status(self):
-        """``false`` contributes nothing, so it cannot manufacture a conflict."""
-        assert (
+    def test_is_published_false_contradicting_published_status_fails_closed(self):
+        from podcaster import publish as pub
+
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
             self._lookup(
                 {"episodeId": 1, "title": "My Show", "isPublished": False, "status": "published"}
             )
-            is None
-        )
+        assert "contradictory" in str(exc.value)
 
 
 class TestExcludedEntriesAreSkippedBeforeClassification:
@@ -2561,13 +2614,11 @@ class TestExcludedEntriesAreSkippedBeforeClassification:
         payload = {"episodes": [{"episodeId": 555, "title": "My Show", "status": "scheduled"}]}
         assert self._lookup(payload, exclude_id=555) is None
 
-    def test_a_non_excluded_unknown_state_still_fails_closed(self):
+    def test_a_non_excluded_scheduled_state_matches(self):
         """Skipping is scoped to ``exclude_id``; everything else is classified."""
-        from podcaster import publish as pub
 
         payload = {"episodes": [{"episodeId": 777, "title": "My Show", "status": "scheduled"}]}
-        with pytest.raises(pub.SpotifyDraftReconcileError):
-            self._lookup(payload, exclude_id=555)
+        assert self._lookup(payload, exclude_id=555) == 777
 
 
 class TestEpisodeAnchorId:
@@ -2885,7 +2936,7 @@ class TestAmbiguousCreateRecovery:
             ]
         )
         pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
-        listings = [m for m, _ in calls if m == "GET"]
+        listings = [url for _m, url in calls if url == pub._SPOTIFY_CREATORS_GRAPHQL_URL]
         assert len(listings) == pub._AMBIGUOUS_CREATE_READS + 1
 
     def test_ambiguous_evidence_skips_the_settling_read(self):
@@ -2904,7 +2955,7 @@ class TestAmbiguousCreateRecovery:
         )
         with pytest.raises(pub.SpotifyDraftReconcileError):
             pub._reconcile_or_create_draft(session, "99", user_id="7", title="My Show")
-        assert len([m for m, _ in calls if m == "GET"]) == 2
+        assert len([url for _m, url in calls if url == pub._SPOTIFY_CREATORS_GRAPHQL_URL]) == 2
 
     def test_second_create_is_never_retried_either(self):
         """Two ambiguous creates in a row stop at two POSTs, not four."""
