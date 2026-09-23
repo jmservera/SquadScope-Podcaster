@@ -530,6 +530,28 @@ def test_complete_provider_snapshot_requires_evidence_source():
         ProviderSnapshot.complete([1, 2, 3], evidence_source="")
 
 
+def test_complete_provider_snapshot_rejects_whitespace_only_evidence_source():
+    with pytest.raises(PublicationStateError):
+        ProviderSnapshot.complete([1], evidence_source="   ")
+
+
+def test_complete_provider_snapshot_rejects_truthy_non_string_evidence_source():
+    class TruthySource:
+        def __bool__(self):
+            return True
+
+    for source in (123, TruthySource()):
+        with pytest.raises(PublicationStateError):
+            ProviderSnapshot((1,), SnapshotCompleteness.COMPLETE, source)
+
+
+def test_provider_snapshot_subclasses_cannot_widen_evidence_source_behavior():
+    with pytest.raises(TypeError, match="ProviderSnapshot cannot be subclassed"):
+
+        class SubSnapshot(ProviderSnapshot):
+            pass
+
+
 def test_complete_snapshot_deserialization_without_evidence_fails_closed_to_absent():
     state = create_safety_state_from_record(
         {
@@ -561,6 +583,46 @@ def test_complete_provider_snapshot_tampered_evidence_source_fails_closed():
 
     assert snapshot.completeness == SnapshotCompleteness.TRUNCATED
     assert snapshot.to_details()["snapshot_completeness"] == "truncated"
+
+
+def test_complete_provider_snapshot_whitespace_mutation_fails_closed():
+    snapshot = ProviderSnapshot.complete([1], evidence_source="test_listing")
+
+    object.__setattr__(snapshot, "evidence_source", "   ")
+
+    assert snapshot.completeness == SnapshotCompleteness.TRUNCATED
+    assert snapshot.to_details() == {
+        "snapshot_completeness": "truncated",
+        "pre_create_episode_ids": [1],
+    }
+
+
+def test_tampered_snapshot_serialization_fails_closed_before_durable_evidence():
+    storage = MemoryStorage()
+    snapshot = ProviderSnapshot.complete([1], evidence_source="test_listing")
+    object.__setattr__(snapshot, "evidence_source", "   ")
+    safety = CreateSafetyState.reconciliation_backed(snapshot)
+
+    append_evidence(
+        storage,
+        identity(),
+        platform="spotify",
+        media_kind="video",
+        operation="create_episode_intent",
+        outcome=PUBLICATION_UNKNOWN,
+        mutation_attempted=False,
+        retry_blocked=False,
+        code="mutation_intent",
+        details=safety.to_details(),
+    )
+
+    details = read_evidence(storage, identity().accepted_job_id)["records"][0]["details"]
+    assert details == {
+        "create_provenance": "reconciliation_backed",
+        "mutation_possibility": "not_possible",
+        "snapshot_completeness": "truncated",
+        "pre_create_episode_ids": [1],
+    }
 
 
 def test_absent_provider_snapshot_cannot_carry_episode_ids():

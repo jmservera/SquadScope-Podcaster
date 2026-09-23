@@ -8,7 +8,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, final
 
 from podcaster.job_logs import LogLevel, emit_log
 
@@ -117,11 +117,22 @@ class MutationPossibility(str, Enum):
     CONFIRMED = "confirmed"
 
 
+def _normalize_snapshot_evidence_source(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+@final
 @dataclass(frozen=True, init=False)
 class ProviderSnapshot:
     episode_ids: tuple[int, ...]
     _completeness: SnapshotCompleteness
     evidence_source: str | None = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        raise TypeError("ProviderSnapshot cannot be subclassed")
 
     def __init__(
         self,
@@ -136,7 +147,10 @@ class ProviderSnapshot:
 
     @property
     def completeness(self) -> SnapshotCompleteness:
-        if self._completeness == SnapshotCompleteness.COMPLETE and not self.evidence_source:
+        if (
+            self._completeness == SnapshotCompleteness.COMPLETE
+            and _normalize_snapshot_evidence_source(self.evidence_source) is None
+        ):
             return (
                 SnapshotCompleteness.TRUNCATED if self.episode_ids else SnapshotCompleteness.ABSENT
             )
@@ -155,6 +169,8 @@ class ProviderSnapshot:
                 raise PublicationStateError("snapshot episode id is unreadable") from exc
         unique_sorted_ids = tuple(sorted(set(normalized_ids)))
         object.__setattr__(self, "episode_ids", unique_sorted_ids)
+        normalized_source = _normalize_snapshot_evidence_source(self.evidence_source)
+        object.__setattr__(self, "evidence_source", normalized_source)
         if len(unique_sorted_ids) != len(normalized_ids):
             raise PublicationStateError("snapshot episode ids must be unique")
         if self._completeness == SnapshotCompleteness.ABSENT and unique_sorted_ids:
@@ -165,7 +181,7 @@ class ProviderSnapshot:
                 SnapshotCompleteness.TRUNCATED,
                 SnapshotCompleteness.COMPLETE,
             )
-            and not self.evidence_source
+            and normalized_source is None
         ):
             raise PublicationStateError("observed snapshot requires an evidence source")
 
@@ -192,6 +208,7 @@ class ProviderSnapshot:
         return cls(tuple(episode_ids), SnapshotCompleteness.COMPLETE, evidence_source)
 
     def to_details(self) -> dict[str, Any]:
+        evidence_source = _normalize_snapshot_evidence_source(self.evidence_source)
         details: dict[str, Any] = {
             "snapshot_completeness": self.completeness.value,
         }
@@ -199,8 +216,8 @@ class ProviderSnapshot:
             details["pre_create_episode_ids"] = list(self.episode_ids)
         elif self.completeness != SnapshotCompleteness.ABSENT:
             details["pre_create_episode_ids"] = []
-        if self.evidence_source:
-            details["snapshot_evidence_source"] = self.evidence_source
+        if evidence_source and self.completeness != SnapshotCompleteness.ABSENT:
+            details["snapshot_evidence_source"] = evidence_source
         return details
 
 
