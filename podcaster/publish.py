@@ -2401,6 +2401,7 @@ def promote_spotify_video_draft(
 
 def _spotify_video_unresolved_create_intent_snapshot(
     document: Mapping[str, Any] | None,
+    identity: PublicationIdentity,
 ) -> tuple[set[int], bool] | None:
     records = document.get("records") if isinstance(document, Mapping) else None
     if not isinstance(records, list):
@@ -2410,6 +2411,11 @@ def _spotify_video_unresolved_create_intent_snapshot(
             not isinstance(record, Mapping)
             or record.get("platform") != "spotify"
             or record.get("media_kind") != "video"
+            or record.get("job_id") != identity.accepted_job_id
+            or record.get("week") != identity.week
+            or record.get("publish_run_id") != identity.publish_run_id
+            or record.get("article_sha256") != identity.article_sha256
+            or record.get("manifest_sha256") != identity.manifest_sha256
         ):
             continue
         if record.get("provider_artifact_id") or record.get("provider_id"):
@@ -2593,7 +2599,10 @@ def upload_video_to_episode(
             if not create_retry_authorized:
                 try:
                     unresolved_create_intent_snapshot = (
-                        _spotify_video_unresolved_create_intent_snapshot(prior_evidence)
+                        _spotify_video_unresolved_create_intent_snapshot(
+                            prior_evidence,
+                            publication_identity_context,
+                        )
                     )
                 except SpotifyDraftReconcileError as exc:
                     return PublishResult(
@@ -2647,6 +2656,7 @@ def upload_video_to_episode(
             *,
             retry_blocked: bool,
             outcome: str,
+            mutation_attempted: bool,
         ) -> bool:
             if (
                 not create_intent_persisted
@@ -2662,12 +2672,35 @@ def upload_video_to_episode(
                     media_kind="video",
                     operation="create_episode_failure",
                     outcome=outcome,
-                    mutation_attempted=False,
+                    mutation_attempted=mutation_attempted,
                     retry_blocked=retry_blocked,
                     code=code,
                     details={"show_id": show_id, "station_id": station_id},
                 )
             except Exception:
+                try:
+                    append_evidence(
+                        publication_storage,
+                        publication_identity_context,
+                        platform="spotify",
+                        media_kind="video",
+                        operation="create_episode_failure_fence",
+                        outcome=PUBLICATION_UNKNOWN,
+                        mutation_attempted=mutation_attempted,
+                        retry_blocked=True,
+                        code="create_evidence_persistence_failed",
+                        details={
+                            "show_id": show_id,
+                            "station_id": station_id,
+                            "failed_evidence_code": code,
+                        },
+                    )
+                except Exception as fence_exc:
+                    raise SpotifyMutationEvidenceError(
+                        "Publication evidence could not record the Spotify create "
+                        "failure; retry remains unsafe.",
+                        code="create_evidence_persistence_failed",
+                    ) from fence_exc
                 return False
             return True
 
@@ -2846,6 +2879,7 @@ def upload_video_to_episode(
                 outcome=(
                     PUBLICATION_UNKNOWN if ambiguous_recovery_blocked else MANUAL_HANDOFF_REQUIRED
                 ),
+                mutation_attempted=True,
             )
             if pre_create_retryable or ambiguous_recovery_blocked
             else True
@@ -2932,6 +2966,7 @@ def upload_video_to_episode(
                 "create_rejected",
                 retry_blocked=True,
                 outcome=PUBLICATION_UNKNOWN,
+                mutation_attempted=True,
             )
             return PublishResult(
                 status="failed",
