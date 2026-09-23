@@ -4638,6 +4638,277 @@ class TestEpisodeListingSchema:
         assert "GraphQL" in str(exc.value)
 
 
+_LIVE_SORTABLE = [
+    "TITLE",
+    "PUBLISHED_ON",
+    "CONTENT_TYPE",
+    "DURATION_MS",
+    "AD_COUNT",
+    "CREATED_ON",
+    "PLAY_COUNT",
+    "START_COUNT",
+    "LISTENERS",
+    "PLAYS_AND_DOWNLOADS",
+]
+
+
+def _live_draft_item(episode_id, title):
+    """An item in the shape the live ``WebGetIndexedEpisodeList`` returned (2026-09)."""
+    return {
+        "episodeId": episode_id,
+        "title": title,
+        "uri": f"spotify:episode:{episode_id}",
+        "contentType": "EPISODE_CONTENT_TYPE_VIDEO",
+        "episodeType": "EPISODE_TYPE_FULL",
+        "createdOn": {"seconds": "1790197835"},
+        "publishedOn": None,
+        "asset": {"downloadUrl": None, "lengthMs": "364691", "mediaFiles": []},
+        "clips": {"clips": []},
+        "isSpotifyExclusive": False,
+        "paywall": {"isPaywallContent": False},
+    }
+
+
+def _live_listing_payload(
+    items, *, current_page=1, total_items=None, total_pages=None, index_status="COMPLETED"
+):
+    """``episodesV2`` in the live shape: ``indexStatus, items, pagination, sortable``."""
+    if total_items is None:
+        total_items = len(items)
+    if total_pages is None:
+        total_pages = (total_items + 49) // 50
+    return {
+        "data": {
+            "showByShowUri": {
+                "episodesV2": {
+                    "indexStatus": index_status,
+                    "items": items,
+                    "pagination": {
+                        "currentPage": current_page,
+                        "pageSize": 50,
+                        "totalItems": total_items,
+                        "totalPages": total_pages,
+                    },
+                    "sortable": list(_LIVE_SORTABLE),
+                }
+            }
+        }
+    }
+
+
+class TestLiveEpisodeListingShape:
+    """The 2026-09 listing adds ``sortable`` and reports an empty listing as 0 pages."""
+
+    TITLE = "Target Video | W39"
+
+    def _session(self, *payloads):
+        session = MagicMock()
+        session.request.side_effect = [_mock_json_resp(payload) for payload in payloads]
+        return session
+
+    def _reconcile(self, monkeypatch, session, create_id=None):
+        from podcaster import publish as pub
+
+        create = MagicMock(return_value=create_id)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        result = pub._reconcile_or_create_draft(
+            session, "99", user_id="7", show_id="show1", title=self.TITLE
+        )
+        return result, create
+
+    def test_observed_empty_draft_listing_proves_absence(self, monkeypatch):
+        # Exact pagination the live DRAFT_EPISODES read returned for W39.
+        session = self._session(_live_listing_payload([], total_items=0, total_pages=0))
+        result, create = self._reconcile(monkeypatch, session, create_id=4242)
+        assert result == (4242, True)
+        create.assert_called_once()
+        assert session.request.call_count == 1
+
+    def test_single_page_without_match_proves_absence(self, monkeypatch):
+        items = [_live_draft_item(1000 + i, f"Other {i}") for i in range(17)]
+        session = self._session(_live_listing_payload(items))
+        result, create = self._reconcile(monkeypatch, session, create_id=4242)
+        assert result == (4242, True)
+        create.assert_called_once()
+
+    def test_existing_matching_draft_is_adopted_without_create(self, monkeypatch):
+        items = [_live_draft_item(1001, "Other"), _live_draft_item(126212999, self.TITLE)]
+        session = self._session(_live_listing_payload(items))
+        result, create = self._reconcile(monkeypatch, session)
+        assert result == (126212999, False)
+        create.assert_not_called()
+
+    def test_multiple_pages_are_followed_to_find_match_on_last_page(self, monkeypatch):
+        first = [_live_draft_item(1000 + i, f"Other {i}") for i in range(50)]
+        second = [_live_draft_item(2000, self.TITLE)]
+        session = self._session(
+            _live_listing_payload(first, total_items=51),
+            _live_listing_payload(second, current_page=2, total_items=51),
+        )
+        result, create = self._reconcile(monkeypatch, session)
+        assert result == (2000, False)
+        create.assert_not_called()
+        pages = [
+            call.kwargs["json"]["variables"]["currentPage"]
+            for call in session.request.call_args_list
+        ]
+        assert pages == [1, 2]
+
+    def test_multiple_pages_without_match_prove_absence_only_after_last_page(self, monkeypatch):
+        first = [_live_draft_item(1000 + i, f"Other {i}") for i in range(50)]
+        second = [_live_draft_item(2000 + i, f"More {i}") for i in range(3)]
+        session = self._session(
+            _live_listing_payload(first, total_items=53),
+            _live_listing_payload(second, current_page=2, total_items=53),
+        )
+        result, create = self._reconcile(monkeypatch, session, create_id=4242)
+        assert result == (4242, True)
+        create.assert_called_once()
+        assert session.request.call_count == 2
+
+    @pytest.mark.parametrize(
+        "index_status",
+        ["INDEXING", "IN_PROGRESS", "PENDING", "PARTIAL", "NOT_INDEXED", "completed", "", None, 1],
+    )
+    def test_not_fully_indexed_listing_never_authorizes_create(self, monkeypatch, index_status):
+        from podcaster import publish as pub
+
+        session = self._session(
+            _live_listing_payload([], total_items=0, total_pages=0, index_status=index_status)
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="index is not complete"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    def test_later_page_not_fully_indexed_never_authorizes_create(self, monkeypatch):
+        from podcaster import publish as pub
+
+        first = [_live_draft_item(1000 + i, f"Other {i}") for i in range(50)]
+        session = self._session(
+            _live_listing_payload(first, total_items=51),
+            _live_listing_payload(
+                [_live_draft_item(2000, "More")],
+                current_page=2,
+                total_items=51,
+                index_status="INDEXING",
+            ),
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="index is not complete"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    @pytest.mark.parametrize(
+        ("pages", "match"),
+        [
+            pytest.param(
+                [_live_listing_payload([], total_items=1, total_pages=0)],
+                "pagination is inconsistent",
+                id="zero-pages-but-items-counted",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1, "Other")], total_items=0, total_pages=0
+                    )
+                ],
+                "pagination is inconsistent",
+                id="zero-pages-but-items-returned",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1000 + i, "Other") for i in range(49)],
+                        total_items=51,
+                    )
+                ],
+                "pagination is inconsistent",
+                id="short-first-page",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1000 + i, "Other") for i in range(50)],
+                        total_items=51,
+                    ),
+                    _live_listing_payload([], current_page=2, total_items=51),
+                ],
+                "pagination is inconsistent",
+                id="truncated-last-page",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1000 + i, "Other") for i in range(50)],
+                        total_items=51,
+                    ),
+                    _live_listing_payload(
+                        [_live_draft_item(2000 + i, "More") for i in range(50)],
+                        current_page=2,
+                        total_items=100,
+                    ),
+                ],
+                "count metadata changed",
+                id="count-changed-between-pages",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1000 + i, "Other") for i in range(50)],
+                        total_items=51,
+                    ),
+                    _live_listing_payload(
+                        [_live_draft_item(1000, "Other")], current_page=2, total_items=51
+                    ),
+                ],
+                "repeated canonical episode id",
+                id="repeated-item-across-pages",
+            ),
+        ],
+    )
+    def test_truncated_or_inconsistent_listing_never_authorizes_create(
+        self, monkeypatch, pages, match
+    ):
+        from podcaster import publish as pub
+
+        session = self._session(*pages)
+        with pytest.raises(pub.SpotifyDraftReconcileError, match=match):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    @pytest.mark.parametrize("sortable", [None, "TITLE", {"TITLE": True}, ["TITLE", 1]])
+    def test_malformed_sortable_never_authorizes_create(self, monkeypatch, sortable):
+        from podcaster import publish as pub
+
+        payload = _live_listing_payload([], total_items=0, total_pages=0)
+        payload["data"]["showByShowUri"]["episodesV2"]["sortable"] = sortable
+        session = self._session(payload)
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="sortable"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    @pytest.mark.parametrize("extra", ["cursor", "hasMore", "nextPageToken", "totalCount"])
+    def test_unknown_listing_field_alongside_sortable_fails_closed(self, monkeypatch, extra):
+        from podcaster import publish as pub
+
+        payload = _live_listing_payload([], total_items=0, total_pages=0)
+        payload["data"]["showByShowUri"]["episodesV2"][extra] = None
+        session = self._session(payload)
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="episodesV2 fields changed"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    @pytest.mark.parametrize("extra", ["cursor", "hasNextPage", "offset"])
+    def test_unknown_pagination_field_fails_closed(self, monkeypatch, extra):
+        from podcaster import publish as pub
+
+        payload = _live_listing_payload([], total_items=0, total_pages=0)
+        payload["data"]["showByShowUri"]["episodesV2"]["pagination"][extra] = None
+        session = self._session(payload)
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="pagination fields changed"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+
 class TestEpisodeDraftState:
     """#656 review: draft/published state must come from evidence, never truthiness.
 
