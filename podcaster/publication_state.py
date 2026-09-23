@@ -7,6 +7,7 @@ import re
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Mapping
 
 from podcaster.job_logs import LogLevel, emit_log
@@ -96,6 +97,236 @@ class PublicationEvidence:
 
     def to_dict(self) -> dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
+
+
+class CreateIntentProvenance(str, Enum):
+    RECONCILIATION_BACKED = "reconciliation_backed"
+    BLIND_UNRECONCILED = "blind_unreconciled"
+    UPLOAD_DISPATCH = "upload_dispatch"
+
+
+class SnapshotCompleteness(str, Enum):
+    ABSENT = "absent"
+    TRUNCATED = "truncated"
+    COMPLETE = "complete"
+
+
+class MutationPossibility(str, Enum):
+    NOT_POSSIBLE = "not_possible"
+    POSSIBLE = "possible"
+    CONFIRMED = "confirmed"
+
+
+@dataclass(frozen=True)
+class ProviderSnapshot:
+    episode_ids: tuple[int, ...]
+    completeness: SnapshotCompleteness
+    evidence_source: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.completeness, SnapshotCompleteness):
+            raise PublicationStateError("snapshot completeness must be explicit")
+        normalized_ids: list[int] = []
+        for raw_id in self.episode_ids:
+            if isinstance(raw_id, bool):
+                raise PublicationStateError("snapshot episode id cannot be a boolean")
+            try:
+                normalized_ids.append(int(raw_id))
+            except (TypeError, ValueError) as exc:
+                raise PublicationStateError("snapshot episode id is unreadable") from exc
+        unique_sorted_ids = tuple(sorted(set(normalized_ids)))
+        object.__setattr__(self, "episode_ids", unique_sorted_ids)
+        if len(unique_sorted_ids) != len(normalized_ids):
+            raise PublicationStateError("snapshot episode ids must be unique")
+        if self.completeness == SnapshotCompleteness.ABSENT and unique_sorted_ids:
+            raise PublicationStateError("absent snapshot cannot carry episode ids")
+        if (
+            self.completeness
+            in (
+                SnapshotCompleteness.TRUNCATED,
+                SnapshotCompleteness.COMPLETE,
+            )
+            and not self.evidence_source
+        ):
+            raise PublicationStateError("observed snapshot requires an evidence source")
+
+    @classmethod
+    def absent(cls) -> "ProviderSnapshot":
+        return cls((), SnapshotCompleteness.ABSENT, None)
+
+    @classmethod
+    def truncated(
+        cls,
+        episode_ids: set[int] | list[int] | tuple[int, ...],
+        *,
+        evidence_source: str,
+    ) -> "ProviderSnapshot":
+        return cls(tuple(episode_ids), SnapshotCompleteness.TRUNCATED, evidence_source)
+
+    @classmethod
+    def complete(
+        cls,
+        episode_ids: set[int] | list[int] | tuple[int, ...],
+        *,
+        evidence_source: str,
+    ) -> "ProviderSnapshot":
+        return cls(tuple(episode_ids), SnapshotCompleteness.COMPLETE, evidence_source)
+
+    def to_details(self) -> dict[str, Any]:
+        details: dict[str, Any] = {
+            "snapshot_completeness": self.completeness.value,
+        }
+        if self.episode_ids:
+            details["pre_create_episode_ids"] = list(self.episode_ids)
+        elif self.completeness != SnapshotCompleteness.ABSENT:
+            details["pre_create_episode_ids"] = []
+        if self.evidence_source:
+            details["snapshot_evidence_source"] = self.evidence_source
+        return details
+
+
+@dataclass(frozen=True)
+class CreateSafetyState:
+    provenance: CreateIntentProvenance
+    snapshot: ProviderSnapshot
+    mutation_possibility: MutationPossibility
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.provenance, CreateIntentProvenance):
+            raise PublicationStateError("create provenance must be explicit")
+        if not isinstance(self.snapshot, ProviderSnapshot):
+            raise PublicationStateError("snapshot must be a ProviderSnapshot")
+        if not isinstance(self.mutation_possibility, MutationPossibility):
+            raise PublicationStateError("mutation possibility must be explicit")
+
+    @classmethod
+    def reconciliation_backed(cls, snapshot: ProviderSnapshot) -> "CreateSafetyState":
+        return cls(
+            CreateIntentProvenance.RECONCILIATION_BACKED,
+            snapshot,
+            MutationPossibility.NOT_POSSIBLE,
+        )
+
+    @classmethod
+    def unreconciled_override(cls) -> "CreateSafetyState":
+        return cls(
+            CreateIntentProvenance.BLIND_UNRECONCILED,
+            ProviderSnapshot.absent(),
+            MutationPossibility.POSSIBLE,
+        )
+
+    @classmethod
+    def upload_dispatch(cls) -> "CreateSafetyState":
+        return cls(
+            CreateIntentProvenance.UPLOAD_DISPATCH,
+            ProviderSnapshot.absent(),
+            MutationPossibility.POSSIBLE,
+        )
+
+    @classmethod
+    def provider_confirmed(
+        cls,
+        provenance: CreateIntentProvenance,
+        snapshot: ProviderSnapshot | None = None,
+    ) -> "CreateSafetyState":
+        return cls(
+            provenance,
+            snapshot or ProviderSnapshot.absent(),
+            MutationPossibility.CONFIRMED,
+        )
+
+    def to_details(self) -> dict[str, Any]:
+        return {
+            "create_provenance": self.provenance.value,
+            "mutation_possibility": self.mutation_possibility.value,
+            **self.snapshot.to_details(),
+        }
+
+
+def _parse_snapshot_ids(raw_ids: Any) -> tuple[int, ...]:
+    if not isinstance(raw_ids, list):
+        raise PublicationStateError("create safety evidence has no episode id snapshot")
+    ids: list[int] = []
+    for raw_id in raw_ids:
+        if isinstance(raw_id, bool):
+            raise PublicationStateError("create safety evidence contains an invalid boolean id")
+        try:
+            ids.append(int(raw_id))
+        except (TypeError, ValueError) as exc:
+            raise PublicationStateError("create safety evidence contains an unreadable id") from exc
+    return tuple(ids)
+
+
+def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetyState | None:
+    details = record.get("details")
+    if not isinstance(details, Mapping):
+        details = {}
+
+    raw_provenance = details.get("create_provenance")
+    if isinstance(raw_provenance, str):
+        try:
+            provenance = CreateIntentProvenance(raw_provenance)
+        except ValueError as exc:
+            raise PublicationStateError("create safety evidence has unknown provenance") from exc
+    elif record.get("operation") == "upload_intent":
+        provenance = CreateIntentProvenance.UPLOAD_DISPATCH
+    elif record.get("operation") == "unreconciled_create_intent":
+        provenance = CreateIntentProvenance.BLIND_UNRECONCILED
+    elif record.get("operation") == "create_episode_intent":
+        provenance = CreateIntentProvenance.RECONCILIATION_BACKED
+    else:
+        return None
+
+    raw_completeness = details.get("snapshot_completeness")
+    if isinstance(raw_completeness, str):
+        try:
+            completeness = SnapshotCompleteness(raw_completeness)
+        except ValueError as exc:
+            raise PublicationStateError(
+                "create safety evidence has unknown snapshot state"
+            ) from exc
+        if completeness == SnapshotCompleteness.ABSENT:
+            snapshot = ProviderSnapshot.absent()
+        else:
+            snapshot = ProviderSnapshot(
+                _parse_snapshot_ids(details.get("pre_create_episode_ids")),
+                completeness,
+                str(details.get("snapshot_evidence_source") or "legacy_evidence"),
+            )
+    elif "pre_create_snapshot_complete" in details:
+        raw_complete = details.get("pre_create_snapshot_complete")
+        if not isinstance(raw_complete, bool):
+            raise PublicationStateError(
+                "legacy create safety evidence has no boolean snapshot completeness"
+            )
+        ids = _parse_snapshot_ids(details.get("pre_create_episode_ids"))
+        snapshot = (
+            ProviderSnapshot.complete(ids, evidence_source="legacy_pre_create_snapshot")
+            if raw_complete
+            else ProviderSnapshot.truncated(ids, evidence_source="legacy_pre_create_snapshot")
+        )
+    else:
+        snapshot = ProviderSnapshot.absent()
+
+    raw_mutation = details.get("mutation_possibility")
+    if isinstance(raw_mutation, str):
+        try:
+            mutation_possibility = MutationPossibility(raw_mutation)
+        except ValueError as exc:
+            raise PublicationStateError(
+                "create safety evidence has unknown mutation state"
+            ) from exc
+    elif record.get("provider_artifact_id") or record.get("provider_id"):
+        mutation_possibility = MutationPossibility.CONFIRMED
+    elif provenance in (
+        CreateIntentProvenance.BLIND_UNRECONCILED,
+        CreateIntentProvenance.UPLOAD_DISPATCH,
+    ):
+        mutation_possibility = MutationPossibility.POSSIBLE
+    else:
+        mutation_possibility = MutationPossibility.NOT_POSSIBLE
+
+    return CreateSafetyState(provenance, snapshot, mutation_possibility)
 
 
 def validate_outcome(outcome: str) -> str:

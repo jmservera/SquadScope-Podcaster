@@ -1091,6 +1091,7 @@ class TestRunVideoGeneration:
         monkeypatch.setenv("SP_DC", "dc")
         monkeypatch.setenv("SP_KEY", "key")
         monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "1")
         monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
         monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
         create = MagicMock(return_value=777)
@@ -1136,11 +1137,12 @@ class TestRunVideoGeneration:
         evidence = read_evidence(storage, job_id)
         operations = [record["operation"] for record in evidence["records"]]
         assert operations == [
-            "create_episode_intent",
-            "create_episode",
+            "unreconciled_create_intent",
+            "unreconciled_create",
             "distribution",
         ]
         assert evidence["records"][0]["mutation_attempted"] is False
+        assert evidence["records"][0]["details"]["create_provenance"] == "blind_unreconciled"
         assert evidence["records"][1]["provider_artifact_id"] == "777"
         assert evidence["records"][2]["provider_artifact_id"] == "777"
 
