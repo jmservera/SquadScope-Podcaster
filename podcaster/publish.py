@@ -2334,6 +2334,8 @@ def upload_video_to_episode(
     sp_key: str | None = None,
     season_number: int | None = None,
     episode_number: int | None = None,
+    publication_storage: StorageBackend | None = None,
+    publication_identity_context: PublicationIdentity | None = None,
 ) -> PublishResult:
     """Publish a video as a NEW separate Spotify episode draft (#340).
 
@@ -2399,6 +2401,36 @@ def upload_video_to_episode(
     try:
         session = _build_session(sp_dc, sp_key, show_id)
         station_id, user_id = _resolve_legacy_ids(session, show_id)
+        if publication_storage is not None and publication_identity_context is not None:
+            try:
+                claim = append_evidence(
+                    publication_storage,
+                    publication_identity_context,
+                    platform="spotify",
+                    media_kind="video",
+                    operation="create_episode_intent",
+                    outcome=PUBLICATION_UNKNOWN,
+                    mutation_attempted=False,
+                    retry_blocked=True,
+                    code="mutation_intent",
+                    details={"show_id": show_id, "station_id": station_id},
+                )
+            except Exception:
+                return PublishResult(
+                    status="failed",
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True},
+                    error="Publication evidence could not be persisted before Spotify mutation.",
+                )
+            if claim is None:
+                return PublishResult(
+                    status="failed",
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={"retry_blocked": True, "code": "mutation_claim_exists"},
+                    error="Spotify video mutation already claimed for this publication identity.",
+                )
 
         # Create or reconcile a separate video draft — never touch the audio one.
         reconcile_enabled = _spotify_reconcile_enabled()
@@ -2417,6 +2449,41 @@ def upload_video_to_episode(
             )
         else:
             video_anchor_id, needs_title = _create_episode(session, station_id), True
+
+        if (
+            needs_title
+            and publication_storage is not None
+            and publication_identity_context is not None
+        ):
+            try:
+                append_evidence(
+                    publication_storage,
+                    publication_identity_context,
+                    platform="spotify",
+                    media_kind="video",
+                    operation="create_episode",
+                    outcome=PUBLICATION_UNKNOWN,
+                    provider_artifact_id=video_anchor_id,
+                    mutation_attempted=True,
+                    retry_blocked=True,
+                    code="provider_artifact_created",
+                    details={"show_id": show_id, "station_id": station_id},
+                )
+            except Exception:
+                return PublishResult(
+                    anchor_episode_id=video_anchor_id,
+                    status="failed",
+                    error=(
+                        "Publication evidence failed after Spotify video draft create; "
+                        "reconciliation required."
+                    ),
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={
+                        "retry_blocked": True,
+                        "code": "create_evidence_persistence_failed",
+                    },
+                )
 
         if needs_title and reconcile_enabled:
             # A new draft is created untitled; title it now — with the real
@@ -2483,6 +2550,11 @@ def upload_video_to_episode(
         return PublishResult(
             anchor_episode_id=video_anchor_id,
             status="draft",
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
             details={
                 "station_id": station_id,
                 "upload_id": upload_id,
@@ -2507,6 +2579,11 @@ def upload_video_to_episode(
         return PublishResult(
             status="failed",
             error=str(exc),
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
             details={
                 "credentials_expired": True,
                 "notification_issue": issue_number,
@@ -2515,11 +2592,27 @@ def upload_video_to_episode(
         )
     except SpotifyPublishError as exc:
         logger.error("Spotify video upload failed: %s", exc)
-        return PublishResult(status="failed", error=str(exc))
+        return PublishResult(
+            status="failed",
+            error=str(exc),
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
+        )
     except Exception as exc:
         safe_msg = re.sub(r"https?://\S+", lambda m: _safe_url(m.group()), str(exc))
         logger.error("Unexpected error during Spotify video upload: %s", safe_msg)
-        return PublishResult(status="failed", error=f"Unexpected: {safe_msg}")
+        return PublishResult(
+            status="failed",
+            error=f"Unexpected: {safe_msg}",
+            publish_run_id=(
+                publication_identity_context.publish_run_id
+                if publication_identity_context is not None
+                else None
+            ),
+        )
 
 
 def _safe_resolve_number(
@@ -2850,6 +2943,7 @@ def publish_episode(
                 mutation_attempted=False,
                 retry_blocked=True,
                 code="mutation_intent",
+                details={"show_id": show_id},
             )
             if claim is None:
                 return PublishResult(
@@ -2944,6 +3038,36 @@ def publish_episode(
         # Step 2: Create draft episode
         anchor_id = _create_episode(session, station_id)
         mutation_started = True
+        if publication_storage is not None and publication_identity_context is not None:
+            try:
+                append_evidence(
+                    publication_storage,
+                    publication_identity_context,
+                    platform="spotify",
+                    media_kind="audio",
+                    operation="create_episode",
+                    outcome=PUBLICATION_UNKNOWN,
+                    provider_artifact_id=anchor_id,
+                    mutation_attempted=True,
+                    retry_blocked=True,
+                    code="provider_artifact_created",
+                    details={"show_id": show_id, "station_id": station_id},
+                )
+            except Exception:
+                return PublishResult(
+                    anchor_episode_id=anchor_id,
+                    status="failed",
+                    error=(
+                        "Publication evidence failed after Spotify draft create; "
+                        "reconciliation required."
+                    ),
+                    outcome=PUBLICATION_UNKNOWN,
+                    publish_run_id=publication_identity_context.publish_run_id,
+                    details={
+                        "retry_blocked": True,
+                        "code": "create_evidence_persistence_failed",
+                    },
+                )
 
         # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
         is_video = content_type.startswith("video/")

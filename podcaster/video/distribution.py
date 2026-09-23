@@ -808,6 +808,8 @@ def upload_to_spotify_episode(
     return_episode_id: bool = False,
     job_id: str | None = None,
     publish_run_id: str | None = None,
+    publication_storage: Any | None = None,
+    publication_identity_context: Any | None = None,
 ) -> bool | tuple[bool, int | None, str | None] | tuple[bool, int | None, str | None, str]:
     """Publish the MP4 as a NEW separate Spotify episode draft (#340).
 
@@ -827,15 +829,17 @@ def upload_to_spotify_episode(
         from podcaster.publish import promote_spotify_video_draft, upload_video_to_episode
 
         promote_terminal_state: str | None = None
-        result = upload_video_to_episode(
-            video_path,
-            anchor_id,
-            title=title,
-            description=description,
-            content_type="video/mp4",
-            season_number=season_number,
-            episode_number=episode_number,
-        )
+        upload_kwargs: dict[str, Any] = {
+            "title": title,
+            "description": description,
+            "content_type": "video/mp4",
+            "season_number": season_number,
+            "episode_number": episode_number,
+        }
+        if publication_storage is not None and publication_identity_context is not None:
+            upload_kwargs["publication_storage"] = publication_storage
+            upload_kwargs["publication_identity_context"] = publication_identity_context
+        result = upload_video_to_episode(video_path, anchor_id, **upload_kwargs)
         if result.status == "failed":
             logger.error("Spotify video upload failed: %s", result.error)
             return (
@@ -1001,6 +1005,8 @@ def distribute_video(
     published: Mapping[str, Any] | None = None,
     on_published: Callable[[str, dict[str, Any]], None] | None = None,
     publish_run_id: str | None = None,
+    publication_storage: Any | None = None,
+    publication_identity_context: Any | None = None,
 ) -> DistributionResult:
     """Distribute a finished video podcast to all configured targets.
 
@@ -1389,6 +1395,8 @@ def distribute_video(
                 return_episode_id=True,
                 job_id=job_id,
                 publish_run_id=publish_run_id,
+                publication_storage=publication_storage,
+                publication_identity_context=publication_identity_context,
             )
             upload_outcome = None
             if isinstance(upload_result, tuple) and len(upload_result) == 4:

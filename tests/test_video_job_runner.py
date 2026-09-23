@@ -36,6 +36,7 @@ from podcaster.video.job_runner import (
     _build_section_cards,
     _build_video_description,
     _record_video_publication,
+    _record_video_publish,
     _resolve_anchor_id,
     _resolve_dog_logo,
     _resolve_video_title,
@@ -105,6 +106,27 @@ class FakeStorage:
 
     def set_script(self, job_id: str, script: str):
         self._data[script_path(job_id)] = script.encode()
+
+
+class FailingUpdateStorage(FakeStorage):
+    def update_bytes(self, path: str, content_type: str, update):
+        raise RuntimeError("manifest storage unavailable")
+
+
+def test_record_video_publish_storage_failure_surfaces():
+    storage = FailingUpdateStorage()
+
+    with pytest.raises(RuntimeError, match="manifest storage unavailable"):
+        _record_video_publish(
+            storage,
+            "video-storage-failure",
+            "spotify_upload",
+            {
+                "status": "published",
+                "outcome": "draft_created",
+                "episode_id": "sp-123",
+            },
+        )
 
 
 def test_video_publication_evidence_failure_overwrites_snapshot_unknown(monkeypatch, caplog):

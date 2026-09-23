@@ -523,15 +523,7 @@ def _record_video_publish(
         video_publish[platform] = record
         return manifest_bytes(doc)
 
-    try:
-        storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
-    except Exception:
-        logger.warning(
-            "failed to record video publish state for job_id=%s platform=%s",
-            job_id,
-            platform,
-            exc_info=True,
-        )
+    storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
 
 
 def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
@@ -1276,6 +1268,8 @@ def run_video_generation(
                     published=published_for_attempt,
                     publish_run_id=publish_run_id,
                     on_published=record_publication,
+                    publication_storage=storage,
+                    publication_identity_context=publication_context,
                 )
             result_publish_run_id = getattr(dist_result, "publish_run_id", None)
             if not isinstance(result_publish_run_id, str):

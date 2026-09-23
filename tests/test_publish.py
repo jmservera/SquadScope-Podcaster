@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from unittest.mock import MagicMock, call, patch
@@ -429,8 +430,155 @@ class TestPublishEpisode:
         assert result.status == "draft"
         assert result.outcome == "draft_created"
         assert result.error is None
-        assert append.call_count == 2
+        assert append.call_count == 3
         assert "publication signal failed" in caplog.text
+
+    def test_spotify_create_id_is_persisted_before_upload_work(
+        self, monkeypatch, mp3_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("station-1", "user-1"))
+        monkeypatch.setattr(pub, "_create_episode", lambda *args: 12345)
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            MagicMock(side_effect=pub.SpotifyPublishError("signed URL failed")),
+        )
+
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="draft", upload_format="mp3"),
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "failed"
+        assert result.anchor_episode_id == 12345
+        records = _evidence_records(storage)
+        assert [record["operation"] for record in records[:2]] == [
+            "create_episode_intent",
+            "create_episode",
+        ]
+        assert records[1]["provider_artifact_id"] == "12345"
+        assert records[1]["retry_blocked"] is True
+
+    def test_spotify_unparseable_create_response_leaves_intent_marker(
+        self, monkeypatch, mp3_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("station-1", "user-1"))
+        monkeypatch.setattr(
+            pub,
+            "_create_episode",
+            MagicMock(
+                side_effect=pub.SpotifyDraftCreateAmbiguousError(
+                    "created but response was unparseable"
+                )
+            ),
+        )
+
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="draft", upload_format="mp3"),
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "failed"
+        assert result.outcome == "publication_unknown"
+        records = _evidence_records(storage)
+        assert records[0]["operation"] == "create_episode_intent"
+        assert records[0].get("provider_artifact_id") is None
+        assert records[0]["details"]["show_id"] == "test-show-123"
+
+    def test_spotify_evidence_failure_after_create_surfaces_with_anchor_id(
+        self, monkeypatch, mp3_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage(fail_on_update=2)
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("station-1", "user-1"))
+        monkeypatch.setattr(pub, "_create_episode", lambda *args: 12345)
+        upload = MagicMock()
+        monkeypatch.setattr(pub, "_get_upload_url", upload)
+
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="draft", upload_format="mp3"),
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "failed"
+        assert result.anchor_episode_id == 12345
+        assert result.outcome == "publication_unknown"
+        assert result.details["code"] == "create_evidence_persistence_failed"
+        upload.assert_not_called()
+        assert _evidence_records(storage)[0]["operation"] == "create_episode_intent"
+
+    def test_spotify_rerun_after_create_marker_does_not_duplicate_or_mutate(
+        self, monkeypatch, mp3_file, spotify_env
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        create = MagicMock(return_value=12345)
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("station-1", "user-1"))
+        monkeypatch.setattr(pub, "_create_episode", create)
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            MagicMock(side_effect=pub.SpotifyPublishError("signed URL failed")),
+        )
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+
+        first = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="draft", upload_format="mp3"),
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+        second = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="draft", upload_format="mp3"),
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert first.anchor_episode_id == 12345
+        assert second.anchor_episode_id is None
+        assert second.details["retry_blocked"] is True
+        assert create.call_count == 1
+        operations = [record["operation"] for record in _evidence_records(storage)]
+        assert operations == [
+            "create_episode_intent",
+            "create_episode",
+            "provider_mutation_failure",
+        ]
 
     def test_spotify_publish_config_resolution(self):
         config = SpotifyPublishConfig.from_payload(
@@ -954,7 +1102,30 @@ class TestPublishEpisode:
 # -- Helpers --
 
 
-def _mock_json_resp(data) -> MagicMock:
+class MemoryStorage:
+    def __init__(self, *, fail_on_update: int | None = None):
+        self.data = {}
+        self.fail_on_update = fail_on_update
+        self.update_count = 0
+
+    def get_bytes(self, path):
+        return self.data.get(path)
+
+    def update_bytes(self, path, content_type, update):
+        self.update_count += 1
+        if self.fail_on_update is not None and self.update_count == self.fail_on_update:
+            raise RuntimeError("storage unavailable")
+        self.data[path] = update(self.data.get(path))
+        return None
+
+
+def _evidence_records(storage: MemoryStorage, job_id: str = "job-1") -> list[dict]:
+    raw = storage.get_bytes(f"publication-evidence/{job_id}.json")
+    assert raw is not None
+    return json.loads(raw.decode())["records"]
+
+
+def _mock_json_resp(data: dict) -> MagicMock:
     resp = MagicMock()
     resp.json.return_value = data
     resp.raise_for_status = MagicMock()
@@ -1382,6 +1553,117 @@ class TestUploadVideoToEpisode:
         assert calls["metadata_anchor"] == 777
         assert calls["metadata_title"] == "My Show"
         assert calls["publish_behavior"] == "draft"
+
+    def test_video_create_id_is_persisted_before_upload_work(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp({"episodes": []})
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        monkeypatch.setattr(pub, "_create_episode", lambda *args: 777)
+        monkeypatch.setattr(pub, "_set_metadata", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            MagicMock(side_effect=pub.SpotifyPublishError("signed URL failed")),
+        )
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "failed"
+        records = _evidence_records(storage)
+        assert [record["operation"] for record in records] == [
+            "create_episode_intent",
+            "create_episode",
+        ]
+        assert records[1]["provider_artifact_id"] == "777"
+        assert records[1]["media_kind"] == "video"
+
+    def test_video_unparseable_create_response_leaves_intent_marker(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp({"episodes": []})
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        monkeypatch.setattr(
+            pub,
+            "_create_episode",
+            MagicMock(
+                side_effect=pub.SpotifyDraftCreateAmbiguousError(
+                    "created but response was unparseable"
+                )
+            ),
+        )
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "failed"
+        records = _evidence_records(storage)
+        assert records[0]["operation"] == "create_episode_intent"
+        assert records[0].get("provider_artifact_id") is None
+        assert records[0]["details"]["show_id"] == "show1"
+
+    def test_video_evidence_failure_after_create_surfaces_with_anchor_id(
+        self, tmp_path, monkeypatch
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage(fail_on_update=2)
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        session = MagicMock()
+        session.request.return_value = _mock_json_resp({"episodes": []})
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        monkeypatch.setattr(pub, "_create_episode", lambda *args: 777)
+        upload = MagicMock()
+        monkeypatch.setattr(pub, "_get_upload_url", upload)
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "failed"
+        assert result.anchor_episode_id == 777
+        assert result.outcome == "publication_unknown"
+        assert result.details["code"] == "create_evidence_persistence_failed"
+        upload.assert_not_called()
 
     def test_reconcile_reuses_existing_draft_by_title(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
