@@ -495,3 +495,22 @@ def test_refuses_claim_without_integer_seq():
     fake = FakeYouTube(OTHER)
     assert _run(storage, fake, "--apply") == EXIT_REFUSED
     assert fake.calls == []
+
+
+def test_non_object_manifest_refuses():
+    storage = _storage()
+    storage.data[f"jobs/{JOB_ID}/manifest.json"] = b"[1, 2]"
+    assert _run(storage, FakeYouTube(OTHER), "--apply") == EXIT_REFUSED
+
+
+def test_token_refresh_failure_is_credential_exit_code():
+    def failing():
+        raise rearm.RearmRefused("credentials_error", "YouTube token refresh failed: X")
+
+    storage = _storage()
+    code = main(
+        ["--job-id", JOB_ID, "--provider", "youtube", "--approved-by", "a", "--reason", "r"],
+        storage=storage,
+        prover_factory=failing,
+    )
+    assert code == rearm.EXIT_USAGE

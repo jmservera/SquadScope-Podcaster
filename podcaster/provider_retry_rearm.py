@@ -474,6 +474,8 @@ def rearm_provider_retry(
         raise RearmRefused("manifest_missing", f"no manifest for job_id={job_id}")
     try:
         manifest = json.loads(raw.decode("utf-8"))
+        if not isinstance(manifest, dict):
+            raise RearmRefused("identity_invalid", "manifest is not a JSON object")
         identity = publication_identity(manifest, job_id, "")
     except (UnicodeDecodeError, ValueError, PublicationStateError) as exc:
         raise RearmRefused("identity_invalid", f"publication identity invalid: {exc}") from None
@@ -583,7 +585,11 @@ def main(
     except RearmRefused as exc:
         print(f"REFUSED {exc.code}: {exc}")
         print("Nothing written.")
-        return EXIT_USAGE if exc.code in ("usage", "credentials_missing") else EXIT_REFUSED
+        return (
+            EXIT_USAGE
+            if exc.code in ("usage", "credentials_missing", "credentials_error")
+            else EXIT_REFUSED
+        )
     except PublicationStateError as exc:
         print(f"REFUSED evidence_changed: {exc}")
         print("Nothing written.")
