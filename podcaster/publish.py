@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -320,12 +320,25 @@ def _http_suffix(exc: BaseException) -> str:
     return f" (HTTP {status})" if isinstance(status, int) else ""
 
 
+_SpotifyRequestContext = Literal["api", "auth_check", "draft_episode_readback"]
+
+
+def _is_credential_expiry_status(
+    status_code: int,
+    *,
+    request_context: _SpotifyRequestContext,
+) -> bool:
+    """Whether an HTTP status proves credential expiry in this context."""
+    return status_code == 401 or (status_code == 403 and request_context == "auth_check")
+
+
 def _retry_request(
     session: requests.Session,
     method: str,
     url: str,
     *,
     max_attempts: int = _MAX_RETRIES,
+    request_context: _SpotifyRequestContext = "api",
     **kwargs: Any,
 ) -> requests.Response:
     """Execute an HTTP request with exponential backoff retry.
@@ -334,8 +347,10 @@ def _retry_request(
     and the two 4xx statuses that are themselves transient — 408 (request
     timeout) and 429 (rate limited), see :func:`_is_retryable`. Every other 4xx
     is deterministic and is raised immediately, because retrying it cannot
-    succeed and could duplicate state-mutating requests. 401/403 short-circuit
-    into :class:`SpotifyCredentialExpiredError` without any retry.
+    succeed and could duplicate state-mutating requests. A 401 always
+    short-circuits into :class:`SpotifyCredentialExpiredError` without retry.
+    A 403 does so only for an explicit auth check; other endpoints can use 403
+    for permission or resource-state failures.
 
     ``max_attempts=1`` disables retries entirely. Requests whose *server-side*
     effect cannot be observed from a transport failure — notably the draft
@@ -356,7 +371,10 @@ def _retry_request(
             if (
                 isinstance(exc, requests.HTTPError)
                 and exc.response is not None
-                and exc.response.status_code in {401, 403}
+                and _is_credential_expiry_status(
+                    exc.response.status_code,
+                    request_context=request_context,
+                )
             ):
                 logger.error(
                     "Spotify API %s %s returned HTTP %d — credentials expired.",
@@ -431,7 +449,10 @@ def verify_spotify_auth(
             if data.get("stationId") and data.get("userId"):
                 return True, "Spotify auth valid."
             return False, "Spotify auth invalid — legacyIds response missing IDs."
-        elif resp.status_code in {401, 403}:
+        elif _is_credential_expiry_status(
+            resp.status_code,
+            request_context="auth_check",
+        ):
             return False, (
                 "Spotify cookies expired (HTTP "
                 f"{resp.status_code}) — operator must refresh SP_DC/SP_KEY."
@@ -1443,7 +1464,10 @@ def _process_upload(
                 continue
             resp.raise_for_status()
         except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code in {401, 403}:
+            if exc.response is not None and _is_credential_expiry_status(
+                exc.response.status_code,
+                request_context="api",
+            ):
                 raise SpotifyCredentialExpiredError(
                     "Spotify rejected the request (HTTP "
                     f"{exc.response.status_code}) — SP_DC/SP_KEY credentials "
@@ -1654,12 +1678,13 @@ def _get_episode_publication_state(
             )
         return None
 
-    url = f"{_BASE_URL}/v3/episodes/{anchor_id}"
+    url = f"{_BASE_URL}/v3/episodes/{anchor_id}/overview"
     try:
         resp = _retry_request(
             session,
             "GET",
             url,
+            request_context="draft_episode_readback",
             params=_mums_params(**{"userId": user_id} if user_id else {}),
             timeout=15,
         )
