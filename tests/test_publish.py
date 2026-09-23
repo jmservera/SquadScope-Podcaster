@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from unittest.mock import MagicMock, call, patch
@@ -38,6 +39,7 @@ def _clean_env(monkeypatch):
         "SP_DC",
         "SP_KEY",
         "PODCASTER_SPOTIFY_RECONCILE",
+        "PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -1326,6 +1328,7 @@ class TestUploadVideoToEpisode:
             (None, None),
             ("", None),
             ("   ", None),
+            ("\u200b \u200c\t\ufeff", None),
             (None, "1"),
         ],
     )
@@ -1382,6 +1385,137 @@ class TestUploadVideoToEpisode:
         create.assert_not_called()
         upload.assert_not_called()
         session.request.assert_not_called()
+
+    def test_reconcile_lookup_failure_fails_closed_without_override(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+
+        session = MagicMock()
+        session.request.return_value = _mock_error_resp(400, "listing unavailable")
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.status == "failed"
+        assert "refusing blind create" in result.error
+        create.assert_not_called()
+
+    def test_reconcile_zero_alone_does_not_grandfather_unreconciled_create(
+        self, tmp_path, monkeypatch
+    ):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setattr(pub, "_UNRECONCILED_CREATE_USED", False)
+
+        session = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+
+        result = pub.upload_video_to_episode(self._video(tmp_path), 555, title="My Show")
+
+        assert result.status == "failed"
+        assert "refusing blind create" in result.error
+        create.assert_not_called()
+
+    def test_unreconciled_override_permits_exactly_one_create_per_run(self, tmp_path, monkeypatch):
+        import podcaster.publish as pub
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "1")
+        monkeypatch.setattr(pub, "_UNRECONCILED_CREATE_USED", False)
+
+        session = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        seen = {}
+        self._patch_successful_video_upload(monkeypatch, pub, seen)
+
+        video = self._video(tmp_path)
+        first = pub.upload_video_to_episode(video, 555, title="My Show")
+        second = pub.upload_video_to_episode(video, 556, title="Another Show")
+
+        assert first.status == "draft"
+        assert first.anchor_episode_id == 777
+        assert second.status == "failed"
+        assert "already used in this run" in second.error
+        create.assert_called_once_with(session, "99")
+
+    def test_unreconciled_override_logs_and_writes_durable_marker(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        import podcaster.publish as pub
+        from podcaster.publication_state import evidence_path
+
+        class MemoryStorage:
+            def __init__(self):
+                self.data = {}
+
+            def get_bytes(self, path):
+                return self.data.get(path)
+
+            def update_bytes(self, path, content_type, update):
+                self.data[path] = update(self.data.get(path))
+                return path
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W39", "1", "a" * 64, "b" * 64)
+
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", "0")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "1")
+        monkeypatch.setattr(pub, "_UNRECONCILED_CREATE_USED", False)
+
+        session = MagicMock()
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        monkeypatch.setattr(pub, "_create_episode", lambda s, station_id: 777)
+        seen = {}
+        self._patch_successful_video_upload(monkeypatch, pub, seen)
+
+        with caplog.at_level(logging.WARNING, logger="podcaster.publish"):
+            result = pub.upload_video_to_episode(
+                self._video(tmp_path),
+                555,
+                title="My Show",
+                publication_storage=storage,
+                publication_identity_context=identity,
+            )
+
+        assert result.status == "draft"
+        warning = " ".join(record.getMessage() for record in caplog.records)
+        assert "unreconciled video create override active" in warning
+        assert "My Show" in warning
+        assert "audio_anchor_id=555" in warning
+        raw = storage.get_bytes(evidence_path("job-1"))
+        assert raw is not None
+        records = json.loads(raw.decode("utf-8"))["records"]
+        marker = next(r for r in records if r["operation"] == "unreconciled_create")
+        assert marker["provider_artifact_id"] == "777"
+        assert marker["details"]["title"] == "My Show"
+        assert marker["details"]["audio_anchor_id"] == 555
+        assert marker["details"]["station_id"] == "99"
+        assert marker["details"]["show_id"] == "show1"
 
     def test_reconcile_never_reuses_audio_anchor_episode(self, tmp_path, monkeypatch):
         """A same-titled audio draft (the anchor_id) must never be reused as the
@@ -2223,31 +2357,28 @@ class TestFindExistingDraft:
         with pytest.raises(pub.SpotifyDraftReconcileError):
             pub._find_existing_draft(session, "99", "My Show", user_id="7")
 
-    def test_truncated_listing_warns_but_does_not_block_by_default(self, caplog):
-        """The paging contract is unverified — a guessed key must not gate publishes."""
-        import logging
-
+    def test_truncated_listing_fails_closed_by_default(self):
+        """An incomplete listing cannot justify a new draft create."""
         from podcaster import publish as pub
 
         session = self._session({"episodes": [], "hasMore": True})
-        with caplog.at_level(logging.WARNING, logger="podcaster.publish"):
-            assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
-        assert "hasMore" in caplog.text
-        assert "Pagination is NOT implemented" in caplog.text
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            pub._find_existing_draft(session, "99", "My Show", user_id="7")
+        assert "further pages" in str(exc.value)
+        assert "will not be used to justify creating a new draft" in str(exc.value)
 
-    def test_truncated_listing_raises_when_strict_paging_opted_in(self, monkeypatch):
+    def test_legacy_strict_paging_zero_does_not_authorize_truncated_listing(self, monkeypatch):
         from podcaster import publish as pub
 
-        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING", "1")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING", "0")
         session = self._session({"episodes": [], "hasMore": True})
         with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
             pub._find_existing_draft(session, "99", "My Show", user_id="7")
         assert "further pages" in str(exc.value)
 
-    def test_truncated_listing_still_returns_match_on_first_page(self, monkeypatch):
+    def test_truncated_listing_still_returns_match_on_first_page(self):
         from podcaster import publish as pub
 
-        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING", "1")
         session = self._session(
             {
                 "episodes": [{"episodeId": 888, "title": "My Show", "status": "draft"}],

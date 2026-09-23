@@ -172,6 +172,9 @@ def _is_dry_run() -> bool:
 
 # Truthy values accepted for boolean opt-in env vars.
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_ZERO_WIDTH_TITLE_CHARS = "\u200b\u200c\u200d\ufeff"
+_ZERO_WIDTH_TITLE_TRANSLATION = str.maketrans("", "", _ZERO_WIDTH_TITLE_CHARS)
+_UNRECONCILED_CREATE_USED = False
 
 
 def _live_publish_allowed() -> bool:
@@ -577,22 +580,96 @@ def _spotify_reconcile_enabled() -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _spotify_unreconciled_create_allowed() -> bool:
+    """Whether the operator explicitly allowed one unreconciled video create."""
+    return (
+        os.environ.get("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "").strip().lower() in _TRUTHY
+    )
+
+
 def _effective_video_title(title: str | None) -> str:
     """Title used for Spotify video creation, reconcile, and metadata."""
-    if isinstance(title, str) and title.strip():
-        return title.strip()
+    if isinstance(title, str):
+        normalized = title.translate(_ZERO_WIDTH_TITLE_TRANSLATION).strip()
+        if normalized:
+            return normalized
     return "Video Episode"
 
 
-def _spotify_strict_paging_enabled() -> bool:
-    """Whether an explicitly paginated listing should fail closed (opt-in).
+def _consume_unreconciled_create_override(
+    *,
+    station_id: str,
+    show_id: str,
+    audio_anchor_id: int | None,
+    title: str,
+    reason: str,
+) -> None:
+    """Authorize exactly one unreconciled Spotify video create per process."""
+    global _UNRECONCILED_CREATE_USED
+    if not _spotify_unreconciled_create_allowed():
+        raise SpotifyDraftReconcileError(
+            "Spotify video draft reconcile is unavailable; refusing blind create that "
+            "could duplicate an existing episode. Set "
+            "PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE=1 only for a deliberate, "
+            "bounded operator override."
+        )
+    if _UNRECONCILED_CREATE_USED:
+        raise SpotifyDraftReconcileError(
+            "Spotify unreconciled video create override was already used in this run; "
+            "refusing a second blind create."
+        )
+    _UNRECONCILED_CREATE_USED = True
+    logger.warning(
+        "Spotify unreconciled video create override active: creating title=%r "
+        "audio_anchor_id=%s station_id=%s show_id=%s without draft reconcile; reason=%s",
+        title,
+        audio_anchor_id,
+        station_id,
+        show_id,
+        reason,
+    )
 
-    The Anchor v5 paging contract is unverified (see :data:`_PAGINATION_HINT_KEYS`),
-    so failing closed on a *guessed* key name could block every new video publish.
-    Operators who have confirmed the contract for their show can opt in.
-    """
-    raw = os.environ.get("PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING", "")
-    return raw.strip().lower() in _TRUTHY
+
+def _record_unreconciled_create_marker(
+    storage: StorageBackend | None,
+    identity: PublicationIdentity | None,
+    *,
+    operation: str,
+    provider_artifact_id: int | None,
+    mutation_attempted: bool,
+    reason: str,
+    title: str,
+    audio_anchor_id: int | None,
+    station_id: str,
+    show_id: str,
+) -> None:
+    """Persist an audit marker for an unreconciled video create when storage exists."""
+    if storage is None or identity is None:
+        return
+    claim = append_evidence(
+        storage,
+        identity,
+        platform="spotify",
+        media_kind="video",
+        operation=operation,
+        outcome=DRAFT_CREATED if provider_artifact_id is not None else PUBLICATION_UNKNOWN,
+        provider_artifact_id=provider_artifact_id,
+        mutation_attempted=mutation_attempted,
+        retry_blocked=True,
+        code="unreconciled_create_override",
+        details={
+            "title": title,
+            "audio_anchor_id": audio_anchor_id,
+            "station_id": station_id,
+            "show_id": show_id,
+            "reason": reason,
+            "override_env": "PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE",
+        },
+    )
+    if claim is None:
+        raise SpotifyPublishError(
+            "Spotify unreconciled create audit marker already exists for this publication identity."
+        )
 
 
 _EPISODE_LIST_KEYS = ("episodes", "items", "data", "results")
@@ -978,22 +1055,11 @@ def _match_existing_draft(
 
     hint_key = _pagination_hint(data)
     if hint_key is not None:
-        if _spotify_strict_paging_enabled():
-            raise SpotifyDraftReconcileError(
-                f"Spotify draft reconcile lookup for station {station_id} signalled "
-                f"further pages via '{hint_key}' and found no match on the first "
-                "page; strict paging is enabled, so a possibly incomplete read "
-                "will not be used to justify creating a new draft."
-            )
-        logger.warning(
-            "Spotify episode listing for station %s carries a truthy '%s' key and "
-            "contained no match for title=%r. Pagination is NOT implemented (the "
-            "real paging contract is unverified), so this read may be incomplete "
-            "and a duplicate draft is possible. Set "
-            "PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1 to fail closed instead.",
-            station_id,
-            hint_key,
-            title,
+        raise SpotifyDraftReconcileError(
+            f"Spotify draft reconcile lookup for station {station_id} signalled "
+            f"further pages via '{hint_key}' and found no match on the first page. "
+            "Pagination is not implemented, so this incomplete read will not be "
+            "used to justify creating a new draft."
         )
 
     logger.info("No existing Spotify draft matched title=%r; a new draft is needed.", title)
@@ -1022,15 +1088,10 @@ def _find_existing_draft(
     draft.
 
     ``None`` is **not** unconditional proof of absence. The listing is fetched
-    with a single unpaginated GET, and by default a response that carries a
-    truthy pagination hint (:data:`_PAGINATION_HINT_KEYS`) but no match only
-    logs a warning and still returns ``None`` — the read may be incomplete,
-    because those key names are informed guesses and hard-failing on a guess
-    could block every video publish. Callers must therefore treat ``None`` as
-    "no match on the page that was read". Setting
-    ``PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1`` opts into raising
-    :class:`SpotifyDraftReconcileError` in that case instead, which is the only
-    configuration where ``None`` is a complete-read proof of absence.
+    with a single unpaginated GET, and a response that carries a truthy
+    pagination hint (:data:`_PAGINATION_HINT_KEYS`) but no match raises
+    :class:`SpotifyDraftReconcileError`; the read may be incomplete, so it must
+    not be used to justify creating a new draft.
     """
     data = _fetch_episode_listing(session, station_id, user_id=user_id)
     return _match_existing_draft(data, station_id, title, exclude_id=exclude_id)
@@ -2017,6 +2078,8 @@ def upload_video_to_episode(
     sp_key: str | None = None,
     season_number: int | None = None,
     episode_number: int | None = None,
+    publication_storage: StorageBackend | None = None,
+    publication_identity_context: PublicationIdentity | None = None,
 ) -> PublishResult:
     """Publish a video as a NEW separate Spotify episode draft (#340).
 
@@ -2074,28 +2137,64 @@ def upload_video_to_episode(
         session = _build_session(sp_dc, sp_key, show_id)
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
-        # Create or reconcile a separate video draft — never touch the audio one.
-        # The gate must use the same effective title that metadata will use; raw
-        # ``title`` may be None/empty while ``video_title`` still has a safe default.
-        if not _spotify_reconcile_enabled():
-            return PublishResult(
-                status="failed",
-                error=(
-                    "Spotify video draft reconcile is disabled; refusing blind "
-                    "create that could duplicate an existing episode."
-                ),
-            )
         try:
             exclude_audio_id = int(anchor_id) if anchor_id is not None else None
         except (TypeError, ValueError):
             exclude_audio_id = None
-        video_anchor_id, needs_title = _reconcile_or_create_draft(
-            session,
-            station_id,
-            user_id=user_id,
-            title=video_title,
-            exclude_id=exclude_audio_id,
-        )
+
+        unreconciled_reason: str | None = None
+
+        # Create or reconcile a separate video draft — never touch the audio one.
+        # The gate must use the same effective title that metadata will use; raw
+        # ``title`` may be None/empty while ``video_title`` still has a safe default.
+        if not _spotify_reconcile_enabled():
+            unreconciled_reason = "PODCASTER_SPOTIFY_RECONCILE disabled"
+        else:
+            try:
+                video_anchor_id, needs_title = _reconcile_or_create_draft(
+                    session,
+                    station_id,
+                    user_id=user_id,
+                    title=video_title,
+                    exclude_id=exclude_audio_id,
+                )
+            except SpotifyDraftReconcileError as exc:
+                unreconciled_reason = f"draft reconcile failed: {type(exc).__name__}"
+
+        if unreconciled_reason is not None:
+            _consume_unreconciled_create_override(
+                station_id=station_id,
+                show_id=show_id,
+                audio_anchor_id=anchor_id,
+                title=video_title,
+                reason=unreconciled_reason,
+            )
+            _record_unreconciled_create_marker(
+                publication_storage,
+                publication_identity_context,
+                operation="unreconciled_create_intent",
+                provider_artifact_id=None,
+                mutation_attempted=False,
+                reason=unreconciled_reason,
+                title=video_title,
+                audio_anchor_id=anchor_id,
+                station_id=station_id,
+                show_id=show_id,
+            )
+            video_anchor_id = _create_episode(session, station_id)
+            needs_title = True
+            _record_unreconciled_create_marker(
+                publication_storage,
+                publication_identity_context,
+                operation="unreconciled_create",
+                provider_artifact_id=video_anchor_id,
+                mutation_attempted=True,
+                reason=unreconciled_reason,
+                title=video_title,
+                audio_anchor_id=anchor_id,
+                station_id=station_id,
+                show_id=show_id,
+            )
 
         if needs_title:
             # A new draft is created untitled; title it now — with the real

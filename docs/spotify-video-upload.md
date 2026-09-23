@@ -227,14 +227,54 @@ listing whose *schema* this code cannot read — an unknown container, an error
 body, a non-array episode field, a renamed title/id/state field, or a non-object
 entry. `None` ("no draft exists") is only sound when every entry of a recognised
 container was understood **and** the listing carried no pagination hint (see
-[Pagination](#pagination-unimplemented-unverified) — by default a hint only
-warns, so `None` then means "no match on the page that was read"); a recognised
-**empty** array is still a legitimate no-match. An entry whose title is present
-but null is understood as an untitled draft (no match). Entries whose id is the
-excluded audio anchor are skipped *before* any state or title classification, so
-a scheduled or processing audio episode can never fail the video lookup.
+[Pagination](#pagination-unimplemented-unverified) — a hint with no first-page
+match fails closed because the read may be incomplete); a recognised **empty**
+array is still a legitimate no-match. An entry whose title is present but null
+is understood as an untitled draft (no match). Entries whose id is the excluded
+audio anchor are skipped *before* any state or title classification, so a
+scheduled or processing audio episode can never fail the video lookup.
 If `PODCASTER_SPOTIFY_RECONCILE=0` disables this lookup, video draft creation
 fails closed instead of blind-creating.
+
+#### Emergency unreconciled-create override
+
+Default behaviour is fail-closed: no configuration, a broken listing endpoint,
+or `PODCASTER_SPOTIFY_RECONCILE=0` alone must never authorize an unreconciled
+draft create. During a confirmed Spotify listing outage (for example
+jmservera/SquadScope-Podcaster#688), an operator may make a deliberate,
+bounded availability exception by setting the separate affirmative opt-in:
+
+```bash
+PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE=1
+```
+
+This variable is intentionally distinct from `PODCASTER_SPOTIFY_RECONCILE=0`.
+Existing deployments that disabled reconcile are **not** grandfathered into
+blind creation; they must add the new variable consciously. The accepted risk is
+that the code cannot prove whether a same-title Spotify draft already exists, so
+one duplicate draft may be created.
+
+The override is structurally capped to **one unreconciled create per process
+run**. A second unreconciled create attempt fails before sending another create
+POST. When used, the publisher logs a `WARNING` naming the safe publication
+identity (title, audio anchor id, station id, show id) and the reason reconcile
+was bypassed. When publication evidence storage is available, it also writes
+append-only audit records before the provider mutation
+(`operation=unreconciled_create_intent`) and immediately after Spotify returns
+the new draft id (`operation=unreconciled_create`, including
+`provider_artifact_id`).
+
+Operator procedure:
+
+1. Confirm in the Spotify creator console that no draft already exists for the
+   target title/week; do not use this before that manual check.
+2. Set `PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE=1` only for the single run
+   that needs the exception (with `PODCASTER_SPOTIFY_RECONCILE=0` only if the
+   listing endpoint itself is the known blocker).
+3. After the run, remove the override and verify the durable publication
+   evidence contains the `unreconciled_create` marker with the expected
+   provider artifact id. Cross-check the Spotify console for exactly one new
+   draft and delete/resolve any unexpected duplicate before retrying.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
 inspected — a malformed `episodeId` never hides a usable `id` — but the entry
@@ -373,10 +413,10 @@ titled before the upload starts and reconcile finds it on the next run.
 The listing is fetched with a single unpaginated GET. Whether the endpoint pages
 at all — and under which key — is unknown. When the response carries a truthy
 `hasMore`/`hasNextPage`/`nextPageToken`/`nextPage` key **and** no match was
-found, a warning is logged naming the key; the publish is *not* blocked, because
-hard-failing on a guessed key name could block every new video publish. Operators
-who have confirmed the contract for their show can opt into fail-closed
-behaviour with `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING=1`.
+found, the publish fails closed: an incomplete first page is not proof that no
+same-title draft exists, so it must not authorize a create. During a confirmed
+listing/pagination outage, use the explicit one-shot
+`PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE=1` procedure above.
 
 #### Credential expiry
 
@@ -894,7 +934,7 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
 | `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on. `0`/`false`/`no`/`off` disables the existing-draft lookup, so video draft creation fails closed before any create POST (§5). |
-| `PODCASTER_SPOTIFY_RECONCILE_STRICT_PAGING` | `publish._spotify_strict_paging_enabled` | Defaults off. `1`/`true`/`yes`/`on` makes an explicitly paginated listing with no first-page match fail closed instead of warning (§5). |
+| `PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE` | `publish.upload_video_to_episode` | Emergency affirmative opt-in for exactly one unreconciled video draft create in a process run; logs a warning and writes publication evidence markers when storage is available (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,

@@ -1275,6 +1275,8 @@ def run_video_generation(
                     language=job_language,
                     published=published_for_attempt,
                     publish_run_id=publish_run_id,
+                    publication_storage=storage,
+                    publication_identity_context=publication_context,
                     on_published=record_publication,
                 )
             result_publish_run_id = getattr(dist_result, "publish_run_id", None)
