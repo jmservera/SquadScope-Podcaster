@@ -3025,6 +3025,8 @@ def publish_episode(
     if upload_path is None or not upload_path.exists():
         return PublishResult(status="failed", error=f"{format_label} file not found: {upload_path}")
 
+    media_kind = "video" if content_type.startswith("video/") else "audio"
+
     if publication_storage is not None and publication_identity_context is not None:
         try:
             prior_evidence = read_evidence(
@@ -3038,7 +3040,7 @@ def publish_episode(
                 publish_run_id=publication_identity_context.publish_run_id,
                 details={"retry_blocked": True},
             )
-        if retry_is_blocked(prior_evidence, platform="spotify", media_kind="audio"):
+        if retry_is_blocked(prior_evidence, platform="spotify", media_kind=media_kind):
             return PublishResult(
                 status="failed",
                 error="Spotify mutation blocked pending publication reconciliation.",
@@ -3051,7 +3053,7 @@ def publish_episode(
                 publication_storage,
                 publication_identity_context,
                 platform="spotify",
-                media_kind="audio",
+                media_kind=media_kind,
                 operation="create_episode_intent",
                 outcome=PUBLICATION_UNKNOWN,
                 mutation_attempted=False,
@@ -3094,7 +3096,7 @@ def publish_episode(
                 publication_storage,
                 publication_identity_context,
                 platform="spotify",
-                media_kind="audio",
+                media_kind=media_kind,
                 operation=operation,
                 outcome=result.outcome or PUBLICATION_UNKNOWN,
                 provider_artifact_id=result.anchor_episode_id,
@@ -3129,7 +3131,7 @@ def publish_episode(
                 publication_storage,
                 publication_identity_context,
                 platform="spotify",
-                media_kind="audio",
+                media_kind=media_kind,
                 outcome=result.outcome or PUBLICATION_UNKNOWN,
                 provider_artifact_id=result.anchor_episode_id,
             )
@@ -3158,7 +3160,7 @@ def publish_episode(
                     publication_storage,
                     publication_identity_context,
                     platform="spotify",
-                    media_kind="audio",
+                    media_kind=media_kind,
                     operation="create_episode",
                     outcome=PUBLICATION_UNKNOWN,
                     provider_artifact_id=anchor_id,
@@ -3184,7 +3186,7 @@ def publish_episode(
                 )
 
         # Step 3 & 4: Upload file (video uses multipart GCS, audio uses single S3)
-        is_video = content_type.startswith("video/")
+        is_video = media_kind == "video"
         file_data = upload_path.read_bytes()
 
         if is_video:

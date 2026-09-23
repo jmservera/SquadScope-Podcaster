@@ -469,6 +469,41 @@ class TestPublishEpisode:
         assert records[1]["provider_artifact_id"] == "12345"
         assert records[1]["retry_blocked"] is True
 
+    def test_spotify_mp4_evidence_is_classified_as_video(self, monkeypatch, mp3_file, spotify_env):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        mp4_file = mp3_file.with_suffix(".mp4")
+        mp4_file.write_bytes(b"video")
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("station-1", "user-1"))
+        monkeypatch.setattr(pub, "_create_episode", lambda *args: 12345)
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            MagicMock(side_effect=pub.SpotifyPublishError("signed URL failed")),
+        )
+
+        result = publish_episode(
+            mp3_file,
+            "Title",
+            "Description",
+            spotify_publish_config=SpotifyPublishConfig(publish_mode="draft", upload_format="mp3"),
+            publication_storage=storage,
+            publication_identity_context=PublicationIdentity(
+                "job-1", "2026-W37", "1", "a" * 64, "b" * 64
+            ),
+        )
+
+        assert result.status == "failed"
+        records = _evidence_records(storage)
+        assert [record["operation"] for record in records] == [
+            "create_episode_intent",
+            "create_episode",
+            "provider_mutation_failure",
+        ]
+        assert all(record["media_kind"] == "video" for record in records)
+
     def test_spotify_unparseable_create_response_leaves_intent_marker(
         self, monkeypatch, mp3_file, spotify_env
     ):
