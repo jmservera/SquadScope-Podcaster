@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 import pytest
 
 from podcaster import ssrf
-from podcaster.publication_state import PublicationIdentity
+from podcaster.publication_state import PublicationIdentity, append_evidence
 from podcaster.queue import QueueMessage
 from podcaster.video.distribution import DistributionResult, VideoDistributionConfig
 from podcaster.video.job_runner import (
@@ -871,6 +871,140 @@ class TestRunVideoGeneration:
         assert outcome.distribution.status == "failed"
         assert outcome.distribution.provider_outcomes["spotify_upload"] == "publication_unknown"
         provider_upload.assert_not_called()
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_spotify_generic_intent_retry_reaches_distribution(
+        self, mock_compose, mock_record, mock_distribute, storage
+    ):
+        job_id = "video-spotify-generic-intent-retry"
+        identity = PublicationIdentity(job_id, "2026-W37", "123", "a" * 64, "b" * 64)
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Generic intent retry",
+                    "week": identity.week,
+                    "publish_run_id": identity.publish_run_id,
+                    "article_sha256": identity.article_sha256,
+                    "manifest_sha256": identity.manifest_sha256,
+                    "publication_identity_mode": "canonical",
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="upload_intent",
+            outcome="publication_unknown",
+            mutation_attempted=False,
+            retry_blocked=True,
+            code="mutation_intent",
+        )
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+        mock_distribute.return_value = DistributionResult(status="completed")
+
+        run_video_generation(
+            job_id,
+            storage,
+            config=VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+                dry_run=False,
+            ),
+        )
+
+        mock_distribute.assert_called_once()
+        assert "spotify_upload" not in (mock_distribute.call_args.kwargs["published"] or {})
+
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_spotify_provider_evidence_retry_remains_blocked(
+        self, mock_compose, mock_record, mock_distribute, storage
+    ):
+        job_id = "video-spotify-provider-replay"
+        identity = PublicationIdentity(job_id, "2026-W37", "123", "a" * 64, "b" * 64)
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Provider replay",
+                    "week": identity.week,
+                    "publish_run_id": identity.publish_run_id,
+                    "article_sha256": identity.article_sha256,
+                    "manifest_sha256": identity.manifest_sha256,
+                    "publication_identity_mode": "canonical",
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode",
+            outcome="publication_unknown",
+            provider_artifact_id="777",
+            mutation_attempted=True,
+            retry_blocked=True,
+        )
+        append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="upload_intent",
+            outcome="publication_unknown",
+            mutation_attempted=False,
+            retry_blocked=True,
+            code="mutation_intent",
+        )
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+        mock_distribute.return_value = DistributionResult(status="failed")
+
+        run_video_generation(
+            job_id,
+            storage,
+            config=VideoDistributionConfig(
+                spotify_upload_enabled=True,
+                blob_archive_enabled=False,
+                dry_run=False,
+            ),
+        )
+
+        prior = mock_distribute.call_args.kwargs["published"]["spotify_upload"]
+        assert prior["outcome"] == "publication_unknown"
+        assert prior["episode_id"] == "777"
 
     @patch("podcaster.video.job_runner.distribute_video")
     @patch("podcaster.video.video_gen.record_episode")

@@ -467,6 +467,50 @@ def retry_is_blocked(
     )
 
 
+def is_spotify_video_dispatch_intent(record: Mapping[str, Any] | None) -> bool:
+    return bool(
+        record
+        and record.get("platform") == "spotify"
+        and record.get("media_kind") == "video"
+        and record.get("operation") == "upload_intent"
+        and record.get("mutation_attempted") is False
+        and not record.get("provider_id")
+        and not record.get("provider_artifact_id")
+        and record.get("code") == "mutation_intent"
+    )
+
+
+def spotify_video_retry_blocking_record(
+    document: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    records = document.get("records") if isinstance(document, Mapping) else None
+    if not isinstance(records, list):
+        return None
+    for record in reversed(records):
+        if (
+            not isinstance(record, Mapping)
+            or record.get("platform") != "spotify"
+            or record.get("media_kind") != "video"
+        ):
+            continue
+        if is_spotify_video_dispatch_intent(record):
+            continue
+        if record.get("outcome") in (
+            UPLOADED,
+            PUBLICATION_UNKNOWN,
+            MANUAL_HANDOFF_REQUIRED,
+            DRAFT_CREATED,
+            PUBLISHED,
+        ) and record.get("retry_blocked", True):
+            return record
+        return None
+    return None
+
+
+def spotify_video_retry_is_blocked(document: Mapping[str, Any] | None) -> bool:
+    return spotify_video_retry_blocking_record(document) is not None
+
+
 def emit_publication_signal(
     storage: StorageBackend,
     identity: PublicationIdentity,

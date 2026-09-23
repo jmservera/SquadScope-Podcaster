@@ -50,6 +50,7 @@ from podcaster.publication_state import (
     outcome_from_spotify_terminal_state,
     read_evidence,
     retry_is_blocked,
+    spotify_video_retry_is_blocked,
 )
 from podcaster.spotify_shows import resolve_show_target
 
@@ -2322,33 +2323,6 @@ def promote_spotify_video_draft(
         )
 
 
-def _spotify_video_create_retry_is_blocked(document: dict[str, Any] | None) -> bool:
-    records = document.get("records") if isinstance(document, dict) else None
-    if not isinstance(records, list):
-        return False
-    for record in reversed(records):
-        if (
-            not isinstance(record, dict)
-            or record.get("platform") != "spotify"
-            or record.get("media_kind") != "video"
-        ):
-            continue
-        if (
-            record.get("operation") == "upload_intent"
-            and record.get("mutation_attempted") is False
-            and not record.get("provider_id")
-            and not record.get("provider_artifact_id")
-            and record.get("code") == "mutation_intent"
-        ):
-            continue
-        return bool(
-            record.get("outcome")
-            in (UPLOADED, PUBLICATION_UNKNOWN, MANUAL_HANDOFF_REQUIRED, DRAFT_CREATED, PUBLISHED)
-            and record.get("retry_blocked", True)
-        )
-    return False
-
-
 def upload_video_to_episode(
     video_path: Path,
     anchor_id: int | None = None,
@@ -2443,7 +2417,7 @@ def upload_video_to_episode(
                     publish_run_id=publication_identity_context.publish_run_id,
                     details={"retry_blocked": True},
                 )
-            if _spotify_video_create_retry_is_blocked(prior_evidence):
+            if spotify_video_retry_is_blocked(prior_evidence):
                 return PublishResult(
                     status="failed",
                     error="Spotify video mutation blocked pending publication reconciliation.",
