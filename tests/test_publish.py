@@ -2859,12 +2859,12 @@ class TestUploadVideoToEpisode:
         monkeypatch.setenv("SP_DC", "dc")
         monkeypatch.setenv("SP_KEY", "key")
         first_session = MagicMock()
-        first_session.request.return_value = _mock_graphql_listing_resp()
-        second_session = MagicMock()
-        monkeypatch.setattr(
-            pub, "_build_session", MagicMock(side_effect=[first_session, second_session])
-        )
-        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        first_session.request.side_effect = [
+            _mock_json_resp({"stationId": "99", "userId": "7"}),
+            _mock_graphql_listing_resp(),
+        ]
+        build_session = MagicMock(return_value=first_session)
+        monkeypatch.setattr(pub, "_build_session", build_session)
         create = MagicMock(side_effect=pub.SpotifyPublishError("create rejected"))
         monkeypatch.setattr(pub, "_create_episode", create)
         upload = MagicMock()
@@ -2877,6 +2877,21 @@ class TestUploadVideoToEpisode:
             publication_storage=storage,
             publication_identity_context=identity,
         )
+        provider_access = {
+            "_get_credentials": MagicMock(side_effect=AssertionError("credentials requested")),
+            "_request_bearer_token": MagicMock(
+                side_effect=AssertionError("bearer token requested")
+            ),
+            "_build_session": MagicMock(side_effect=AssertionError("session built")),
+            "_resolve_legacy_ids": MagicMock(side_effect=AssertionError("legacyIds requested")),
+            "_reconcile_or_create_draft": MagicMock(
+                side_effect=AssertionError("draft listing or reconciliation attempted")
+            ),
+            "_create_episode": MagicMock(side_effect=AssertionError("draft create attempted")),
+            "_get_upload_url": MagicMock(side_effect=AssertionError("upload attempted")),
+        }
+        for name, boundary in provider_access.items():
+            monkeypatch.setattr(pub, name, boundary)
         second = pub.upload_video_to_episode(
             self._video(tmp_path),
             555,
@@ -2893,9 +2908,12 @@ class TestUploadVideoToEpisode:
             "retry_blocked": True,
             "code": "unresolved_create_intent",
         }
+        build_session.assert_called_once_with("dc", "key", "show1")
+        assert first_session.request.call_count == 2
+        for boundary in provider_access.values():
+            boundary.assert_not_called()
         create.assert_called_once()
         upload.assert_not_called()
-        assert second_session.request.call_count == 0
         assert [record["operation"] for record in _evidence_records(storage)] == [
             "create_episode_intent"
         ]
