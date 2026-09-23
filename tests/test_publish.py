@@ -1941,7 +1941,7 @@ class TestUploadVideoToEpisode:
         assert result.anchor_episode_id is None
         assert result.outcome == pub.PUBLICATION_UNKNOWN
         assert result.details == {"retry_blocked": True, "code": "unresolved_create_intent"}
-        assert "reconciliation is disabled" in result.error
+        assert "refusing provider access or mutation" in result.error
         create.assert_not_called()
         records = _evidence_records(storage)
         assert [record["operation"] for record in records] == ["create_episode_intent"]
@@ -1998,7 +1998,9 @@ class TestUploadVideoToEpisode:
 
         assert result.status == "failed"
         assert result.anchor_episode_id is None
-        assert "no unique new draft candidate" in result.error
+        assert result.details == {"retry_blocked": True, "code": "unresolved_create_intent"}
+        assert "refusing provider access or mutation" in result.error
+        assert session.request.call_count == 0
         create.assert_not_called()
         record = _evidence_records(storage)[0]
         assert record["details"]["pre_create_episode_ids"] == preexisting_ids
@@ -2836,6 +2838,85 @@ class TestUploadVideoToEpisode:
         assert records[-1]["mutation_attempted"] is True
         assert records[-1]["retry_blocked"] is True
         assert records[-1]["code"] == "create_evidence_persistence_failed"
+
+    def test_create_rejection_double_storage_failure_blocks_later_provider_access(
+        self, tmp_path, monkeypatch
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        original_update = storage.update_bytes
+
+        def fail_failure_evidence(path, content_type, update):
+            if storage.update_count >= 1:
+                storage.update_count += 1
+                raise RuntimeError("storage unavailable")
+            return original_update(path, content_type, update)
+
+        storage.update_bytes = fail_failure_evidence
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        first_session = MagicMock()
+        first_session.request.side_effect = [
+            _mock_json_resp({"stationId": "99", "userId": "7"}),
+            _mock_graphql_listing_resp(),
+        ]
+        build_session = MagicMock(return_value=first_session)
+        monkeypatch.setattr(pub, "_build_session", build_session)
+        create = MagicMock(side_effect=pub.SpotifyPublishError("create rejected"))
+        monkeypatch.setattr(pub, "_create_episode", create)
+        upload = MagicMock()
+        monkeypatch.setattr(pub, "_get_upload_url", upload)
+
+        first = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+        provider_access = {
+            "_get_credentials": MagicMock(side_effect=AssertionError("credentials requested")),
+            "_request_bearer_token": MagicMock(
+                side_effect=AssertionError("bearer token requested")
+            ),
+            "_build_session": MagicMock(side_effect=AssertionError("session built")),
+            "_resolve_legacy_ids": MagicMock(side_effect=AssertionError("legacyIds requested")),
+            "_reconcile_or_create_draft": MagicMock(
+                side_effect=AssertionError("draft listing or reconciliation attempted")
+            ),
+            "_create_episode": MagicMock(side_effect=AssertionError("draft create attempted")),
+            "_get_upload_url": MagicMock(side_effect=AssertionError("upload attempted")),
+        }
+        for name, boundary in provider_access.items():
+            monkeypatch.setattr(pub, name, boundary)
+        second = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert first.details == {
+            "retry_blocked": True,
+            "code": "create_evidence_persistence_failed",
+        }
+        assert second.details == {
+            "retry_blocked": True,
+            "code": "unresolved_create_intent",
+        }
+        build_session.assert_called_once_with("dc", "key", "show1")
+        assert first_session.request.call_count == 2
+        for boundary in provider_access.values():
+            boundary.assert_not_called()
+        create.assert_called_once()
+        upload.assert_not_called()
+        assert [record["operation"] for record in _evidence_records(storage)] == [
+            "create_episode_intent"
+        ]
 
     def test_deterministic_create_failure_never_recovers_untitled_draft(
         self, tmp_path, monkeypatch
