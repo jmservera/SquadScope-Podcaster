@@ -1405,7 +1405,7 @@ def _recover_ambiguous_create(
     known_ids: set[int],
     snapshot_complete: bool,
     cause: SpotifyDraftCreateAmbiguousError,
-    on_create_resolved: Callable[[int], None] | None = None,
+    on_create_resolved: Callable[[int, bool], None] | None = None,
 ) -> tuple[int, bool]:
     """Resolve a create whose server-side effect is unknown, using evidence.
 
@@ -1449,7 +1449,7 @@ def _recover_ambiguous_create(
                 titled_match,
             )
             if on_create_resolved is not None:
-                on_create_resolved(titled_match)
+                on_create_resolved(titled_match, False)
             return titled_match, False
 
         candidates, opaque = _new_untitled_draft_ids(data, known_ids)
@@ -1462,7 +1462,7 @@ def _recover_ambiguous_create(
                 adopted,
             )
             if on_create_resolved is not None:
-                on_create_resolved(adopted)
+                on_create_resolved(adopted, True)
             return adopted, True
 
         if candidates or opaque or not snapshot_complete:
@@ -1489,7 +1489,7 @@ def _recover_ambiguous_create(
         )
         anchor_id = _create_episode(session, station_id)
         if on_create_resolved is not None:
-            on_create_resolved(anchor_id)
+            on_create_resolved(anchor_id, True)
         return anchor_id, True
 
     raise SpotifyDraftReconcileError(
@@ -1549,7 +1549,7 @@ def _reconcile_or_create_draft(
     title: str,
     exclude_id: int | None = None,
     before_create: Callable[[set[int], bool], None] | None = None,
-    on_create_resolved: Callable[[int], None] | None = None,
+    on_create_resolved: Callable[[int, bool], None] | None = None,
     unresolved_create_intent_snapshot: tuple[set[int], bool] | None = None,
 ) -> tuple[int, bool]:
     """Return ``(anchor_id, needs_title)`` for the video draft carrying *title*.
@@ -1588,7 +1588,7 @@ def _reconcile_or_create_draft(
     try:
         anchor_id = _create_episode(session, station_id)
         if on_create_resolved is not None:
-            on_create_resolved(anchor_id)
+            on_create_resolved(anchor_id, True)
         return anchor_id, True
     except SpotifyDraftCreateAmbiguousError as exc:
         return _recover_ambiguous_create(
@@ -2603,9 +2603,9 @@ def upload_video_to_episode(
                 )
             create_intent_persisted = True
 
-        def _mark_create_resolved(_anchor_id: int) -> None:
+        def _mark_create_resolved(_anchor_id: int, created_by_attempt: bool) -> None:
             nonlocal create_resolved
-            create_resolved = True
+            create_resolved = created_by_attempt
 
         # Create or reconcile a separate video draft — never touch the audio one.
         reconcile_enabled = _spotify_reconcile_enabled()

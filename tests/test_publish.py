@@ -1629,6 +1629,8 @@ class TestUploadVideoToEpisode:
         ]
         assert records[1]["provider_artifact_id"] == "777"
         assert records[1]["media_kind"] == "video"
+        assert records[1]["mutation_attempted"] is True
+        assert records[1]["code"] == "provider_artifact_created"
 
     def test_titled_ambiguous_recovery_persists_provider_identity(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
@@ -1670,10 +1672,11 @@ class TestUploadVideoToEpisode:
         records = _evidence_records(storage)
         assert [record["operation"] for record in records] == [
             "create_episode_intent",
-            "create_episode",
+            "reconcile_episode",
         ]
         assert records[1]["provider_artifact_id"] == "901"
-        assert records[1]["mutation_attempted"] is True
+        assert records[1]["mutation_attempted"] is False
+        assert records[1]["code"] == "provider_artifact_reconciled"
 
     def test_listing_failure_before_create_leaves_retryable_evidence(self, tmp_path, monkeypatch):
         import podcaster.publish as pub
@@ -2042,8 +2045,10 @@ class TestUploadVideoToEpisode:
             (record["operation"], record.get("provider_artifact_id")) for record in records
         ] == [
             ("create_episode_intent", None),
-            ("create_episode", "888"),
+            ("reconcile_episode", "888"),
         ]
+        assert records[1]["mutation_attempted"] is False
+        assert records[1]["code"] == "provider_artifact_reconciled"
 
     def test_recovered_untitled_draft_persists_provider_id_before_upload(
         self, tmp_path, monkeypatch
