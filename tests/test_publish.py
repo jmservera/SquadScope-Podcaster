@@ -2225,6 +2225,45 @@ class TestFindExistingDraft:
         assert "hasMore" in str(exc.value)
         assert "boolean" in str(exc.value)
 
+    @pytest.mark.parametrize("cursor_key", ["nextPageToken", "nextPage"])
+    def test_null_top_level_pagination_cursor_raises_without_false_flag(self, cursor_key):
+        from podcaster import publish as pub
+
+        session = self._session({"episodes": [], cursor_key: None})
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pytest.fail(f"null {cursor_key} cursor returned partial result: {result!r}")
+        assert cursor_key in str(exc.value)
+        assert "null" in str(exc.value)
+
+    def test_null_graphql_end_cursor_raises_without_false_flag(self):
+        from podcaster import publish as pub
+
+        session = self._session(
+            {
+                "data": {
+                    "webGetIndexedEpisodeList": {
+                        "episodes": {
+                            "nodes": [],
+                            "pageInfo": {"endCursor": None},
+                        }
+                    }
+                }
+            }
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError) as exc:
+            result = pub._find_existing_draft(session, "99", "My Show", user_id="7")
+            pytest.fail(f"null GraphQL endCursor returned partial result: {result!r}")
+        assert "endCursor" in str(exc.value)
+        assert "null" in str(exc.value)
+
+    @pytest.mark.parametrize("cursor_key", ["nextPageToken", "nextPage"])
+    def test_null_top_level_cursor_with_explicit_false_flag_is_terminal(self, cursor_key):
+        from podcaster import publish as pub
+
+        session = self._session({"episodes": [], "hasMore": False, cursor_key: None})
+        assert pub._find_existing_draft(session, "99", "My Show", user_id="7") is None
+
     def test_paginated_listing_fetches_all_pages_before_absence(self):
         from podcaster import publish as pub
 

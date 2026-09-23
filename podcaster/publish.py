@@ -894,10 +894,23 @@ def _pagination_flag(data: dict[Any, Any], key: str, *, context: str) -> bool | 
     )
 
 
-def _pagination_cursor(data: dict[Any, Any], key: str, *, context: str) -> str | None:
-    if key not in data or data[key] is None:
+def _pagination_cursor(
+    data: dict[Any, Any],
+    key: str,
+    *,
+    context: str,
+    allow_null: bool = False,
+) -> str | None:
+    if key not in data:
         return None
     value = data[key]
+    if value is None:
+        if allow_null:
+            return None
+        raise SpotifyDraftReconcileError(
+            f"Spotify episode listing {context} field '{key}' is null without "
+            f"an explicit false pagination flag; {_FAIL_CLOSED_SUFFIX}."
+        )
     if isinstance(value, str) and value:
         return value
     raise SpotifyDraftReconcileError(
@@ -906,9 +919,14 @@ def _pagination_cursor(data: dict[Any, Any], key: str, *, context: str) -> str |
     )
 
 
-def _first_pagination_cursor(data: dict[Any, Any], *, context: str) -> str | None:
+def _first_pagination_cursor(
+    data: dict[Any, Any],
+    *,
+    context: str,
+    allow_null: bool = False,
+) -> str | None:
     for key in ("nextPageToken", "nextPage"):
-        token = _pagination_cursor(data, key, context=context)
+        token = _pagination_cursor(data, key, context=context, allow_null=allow_null)
         if token is not None:
             return token
     return None
@@ -951,8 +969,10 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
     ):
         # Unit tests and any temporary REST-compatible probe fixtures can still
         # use the already-normalised listing shape.
-        next_token = _first_pagination_cursor(payload, context="top-level")
         has_more = _pagination_has_more(payload, context="top-level")
+        next_token = _first_pagination_cursor(
+            payload, context="top-level", allow_null=has_more is False
+        )
         if has_more and not next_token:
             raise SpotifyDraftReconcileError(
                 "Spotify episode listing signalled another page without a "
@@ -1018,14 +1038,19 @@ def _normalise_episode_listing_page(payload: Any) -> dict[str, Any]:
                         page_info,
                         token_key,
                         context=f"field '{name}.{list_key}.pageInfo'",
+                        allow_null=has_next is False,
                     )
                     if token is not None:
                         next_token = token
                         break
-            candidate_token = _first_pagination_cursor(candidate, context=f"field '{name}'")
+            candidate_has_next = _pagination_has_more(candidate, context=f"field '{name}'")
+            candidate_token = _first_pagination_cursor(
+                candidate,
+                context=f"field '{name}'",
+                allow_null=candidate_has_next is False,
+            )
             if candidate_token is not None:
                 next_token = candidate_token
-            candidate_has_next = _pagination_has_more(candidate, context=f"field '{name}'")
             if candidate_has_next is True:
                 has_next = True
             elif has_next is None:
