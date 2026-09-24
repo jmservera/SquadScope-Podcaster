@@ -26,6 +26,7 @@ import os
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +87,9 @@ from podcaster.video.sync_plan import (
     removed_repo_speaker_notes,
     weekly_url_from_job_id,
 )
+from podcaster.video.youtube_reconcile import IDENTITY_DETAIL_KEY as YOUTUBE_IDENTITY_DETAIL_KEY
+from podcaster.video.youtube_reconcile import IDENTITY_SCHEME as YOUTUBE_IDENTITY_SCHEME
+from podcaster.video.youtube_reconcile import youtube_identity_tag
 
 logger = logging.getLogger("podcaster.video.job_runner")
 
@@ -556,6 +560,18 @@ def _ensure_video_publish_run(storage: StorageBackend, job_id: str) -> str:
 
     storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
     return captured["run_id"]
+
+
+def _upload_intent_details(
+    platform: str, identity: PublicationIdentity | None
+) -> dict[str, Any] | None:
+    """Declare the YouTube identity tag durably before the upload mutation (#678)."""
+    if platform != "youtube":
+        return None
+    tag = youtube_identity_tag(identity)
+    if tag is None:
+        return None
+    return {YOUTUBE_IDENTITY_DETAIL_KEY: tag, "identity_scheme": YOUTUBE_IDENTITY_SCHEME}
 
 
 def _record_video_publication(
@@ -1225,6 +1241,11 @@ def run_video_generation(
                             if platform == "spotify"
                             else None,
                         }
+                        prior_details = prior.get("details")
+                        if platform == "youtube" and isinstance(prior_details, Mapping):
+                            declared_tag = prior_details.get(YOUTUBE_IDENTITY_DETAIL_KEY)
+                            if isinstance(declared_tag, str):
+                                published_for_attempt[record_key]["identity_tag"] = declared_tag
                     elif enabled and not dist_config.dry_run:
                         if platform == "spotify":
                             continue
@@ -1235,6 +1256,7 @@ def run_video_generation(
                                 platform=platform,
                                 media_kind="video",
                                 operation="upload_intent",
+                                details=_upload_intent_details(platform, publication_context),
                             )
                             if claim is None:
                                 published_for_attempt[record_key] = {

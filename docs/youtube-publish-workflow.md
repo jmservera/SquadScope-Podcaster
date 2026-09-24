@@ -200,6 +200,29 @@ automatically repeated. Scheduled private state remains `draft_created` until
 public state is independently confirmed.
 
 Accepted jobs persist bounded identity-bound evidence before provider mutation.
-Existing blocking evidence takes precedence over the legacy snapshot. Rollback
+Existing blocking evidence takes precedence over the legacy snapshot.
+
+### Identity-bound upload reconciliation (#678)
+
+For canonical accepted jobs every upload carries a deterministic identity tag
+(`sqpub-` + 32 hex characters of SHA-256 over the scheme, accepted job ID,
+publish run ID, week and article SHA-256). The tag contains no raw identifiers
+and is declared in the `upload_intent` evidence (`details.youtube_identity_tag`)
+**before** the upload session is opened.
+
+When a redelivered job finds that intent still `publication_unknown` without a
+video ID, it reads back the channel's uploads playlist (`channels.list
+mine=true`, at most two `playlistItems.list` pages of 50, then `videos.list`;
+about 5 quota units) and never opens a new upload session. It binds the video
+only if exactly one upload carries the exact tag, is still `private`/`unlisted`,
+and has `uploadStatus` `uploaded` or `processed`. That records `draft_created`
+with `verification=provider_readback` and
+`evidence_source=youtube_identity_readback`, then the idempotent playlist step
+runs. If no upload matches, more than one does, a match is public or incomplete,
+the page is malformed, the read fails, or the intent predates the tag, the job
+stays `publication_unknown` and needs the manual re-arm path above. Title and
+newest-upload matches are never used.
+
+Rollback
 retains provider artifacts and legacy fields; disable the additive projection
 or revert the implementation rather than deleting uploaded videos.
