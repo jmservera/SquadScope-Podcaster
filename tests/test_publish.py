@@ -839,10 +839,8 @@ class TestPublishEpisode:
         # Step 6: metadata
         meta_resp = MagicMock()
         meta_resp.raise_for_status = MagicMock()
-        publish_resp = MagicMock()
-        publish_resp.raise_for_status = MagicMock()
 
-        # Step 7: publish
+        # Step 7: provider readback (the /update above is the go-live call)
         mock_session.request.side_effect = [
             resolve_resp,
             create_resp,
@@ -851,7 +849,6 @@ class TestPublishEpisode:
             process_resp,
             poll_resp,
             meta_resp,
-            publish_resp,
             _mock_json_resp({"isPublished": True}),
         ]
 
@@ -873,12 +870,18 @@ class TestPublishEpisode:
         assert process_call.kwargs["json"]["episodeId"] == 12345
         assert process_call.kwargs["json"]["stationId"] == 1
         assert process_call.kwargs["json"]["userId"] == 2
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["userId"] == 2
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert metadata_call.kwargs["json"]["podcastEpisodeIsExplicit"] is False
-        publish_call = mock_session.request.call_args_list[-2]
-        assert publish_call.args[1].endswith("/publish?isMumsCompatible=true")
+        assert metadata_call.args[1].endswith("/v3/episodes/12345/update")
+        readback_call = mock_session.request.call_args_list[-1]
+        assert readback_call.args[:2] == (
+            "GET",
+            "https://api-v5.anchor.fm/v3/episodes/12345/overview",
+        )
+        assert result.outcome == "published"
+        assert not any("/publish" in c.args[1] for c in mock_session.request.call_args_list)
 
     @patch("podcaster.publish._build_session")
     def test_scheduled_mode_passes_date(self, mock_build, mp3_file, wav_file, spotify_env):
@@ -893,8 +896,7 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
-            _mock_json_resp({"isPublished": False}),
+            _mock_json_resp({"isPublished": False, "isDraft": True}),
         ]
         mock_session.request.side_effect = responses
 
@@ -917,7 +919,7 @@ class TestPublishEpisode:
         )
         assert result.status == "scheduled"
         assert result.anchor_episode_id == 999
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["title"] == "2026-W25: Scheduled Ep"
         assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
         assert metadata_call.kwargs["json"]["episodeNumber"] == 25
@@ -926,8 +928,8 @@ class TestPublishEpisode:
         assert (
             metadata_call.kwargs["json"]["wizardDraftedToPublishOn"] == "2026-06-20T09:00:00.000Z"
         )
-        publish_call = mock_session.request.call_args_list[-2]
-        assert publish_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00Z"
+        assert result.outcome == "draft_created"
+        assert not any("/publish" in c.args[1] for c in mock_session.request.call_args_list)
 
     @patch("podcaster.publish._build_session")
     def test_draft_mode_does_not_publish(self, mock_build, mp3_file, wav_file, spotify_env):
@@ -940,7 +942,6 @@ class TestPublishEpisode:
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
-            _mock_json_resp({}),
             _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
@@ -1098,7 +1099,6 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
 
@@ -1107,7 +1107,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["title"] == "Original Title"
         assert "seasonNumber" not in metadata_call.kwargs["json"]
         assert metadata_call.kwargs["json"]["isPublished"] is True
@@ -1124,7 +1124,6 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
 
@@ -1137,7 +1136,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert "publishOn" not in metadata_call.kwargs["json"]
         assert "wizardDraftedToPublishOn" not in metadata_call.kwargs["json"]
@@ -1156,7 +1155,6 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
 
@@ -1172,7 +1170,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["description"] == description + timestamps_html
 
     @patch("podcaster.publish._build_session")
@@ -1200,7 +1198,6 @@ class TestPublishEpisode:
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
-            _mock_json_resp({}),
             _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
@@ -3302,6 +3299,17 @@ class TestPromoteSpotifyVideoDraft:
     VIDEO_ANCHOR_ID = 321
     AUDIO_ANCHOR_ID = 111
     W35_PROTECTED_IDS = (124658107, 124658398, 124662333)
+    OVERVIEW = {
+        "userId": 7,
+        "title": "Show | W39",
+        "description": "<p>Notes</p>",
+        "podcastEpisodeType": "full",
+        "podcastEpisodeIsExplicit": False,
+        "podcastSeasonNumber": 2026,
+        "podcastEpisodeNumber": 39,
+        "isPublished": False,
+        "isDraft": True,
+    }
 
     def _patch_dependencies(self, monkeypatch, pub, *, states=None, publish_side_effect=None):
         session = MagicMock(name="spotify-session")
@@ -3312,8 +3320,13 @@ class TestPromoteSpotifyVideoDraft:
         if publish_side_effect is not None:
             publish_live.side_effect = publish_side_effect
         monkeypatch.setattr(pub, "_publish_episode_live", publish_live)
-        state_reader = MagicMock(side_effect=states if states is not None else [False, True])
-        monkeypatch.setattr(pub, "_get_episode_publication_state", state_reader)
+        state_reader = MagicMock(
+            side_effect=[
+                (state, dict(self.OVERVIEW))
+                for state in (states if states is not None else [False, True])
+            ]
+        )
+        monkeypatch.setattr(pub, "_read_episode_overview", state_reader)
         return session, publish_live, state_reader
 
     def test_denies_non_live_mode_without_spotify_calls(self, monkeypatch):
@@ -3416,7 +3429,7 @@ class TestPromoteSpotifyVideoDraft:
         assert result.terminal_state == "published"
         assert result.outcome == "published"
         assert result.is_published is True
-        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
+        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, "7", self.OVERVIEW)
         assert state_reader.call_count == 2
         assert state_reader.call_args_list == [
             call(session, self.VIDEO_ANCHOR_ID, user_id="7"),
@@ -3501,7 +3514,7 @@ class TestPromoteSpotifyVideoDraft:
         assert result.terminal_state == "publication_state_unknown"
         assert result.outcome == "publication_unknown"
         assert result.publish_run_id == "run-1"
-        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
+        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, "7", self.OVERVIEW)
         assert state_reader.call_count == 2
 
     def test_publish_error_requires_manual_handoff(self, monkeypatch):
@@ -3511,7 +3524,7 @@ class TestPromoteSpotifyVideoDraft:
         _session, publish_live, _state_reader = self._patch_dependencies(
             monkeypatch,
             pub,
-            states=[False],
+            states=[False, False],
             publish_side_effect=pub.SpotifyPublishError("publish rejected"),
         )
 
@@ -3522,6 +3535,8 @@ class TestPromoteSpotifyVideoDraft:
         )
 
         assert result.terminal_state == "manual_handoff_required"
+        assert result.is_published is False
+        assert result.details["mutation_error"] == "publish rejected"
         publish_live.assert_called_once()
 
     def test_dry_run_denies_promotion_after_authorization(self, monkeypatch):
