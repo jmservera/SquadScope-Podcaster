@@ -501,6 +501,27 @@ def upload_to_youtube(
     if file_size < _MIN_VALID_MP4_BYTES:
         raise ValueError(f"Video file too small ({file_size} bytes), likely corrupt")
 
+    # Resolve the chunked uploader BEFORE opening a session: the init POST
+    # creates the YouTube video, so failing afterwards would orphan it (#698).
+    chunked_uploader: Callable[..., Any] | None = None
+    if file_size > _MAX_SINGLE_UPLOAD_BYTES:
+        chunked_uploader = _load_chunked_uploader()
+        if chunked_uploader is None:
+            logger.error(
+                "Video too large for single-request upload (%d bytes > %d) and the "
+                "chunked resumable uploader is unavailable.",
+                file_size,
+                _MAX_SINGLE_UPLOAD_BYTES,
+            )
+            if raise_on_failure:
+                raise YouTubeDeliveryError(
+                    "YouTube chunked uploader unavailable for large video",
+                    code="youtube_chunked_unavailable",
+                    stage="upload_chunked",
+                    retryable=False,
+                )
+            return None, None
+
     http = transport or _DefaultTransport()
     access_token = _get_youtube_access_token(config, http)
 
@@ -580,31 +601,16 @@ def upload_to_youtube(
 
     # Files above the single-request ceiling are uploaded in resumable chunks
     # (#442) over the session opened above.
-    if file_size > _MAX_SINGLE_UPLOAD_BYTES:
-        chunked = _try_chunked_upload(
+    if chunked_uploader is not None:
+        return _try_chunked_upload(
             video_path,
             session_uri=upload_url,
             access_token=access_token,
             file_size=file_size,
             transport=http,
             raise_on_failure=raise_on_failure,
+            uploader=chunked_uploader,
         )
-        if chunked is not None:
-            return chunked
-        logger.error(
-            "Video too large for single-request upload (%d bytes > %d) and the "
-            "chunked resumable uploader is unavailable.",
-            file_size,
-            _MAX_SINGLE_UPLOAD_BYTES,
-        )
-        if raise_on_failure:
-            raise YouTubeDeliveryError(
-                "YouTube chunked uploader unavailable for large video",
-                code="youtube_chunked_unavailable",
-                stage="upload_chunked",
-                retryable=False,
-            )
-        return None, None
 
     video_bytes = video_path.read_bytes()
     last_status: int | None = None
@@ -908,6 +914,15 @@ def upload_to_spotify_episode(
 # --- Orchestrator ---
 
 
+def _load_chunked_uploader() -> Callable[..., Any] | None:
+    """Return :func:`podcaster.video.youtube.upload_chunked`, or None if unavailable."""
+    try:
+        from podcaster.video.youtube import upload_chunked
+    except ImportError:  # noqa: BLE001 - optional module; degrade gracefully
+        return None
+    return upload_chunked
+
+
 def _try_chunked_upload(
     video_path: Path,
     *,
@@ -916,7 +931,8 @@ def _try_chunked_upload(
     file_size: int,
     transport: HttpTransport,
     raise_on_failure: bool = False,
-) -> tuple[str | None, str | None] | None:
+    uploader: Callable[..., Any] | None = None,
+) -> tuple[str | None, str | None]:
     """Upload *video_path* in chunks over an already-open resumable session.
 
     The caller has already opened the session (the videos.insert). This helper
@@ -924,13 +940,13 @@ def _try_chunked_upload(
     video for the abandoned session (#698). Transient chunk failures resume
     the same ``session_uri`` from the server-acknowledged offset.
 
-    Returns ``(video_id, video_url)`` on completion, ``(None, None)`` on a
-    handled upload failure, or ``None`` when the chunked module is unavailable.
+    Returns ``(video_id, video_url)`` on completion or ``(None, None)`` on a
+    handled upload failure (raises instead when ``raise_on_failure``).
     """
-    try:
-        from podcaster.video.youtube import upload_chunked
-    except ImportError:  # noqa: BLE001 - optional module; degrade gracefully
-        return None
+    upload_chunked = uploader or _load_chunked_uploader()
+    if upload_chunked is None:
+        # upload_to_youtube resolves the uploader before init; this is a guard.
+        raise RuntimeError("chunked uploader unavailable after session init")
 
     try:
         result = upload_chunked(

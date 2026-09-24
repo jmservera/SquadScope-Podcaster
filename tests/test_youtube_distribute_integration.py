@@ -9,6 +9,7 @@ import pytest
 
 from podcaster.video.distribution import (
     VideoDistributionConfig,
+    YouTubeDeliveryError,
     distribute_video,
     upload_to_youtube,
     youtube_enabled_for_language,
@@ -111,7 +112,12 @@ class _InitTransport:
     """Transport that completes the resumable init then is taken over by the
     chunked uploader (which we stub via monkeypatch)."""
 
+    def __init__(self):
+        self.init_posts = 0
+
     def request_with_headers(self, url, *, method="GET", headers=None, data=None):
+        if "uploadType=resumable" in url:
+            self.init_posts += 1
         return 200, {"location": "https://upload/session"}, b""
 
     def request(self, *a, **k):
@@ -197,5 +203,15 @@ def test_large_file_without_chunked_module_returns_none(tmp_path, monkeypatch):
 
     monkeypatch.setitem(sys.modules, "podcaster.video.youtube", None)  # ImportError on import
 
-    vid_id, vid_url = upload_to_youtube(big, "t", "d", cfg, transport=_InitTransport())
+    transport = _InitTransport()
+    vid_id, vid_url = upload_to_youtube(big, "t", "d", cfg, transport=transport)
     assert vid_id is None and vid_url is None
+    # No session may be opened when the chunked path cannot finish it (#698).
+    assert transport.init_posts == 0
+
+    with pytest.raises(YouTubeDeliveryError) as raised:
+        upload_to_youtube(big, "t", "d", cfg, transport=transport, raise_on_failure=True)
+    assert raised.value.code == "youtube_chunked_unavailable"
+    assert raised.value.stage == "upload_chunked"
+    assert raised.value.retryable is False
+    assert transport.init_posts == 0
