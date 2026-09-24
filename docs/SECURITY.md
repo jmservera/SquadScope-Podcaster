@@ -6,13 +6,13 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
 
 ### Secrets in This Repository
 
-- **`PODCASTER_API_KEY`** (GitHub repository secret, Azure app setting)
+- **`PODCASTER_API_KEY`** (GitHub `prod` environment secret, ACA secret `podcaster-api-key`)
   - The bearer token for cross-repo callers to authenticate requests.
   - Optionally stored as a GitHub secret in this repository for stable deployment/rotation.
   - If the secret is absent, the deploy workflow generates a 256-bit key during deployment, masks it immediately, and passes it as a secure Bicep parameter to the ACA environment.
-  - Transmitted to Azure as a secure parameter and configured as an ACA Job secret.
+  - Transmitted to Azure as a `@secure()` Bicep parameter and stored as the ACA secret `podcaster-api-key` on both the API container app and the synthesis job; the `PODCASTER_API_KEY` env var uses `secretRef`, never a plain `value` (enforced by `tests/test_deploy_workflow.py`).
   - Never logged, echoed, printed to outputs, or included in workflow summaries.
-  - **Rotating:** Generate a new key, update GitHub/SquadScope secrets, re-deploy via `deploy-azure.yml`. If using generated-per-deploy keys, run the optional SquadScope sync during the same deployment.
+  - **Rotating:** Update the `prod` environment secret, re-deploy (Release or `deploy-azure.yml`), then re-sync SquadScope (Release does not sync; use `deploy-azure.yml -f sync_squadscope=true` or `scripts/get-podcaster-values.sh`). Full runbook: [AZURE-DEPLOYMENT.md → Rotating `PODCASTER_API_KEY`](AZURE-DEPLOYMENT.md#rotating-podcaster_api_key).
 
 - **`SQUADSCOPE_SYNC_TOKEN`** (GitHub repository secret, optional)
   - Fine-grained personal access token with permission to write variables and secrets in `jmservera/SquadScope`.
@@ -47,7 +47,7 @@ This document defines secret-handling policy, logging guarantees, and pre-releas
 
 ### Auth Bootstrap Decision
 
-- **Current release:** keep `x-podcaster-api-key` for compatibility and bootstrap safely. If a stable `PODCASTER_API_KEY` secret is unavailable, deployment generates a high-entropy key, masks it, and passes it only as a secure ACA Job environment secret.
+- **Current release:** keep `x-podcaster-api-key` for compatibility and bootstrap safely. If a stable `PODCASTER_API_KEY` secret is unavailable, deployment generates a high-entropy key, masks it, and passes it only as a secure parameter stored in the `podcaster-api-key` ACA secret (API app and synthesis job).
 - **Handoff:** prefer `sync_squadscope=true` with the gated `SQUADSCOPE_SYNC_TOKEN` during the same run, or pre-create a stable key and store it in both repositories. Do not print generated keys for manual copy/paste.
 - **Future hardening:** migrate SquadScope caller authentication to Azure federated identity/OIDC or EasyAuth while accepting the API-key header during a compatibility window.
 
@@ -104,7 +104,7 @@ The production deploy workflow uses OIDC/Entra for all Azure authentication. Bic
 ### What Must Never Be Logged
 
 - The `x-podcaster-api-key` header value or any representation of the API key
-- The derived API key from app settings (PODCASTER_API_KEY)
+- The API key value (PODCASTER_API_KEY / ACA secret `podcaster-api-key`)
 - The `SQUADSCOPE_SYNC_TOKEN` or any fine-grained token
 - Azure storage connection strings or account keys
 - Request or response bodies that contain secrets (validate this during response marshaling)

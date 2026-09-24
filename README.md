@@ -102,7 +102,7 @@ Optional `prod` environment variables:
 
 Optional `prod` environment secret:
 
-- `PODCASTER_API_KEY` - if absent, the workflow generates a high-entropy key, masks it, and sets it only as an Azure app setting. Never print this value.
+- `PODCASTER_API_KEY` - if absent, the workflow generates a high-entropy key, masks it, and stores it only as the ACA secret `podcaster-api-key` (referenced via `secretRef`). Never print this value.
 - `SPOTIFY_SHOW_ID` - Spotify show identifier for runtime publish.
 - `SP_DC` - Spotify session cookie for runtime publish.
 - `SP_KEY` - Spotify session cookie for runtime publish.

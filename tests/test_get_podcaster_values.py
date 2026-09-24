@@ -57,11 +57,29 @@ FAKE_AZ = (
     '  "cognitiveservices account keys")\n'
     '    [ "$query" = "key1" ] && echo "fake-openai-key-xyz789"; exit 0;;\n'
     '  "containerapp job list")\n'
-    '    [ "$query" = "[0].name" ] && echo "podcaster-fake-synth"; exit 0;;\n'
+    """    if [ "$query" = "[?ends_with(name, '-synth')].name | [0]" ]; then """
+    'echo "podcaster-fake-synth"; fi\n'
+    '    [ "$query" = "[0].name" ] && echo "podcaster-fake-video"; exit 0;;\n'
+    '  "containerapp job secret")\n'
+    '    if [ "$4" = "show" ] && [ "$query" = "value" ] && '
+    '[ "${FAKE_AZ_JOB_SECRET:-1}" = "1" ]; then\n'
+    '      case " $* " in\n'
+    '        *" --name podcaster-fake-synth"*" --secret-name podcaster-api-key "*)\n'
+    '          echo "fake-podcaster-key-abc123";;\n'
+    "      esac\n"
+    "    fi\n"
+    "    exit 0;;\n"
+    '  "containerapp list --resource-group")\n'
+    """    [ "$query" = "[?ends_with(name, '-api')].name | [0]" ] && """
+    'echo "podcaster-fake-api"; exit 0;;\n'
+    '  "containerapp secret show")\n'
+    '    case " $* " in\n'
+    '      *" --name podcaster-fake-api"*" --secret-name podcaster-api-key "*)\n'
+    '        [ "$query" = "value" ] && echo "fake-podcaster-api-app-key";;\n'
+    "    esac\n"
+    "    exit 0;;\n"
     '  "containerapp job show")\n'
-    '    [ "$query" = "properties.template.containers[0].env'
-    """[?name=='PODCASTER_API_KEY'].value | [0]" ] && echo """
-    '"fake-podcaster-key-abc123"; exit 0;;\n'
+    '    echo "plaintext env read is forbidden" >&2; exit 97;;\n'
     "esac\n"
     "exit 0\n"
 )
@@ -197,3 +215,31 @@ def test_succeeds_without_aca_job(tmp_path: Path) -> None:
     )
     # Should succeed (exit 0) even without ACA job — just emits what it can.
     assert result.returncode == 0, result.stderr
+
+
+def test_reads_api_key_from_aca_secret_not_plaintext_env() -> None:
+    """The key is an ACA secret; the script must not read a plaintext env value."""
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert "containerapp job secret show" in script
+    assert "--secret-name" in script
+    assert "podcaster-api-key" in script
+    assert "env[?name=='PODCASTER_API_KEY']" not in script
+    assert "].value" not in script
+
+
+def test_falls_back_to_api_app_secret_when_job_secret_missing(tmp_path: Path) -> None:
+    env = _make_fake_az(tmp_path)
+    env["FAKE_AZ_JOB_SECRET"] = "0"
+    result = subprocess.run(
+        ["bash", str(SCRIPT)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        "gh secret set PODCASTER_API_KEY --repo jmservera/SquadScope "
+        "--body 'fake-podcaster-api-app-key'"
+    ) in result.stdout
+    assert "#   ACA Job:         podcaster-fake-synth" in result.stdout
