@@ -395,7 +395,8 @@ The publishing flow is:
 3. get signed GCS upload URL
 4. upload MP3
 5. trigger processing and poll
-6. set metadata and publish/schedule
+6. set metadata via `/v3/episodes/{id}/update` — for live publishing this same call carries `isPublished: true` and is the go-live request (the legacy `/publish` endpoint returns 404, #688)
+7. read `/v3/episodes/{id}/overview` back and classify the result from provider state, never from the HTTP status
 
 Most importantly, publishing is **non-fatal**. If publishing is disabled, misconfigured, or fails, episode generation still succeeds. The module returns a `PublishResult` instead of throwing pipeline-breaking exceptions.
 

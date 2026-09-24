@@ -753,8 +753,15 @@ def append_evidence(
     details: Mapping[str, Any] | None = None,
     create_safety_state: CreateSafetyState | None = None,
     at: datetime | None = None,
+    expected_latest_seq: int | None = None,
     _rearmable_claim: bool = False,
 ) -> PublicationEvidence | None:
+    """Append one durable record.
+
+    ``expected_latest_seq`` makes the append conditional (compare-and-swap):
+    it raises unless the latest record for ``platform``/``media_kind`` inside
+    the atomic update still has that ``seq``.
+    """
     validate_outcome(outcome)
     if create_safety_state is not None and type(create_safety_state) is not CreateSafetyState:
         raise PublicationStateError("create safety state must be validated")
@@ -800,6 +807,19 @@ def append_evidence(
             strict=True,
         )
         records = document["records"]
+        if expected_latest_seq is not None:
+            scoped_seq = None
+            for existing in records:
+                if (
+                    isinstance(existing, dict)
+                    and existing.get("platform") == platform
+                    and existing.get("media_kind") == media_kind
+                ):
+                    scoped_seq = existing.get("seq")
+            if scoped_seq != expected_latest_seq:
+                raise PublicationStateError(
+                    "publication evidence changed since preconditions were checked"
+                )
         duplicate_index: int | None = None
         for index, existing in enumerate(records):
             if not isinstance(existing, dict):

@@ -866,10 +866,8 @@ class TestPublishEpisode:
         # Step 6: metadata
         meta_resp = MagicMock()
         meta_resp.raise_for_status = MagicMock()
-        publish_resp = MagicMock()
-        publish_resp.raise_for_status = MagicMock()
 
-        # Step 7: publish
+        # Step 7: provider readback (the /update above is the go-live call)
         mock_session.request.side_effect = [
             resolve_resp,
             create_resp,
@@ -878,7 +876,6 @@ class TestPublishEpisode:
             process_resp,
             poll_resp,
             meta_resp,
-            publish_resp,
             _mock_json_resp({"isPublished": True}),
         ]
 
@@ -900,12 +897,18 @@ class TestPublishEpisode:
         assert process_call.kwargs["json"]["episodeId"] == 12345
         assert process_call.kwargs["json"]["stationId"] == 1
         assert process_call.kwargs["json"]["userId"] == 2
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["userId"] == 2
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert metadata_call.kwargs["json"]["podcastEpisodeIsExplicit"] is False
-        publish_call = mock_session.request.call_args_list[-2]
-        assert publish_call.args[1].endswith("/publish?isMumsCompatible=true")
+        assert metadata_call.args[1].endswith("/v3/episodes/12345/update")
+        readback_call = mock_session.request.call_args_list[-1]
+        assert readback_call.args[:2] == (
+            "GET",
+            "https://api-v5.anchor.fm/v3/episodes/12345/overview",
+        )
+        assert result.outcome == "published"
+        assert not any("/publish" in c.args[1] for c in mock_session.request.call_args_list)
 
     @patch("podcaster.publish._build_session")
     def test_scheduled_mode_passes_date(self, mock_build, mp3_file, wav_file, spotify_env):
@@ -920,8 +923,7 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
-            _mock_json_resp({"isPublished": False}),
+            _mock_json_resp({"isPublished": False, "isDraft": True}),
         ]
         mock_session.request.side_effect = responses
 
@@ -944,7 +946,7 @@ class TestPublishEpisode:
         )
         assert result.status == "scheduled"
         assert result.anchor_episode_id == 999
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["title"] == "2026-W25: Scheduled Ep"
         assert metadata_call.kwargs["json"]["seasonNumber"] == 2026
         assert metadata_call.kwargs["json"]["episodeNumber"] == 25
@@ -953,8 +955,8 @@ class TestPublishEpisode:
         assert (
             metadata_call.kwargs["json"]["wizardDraftedToPublishOn"] == "2026-06-20T09:00:00.000Z"
         )
-        publish_call = mock_session.request.call_args_list[-2]
-        assert publish_call.kwargs["json"]["publishOn"] == "2026-06-20T09:00:00Z"
+        assert result.outcome == "draft_created"
+        assert not any("/publish" in c.args[1] for c in mock_session.request.call_args_list)
 
     @patch("podcaster.publish._build_session")
     def test_draft_mode_does_not_publish(self, mock_build, mp3_file, wav_file, spotify_env):
@@ -967,7 +969,6 @@ class TestPublishEpisode:
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
-            _mock_json_resp({}),
             _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
@@ -1125,7 +1126,6 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
 
@@ -1134,7 +1134,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["title"] == "Original Title"
         assert "seasonNumber" not in metadata_call.kwargs["json"]
         assert metadata_call.kwargs["json"]["isPublished"] is True
@@ -1151,7 +1151,6 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
 
@@ -1164,7 +1163,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["isPublished"] is True
         assert "publishOn" not in metadata_call.kwargs["json"]
         assert "wizardDraftedToPublishOn" not in metadata_call.kwargs["json"]
@@ -1183,7 +1182,6 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
 
@@ -1199,7 +1197,7 @@ class TestPublishEpisode:
         )
 
         assert result.status == "published"
-        metadata_call = mock_session.request.call_args_list[-3]
+        metadata_call = mock_session.request.call_args_list[-2]
         assert metadata_call.kwargs["json"]["description"] == description + timestamps_html
 
     @patch("podcaster.publish._build_session")
@@ -1227,7 +1225,6 @@ class TestPublishEpisode:
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
-            _mock_json_resp({}),
             _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
@@ -4298,6 +4295,17 @@ class TestPromoteSpotifyVideoDraft:
     VIDEO_ANCHOR_ID = 321
     AUDIO_ANCHOR_ID = 111
     W35_PROTECTED_IDS = (124658107, 124658398, 124662333)
+    OVERVIEW = {
+        "userId": 7,
+        "title": "Show | W39",
+        "description": "<p>Notes</p>",
+        "podcastEpisodeType": "full",
+        "podcastEpisodeIsExplicit": False,
+        "podcastSeasonNumber": 2026,
+        "podcastEpisodeNumber": 39,
+        "isPublished": False,
+        "isDraft": True,
+    }
 
     def _patch_dependencies(self, monkeypatch, pub, *, states=None, publish_side_effect=None):
         session = MagicMock(name="spotify-session")
@@ -4308,8 +4316,13 @@ class TestPromoteSpotifyVideoDraft:
         if publish_side_effect is not None:
             publish_live.side_effect = publish_side_effect
         monkeypatch.setattr(pub, "_publish_episode_live", publish_live)
-        state_reader = MagicMock(side_effect=states if states is not None else [False, True])
-        monkeypatch.setattr(pub, "_get_episode_publication_state", state_reader)
+        state_reader = MagicMock(
+            side_effect=[
+                (state, dict(self.OVERVIEW))
+                for state in (states if states is not None else [False, True])
+            ]
+        )
+        monkeypatch.setattr(pub, "_read_episode_overview", state_reader)
         return session, publish_live, state_reader
 
     def test_denies_non_live_mode_without_spotify_calls(self, monkeypatch):
@@ -4412,7 +4425,7 @@ class TestPromoteSpotifyVideoDraft:
         assert result.terminal_state == "published"
         assert result.outcome == "published"
         assert result.is_published is True
-        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
+        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, "7", self.OVERVIEW)
         assert state_reader.call_count == 2
         assert state_reader.call_args_list == [
             call(session, self.VIDEO_ANCHOR_ID, user_id="7"),
@@ -4497,7 +4510,7 @@ class TestPromoteSpotifyVideoDraft:
         assert result.terminal_state == "publication_state_unknown"
         assert result.outcome == "publication_unknown"
         assert result.publish_run_id == "run-1"
-        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, max_attempts=1)
+        publish_live.assert_called_once_with(session, self.VIDEO_ANCHOR_ID, "7", self.OVERVIEW)
         assert state_reader.call_count == 2
 
     def test_publish_error_requires_manual_handoff(self, monkeypatch):
@@ -4507,7 +4520,7 @@ class TestPromoteSpotifyVideoDraft:
         _session, publish_live, _state_reader = self._patch_dependencies(
             monkeypatch,
             pub,
-            states=[False],
+            states=[False, False],
             publish_side_effect=pub.SpotifyPublishError("publish rejected"),
         )
 
@@ -4518,6 +4531,8 @@ class TestPromoteSpotifyVideoDraft:
         )
 
         assert result.terminal_state == "manual_handoff_required"
+        assert result.is_published is False
+        assert result.details["mutation_error"] == "publish rejected"
         publish_live.assert_called_once()
 
     def test_dry_run_denies_promotion_after_authorization(self, monkeypatch):
@@ -5632,6 +5647,277 @@ class TestEpisodeListingSchema:
             result = self._lookup(payload)
             pytest.fail(f"multiple GraphQL list fields returned partial result: {result!r}")
         assert "GraphQL" in str(exc.value)
+
+
+_LIVE_SORTABLE = [
+    "TITLE",
+    "PUBLISHED_ON",
+    "CONTENT_TYPE",
+    "DURATION_MS",
+    "AD_COUNT",
+    "CREATED_ON",
+    "PLAY_COUNT",
+    "START_COUNT",
+    "LISTENERS",
+    "PLAYS_AND_DOWNLOADS",
+]
+
+
+def _live_draft_item(episode_id, title):
+    """An item in the shape the live ``WebGetIndexedEpisodeList`` returned (2026-09)."""
+    return {
+        "episodeId": episode_id,
+        "title": title,
+        "uri": f"spotify:episode:{episode_id}",
+        "contentType": "EPISODE_CONTENT_TYPE_VIDEO",
+        "episodeType": "EPISODE_TYPE_FULL",
+        "createdOn": {"seconds": "1790197835"},
+        "publishedOn": None,
+        "asset": {"downloadUrl": None, "lengthMs": "364691", "mediaFiles": []},
+        "clips": {"clips": []},
+        "isSpotifyExclusive": False,
+        "paywall": {"isPaywallContent": False},
+    }
+
+
+def _live_listing_payload(
+    items, *, current_page=1, total_items=None, total_pages=None, index_status="COMPLETED"
+):
+    """``episodesV2`` in the live shape: ``indexStatus, items, pagination, sortable``."""
+    if total_items is None:
+        total_items = len(items)
+    if total_pages is None:
+        total_pages = (total_items + 49) // 50
+    return {
+        "data": {
+            "showByShowUri": {
+                "episodesV2": {
+                    "indexStatus": index_status,
+                    "items": items,
+                    "pagination": {
+                        "currentPage": current_page,
+                        "pageSize": 50,
+                        "totalItems": total_items,
+                        "totalPages": total_pages,
+                    },
+                    "sortable": list(_LIVE_SORTABLE),
+                }
+            }
+        }
+    }
+
+
+class TestLiveEpisodeListingShape:
+    """The 2026-09 listing adds ``sortable`` and reports an empty listing as 0 pages."""
+
+    TITLE = "Target Video | W39"
+
+    def _session(self, *payloads):
+        session = MagicMock()
+        session.request.side_effect = [_mock_json_resp(payload) for payload in payloads]
+        return session
+
+    def _reconcile(self, monkeypatch, session, create_id=None):
+        from podcaster import publish as pub
+
+        create = MagicMock(return_value=create_id)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        result = pub._reconcile_or_create_draft(
+            session, "99", user_id="7", show_id="show1", title=self.TITLE
+        )
+        return result, create
+
+    def test_observed_empty_draft_listing_proves_absence(self, monkeypatch):
+        # Exact pagination the live DRAFT_EPISODES read returned for W39.
+        session = self._session(_live_listing_payload([], total_items=0, total_pages=0))
+        result, create = self._reconcile(monkeypatch, session, create_id=4242)
+        assert result == (4242, True)
+        create.assert_called_once()
+        assert session.request.call_count == 1
+
+    def test_single_page_without_match_proves_absence(self, monkeypatch):
+        items = [_live_draft_item(1000 + i, f"Other {i}") for i in range(17)]
+        session = self._session(_live_listing_payload(items))
+        result, create = self._reconcile(monkeypatch, session, create_id=4242)
+        assert result == (4242, True)
+        create.assert_called_once()
+
+    def test_existing_matching_draft_is_adopted_without_create(self, monkeypatch):
+        items = [_live_draft_item(1001, "Other"), _live_draft_item(126212999, self.TITLE)]
+        session = self._session(_live_listing_payload(items))
+        result, create = self._reconcile(monkeypatch, session)
+        assert result == (126212999, False)
+        create.assert_not_called()
+
+    def test_multiple_pages_are_followed_to_find_match_on_last_page(self, monkeypatch):
+        first = [_live_draft_item(1000 + i, f"Other {i}") for i in range(50)]
+        second = [_live_draft_item(2000, self.TITLE)]
+        session = self._session(
+            _live_listing_payload(first, total_items=51),
+            _live_listing_payload(second, current_page=2, total_items=51),
+        )
+        result, create = self._reconcile(monkeypatch, session)
+        assert result == (2000, False)
+        create.assert_not_called()
+        pages = [
+            call.kwargs["json"]["variables"]["currentPage"]
+            for call in session.request.call_args_list
+        ]
+        assert pages == [1, 2]
+
+    def test_multiple_pages_without_match_prove_absence_only_after_last_page(self, monkeypatch):
+        first = [_live_draft_item(1000 + i, f"Other {i}") for i in range(50)]
+        second = [_live_draft_item(2000 + i, f"More {i}") for i in range(3)]
+        session = self._session(
+            _live_listing_payload(first, total_items=53),
+            _live_listing_payload(second, current_page=2, total_items=53),
+        )
+        result, create = self._reconcile(monkeypatch, session, create_id=4242)
+        assert result == (4242, True)
+        create.assert_called_once()
+        assert session.request.call_count == 2
+
+    @pytest.mark.parametrize(
+        "index_status",
+        ["INDEXING", "IN_PROGRESS", "PENDING", "PARTIAL", "NOT_INDEXED", "completed", "", None, 1],
+    )
+    def test_not_fully_indexed_listing_never_authorizes_create(self, monkeypatch, index_status):
+        from podcaster import publish as pub
+
+        session = self._session(
+            _live_listing_payload([], total_items=0, total_pages=0, index_status=index_status)
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="index is not complete"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    def test_later_page_not_fully_indexed_never_authorizes_create(self, monkeypatch):
+        from podcaster import publish as pub
+
+        first = [_live_draft_item(1000 + i, f"Other {i}") for i in range(50)]
+        session = self._session(
+            _live_listing_payload(first, total_items=51),
+            _live_listing_payload(
+                [_live_draft_item(2000, "More")],
+                current_page=2,
+                total_items=51,
+                index_status="INDEXING",
+            ),
+        )
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="index is not complete"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    @pytest.mark.parametrize(
+        ("pages", "match"),
+        [
+            pytest.param(
+                [_live_listing_payload([], total_items=1, total_pages=0)],
+                "pagination is inconsistent",
+                id="zero-pages-but-items-counted",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1, "Other")], total_items=0, total_pages=0
+                    )
+                ],
+                "pagination is inconsistent",
+                id="zero-pages-but-items-returned",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1000 + i, "Other") for i in range(49)],
+                        total_items=51,
+                    )
+                ],
+                "pagination is inconsistent",
+                id="short-first-page",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1000 + i, "Other") for i in range(50)],
+                        total_items=51,
+                    ),
+                    _live_listing_payload([], current_page=2, total_items=51),
+                ],
+                "pagination is inconsistent",
+                id="truncated-last-page",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1000 + i, "Other") for i in range(50)],
+                        total_items=51,
+                    ),
+                    _live_listing_payload(
+                        [_live_draft_item(2000 + i, "More") for i in range(50)],
+                        current_page=2,
+                        total_items=100,
+                    ),
+                ],
+                "count metadata changed",
+                id="count-changed-between-pages",
+            ),
+            pytest.param(
+                [
+                    _live_listing_payload(
+                        [_live_draft_item(1000 + i, "Other") for i in range(50)],
+                        total_items=51,
+                    ),
+                    _live_listing_payload(
+                        [_live_draft_item(1000, "Other")], current_page=2, total_items=51
+                    ),
+                ],
+                "repeated canonical episode id",
+                id="repeated-item-across-pages",
+            ),
+        ],
+    )
+    def test_truncated_or_inconsistent_listing_never_authorizes_create(
+        self, monkeypatch, pages, match
+    ):
+        from podcaster import publish as pub
+
+        session = self._session(*pages)
+        with pytest.raises(pub.SpotifyDraftReconcileError, match=match):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    @pytest.mark.parametrize("sortable", [None, "TITLE", {"TITLE": True}, ["TITLE", 1]])
+    def test_malformed_sortable_never_authorizes_create(self, monkeypatch, sortable):
+        from podcaster import publish as pub
+
+        payload = _live_listing_payload([], total_items=0, total_pages=0)
+        payload["data"]["showByShowUri"]["episodesV2"]["sortable"] = sortable
+        session = self._session(payload)
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="sortable"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    @pytest.mark.parametrize("extra", ["cursor", "hasMore", "nextPageToken", "totalCount"])
+    def test_unknown_listing_field_alongside_sortable_fails_closed(self, monkeypatch, extra):
+        from podcaster import publish as pub
+
+        payload = _live_listing_payload([], total_items=0, total_pages=0)
+        payload["data"]["showByShowUri"]["episodesV2"][extra] = None
+        session = self._session(payload)
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="episodesV2 fields changed"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
+
+    @pytest.mark.parametrize("extra", ["cursor", "hasNextPage", "offset"])
+    def test_unknown_pagination_field_fails_closed(self, monkeypatch, extra):
+        from podcaster import publish as pub
+
+        payload = _live_listing_payload([], total_items=0, total_pages=0)
+        payload["data"]["showByShowUri"]["episodesV2"]["pagination"][extra] = None
+        session = self._session(payload)
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="pagination fields changed"):
+            self._reconcile(monkeypatch, session, create_id=4242)
+        assert pub._create_episode.call_count == 0
 
 
 class TestEpisodeDraftState:

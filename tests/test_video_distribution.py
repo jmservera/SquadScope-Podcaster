@@ -395,16 +395,15 @@ class TestUploadToYouTube:
         self, video_file, youtube_config, monkeypatch
     ):
         monkeypatch.setattr(
-            "podcaster.video.youtube.upload_video",
+            "podcaster.video.youtube.upload_chunked",
             lambda *args, **kwargs: (_ for _ in ()).throw(URLError("temporary failure")),
         )
         with pytest.raises(YouTubeDeliveryError) as raised:
             _try_chunked_upload(
                 video_file,
-                "title",
-                "desc",
-                youtube_config,
-                tags=None,
+                session_uri="https://upload/session",
+                access_token="tok",
+                file_size=2048,
                 transport=FakeTransport(),
                 raise_on_failure=True,
             )
