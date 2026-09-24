@@ -125,7 +125,7 @@ new video `anchor_id` has been returned.
   provider's `/overview` currently reports it (`title`, `description`,
   `podcastEpisodeType`, `podcastEpisodeIsExplicit`, `podcastSeasonNumber`,
   `podcastEpisodeNumber`). Missing/unreadable fields, or an overview `userId`
-  that differs from the session's, fail closed before any mutation.
+  that is absent or differs from the session's, fail closed before any mutation.
 - `GET /v3/episodes/{anchor_id}/overview?returnWebIds=true&isMumsCompatible=true`
   (HTTP 200; `/v3/episodes/{id}` itself returns 400) is the readback source.
   After any go-live response — success, HTTP error, or transport failure —

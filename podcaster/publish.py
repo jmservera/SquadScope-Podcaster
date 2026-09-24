@@ -2005,11 +2005,14 @@ def _go_live_payload_from_overview(
             f"Spotify userId unreadable for episode {anchor_id}; refusing go-live."
         ) from exc
     overview_user_id = overview.get("userId")
-    if overview_user_id is not None and (
-        isinstance(overview_user_id, bool) or overview_user_id != expected_user_id
+    if (
+        not isinstance(overview_user_id, int)
+        or isinstance(overview_user_id, bool)
+        or overview_user_id != expected_user_id
     ):
         raise SpotifyPublishError(
-            f"Spotify episode {anchor_id} belongs to a different user; refusing go-live."
+            f"Spotify episode {anchor_id} ownership is unverified or belongs to a "
+            "different user; refusing go-live."
         )
     explicit = overview.get("podcastEpisodeIsExplicit")
     if not isinstance(explicit, bool):

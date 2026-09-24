@@ -140,6 +140,8 @@ class TestGoLiveMutation:
             {"podcastEpisodeType": ""},
             {"userId": 8},
             {"userId": True},
+            {"userId": None},
+            {"userId": "7"},
             {"podcastSeasonNumber": "2026"},
             {"podcastEpisodeNumber": True},
         ],
@@ -151,6 +153,16 @@ class TestGoLiveMutation:
             pub._publish_episode_live(
                 session, VIDEO_ID, "7", _overview(published=False, **overrides)
             )
+
+        session.request.assert_not_called()
+
+    def test_absent_user_id_fails_closed_before_mutation(self):
+        overview = _overview(published=False)
+        del overview["userId"]
+        session = MagicMock()
+
+        with pytest.raises(pub.SpotifyPublishError, match="ownership"):
+            pub._publish_episode_live(session, VIDEO_ID, "7", overview)
 
         session.request.assert_not_called()
 
