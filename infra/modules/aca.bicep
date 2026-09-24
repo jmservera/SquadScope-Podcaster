@@ -78,7 +78,7 @@ param chatDeploymentName string = ''
 
 @secure()
 @description('Podcaster API key for auth.')
-param podcasterApiKey string = ''
+param podcasterApiKey string
 
 @description('TTS voice for host A.')
 param ttsVoiceHostA string = 'fable'
@@ -228,6 +228,10 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
           name: 'spotify-sp-key'
           value: spotifySessionCookieKey
         }
+        {
+          name: 'podcaster-api-key'
+          value: podcasterApiKey
+        }
       ]
       registries: hasContainerRegistry ? [
         {
@@ -321,7 +325,7 @@ resource synthesisJob 'Microsoft.App/jobs@2025-01-01' = {
             }
             {
               name: 'PODCASTER_API_KEY'
-              value: podcasterApiKey
+              secretRef: 'podcaster-api-key'
             }
             {
               name: 'PODCAST_AUTO_PUBLISH'

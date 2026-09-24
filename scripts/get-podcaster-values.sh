@@ -8,7 +8,8 @@
 # Architecture: ACA-only (Container Apps Job + Storage + Azure OpenAI).
 # There is no Function App or public HTTP endpoint; SquadScope triggers synthesis
 # via the Storage Queue (synthesis-jobs) and the PODCASTER_API_KEY is used for
-# queue-message auth validation inside the ACA job.
+# queue-message auth validation inside the ACA job. The key is read back from the
+# "podcaster-api-key" ACA secret (never from a plaintext env value).
 #
 # The operator only needs to provide a resource group name (defaults to the
 # deployed `squadscope-podcaster`); everything else is discovered via `az`.
@@ -113,22 +114,41 @@ else
 fi
 
 # --- Container Apps Job (synthesis) -----------------------------------------
-ACA_JOB_NAME="$(az_query "[0].name" containerapp job list --resource-group "$RESOURCE_GROUP" 2>/dev/null)"
+# Several jobs share the resource group (synthesis, video, recorder); prefer the
+# synthesis job (named "<baseName>-synth"), which owns the podcaster-api-key secret.
+ACA_JOB_NAME="$(az_query "[?ends_with(name, '-synth')].name | [0]" containerapp job list --resource-group "$RESOURCE_GROUP" 2>/dev/null)"
+if [ -z "$ACA_JOB_NAME" ]; then
+  ACA_JOB_NAME="$(az_query "[0].name" containerapp job list --resource-group "$RESOURCE_GROUP" 2>/dev/null)"
+fi
 if [ -z "$ACA_JOB_NAME" ]; then
   err "No Container Apps Job found in '$RESOURCE_GROUP' (continuing)."
 fi
 
-# --- Podcaster API key (read from ACA job env if available) -----------------
+# --- Podcaster API key (read from the ACA secret, never from plaintext env) --
+# The key is stored as the ACA secret "podcaster-api-key" on the synthesis job
+# and the API container app; env vars only reference it via secretRef.
+# Reading secret values requires listSecrets permission (e.g. Contributor).
+PODCASTER_API_KEY_SECRET_NAME="podcaster-api-key"
 PODCASTER_API_KEY=""
 if [ -n "$ACA_JOB_NAME" ]; then
-  PODCASTER_API_KEY="$(az containerapp job show \
+  PODCASTER_API_KEY="$(az containerapp job secret show \
     --resource-group "$RESOURCE_GROUP" --name "$ACA_JOB_NAME" \
-    --query "properties.template.containers[0].env[?name=='PODCASTER_API_KEY'].value | [0]" \
-    --output tsv 2>/dev/null || true)"
+    --secret-name "$PODCASTER_API_KEY_SECRET_NAME" \
+    --query "value" --output tsv 2>/dev/null || true)"
 fi
 if [ -z "$PODCASTER_API_KEY" ]; then
-  err "Could not discover PODCASTER_API_KEY from ACA job env. It is set during deployment from the GitHub secret."
-  err "If you need to rotate it, update the PODCASTER_API_KEY secret in the 'prod' environment and re-deploy."
+  ACA_API_APP_NAME="$(az_query "[?ends_with(name, '-api')].name | [0]" containerapp list --resource-group "$RESOURCE_GROUP" 2>/dev/null)"
+  if [ -n "$ACA_API_APP_NAME" ]; then
+    PODCASTER_API_KEY="$(az containerapp secret show \
+      --resource-group "$RESOURCE_GROUP" --name "$ACA_API_APP_NAME" \
+      --secret-name "$PODCASTER_API_KEY_SECRET_NAME" \
+      --query "value" --output tsv 2>/dev/null || true)"
+  fi
+fi
+if [ -z "$PODCASTER_API_KEY" ]; then
+  err "Could not read the '$PODCASTER_API_KEY_SECRET_NAME' ACA secret from the synthesis job or API app."
+  err "Check that the current infra is deployed and that you have listSecrets permission (e.g. Contributor)."
+  err "The key originates from the PODCASTER_API_KEY secret in the GitHub 'prod' environment; to rotate it, see docs/AZURE-DEPLOYMENT.md."
 fi
 
 # --- Emit gh secret set commands -------------------------------------------
