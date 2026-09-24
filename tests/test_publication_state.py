@@ -1397,3 +1397,97 @@ def test_create_safety_absent_closed_set_fields_keep_legacy_defaults():
     assert state is not None
     assert state.provenance is CreateIntentProvenance.RECONCILIATION_BACKED
     assert state.mutation_possibility is MutationPossibility.NOT_POSSIBLE
+
+
+@pytest.mark.parametrize(
+    ("operation", "details"),
+    [
+        (
+            "create_episode_intent",
+            {"create_provenance": "reconciliation_backed", "mutation_possibility": "confirmed"},
+        ),
+        (
+            "create_episode_intent",
+            {"create_provenance": "upload_dispatch", "mutation_possibility": "confirmed"},
+        ),
+        ("create_episode_intent", {"mutation_possibility": "confirmed"}),
+        (
+            "create_episode_intent",
+            {"create_provenance": "upload_dispatch", "mutation_possibility": "not_possible"},
+        ),
+        (
+            "unreconciled_create_intent",
+            {"create_provenance": "blind_unreconciled", "mutation_possibility": "not_possible"},
+        ),
+        ("upload_intent", {"mutation_possibility": "not_possible"}),
+    ],
+)
+def test_create_safety_rejects_inconsistent_mutation_possibility(operation, details):
+    """#694 thread 4092840065: mutation state must agree with provenance and provider id."""
+    with pytest.raises(PublicationStateError):
+        create_safety_state_from_record({"operation": operation, "details": details})
+
+
+def test_create_safety_confirmed_mutation_accepts_durable_provider_identity():
+    state = create_safety_state_from_record(
+        {
+            "operation": "create_episode",
+            "provider_artifact_id": "777",
+            "details": {
+                "create_provenance": "reconciliation_backed",
+                "mutation_possibility": "confirmed",
+            },
+        }
+    )
+
+    assert state is not None
+    assert state.mutation_possibility is MutationPossibility.CONFIRMED
+
+
+@pytest.mark.parametrize(
+    ("operation", "state"),
+    [
+        (
+            "unreconciled_create_intent",
+            CreateSafetyState.reconciliation_backed(ProviderSnapshot.absent()),
+        ),
+        ("unreconciled_create_intent", CreateSafetyState.upload_dispatch()),
+        ("create_episode_intent", CreateSafetyState.unreconciled_override()),
+        ("upload_intent", CreateSafetyState.unreconciled_override()),
+    ],
+)
+def test_append_evidence_rejects_operation_provenance_mismatch_without_writing(operation, state):
+    """#694 thread 4092840137: the writer enforces the operation→provenance contract."""
+    storage = MemoryStorage()
+
+    with pytest.raises(PublicationStateError, match="does not match its recording operation"):
+        append_evidence(
+            storage,
+            identity(),
+            platform="spotify",
+            media_kind="video",
+            operation=operation,
+            outcome=PUBLICATION_UNKNOWN,
+            create_safety_state=state,
+        )
+
+    assert storage.data == {}
+
+
+def test_append_evidence_rejects_confirmed_mutation_without_provider_id():
+    storage = MemoryStorage()
+
+    with pytest.raises(PublicationStateError, match="without a provider identity"):
+        append_evidence(
+            storage,
+            identity(),
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode",
+            outcome=PUBLICATION_UNKNOWN,
+            create_safety_state=CreateSafetyState.provider_confirmed(
+                CreateIntentProvenance.RECONCILIATION_BACKED
+            ),
+        )
+
+    assert storage.data == {}

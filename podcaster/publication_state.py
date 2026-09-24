@@ -172,6 +172,27 @@ _OPERATION_PROVENANCE: dict[str, frozenset[CreateIntentProvenance]] = {
 }
 
 
+def _validate_mutation_combination(
+    provenance: CreateIntentProvenance,
+    mutation_possibility: MutationPossibility,
+    *,
+    has_provider_id: bool,
+) -> None:
+    # A confirmed mutation must name the durable provider artifact, and a blind or
+    # dispatch-backed claim can never assert that no mutation was possible.
+    if mutation_possibility == MutationPossibility.CONFIRMED and not has_provider_id:
+        raise PublicationStateError(
+            "create safety evidence confirms a mutation without a provider identity"
+        )
+    if mutation_possibility == MutationPossibility.NOT_POSSIBLE and provenance in (
+        CreateIntentProvenance.BLIND_UNRECONCILED,
+        CreateIntentProvenance.UPLOAD_DISPATCH,
+    ):
+        raise PublicationStateError(
+            "create safety evidence denies a possible mutation for a non-reconciled create"
+        )
+
+
 def _classify_untrusted_evidence_source(value: Any) -> str:
     """Describe a rejected persisted source without echoing its (untrusted) content."""
     if value is None:
@@ -579,6 +600,11 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
     else:
         mutation_possibility = MutationPossibility.NOT_POSSIBLE
 
+    _validate_mutation_combination(
+        provenance,
+        mutation_possibility,
+        has_provider_id=bool(record.get("provider_artifact_id") or record.get("provider_id")),
+    )
     return CreateSafetyState(
         provenance, snapshot, mutation_possibility, snapshot_degraded=snapshot_degraded
     )
@@ -833,6 +859,17 @@ def append_evidence(
         )
     safe_details = _safe_details(details) or {}
     if create_safety_state is not None:
+        state_provenance = object.__getattribute__(create_safety_state, "provenance")
+        allowed_provenance = _OPERATION_PROVENANCE.get(operation)
+        if allowed_provenance is not None and state_provenance not in allowed_provenance:
+            raise PublicationStateError(
+                "create safety state provenance does not match its recording operation"
+            )
+        _validate_mutation_combination(
+            state_provenance,
+            object.__getattribute__(create_safety_state, "mutation_possibility"),
+            has_provider_id=provider_artifact_id is not None and provider_artifact_id != "",
+        )
         safe_details.update(create_safety_state.to_details())
     effective_verification = (
         "provider_readback" if confirmation_source and verification == "none" else verification

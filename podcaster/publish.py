@@ -2679,6 +2679,12 @@ def _spotify_video_unresolved_create_intent_snapshot(
             unresolved_snapshot = None
             unresolved_foreign_provenance = False
             continue
+        if record.get("operation") == "unreconciled_create_intent":
+            # A blind create claim stays unresolved until a provider id or a
+            # definite rejection resolves it, regardless of its retry flag.
+            unresolved_snapshot = None
+            unresolved_foreign_provenance = True
+            continue
         if record.get("operation") != "create_episode_intent":
             continue
         if (

@@ -1431,6 +1431,16 @@ def _evidence_records(storage: MemoryStorage, job_id: str = "job-1") -> list[dic
     return json.loads(raw.decode())["records"]
 
 
+def _tamper_evidence_record(
+    storage: MemoryStorage, index: int, update, job_id: str = "job-1"
+) -> None:
+    """Rewrite a durable record in place, bypassing the validating writer."""
+    path = f"publication-evidence/{job_id}.json"
+    document = json.loads(storage.data[path].decode())
+    update(document["records"][index])
+    storage.data[path] = json.dumps(document).encode()
+
+
 def _mock_json_resp(data: dict) -> MagicMock:
     resp = MagicMock()
     resp.json.return_value = data
@@ -2708,7 +2718,13 @@ class TestUploadVideoToEpisode:
             mutation_attempted=False,
             retry_blocked=False,
             code="mutation_intent",
-            create_safety_state=pub.CreateSafetyState.unreconciled_override(),
+            create_safety_state=pub.CreateSafetyState.upload_dispatch(),
+        )
+        # The writer rejects this operation/provenance mismatch, so tamper it in.
+        _tamper_evidence_record(
+            storage,
+            0,
+            lambda record: record["details"].update(create_provenance="blind_unreconciled"),
         )
         monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
         monkeypatch.setenv("SP_DC", "dc")
@@ -4577,6 +4593,93 @@ class TestUploadVideoToEpisode:
             pub._spotify_video_unresolved_create_intent_snapshot(
                 {"records": [dispatch, malformed]}, identity
             )
+
+    def test_unreconciled_create_intent_blocks_scanner_until_resolved(self):
+        """#694 thread 4092840188: a blind create claim is a pending intent."""
+        import podcaster.publish as pub
+
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        blind = {
+            "platform": "spotify",
+            "media_kind": "video",
+            "job_id": identity.accepted_job_id,
+            "week": identity.week,
+            "publish_run_id": identity.publish_run_id,
+            "article_sha256": identity.article_sha256,
+            "manifest_sha256": identity.manifest_sha256,
+            "operation": "unreconciled_create_intent",
+            "outcome": pub.PUBLICATION_UNKNOWN,
+            "mutation_attempted": False,
+            "retry_blocked": False,
+            "code": "unreconciled_create_authorized",
+            "details": {
+                "create_provenance": "blind_unreconciled",
+                "mutation_possibility": "possible",
+                "snapshot_completeness": "absent",
+            },
+        }
+        resolved = {**blind, "operation": "create_episode", "provider_artifact_id": "777"}
+        rejected = {
+            **blind,
+            "operation": "create_episode_failure",
+            "outcome": "failed",
+            "code": "create_rejected",
+            "details": {},
+        }
+
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="no reconciliation provenance"):
+            pub._spotify_video_unresolved_create_intent_snapshot({"records": [blind]}, identity)
+        for later in (resolved, rejected):
+            assert (
+                pub._spotify_video_unresolved_create_intent_snapshot(
+                    {"records": [blind, later]}, identity
+                )
+                is None
+            )
+
+    @pytest.mark.parametrize("override", (None, "1"))
+    def test_tampered_retryable_unreconciled_intent_never_reaches_create(
+        self, tmp_path, monkeypatch, override
+    ):
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="unreconciled_create_intent",
+            outcome=pub.PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=True,
+            code="unreconciled_create_authorized",
+            create_safety_state=pub.CreateSafetyState.unreconciled_override(),
+        )
+        _tamper_evidence_record(storage, 0, lambda record: record.update(retry_blocked=False))
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        if override is not None:
+            monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", override)
+        monkeypatch.setattr(pub, "_build_session", lambda *args: MagicMock())
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(return_value=777)
+        monkeypatch.setattr(pub, "_create_episode", create)
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert result.status == "failed"
+        assert result.outcome == pub.PUBLICATION_UNKNOWN
+        assert result.details == {"retry_blocked": False, "code": "unresolved_create_intent"}
+        create.assert_not_called()
 
     def test_reconcile_disabled_authorized_retry_reaches_create_once(self, tmp_path, monkeypatch):
         import podcaster.publish as pub

@@ -529,7 +529,14 @@ no completeness claim are degraded and blocking, and a legacy
 `pre_create_snapshot_complete` record that also carries a
 `snapshot_evidence_source` is rejected. With reconciliation disabled, a definite
 rejection re-arms a create only if a create claim precedes it for the same
-identity.
+identity. `append_evidence` enforces the same operation→provenance contract
+when it writes a record, so a mismatched pair is never persisted. The
+`mutation_possibility` must match the rest of the record, on both read and
+write: `confirmed` needs a durable provider artifact id, and a
+`blind_unreconciled` or `upload_dispatch` claim cannot record `not_possible`.
+An `unreconciled_create_intent` (blind create claim) stays a pending,
+blocking intent until a provider id or a definite rejection resolves it, even
+if its record says `retry_blocked: false`.
 
 #### Pagination
 
