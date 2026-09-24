@@ -1,7 +1,9 @@
 """YouTube resumable chunked upload (#442).
 
-The existing :func:`podcaster.video.distribution.upload_to_youtube` performs a
-single-request upload and explicitly refuses files larger than 128 MB. Finished
+:func:`podcaster.video.distribution.upload_to_youtube` opens exactly one
+resumable session per attempt and, for files larger than 128 MiB, hands that
+session URI to :func:`upload_chunked` (it must never call :func:`upload_video`,
+which would open a second session and leave an orphan video, #698). Finished
 video podcasts are 200–300 MB, so this module implements the **resumable chunked
 upload** flow of the YouTube Data API v3 ``videos.insert`` endpoint:
 
@@ -227,10 +229,11 @@ def upload_chunked(
     chunk_size: int = RESUMABLE_CHUNK_SIZE,
     content_type: str = "video/mp4",
     max_retries: int = _MAX_TRANSIENT_RETRIES,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
 ) -> YouTubeUploadResult:
     """Upload a file in resumable chunks, resuming over transient failures."""
 
+    sleep = sleep or time.sleep
     chunk_size = align_chunk_size(chunk_size)
     start = 0
     transient_retries = 0
