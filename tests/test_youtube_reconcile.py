@@ -464,12 +464,12 @@ def test_untrustworthy_continuation_is_contradictory(pages, code):
 class _OAuthFailingReadback(FakeYouTubeReadback):
     def __init__(self, videos, status):
         super().__init__(videos)
-        self.oauth_status = status
+        self.failure_status = status
 
     def request(self, url, *, method="GET", headers=None, data=None):
         if "oauth2.googleapis.com/token" in url:
             self.calls.append((method, url))
-            return self.oauth_status, b"{}"
+            return self.failure_status, b"{}"
         return super().request(url, method=method, headers=headers, data=data)
 
 
