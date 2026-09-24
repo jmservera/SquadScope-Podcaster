@@ -411,6 +411,7 @@ def test_run_synthesis_calls_auto_publish_when_enabled(monkeypatch):
 
 def test_run_synthesis_direct_publishes_when_spotify_config_present(monkeypatch):
     _patch_audio(monkeypatch)
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
     monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
     storage = FakeStorage()
     manifest = _base_manifest()
@@ -473,6 +474,7 @@ def test_run_synthesis_blocks_invalid_canonical_identity_before_spotify_mutation
     monkeypatch,
 ):
     _patch_audio(monkeypatch)
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
     monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
     storage = FakeStorage()
     manifest = _base_manifest()
@@ -548,6 +550,161 @@ def test_run_synthesis_enqueues_video_and_publishes_audio_when_video_enabled(mon
     # Video is enqueued AND audio is published immediately — both independently.
     assert enqueued == [JOB_ID]
     assert auto_published == [JOB_ID]
+
+
+def _video_only_manifest(**request_extra) -> dict:
+    manifest = _base_manifest()
+    manifest["request"] = {
+        "week": "2026-W24",
+        "article_url": "https://claracle.com/weekly/2026/w24/",
+        "article_title": "Video only week",
+        "spotify_publish": {"publish_mode": "live", "upload_format": "wav"},
+        **request_extra,
+    }
+    return manifest
+
+
+def _no_spotify_mutation(*args, **kwargs):
+    raise AssertionError("audio Spotify publish must not run in video-only mode")
+
+
+def test_run_synthesis_video_only_skips_audio_publish_and_records_skipped(monkeypatch, caplog):
+    _patch_audio(monkeypatch)
+    monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
+    monkeypatch.delenv("VIDEO_YOUTUBE_ENABLED", raising=False)
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", "live")
+    monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
+    monkeypatch.setenv("PODCAST_AUTO_PUBLISH", "true")
+    storage = FakeStorage()
+    _stage(storage, _video_only_manifest(), _two_voice_script())
+    monkeypatch.setattr(job_runner, "publish_episode", _no_spotify_mutation)
+    monkeypatch.setattr(job_runner, "auto_publish_job", _no_spotify_mutation)
+    enqueued: list[str] = []
+
+    with caplog.at_level("INFO"):
+        outcome = job_runner.run_synthesis(
+            JOB_ID,
+            storage,
+            _production_config(),
+            token_provider=lambda scope: "token",
+            transport=lambda request: b"segment-bytes",
+            enqueue_video=lambda job_id: enqueued.append(job_id) or True,
+        )
+
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    assert enqueued == [JOB_ID]
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    publish_result = persisted["generation"]["publish_result"]
+    assert publish_result["status"] == "skipped"
+    assert publish_result["outcome"] is None
+    assert publish_result["error"] is None
+    assert publish_result["anchor_id"] is None
+    assert publish_result["details"] == {"reason": "spotify_audio_publish_disabled"}
+    assert publish_result["publish_run_id"]
+    assert persisted["status"] != "publish_failed"
+    messages = [record.getMessage() for record in caplog.records]
+    assert not any("no listener-facing publish target" in message for message in messages)
+    assert not any(
+        record.levelname == "WARNING" and "publish" in record.getMessage()
+        for record in caplog.records
+        if record.name == "podcaster.job_runner"
+    )
+    assert any("video-only mode" in message for message in messages)
+
+    from podcaster.monitoring import app, set_storage
+    from tests.test_monitoring import MemoryStorageBackend
+
+    detail_storage = MemoryStorageBackend()
+    detail_storage.put_bytes(
+        job_runner.manifest_path(JOB_ID), json.dumps(persisted).encode(), "application/json"
+    )
+    set_storage(detail_storage)
+    try:
+        from fastapi.testclient import TestClient
+
+        detail = TestClient(app).get(f"/api/jobs/{JOB_ID}").json()
+    finally:
+        set_storage(None)
+    assert detail["publication_outcome"] is None
+
+
+def test_run_synthesis_video_only_skip_precedes_identity_check(monkeypatch):
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "true")
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    storage = FakeStorage()
+    _stage(
+        storage,
+        _video_only_manifest(article_sha256="a" * 64, publish_run_id="123"),
+        _two_voice_script(),
+    )
+    monkeypatch.setattr(job_runner, "publish_episode", _no_spotify_mutation)
+
+    outcome = job_runner.run_synthesis(
+        JOB_ID,
+        storage,
+        _production_config(),
+        token_provider=lambda scope: "token",
+        transport=lambda request: b"segment-bytes",
+        enqueue_video=lambda job_id: True,
+    )
+
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    persisted = json.loads(storage.get_bytes(job_runner.manifest_path(JOB_ID)).decode())
+    publish_result = persisted["generation"]["publish_result"]
+    assert publish_result["status"] == "skipped"
+    assert publish_result["outcome"] is None
+    assert publish_result["publish_run_id"] == "123"
+
+
+@pytest.mark.parametrize(
+    ("video_enabled", "video_mode", "video_allow"),
+    [("false", "live", "true"), ("true", "draft", "true"), ("true", "live", "false")],
+)
+@pytest.mark.parametrize("youtube", ["false", "true"])
+def test_run_synthesis_warns_when_no_publish_target_at_all(
+    monkeypatch, caplog, video_enabled, video_mode, video_allow, youtube
+):
+    if youtube == "true" and video_enabled == "true":
+        pytest.skip("YouTube via an enabled video job is a real target")
+    _patch_audio(monkeypatch)
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", video_enabled)
+    monkeypatch.setenv("VIDEO_YOUTUBE_ENABLED", youtube)
+    monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", video_mode)
+    monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", video_allow)
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    storage = FakeStorage()
+    _stage(storage, _video_only_manifest(), _two_voice_script())
+    monkeypatch.setattr(job_runner, "publish_episode", _no_spotify_mutation)
+
+    with caplog.at_level("INFO"):
+        outcome = job_runner.run_synthesis(
+            JOB_ID,
+            storage,
+            _production_config(),
+            token_provider=lambda scope: "token",
+            transport=lambda request: b"segment-bytes",
+            enqueue_video=lambda job_id: True,
+        )
+
+    assert outcome.status == job_runner.STATUS_COMPLETED
+    assert any(
+        record.levelname == "WARNING" and "no listener-facing publish target" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_spotify_audio_publish_flag_matches_publisher_gate(monkeypatch):
+    from podcaster import publish
+    from podcaster.spotify_mode import spotify_audio_publish_enabled
+
+    for value in (None, "", "false", "False", "0", "true", "True", "TRUE", "yes"):
+        if value is None:
+            monkeypatch.delenv("SPOTIFY_PUBLISH_ENABLED", raising=False)
+        else:
+            monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", value)
+        assert spotify_audio_publish_enabled() is publish._is_enabled(), value
 
 
 class _FakeAutoOutcome:

@@ -371,6 +371,13 @@ Why this design: validation is the last protection against bad renders, broken f
 
 Optional Spotify publishing lives in `podcaster/publish.py`.
 
+Audio and video are gated separately. `SPOTIFY_PUBLISH_ENABLED` controls only
+the **audio** episode; the video job publishes a separate Spotify video episode
+under `SPOTIFY_VIDEO_PUBLISH_MODE` / `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH`. With
+`SPOTIFY_PUBLISH_ENABLED=false` the pipeline runs in video-only mode and the
+skipped audio publish is recorded as `skipped` (never `failed`); see
+[video-only-mode.md](video-only-mode.md).
+
 It is opt-in:
 
 - `SPOTIFY_PUBLISH_ENABLED=true`
@@ -422,11 +429,13 @@ Why this design: podcast generation is the core product; distribution integratio
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `SPOTIFY_PUBLISH_ENABLED` | Optional, default `false` | Enables publishing module |
+| `SPOTIFY_PUBLISH_ENABLED` | Optional, default `false` | Enables the **audio** Spotify publish; `false` = video-only mode ([video-only-mode.md](video-only-mode.md)) |
 | `SPOTIFY_ALLOW_LIVE_PUBLISH` | Optional, default `false` | Required to make episodes **public**; without it `immediate`/`scheduled` requests fail safe to drafts (#602) |
 | `SPOTIFY_SHOW_ID` | Required if publishing enabled | Target Spotify show |
 | `SP_DC` | Required if publishing enabled | Spotify browser session cookie |
 | `SP_KEY` | Required if publishing enabled | Spotify browser session cookie |
+| `SPOTIFY_VIDEO_PUBLISH_MODE` | Optional, default `draft` (video job) | `live` requests the separate Spotify video episode go live |
+| `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH` | Optional, default `false` (video job) | Operator authorization for video go-live; without it `live` stays a draft |
 
 #### Runtime note
 
