@@ -19,6 +19,8 @@ from podcaster.publication_state import (
     PublicationIdentity,
     SnapshotEvidenceSource,
     append_evidence,
+    latest_outcomes,
+    read_evidence,
 )
 from podcaster.queue import QueueMessage
 from podcaster.video.distribution import DistributionResult, VideoDistributionConfig
@@ -1055,6 +1057,69 @@ class TestRunVideoGeneration:
             "spotify_rss",
         }
 
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_youtube_intent_declares_identity_tag_for_redelivery_reconcile(
+        self, mock_compose, mock_record, mock_distribute, storage
+    ):
+        from podcaster.video.youtube_reconcile import youtube_identity_tag
+
+        job_id = "video-youtube-identity"
+        identity = PublicationIdentity(job_id, "2026-W37", "123", "a" * 64, "b" * 64)
+        storage.set_manifest(
+            job_id,
+            {
+                "job_id": job_id,
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {
+                    "article_title": "Identity",
+                    "week": identity.week,
+                    "publish_run_id": identity.publish_run_id,
+                    "article_sha256": identity.article_sha256,
+                    "manifest_sha256": identity.manifest_sha256,
+                    "publication_identity_mode": "canonical",
+                },
+                "lifecycle": {"transitions": [{"to": "accepted"}]},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *args, output_path=None, **kwargs: (
+            output_path.write_bytes(b"\x00" * 2048),
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+        mock_distribute.return_value = DistributionResult(status="failed")
+        config = VideoDistributionConfig(
+            youtube_enabled=True, blob_archive_enabled=False, dry_run=False
+        )
+
+        run_video_generation(job_id, storage, config=config)
+
+        expected_tag = youtube_identity_tag(
+            mock_distribute.call_args.kwargs["publication_identity_context"]
+        )
+        assert expected_tag is not None
+        intent = latest_outcomes(read_evidence(storage, job_id))["youtube:video"]
+        assert intent["operation"] == "upload_intent"
+        assert intent["details"]["youtube_identity_tag"] == expected_tag
+        assert "identity_tag" not in mock_distribute.call_args.kwargs["published"].get(
+            "youtube", {}
+        )
+
+        run_video_generation(job_id, storage, config=config)
+
+        prior = mock_distribute.call_args.kwargs["published"]["youtube"]
+        assert prior["outcome"] == "publication_unknown"
+        assert prior["video_id"] is None
+        assert prior["identity_tag"] == expected_tag
+        assert prior["intent_at"] == intent["at"]
+
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
     def test_spotify_video_publish_persists_create_before_upload(
@@ -1613,6 +1678,87 @@ class TestRunVideoGeneration:
         assert state["status"] == STATUS_FAILED
         assert state["reason"] == REASON_REQUIRED_YOUTUBE_FAILURE
         assert state["distribution"]["youtube_oauth_error_subtype"] == "invalid_rapt"
+
+    @pytest.mark.parametrize(
+        ("evidence_source", "code"),
+        [
+            ("youtube_identity_readback", "youtube_reconcile_evidence_failed"),
+            ("youtube_upload_response", "youtube_evidence_persistence_failed"),
+        ],
+    )
+    @patch("podcaster.video.job_runner._record_video_publication", return_value=False)
+    @patch("podcaster.video.job_runner.distribute_video")
+    @patch("podcaster.video.video_gen.record_episode")
+    @patch("podcaster.video.video_compose.compose_video")
+    def test_required_youtube_evidence_failure_fails_required_delivery(
+        self,
+        mock_compose,
+        mock_record,
+        mock_distribute,
+        _mock_record_publication,
+        storage,
+        evidence_source,
+        code,
+    ):
+        """A non-raising evidence-persistence failure still fails required YouTube (#709)."""
+        job_id = f"video-required-youtube-evidence-{code}"
+        storage.set_manifest(
+            job_id,
+            {
+                "generation": {"validation": {"duration_seconds": 60.0}},
+                "request": {"article_title": "Test Episode"},
+            },
+        )
+        storage.set_script(job_id, SAMPLE_SCRIPT)
+        mock_record.return_value = MagicMock(recorded=[])
+        mock_compose.side_effect = lambda *a, output_path=None, **k: (
+            output_path.write_bytes(b"\x00" * 2048) if output_path else None,
+            MagicMock(
+                output_path=output_path,
+                duration_seconds=60.0,
+                segment_count=2,
+                has_audio=False,
+            ),
+        )[1]
+
+        def fake_distribute(*args, on_published=None, **kwargs):
+            on_published("youtube", {"status": "published", "video_id": "vid-1"})
+            return DistributionResult(
+                status="completed",
+                youtube_id="vid-1",
+                provider_outcomes={"youtube": "draft_created"},
+                provider_records={
+                    "youtube": {
+                        "provider": "youtube",
+                        "provider_id": "vid-1",
+                        "evidence_source": evidence_source,
+                        "retry_blocked": True,
+                    }
+                },
+            )
+
+        mock_distribute.side_effect = fake_distribute
+
+        with pytest.raises(PermanentVideoError, match="required YouTube delivery failed"):
+            run_video_generation(
+                job_id,
+                storage,
+                config=VideoDistributionConfig(
+                    youtube_enabled=True,
+                    youtube_required=True,
+                    blob_archive_enabled=False,
+                    dry_run=False,
+                ),
+            )
+        manifest = json.loads(storage.get_bytes(manifest_path(job_id)).decode())
+        state = manifest["generation"]["video_runner"]
+        assert state["status"] == STATUS_FAILED
+        assert state["reason"] == REASON_REQUIRED_YOUTUBE_FAILURE
+        distribution = state["distribution"]
+        assert distribution["youtube_failure_code"] == code
+        assert distribution["youtube_failure_retryable"] is False
+        assert distribution["provider_outcomes"]["youtube"] == "publication_unknown"
+        assert distribution["provider_records"]["youtube"]["retry_blocked"] is True
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")

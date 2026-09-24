@@ -40,6 +40,13 @@ from podcaster.publication_state import (
 )
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
 from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
+from podcaster.video.youtube_reconcile import ERROR as RECONCILE_ERROR
+from podcaster.video.youtube_reconcile import (
+    parse_timestamp,
+    reconcile_youtube_upload,
+    tags_with_identity,
+    youtube_identity_tag,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +474,146 @@ def _get_youtube_access_token(config: VideoDistributionConfig, transport: HttpTr
     return access_token
 
 
+def _reconcile_unknown_youtube_upload(
+    record: Mapping[str, Any],
+    config: VideoDistributionConfig,
+    result: DistributionResult,
+    *,
+    publication_identity_context: Any | None,
+    transport: HttpTransport | None,
+    on_published: Callable[[str, dict[str, Any]], None] | None,
+    publish_run_id: str | None,
+) -> tuple[bool, YouTubeDeliveryError | None]:
+    """Bind an ambiguous YouTube upload by its declared identity tag (#678).
+
+    Only runs for a ``publication_unknown`` intent without a provider ID whose
+    durable intent declared the exact identity tag for this publication. It
+    never uploads: a non-match leaves the job fail-closed and returns
+    ``(False, None)`` so the caller keeps the existing retry-blocked behaviour.
+    A bound upload returns ``(True, error)`` where ``error`` is set only when
+    ``on_published`` failed to persist the evidence. An unbound readback that
+    failed (OAuth, transport, or provider HTTP error) returns ``(False, error)``
+    carrying the failure's retryability; the caller applies it only when
+    YouTube delivery is required.
+    """
+    if config.dry_run or record.get("outcome") != PUBLICATION_UNKNOWN:
+        return False, None
+    if record.get("video_id") or record.get("provider_id"):
+        return False, None
+    expected_tag = youtube_identity_tag(publication_identity_context)
+    declared_tag = record.get("identity_tag")
+    if not expected_tag or declared_tag != expected_tag:
+        return False, None
+    try:
+        http = transport or _DefaultTransport()
+        access_token = _get_youtube_access_token(config, http)
+        reconciled = reconcile_youtube_upload(
+            expected_tag,
+            access_token,
+            http,
+            not_before=parse_timestamp(record.get("intent_at")),
+        )
+    except YouTubeDeliveryError as exc:
+        # Typed OAuth failures keep their retryability; the upload intent stays
+        # publication_unknown, so a retry only re-runs this read-only readback.
+        logger.warning(
+            "YouTube identity reconcile failed; upload remains blocked stage=%s code=%s "
+            "retryable=%s",
+            exc.stage,
+            exc.code,
+            exc.retryable,
+        )
+        return False, exc
+    except Exception as exc:
+        logger.warning(
+            "YouTube identity reconcile failed; retry remains blocked: %s",
+            type(exc).__name__,
+        )
+        transient = isinstance(exc, _TRANSIENT_TRANSPORT_ERRORS)
+        return False, YouTubeDeliveryError(
+            "YouTube identity reconcile readback error",
+            code=(
+                "youtube_reconcile_network_error" if transient else "youtube_reconcile_exception"
+            ),
+            stage="reconcile",
+            retryable=transient,
+        )
+    if reconciled.status == RECONCILE_ERROR and reconciled.http_status is not None:
+        logger.warning(
+            "YouTube identity reconcile readback failed code=%s; publication remains unknown",
+            reconciled.code,
+        )
+        return False, YouTubeDeliveryError(
+            "YouTube identity reconcile readback failed",
+            code=reconciled.code,
+            stage="reconcile",
+            retryable=_is_transient_http_status(reconciled.http_status),
+            http_status=reconciled.http_status,
+        )
+    if not reconciled.matched or reconciled.video_id is None:
+        logger.warning(
+            "YouTube identity reconcile did not bind an upload status=%s code=%s; "
+            "publication remains unknown",
+            reconciled.status,
+            reconciled.code,
+        )
+        return False, None
+
+    video_id = reconciled.video_id
+    privacy = reconciled.privacy_status or config.youtube_privacy
+    checked_at = datetime.now(timezone.utc).isoformat()
+    result.youtube_id = video_id
+    result.youtube_url = f"https://youtube.com/watch?v={video_id}"
+    result.provider_outcomes["youtube"] = DRAFT_CREATED
+    result.provider_records["youtube"] = {
+        "provider": "youtube",
+        "outcome": DRAFT_CREATED,
+        "status": "unlisted" if privacy == "unlisted" else "private",
+        "provider_id": video_id,
+        "native_state": privacy,
+        "transport_status": "reconciled",
+        "verification": "provider_readback",
+        "checked_at": checked_at,
+        "evidence_source": "youtube_identity_readback",
+        "last_error_code": None,
+        "retry_blocked": True,
+    }
+    logger.info("YouTube upload reconciled by identity tag: %s", result.youtube_url)
+    if on_published is None:
+        return True, None
+    try:
+        on_published(
+            "youtube",
+            {
+                "status": "published",
+                "provider_status": result.provider_records["youtube"]["status"],
+                "outcome": DRAFT_CREATED,
+                "provider": "youtube",
+                "provider_id": video_id,
+                "native_state": privacy,
+                "transport_status": "reconciled",
+                "verification": "provider_readback",
+                "evidence_source": "youtube_identity_readback",
+                "retry_blocked": True,
+                "video_id": video_id,
+                "publish_run_id": publish_run_id,
+                "at": checked_at,
+            },
+        )
+    except Exception as exc:
+        # Mirror the upload branch: keep the bound video so playlist repair and
+        # the remaining steps still run; the readback record stays retry-blocked.
+        result.errors.append(f"YouTube reconcile evidence error: {type(exc).__name__}")
+        logger.error("YouTube reconcile evidence persistence failed: %s", type(exc).__name__)
+        return True, YouTubeDeliveryError(
+            "Required YouTube reconcile evidence persistence failed",
+            code="youtube_reconcile_evidence_failed",
+            stage="upload",
+            retryable=False,
+        )
+    return True, None
+
+
 def upload_to_youtube(
     video_path: Path,
     title: str,
@@ -476,8 +623,12 @@ def upload_to_youtube(
     tags: list[str] | None = None,
     transport: HttpTransport | None = None,
     raise_on_failure: bool = False,
+    identity_tag: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Upload a video to YouTube via the Data API v3.
+
+    ``identity_tag`` stamps the upload with the deterministic publication
+    identity tag so an ambiguous create can later be reconciled (#678).
 
     Returns (video_id, video_url) on success, (None, None) on failure.
     Raises RuntimeError on auth failures; returns None on upload failures
@@ -529,7 +680,7 @@ def upload_to_youtube(
         "snippet": {
             "title": title[:100],
             "description": description[:5000],
-            "tags": tags or ["podcast", "tech", "open-source"],
+            "tags": tags_with_identity(tags or ["podcast", "tech", "open-source"], identity_tag),
             "categoryId": config.youtube_category_id,
         },
         "status": {
@@ -1067,10 +1218,11 @@ def distribute_video(
     to select the per-language playlist after a successful YouTube upload (#449).
 
     Per-platform ``published`` state is the durable at-most-once guard for
-    provider side effects. Residual risk: a crash after a provider create but
-    before ``on_published`` persists is still at-least-once for YouTube (no cheap
-    reconcile key); Spotify closes that window by reconciling drafts by title
-    before creating one.
+    provider side effects. A crash after a YouTube create but before
+    ``on_published`` persists leaves the upload ``publication_unknown``; on
+    redelivery the upload is bound read-only by its deterministic identity tag
+    when exactly one match exists, otherwise it stays fail-closed (#678).
+    Spotify closes that window by reconciling drafts before creating one.
     """
     result = DistributionResult(publish_run_id=publish_run_id)
     prior_published = published or {}
@@ -1116,7 +1268,22 @@ def distribute_video(
             language,
         )
     youtube_record = prior_published.get("youtube")
-    if (
+    youtube_reconciled = False
+    if youtube_active and isinstance(youtube_record, Mapping):
+        youtube_reconciled, reconcile_error = _reconcile_unknown_youtube_upload(
+            youtube_record,
+            config,
+            result,
+            publication_identity_context=publication_identity_context,
+            transport=transport,
+            on_published=on_published,
+            publish_run_id=publish_run_id,
+        )
+        if reconcile_error is not None and config.youtube_required:
+            youtube_required_failure = reconcile_error
+    if youtube_reconciled:
+        pass
+    elif (
         youtube_active
         and isinstance(youtube_record, Mapping)
         and (
@@ -1143,6 +1310,8 @@ def distribute_video(
             provider_id_field="video_id",
         )
     elif youtube_active:
+        identity_tag = youtube_identity_tag(publication_identity_context)
+        upload_identity = {"identity_tag": identity_tag} if identity_tag else {}
         try:
             video_id, video_url = upload_to_youtube(
                 video_path,
@@ -1152,6 +1321,7 @@ def distribute_video(
                 tags=tags,
                 transport=transport,
                 raise_on_failure=config.youtube_required,
+                **upload_identity,
             )
             result.youtube_id = video_id
             result.youtube_url = video_url
@@ -1242,7 +1412,11 @@ def distribute_video(
         except Exception as exc:
             logger.warning("Playlist add skipped for %s: %s", result.youtube_id, exc)
 
-    if config.youtube_required and result.youtube_id is None:
+    # A bound video ID does not satisfy required delivery when a required failure
+    # was recorded after binding (e.g. evidence persistence failed, #708 review).
+    if config.youtube_required and (
+        result.youtube_id is None or youtube_required_failure is not None
+    ):
         result.youtube_required_failed = True
         if youtube_required_failure is None:
             if not youtube_active:

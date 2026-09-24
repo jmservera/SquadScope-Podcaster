@@ -200,6 +200,45 @@ automatically repeated. Scheduled private state remains `draft_created` until
 public state is independently confirmed.
 
 Accepted jobs persist bounded identity-bound evidence before provider mutation.
-Existing blocking evidence takes precedence over the legacy snapshot. Rollback
+Existing blocking evidence takes precedence over the legacy snapshot.
+
+### Identity-bound upload reconciliation (#678)
+
+For canonical accepted jobs every upload carries a deterministic identity tag
+(`sqpub-` + 32 hex characters of SHA-256 over the scheme, accepted job ID,
+publish run ID, week and article SHA-256). The tag contains no raw identifiers
+and is declared in the `upload_intent` evidence (`details.youtube_identity_tag`)
+**before** the upload session is opened.
+
+When a redelivered job finds that intent still `publication_unknown` without a
+video ID, it reads back the channel's uploads playlist (`channels.list
+mine=true`, at most four `playlistItems.list` pages of 50, then `videos.list`;
+at most 9 quota units) and never opens a new upload session. The newest-first
+listing order is verified, and the scan counts as exhaustive only when it
+reaches the end of the playlist or an item older than the intent timestamp
+minus 15 minutes of clock skew. Hitting the page bound first is treated as
+contradictory, and so is an empty, repeated, or non-string `nextPageToken`, an
+empty page that still carries a continuation token, or a `videos.list`
+readback that omits or repeats a requested ID or adds an unrequested one. It
+binds the video
+only if exactly one upload carries the exact tag, is still `private`/`unlisted`,
+and has `uploadStatus` `uploaded` or `processed`. That records `draft_created`
+with `verification=provider_readback` and
+`evidence_source=youtube_identity_readback`, then the idempotent playlist step
+runs. If persisting that evidence fails, the error is recorded and the bound
+video still flows to the playlist step without a second upload; when
+`VIDEO_YOUTUBE_REQUIRED=true` the job then fails required delivery
+(non-retryable `youtube_reconcile_evidence_failed`, or
+`youtube_evidence_persistence_failed` for a fresh upload) instead of completing. If no upload
+matches, more than one does, a match is public or incomplete,
+the page is malformed, the read fails, or the intent predates the tag, the job
+stays `publication_unknown` and needs the manual re-arm path above. Title and
+newest-upload matches are never used. When YouTube is required, a failed read
+keeps its retryability: transient OAuth, network, `429` or `5xx` readback
+failures are retryable, since a retry only repeats the read-only readback and
+the `publication_unknown` intent still blocks a second upload. Other failures
+are terminal.
+
+Rollback
 retains provider artifacts and legacy fields; disable the additive projection
 or revert the implementation rather than deleting uploaded videos.
