@@ -195,8 +195,9 @@ def reconcile_youtube_upload(
             seen.add(video_id)
             previous_at = added_at
             if cutoff is not None and added_at < cutoff:
+                # Keep validating the rest of this page before stopping.
                 exhausted = True
-                break
+                continue
             video_ids.append(video_id)
         if exhausted:
             break

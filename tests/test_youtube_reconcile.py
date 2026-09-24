@@ -206,13 +206,17 @@ def test_page_bound_without_exhaustion_is_contradictory():
     ("page", "code"),
     [
         ({"items": [_item("v1", 5), _item("v2", 1)]}, "youtube_reconcile_unordered_uploads"),
+        (
+            {"items": [_item("v1", 1), _item("old", 600), _item("v2", 2)]},
+            "youtube_reconcile_unordered_uploads",
+        ),
         ({"items": [{"contentDetails": {"videoId": "v1"}}]}, "youtube_reconcile_malformed_item"),
         ({"items": [_item("v1", 1)], "nextPageToken": 7}, "youtube_reconcile_malformed_page_token"),
     ],
 )
 def test_unverifiable_listing_is_contradictory(page, code):
     fake = FakeYouTubeReadback([_video("v1", [TAG])], pages={None: page})
-    result = reconcile_youtube_upload(TAG, "tok", fake)
+    result = reconcile_youtube_upload(TAG, "tok", fake, not_before=NOW - timedelta(minutes=30))
     assert result.status == CONTRADICTORY and result.code == code
 
 
