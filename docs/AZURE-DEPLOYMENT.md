@@ -118,6 +118,16 @@ AZURE_STORAGE_ACCOUNT_NAME=podcasterstgprod
 
 If omitted, the workflow computes a safe deterministic default. Storage Account names are globally unique across Azure; a rare collision requires setting the override variable.
 
+Spotify publishing variables (production runs in [video-only mode](video-only-mode.md)):
+
+```text
+SPOTIFY_PUBLISH_ENABLED=false          # synthesis job + API: audio episode off (skipped, not failed)
+SPOTIFY_VIDEO_PUBLISH_MODE=live        # video job: take the separate video episode live
+SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH=true  # video job: operator authorization for video go-live
+```
+
+The workflow reads `vars.SPOTIFY_PUBLISH_ENABLED` directly; there is no `SPOTIFY_PUBLISH_ENABLED_VAR` environment variable to configure.
+
 #### Step 2: Add `prod` Environment Secrets
 
 Go to **Settings > Environments > prod > Environment secrets** and optionally create:

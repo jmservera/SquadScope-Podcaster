@@ -947,6 +947,8 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | Variable | Used by | Purpose |
 |----------|---------|---------|
 | `VIDEO_SPOTIFY_UPLOAD_ENABLED` | `distribution.VideoDistributionConfig.from_env` | `"true"` enables publishing the MP4 as a new Spotify video episode draft (§5). |
+| `SPOTIFY_VIDEO_PUBLISH_MODE` | `distribution.VideoDistributionConfig.from_env` | `live` promotes the video draft (default `draft`). Independent of `SPOTIFY_PUBLISH_ENABLED`, which gates only the audio episode — see [video-only-mode.md](video-only-mode.md). |
+| `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH` | `publish._spotify_video_allow_live_publish` | Operator authorization for video go-live; without it `live` stays a draft. |
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |

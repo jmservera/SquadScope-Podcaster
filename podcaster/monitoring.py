@@ -64,6 +64,7 @@ from podcaster.progress import (
 )
 from podcaster.publication_state import latest_outcomes, read_evidence
 from podcaster.queue import enqueue_video_job
+from podcaster.spotify_mode import review_publish_fields, spotify_audio_publish_enabled
 from podcaster.stage_progress import summarize as summarize_stage_progress
 from podcaster.storage import StorageBackend, create_storage_backend
 from podcaster.validation import validate_payload_details
@@ -600,6 +601,11 @@ async def api_review(request: Request):
         timezone.utc
     ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     publish_on_approval = payload.get("publish_on_approval", True) is not False
+    # Video-only mode: with audio Spotify publishing disabled an approval must
+    # not attempt (and fail) the audio publish; it is a deliberate skip.
+    audio_publish_skipped = (
+        decision == "approved" and publish_on_approval and not spotify_audio_publish_enabled()
+    )
 
     errors: list[str] = []
     if not job_id:
@@ -619,7 +625,7 @@ async def api_review(request: Request):
             reviewed_at=reviewed_at,
             notes=notes,
             run_url=run_url,
-            publish_on_approval=publish_on_approval,
+            publish_on_approval=publish_on_approval and not audio_publish_skipped,
         )
     except ValueError as exc:
         return JSONResponse(status_code=404, content={"error": str(exc)})
@@ -633,11 +639,14 @@ async def api_review(request: Request):
         return JSONResponse(status_code=500, content={"error": "internal server error"})
 
     publish_result = outcome.publish_result
+    publish_fields = review_publish_fields(
+        publish_result, audio_publish_skipped=audio_publish_skipped
+    )
     logger.info(
         "api_review job_id=%s decision=%s publish_status=%s",
         job_id,
         decision,
-        publish_result.status if publish_result else "not_requested",
+        publish_fields["publish_status"] or "not_requested",
     )
     return JSONResponse(
         status_code=200,
@@ -645,8 +654,7 @@ async def api_review(request: Request):
             "job_id": job_id,
             "status": outcome.manifest.get("status"),
             "review_status": outcome.manifest.get("review_status"),
-            "publish_status": publish_result.status if publish_result else None,
-            "publish_error": publish_result.error if publish_result else None,
+            **publish_fields,
             "manifest": outcome.manifest,
         },
     )

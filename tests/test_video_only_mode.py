@@ -1,0 +1,189 @@
+"""Video-only Spotify mode (SPOTIFY_PUBLISH_ENABLED=false): skipped is not failed."""
+
+from __future__ import annotations
+
+import json
+import os
+from http import HTTPStatus
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+from podcaster import orchestration
+from podcaster.monitoring import app, set_storage
+from podcaster.orchestration import manifest_path
+from podcaster.publish import PublishResult
+from podcaster.spotify_mode import review_publish_fields
+from podcaster.storage import LocalStorageBackend
+from tests.test_api import make_handler
+from tests.test_orchestration import _job_id, _stage, _synthesized_manifest
+
+API_KEY = "test-key-123"
+
+
+def _no_spotify_mutation(*args, **kwargs):
+    raise AssertionError("audio Spotify publish must not run in video-only mode")
+
+
+@pytest.fixture
+def staged(tmp_path: Path) -> LocalStorageBackend:
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+    _stage(storage, _synthesized_manifest())
+    return storage
+
+
+def _wrap_process(storage: LocalStorageBackend, calls: list[dict]):
+    real = orchestration.process_review_decision
+
+    def _process(job_id, **kwargs):
+        calls.append(kwargs)
+        return real(job_id, storage=storage, **kwargs)
+
+    return _process
+
+
+def _persisted(storage: LocalStorageBackend) -> dict:
+    return json.loads(storage.get_bytes(manifest_path(_job_id())).decode("utf-8"))
+
+
+def _review_body() -> dict:
+    return {"job_id": _job_id(), "reviewer": "leela", "decision": "approved"}
+
+
+def _post_monitoring(body: dict) -> tuple[int, dict]:
+    response = TestClient(app).post("/api/review", json=body)
+    return response.status_code, response.json()
+
+
+def _post_api(body: dict) -> tuple[int, dict]:
+    raw = json.dumps(body).encode()
+    headers = {"x-podcaster-api-key": API_KEY, "Content-Length": str(len(raw))}
+    with patch.dict(os.environ, {"PODCASTER_API_KEY": API_KEY}):
+        handler = make_handler("POST", "/api/review", body=raw, headers=headers)
+    return handler.response_code, handler.get_response_json()
+
+
+ENDPOINTS = [
+    pytest.param("podcaster.monitoring.process_review_decision", _post_monitoring, id="monitoring"),
+    pytest.param("podcaster.api.process_review_decision", _post_api, id="api"),
+]
+
+
+@pytest.fixture(autouse=True)
+def _monitoring_storage():
+    set_storage(None)
+    yield
+    set_storage(None)
+
+
+@pytest.mark.parametrize(("target", "post"), ENDPOINTS)
+def test_video_only_approval_skips_audio_publish_without_failing(
+    target, post, staged, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", _no_spotify_mutation)
+    calls: list[dict] = []
+
+    with patch(target, side_effect=_wrap_process(staged, calls)):
+        status_code, body = post(_review_body())
+
+    assert status_code == HTTPStatus.OK
+    assert calls[0]["publish_on_approval"] is False
+    assert body["publish_status"] == "skipped"
+    assert body["publish_error"] is None
+    assert body["publish_skipped_reason"] == "spotify_audio_publish_disabled"
+    assert body["status"] == "review_approved"
+    persisted = _persisted(staged)
+    assert persisted["status"] == "review_approved"
+    assert persisted["review"]["status"] == "approved"
+    assert persisted["publishing"]["eligible"] is True
+    assert persisted.get("publishing", {}).get("result") is None
+
+
+@pytest.mark.parametrize(("target", "post"), ENDPOINTS)
+def test_reapproval_publishes_audio_after_audio_is_reenabled(
+    target, post, staged, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", _no_spotify_mutation)
+    calls: list[dict] = []
+    with patch(target, side_effect=_wrap_process(staged, calls)):
+        post(_review_body())
+
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "true")
+    published: list[str] = []
+    monkeypatch.setattr(
+        "podcaster.orchestration.publish_episode",
+        lambda *args, **kwargs: (
+            published.append("audio") or PublishResult(status="published", anchor_episode_id=7)
+        ),
+    )
+    with patch(target, side_effect=_wrap_process(staged, calls)):
+        status_code, body = post(_review_body())
+
+    assert status_code == HTTPStatus.OK
+    assert calls[-1]["publish_on_approval"] is True
+    assert published == ["audio"]
+    assert body["publish_status"] == "published"
+    assert "publish_skipped_reason" not in body
+
+
+@pytest.mark.parametrize(("target", "post"), ENDPOINTS)
+def test_non_approval_decision_is_not_reported_as_skipped(
+    target, post, staged, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    calls: list[dict] = []
+    with patch(target, side_effect=_wrap_process(staged, calls)):
+        status_code, body = post({**_review_body(), "decision": "changes_requested"})
+
+    assert status_code == HTTPStatus.OK
+    assert body["publish_status"] is None
+    assert "publish_skipped_reason" not in body
+
+
+@pytest.mark.parametrize(("target", "post"), ENDPOINTS)
+def test_explicit_no_publish_approval_is_not_reported_as_skipped(
+    target, post, staged, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    calls: list[dict] = []
+    with patch(target, side_effect=_wrap_process(staged, calls)):
+        status_code, body = post({**_review_body(), "publish_on_approval": False})
+
+    assert status_code == HTTPStatus.OK
+    assert calls[0]["publish_on_approval"] is False
+    assert body["publish_status"] is None
+    assert "publish_skipped_reason" not in body
+
+
+def test_review_publish_fields_prefers_real_result() -> None:
+    result = PublishResult(status="failed", error="boom")
+    assert review_publish_fields(result, audio_publish_skipped=True) == {
+        "publish_status": "failed",
+        "publish_error": "boom",
+    }
+
+
+def test_job_detail_does_not_report_manual_handoff_for_skipped_audio() -> None:
+    from tests.test_monitoring import MemoryStorageBackend
+
+    storage = MemoryStorageBackend()
+    manifest = _synthesized_manifest()
+    manifest["generation"]["publish_result"] = {
+        "anchor_id": None,
+        "status": "skipped",
+        "outcome": PublishResult(status="skipped").outcome,
+        "publish_run_id": "123",
+        "dry_run": False,
+        "error": None,
+        "details": {"reason": "spotify_audio_publish_disabled"},
+    }
+    storage.put_bytes(manifest_path(_job_id()), json.dumps(manifest).encode(), "application/json")
+    set_storage(storage)
+
+    data = TestClient(app).get(f"/api/jobs/{_job_id()}").json()
+
+    assert data["publication_outcome"] is None

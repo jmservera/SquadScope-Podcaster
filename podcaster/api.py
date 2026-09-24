@@ -34,6 +34,7 @@ from podcaster.failure_reporting import report_failure
 from podcaster.jobs import ReplayCollisionError, failed_response, run_generation_job
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
+from podcaster.spotify_mode import review_publish_fields, spotify_audio_publish_enabled
 from podcaster.storage import create_storage_backend
 from podcaster.validation import is_authorized, validate_payload_details
 
@@ -522,6 +523,11 @@ class GenerateHandler(BaseHTTPRequestHandler):
             timezone.utc
         ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         publish_on_approval = payload.get("publish_on_approval", True) is not False
+        # Video-only mode: with audio Spotify publishing disabled an approval must
+        # not attempt (and fail) the audio publish; it is a deliberate skip.
+        audio_publish_skipped = (
+            decision == "approved" and publish_on_approval and not spotify_audio_publish_enabled()
+        )
         errors: list[str] = []
         if not job_id:
             errors.append("job_id is required")
@@ -540,7 +546,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
                 reviewed_at=reviewed_at,
                 notes=notes,
                 run_url=run_url,
-                publish_on_approval=publish_on_approval,
+                publish_on_approval=publish_on_approval and not audio_publish_skipped,
             )
         except ValueError as exc:
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})
@@ -560,6 +566,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
             return
 
         publish_result = outcome.publish_result
+        publish_fields = review_publish_fields(
+            publish_result, audio_publish_skipped=audio_publish_skipped
+        )
         _json_response(
             self,
             HTTPStatus.OK,
@@ -567,8 +576,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
                 "job_id": job_id,
                 "status": outcome.manifest.get("status"),
                 "review_status": outcome.manifest.get("review_status"),
-                "publish_status": publish_result.status if publish_result else None,
-                "publish_error": publish_result.error if publish_result else None,
+                **publish_fields,
                 "manifest": outcome.manifest,
             },
         )
@@ -576,7 +584,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
             "api_review job_id=%s decision=%s publish_status=%s",
             job_id,
             decision,
-            publish_result.status if publish_result else "not_requested",
+            publish_fields["publish_status"] or "not_requested",
         )
 
 
