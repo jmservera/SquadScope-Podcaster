@@ -217,14 +217,19 @@ at most 9 quota units) and never opens a new upload session. The newest-first
 listing order is verified, and the scan counts as exhaustive only when it
 reaches the end of the playlist or an item older than the intent timestamp
 minus 15 minutes of clock skew. Hitting the page bound first is treated as
-contradictory, and so is a `videos.list` readback that omits, repeats, or adds
-any requested ID. It binds the video
+contradictory, and so is an empty, repeated, or non-string `nextPageToken`, an
+empty page that still carries a continuation token, or a `videos.list`
+readback that omits or repeats a requested ID or adds an unrequested one. It
+binds the video
 only if exactly one upload carries the exact tag, is still `private`/`unlisted`,
 and has `uploadStatus` `uploaded` or `processed`. That records `draft_created`
 with `verification=provider_readback` and
 `evidence_source=youtube_identity_readback`, then the idempotent playlist step
 runs. If persisting that evidence fails, the error is recorded and the bound
-video still flows to the playlist step without a second upload. If no upload
+video still flows to the playlist step without a second upload; when
+`VIDEO_YOUTUBE_REQUIRED=true` the job then fails required delivery
+(non-retryable `youtube_reconcile_evidence_failed`, or
+`youtube_evidence_persistence_failed` for a fresh upload) instead of completing. If no upload
 matches, more than one does, a match is public or incomplete,
 the page is malformed, the read fails, or the intent predates the tag, the job
 stays `publication_unknown` and needs the manual re-arm path above. Title and

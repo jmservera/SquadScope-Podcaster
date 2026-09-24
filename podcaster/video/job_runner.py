@@ -1329,6 +1329,26 @@ def run_video_generation(
                     "retry_blocked": True,
                 }
                 dist_result.status = "failed"
+            # The production callback reports persistence failures through
+            # evidence_failures instead of raising, so required YouTube delivery
+            # must fail here when its evidence was not recorded (#709 review).
+            if (
+                "youtube" in evidence_failures
+                and dist_config.youtube_required
+                and not dist_result.youtube_required_failed
+            ):
+                reconciled = (
+                    result_provider_records.get("youtube", {}).get("evidence_source")
+                    == "youtube_identity_readback"
+                )
+                dist_result.youtube_required_failed = True
+                dist_result.youtube_failure_code = (
+                    "youtube_reconcile_evidence_failed"
+                    if reconciled
+                    else "youtube_evidence_persistence_failed"
+                )
+                dist_result.youtube_failure_stage = "evidence"
+                dist_result.youtube_failure_retryable = False
             public_delivery_status = getattr(dist_result, "public_delivery_status", "pending")
             if not isinstance(public_delivery_status, str):
                 public_delivery_status = "pending"

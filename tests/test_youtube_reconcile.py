@@ -427,3 +427,35 @@ def test_required_reconcile_success_completes_required_delivery(video_file):
     assert result.youtube_required_failed is False
     assert result.youtube_failure_code is None
     assert published and published[0][1]["video_id"] == "vid-1"
+
+
+@pytest.mark.parametrize(
+    ("pages", "code"),
+    [
+        (
+            {None: {"items": [_item("v1", 1)], "nextPageToken": ""}},
+            "youtube_reconcile_malformed_page_token",
+        ),
+        (
+            {
+                None: {"items": [_item("v1", 1)], "nextPageToken": "p2"},
+                "p2": {"items": [_item("v2", 2)], "nextPageToken": "p2"},
+            },
+            "youtube_reconcile_malformed_page_token",
+        ),
+        (
+            {
+                None: {"items": [_item("v1", 1)], "nextPageToken": "p2"},
+                "p2": {"items": [], "nextPageToken": "p3"},
+                "p3": {"items": []},
+            },
+            "youtube_reconcile_empty_page_with_token",
+        ),
+    ],
+)
+def test_untrustworthy_continuation_is_contradictory(pages, code):
+    fake = FakeYouTubeReadback([_video("v1", [TAG]), _video("v2", [])], pages=pages)
+    result = reconcile_youtube_upload(TAG, "tok", fake)
+    assert result.status == CONTRADICTORY
+    assert result.code == code
+    assert result.video_id is None

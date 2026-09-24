@@ -163,6 +163,7 @@ def reconcile_youtube_upload(
 
     cutoff = not_before - CLOCK_SKEW if not_before is not None else None
     seen: set[str] = set()
+    seen_tokens: set[str] = set()
     video_ids: list[str] = []
     previous_at: datetime | None = None
     exhausted = False
@@ -202,11 +203,14 @@ def reconcile_youtube_upload(
         if exhausted:
             break
         next_token = page.get("nextPageToken")
-        if next_token is None or next_token == "":
+        if next_token is None:
             exhausted = True
             break
-        if not isinstance(next_token, str):
+        if not isinstance(next_token, str) or not next_token or next_token in seen_tokens:
             return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_malformed_page_token")
+        if not page_items:
+            return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_empty_page_with_token")
+        seen_tokens.add(next_token)
         page_token = next_token
     if not exhausted:
         return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_window_not_exhausted")
