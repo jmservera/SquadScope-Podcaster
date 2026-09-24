@@ -179,7 +179,7 @@ def test_repeated_items_across_pages_are_contradictory():
 
 def test_scan_stops_once_older_than_intent_window():
     fake = FakeYouTubeReadback(
-        [_video("v2", [TAG])],
+        [_video("v1", []), _video("v2", [TAG])],
         pages={
             None: {"items": [_item("v1", 1)], "nextPageToken": "p2"},
             "p2": {"items": [_item("v2", 5), _item("old", 600)], "nextPageToken": "p3"},
@@ -311,3 +311,69 @@ def test_upload_intent_declares_identity_before_mutation():
     assert details == {"youtube_identity_tag": TAG, "identity_scheme": "youtube-video-v1"}
     assert job_runner._upload_intent_details("spotify_rss", IDENTITY) is None
     assert job_runner._upload_intent_details("youtube", None) is None
+
+
+def test_incomplete_videos_readback_is_contradictory():
+    pages = {None: {"items": [_item("v1", 1), _item("v2", 2)]}}
+    fake = FakeYouTubeReadback([_video("v1", [TAG])], pages=pages)
+    result = reconcile_youtube_upload(TAG, "tok", fake)
+    assert result.status == CONTRADICTORY
+    assert result.code == "youtube_reconcile_incomplete_readback"
+    assert result.video_id is None
+
+
+class _TamperedVideosReadback(FakeYouTubeReadback):
+    def __init__(self, videos, extra):
+        super().__init__(videos)
+        self.extra = extra
+
+    def request(self, url, *, method="GET", headers=None, data=None):
+        status, body = super().request(url, method=method, headers=headers, data=data)
+        if urlparse(url).path.endswith("/videos"):
+            payload = json.loads(body)
+            payload["items"].extend(self.extra)
+            body = json.dumps(payload).encode()
+        return status, body
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["not-a-dict"],
+        [{"snippet": {"tags": [TAG]}}],
+        [_video("unrequested", [])],
+        [_video("v1", [])],
+    ],
+)
+def test_malformed_videos_readback_is_contradictory(extra):
+    fake = _TamperedVideosReadback([_video("v1", [TAG])], extra)
+    result = reconcile_youtube_upload(TAG, "tok", fake)
+    assert result.status == CONTRADICTORY
+    assert result.code == "youtube_reconcile_malformed_video"
+    assert result.video_id is None
+
+
+def test_reconcile_callback_failure_keeps_binding_without_second_upload(video_file):
+    fake = FakeYouTubeReadback([_video("vid-1", [TAG])])
+
+    def failing_callback(platform, record):
+        raise RuntimeError("evidence store unavailable")
+
+    result = distribute_video(
+        video_file,
+        "job-2026-W39-en",
+        "Same title",
+        "desc",
+        60.0,
+        _config(),
+        transport=fake,
+        published={"youtube": _unknown_record()},
+        on_published=failing_callback,
+        publish_run_id="run-abc",
+        publication_identity_context=IDENTITY,
+    )
+    assert result.youtube_id == "vid-1"
+    assert result.provider_records["youtube"]["retry_blocked"] is True
+    assert any("YouTube reconcile evidence error" in err for err in result.errors)
+    assert not any("evidence store unavailable" in err for err in result.errors)
+    assert all(method == "GET" or "oauth2" in url for method, url in fake.calls)

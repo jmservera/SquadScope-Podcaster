@@ -482,22 +482,24 @@ def _reconcile_unknown_youtube_upload(
     transport: HttpTransport | None,
     on_published: Callable[[str, dict[str, Any]], None] | None,
     publish_run_id: str | None,
-) -> bool:
+) -> tuple[bool, YouTubeDeliveryError | None]:
     """Bind an ambiguous YouTube upload by its declared identity tag (#678).
 
     Only runs for a ``publication_unknown`` intent without a provider ID whose
     durable intent declared the exact identity tag for this publication. It
-    never uploads: a non-match leaves the job fail-closed and returns False so
-    the caller keeps the existing retry-blocked behaviour.
+    never uploads: a non-match leaves the job fail-closed and returns
+    ``(False, None)`` so the caller keeps the existing retry-blocked behaviour.
+    A bound upload returns ``(True, error)`` where ``error`` is set only when
+    ``on_published`` failed to persist the evidence.
     """
     if config.dry_run or record.get("outcome") != PUBLICATION_UNKNOWN:
-        return False
+        return False, None
     if record.get("video_id") or record.get("provider_id"):
-        return False
+        return False, None
     expected_tag = youtube_identity_tag(publication_identity_context)
     declared_tag = record.get("identity_tag")
     if not expected_tag or declared_tag != expected_tag:
-        return False
+        return False, None
     try:
         http = transport or _DefaultTransport()
         access_token = _get_youtube_access_token(config, http)
@@ -512,7 +514,7 @@ def _reconcile_unknown_youtube_upload(
             "YouTube identity reconcile failed; retry remains blocked: %s",
             type(exc).__name__,
         )
-        return False
+        return False, None
     if not reconciled.matched or reconciled.video_id is None:
         logger.warning(
             "YouTube identity reconcile did not bind an upload status=%s code=%s; "
@@ -520,7 +522,7 @@ def _reconcile_unknown_youtube_upload(
             reconciled.status,
             reconciled.code,
         )
-        return False
+        return False, None
 
     video_id = reconciled.video_id
     privacy = reconciled.privacy_status or config.youtube_privacy
@@ -542,7 +544,9 @@ def _reconcile_unknown_youtube_upload(
         "retry_blocked": True,
     }
     logger.info("YouTube upload reconciled by identity tag: %s", result.youtube_url)
-    if on_published is not None:
+    if on_published is None:
+        return True, None
+    try:
         on_published(
             "youtube",
             {
@@ -561,7 +565,18 @@ def _reconcile_unknown_youtube_upload(
                 "at": checked_at,
             },
         )
-    return True
+    except Exception as exc:
+        # Mirror the upload branch: keep the bound video so playlist repair and
+        # the remaining steps still run; the readback record stays retry-blocked.
+        result.errors.append(f"YouTube reconcile evidence error: {type(exc).__name__}")
+        logger.error("YouTube reconcile evidence persistence failed: %s", type(exc).__name__)
+        return True, YouTubeDeliveryError(
+            "Required YouTube reconcile evidence persistence failed",
+            code="youtube_reconcile_evidence_failed",
+            stage="upload",
+            retryable=False,
+        )
+    return True, None
 
 
 def upload_to_youtube(
@@ -1218,10 +1233,9 @@ def distribute_video(
             language,
         )
     youtube_record = prior_published.get("youtube")
-    if (
-        youtube_active
-        and isinstance(youtube_record, Mapping)
-        and _reconcile_unknown_youtube_upload(
+    youtube_reconciled = False
+    if youtube_active and isinstance(youtube_record, Mapping):
+        youtube_reconciled, reconcile_error = _reconcile_unknown_youtube_upload(
             youtube_record,
             config,
             result,
@@ -1230,7 +1244,9 @@ def distribute_video(
             on_published=on_published,
             publish_run_id=publish_run_id,
         )
-    ):
+        if reconcile_error is not None and config.youtube_required:
+            youtube_required_failure = reconcile_error
+    if youtube_reconciled:
         pass
     elif (
         youtube_active

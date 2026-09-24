@@ -219,10 +219,19 @@ def reconcile_youtube_upload(
         video_items = videos.get("items") if isinstance(videos, dict) else None
         if status != 200 or not isinstance(video_items, list):
             return YouTubeReconcileResult(ERROR, f"youtube_reconcile_videos_http_{status}")
+        # The readback must cover exactly the requested IDs: an omitted ID could
+        # be another tagged candidate, so incomplete readback stays fail-closed.
+        returned: set[str] = set()
         for video in video_items:
-            if not isinstance(video, dict):
-                continue
-            tags = video.get("snippet", {}).get("tags")
+            video_id = video.get("id") if isinstance(video, dict) else None
+            if not isinstance(video_id, str) or video_id not in batch or video_id in returned:
+                return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_malformed_video")
+            returned.add(video_id)
+        if returned != set(batch):
+            return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_incomplete_readback")
+        for video in video_items:
+            snippet = video.get("snippet")
+            tags = snippet.get("tags") if isinstance(snippet, dict) else None
             if isinstance(tags, list) and identity_tag in tags:
                 candidates.append(video)
 
