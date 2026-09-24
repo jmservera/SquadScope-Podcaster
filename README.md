@@ -97,7 +97,8 @@ Optional `prod` environment variables:
 
 - `AZURE_LOCATION` defaults to `eastus2`; override only when deploying the full stack to another supported region.
 - `AZURE_STORAGE_ACCOUNT_NAME` - override the deterministic default Storage Account name.
-- `SPOTIFY_PUBLISH_ENABLED` - set to `true` to let runtime publish approved episodes.
+- `SPOTIFY_PUBLISH_ENABLED` - set to `true` to let runtime publish the **audio** Spotify episode for approved jobs. `false` (production since 2026-09-24) is video-only mode: audio publish is recorded as `skipped`, not failed. See [docs/video-only-mode.md](docs/video-only-mode.md).
+- `SPOTIFY_VIDEO_PUBLISH_MODE` / `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH` - set to `live` / `true` to take the separate Spotify **video** episode live (video job).
 - `PODCAST_AUTO_PUBLISH` - set to `true` to auto-approve after synthesis, but publication still requires `SPOTIFY_PUBLISH_ENABLED=true`.
 
 Optional `prod` environment secret:

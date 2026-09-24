@@ -58,6 +58,12 @@ from podcaster.queue import (
     parse_job_id,
 )
 from podcaster.sanitization import normalize_weekly_url
+from podcaster.spotify_mode import (
+    AUDIO_PUBLISH_DISABLED_REASON,
+    PUBLISH_STATUS_SKIPPED,
+    spotify_audio_publish_enabled,
+    spotify_video_live_publish_configured,
+)
 from podcaster.storage import ManagedIdentityTokenCredential, StorageBackend, create_storage_backend
 from podcaster.tts import PROVIDER, TtsConfig, load_tts_config
 
@@ -87,10 +93,13 @@ def video_generation_enabled() -> bool:
     """Whether to enqueue a video job after successful synthesis.
 
     Defaults to ``True``. When enabled, the audio runner enqueues a video job
-    *in addition to* publishing the MP3 immediately; the video pipeline composes
-    the MP4 and publishes it to Spotify separately. Audio and video are always
-    published independently. Set ``VIDEO_GENERATION_ENABLED`` to a falsey value
-    (``false``/``0``/``no``) to skip video generation entirely.
+    *in addition to* the (optional) MP3 publish; the video pipeline composes the
+    MP4 and publishes it to its own targets (YouTube, a separate Spotify video
+    episode). Audio and video publishing are independent: with
+    ``SPOTIFY_PUBLISH_ENABLED=false`` (video-only mode) the audio publish is
+    skipped and only the video pipeline publishes. Set
+    ``VIDEO_GENERATION_ENABLED`` to a falsey value (``false``/``0``/``no``) to
+    skip video generation entirely.
     """
 
     raw = os.environ.get("VIDEO_GENERATION_ENABLED")
@@ -435,23 +444,40 @@ def run_synthesis(
             storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
 
             # Validate at least one listener-facing publish target is configured (#268)
-            # spotify_publish_config being present is not enough — Spotify must also be
-            # enabled via SPOTIFY_PUBLISH_ENABLED=true for actual publishing to occur.
-            has_spotify = (
-                spotify_publish_config is not None
-                and os.environ.get("SPOTIFY_PUBLISH_ENABLED", "").lower() == "true"
+            # spotify_publish_config being present is not enough — audio Spotify must
+            # also be enabled via SPOTIFY_PUBLISH_ENABLED=true. The video pipeline owns
+            # its own targets (YouTube, a separate Spotify video episode) and
+            # validates them itself; a video hand-off counts as a target when it will
+            # reach an audience (YouTube, or a live-authorized Spotify video episode).
+            audio_publish_enabled = spotify_audio_publish_enabled()
+            has_spotify_audio = (
+                spotify_publish_config is not None and audio_publish_enabled
             ) or auto_publish_enabled()
-            has_youtube = os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true"
-            if not has_spotify and not has_youtube:
+            video_enabled = video_generation_enabled()
+            has_youtube = (
+                video_enabled and os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true"
+            )
+            has_video = has_youtube or (video_enabled and spotify_video_live_publish_configured())
+            if not has_spotify_audio and not has_video:
                 logger.warning(
                     "no listener-facing publish target configured for job_id=%s — "
-                    "episode will not reach any audience (enable Spotify or YouTube)",
+                    "episode will not reach any audience (enable Spotify audio, YouTube, "
+                    "or live Spotify video)",
+                    job_id,
+                )
+            elif not audio_publish_enabled and has_video:
+                logger.info(
+                    "audio Spotify publish disabled for job_id=%s; delegating "
+                    "listener-facing publication to the video pipeline (video-only mode)",
                     job_id,
                 )
 
-            # Publish the MP3 immediately. Audio is always published as soon as
-            # synthesis completes, independently of video generation — we never
-            # defer the audio publish to the video pipeline.
+            # Publish the MP3 right after synthesis when audio Spotify publishing
+            # is enabled (SPOTIFY_PUBLISH_ENABLED=true). The audio publish never
+            # waits for the video pipeline. In video-only mode
+            # (SPOTIFY_PUBLISH_ENABLED=false) the audio publish is skipped and
+            # recorded as ``skipped`` — not failed — and only the video pipeline
+            # publishes.
             auto_publish = auto_publish_enabled()
             if auto_publish:
                 try:
@@ -468,7 +494,14 @@ def run_synthesis(
                         exc_info=True,
                     )
 
-            if spotify_publish_config is not None and validation_ready and not auto_publish:
+            if (
+                spotify_publish_config is not None
+                and validation_ready
+                and not auto_publish
+                and not audio_publish_enabled
+            ):
+                _record_skipped_audio_publish(storage, job_id, manifest)
+            elif spotify_publish_config is not None and validation_ready and not auto_publish:
                 try:
                     request = (
                         manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
@@ -551,9 +584,9 @@ def run_synthesis(
                     logger.warning("draft publish failed job_id=%s", job_id, exc_info=True)
 
             # Additionally hand off to the video pipeline. It composes the MP4
-            # and publishes it to Spotify separately (via
-            # podcaster.video.distribution). This runs independently of the MP3
-            # publish above — both audio and video are published on their own.
+            # and publishes it to its own targets, including a separate Spotify
+            # video episode (via podcaster.video.distribution). This runs
+            # independently of the MP3 publish above, whether it ran or was skipped.
             # A failed or unconfigured enqueue never breaks synthesis completion.
             if video_generation_enabled():
                 _enqueue_video(job_id, enqueue_video)
@@ -1197,6 +1230,35 @@ def _record_direct_publish_result(
         return manifest_bytes(document)
 
     storage.update_bytes(manifest_path(job_id), "application/json; charset=utf-8", _apply)
+
+
+def _record_skipped_audio_publish(
+    storage: StorageBackend,
+    job_id: str,
+    manifest: dict[str, Any],
+) -> None:
+    """Record a deliberate video-only audio publish skip (never a failure)."""
+    request = manifest.get("request") if isinstance(manifest.get("request"), dict) else {}
+    request_run_id = request.get("publish_run_id")
+    publish_run_id = (
+        request_run_id
+        if isinstance(request_run_id, str) and request_run_id.isdecimal()
+        else new_publish_run_id()
+    )
+    result = PublishResult(
+        status=PUBLISH_STATUS_SKIPPED,
+        publish_run_id=publish_run_id,
+        details={"reason": AUDIO_PUBLISH_DISABLED_REASON},
+    )
+    logger.info(
+        "audio Spotify publish skipped job_id=%s reason=%s",
+        job_id,
+        AUDIO_PUBLISH_DISABLED_REASON,
+    )
+    try:
+        _record_direct_publish_result(storage, job_id, result, publish_run_id)
+    except Exception:  # noqa: BLE001 - a skip marker must never break synthesis completion
+        logger.warning("could not record skipped audio publish job_id=%s", job_id, exc_info=True)
 
 
 def _iso(moment: datetime) -> str:
