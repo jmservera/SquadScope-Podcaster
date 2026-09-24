@@ -167,23 +167,21 @@ def test_review_publish_fields_prefers_real_result() -> None:
     }
 
 
-def test_job_detail_does_not_report_manual_handoff_for_skipped_audio() -> None:
-    from tests.test_monitoring import MemoryStorageBackend
-
-    storage = MemoryStorageBackend()
+@pytest.mark.parametrize(("target", "post"), ENDPOINTS)
+def test_video_only_approval_of_blocked_job_reports_blocked_not_skipped(
+    target, post, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
     manifest = _synthesized_manifest()
-    manifest["generation"]["publish_result"] = {
-        "anchor_id": None,
-        "status": "skipped",
-        "outcome": PublishResult(status="skipped").outcome,
-        "publish_run_id": "123",
-        "dry_run": False,
-        "error": None,
-        "details": {"reason": "spotify_audio_publish_disabled"},
-    }
-    storage.put_bytes(manifest_path(_job_id()), json.dumps(manifest).encode(), "application/json")
-    set_storage(storage)
+    manifest["generation"]["audio_validation"] = {"status": "failed", "ready": False}
+    _stage(storage, manifest)
+    calls: list[dict] = []
 
-    data = TestClient(app).get(f"/api/jobs/{_job_id()}").json()
+    with patch(target, side_effect=_wrap_process(storage, calls)):
+        status_code, body = post(_review_body())
 
-    assert data["publication_outcome"] is None
+    assert status_code == HTTPStatus.OK
+    assert body["publish_status"] == "blocked"
+    assert "audio_validation_not_passed" in body["publish_blocked_by"]
+    assert "publish_skipped_reason" not in body

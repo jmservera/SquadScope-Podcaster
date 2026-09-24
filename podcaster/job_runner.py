@@ -62,6 +62,7 @@ from podcaster.spotify_mode import (
     AUDIO_PUBLISH_DISABLED_REASON,
     PUBLISH_STATUS_SKIPPED,
     spotify_audio_publish_enabled,
+    spotify_video_live_publish_configured,
 )
 from podcaster.storage import ManagedIdentityTokenCredential, StorageBackend, create_storage_backend
 from podcaster.tts import PROVIDER, TtsConfig, load_tts_config
@@ -446,20 +447,24 @@ def run_synthesis(
             # spotify_publish_config being present is not enough — audio Spotify must
             # also be enabled via SPOTIFY_PUBLISH_ENABLED=true. The video pipeline owns
             # its own targets (YouTube, a separate Spotify video episode) and
-            # validates them itself, so an enabled video hand-off counts as a target.
+            # validates them itself; a video hand-off counts as a target when it will
+            # reach an audience (YouTube, or a live-authorized Spotify video episode).
             audio_publish_enabled = spotify_audio_publish_enabled()
             has_spotify_audio = (
                 spotify_publish_config is not None and audio_publish_enabled
             ) or auto_publish_enabled()
             has_youtube = os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true"
-            has_video = video_generation_enabled()
+            has_video = video_generation_enabled() and (
+                has_youtube or spotify_video_live_publish_configured()
+            )
             if not has_spotify_audio and not has_youtube and not has_video:
                 logger.warning(
                     "no listener-facing publish target configured for job_id=%s — "
-                    "episode will not reach any audience (enable Spotify or video)",
+                    "episode will not reach any audience (enable Spotify audio, YouTube, "
+                    "or live Spotify video)",
                     job_id,
                 )
-            elif not has_spotify_audio and has_video:
+            elif not audio_publish_enabled and has_video:
                 logger.info(
                     "audio Spotify publish disabled for job_id=%s; delegating "
                     "listener-facing publication to the video pipeline (video-only mode)",

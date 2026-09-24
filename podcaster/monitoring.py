@@ -640,7 +640,9 @@ async def api_review(request: Request):
 
     publish_result = outcome.publish_result
     publish_fields = review_publish_fields(
-        publish_result, audio_publish_skipped=audio_publish_skipped
+        publish_result,
+        audio_publish_skipped=audio_publish_skipped,
+        manifest=outcome.manifest,
     )
     logger.info(
         "api_review job_id=%s decision=%s publish_status=%s",

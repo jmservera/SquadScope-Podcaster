@@ -26,10 +26,37 @@ def spotify_audio_publish_enabled() -> bool:
     return os.environ.get("SPOTIFY_PUBLISH_ENABLED", "").lower() == "true"
 
 
-def review_publish_fields(publish_result: Any, *, audio_publish_skipped: bool) -> dict[str, Any]:
-    """Publish fields for a review response; a video-only skip reports ``skipped``."""
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def spotify_video_live_publish_configured() -> bool:
+    """Whether the video job is configured to take the Spotify video episode live."""
+    mode = os.environ.get("SPOTIFY_VIDEO_PUBLISH_MODE", "draft").strip().lower()
+    allowed = os.environ.get("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "").strip().lower() in _TRUTHY
+    return mode == "live" and allowed
+
+
+def review_publish_fields(
+    publish_result: Any,
+    *,
+    audio_publish_skipped: bool,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Publish fields for a review response; a video-only skip reports ``skipped``.
+
+    A skip is only reported for a job that would otherwise have been published;
+    a job with publish blockers reports ``blocked`` with its blockers instead.
+    """
     if publish_result is not None:
         return {"publish_status": publish_result.status, "publish_error": publish_result.error}
+    publishing = manifest.get("publishing") if isinstance(manifest, dict) else None
+    publishing = publishing if isinstance(publishing, dict) else {}
+    if audio_publish_skipped and publishing.get("eligible") is not True:
+        return {
+            "publish_status": "blocked",
+            "publish_error": None,
+            "publish_blocked_by": list(publishing.get("blocked_by") or []),
+        }
     if audio_publish_skipped:
         return {
             "publish_status": PUBLISH_STATUS_SKIPPED,

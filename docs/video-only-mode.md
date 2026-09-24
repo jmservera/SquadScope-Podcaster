@@ -27,20 +27,27 @@ video to an episode that already has audio. The video path never reads
 
 ## Behavior with `SPOTIFY_PUBLISH_ENABLED=false`
 
-- **After synthesis:** the runner does not call the Spotify audio publisher.
-  It records `generation.publish_result.status = "skipped"` with
-  `details.reason = "spotify_audio_publish_disabled"` and `outcome: null`. A
-  skip is never recorded as `failed` or `manual_handoff_required`. The runner
-  logs at INFO that publication is left to the video pipeline, and then queues
-  the video job as usual.
+- **After synthesis:** for a publishable episode (audio validation passed and
+  a `spotify_publish` request block present), the runner skips the Spotify
+  audio publisher. It records `generation.publish_result.status = "skipped"`
+  with `details.reason = "spotify_audio_publish_disabled"` and `outcome: null`,
+  never `failed` or `manual_handoff_required`. It logs at INFO that publication
+  is left to the video pipeline, then queues the video job as usual.
 - **Missing-target warning:** "no listener-facing publish target" is logged
-  only when audio Spotify, YouTube and video generation are *all* disabled. The
-  video job checks its own targets.
+  when an episode has none of these:
+  - audio Spotify publishing;
+  - YouTube;
+  - video generation with a live-authorized Spotify video, meaning
+    `SPOTIFY_VIDEO_PUBLISH_MODE=live` and
+    `SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH=true`. The synthesis job receives both
+    variables.
 - **Review approval** (`/api/review`, `podcast-review-gate.yml`): the approval
-  is recorded, but no audio publish is attempted. The job becomes
-  `review_approved`, not `publish_failed`. The response contains
-  `publish_status: "skipped"` and `publish_skipped_reason:
-  "spotify_audio_publish_disabled"`. `publishing.eligible` stays `true`.
+  is recorded but no audio publish is attempted. The job becomes
+  `review_approved`, not `publish_failed`, and `publishing.eligible` stays
+  `true`. The response contains `publish_status: "skipped"` and
+  `publish_skipped_reason: "spotify_audio_publish_disabled"`. A job that still
+  has blockers (for example `audio_validation_not_passed`) gets
+  `publish_status: "blocked"` and `publish_blocked_by` instead.
 - **Weekly success:** a video-only week is healthy when YouTube is public and
   the Spotify video episode is live, as confirmed by provider readback
   (`/overview`). A missing audio episode is expected.

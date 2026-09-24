@@ -573,6 +573,8 @@ def test_run_synthesis_video_only_skips_audio_publish_and_records_skipped(monkey
     monkeypatch.delenv("VIDEO_GENERATION_ENABLED", raising=False)
     monkeypatch.delenv("VIDEO_YOUTUBE_ENABLED", raising=False)
     monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", "live")
+    monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", "true")
     monkeypatch.setenv("PODCAST_AUTO_PUBLISH", "true")
     storage = FakeStorage()
     _stage(storage, _video_only_manifest(), _two_voice_script())
@@ -610,6 +612,22 @@ def test_run_synthesis_video_only_skips_audio_publish_and_records_skipped(monkey
     )
     assert any("video-only mode" in message for message in messages)
 
+    from podcaster.monitoring import app, set_storage
+    from tests.test_monitoring import MemoryStorageBackend
+
+    detail_storage = MemoryStorageBackend()
+    detail_storage.put_bytes(
+        job_runner.manifest_path(JOB_ID), json.dumps(persisted).encode(), "application/json"
+    )
+    set_storage(detail_storage)
+    try:
+        from fastapi.testclient import TestClient
+
+        detail = TestClient(app).get(f"/api/jobs/{JOB_ID}").json()
+    finally:
+        set_storage(None)
+    assert detail["publication_outcome"] is None
+
 
 def test_run_synthesis_video_only_skip_precedes_identity_check(monkeypatch):
     _patch_audio(monkeypatch)
@@ -640,9 +658,17 @@ def test_run_synthesis_video_only_skip_precedes_identity_check(monkeypatch):
     assert publish_result["publish_run_id"] == "123"
 
 
-def test_run_synthesis_warns_when_no_publish_target_at_all(monkeypatch, caplog):
+@pytest.mark.parametrize(
+    ("video_enabled", "video_mode", "video_allow"),
+    [("false", "live", "true"), ("true", "draft", "true"), ("true", "live", "false")],
+)
+def test_run_synthesis_warns_when_no_publish_target_at_all(
+    monkeypatch, caplog, video_enabled, video_mode, video_allow
+):
     _patch_audio(monkeypatch)
-    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", "false")
+    monkeypatch.setenv("VIDEO_GENERATION_ENABLED", video_enabled)
+    monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", video_mode)
+    monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", video_allow)
     monkeypatch.delenv("VIDEO_YOUTUBE_ENABLED", raising=False)
     monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
     storage = FakeStorage()
@@ -656,6 +682,7 @@ def test_run_synthesis_warns_when_no_publish_target_at_all(monkeypatch, caplog):
             _production_config(),
             token_provider=lambda scope: "token",
             transport=lambda request: b"segment-bytes",
+            enqueue_video=lambda job_id: True,
         )
 
     assert outcome.status == job_runner.STATUS_COMPLETED

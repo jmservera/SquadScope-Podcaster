@@ -567,7 +567,9 @@ class GenerateHandler(BaseHTTPRequestHandler):
 
         publish_result = outcome.publish_result
         publish_fields = review_publish_fields(
-            publish_result, audio_publish_skipped=audio_publish_skipped
+            publish_result,
+            audio_publish_skipped=audio_publish_skipped,
+            manifest=outcome.manifest,
         )
         _json_response(
             self,
