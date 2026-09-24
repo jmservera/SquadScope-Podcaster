@@ -240,8 +240,8 @@ The implementation requires the page count to equal the ceiling implied by
 declared share of those items, requires count metadata to remain unchanged
 across pages, and rejects repeated canonical episode identities. Reconciliation
 defaults on and fails closed if the readback is unavailable or inconsistent.
-The explicit `false` setting remains the operator-authorized blind-create
-escape hatch.
+If `PODCASTER_SPOTIFY_RECONCILE=0` disables this lookup, video draft creation
+fails closed instead of blind-creating.
 
 The older Anchor REST station listing (`GET /v3/stations/{stationId}/episodes`,
 with or without `userId`) is stale for this workflow and must not be treated as
@@ -260,7 +260,53 @@ as an untitled draft (no match). Entries whose id is the excluded audio anchor
 are skipped before title classification. More than one reusable draft with the
 exact target title is ambiguous identity and fails closed; no candidate is
 selected and no create or upload follows.
-Operators who need a blind create can set `PODCASTER_SPOTIFY_RECONCILE=0`.
+#### Emergency unreconciled-create override
+
+Default behaviour is fail-closed: no configuration, a broken listing endpoint,
+nor `PODCASTER_SPOTIFY_RECONCILE=0` alone authorizes an unreconciled draft
+create. During a confirmed Spotify listing outage (for example
+jmservera/SquadScope-Podcaster#688), an operator may make a deliberate,
+bounded availability exception by setting the separate affirmative opt-in:
+
+```bash
+PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE=1
+```
+
+The override uses the repository truthy set: `1`, `true`, `yes`, or `on`
+(case-insensitive after trimming). This variable is intentionally distinct from
+`PODCASTER_SPOTIFY_RECONCILE=0`; existing deployments that disabled reconcile
+are **not** grandfathered into blind creation. The accepted risk is that the
+code cannot prove whether a same-title Spotify draft already exists, so one
+duplicate draft may be created.
+
+The override is capped by durable publication evidence, keyed by the canonical
+publication identity. It requires publication evidence storage and writes
+`operation=unreconciled_create_intent` before the provider mutation with
+`create_provenance=blind_unreconciled`,
+`snapshot_completeness=absent`, and `mutation_possibility=possible`. Once
+Spotify returns the new draft id, it writes `operation=unreconciled_create`
+with `provider_artifact_id` and `mutation_possibility=confirmed`. A second
+container or retry for the same identity sees the existing durable claim and
+fails before another create POST. Process-local state is not used as the
+concurrency bound.
+
+When used, the publisher logs a `WARNING` naming the safe publication identity
+(title, audio anchor id, station id, show id, publish run id) and the reason
+reconcile was bypassed. It never logs cookie, bearer-token, signed-URL, or body
+values.
+
+Operator procedure:
+
+1. Confirm in the Spotify creator console that no draft already exists for the
+   target title/week; do not use this before that manual check.
+2. Set `PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE` to one truthy value only
+   for the single run that needs the exception (with
+   `PODCASTER_SPOTIFY_RECONCILE=0` only if the listing endpoint itself is the
+   known blocker).
+3. After the run, remove the override and verify durable publication evidence
+   contains the `unreconciled_create` marker with the expected provider
+   artifact id. Cross-check the Spotify console for exactly one new draft and
+   delete/resolve any unexpected duplicate before retrying.
 
 Episode ids are read from `episodeId`, `id` and `anchorId`. Every key is
 inspected, and the entry only yields an id when at least one canonical identity
@@ -326,8 +372,9 @@ before uploading and names the orphan draft id so an operator can delete it.
 Only drafts known to be *untitled* are claimed: `_reconcile_or_create_draft`
 returns `(anchor_id, needs_title)` and `needs_title` is `False` for a
 reconciled draft **and** for a draft adopted during ambiguous-create recovery
-because it already carried the target title. The claim is skipped entirely when
-`PODCASTER_SPOTIFY_RECONCILE=0`.
+because it already carried the target title. An authorized unreconciled create
+is also claimed immediately before upload; `PODCASTER_SPOTIFY_RECONCILE=0`
+alone fails before create.
 
 #### The create POST is never retried blindly
 
@@ -371,7 +418,8 @@ second only after a settled, twice-observed listing that still shows nothing the
 first create could have produced. A second ambiguous create is not recovered
 again. With `PODCASTER_SPOTIFY_RECONCILE=0` (and on the audio path in
 `publish_episode`, which never reconciles) there is no listing to reason from,
-so the single POST simply fails — a failed publish, not an orphaned duplicate.
+so video create fails before any POST unless the durable emergency override is
+set. The audio path remains a single non-reconciled POST.
 
 Residual, irreducible windows — stated precisely, because neither one loses the
 draft server-side:
@@ -405,14 +453,15 @@ create outcome is unknown, a later run reuses the snapshot to adopt exactly one
 new untitled draft, persist its provider id, title it, and continue without a
 duplicate create. If the snapshot is incomplete, the follow-up listing is
 unreadable, or more than one candidate appears, the retry fails closed for
-manual cleanup instead of guessing. With
-`PODCASTER_SPOTIFY_RECONCILE=0`, the intent is still written immediately before
-the create POST, but no listing-based absence proof is available, so an unknown
-create outcome remains a fail-closed/manual recovery condition. Once this client
-has observed a video draft id — from a normal create response, from recovery of
-an ambiguous create, or from a later run resolving a durable create intent,
-whether the recovered draft is already titled or still untitled — the provider
-id is durably written as `create_episode`/`reconcile_episode` evidence before
+manual cleanup instead of guessing. With the unreconciled-create override, the
+intent is written as `unreconciled_create_intent` with an absent snapshot and
+possible mutation state; no listing-based absence proof is claimed, and the
+durable claim blocks a second create for the same publication identity if the
+process dies before the provider id is recorded. Once this client has observed
+a video draft id — from a normal create response, from recovery of an ambiguous
+create, from a later run resolving a durable create intent, or from an
+authorized unreconciled create — the provider id is durably written as
+`create_episode`/`reconcile_episode`/`unreconciled_create` evidence before
 upload work continues when publication evidence storage is available. If that
 write fails, the call fails closed with
 `publication_unknown`, `retry_blocked=true`, and the observed
@@ -422,6 +471,78 @@ preserves duplicate safety by forcing reconciliation/manual handoff instead of
 presenting the failed call as "no draft was created"; the remaining risk is
 operational recovery of a known draft or of an ambiguous candidate set, not
 blind re-create permission.
+
+A *definite* rejection of the create POST itself is different from an unknown
+outcome, because it proves no draft was created. A 401 from `_create_episode`
+writes `create_episode_failure` with `code=credentials_expired`,
+`retry_blocked=false` (outcome `manual_handoff_required`), which re-arms exactly
+one corrected-credential create for the identity (#693). A deterministic 4xx
+writes `create_episode_failure` with `code=create_rejected`, `retry_blocked=true`,
+because the same request would be rejected again. Only these two codes resolve a
+pending create intent. A resolved intent is never used for adoption, so an
+unrelated untitled draft that appears later is not uploaded onto. If the rejection
+record cannot be written, a retry-blocking `create_episode_failure_fence` is
+attempted instead. If both writes fail, the intent stays unknown: retries reconcile
+read-only and never create. Failures raised while recovering an ambiguous create,
+or while resolving an earlier intent, stay unknown (`publication_unknown`,
+`retry_blocked=false`, never "failed").
+
+With `PODCASTER_SPOTIFY_RECONCILE=0` there is no listing check, so only a
+definite rejection of the create that is written with `retry_blocked=false`
+(today only `create_episode_failure` with `code=credentials_expired`) re-arms a
+create without the override. Any other `retry_blocked=false` record, such as an
+unknown outcome, fails closed as `unreconciled_create_not_authorized`.
+
+When `publish_episode` routes an MP4 through this create-safe video flow, a
+live `publish_mode` (`immediate`/`scheduled`, with `SPOTIFY_ALLOW_LIVE_PUBLISH`)
+is applied by the final `/update` (`isPublished`/`publishOn`). The outcome is
+then classified from `/overview` readback, exactly as on the audio path (#700),
+and recorded as `publish`. An ambiguous `/update` failure that readback does not
+confirm as live is recorded as `provider_mutation_failure` (`uploaded` or
+`publication_unknown`, retry-blocked). The result is never reported as published
+without readback confirmation. `upload_video_to_episode` checks
+`SPOTIFY_ALLOW_LIVE_PUBLISH` itself too: a live behavior passed directly without
+the opt-in is downgraded to a draft (with the same warning), so the lower-level
+helper can never go public by accident.
+
+Persisted create-safety fields (`create_provenance`, `snapshot_completeness`,
+`mutation_possibility`, `snapshot_evidence_source`) are parsed through one
+closed-set parser that accepts only an exact string naming a member. A present
+field that is non-string, unknown, or carries look-alike or invisible characters
+fails closed as an unresolved intent. Each intent operation accepts only its own
+provenance (`create_episode_intent`: `reconciliation_backed` or
+`upload_dispatch`; `unreconciled_create_intent`: `blind_unreconciled`;
+`upload_intent`: `upload_dispatch`). One exception: an untrusted
+`snapshot_evidence_source` on a present snapshot degrades that snapshot to
+`absent`, with a single `WARNING`, and the intent stays blocking. An explicit
+`absent` snapshot that still carries observed-snapshot fields
+(`pre_create_episode_ids`, `pre_create_snapshot_complete`,
+`snapshot_evidence_source`) is degraded the same way. A degraded state is
+re-persisted with `snapshot_degraded: true`, so a deserialize/serialize cycle
+keeps it blocking; a non-boolean marker, or one on a non-absent snapshot, fails
+closed. Snapshot episode ids must be exact integers and are never coerced
+(`1.5` is rejected, not read as `1`). A present `details` value that is not an
+object fails closed; only an omitted or `null` `details` reads as a legacy
+intent. Identity fields in these warnings are capped at 80 characters after
+escaping. A non-reconciliation (`upload_dispatch`) create intent blocks only while it
+is still the pending intent. A later provider id or definite rejection resolves
+it, so repeated #693 credential re-arms each allow exactly one create. Observed-
+snapshot fragments (`pre_create_episode_ids`, `snapshot_evidence_source`) with
+no completeness claim are degraded and blocking, and a legacy
+`pre_create_snapshot_complete` record that also carries a
+`snapshot_evidence_source` is rejected. With reconciliation disabled, a definite
+rejection re-arms a create only if a create claim precedes it for the same
+identity. `append_evidence` enforces the same operation→provenance contract
+when it writes a record, so a mismatched pair is never persisted. The
+`mutation_possibility` must match the rest of the record, on both read and
+write: `confirmed` needs a durable provider artifact id, and a
+`blind_unreconciled` or `upload_dispatch` claim cannot record `not_possible`.
+An `unreconciled_create_intent` (blind create claim) stays a pending,
+blocking intent until a provider id or a definite rejection resolves it, even
+if its record says `retry_blocked: false`. A malformed `create_episode_intent`
+(one without the writer's `publication_unknown` / `mutation_intent` shape) is
+never treated as a resolution. It fails closed while an earlier intent is
+still pending, and it cannot hide a later valid intent.
 
 #### Pagination
 
@@ -952,7 +1073,8 @@ The Spotify multipart upload protocol (§5) was validated against real uploads a
 | `SP_DC` | `publish._get_credentials` | Spotify `sp_dc` session cookie (auth). |
 | `SP_KEY` | `publish._build_session` | Spotify `sp_key` session cookie (auth). |
 | `SPOTIFY_SHOW_ID` | `publish._get_credentials` | The show's `webId` used to resolve legacy `stationId`/`userId`. |
-| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on with the observed persisted-query draft listing contract. `0`/`false`/`no`/`off` explicitly authorize the blind-create escape hatch (§5). |
+| `PODCASTER_SPOTIFY_RECONCILE` | `publish._spotify_reconcile_enabled` | Defaults on with the observed persisted-query draft listing contract. `0`/`false`/`no`/`off` disables reconciliation and fails closed before a video create unless the separate unreconciled-create override is truthy (§5). |
+| `PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE` | `publish._spotify_unreconciled_create_allowed` | Emergency affirmative opt-in for one durable-evidence-keyed unreconciled video draft create. Accepts the repo truthy set (`1`/`true`/`yes`/`on`); `PODCASTER_SPOTIFY_RECONCILE=0` alone never satisfies it (§5). |
 | `PODCASTER_STORAGE_ACCOUNT_URL` | `storage.py`, `video/job_runner.py` | Azure Blob storage account URL; backs intro/outro fetch, blob archive, and job manifests. |
 
 Adjacent distribution toggles (same `from_env`): `VIDEO_YOUTUBE_ENABLED`,

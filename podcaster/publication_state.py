@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Mapping
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Mapping, TypeVar, final
 
 from podcaster.job_logs import LogLevel, emit_log
 
@@ -43,12 +45,25 @@ PROVIDER_STATUSES = (
 )
 VERIFICATION_STATES = ("none", "provider_readback", "external_verified")
 REARMABLE_CLAIM_OPERATIONS = ("upload_intent", "create_episode_intent")
+logger = logging.getLogger(__name__)
+
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _WEEK_RE = re.compile(r"^\d{4}-W(?:0[1-9]|[1-4]\d|5[0-3])$")
 _RUN_RE = re.compile(r"^[0-9]+$")
 _UNSAFE_DETAIL_KEY = re.compile(
     r"(authorization|bearer|cookie|credential|secret|token|signed.?url|body|content)",
     re.IGNORECASE,
+)
+_CREATE_SAFETY_DETAIL_KEYS = frozenset(
+    {
+        "create_provenance",
+        "mutation_possibility",
+        "pre_create_episode_ids",
+        "pre_create_snapshot_complete",
+        "snapshot_completeness",
+        "snapshot_degraded",
+        "snapshot_evidence_source",
+    }
 )
 
 
@@ -96,6 +111,503 @@ class PublicationEvidence:
 
     def to_dict(self) -> dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
+
+
+class CreateIntentProvenance(str, Enum):
+    RECONCILIATION_BACKED = "reconciliation_backed"
+    BLIND_UNRECONCILED = "blind_unreconciled"
+    UPLOAD_DISPATCH = "upload_dispatch"
+
+
+class SnapshotCompleteness(str, Enum):
+    ABSENT = "absent"
+    TRUNCATED = "truncated"
+    COMPLETE = "complete"
+
+
+class SnapshotEvidenceSource(str, Enum):
+    SPOTIFY_EPISODE_LISTING = "spotify_episode_listing"
+    LEGACY_PRE_CREATE_SNAPSHOT = "legacy_pre_create_snapshot"
+
+
+class MutationPossibility(str, Enum):
+    NOT_POSSIBLE = "not_possible"
+    POSSIBLE = "possible"
+    CONFIRMED = "confirmed"
+
+
+def _snapshot_evidence_source(value: Any) -> SnapshotEvidenceSource | None:
+    return value if type(value) is SnapshotEvidenceSource else None
+
+
+_ClosedMember = TypeVar("_ClosedMember", bound=Enum)
+
+
+def _closed_set_member(enum_cls: type[_ClosedMember], value: Any) -> _ClosedMember | None:
+    """Map a persisted value onto a closed set, or ``None``; never coerce.
+
+    The single parser for every closed-set create-safety field: only an exact
+    ``str`` naming a member is accepted, so non-string, look-alike, zero-width
+    and control-character values can never be read as a valid member.
+    """
+    if type(value) is not str:
+        return None
+    try:
+        return enum_cls(value)
+    except ValueError:
+        return None
+
+
+def _snapshot_evidence_source_from_record(value: Any) -> SnapshotEvidenceSource | None:
+    return _closed_set_member(SnapshotEvidenceSource, value)
+
+
+# Each create-intent operation may only carry the provenance its writer records.
+_OPERATION_PROVENANCE: dict[str, frozenset[CreateIntentProvenance]] = {
+    "create_episode_intent": frozenset(
+        {CreateIntentProvenance.RECONCILIATION_BACKED, CreateIntentProvenance.UPLOAD_DISPATCH}
+    ),
+    "unreconciled_create_intent": frozenset({CreateIntentProvenance.BLIND_UNRECONCILED}),
+    "upload_intent": frozenset({CreateIntentProvenance.UPLOAD_DISPATCH}),
+}
+
+
+def _validate_mutation_combination(
+    provenance: CreateIntentProvenance,
+    mutation_possibility: MutationPossibility,
+    *,
+    has_provider_id: bool,
+) -> None:
+    # A confirmed mutation must name the durable provider artifact, and a blind or
+    # dispatch-backed claim can never assert that no mutation was possible.
+    if mutation_possibility == MutationPossibility.CONFIRMED and not has_provider_id:
+        raise PublicationStateError(
+            "create safety evidence confirms a mutation without a provider identity"
+        )
+    if mutation_possibility == MutationPossibility.NOT_POSSIBLE and provenance in (
+        CreateIntentProvenance.BLIND_UNRECONCILED,
+        CreateIntentProvenance.UPLOAD_DISPATCH,
+    ):
+        raise PublicationStateError(
+            "create safety evidence denies a possible mutation for a non-reconciled create"
+        )
+
+
+def _classify_untrusted_evidence_source(value: Any) -> str:
+    """Describe a rejected persisted source without echoing its (untrusted) content."""
+    if value is None:
+        return "missing_or_null"
+    if not isinstance(value, str):
+        return f"non_string:{type(value).__name__}"
+    if not value:
+        return "empty_string"
+    if not value.strip():
+        return f"whitespace_only(len={len(value)})"
+    if any(not ch.isprintable() for ch in value):
+        return f"contains_invisible_or_control_chars(len={len(value)})"
+    return f"unrecognized_string(len={len(value)})"
+
+
+def _warn_degraded_snapshot(
+    record: Mapping[str, Any], completeness: SnapshotCompleteness, raw_source: Any
+) -> None:
+    logger.warning(
+        "Persisted %s snapshot degraded to absent (fail closed): "
+        "snapshot_evidence_source is not a SnapshotEvidenceSource member "
+        "[%s]; job_id=%s week=%s publish_run_id=%s operation=%s",
+        completeness.value,
+        _classify_untrusted_evidence_source(raw_source),
+        _safe_identity_field(record.get("job_id")),
+        _safe_identity_field(record.get("week")),
+        _safe_identity_field(record.get("publish_run_id")),
+        _safe_identity_field(record.get("operation")),
+    )
+
+
+_MAX_IDENTITY_LOG_CHARS = 80
+
+
+def _safe_identity_field(value: Any) -> str:
+    if not isinstance(value, str):
+        return "<invalid>"
+    # Bound the escaped form: escaping can expand one character to ten.
+    escaped = ascii(value)
+    return escaped if len(escaped) <= _MAX_IDENTITY_LOG_CHARS else escaped[:77] + "..."
+
+
+@final
+@dataclass(frozen=True, init=False)
+class ProviderSnapshot:
+    """Closed provider snapshot; observed evidence sources are enum-only."""
+
+    episode_ids: tuple[int, ...]
+    _completeness: SnapshotCompleteness
+    evidence_source: SnapshotEvidenceSource | None = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        raise TypeError("ProviderSnapshot cannot be subclassed")
+
+    def __init__(
+        self,
+        episode_ids: tuple[int, ...],
+        completeness: SnapshotCompleteness,
+        evidence_source: SnapshotEvidenceSource | None = None,
+    ) -> None:
+        object.__setattr__(self, "episode_ids", episode_ids)
+        object.__setattr__(self, "_completeness", completeness)
+        object.__setattr__(self, "evidence_source", evidence_source)
+        self.__post_init__()
+
+    @property
+    def completeness(self) -> SnapshotCompleteness:
+        completeness, _, _ = _trusted_provider_snapshot_values(self)
+        return completeness
+
+    def __post_init__(self) -> None:
+        if type(self._completeness) is not SnapshotCompleteness:
+            raise PublicationStateError("snapshot completeness must be explicit")
+        normalized_ids: list[int] = []
+        for raw_id in self.episode_ids:
+            if isinstance(raw_id, bool):
+                raise PublicationStateError("snapshot episode id cannot be a boolean")
+            if type(raw_id) is not int:
+                # Never coerce (``int(1.5) == 1``): a truncated id could turn
+                # untrusted evidence into a false "this draft is new" proof.
+                raise PublicationStateError("snapshot episode id is unreadable")
+            normalized_ids.append(raw_id)
+        unique_sorted_ids = tuple(sorted(set(normalized_ids)))
+        object.__setattr__(self, "episode_ids", unique_sorted_ids)
+        normalized_source = _snapshot_evidence_source(self.evidence_source)
+        object.__setattr__(self, "evidence_source", normalized_source)
+        if len(unique_sorted_ids) != len(normalized_ids):
+            raise PublicationStateError("snapshot episode ids must be unique")
+        if self._completeness == SnapshotCompleteness.ABSENT and unique_sorted_ids:
+            raise PublicationStateError("absent snapshot cannot carry episode ids")
+        if (
+            self._completeness
+            in (
+                SnapshotCompleteness.TRUNCATED,
+                SnapshotCompleteness.COMPLETE,
+            )
+            and normalized_source is None
+        ):
+            raise PublicationStateError("observed snapshot requires an evidence source")
+        _trusted_provider_snapshot_values(self)
+
+    @classmethod
+    def absent(cls) -> "ProviderSnapshot":
+        return cls((), SnapshotCompleteness.ABSENT, None)
+
+    @classmethod
+    def truncated(
+        cls,
+        episode_ids: set[int] | list[int] | tuple[int, ...],
+        *,
+        evidence_source: SnapshotEvidenceSource,
+    ) -> "ProviderSnapshot":
+        return cls(tuple(episode_ids), SnapshotCompleteness.TRUNCATED, evidence_source)
+
+    @classmethod
+    def complete(
+        cls,
+        episode_ids: set[int] | list[int] | tuple[int, ...],
+        *,
+        evidence_source: SnapshotEvidenceSource,
+    ) -> "ProviderSnapshot":
+        return cls(tuple(episode_ids), SnapshotCompleteness.COMPLETE, evidence_source)
+
+    def require_evidence_source(self) -> SnapshotEvidenceSource:
+        source = _snapshot_evidence_source(self.evidence_source)
+        if source is None:
+            raise PublicationStateError("absent snapshot has no evidence source")
+        return source
+
+    def to_details(self) -> dict[str, Any]:
+        completeness, episode_ids, evidence_source = _trusted_provider_snapshot_values(self)
+        details: dict[str, Any] = {
+            "snapshot_completeness": completeness.value,
+        }
+        if episode_ids:
+            details["pre_create_episode_ids"] = list(episode_ids)
+        elif completeness != SnapshotCompleteness.ABSENT:
+            details["pre_create_episode_ids"] = []
+        if evidence_source is not None and completeness != SnapshotCompleteness.ABSENT:
+            details["snapshot_evidence_source"] = evidence_source.value
+        return details
+
+
+def _trusted_provider_snapshot_values(
+    snapshot: ProviderSnapshot,
+) -> tuple[SnapshotCompleteness, tuple[int, ...], SnapshotEvidenceSource | None]:
+    if type(snapshot) is not ProviderSnapshot:
+        raise PublicationStateError("snapshot must use the trusted concrete type")
+    completeness = object.__getattribute__(snapshot, "_completeness")
+    episode_ids = object.__getattribute__(snapshot, "episode_ids")
+    evidence_source = object.__getattribute__(snapshot, "evidence_source")
+    if type(completeness) is not SnapshotCompleteness:
+        raise PublicationStateError("snapshot completeness has invalid stored state")
+    if type(episode_ids) is not tuple or any(
+        type(episode_id) is not int for episode_id in episode_ids
+    ):
+        raise PublicationStateError("snapshot episode ids have invalid stored state")
+    if tuple(sorted(set(episode_ids))) != episode_ids:
+        raise PublicationStateError("snapshot episode ids have invalid stored state")
+    if completeness == SnapshotCompleteness.ABSENT:
+        if episode_ids or evidence_source is not None:
+            raise PublicationStateError("absent snapshot has invalid stored state")
+        return completeness, episode_ids, None
+    if type(evidence_source) is not SnapshotEvidenceSource:
+        raise PublicationStateError("observed snapshot has invalid stored evidence source")
+    return completeness, episode_ids, evidence_source
+
+
+@dataclass(frozen=True)
+class CreateSafetyState:
+    provenance: CreateIntentProvenance
+    snapshot: ProviderSnapshot
+    mutation_possibility: MutationPossibility
+    # True only when a persisted record claimed an observed snapshot whose
+    # evidence source was untrusted and was therefore degraded to absent.
+    snapshot_degraded: bool = field(default=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if type(self) is not CreateSafetyState:
+            raise PublicationStateError("create safety state must use the trusted concrete type")
+        if type(self.provenance) is not CreateIntentProvenance:
+            raise PublicationStateError("create provenance must be explicit")
+        _trusted_provider_snapshot_values(self.snapshot)
+        if type(self.mutation_possibility) is not MutationPossibility:
+            raise PublicationStateError("mutation possibility must be explicit")
+        if type(self.snapshot_degraded) is not bool:
+            raise PublicationStateError("snapshot degradation flag must be a boolean")
+        if self.snapshot_degraded and (
+            _trusted_provider_snapshot_values(self.snapshot)[0] != SnapshotCompleteness.ABSENT
+        ):
+            raise PublicationStateError("only an absent snapshot can be marked degraded")
+
+    @classmethod
+    def reconciliation_backed(cls, snapshot: ProviderSnapshot) -> "CreateSafetyState":
+        return cls(
+            CreateIntentProvenance.RECONCILIATION_BACKED,
+            snapshot,
+            MutationPossibility.NOT_POSSIBLE,
+        )
+
+    @classmethod
+    def unreconciled_override(cls) -> "CreateSafetyState":
+        return cls(
+            CreateIntentProvenance.BLIND_UNRECONCILED,
+            ProviderSnapshot.absent(),
+            MutationPossibility.POSSIBLE,
+        )
+
+    @classmethod
+    def upload_dispatch(cls) -> "CreateSafetyState":
+        return cls(
+            CreateIntentProvenance.UPLOAD_DISPATCH,
+            ProviderSnapshot.absent(),
+            MutationPossibility.POSSIBLE,
+        )
+
+    @classmethod
+    def provider_confirmed(
+        cls,
+        provenance: CreateIntentProvenance,
+        snapshot: ProviderSnapshot | None = None,
+    ) -> "CreateSafetyState":
+        return cls(
+            provenance,
+            snapshot or ProviderSnapshot.absent(),
+            MutationPossibility.CONFIRMED,
+        )
+
+    def to_details(self) -> dict[str, Any]:
+        if type(self) is not CreateSafetyState:
+            raise PublicationStateError("create safety state must use the trusted concrete type")
+        provenance = object.__getattribute__(self, "provenance")
+        snapshot = object.__getattribute__(self, "snapshot")
+        mutation_possibility = object.__getattribute__(self, "mutation_possibility")
+        if type(provenance) is not CreateIntentProvenance:
+            raise PublicationStateError("create provenance must be explicit")
+        if type(mutation_possibility) is not MutationPossibility:
+            raise PublicationStateError("mutation possibility must be explicit")
+        snapshot_degraded = object.__getattribute__(self, "snapshot_degraded")
+        if type(snapshot_degraded) is not bool:
+            raise PublicationStateError("snapshot degradation flag must be a boolean")
+        details = {
+            "create_provenance": provenance.value,
+            "mutation_possibility": mutation_possibility.value,
+            **_provider_snapshot_to_details(snapshot),
+        }
+        if snapshot_degraded:
+            if details["snapshot_completeness"] != SnapshotCompleteness.ABSENT.value:
+                raise PublicationStateError("only an absent snapshot can be marked degraded")
+            # Persisted so a deserialize/serialize cycle keeps the intent blocking.
+            details["snapshot_degraded"] = True
+        return details
+
+
+def _provider_snapshot_to_details(snapshot: ProviderSnapshot) -> dict[str, Any]:
+    completeness, episode_ids, evidence_source = _trusted_provider_snapshot_values(snapshot)
+    details: dict[str, Any] = {"snapshot_completeness": completeness.value}
+    if episode_ids or completeness != SnapshotCompleteness.ABSENT:
+        details["pre_create_episode_ids"] = list(episode_ids)
+    if evidence_source is not None and completeness != SnapshotCompleteness.ABSENT:
+        details["snapshot_evidence_source"] = evidence_source.value
+    return details
+
+
+def _parse_snapshot_ids(raw_ids: Any) -> tuple[int, ...]:
+    if not isinstance(raw_ids, list):
+        raise PublicationStateError("create safety evidence has no episode id snapshot")
+    ids: list[int] = []
+    for raw_id in raw_ids:
+        if isinstance(raw_id, bool):
+            raise PublicationStateError("create safety evidence contains an invalid boolean id")
+        if type(raw_id) is not int:
+            raise PublicationStateError("create safety evidence contains an unreadable id")
+        ids.append(raw_id)
+    return tuple(ids)
+
+
+_OBSERVED_SNAPSHOT_DETAIL_KEYS = (
+    "pre_create_episode_ids",
+    "pre_create_snapshot_complete",
+    "snapshot_evidence_source",
+)
+
+
+def _warn_inconsistent_absent_snapshot(record: Mapping[str, Any]) -> None:
+    logger.warning(
+        "Persisted absent snapshot carries observed-snapshot fields; treating it as "
+        "degraded (fail closed); job_id=%s week=%s publish_run_id=%s operation=%s",
+        _safe_identity_field(record.get("job_id")),
+        _safe_identity_field(record.get("week")),
+        _safe_identity_field(record.get("publish_run_id")),
+        _safe_identity_field(record.get("operation")),
+    )
+
+
+def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetyState | None:
+    details = record.get("details")
+    if details is None:
+        details = {}
+    elif not isinstance(details, Mapping):
+        # A present but malformed safety record must never read as a legacy intent.
+        raise PublicationStateError("create safety evidence details are not an object")
+
+    operation = record.get("operation")
+    if "create_provenance" in details:
+        provenance = _closed_set_member(CreateIntentProvenance, details.get("create_provenance"))
+        if provenance is None:
+            raise PublicationStateError("create safety evidence has unknown provenance")
+        allowed = _OPERATION_PROVENANCE.get(operation) if isinstance(operation, str) else None
+        if allowed is not None and provenance not in allowed:
+            raise PublicationStateError(
+                "create safety evidence provenance does not match its recording operation"
+            )
+    elif record.get("operation") == "upload_intent":
+        provenance = CreateIntentProvenance.UPLOAD_DISPATCH
+    elif record.get("operation") == "unreconciled_create_intent":
+        provenance = CreateIntentProvenance.BLIND_UNRECONCILED
+    elif record.get("operation") == "create_episode_intent":
+        provenance = CreateIntentProvenance.RECONCILIATION_BACKED
+    else:
+        return None
+
+    snapshot_degraded = False
+    if "snapshot_completeness" in details:
+        completeness = _closed_set_member(
+            SnapshotCompleteness, details.get("snapshot_completeness")
+        )
+        if completeness is None:
+            raise PublicationStateError("create safety evidence has unknown snapshot state")
+        if completeness == SnapshotCompleteness.ABSENT:
+            snapshot = ProviderSnapshot.absent()
+            if any(key in details for key in _OBSERVED_SNAPSHOT_DETAIL_KEYS):
+                _warn_inconsistent_absent_snapshot(record)
+                snapshot_degraded = True
+        else:
+            raw_source = details.get("snapshot_evidence_source")
+            evidence_source = _snapshot_evidence_source_from_record(raw_source)
+            if evidence_source is None:
+                _warn_degraded_snapshot(record, completeness, raw_source)
+                snapshot = ProviderSnapshot.absent()
+                snapshot_degraded = True
+            else:
+                snapshot = ProviderSnapshot(
+                    _parse_snapshot_ids(details.get("pre_create_episode_ids")),
+                    completeness,
+                    evidence_source,
+                )
+    elif "pre_create_snapshot_complete" in details:
+        if "snapshot_evidence_source" in details:
+            # Legacy records never carried a source; a mixed shape is not trusted.
+            raise PublicationStateError(
+                "legacy create safety evidence carries a snapshot evidence source"
+            )
+        raw_complete = details.get("pre_create_snapshot_complete")
+        if not isinstance(raw_complete, bool):
+            raise PublicationStateError(
+                "legacy create safety evidence has no boolean snapshot completeness"
+            )
+        ids = _parse_snapshot_ids(details.get("pre_create_episode_ids"))
+        snapshot = (
+            ProviderSnapshot.complete(
+                ids,
+                evidence_source=SnapshotEvidenceSource.LEGACY_PRE_CREATE_SNAPSHOT,
+            )
+            if raw_complete
+            else ProviderSnapshot.truncated(
+                ids,
+                evidence_source=SnapshotEvidenceSource.LEGACY_PRE_CREATE_SNAPSHOT,
+            )
+        )
+    else:
+        snapshot = ProviderSnapshot.absent()
+        if any(key in details for key in _OBSERVED_SNAPSHOT_DETAIL_KEYS):
+            # Observed-snapshot fragments without any completeness claim are not a
+            # clean legacy default: keep the intent blocking.
+            _warn_inconsistent_absent_snapshot(record)
+            snapshot_degraded = True
+
+    if "snapshot_degraded" in details:
+        raw_degraded = details.get("snapshot_degraded")
+        if type(raw_degraded) is not bool:
+            raise PublicationStateError("create safety evidence has a non-boolean degraded flag")
+        if raw_degraded:
+            if "snapshot_completeness" not in details or (
+                details.get("snapshot_completeness") != SnapshotCompleteness.ABSENT.value
+            ):
+                raise PublicationStateError(
+                    "create safety evidence marks a non-absent snapshot as degraded"
+                )
+            snapshot_degraded = True
+
+    if "mutation_possibility" in details:
+        mutation_possibility = _closed_set_member(
+            MutationPossibility, details.get("mutation_possibility")
+        )
+        if mutation_possibility is None:
+            raise PublicationStateError("create safety evidence has unknown mutation state")
+    elif record.get("provider_artifact_id") or record.get("provider_id"):
+        mutation_possibility = MutationPossibility.CONFIRMED
+    elif provenance in (
+        CreateIntentProvenance.BLIND_UNRECONCILED,
+        CreateIntentProvenance.UPLOAD_DISPATCH,
+    ):
+        mutation_possibility = MutationPossibility.POSSIBLE
+    else:
+        mutation_possibility = MutationPossibility.NOT_POSSIBLE
+
+    _validate_mutation_combination(
+        provenance,
+        mutation_possibility,
+        has_provider_id=bool(record.get("provider_artifact_id") or record.get("provider_id")),
+    )
+    return CreateSafetyState(
+        provenance, snapshot, mutation_possibility, snapshot_degraded=snapshot_degraded
+    )
 
 
 def validate_outcome(outcome: str) -> str:
@@ -327,6 +839,7 @@ def append_evidence(
     retry_blocked: bool = False,
     code: str | None = None,
     details: Mapping[str, Any] | None = None,
+    create_safety_state: CreateSafetyState | None = None,
     at: datetime | None = None,
     expected_latest_seq: int | None = None,
     _rearmable_claim: bool = False,
@@ -338,6 +851,26 @@ def append_evidence(
     the atomic update still has that ``seq``.
     """
     validate_outcome(outcome)
+    if create_safety_state is not None and type(create_safety_state) is not CreateSafetyState:
+        raise PublicationStateError("create safety state must be validated")
+    if details and _CREATE_SAFETY_DETAIL_KEYS.intersection(details):
+        raise PublicationStateError(
+            "create safety details must be persisted through create_safety_state"
+        )
+    safe_details = _safe_details(details) or {}
+    if create_safety_state is not None:
+        state_provenance = object.__getattribute__(create_safety_state, "provenance")
+        allowed_provenance = _OPERATION_PROVENANCE.get(operation)
+        if allowed_provenance is not None and state_provenance not in allowed_provenance:
+            raise PublicationStateError(
+                "create safety state provenance does not match its recording operation"
+            )
+        _validate_mutation_combination(
+            state_provenance,
+            object.__getattribute__(create_safety_state, "mutation_possibility"),
+            has_provider_id=provider_artifact_id is not None and provider_artifact_id != "",
+        )
+        safe_details.update(create_safety_state.to_details())
     effective_verification = (
         "provider_readback" if confirmation_source and verification == "none" else verification
     )
@@ -405,41 +938,38 @@ def append_evidence(
             if existing_key == dedupe_key:
                 duplicate_index = index
         if duplicate_index is not None:
+            later_records = records[duplicate_index + 1 :]
+            for candidate in later_records:
+                if not isinstance(candidate, Mapping):
+                    raise PublicationStateError("publication evidence contains a malformed record")
+            same_target = [
+                candidate
+                for candidate in later_records
+                if candidate.get("job_id") == identity.accepted_job_id
+                and candidate.get("week") == identity.week
+                and candidate.get("article_sha256") == identity.article_sha256
+                and candidate.get("manifest_sha256") == identity.manifest_sha256
+                and candidate.get("publish_run_id") == identity.publish_run_id
+                and candidate.get("platform") == platform
+                and candidate.get("media_kind") == media_kind
+            ]
             if not _rearmable_claim:
+                # An identical retry-authorizing outcome after a *later* claim is a
+                # new fact (each failed attempt must re-arm the next claim), not a
+                # replay; anything else is an idempotent duplicate.
                 later_claim = any(
-                    isinstance(candidate, Mapping)
-                    and candidate.get("job_id") == identity.accepted_job_id
-                    and candidate.get("week") == identity.week
-                    and candidate.get("article_sha256") == identity.article_sha256
-                    and candidate.get("manifest_sha256") == identity.manifest_sha256
-                    and candidate.get("publish_run_id") == identity.publish_run_id
-                    and candidate.get("platform") == platform
-                    and candidate.get("media_kind") == media_kind
-                    and candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS
-                    for candidate in records[duplicate_index + 1 :]
+                    candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS
+                    for candidate in same_target
                 )
                 if retry_blocked or not later_claim:
                     return raw if raw is not None else legacy_raw or b""
             else:
                 retry_authorization: Mapping[str, Any] | None = None
-                for candidate in records[duplicate_index + 1 :]:
-                    if not isinstance(candidate, Mapping):
-                        raise PublicationStateError(
-                            "publication evidence contains a malformed record"
-                        )
-                    if (
-                        candidate.get("job_id") == identity.accepted_job_id
-                        and candidate.get("week") == identity.week
-                        and candidate.get("article_sha256") == identity.article_sha256
-                        and candidate.get("manifest_sha256") == identity.manifest_sha256
-                        and candidate.get("publish_run_id") == identity.publish_run_id
-                        and candidate.get("platform") == platform
-                        and candidate.get("media_kind") == media_kind
-                    ):
-                        if candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS:
-                            retry_authorization = None
-                        else:
-                            retry_authorization = candidate
+                for candidate in same_target:
+                    if candidate.get("operation") in REARMABLE_CLAIM_OPERATIONS:
+                        retry_authorization = None
+                    else:
+                        retry_authorization = candidate
                 if (
                     retry_authorization is None
                     or retry_authorization.get("retry_blocked") is not False
@@ -486,7 +1016,7 @@ def append_evidence(
             code=str(code)[:64] if code else None,
             checked_at=timestamp,
             last_error_code=str(code)[:64] if code else None,
-            details=_safe_details(details),
+            details=safe_details or None,
         ).to_dict()
         records.append(record)
         document["minimum_retention_days"] = MIN_EVIDENCE_RETENTION_DAYS
@@ -512,6 +1042,8 @@ def claim_evidence(
     media_kind: str,
     operation: str,
     details: Mapping[str, Any] | None = None,
+    create_safety_state: CreateSafetyState | None = None,
+    retry_blocked: bool = True,
     at: datetime | None = None,
 ) -> PublicationEvidence | None:
     """Atomically acquire or re-arm a provider mutation claim.
@@ -519,7 +1051,10 @@ def claim_evidence(
     A historical claim can only be acquired again after later evidence for the
     same publication identity and provider explicitly records
     ``retry_blocked=false``. The newly appended claim consumes that
-    authorization, so concurrent contenders cannot both proceed.
+    authorization, so concurrent contenders cannot both proceed. The claim's
+    own ``retry_blocked`` never authorizes a re-arm: only evidence recorded
+    *after* the claim does, so ``retry_blocked=False`` is safe for intents the
+    publication gate must not treat as blocking while still single-claiming.
     """
     if operation not in REARMABLE_CLAIM_OPERATIONS:
         raise PublicationStateError(f"operation is not a re-armable claim: {operation!r}")
@@ -531,9 +1066,10 @@ def claim_evidence(
         operation=operation,
         outcome=PUBLICATION_UNKNOWN,
         mutation_attempted=False,
-        retry_blocked=True,
+        retry_blocked=retry_blocked,
         code="mutation_intent",
         details=details,
+        create_safety_state=create_safety_state,
         at=at,
         _rearmable_claim=True,
     )
