@@ -597,3 +597,63 @@ def test_reusable_deploy_workflow_only_requires_youtube_secrets_when_enabled() -
     assert workflow.count(client_id_check) == 1
     assert workflow.count(client_secret_check) == 1
     assert workflow.count(refresh_token_check) == 1
+
+
+def _bicep_env_entries(text: str, env_name: str) -> list[str]:
+    """Return the body of every Bicep env/object entry that sets ``name: '<env_name>'``."""
+    pattern = re.compile(
+        r"\{\s*name:\s*'" + re.escape(env_name) + r"'\s*\n(?P<body>[^{}]*?)\}",
+        re.MULTILINE,
+    )
+    return [m.group("body") for m in pattern.finditer(text)]
+
+
+def test_podcaster_api_key_is_aca_secret_not_plain_env_value() -> None:
+    """PODCASTER_API_KEY must be injected via ACA secretRef, never as a plain env value."""
+    consumers = []
+    for path in sorted((ROOT / "infra").rglob("*.bicep")):
+        text = path.read_text(encoding="utf-8")
+        if "PODCASTER_API_KEY" not in text:
+            continue
+        consumers.append(path.relative_to(ROOT).as_posix())
+        entries = _bicep_env_entries(text, "PODCASTER_API_KEY")
+        assert entries, f"{path.name}: PODCASTER_API_KEY env entry not parsed"
+        for body in entries:
+            assert "secretRef: 'podcaster-api-key'" in body, (
+                f"{path.name}: PODCASTER_API_KEY must use secretRef 'podcaster-api-key'"
+            )
+            assert not re.search(r"^\s*value:", body, re.MULTILINE), (
+                f"{path.name}: PODCASTER_API_KEY must not be a plain env value"
+            )
+        secrets = _bicep_env_entries(text, "podcaster-api-key")
+        assert secrets == [secrets[0]] and "value: podcasterApiKey" in secrets[0], (
+            f"{path.name}: must declare exactly one 'podcaster-api-key' ACA secret"
+        )
+    assert consumers == ["infra/modules/aca.bicep", "infra/modules/api.bicep"]
+
+
+def test_podcaster_api_key_param_is_secure_everywhere() -> None:
+    for rel in ("infra/main.bicep", "infra/modules/aca.bicep", "infra/modules/api.bicep"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert re.search(
+            r"@secure\(\)\s*\n(?:@description\([^\n]*\)\s*\n)?param podcasterApiKey string\s*\n",
+            text,
+        ), f"{rel}: podcasterApiKey must be a required @secure() string param"
+
+
+def test_existing_aca_secrets_preserved() -> None:
+    api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+    aca = (ROOT / "infra/modules/aca.bicep").read_text(encoding="utf-8")
+    for name in (
+        "spotify-sp-dc",
+        "spotify-sp-key",
+        "ui-auth-username",
+        "ui-auth-password",
+        "ui-auth-secret",
+        "podcaster-api-key",
+    ):
+        assert f"name: '{name}'" in api, f"api.bicep lost secret {name}"
+        assert f"secretRef: '{name}'" in api, f"api.bicep no longer references {name}"
+    for name in ("spotify-sp-dc", "spotify-sp-key", "podcaster-api-key"):
+        assert f"name: '{name}'" in aca, f"aca.bicep lost secret {name}"
+        assert f"secretRef: '{name}'" in aca, f"aca.bicep no longer references {name}"
