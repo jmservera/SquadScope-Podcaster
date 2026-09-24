@@ -4594,6 +4594,51 @@ class TestUploadVideoToEpisode:
                 {"records": [dispatch, malformed]}, identity
             )
 
+    def test_malformed_later_intent_never_drops_pending_reconciled_intent(self):
+        """#694 thread 4092897960: a malformed intent is not a resolution."""
+        import podcaster.publish as pub
+
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        base = {
+            "platform": "spotify",
+            "media_kind": "video",
+            "job_id": identity.accepted_job_id,
+            "week": identity.week,
+            "publish_run_id": identity.publish_run_id,
+            "article_sha256": identity.article_sha256,
+            "manifest_sha256": identity.manifest_sha256,
+            "operation": "create_episode_intent",
+            "mutation_attempted": False,
+            "code": "mutation_intent",
+        }
+        pending = {
+            **base,
+            "outcome": pub.PUBLICATION_UNKNOWN,
+            "details": {
+                "create_provenance": "reconciliation_backed",
+                "mutation_possibility": "not_possible",
+                "snapshot_completeness": "complete",
+                "snapshot_evidence_source": "spotify_episode_listing",
+                "pre_create_episode_ids": [1, 2],
+            },
+        }
+        malformed = {**base, "outcome": "failed"}
+
+        with pytest.raises(pub.SpotifyDraftReconcileError, match="malformed"):
+            pub._spotify_video_unresolved_create_intent_snapshot(
+                {"records": [pending, malformed]}, identity
+            )
+        # A malformed record never masks a later valid pending intent either.
+        later = pub._spotify_video_unresolved_create_intent_snapshot(
+            {"records": [malformed, pending]}, identity
+        )
+        assert later is not None
+        assert later.episode_ids == (1, 2)
+        assert (
+            pub._spotify_video_unresolved_create_intent_snapshot({"records": [malformed]}, identity)
+            is None
+        )
+
     def test_unreconciled_create_intent_blocks_scanner_until_resolved(self):
         """#694 thread 4092840188: a blind create claim is a pending intent."""
         import podcaster.publish as pub

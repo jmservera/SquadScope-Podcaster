@@ -2696,7 +2696,14 @@ def _spotify_video_unresolved_create_intent_snapshot(
                 raise SpotifyDraftReconcileError(
                     "Spotify video create intent evidence has no reconciliation provenance."
                 )
-            return None
+            if unresolved_snapshot is not None:
+                raise SpotifyDraftReconcileError(
+                    "Spotify video create intent evidence is malformed while an earlier "
+                    "create intent is unresolved."
+                )
+            # Every writer records the full intent shape; a malformed record is not a
+            # resolution, so keep scanning for any later intent.
+            continue
         try:
             state = create_safety_state_from_record(record)
         except PublicationStateError as exc:

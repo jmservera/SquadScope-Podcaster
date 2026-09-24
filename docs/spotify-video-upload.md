@@ -536,7 +536,10 @@ write: `confirmed` needs a durable provider artifact id, and a
 `blind_unreconciled` or `upload_dispatch` claim cannot record `not_possible`.
 An `unreconciled_create_intent` (blind create claim) stays a pending,
 blocking intent until a provider id or a definite rejection resolves it, even
-if its record says `retry_blocked: false`.
+if its record says `retry_blocked: false`. A malformed `create_episode_intent`
+(one without the writer's `publication_unknown` / `mutation_intent` shape) is
+never treated as a resolution. It fails closed while an earlier intent is
+still pending, and it cannot hide a later valid intent.
 
 #### Pagination
 
