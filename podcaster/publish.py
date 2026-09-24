@@ -2033,7 +2033,13 @@ def _go_live_payload_from_overview(
         ("podcastSeasonNumber", "seasonNumber"),
         ("podcastEpisodeNumber", "episodeNumber"),
     ):
-        value = overview.get(source_key)
+        if source_key not in overview:
+            # Absent (not explicitly null) means the overview shape changed;
+            # omitting it from a replacing /update could erase the number.
+            raise SpotifyPublishError(
+                f"Spotify episode {anchor_id} overview is missing {source_key}; refusing go-live."
+            )
+        value = overview[source_key]
         if value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, int):

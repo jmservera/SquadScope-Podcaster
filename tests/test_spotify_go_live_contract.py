@@ -110,15 +110,24 @@ class TestGoLiveMutation:
 
         assert session.request.call_count == 1
 
-    def test_omits_absent_season_and_episode_numbers(self):
-        overview = _overview(published=False)
-        del overview["podcastSeasonNumber"]
-        overview["podcastEpisodeNumber"] = None
+    def test_omits_explicitly_null_season_and_episode_numbers(self):
+        overview = _overview(published=False, podcastSeasonNumber=None, podcastEpisodeNumber=None)
 
         payload = pub._go_live_payload_from_overview(VIDEO_ID, "7", overview)
 
         assert "seasonNumber" not in payload
         assert "episodeNumber" not in payload
+
+    @pytest.mark.parametrize("missing", ["podcastSeasonNumber", "podcastEpisodeNumber"])
+    def test_absent_season_or_episode_key_fails_closed(self, missing):
+        overview = _overview(published=False)
+        del overview[missing]
+        session = MagicMock()
+
+        with pytest.raises(pub.SpotifyPublishError, match=missing):
+            pub._publish_episode_live(session, VIDEO_ID, "7", overview)
+
+        session.request.assert_not_called()
 
     @pytest.mark.parametrize(
         "overrides",
