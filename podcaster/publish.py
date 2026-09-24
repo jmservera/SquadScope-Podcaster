@@ -1966,32 +1966,109 @@ def _set_metadata(
     )
 
 
+def _go_live_payload_from_overview(
+    anchor_id: int,
+    user_id: str,
+    overview: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the go-live ``/update`` payload from the provider's own overview.
+
+    The legacy ``POST /v3/episodes/{id}/publish`` endpoint no longer exists
+    (HTTP 404 since at least W37, #688). Spotify for Creators now takes an
+    episode live through ``POST /v3/episodes/{id}/update`` carrying
+    ``isPublished: true`` — the same call that made the W38/W39 audio episodes
+    live before the dead ``/publish`` call reported a false failure.
+
+    ``/update`` replaces the episode metadata, so every metadata field is
+    re-sent exactly as the provider currently reports it. Anything unreadable
+    fails closed *before* the mutation rather than risking a blanked title or
+    description on a live episode.
+    """
+    if not isinstance(overview, Mapping):
+        raise SpotifyPublishError(
+            f"Spotify episode {anchor_id} overview unavailable; refusing go-live."
+        )
+    title = overview.get("title")
+    description = overview.get("description")
+    if not isinstance(title, str) or not title.strip():
+        raise SpotifyPublishError(
+            f"Spotify episode {anchor_id} overview has no title; refusing go-live."
+        )
+    if not isinstance(description, str) or not description.strip():
+        raise SpotifyPublishError(
+            f"Spotify episode {anchor_id} overview has no description; refusing go-live."
+        )
+    try:
+        expected_user_id = int(user_id)
+    except (TypeError, ValueError) as exc:
+        raise SpotifyPublishError(
+            f"Spotify userId unreadable for episode {anchor_id}; refusing go-live."
+        ) from exc
+    overview_user_id = overview.get("userId")
+    if overview_user_id is not None and (
+        isinstance(overview_user_id, bool) or overview_user_id != expected_user_id
+    ):
+        raise SpotifyPublishError(
+            f"Spotify episode {anchor_id} belongs to a different user; refusing go-live."
+        )
+    explicit = overview.get("podcastEpisodeIsExplicit")
+    if not isinstance(explicit, bool):
+        raise SpotifyPublishError(
+            f"Spotify episode {anchor_id} overview has no explicit flag; refusing go-live."
+        )
+    episode_type = overview.get("podcastEpisodeType")
+    if not isinstance(episode_type, str) or not episode_type.strip():
+        raise SpotifyPublishError(
+            f"Spotify episode {anchor_id} overview has no episode type; refusing go-live."
+        )
+    payload: dict[str, Any] = {
+        "userId": expected_user_id,
+        "title": title,
+        "description": description,
+        "episodeType": episode_type,
+        "isPublished": True,
+        "podcastEpisodeIsExplicit": explicit,
+    }
+    for source_key, target_key in (
+        ("podcastSeasonNumber", "seasonNumber"),
+        ("podcastEpisodeNumber", "episodeNumber"),
+    ):
+        value = overview.get(source_key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise SpotifyPublishError(
+                f"Spotify episode {anchor_id} overview has an unreadable {source_key}; "
+                "refusing go-live."
+            )
+        payload[target_key] = value
+    return payload
+
+
 def _publish_episode_live(
     session: requests.Session,
     anchor_id: int,
-    publish_on: datetime | None = None,
-    *,
-    max_attempts: int = _MAX_RETRIES,
+    user_id: str,
+    overview: Mapping[str, Any] | None,
 ) -> None:
-    """Step 7: Publish or schedule an episode."""
-    url = f"{_BASE_URL}/v3/episodes/{anchor_id}/publish?isMumsCompatible=true"
-    payload: dict[str, Any] = {}
-    if publish_on:
-        payload["publishOn"] = publish_on.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Take an existing draft live via ``/update`` with ``isPublished: true``.
+
+    Sent exactly once (``max_attempts=1``): the endpoint's idempotency is not
+    guaranteed and a lost response is indistinguishable from success, so the
+    caller must read ``/overview`` back and decide from provider state.
+    """
+    payload = _go_live_payload_from_overview(anchor_id, user_id, overview)
     _retry_request(
         session,
         "POST",
-        url,
-        max_attempts=max_attempts,
+        f"{_BASE_URL}/v3/episodes/{anchor_id}/update",
+        max_attempts=1,
         headers=_MUTATION_HEADERS,
+        params=_mums_params(),
         json=payload,
         timeout=15,
     )
-    logger.info(
-        "Episode %d publish requested (%s)",
-        anchor_id,
-        publish_on or "immediate",
-    )
+    logger.info("Episode %d go-live update requested", anchor_id)
 
 
 def _get_episode_publication_state(
@@ -1999,7 +2076,20 @@ def _get_episode_publication_state(
     anchor_id: int,
     user_id: str | None = None,
 ) -> bool | None:
-    """Return True when published, False when draft, or None when unknown.
+    """Return True when published, False when draft, or None when unknown."""
+    state, _payload = _read_episode_overview(session, anchor_id, user_id=user_id)
+    return state
+
+
+def _read_episode_overview(
+    session: requests.Session,
+    anchor_id: int,
+    user_id: str | None = None,
+) -> tuple[bool | None, dict[Any, Any] | None]:
+    """Return ``(publication_state, overview_payload)`` from ``/overview``.
+
+    ``publication_state`` is True when published, False when draft, or None
+    when unknown. The payload is only returned when it is a JSON object.
 
     Args:
         session: Authenticated Spotify session.
@@ -2096,20 +2186,20 @@ def _get_episode_publication_state(
                 "unknown publication state, not credential expiry.",
                 anchor_id,
             )
-            return None
+            return None, None
         logger.warning(
             "Spotify episode %s overview request failed with HTTP %s",
             anchor_id,
             status,
         )
-        return None
+        return None, None
     except requests.RequestException as exc:
         logger.warning(
             "Spotify episode %s publication state request failed: %s",
             anchor_id,
             type(exc).__name__,
         )
-        return None
+        return None, None
 
     try:
         payload = resp.json()
@@ -2118,8 +2208,8 @@ def _get_episode_publication_state(
             "Spotify episode %s publication state response was not valid JSON",
             anchor_id,
         )
-        return None
-    return _extract_state(payload)
+        return None, None
+    return _extract_state(payload), (payload if isinstance(payload, dict) else None)
 
 
 def promote_spotify_video_draft(
@@ -2298,7 +2388,7 @@ def promote_spotify_video_draft(
     try:
         session = _build_session(sp_dc, sp_key, show_id)
         _station_id, user_id = _resolve_legacy_ids(session, show_id)
-        current_state = _get_episode_publication_state(
+        current_state, overview = _read_episode_overview(
             session,
             video_anchor_id,
             user_id=user_id,
@@ -2336,9 +2426,29 @@ def promote_spotify_video_draft(
                 w35_check=w35_check,
             )
 
+        # Validates the go-live payload before any mutation (fail closed).
+        _go_live_payload_from_overview(video_anchor_id, user_id, overview)
+
         publish_attempted = True
-        _publish_episode_live(session, video_anchor_id, max_attempts=1)
-        final_state = _get_episode_publication_state(
+        mutation_error: SpotifyPublishError | None = None
+        try:
+            _publish_episode_live(session, video_anchor_id, user_id, overview)
+        except SpotifyCredentialExpiredError:
+            raise
+        except SpotifyPublishError as exc:
+            # Ambiguous: a lost/erroring response can still have applied the
+            # update (the W38/W39 false-404 class). Provider readback decides.
+            mutation_error = exc
+            logger.warning(
+                "Spotify video go-live response for %s was ambiguous (%s); "
+                "reading provider state back before classifying",
+                video_anchor_id,
+                type(exc).__name__,
+            )
+        details: dict[str, Any] = {"confirmation_source": "spotify_episode_overview"}
+        if mutation_error is not None:
+            details["mutation_error"] = str(mutation_error)
+        final_state, _final_overview = _read_episode_overview(
             session,
             video_anchor_id,
             user_id=user_id,
@@ -2351,6 +2461,7 @@ def promote_spotify_video_draft(
                     audio_anchor_id=audio_anchor_id,
                     is_published=True,
                     authorized=True,
+                    details=details,
                 ),
                 video_auth_granted=video_auth_granted,
                 w35_check=w35_check,
@@ -2363,6 +2474,7 @@ def promote_spotify_video_draft(
                     audio_anchor_id=audio_anchor_id,
                     is_published=None,
                     authorized=True,
+                    details=details,
                 ),
                 video_auth_granted=video_auth_granted,
                 w35_check=w35_check,
@@ -2374,6 +2486,7 @@ def promote_spotify_video_draft(
                 audio_anchor_id=audio_anchor_id,
                 is_published=False,
                 authorized=True,
+                details=details,
             ),
             video_auth_granted=video_auth_granted,
             w35_check=w35_check,
@@ -2385,7 +2498,11 @@ def promote_spotify_video_draft(
         )
         return _finalize(
             VideoPromoteResult(
-                terminal_state="manual_handoff_required",
+                # Once the go-live mutation was sent, provider state is no
+                # longer knowable without a readback, so it must stay unknown.
+                terminal_state=(
+                    "publication_state_unknown" if publish_attempted else "manual_handoff_required"
+                ),
                 anchor_episode_id=video_anchor_id,
                 audio_anchor_id=audio_anchor_id,
                 authorized=True,
@@ -2402,7 +2519,9 @@ def promote_spotify_video_draft(
         )
         return _finalize(
             VideoPromoteResult(
-                terminal_state="manual_handoff_required",
+                terminal_state=(
+                    "publication_state_unknown" if publish_attempted else "manual_handoff_required"
+                ),
                 anchor_episode_id=video_anchor_id,
                 audio_anchor_id=audio_anchor_id,
                 authorized=True,
@@ -3539,24 +3658,51 @@ def publish_episode(
         )
         safe_outcome = UPLOADED
 
-        # Step 6: Set metadata
-        _set_metadata(
-            session,
-            anchor_id,
-            user_id,
-            title=resolved_title,
-            description=resolved_description,
-            publish_behavior=publish_behavior,
-            publish_on=resolved_publish_on,
-            season_number=season_number,
-            episode_number=episode_number,
-            episode_type=episode_type,
-            explicit=explicit,
-        )
-        safe_outcome = DRAFT_CREATED
-        if publish_behavior != "draft":
-            _publish_episode_live(session, anchor_id, resolved_publish_on, max_attempts=1)
+        # Step 6: Set metadata. For live behaviors this ``/update`` call (with
+        # ``isPublished``/``publishOn``) is itself the go-live mutation: the
+        # legacy ``/v3/episodes/{id}/publish`` endpoint is gone (HTTP 404, #688).
+        live_requested = publish_behavior != "draft"
+        metadata_error: SpotifyPublishError | None = None
+        try:
+            _set_metadata(
+                session,
+                anchor_id,
+                user_id,
+                title=resolved_title,
+                description=resolved_description,
+                publish_behavior=publish_behavior,
+                publish_on=resolved_publish_on,
+                season_number=season_number,
+                episode_number=episode_number,
+                episode_type=episode_type,
+                explicit=explicit,
+            )
+        except SpotifyCredentialExpiredError:
+            raise
+        except SpotifyPublishError as exc:
+            if not live_requested:
+                raise
+            # Ambiguous go-live response: the update may still have applied
+            # (false-failure class). Decide from provider readback below.
+            metadata_error = exc
+            safe_outcome = PUBLICATION_UNKNOWN
+            logger.warning(
+                "Spotify go-live update for episode %d returned an ambiguous failure (%s); "
+                "reading provider state back before classifying",
+                anchor_id,
+                type(exc).__name__,
+            )
+        if metadata_error is None:
+            safe_outcome = DRAFT_CREATED
+        if live_requested:
             confirmed = _get_episode_publication_state(session, anchor_id, user_id=user_id)
+            if metadata_error is not None and not (
+                confirmed is True and resolved_publish_on is None
+            ):
+                # Not confirmed live: a confirmed draft keeps the pre-update
+                # outcome; anything else stays unknown and retry-blocked.
+                safe_outcome = UPLOADED if confirmed is False else PUBLICATION_UNKNOWN
+                raise metadata_error
             if confirmed is True and resolved_publish_on is None:
                 safe_outcome = PUBLISHED
             elif confirmed is False:
@@ -3581,7 +3727,15 @@ def publish_episode(
                 anchor_episode_id=anchor_id,
                 status=status,
                 outcome=safe_outcome,
-                details={"station_id": station_id, "upload_id": upload_id},
+                details={
+                    "station_id": station_id,
+                    "upload_id": upload_id,
+                    **(
+                        {"ambiguous_go_live_response": str(metadata_error)}
+                        if metadata_error is not None
+                        else {}
+                    ),
+                },
             ),
             "publish" if publish_behavior != "draft" else "draft_setup",
         )

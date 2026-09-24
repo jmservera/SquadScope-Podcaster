@@ -18,14 +18,18 @@ video-specific publication intent and authorization, preserve the permanent W35
 draft exceptions, and emit durable terminal-state evidence. It must not reuse
 the audio live-publish authorization.
 
-The repository contains a working call to
-`POST /v3/episodes/{anchor_id}/publish?isMumsCompatible=true` for episodes
-created by the synthesis publisher. However, neither the repository nor
-Spotify's public documentation proves that this unofficial endpoint can promote
-a previously uploaded video draft, and its retry/idempotency behavior is
-undocumented. Automated video promotion must remain disabled until a controlled
-real-platform canary proves that exact transition. If the platform rejects it,
-manual Spotify for Creators publication remains the required handoff.
+> **Contract update (#688, 2026-09-24):** the legacy
+> `POST /v3/episodes/{anchor_id}/publish?isMumsCompatible=true` endpoint no
+> longer exists — it returned HTTP 404 for W37, W38 and W39. Episodes now go
+> live through `POST /v3/episodes/{anchor_id}/update?isMumsCompatible=true`
+> with `isPublished: true`. See
+> [Verified repository behavior](#verified-repository-behavior).
+
+The unofficial go-live endpoint's retry/idempotency behavior is undocumented,
+so every go-live request is sent at most once and the terminal state is always
+decided from a provider `/overview` readback, never from the HTTP status. If
+the platform rejects it, manual Spotify for Creators publication remains the
+required handoff.
 
 ## Problem Statement
 
@@ -100,15 +104,36 @@ new video `anchor_id` has been returned.
 
 ### Verified repository behavior
 
-- `podcaster.publish._publish_episode_live(session, anchor_id)` sends:
+- `POST /v3/episodes/{anchor_id}/publish` returns HTTP 404 (W37 video
+  125401976, W38 audio 125763065, W39 audio 126212203, W39 video 126230829).
+- The W38/W39 **audio** episodes nevertheless went live: the synthesis
+  publisher's metadata call carried `isPublished: true`, and provider
+  `/overview` reports `publishOn` equal to that `/update` call's timestamp
+  (126212203: metadata set `21:10:51.781Z`, `publishOn` `21:10:52.000Z`). The
+  later `/publish` 404 was a false failure that recorded `publication_unknown`.
+- `podcaster.publish._publish_episode_live(session, anchor_id, user_id, overview)`
+  therefore sends, exactly once:
 
   ```http
-  POST https://api-v5.anchor.fm/v3/episodes/{anchor_id}/publish?isMumsCompatible=true
-  {}
+  POST https://api-v5.anchor.fm/v3/episodes/{anchor_id}/update?isMumsCompatible=true
+  {"userId": …, "title": …, "description": …, "episodeType": …,
+   "isPublished": true, "podcastEpisodeIsExplicit": …,
+   "seasonNumber": …, "episodeNumber": …}
   ```
 
-- The synthesis publisher calls this function after creating an episode when
-  its publish behavior is not `draft`.
+  `/update` replaces metadata, so every field is re-sent exactly as the
+  provider's `/overview` currently reports it (`title`, `description`,
+  `podcastEpisodeType`, `podcastEpisodeIsExplicit`, `podcastSeasonNumber`,
+  `podcastEpisodeNumber`). Missing/unreadable fields, or an overview `userId`
+  that differs from the session's, fail closed before any mutation.
+- `GET /v3/episodes/{anchor_id}/overview?returnWebIds=true&isMumsCompatible=true`
+  (HTTP 200; `/v3/episodes/{id}` itself returns 400) is the readback source.
+  After any go-live response — success, HTTP error, or transport failure —
+  the result is classified from the readback: `isPublished=true` →
+  `published`; a confirmed draft → `manual_handoff_required`; unreadable →
+  `publication_state_unknown`.
+- The synthesis publisher's metadata `/update` is itself the go-live call for
+  `immediate`; no separate publish request is sent.
 - `podcaster.publish.upload_video_to_episode()` creates a separate video
   episode and deliberately stops after setting draft metadata.
 - `docs/spotify-video-upload.md` documents the multipart video upload as
@@ -120,8 +145,9 @@ new video `anchor_id` has been returned.
 Spotify does not publicly document the internal Anchor endpoint used by this
 repository. Available evidence does **not** establish:
 
-- that `POST /v3/episodes/{anchor_id}/publish` accepts a processed video episode
-  created by the multipart upload flow;
+- that the `/update` + `isPublished: true` go-live accepts a processed video
+  episode created by the multipart upload flow (proven for audio only; the W38
+  video was published manually in the web UI);
 - whether additional wizard, monetization, sponsored-content, or distribution
   state is required before a video can be published;
 - the response and side effects when the target episode is already live; or
