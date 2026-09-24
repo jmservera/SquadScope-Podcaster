@@ -277,3 +277,44 @@ def test_unambiguous_create_keeps_original_evidence_code(audio_env):
     create_record = next(r for r in _records(storage) if r["operation"] == "create_episode")
     assert create_record["code"] == "provider_artifact_created"
     assert "reconciled_from" not in create_record.get("details", {})
+
+
+def test_credential_expiry_in_pre_create_snapshot_never_creates(audio_env):
+    audio_env["listing"].side_effect = [pub.SpotifyCredentialExpiredError("401 on listing")]
+
+    result = _publish(audio_env, MemoryStorage())
+
+    assert result.status == "failed"
+    assert result.anchor_episode_id is None
+    audio_env["create"].assert_not_called()
+    audio_env["upload_url"].assert_not_called()
+    audio_env["metadata"].assert_not_called()
+    assert audio_env["listing"].call_count == 1
+    assert result.outcome == "manual_handoff_required"
+    assert result.details["credentials_expired"] is True
+    assert result.details["code"] == "credentials_expired"
+    # Nothing was mutated, so a retry after credential refresh stays allowed.
+    assert result.details["retry_blocked"] is False
+
+
+@pytest.mark.parametrize("step", ["process", "metadata"])
+def test_post_adoption_redelivery_never_repeats_mutation(audio_env, step):
+    storage = MemoryStorage()
+    audio_env["listing"].side_effect = [_listing(), _listing(_draft(71))]
+    audio_env[step].side_effect = pub.SpotifyPublishError(f"{step} timed out")
+    first = _publish(audio_env, storage)
+    assert first.anchor_episode_id == 71
+    assert first.details["retry_blocked"] is True
+
+    for name in ("create", "listing", "upload_url", "upload", "process", "metadata"):
+        audio_env[name].reset_mock()
+    second = _publish(audio_env, storage)
+
+    assert second.status == "failed"
+    assert second.outcome == "publication_unknown"
+    assert second.details["retry_blocked"] is True
+    create = next(r for r in _records(storage) if r["operation"] == "create_episode")
+    assert create["code"] == "provider_artifact_reconciled"
+    assert create["details"]["reconciled_from"] == "ambiguous_create"
+    for name in ("create", "listing", "upload_url", "upload", "process", "metadata"):
+        audio_env[name].assert_not_called()
