@@ -500,7 +500,10 @@ then classified from `/overview` readback, exactly as on the audio path (#700),
 and recorded as `publish`. An ambiguous `/update` failure that readback does not
 confirm as live is recorded as `provider_mutation_failure` (`uploaded` or
 `publication_unknown`, retry-blocked). The result is never reported as published
-without readback confirmation.
+without readback confirmation. `upload_video_to_episode` checks
+`SPOTIFY_ALLOW_LIVE_PUBLISH` itself too: a live behavior passed directly without
+the opt-in is downgraded to a draft (with the same warning), so the lower-level
+helper can never go public by accident.
 
 Persisted create-safety fields (`create_provenance`, `snapshot_completeness`,
 `mutation_possibility`, `snapshot_evidence_source`) are parsed through one

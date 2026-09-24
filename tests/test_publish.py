@@ -582,6 +582,59 @@ class TestPublishEpisode:
         )
         return result, _evidence_records(storage), metadata, readback_mock
 
+    @pytest.mark.parametrize("allow_live", (None, "", "false", "0"))
+    @pytest.mark.parametrize("behavior", ("immediate", "scheduled"))
+    def test_direct_video_upload_live_behavior_requires_live_opt_in(
+        self, monkeypatch, mp3_file, spotify_env, allow_live, behavior
+    ):
+        """#694 thread 4092981689: the helper enforces SPOTIFY_ALLOW_LIVE_PUBLISH."""
+        import podcaster.publish as pub
+
+        if allow_live is None:
+            monkeypatch.delenv("SPOTIFY_ALLOW_LIVE_PUBLISH", raising=False)
+        else:
+            monkeypatch.setenv("SPOTIFY_ALLOW_LIVE_PUBLISH", allow_live)
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        video = mp3_file.with_suffix(".mp4")
+        video.write_bytes(b"video")
+        session = MagicMock()
+        session.request.return_value = _mock_graphql_listing_resp()
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("station-1", "7"))
+        monkeypatch.setattr(pub, "_create_episode", MagicMock(return_value=12345))
+        monkeypatch.setattr(pub, "_claim_draft_title", MagicMock())
+        monkeypatch.setattr(
+            pub,
+            "_get_upload_url",
+            lambda *args, **kwargs: ([{"partNumber": 1, "url": "https://gcs/part"}], "up1"),
+        )
+        monkeypatch.setattr(
+            pub, "_upload_video_multipart", lambda *args: [{"partNumber": 1, "etag": "e1"}]
+        )
+        monkeypatch.setattr(pub, "_process_upload", MagicMock())
+        metadata = MagicMock()
+        monkeypatch.setattr(pub, "_set_metadata", metadata)
+        readback = MagicMock(return_value=True)
+        monkeypatch.setattr(pub, "_get_episode_publication_state", readback)
+
+        result = pub.upload_video_to_episode(
+            video,
+            555,
+            title="Title",
+            publication_storage=storage,
+            publication_identity_context=identity,
+            publish_behavior=behavior,
+            publish_on=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        )
+
+        assert metadata.call_count == 1
+        assert metadata.call_args.kwargs["publish_behavior"] == "draft"
+        assert metadata.call_args.kwargs.get("publish_on") is None
+        assert "go_live_attempted" not in result.details
+        readback.assert_not_called()
+        assert result.status == "draft"
+
     def test_spotify_mp4_immediate_goes_live_via_update_and_readback(
         self, monkeypatch, mp3_file, spotify_env
     ):

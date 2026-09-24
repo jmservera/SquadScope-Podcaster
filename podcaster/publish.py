@@ -2819,6 +2819,12 @@ def upload_video_to_episode(
     Returns a PublishResult; ``anchor_episode_id`` is the NEW video episode id,
     status is "draft"/"scheduled"/"published" on success and "failed" otherwise.
     """
+    # Same fail-safe as ``publish_episode``: a direct caller can never reach the
+    # live ``/update`` without the explicit SPOTIFY_ALLOW_LIVE_PUBLISH opt-in.
+    if publish_behavior != "draft" and not _live_publish_allowed():
+        _warn_live_publish_downgraded_once()
+        publish_behavior = "draft"
+        publish_on = None
     identity_title = title.strip() if isinstance(title, str) else ""
     if not identity_title:
         return PublishResult(
