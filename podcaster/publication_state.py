@@ -520,6 +520,11 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
                     evidence_source,
                 )
     elif "pre_create_snapshot_complete" in details:
+        if "snapshot_evidence_source" in details:
+            # Legacy records never carried a source; a mixed shape is not trusted.
+            raise PublicationStateError(
+                "legacy create safety evidence carries a snapshot evidence source"
+            )
         raw_complete = details.get("pre_create_snapshot_complete")
         if not isinstance(raw_complete, bool):
             raise PublicationStateError(
@@ -539,6 +544,11 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
         )
     else:
         snapshot = ProviderSnapshot.absent()
+        if any(key in details for key in _OBSERVED_SNAPSHOT_DETAIL_KEYS):
+            # Observed-snapshot fragments without any completeness claim are not a
+            # clean legacy default: keep the intent blocking.
+            _warn_inconsistent_absent_snapshot(record)
+            snapshot_degraded = True
 
     if "snapshot_degraded" in details:
         raw_degraded = details.get("snapshot_degraded")

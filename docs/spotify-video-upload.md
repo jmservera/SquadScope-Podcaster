@@ -523,7 +523,13 @@ object fails closed; only an omitted or `null` `details` reads as a legacy
 intent. Identity fields in these warnings are capped at 80 characters after
 escaping. A non-reconciliation (`upload_dispatch`) create intent blocks only while it
 is still the pending intent. A later provider id or definite rejection resolves
-it, so repeated #693 credential re-arms each allow exactly one create.
+it, so repeated #693 credential re-arms each allow exactly one create. Observed-
+snapshot fragments (`pre_create_episode_ids`, `snapshot_evidence_source`) with
+no completeness claim are degraded and blocking, and a legacy
+`pre_create_snapshot_complete` record that also carries a
+`snapshot_evidence_source` is rejected. With reconciliation disabled, a definite
+rejection re-arms a create only if a create claim precedes it for the same
+identity.
 
 #### Pagination
 

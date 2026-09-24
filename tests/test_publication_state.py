@@ -1101,6 +1101,40 @@ def test_degrade_warning_identity_fields_are_bounded_after_escaping(caplog):
     assert len(message) < 600
 
 
+@pytest.mark.parametrize(
+    "details",
+    (
+        {"pre_create_episode_ids": [1]},
+        {"pre_create_episode_ids": []},
+        {"snapshot_evidence_source": "spotify_episode_listing"},
+    ),
+)
+def test_observed_fragments_without_completeness_are_degraded(details, caplog):
+    with caplog.at_level("WARNING", logger="podcaster.publication_state"):
+        state = create_safety_state_from_record(
+            {"operation": "create_episode_intent", "details": details}
+        )
+
+    assert state.snapshot.completeness == SnapshotCompleteness.ABSENT
+    assert state.snapshot_degraded is True
+    assert [r for r in caplog.records if r.name == "podcaster.publication_state"]
+
+
+@pytest.mark.parametrize("source", ("spotify_episode_listing", "\u200b", None))
+def test_legacy_flag_with_snapshot_source_is_rejected(source):
+    with pytest.raises(PublicationStateError, match="legacy create safety evidence"):
+        create_safety_state_from_record(
+            {
+                "operation": "create_episode_intent",
+                "details": {
+                    "pre_create_snapshot_complete": True,
+                    "pre_create_episode_ids": [1],
+                    "snapshot_evidence_source": source,
+                },
+            }
+        )
+
+
 def test_valid_or_absent_snapshot_deserialization_does_not_warn(caplog):
     base = {
         "operation": "create_episode_intent",

@@ -2639,6 +2639,7 @@ def promote_spotify_video_draft(
 # Evidence codes recorded only when ``_create_episode`` itself was definitively
 # rejected (no draft created). Any other failure leaves a create intent unknown.
 _DEFINITE_CREATE_REJECTION_CODES = frozenset({"credentials_expired", "create_rejected"})
+_CREATE_CLAIM_OPERATIONS = frozenset({"create_episode_intent", "unreconciled_create_intent"})
 
 
 def _spotify_video_unresolved_create_intent_snapshot(
@@ -2685,6 +2686,10 @@ def _spotify_video_unresolved_create_intent_snapshot(
             or record.get("mutation_attempted") is not False
             or record.get("code") != "mutation_intent"
         ):
+            if unresolved_foreign_provenance:
+                raise SpotifyDraftReconcileError(
+                    "Spotify video create intent evidence has no reconciliation provenance."
+                )
             return None
         try:
             state = create_safety_state_from_record(record)
@@ -2732,29 +2737,33 @@ def _spotify_video_create_retry_authorized(
     records = document.get("records") if isinstance(document, Mapping) else None
     if not isinstance(records, list):
         return False
-    for record in reversed(records):
-        if (
-            not isinstance(record, Mapping)
-            or record.get("platform") != "spotify"
-            or record.get("media_kind") != "video"
-            or record.get("job_id") != identity.accepted_job_id
-            or record.get("week") != identity.week
-            or record.get("publish_run_id") != identity.publish_run_id
-            or record.get("article_sha256") != identity.article_sha256
-            or record.get("manifest_sha256") != identity.manifest_sha256
-        ):
-            continue
-        if record.get("operation") in {"upload_intent", "create_episode_intent"}:
-            return False
-        if record.get("retry_blocked") is not False:
-            return False
-        if require_definite_rejection:
-            return (
-                record.get("operation") == "create_episode_failure"
-                and record.get("code") in _DEFINITE_CREATE_REJECTION_CODES
-            )
+    matching = [
+        record
+        for record in records
+        if isinstance(record, Mapping)
+        and record.get("platform") == "spotify"
+        and record.get("media_kind") == "video"
+        and record.get("job_id") == identity.accepted_job_id
+        and record.get("week") == identity.week
+        and record.get("publish_run_id") == identity.publish_run_id
+        and record.get("article_sha256") == identity.article_sha256
+        and record.get("manifest_sha256") == identity.manifest_sha256
+    ]
+    if not matching:
+        return False
+    latest = matching[-1]
+    if latest.get("operation") in {"upload_intent", "create_episode_intent"}:
+        return False
+    if latest.get("retry_blocked") is not False:
+        return False
+    if not require_definite_rejection:
         return True
-    return False
+    # A rejection only re-arms a create that was actually claimed before it.
+    return (
+        latest.get("operation") == "create_episode_failure"
+        and latest.get("code") in _DEFINITE_CREATE_REJECTION_CODES
+        and any(record.get("operation") in _CREATE_CLAIM_OPERATIONS for record in matching[:-1])
+    )
 
 
 def upload_video_to_episode(
@@ -3436,7 +3445,14 @@ def upload_video_to_episode(
                 **(
                     {"retry_blocked": True, "code": "post_create_failure"}
                     if video_anchor_id is not None
-                    else {"retry_blocked": not evidence_persisted, "code": "credentials_expired"}
+                    else {
+                        "retry_blocked": not evidence_persisted,
+                        "code": (
+                            "credentials_expired"
+                            if evidence_persisted
+                            else "create_evidence_persistence_failed"
+                        ),
+                    }
                     if create_definitely_rejected
                     else (
                         {"retry_blocked": False, "code": "create_outcome_unknown"}
