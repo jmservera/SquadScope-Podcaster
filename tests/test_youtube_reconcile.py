@@ -459,3 +459,106 @@ def test_untrustworthy_continuation_is_contradictory(pages, code):
     assert result.status == CONTRADICTORY
     assert result.code == code
     assert result.video_id is None
+
+
+class _OAuthFailingReadback(FakeYouTubeReadback):
+    def __init__(self, videos, status):
+        super().__init__(videos)
+        self.oauth_status = status
+
+    def request(self, url, *, method="GET", headers=None, data=None):
+        if "oauth2.googleapis.com/token" in url:
+            self.calls.append((method, url))
+            return self.oauth_status, b"{}"
+        return super().request(url, method=method, headers=headers, data=data)
+
+
+class _NetworkFailingReadback(FakeYouTubeReadback):
+    def __init__(self, videos, exc):
+        super().__init__(videos)
+        self.exc = exc
+
+    def request(self, url, *, method="GET", headers=None, data=None):
+        if urlparse(url).path.endswith("/playlistItems"):
+            self.calls.append((method, url))
+            raise self.exc
+        return super().request(url, method=method, headers=headers, data=data)
+
+
+def _required_redelivery(video_file, fake):
+    return distribute_video(
+        video_file,
+        "job-2026-W39-en",
+        "Same title",
+        "desc",
+        60.0,
+        _config(youtube_required=True),
+        transport=fake,
+        published={"youtube": _unknown_record()},
+        on_published=lambda platform, rec: None,
+        publish_run_id="run-abc",
+        publication_identity_context=IDENTITY,
+    )
+
+
+def _failure_fields(result):
+    return (
+        result.youtube_failure_code,
+        result.youtube_failure_stage,
+        result.youtube_failure_retryable,
+    )
+
+
+def test_required_reconcile_transient_oauth_failure_stays_retryable(video_file):
+    fake = _OAuthFailingReadback([_video("vid-1", [TAG])], 503)
+    result = _required_redelivery(video_file, fake)
+    assert result.youtube_id is None
+    assert result.youtube_required_failed is True
+    assert _failure_fields(result) == ("youtube_oauth_http_503", "oauth_token", True)
+    assert result.youtube_failure_http_status == 503
+    assert result.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN
+    assert all(method == "GET" or "oauth2" in url for method, url in fake.calls)
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    [(503, True), (429, True), (404, False)],
+)
+def test_required_reconcile_readback_http_failure_maps_retryability(video_file, status, retryable):
+    fake = FakeYouTubeReadback([_video("vid-1", [TAG])])
+    fake.failures["/videos"] = status
+    result = _required_redelivery(video_file, fake)
+    assert result.youtube_id is None
+    assert result.youtube_required_failed is True
+    assert _failure_fields(result) == (
+        f"youtube_reconcile_videos_http_{status}",
+        "reconcile",
+        retryable,
+    )
+    assert result.youtube_failure_http_status == status
+    assert all(method == "GET" or "oauth2" in url for method, url in fake.calls)
+
+
+@pytest.mark.parametrize(
+    ("exc", "code", "retryable"),
+    [
+        (TimeoutError("slow"), "youtube_reconcile_network_error", True),
+        (ValueError("bug"), "youtube_reconcile_exception", False),
+    ],
+)
+def test_required_reconcile_transport_exception_maps_retryability(video_file, exc, code, retryable):
+    fake = _NetworkFailingReadback([_video("vid-1", [TAG])], exc)
+    result = _required_redelivery(video_file, fake)
+    assert result.youtube_id is None
+    assert result.youtube_required_failed is True
+    assert _failure_fields(result) == (code, "reconcile", retryable)
+    assert all(method == "GET" or "oauth2" in url for method, url in fake.calls)
+
+
+def test_unrequired_reconcile_failure_does_not_fail_delivery(video_file):
+    fake = FakeYouTubeReadback([_video("vid-1", [TAG])])
+    fake.failures["/videos"] = 503
+    result = _distribute(video_file, fake, _unknown_record(), [])
+    assert result.youtube_id is None
+    assert result.youtube_required_failed is False
+    assert result.provider_outcomes["youtube"] == PUBLICATION_UNKNOWN

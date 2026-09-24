@@ -59,6 +59,7 @@ class YouTubeReconcileResult:
     code: str
     video_id: str | None = None
     privacy_status: str | None = None
+    http_status: int | None = None
 
     @property
     def matched(self) -> bool:
@@ -150,7 +151,9 @@ def reconcile_youtube_upload(
     )
     items = channels.get("items") if isinstance(channels, dict) else None
     if status != 200 or not isinstance(items, list):
-        return YouTubeReconcileResult(ERROR, f"youtube_reconcile_channels_http_{status}")
+        return YouTubeReconcileResult(
+            ERROR, f"youtube_reconcile_channels_http_{status}", http_status=status
+        )
     if len(items) != 1:
         return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_channel_not_unique")
     uploads = (
@@ -181,7 +184,9 @@ def reconcile_youtube_upload(
         )
         page_items = page.get("items") if isinstance(page, dict) else None
         if status != 200 or not isinstance(page_items, list):
-            return YouTubeReconcileResult(ERROR, f"youtube_reconcile_uploads_http_{status}")
+            return YouTubeReconcileResult(
+                ERROR, f"youtube_reconcile_uploads_http_{status}", http_status=status
+            )
         for item in page_items:
             if not isinstance(item, dict):
                 return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_malformed_item")
@@ -222,7 +227,9 @@ def reconcile_youtube_upload(
         status, videos = _get_json(transport, f"{VIDEOS_URL}?{query}", access_token)
         video_items = videos.get("items") if isinstance(videos, dict) else None
         if status != 200 or not isinstance(video_items, list):
-            return YouTubeReconcileResult(ERROR, f"youtube_reconcile_videos_http_{status}")
+            return YouTubeReconcileResult(
+                ERROR, f"youtube_reconcile_videos_http_{status}", http_status=status
+            )
         # The readback must cover exactly the requested IDs: an omitted ID could
         # be another tagged candidate, so incomplete readback stays fail-closed.
         returned: set[str] = set()

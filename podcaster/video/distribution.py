@@ -40,6 +40,7 @@ from podcaster.publication_state import (
 )
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
 from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
+from podcaster.video.youtube_reconcile import ERROR as RECONCILE_ERROR
 from podcaster.video.youtube_reconcile import (
     parse_timestamp,
     reconcile_youtube_upload,
@@ -490,7 +491,10 @@ def _reconcile_unknown_youtube_upload(
     never uploads: a non-match leaves the job fail-closed and returns
     ``(False, None)`` so the caller keeps the existing retry-blocked behaviour.
     A bound upload returns ``(True, error)`` where ``error`` is set only when
-    ``on_published`` failed to persist the evidence.
+    ``on_published`` failed to persist the evidence. An unbound readback that
+    failed (OAuth, transport, or provider HTTP error) returns ``(False, error)``
+    carrying the failure's retryability; the caller applies it only when
+    YouTube delivery is required.
     """
     if config.dry_run or record.get("outcome") != PUBLICATION_UNKNOWN:
         return False, None
@@ -509,12 +513,43 @@ def _reconcile_unknown_youtube_upload(
             http,
             not_before=parse_timestamp(record.get("intent_at")),
         )
+    except YouTubeDeliveryError as exc:
+        # Typed OAuth failures keep their retryability; the upload intent stays
+        # publication_unknown, so a retry only re-runs this read-only readback.
+        logger.warning(
+            "YouTube identity reconcile failed; upload remains blocked stage=%s code=%s "
+            "retryable=%s",
+            exc.stage,
+            exc.code,
+            exc.retryable,
+        )
+        return False, exc
     except Exception as exc:
         logger.warning(
             "YouTube identity reconcile failed; retry remains blocked: %s",
             type(exc).__name__,
         )
-        return False, None
+        transient = isinstance(exc, _TRANSIENT_TRANSPORT_ERRORS)
+        return False, YouTubeDeliveryError(
+            "YouTube identity reconcile readback error",
+            code=(
+                "youtube_reconcile_network_error" if transient else "youtube_reconcile_exception"
+            ),
+            stage="reconcile",
+            retryable=transient,
+        )
+    if reconciled.status == RECONCILE_ERROR and reconciled.http_status is not None:
+        logger.warning(
+            "YouTube identity reconcile readback failed code=%s; publication remains unknown",
+            reconciled.code,
+        )
+        return False, YouTubeDeliveryError(
+            "YouTube identity reconcile readback failed",
+            code=reconciled.code,
+            stage="reconcile",
+            retryable=_is_transient_http_status(reconciled.http_status),
+            http_status=reconciled.http_status,
+        )
     if not reconciled.matched or reconciled.video_id is None:
         logger.warning(
             "YouTube identity reconcile did not bind an upload status=%s code=%s; "

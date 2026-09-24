@@ -233,7 +233,11 @@ video still flows to the playlist step without a second upload; when
 matches, more than one does, a match is public or incomplete,
 the page is malformed, the read fails, or the intent predates the tag, the job
 stays `publication_unknown` and needs the manual re-arm path above. Title and
-newest-upload matches are never used.
+newest-upload matches are never used. When YouTube is required, a failed read
+keeps its retryability: transient OAuth, network, `429` or `5xx` readback
+failures are retryable, since a retry only repeats the read-only readback and
+the `publication_unknown` intent still blocks a second upload. Other failures
+are terminal.
 
 Rollback
 retains provider artifacts and legacy fields; disable the additive projection
