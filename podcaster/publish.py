@@ -2080,6 +2080,48 @@ def _publish_episode_live(
     logger.info("Episode %d go-live update requested", anchor_id)
 
 
+def _readback_publication_state(episode: Mapping[Any, Any]) -> bool | None:
+    """Publication state from provider readback, requiring explicit evidence.
+
+    ``True`` only for explicit public evidence (``isPublished: true`` or a
+    ``published`` status) with nothing contradicting it; ``False`` for explicit
+    non-public evidence (``isPublished: false``, ``isDraft: true``, or a
+    ``draft``/``scheduled``/``unpublished`` status). ``isDraft: false`` alone
+    is *not* publication evidence — a scheduled episode is non-draft yet not
+    public. Non-boolean flags, deleted episodes, unknown tokens and
+    contradictions are ``None`` (unknown).
+    """
+    flags: dict[str, bool | None] = {}
+    for key in ("isPublished", "isDraft", "isDeleted"):
+        raw = episode.get(key)
+        if raw is not None and not isinstance(raw, bool):
+            return None
+        flags[key] = raw
+    if flags["isDeleted"] is True:
+        return None
+    votes: set[bool] = set()
+    if flags["isPublished"] is not None:
+        votes.add(flags["isPublished"])
+    if flags["isDraft"] is True:
+        votes.add(False)
+    for key in _STATUS_KEYS:
+        raw = episode.get(key)
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            return None
+        token = raw.strip().lower()
+        if token in _NON_DRAFT_STATE_TOKENS:
+            votes.add(True)
+        elif token in _DRAFT_STATE_TOKENS or token in _NON_PUBLIC_STATE_TOKENS:
+            votes.add(False)
+        else:
+            return None
+    if len(votes) != 1:
+        return None
+    return next(iter(votes))
+
+
 def _get_episode_publication_state(
     session: requests.Session,
     anchor_id: int,
@@ -2116,10 +2158,9 @@ def _read_episode_overview(
                 if isinstance(value, dict):
                     candidates.append(value)
         for candidate in candidates:
-            try:
-                return not _episode_is_draft(candidate)
-            except SpotifyDraftReconcileError:
-                continue
+            state = _readback_publication_state(candidate)
+            if state is not None:
+                return state
         if isinstance(payload, dict):
             for list_key in ("episodes", "items", "data"):
                 list_val = payload.get(list_key)
@@ -2144,16 +2185,9 @@ def _read_episode_overview(
                     None,
                 )
                 if match is not None:
-                    try:
-                        return not _episode_is_draft(match)
-                    except SpotifyDraftReconcileError:
-                        if "isPublished" in match:
-                            pub_val = match["isPublished"]
-                            if pub_val is True:
-                                return True
-                            if pub_val is False:
-                                return False
-                        continue
+                    state = _readback_publication_state(match)
+                    if state is not None:
+                        return state
         if isinstance(payload, dict):
             logger.warning(
                 "Spotify episode %s publication state unknown; response keys=%s",
@@ -2430,6 +2464,26 @@ def promote_spotify_video_draft(
                     anchor_episode_id=video_anchor_id,
                     audio_anchor_id=audio_anchor_id,
                     authorized=True,
+                ),
+                video_auth_granted=video_auth_granted,
+                w35_check=w35_check,
+            )
+
+        if not isinstance(overview, dict) or overview.get("isDraft") is not True:
+            # Non-public but not an explicit draft (e.g. scheduled): never
+            # force it live; an operator must decide.
+            logger.warning(
+                "Spotify video episode %s is not an explicit draft before promote;"
+                " aborting to avoid blind mutation",
+                video_anchor_id,
+            )
+            return _finalize(
+                VideoPromoteResult(
+                    terminal_state="publication_state_unknown",
+                    anchor_episode_id=video_anchor_id,
+                    audio_anchor_id=audio_anchor_id,
+                    authorized=True,
+                    details={"reason": "not_explicit_draft"},
                 ),
                 video_auth_granted=video_auth_granted,
                 w35_check=w35_check,

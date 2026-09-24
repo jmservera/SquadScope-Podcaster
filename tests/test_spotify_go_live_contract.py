@@ -175,6 +175,30 @@ class TestGoLiveMutation:
         session.request.assert_not_called()
 
 
+class TestReadbackPublicationState:
+    @pytest.mark.parametrize(
+        ("episode", "expected"),
+        [
+            ({"isPublished": True, "isDraft": False}, True),
+            ({"isPublished": True}, True),
+            ({"status": "published"}, True),
+            ({"isPublished": False, "isDraft": True}, False),
+            ({"isPublished": False, "isDraft": False}, False),
+            ({"isDraft": True}, False),
+            ({"status": "scheduled"}, False),
+            ({"isDraft": False}, None),
+            ({"isPublished": True, "isDraft": True}, None),
+            ({"isPublished": True, "status": "scheduled"}, None),
+            ({"isPublished": "true"}, None),
+            ({"isPublished": True, "isDeleted": True}, None),
+            ({"status": "processing"}, None),
+            ({}, None),
+        ],
+    )
+    def test_requires_explicit_publication_evidence(self, episode, expected):
+        assert pub._readback_publication_state(episode) is expected
+
+
 class TestPromoteVideoDraftAgainstProvider:
     """Drives promote_spotify_video_draft through the real HTTP helpers."""
 
@@ -321,6 +345,29 @@ class TestPromoteVideoDraftAgainstProvider:
 
         assert result.terminal_state == "manual_handoff_required"
         assert [m for m, _u in _urls(session)] == ["GET"]
+
+    def test_non_draft_non_public_readback_is_not_already_published(self, monkeypatch):
+        result, session = self._run(
+            monkeypatch,
+            [_json(_overview(published=False, isDraft=False))],
+        )
+
+        assert result.terminal_state == "publication_state_unknown"
+        assert result.details["reason"] == "not_explicit_draft"
+        assert [m for m, _u in _urls(session)] == ["GET"]
+
+    def test_non_draft_non_public_final_readback_is_not_published(self, monkeypatch):
+        result, _session = self._run(
+            monkeypatch,
+            [
+                _json(_overview(published=False)),
+                _error(404),
+                _json(_overview(published=False, isDraft=False)),
+            ],
+        )
+
+        assert result.terminal_state == "manual_handoff_required"
+        assert result.is_published is False
 
     def test_already_published_sends_no_mutation(self, monkeypatch):
         result, session = self._run(monkeypatch, [_json(_overview(published=True))])
