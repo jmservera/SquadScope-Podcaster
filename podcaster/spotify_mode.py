@@ -15,11 +15,8 @@ pipeline remains the listener-facing path.
 from __future__ import annotations
 
 import json
-import logging
 import os
 from typing import Any
-
-logger = logging.getLogger(__name__)
 
 AUDIO_PUBLISH_DISABLED_REASON = "spotify_audio_publish_disabled"
 PUBLISH_STATUS_SKIPPED = "skipped"
@@ -154,11 +151,9 @@ def record_review_skip_outcome(
     eligible = isinstance(publishing, dict) and publishing.get("eligible") is True
     if not audio_publish_skipped or outcome.publish_result is not None or not eligible:
         return outcome
-    try:
-        updated = record_review_audio_skip(storage, job_id, reviewed_at=reviewed_at)
-    except Exception:  # noqa: BLE001 - the approval is already persisted
-        logger.warning("could not record skipped audio publish job_id=%s", job_id, exc_info=True)
-        return outcome
+    # Persistence failures propagate: the endpoint must not report ``skipped``
+    # unless storage agrees. Re-submitting the approval is safe.
+    updated = record_review_audio_skip(storage, job_id, reviewed_at=reviewed_at)
     if updated is None:
         return outcome
     return type(outcome)(updated, outcome.publish_result)

@@ -275,3 +275,24 @@ def test_video_only_reapproval_preserves_real_provider_history(
 
     assert status_code == HTTPStatus.OK
     assert _persisted(storage)["publishing"]["result"] == real_result
+
+
+@pytest.mark.parametrize(("target", "post"), ENDPOINTS)
+def test_video_only_skip_persistence_failure_is_not_reported_as_skipped(
+    target, post, staged, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", _no_spotify_mutation)
+
+    def _fail(*args, **kwargs):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr("podcaster.spotify_mode.record_review_audio_skip", _fail)
+    monkeypatch.setattr("podcaster.api.report_failure", lambda **kwargs: None)
+    monkeypatch.setattr("podcaster.monitoring.report_failure", lambda **kwargs: None)
+
+    with patch(target, side_effect=_wrap_process(staged, [])):
+        status_code, body = post(_review_body())
+
+    assert status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert body.get("publish_status") != "skipped"

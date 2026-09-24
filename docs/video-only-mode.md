@@ -55,6 +55,8 @@ video to an episode that already has audio. The video path never reads
   `skipped`, so monitoring stops reporting `manual_handoff_required`. Every
   other earlier result is left as is, because it is real provider history
   (for example `publication_unknown` or an existing anchor).
+  If the skip record can't be saved, the endpoint returns HTTP 500 instead of
+  `skipped`. Submitting the approval again is safe.
 - **Weekly success:** a video-only week is healthy when YouTube is public and
   the Spotify video episode is live, as confirmed by provider readback
   (`/overview`). A missing audio episode is expected.
