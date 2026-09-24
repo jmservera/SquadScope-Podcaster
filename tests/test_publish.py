@@ -943,7 +943,6 @@ class TestPublishEpisode:
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
             _mock_json_resp({}),
-            _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]
 
@@ -1199,7 +1198,6 @@ class TestPublishEpisode:
             _mock_resp_with_headers({"ETag": '"e1"'}),
             _mock_json_resp({}),
             _mock_json_resp({"status": "completed"}),
-            _mock_json_resp({}),
             _mock_json_resp({}),
             _mock_json_resp({"isPublished": True}),
         ]

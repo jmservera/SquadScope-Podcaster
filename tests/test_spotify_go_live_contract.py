@@ -369,6 +369,26 @@ class TestPromoteVideoDraftAgainstProvider:
         assert result.terminal_state == "manual_handoff_required"
         assert result.is_published is False
 
+    @pytest.mark.parametrize(
+        "wrap",
+        [
+            lambda ep: {"episode": ep},
+            lambda ep: {"data": ep},
+            lambda ep: {"episodes": [{"episodeId": 1, "isPublished": True}, ep]},
+        ],
+    )
+    def test_wrapped_overview_shapes_promote_from_matched_entry(self, monkeypatch, wrap):
+        def entry(published):
+            return {"episodeId": VIDEO_ID, **_overview(published=published)}
+
+        result, session = self._run(
+            monkeypatch,
+            [_json(wrap(entry(False))), _json({}), _json(wrap(entry(True)))],
+        )
+
+        assert result.terminal_state == "published"
+        assert session.request.call_args_list[1].kwargs["json"]["title"] == "Show | W39"
+
     def test_already_published_sends_no_mutation(self, monkeypatch):
         result, session = self._run(monkeypatch, [_json(_overview(published=True))])
 
@@ -460,3 +480,14 @@ class TestAudioGoLive:
         )
 
         assert result.outcome == "manual_handoff_required"
+        assert result.status == "failed"
+        assert "not confirmed" in result.error
+
+    def test_success_with_unknown_readback_is_not_reported_published(
+        self, env, tmp_path, monkeypatch
+    ):
+        result, _session = self._run(tmp_path, monkeypatch, _json({}), _error(403))
+
+        assert result.status == "failed"
+        assert result.outcome == "publication_unknown"
+        assert result.details["retry_blocked"] is True

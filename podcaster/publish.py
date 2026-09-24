@@ -2139,8 +2139,9 @@ def _read_episode_overview(
 ) -> tuple[bool | None, dict[Any, Any] | None]:
     """Return ``(publication_state, overview_payload)`` from ``/overview``.
 
-    ``publication_state`` is True when published, False when draft, or None
-    when unknown. The payload is only returned when it is a JSON object.
+    ``publication_state`` is True when published, False when non-public, or
+    None when unknown. The returned episode object is the exact (possibly
+    nested or listed) entry the state was read from, or None when unknown.
 
     Args:
         session: Authenticated Spotify session.
@@ -2149,7 +2150,7 @@ def _read_episode_overview(
             When None the request omits userId and may return HTTP 400.
     """
 
-    def _extract_state(payload: Any) -> bool | None:
+    def _extract_state(payload: Any) -> tuple[bool | None, dict[Any, Any] | None]:
         candidates: list[dict[Any, Any]] = []
         if isinstance(payload, dict):
             candidates.append(payload)
@@ -2160,7 +2161,7 @@ def _read_episode_overview(
         for candidate in candidates:
             state = _readback_publication_state(candidate)
             if state is not None:
-                return state
+                return state, candidate
         if isinstance(payload, dict):
             for list_key in ("episodes", "items", "data"):
                 list_val = payload.get(list_key)
@@ -2187,7 +2188,7 @@ def _read_episode_overview(
                 if match is not None:
                     state = _readback_publication_state(match)
                     if state is not None:
-                        return state
+                        return state, match
         if isinstance(payload, dict):
             logger.warning(
                 "Spotify episode %s publication state unknown; response keys=%s",
@@ -2200,7 +2201,7 @@ def _read_episode_overview(
                 anchor_id,
                 type(payload).__name__,
             )
-        return None
+        return None, None
 
     url = f"{_BASE_URL}/v3/episodes/{anchor_id}/overview"
     try:
@@ -2252,7 +2253,7 @@ def _read_episode_overview(
             anchor_id,
         )
         return None, None
-    return _extract_state(payload), (payload if isinstance(payload, dict) else None)
+    return _extract_state(payload)
 
 
 def promote_spotify_video_draft(
@@ -3780,15 +3781,26 @@ def publish_episode(
             if publish_behavior == "draft"
             else ("scheduled" if resolved_publish_on else "published")
         )
-        logger.info(
-            "Episode published to Spotify: anchorId=%d status=%s",
-            anchor_id,
-            status,
-        )
+        error: str | None = None
+        if status == "published" and safe_outcome != PUBLISHED:
+            # Never report "published" unless provider readback confirmed it.
+            status = "failed"
+            error = (
+                f"Spotify go-live for episode {anchor_id} not confirmed by provider "
+                f"readback (outcome={safe_outcome}); manual verification required."
+            )
+            logger.warning("%s", error)
+        else:
+            logger.info(
+                "Episode published to Spotify: anchorId=%d status=%s",
+                anchor_id,
+                status,
+            )
         return _finalize_with_evidence(
             PublishResult(
                 anchor_episode_id=anchor_id,
                 status=status,
+                error=error,
                 outcome=safe_outcome,
                 details={
                     "station_id": station_id,
@@ -3798,6 +3810,7 @@ def publish_episode(
                         if metadata_error is not None
                         else {}
                     ),
+                    **({"retry_blocked": True} if error is not None else {}),
                 },
             ),
             "publish" if publish_behavior != "draft" else "draft_setup",
