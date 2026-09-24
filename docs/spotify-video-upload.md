@@ -416,10 +416,36 @@ make it provable.
 At most **two** create POSTs are ever sent for one publish attempt, and the
 second only after a settled, twice-observed listing that still shows nothing the
 first create could have produced. A second ambiguous create is not recovered
-again. With `PODCASTER_SPOTIFY_RECONCILE=0` (and on the audio path in
-`publish_episode`, which never reconciles) there is no listing to reason from,
+again. With `PODCASTER_SPOTIFY_RECONCILE=0` there is no listing to reason from,
 so video create fails before any POST unless the durable emergency override is
-set. The audio path remains a single non-reconciled POST.
+set.
+
+### Audio path: exact draft reconciliation after an ambiguous create (#679)
+
+The audio path in `publish_episode` still sends a **single** create POST and
+never a second one. Before that POST it reads one station-scoped listing
+(`_audio_pre_create_snapshot`, skipped when `PODCASTER_SPOTIFY_RECONCILE=0`).
+If that listing fails, the create still goes ahead, but an ambiguous result
+can't be recovered. If the create is ambiguous, `_recover_ambiguous_audio_create`
+re-reads the listing at most `_AMBIGUOUS_CREATE_READS` times, waiting
+`_AMBIGUOUS_CREATE_SETTLE_SECONDS` between reads:
+
+| Evidence | Action |
+|---|---|
+| Complete pre-create snapshot, and exactly one *new* untitled draft with no unclassifiable entries | adopt that episode id, record `create_episode` / `provider_artifact_reconciled` evidence bound to the accepted `job_id`, `publish_run_id`, week, and article/manifest SHA-256, then continue with upload → process → metadata |
+| No new draft after the settled reads | `publication_unknown`, retry-blocked, **no second POST** |
+| Several candidates, unclassifiable/contradictory entries, an absent or incomplete snapshot, or any failure while re-reading (credential expiry included) | `publication_unknown`, retry-blocked |
+
+The proof is the immutable episode id: it was absent from the complete pre-create
+listing of the same show, and the entry is still an untitled draft. A draft that
+matches only by title, or simply the newest item, is never adopted. The result's
+`details.create_verification` field holds only safe counts and candidate ids,
+never provider bodies, credentials, or signed URLs. After adoption, an ambiguous
+failure in process, metadata, or publish is never retried. Redelivery stays
+blocked by the durable evidence. Residual: another writer, including a video leg,
+could create an untitled draft in the same show at the same moment, and that
+draft could look like the one candidate. Automation is a single writer per show,
+which is the same assumption the video path relies on.
 
 Residual, irreducible windows — stated precisely, because neither one loses the
 draft server-side:

@@ -396,6 +396,19 @@ class TestPromoteVideoDraftAgainstProvider:
         assert [m for m, _u in _urls(session)] == ["GET"]
 
 
+_EMPTY_LISTING = {
+    "data": {
+        "showByShowUri": {
+            "episodesV2": {
+                "indexStatus": "COMPLETED",
+                "items": [],
+                "pagination": {"currentPage": 1, "pageSize": 50, "totalItems": 0, "totalPages": 1},
+            }
+        }
+    }
+}
+
+
 class TestAudioGoLive:
     """publish_episode: the metadata ``/update`` IS the go-live call."""
 
@@ -416,6 +429,7 @@ class TestAudioGoLive:
         upload.raise_for_status = MagicMock()
         session.request.side_effect = [
             _json({"stationId": "1", "userId": "7"}),
+            _json(_EMPTY_LISTING),  # #679 audio pre-create snapshot
             _json({"episodeId": AUDIO_ID}),
             _json({"signedUrl": "https://x.example/u", "uploadId": "up1"}),
             upload,

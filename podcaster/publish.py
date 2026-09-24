@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, NoReturn
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -160,6 +160,18 @@ class SpotifyDraftCreateAmbiguousError(SpotifyPublishError):
     on its own. It is raised for the caller to resolve with evidence (a
     re-list, see :func:`_recover_ambiguous_create`) or to surface as a failure.
     """
+
+
+class SpotifyAudioCreateUnresolvedError(SpotifyDraftCreateAmbiguousError):
+    """An ambiguous audio draft create that bounded verification could not prove.
+
+    Carries only the safe verification summary (candidate ids and counts) so the
+    operator can reconcile; it never carries provider bodies or credentials.
+    """
+
+    def __init__(self, message: str, *, verification: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.verification = dict(verification)
 
 
 class SpotifyCredentialExpiredError(SpotifyPublishError):
@@ -551,7 +563,8 @@ def _create_episode(session: requests.Session, station_id: str) -> int:
     later run can ever clean up. A transient failure (or a success whose body
     cannot be read) therefore raises
     :class:`SpotifyDraftCreateAmbiguousError`, which the video path resolves
-    with evidence in :func:`_recover_ambiguous_create`. Deterministic failures
+    with evidence in :func:`_recover_ambiguous_create` and the audio path in
+    :func:`_recover_ambiguous_audio_create` (never with a second POST). Deterministic failures
     (4xx other than 408/429) raise :class:`SpotifyPublishError`: no draft was
     created.
     """
@@ -1581,6 +1594,119 @@ def _recover_unresolved_create_intent(
         "draft candidate; refusing to create another draft while the prior create "
         "outcome is unresolved."
     )
+
+
+def _audio_pre_create_snapshot(
+    session: requests.Session,
+    station_id: str,
+    *,
+    user_id: str,
+    show_id: str | None,
+) -> ProviderSnapshot | None:
+    """Station-scoped listing snapshot taken before an audio draft create.
+
+    Best effort: a listing this code cannot prove complete only removes the
+    ability to recover an ambiguous create later (it stays
+    ``publication_unknown``); it never blocks the create itself. Credential
+    expiry is re-raised because nothing has been mutated yet.
+    """
+    if not _spotify_reconcile_enabled():
+        return None
+    try:
+        data = _fetch_episode_listing(session, station_id, user_id=user_id, show_id=show_id)
+        snapshot = _snapshot_episode_ids(data)
+    except SpotifyCredentialExpiredError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Spotify audio pre-create listing for station %s is unusable (%s); an "
+            "ambiguous create will not be recoverable automatically.",
+            station_id,
+            type(exc).__name__,
+        )
+        return None
+    if snapshot.completeness != SnapshotCompleteness.COMPLETE:
+        logger.warning(
+            "Spotify audio pre-create listing for station %s is incomplete; an "
+            "ambiguous create will not be recoverable automatically.",
+            station_id,
+        )
+    return snapshot
+
+
+def _recover_ambiguous_audio_create(
+    session: requests.Session,
+    station_id: str,
+    *,
+    user_id: str,
+    show_id: str | None,
+    snapshot: ProviderSnapshot | None,
+    cause: SpotifyDraftCreateAmbiguousError,
+) -> int:
+    """Prove which audio draft an ambiguous create made, without a second POST.
+
+    The audio create has no provider idempotency key, so the only immutable
+    handle on the draft is its episode id, and the only proof that an id belongs
+    to *this* create is that it was absent from a complete, station-scoped
+    pre-create listing and is still an untitled draft. The listing is read at
+    most :data:`_AMBIGUOUS_CREATE_READS` times, spaced by
+    :data:`_AMBIGUOUS_CREATE_SETTLE_SECONDS`. Exactly one such candidate with no
+    unclassifiable entries is adopted. Titles are never used as proof (the
+    create sends none), and the newest item is never guessed.
+
+    Every other result — no candidate after settling, several candidates,
+    unclassifiable entries, an absent/incomplete snapshot, or any failure while
+    re-reading (credential expiry included) — raises
+    :class:`SpotifyAudioCreateUnresolvedError` so the publication stays
+    ``publication_unknown`` and retry-blocked. Unlike the video path, no second
+    create is ever sent: a still-settling create would orphan a duplicate.
+    """
+    verification: dict[str, Any] = {
+        "snapshot": (snapshot.completeness.value if snapshot is not None else "absent"),
+        "reads": 0,
+        "candidates": [],
+        "unclassifiable": 0,
+    }
+
+    def _unresolved(reason: str, exc: BaseException | None = None) -> NoReturn:
+        verification["reason"] = reason
+        raise SpotifyAudioCreateUnresolvedError(
+            f"Spotify audio draft create for station {station_id} failed ambiguously "
+            f"({type(cause).__name__}) and bounded verification could not prove a "
+            f"unique draft ({reason}; new untitled draft candidates: "
+            f"{verification['candidates'] or 'none'}, unclassifiable entries: "
+            f"{verification['unclassifiable']}, pre-create snapshot: "
+            f"{verification['snapshot']}). No second create was sent; inspect this "
+            "show's drafts in the Spotify creator UI and reconcile.",
+            verification=verification,
+        ) from (exc or cause)
+
+    if snapshot is None or snapshot.completeness != SnapshotCompleteness.COMPLETE:
+        _unresolved("pre_create_snapshot_unusable")
+
+    known_ids = set(snapshot.episode_ids)
+    for read in range(_AMBIGUOUS_CREATE_READS):
+        if read:
+            time.sleep(_AMBIGUOUS_CREATE_SETTLE_SECONDS)
+        try:
+            data = _fetch_episode_listing(session, station_id, user_id=user_id, show_id=show_id)
+            candidates, opaque = _new_untitled_draft_ids(data, known_ids)
+        except Exception as exc:
+            _unresolved(f"verification_read_failed:{type(exc).__name__}", exc)
+        verification["reads"] = read + 1
+        verification["candidates"] = candidates
+        verification["unclassifiable"] = opaque
+        if len(candidates) == 1 and not opaque:
+            logger.info(
+                "Ambiguous Spotify audio draft create resolved to new untitled draft "
+                "anchorId=%d after %d verification read(s); adopting it.",
+                candidates[0],
+                read + 1,
+            )
+            return candidates[0]
+        if candidates or opaque:
+            _unresolved("multiple_or_unclassifiable_candidates")
+    _unresolved("no_new_draft_observed")
 
 
 def _reconcile_or_create_draft(
@@ -4089,9 +4215,29 @@ def publish_episode(
         station_id, user_id = _resolve_legacy_ids(session, show_id)
 
         # Step 2: Create draft episode. Mark the mutation first: an ambiguous
-        # create may have created a draft even though it raised.
+        # create may have created a draft even though it raised. The
+        # station-scoped pre-create snapshot is what lets an ambiguous create
+        # be proven (#679) instead of left unknown.
+        pre_create_snapshot = _audio_pre_create_snapshot(
+            session, station_id, user_id=user_id, show_id=show_id
+        )
         mutation_started = True
-        anchor_id = _create_episode(session, station_id)
+        create_code = "provider_artifact_created"
+        create_details: dict[str, Any] = {"show_id": show_id, "station_id": station_id}
+        try:
+            anchor_id = _create_episode(session, station_id)
+        except SpotifyDraftCreateAmbiguousError as create_exc:
+            anchor_id = _recover_ambiguous_audio_create(
+                session,
+                station_id,
+                user_id=user_id,
+                show_id=show_id,
+                snapshot=pre_create_snapshot,
+                cause=create_exc,
+            )
+            create_code = "provider_artifact_reconciled"
+            create_details["reconciled_from"] = "ambiguous_create"
+            create_details["reconcile_evidence"] = "pre_create_listing_diff"
         if publication_storage is not None and publication_identity_context is not None:
             try:
                 append_evidence(
@@ -4104,8 +4250,8 @@ def publish_episode(
                     provider_artifact_id=anchor_id,
                     mutation_attempted=True,
                     retry_blocked=True,
-                    code="provider_artifact_created",
-                    details={"show_id": show_id, "station_id": station_id},
+                    code=create_code,
+                    details=create_details,
                 )
             except Exception:
                 return PublishResult(
@@ -4296,12 +4442,15 @@ def publish_episode(
         )
     except SpotifyDraftCreateAmbiguousError as exc:
         logger.error("Spotify draft create state unknown: %s", exc)
+        ambiguous_details: dict[str, Any] = {"retry_blocked": True, "code": "ambiguous_create"}
+        if isinstance(exc, SpotifyAudioCreateUnresolvedError):
+            ambiguous_details["create_verification"] = exc.verification
         return _finalize_with_evidence(
             PublishResult(
                 status="failed",
                 error=str(exc),
                 outcome=PUBLICATION_UNKNOWN,
-                details={"retry_blocked": True, "code": "ambiguous_create"},
+                details=ambiguous_details,
             ),
             "create_episode",
         )
