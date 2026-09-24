@@ -48,6 +48,13 @@ video to an episode that already has audio. The video path never reads
   `publish_skipped_reason: "spotify_audio_publish_disabled"`. A job that still
   has blockers (for example `audio_validation_not_passed`) gets
   `publish_status: "blocked"` and `publish_blocked_by` instead.
+  An eligible approval also writes `publishing.result.status = "skipped"`.
+  Suppose a job recorded a disabled audio publish as a failure before
+  video-only mode existed ("Spotify publishing disabled…"). Approving it again
+  rewrites that record, and the matching `generation.publish_result`, to
+  `skipped`, so monitoring stops reporting `manual_handoff_required`. Every
+  other earlier result is left as is, because it is real provider history
+  (for example `publication_unknown` or an existing anchor).
 - **Weekly success:** a video-only week is healthy when YouTube is public and
   the Spotify video episode is live, as confirmed by provider readback
   (`/overview`). A missing audio episode is expected.

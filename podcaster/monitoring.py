@@ -64,7 +64,11 @@ from podcaster.progress import (
 )
 from podcaster.publication_state import latest_outcomes, read_evidence
 from podcaster.queue import enqueue_video_job
-from podcaster.spotify_mode import review_publish_fields, spotify_audio_publish_enabled
+from podcaster.spotify_mode import (
+    record_review_skip_outcome,
+    review_publish_fields,
+    spotify_audio_publish_enabled,
+)
 from podcaster.stage_progress import summarize as summarize_stage_progress
 from podcaster.storage import StorageBackend, create_storage_backend
 from podcaster.validation import validate_payload_details
@@ -618,6 +622,7 @@ async def api_review(request: Request):
         return JSONResponse(status_code=400, content={"errors": errors})
 
     try:
+        storage = get_storage()
         outcome = process_review_decision(
             job_id,
             reviewer=reviewer,
@@ -626,6 +631,10 @@ async def api_review(request: Request):
             notes=notes,
             run_url=run_url,
             publish_on_approval=publish_on_approval and not audio_publish_skipped,
+            storage=storage,
+        )
+        outcome = record_review_skip_outcome(
+            storage, job_id, outcome, reviewed_at, audio_publish_skipped
         )
     except ValueError as exc:
         return JSONResponse(status_code=404, content={"error": str(exc)})

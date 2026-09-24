@@ -453,11 +453,12 @@ def run_synthesis(
             has_spotify_audio = (
                 spotify_publish_config is not None and audio_publish_enabled
             ) or auto_publish_enabled()
-            has_youtube = os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true"
-            has_video = video_generation_enabled() and (
-                has_youtube or spotify_video_live_publish_configured()
+            video_enabled = video_generation_enabled()
+            has_youtube = (
+                video_enabled and os.environ.get("VIDEO_YOUTUBE_ENABLED", "").lower() == "true"
             )
-            if not has_spotify_audio and not has_youtube and not has_video:
+            has_video = has_youtube or (video_enabled and spotify_video_live_publish_configured())
+            if not has_spotify_audio and not has_video:
                 logger.warning(
                     "no listener-facing publish target configured for job_id=%s — "
                     "episode will not reach any audience (enable Spotify audio, YouTube, "

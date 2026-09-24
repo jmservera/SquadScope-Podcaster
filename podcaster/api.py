@@ -34,7 +34,11 @@ from podcaster.failure_reporting import report_failure
 from podcaster.jobs import ReplayCollisionError, failed_response, run_generation_job
 from podcaster.orchestration import process_review_decision
 from podcaster.podcast_config import PodcastConfigStore
-from podcaster.spotify_mode import review_publish_fields, spotify_audio_publish_enabled
+from podcaster.spotify_mode import (
+    record_review_skip_outcome,
+    review_publish_fields,
+    spotify_audio_publish_enabled,
+)
 from podcaster.storage import create_storage_backend
 from podcaster.validation import is_authorized, validate_payload_details
 
@@ -539,6 +543,7 @@ class GenerateHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, {"errors": errors})
             return
         try:
+            storage = create_storage_backend()
             outcome = process_review_decision(
                 job_id,
                 reviewer=reviewer,
@@ -547,6 +552,10 @@ class GenerateHandler(BaseHTTPRequestHandler):
                 notes=notes,
                 run_url=run_url,
                 publish_on_approval=publish_on_approval and not audio_publish_skipped,
+                storage=storage,
+            )
+            outcome = record_review_skip_outcome(
+                storage, job_id, outcome, reviewed_at, audio_publish_skipped
             )
         except ValueError as exc:
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": str(exc)})

@@ -662,14 +662,17 @@ def test_run_synthesis_video_only_skip_precedes_identity_check(monkeypatch):
     ("video_enabled", "video_mode", "video_allow"),
     [("false", "live", "true"), ("true", "draft", "true"), ("true", "live", "false")],
 )
+@pytest.mark.parametrize("youtube", ["false", "true"])
 def test_run_synthesis_warns_when_no_publish_target_at_all(
-    monkeypatch, caplog, video_enabled, video_mode, video_allow
+    monkeypatch, caplog, video_enabled, video_mode, video_allow, youtube
 ):
+    if youtube == "true" and video_enabled == "true":
+        pytest.skip("YouTube via an enabled video job is a real target")
     _patch_audio(monkeypatch)
     monkeypatch.setenv("VIDEO_GENERATION_ENABLED", video_enabled)
+    monkeypatch.setenv("VIDEO_YOUTUBE_ENABLED", youtube)
     monkeypatch.setenv("SPOTIFY_VIDEO_PUBLISH_MODE", video_mode)
     monkeypatch.setenv("SPOTIFY_VIDEO_ALLOW_LIVE_PUBLISH", video_allow)
-    monkeypatch.delenv("VIDEO_YOUTUBE_ENABLED", raising=False)
     monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
     storage = FakeStorage()
     _stage(storage, _video_only_manifest(), _two_voice_script())

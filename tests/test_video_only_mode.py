@@ -31,7 +31,7 @@ def _no_spotify_mutation(*args, **kwargs):
 def staged(tmp_path: Path) -> LocalStorageBackend:
     storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
     _stage(storage, _synthesized_manifest())
-    return storage
+    return _use(storage)
 
 
 def _wrap_process(storage: LocalStorageBackend, calls: list[dict]):
@@ -39,7 +39,8 @@ def _wrap_process(storage: LocalStorageBackend, calls: list[dict]):
 
     def _process(job_id, **kwargs):
         calls.append(kwargs)
-        return real(job_id, storage=storage, **kwargs)
+        assert kwargs["storage"] is storage
+        return real(job_id, **kwargs)
 
     return _process
 
@@ -71,11 +72,23 @@ ENDPOINTS = [
 ]
 
 
+_CURRENT_STORAGE: list[LocalStorageBackend] = []
+
+
 @pytest.fixture(autouse=True)
-def _monitoring_storage():
+def _handler_storage(monkeypatch):
+    """Route both review handlers to the storage staged by the test."""
+    _CURRENT_STORAGE.clear()
+    monkeypatch.setattr("podcaster.api.create_storage_backend", lambda: _CURRENT_STORAGE[-1])
     set_storage(None)
     yield
     set_storage(None)
+
+
+def _use(storage: LocalStorageBackend) -> LocalStorageBackend:
+    _CURRENT_STORAGE.append(storage)
+    set_storage(storage)
+    return storage
 
 
 @pytest.mark.parametrize(("target", "post"), ENDPOINTS)
@@ -99,7 +112,12 @@ def test_video_only_approval_skips_audio_publish_without_failing(
     assert persisted["status"] == "review_approved"
     assert persisted["review"]["status"] == "approved"
     assert persisted["publishing"]["eligible"] is True
-    assert persisted.get("publishing", {}).get("result") is None
+    assert persisted["publishing"]["result"]["status"] == "skipped"
+    assert persisted["publishing"]["result"]["outcome"] is None
+    assert persisted["publishing"]["result"]["details"] == {
+        "reason": "spotify_audio_publish_disabled"
+    }
+    assert body["manifest"]["publishing"]["result"]["status"] == "skipped"
 
 
 @pytest.mark.parametrize(("target", "post"), ENDPOINTS)
@@ -176,6 +194,7 @@ def test_video_only_approval_of_blocked_job_reports_blocked_not_skipped(
     manifest = _synthesized_manifest()
     manifest["generation"]["audio_validation"] = {"status": "failed", "ready": False}
     _stage(storage, manifest)
+    _use(storage)
     calls: list[dict] = []
 
     with patch(target, side_effect=_wrap_process(storage, calls)):
@@ -185,3 +204,74 @@ def test_video_only_approval_of_blocked_job_reports_blocked_not_skipped(
     assert body["publish_status"] == "blocked"
     assert "audio_validation_not_passed" in body["publish_blocked_by"]
     assert "publish_skipped_reason" not in body
+
+
+_LEGACY_DISABLED_FAILURE = {
+    "status": "failed",
+    "error": "Spotify publishing disabled (SPOTIFY_PUBLISH_ENABLED != true).",
+    "outcome": "manual_handoff_required",
+    "anchor_episode_id": None,
+}
+
+
+@pytest.mark.parametrize(("target", "post"), ENDPOINTS)
+def test_video_only_reapproval_normalizes_legacy_disabled_failures(
+    target, post, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", _no_spotify_mutation)
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+    manifest = _synthesized_manifest()
+    manifest["status"] = "publish_failed"
+    manifest["publishing"]["result"] = dict(_LEGACY_DISABLED_FAILURE)
+    manifest["generation"]["publish_result"] = {
+        "anchor_id": None,
+        "status": "failed",
+        "outcome": "manual_handoff_required",
+        "publish_run_id": "123",
+        "dry_run": False,
+        "error": "Spotify publishing disabled (SPOTIFY_PUBLISH_ENABLED != true).",
+        "details": {},
+    }
+    _stage(storage, manifest)
+    _use(storage)
+    calls: list[dict] = []
+
+    with patch(target, side_effect=_wrap_process(storage, calls)):
+        status_code, body = post(_review_body())
+
+    assert status_code == HTTPStatus.OK
+    assert body["publish_status"] == "skipped"
+    persisted = _persisted(storage)
+    assert persisted["status"] == "review_approved"
+    assert persisted["publishing"]["result"]["status"] == "skipped"
+    assert persisted["generation"]["publish_result"]["status"] == "skipped"
+    assert persisted["generation"]["publish_result"]["outcome"] is None
+    assert persisted["generation"]["publish_result"]["publish_run_id"] == "123"
+    detail = TestClient(app).get(f"/api/jobs/{_job_id()}").json()
+    assert detail["publication_outcome"] is None
+
+
+@pytest.mark.parametrize(("target", "post"), ENDPOINTS)
+def test_video_only_reapproval_preserves_real_provider_history(
+    target, post, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPOTIFY_PUBLISH_ENABLED", "false")
+    monkeypatch.setattr("podcaster.orchestration.publish_episode", _no_spotify_mutation)
+    storage = LocalStorageBackend(tmp_path / "artifacts", "https://example.invalid/artifacts")
+    manifest = _synthesized_manifest()
+    real_result = {
+        "status": "failed",
+        "error": "Spotify go-live not confirmed by provider readback",
+        "outcome": "publication_unknown",
+        "anchor_episode_id": 42,
+    }
+    manifest["publishing"]["result"] = dict(real_result)
+    _stage(storage, manifest)
+    _use(storage)
+
+    with patch(target, side_effect=_wrap_process(storage, [])):
+        status_code, _body = post(_review_body())
+
+    assert status_code == HTTPStatus.OK
+    assert _persisted(storage)["publishing"]["result"] == real_result
