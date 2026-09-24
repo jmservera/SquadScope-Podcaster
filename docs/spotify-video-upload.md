@@ -496,7 +496,14 @@ provenance (`create_episode_intent`: `reconciliation_backed` or
 `upload_dispatch`; `unreconciled_create_intent`: `blind_unreconciled`;
 `upload_intent`: `upload_dispatch`). One exception: an untrusted
 `snapshot_evidence_source` on a present snapshot degrades that snapshot to
-`absent`, with a single `WARNING`, and the intent stays blocking.
+`absent`, with a single `WARNING`, and the intent stays blocking. An explicit
+`absent` snapshot that still carries observed-snapshot fields
+(`pre_create_episode_ids`, `pre_create_snapshot_complete`,
+`snapshot_evidence_source`) is degraded the same way. A degraded state is
+re-persisted with `snapshot_degraded: true`, so a deserialize/serialize cycle
+keeps it blocking; a non-boolean marker, or one on a non-absent snapshot, fails
+closed. Snapshot episode ids must be exact integers and are never coerced
+(`1.5` is rejected, not read as `1`).
 
 #### Pagination
 

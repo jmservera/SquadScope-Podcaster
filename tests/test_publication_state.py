@@ -963,6 +963,105 @@ def test_degraded_flag_marks_only_untrusted_observed_snapshot_claims():
         )
 
 
+@pytest.mark.parametrize(
+    "extra",
+    (
+        {"pre_create_episode_ids": [1]},
+        {"pre_create_episode_ids": []},
+        {"snapshot_evidence_source": "spotify_episode_listing"},
+        {"pre_create_snapshot_complete": True},
+        {"snapshot_degraded": True},
+    ),
+)
+def test_explicit_absent_with_observed_fields_is_degraded_not_clean(extra, caplog):
+    record = {
+        "operation": "create_episode_intent",
+        "details": {"snapshot_completeness": "absent", **extra},
+    }
+
+    with caplog.at_level("WARNING", logger="podcaster.publication_state"):
+        state = create_safety_state_from_record(record)
+
+    assert state.snapshot.completeness == SnapshotCompleteness.ABSENT
+    assert state.snapshot_degraded is True
+    if "snapshot_degraded" not in extra:
+        assert [r for r in caplog.records if r.name == "podcaster.publication_state"]
+
+
+@pytest.mark.parametrize(
+    "details",
+    (
+        {"snapshot_completeness": "absent", "snapshot_degraded": 1},
+        {"snapshot_completeness": "absent", "snapshot_degraded": "true"},
+        {"snapshot_degraded": True},
+        {
+            "snapshot_completeness": "complete",
+            "snapshot_evidence_source": "spotify_episode_listing",
+            "pre_create_episode_ids": [1],
+            "snapshot_degraded": True,
+        },
+    ),
+)
+def test_invalid_degraded_marker_fails_closed(details):
+    with pytest.raises(PublicationStateError):
+        create_safety_state_from_record({"operation": "create_episode_intent", "details": details})
+
+
+def test_degraded_state_survives_serialize_deserialize_cycle():
+    tainted = {
+        "operation": "create_episode_intent",
+        "details": {
+            "create_provenance": "reconciliation_backed",
+            "mutation_possibility": "not_possible",
+            "snapshot_completeness": "complete",
+            "snapshot_evidence_source": "\u200b",
+            "pre_create_episode_ids": [1],
+        },
+    }
+    state = create_safety_state_from_record(tainted)
+    details = state.to_details()
+
+    assert details["snapshot_completeness"] == "absent"
+    assert details["snapshot_degraded"] is True
+    reparsed = create_safety_state_from_record(
+        {"operation": "create_episode_intent", "details": details}
+    )
+    assert reparsed.snapshot_degraded is True
+    assert (
+        "snapshot_degraded"
+        not in CreateSafetyState.reconciliation_backed(ProviderSnapshot.absent()).to_details()
+    )
+
+
+@pytest.mark.parametrize("raw_id", (1.5, 1.0, "1", float("nan"), None))
+def test_snapshot_ids_are_never_coerced(raw_id):
+    with pytest.raises(PublicationStateError):
+        create_safety_state_from_record(
+            {
+                "operation": "create_episode_intent",
+                "details": {
+                    "snapshot_completeness": "complete",
+                    "snapshot_evidence_source": "spotify_episode_listing",
+                    "pre_create_episode_ids": [raw_id],
+                },
+            }
+        )
+    with pytest.raises(PublicationStateError):
+        create_safety_state_from_record(
+            {
+                "operation": "create_episode_intent",
+                "details": {
+                    "pre_create_snapshot_complete": True,
+                    "pre_create_episode_ids": [raw_id],
+                },
+            }
+        )
+    with pytest.raises(PublicationStateError):
+        ProviderSnapshot.complete(
+            [raw_id], evidence_source=SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING
+        )
+
+
 def test_valid_or_absent_snapshot_deserialization_does_not_warn(caplog):
     base = {
         "operation": "create_episode_intent",

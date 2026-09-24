@@ -2650,6 +2650,118 @@ class TestUploadVideoToEpisode:
             rearm_operation,
         ]
 
+    @pytest.mark.parametrize(
+        "tamper",
+        (
+            "absent_with_ids",
+            "absent_with_source",
+            "absent_with_legacy_flag",
+            "absent_with_degraded_marker",
+            "fractional_id",
+            "degraded_reserialized",
+        ),
+    )
+    def test_tampered_or_reserialized_snapshot_intent_never_creates(
+        self, tmp_path, monkeypatch, tamper
+    ):
+        import podcaster.publish as pub
+        from podcaster.publication_state import create_safety_state_from_record
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_intent",
+            outcome=pub.PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=False,
+            code="mutation_intent",
+            create_safety_state=pub.CreateSafetyState.reconciliation_backed(
+                pub.ProviderSnapshot.complete(
+                    [555],
+                    evidence_source=pub.SnapshotEvidenceSource.SPOTIFY_EPISODE_LISTING,
+                )
+            ),
+        )
+        path = "publication-evidence/job-1.json"
+        document = json.loads(storage.data[path].decode())
+        record = document["records"][0]
+        details = record["details"]
+        if tamper == "fractional_id":
+            details["pre_create_episode_ids"] = [554.5]
+        elif tamper == "degraded_reserialized":
+            details["snapshot_evidence_source"] = "\u200b"
+        else:
+            details["snapshot_completeness"] = "absent"
+            if tamper != "absent_with_ids":
+                details.pop("pre_create_episode_ids")
+            if tamper != "absent_with_source":
+                details.pop("snapshot_evidence_source")
+            if tamper == "absent_with_legacy_flag":
+                details["pre_create_snapshot_complete"] = True
+            if tamper == "absent_with_degraded_marker":
+                details["snapshot_degraded"] = True
+        storage.data[path] = json.dumps(document).encode()
+        if tamper == "degraded_reserialized":
+            # A deserialize/serialize cycle must keep the degraded intent blocking.
+            state = create_safety_state_from_record(record)
+            assert state.snapshot_degraded is True
+            del storage.data[path]
+            pub.append_evidence(
+                storage,
+                identity,
+                platform="spotify",
+                media_kind="video",
+                operation="create_episode_intent",
+                outcome=pub.PUBLICATION_UNKNOWN,
+                mutation_attempted=False,
+                retry_blocked=False,
+                code="mutation_intent",
+                create_safety_state=state,
+            )
+            persisted = _evidence_records(storage)[0]["details"]
+            assert persisted["snapshot_completeness"] == "absent"
+            assert persisted["snapshot_degraded"] is True
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="retry_authorization",
+            outcome=pub.PUBLICATION_UNKNOWN,
+            mutation_attempted=False,
+            retry_blocked=False,
+        )
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", "1")
+        session = MagicMock()
+        session.request.return_value = _mock_graphql_listing_resp(
+            [{"episodeId": 777, "title": "", "status": "draft"}]
+        )
+        monkeypatch.setattr(pub, "_build_session", lambda *args: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda *args: ("99", "7"))
+        create = MagicMock(return_value=888)
+        monkeypatch.setattr(pub, "_create_episode", create)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        result = pub.upload_video_to_episode(
+            self._video(tmp_path),
+            555,
+            title="My Show",
+            publication_storage=storage,
+            publication_identity_context=identity,
+        )
+
+        assert result.status == "failed"
+        assert result.outcome == pub.PUBLICATION_UNKNOWN
+        assert result.details == {"retry_blocked": False, "code": "unresolved_create_intent"}
+        create.assert_not_called()
+
     def test_provider_id_evidence_callback_failure_stops_before_title_or_upload(
         self, tmp_path, monkeypatch
     ):

@@ -61,6 +61,7 @@ _CREATE_SAFETY_DETAIL_KEYS = frozenset(
         "pre_create_episode_ids",
         "pre_create_snapshot_complete",
         "snapshot_completeness",
+        "snapshot_degraded",
         "snapshot_evidence_source",
     }
 )
@@ -243,10 +244,11 @@ class ProviderSnapshot:
         for raw_id in self.episode_ids:
             if isinstance(raw_id, bool):
                 raise PublicationStateError("snapshot episode id cannot be a boolean")
-            try:
-                normalized_ids.append(int(raw_id))
-            except (TypeError, ValueError) as exc:
-                raise PublicationStateError("snapshot episode id is unreadable") from exc
+            if type(raw_id) is not int:
+                # Never coerce (``int(1.5) == 1``): a truncated id could turn
+                # untrusted evidence into a false "this draft is new" proof.
+                raise PublicationStateError("snapshot episode id is unreadable")
+            normalized_ids.append(raw_id)
         unique_sorted_ids = tuple(sorted(set(normalized_ids)))
         object.__setattr__(self, "episode_ids", unique_sorted_ids)
         normalized_source = _snapshot_evidence_source(self.evidence_source)
@@ -403,11 +405,20 @@ class CreateSafetyState:
             raise PublicationStateError("create provenance must be explicit")
         if type(mutation_possibility) is not MutationPossibility:
             raise PublicationStateError("mutation possibility must be explicit")
-        return {
+        snapshot_degraded = object.__getattribute__(self, "snapshot_degraded")
+        if type(snapshot_degraded) is not bool:
+            raise PublicationStateError("snapshot degradation flag must be a boolean")
+        details = {
             "create_provenance": provenance.value,
             "mutation_possibility": mutation_possibility.value,
             **_provider_snapshot_to_details(snapshot),
         }
+        if snapshot_degraded:
+            if details["snapshot_completeness"] != SnapshotCompleteness.ABSENT.value:
+                raise PublicationStateError("only an absent snapshot can be marked degraded")
+            # Persisted so a deserialize/serialize cycle keeps the intent blocking.
+            details["snapshot_degraded"] = True
+        return details
 
 
 def _provider_snapshot_to_details(snapshot: ProviderSnapshot) -> dict[str, Any]:
@@ -427,11 +438,28 @@ def _parse_snapshot_ids(raw_ids: Any) -> tuple[int, ...]:
     for raw_id in raw_ids:
         if isinstance(raw_id, bool):
             raise PublicationStateError("create safety evidence contains an invalid boolean id")
-        try:
-            ids.append(int(raw_id))
-        except (TypeError, ValueError) as exc:
-            raise PublicationStateError("create safety evidence contains an unreadable id") from exc
+        if type(raw_id) is not int:
+            raise PublicationStateError("create safety evidence contains an unreadable id")
+        ids.append(raw_id)
     return tuple(ids)
+
+
+_OBSERVED_SNAPSHOT_DETAIL_KEYS = (
+    "pre_create_episode_ids",
+    "pre_create_snapshot_complete",
+    "snapshot_evidence_source",
+)
+
+
+def _warn_inconsistent_absent_snapshot(record: Mapping[str, Any]) -> None:
+    logger.warning(
+        "Persisted absent snapshot carries observed-snapshot fields; treating it as "
+        "degraded (fail closed); job_id=%s week=%s publish_run_id=%s operation=%s",
+        _safe_identity_field(record.get("job_id")),
+        _safe_identity_field(record.get("week")),
+        _safe_identity_field(record.get("publish_run_id")),
+        _safe_identity_field(record.get("operation")),
+    )
 
 
 def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetyState | None:
@@ -467,6 +495,9 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
             raise PublicationStateError("create safety evidence has unknown snapshot state")
         if completeness == SnapshotCompleteness.ABSENT:
             snapshot = ProviderSnapshot.absent()
+            if any(key in details for key in _OBSERVED_SNAPSHOT_DETAIL_KEYS):
+                _warn_inconsistent_absent_snapshot(record)
+                snapshot_degraded = True
         else:
             raw_source = details.get("snapshot_evidence_source")
             evidence_source = _snapshot_evidence_source_from_record(raw_source)
@@ -500,6 +531,19 @@ def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetySt
         )
     else:
         snapshot = ProviderSnapshot.absent()
+
+    if "snapshot_degraded" in details:
+        raw_degraded = details.get("snapshot_degraded")
+        if type(raw_degraded) is not bool:
+            raise PublicationStateError("create safety evidence has a non-boolean degraded flag")
+        if raw_degraded:
+            if "snapshot_completeness" not in details or (
+                details.get("snapshot_completeness") != SnapshotCompleteness.ABSENT.value
+            ):
+                raise PublicationStateError(
+                    "create safety evidence marks a non-absent snapshot as degraded"
+                )
+            snapshot_degraded = True
 
     if "mutation_possibility" in details:
         mutation_possibility = _closed_set_member(
