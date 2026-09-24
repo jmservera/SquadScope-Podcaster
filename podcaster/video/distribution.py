@@ -59,6 +59,7 @@ _OAUTH_IDENTIFIER_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 _TRANSIENT_TRANSPORT_ERRORS = (ConnectionError, TimeoutError, URLError)
 
 _MAX_RETRIES = 3
+_MAX_SINGLE_UPLOAD_BYTES = 128 * 1024 * 1024
 _RETRY_BACKOFF_BASE = 2.0
 
 # Minimum valid MP4 size (header alone is ~30 bytes, real video much larger)
@@ -561,19 +562,30 @@ def upload_to_youtube(
             )
         return None, None
 
-    # Use the resumable session URI returned in the Location header
-    upload_url = resp_headers.get("location", init_url)
+    # The init above is the ONE videos.insert for this attempt: YouTube creates
+    # the video resource as soon as the session is opened (#698). Every later
+    # request (single PUT, chunks, resume probes, retries) must reuse this
+    # session URI; nothing below may open a second session.
+    upload_url = resp_headers.get("location")
+    if not upload_url:
+        logger.error("YouTube resumable upload init returned no session URI")
+        if raise_on_failure:
+            raise YouTubeDeliveryError(
+                "YouTube resumable upload init returned no session URI",
+                code="youtube_upload_init_missing_session",
+                stage="upload_init",
+                retryable=False,
+            )
+        return None, None
 
-    # Files above the single-request ceiling are uploaded via the resumable
-    # chunked uploader (#442). Small files use the single-request path below.
-    _MAX_SINGLE_UPLOAD_BYTES = 128 * 1024 * 1024
+    # Files above the single-request ceiling are uploaded in resumable chunks
+    # (#442) over the session opened above.
     if file_size > _MAX_SINGLE_UPLOAD_BYTES:
         chunked = _try_chunked_upload(
             video_path,
-            title,
-            description,
-            config,
-            tags=tags,
+            session_uri=upload_url,
+            access_token=access_token,
+            file_size=file_size,
             transport=http,
             raise_on_failure=raise_on_failure,
         )
@@ -585,6 +597,13 @@ def upload_to_youtube(
             file_size,
             _MAX_SINGLE_UPLOAD_BYTES,
         )
+        if raise_on_failure:
+            raise YouTubeDeliveryError(
+                "YouTube chunked uploader unavailable for large video",
+                code="youtube_chunked_unavailable",
+                stage="upload_chunked",
+                retryable=False,
+            )
         return None, None
 
     video_bytes = video_path.read_bytes()
@@ -891,33 +910,35 @@ def upload_to_spotify_episode(
 
 def _try_chunked_upload(
     video_path: Path,
-    title: str,
-    description: str,
-    config: VideoDistributionConfig,
     *,
-    tags: list[str] | None,
+    session_uri: str,
+    access_token: str,
+    file_size: int,
     transport: HttpTransport,
     raise_on_failure: bool = False,
 ) -> tuple[str | None, str | None] | None:
-    """Delegate to the resumable chunked uploader (#442) when available.
+    """Upload *video_path* in chunks over an already-open resumable session.
+
+    The caller has already opened the session (the videos.insert). This helper
+    must never open another one, otherwise YouTube keeps an orphan zero-length
+    video for the abandoned session (#698). Transient chunk failures resume
+    the same ``session_uri`` from the server-acknowledged offset.
 
     Returns ``(video_id, video_url)`` on completion, ``(None, None)`` on a
-    handled upload failure, or ``None`` when the chunked module is unavailable
-    (caller falls back to single-request behavior).
+    handled upload failure, or ``None`` when the chunked module is unavailable.
     """
     try:
-        from podcaster.video.youtube import upload_video
+        from podcaster.video.youtube import upload_chunked
     except ImportError:  # noqa: BLE001 - optional module; degrade gracefully
         return None
 
     try:
-        result = upload_video(
+        result = upload_chunked(
+            transport,
+            session_uri,
+            access_token,
             video_path,
-            title,
-            description,
-            config,
-            tags=tags,
-            transport=transport,
+            file_size,
         )
     except _TRANSIENT_TRANSPORT_ERRORS as exc:
         if raise_on_failure:

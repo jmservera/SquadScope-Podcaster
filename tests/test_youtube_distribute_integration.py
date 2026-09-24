@@ -153,12 +153,24 @@ def test_large_file_delegates_to_chunked_uploader(tmp_path, monkeypatch):
         video_url = "https://youtube.com/watch?v=vid-big"
         error = None
 
-    fake_mod.upload_video = lambda *a, **k: _Result()
+    calls: list[tuple] = []
+
+    def _fake_upload_chunked(http, session_uri, access_token, path, size, **kwargs):
+        calls.append((session_uri, access_token, size))
+        return _Result()
+
+    def _forbidden_upload_video(*a, **k):
+        raise AssertionError("upload_video would open a second resumable session (#698)")
+
+    fake_mod.upload_chunked = _fake_upload_chunked
+    fake_mod.upload_video = _forbidden_upload_video
     monkeypatch.setitem(sys.modules, "podcaster.video.youtube", fake_mod)
 
     vid_id, vid_url = upload_to_youtube(big, "t", "d", cfg, transport=_InitTransport())
     assert vid_id == "vid-big"
     assert vid_url.endswith("vid-big")
+    # The chunked uploader reuses the session opened by upload_to_youtube.
+    assert calls == [("https://upload/session", "tok", 200 * 1024 * 1024)]
 
 
 def test_large_file_without_chunked_module_returns_none(tmp_path, monkeypatch):
