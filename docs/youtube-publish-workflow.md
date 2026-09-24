@@ -212,8 +212,12 @@ and is declared in the `upload_intent` evidence (`details.youtube_identity_tag`)
 
 When a redelivered job finds that intent still `publication_unknown` without a
 video ID, it reads back the channel's uploads playlist (`channels.list
-mine=true`, at most two `playlistItems.list` pages of 50, then `videos.list`;
-about 5 quota units) and never opens a new upload session. It binds the video
+mine=true`, at most four `playlistItems.list` pages of 50, then `videos.list`;
+at most 9 quota units) and never opens a new upload session. The newest-first
+listing order is verified, and the scan counts as exhaustive only when it
+reaches the end of the playlist or an item older than the intent timestamp
+minus 15 minutes of clock skew. Hitting the page bound first is treated as
+contradictory. It binds the video
 only if exactly one upload carries the exact tag, is still `private`/`unlisted`,
 and has `uploadStatus` `uploaded` or `processed`. That records `draft_created`
 with `verification=provider_readback` and

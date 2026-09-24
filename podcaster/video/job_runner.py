@@ -1246,6 +1246,7 @@ def run_video_generation(
                             declared_tag = prior_details.get(YOUTUBE_IDENTITY_DETAIL_KEY)
                             if isinstance(declared_tag, str):
                                 published_for_attempt[record_key]["identity_tag"] = declared_tag
+                                published_for_attempt[record_key]["intent_at"] = prior.get("at")
                     elif enabled and not dist_config.dry_run:
                         if platform == "spotify":
                             continue

@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
 
@@ -35,7 +36,10 @@ VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 #: Uploads-playlist pages scanned (50 items each). Bounded so a reconcile costs
 #: at most ``1 + 2 * MAX_PAGES`` quota units (read operations cost 1 unit).
-MAX_PAGES = 2
+MAX_PAGES = 4
+#: Allowed clock skew between the worker's intent timestamp and YouTube's
+#: ``publishedAt`` when deciding that the scan window is exhaustive.
+CLOCK_SKEW = timedelta(minutes=15)
 _PAGE_SIZE = 50
 _MAX_TAGS_CHARS = 500
 
@@ -96,6 +100,16 @@ def tags_with_identity(tags: list[str], identity_tag: str | None) -> list[str]:
     return [*base, identity_tag]
 
 
+def parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
 def _get_json(transport: Any, url: str, access_token: str) -> tuple[int, Any]:
     status, body = transport.request(
         url,
@@ -115,9 +129,17 @@ def reconcile_youtube_upload(
     access_token: str,
     transport: Any,
     *,
+    not_before: datetime | None = None,
     max_pages: int = MAX_PAGES,
 ) -> YouTubeReconcileResult:
-    """Read back the owner's recent uploads and bind the exact tagged video."""
+    """Read back the owner's recent uploads and bind the exact tagged video.
+
+    The uploads playlist is scanned newest-first (ordering is verified). The
+    scan is exhaustive only when it reaches the end of the playlist or an item
+    older than ``not_before - CLOCK_SKEW`` (the durable intent time, before
+    which the tagged upload cannot exist). Hitting the page bound first is
+    contradictory: an unseen duplicate could exist, so nothing is bound.
+    """
     if not is_identity_tag(identity_tag):
         return YouTubeReconcileResult(ERROR, "youtube_reconcile_invalid_identity")
 
@@ -139,11 +161,15 @@ def reconcile_youtube_upload(
     if not isinstance(uploads, str) or not uploads:
         return YouTubeReconcileResult(ERROR, "youtube_reconcile_uploads_playlist_missing")
 
+    cutoff = not_before - CLOCK_SKEW if not_before is not None else None
+    seen: set[str] = set()
     video_ids: list[str] = []
+    previous_at: datetime | None = None
+    exhausted = False
     page_token: str | None = None
     for _ in range(max(1, max_pages)):
         params = {
-            "part": "contentDetails",
+            "part": "snippet,contentDetails",
             "playlistId": uploads,
             "maxResults": str(_PAGE_SIZE),
         }
@@ -156,18 +182,33 @@ def reconcile_youtube_upload(
         if status != 200 or not isinstance(page_items, list):
             return YouTubeReconcileResult(ERROR, f"youtube_reconcile_uploads_http_{status}")
         for item in page_items:
-            video_id = (
-                item.get("contentDetails", {}).get("videoId") if isinstance(item, dict) else None
-            )
-            if not isinstance(video_id, str) or not video_id:
+            if not isinstance(item, dict):
                 return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_malformed_item")
-            if video_id in video_ids:
+            video_id = item.get("contentDetails", {}).get("videoId")
+            added_at = parse_timestamp(item.get("snippet", {}).get("publishedAt"))
+            if not isinstance(video_id, str) or not video_id or added_at is None:
+                return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_malformed_item")
+            if video_id in seen:
                 return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_repeated_item")
+            if previous_at is not None and added_at > previous_at:
+                return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_unordered_uploads")
+            seen.add(video_id)
+            previous_at = added_at
+            if cutoff is not None and added_at < cutoff:
+                exhausted = True
+                break
             video_ids.append(video_id)
-        next_token = page.get("nextPageToken")
-        if not isinstance(next_token, str) or not next_token:
+        if exhausted:
             break
+        next_token = page.get("nextPageToken")
+        if next_token is None or next_token == "":
+            exhausted = True
+            break
+        if not isinstance(next_token, str):
+            return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_malformed_page_token")
         page_token = next_token
+    if not exhausted:
+        return YouTubeReconcileResult(CONTRADICTORY, "youtube_reconcile_window_not_exhausted")
 
     candidates: list[dict[str, Any]] = []
     for start in range(0, len(video_ids), _PAGE_SIZE):

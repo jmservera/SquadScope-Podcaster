@@ -41,6 +41,7 @@ from podcaster.publication_state import (
 from podcaster.video.youtube_playlist import add_to_show_playlist as _add_to_show_playlist
 from podcaster.video.youtube_playlist import resolve_playlist_id as _resolve_playlist_id
 from podcaster.video.youtube_reconcile import (
+    parse_timestamp,
     reconcile_youtube_upload,
     tags_with_identity,
     youtube_identity_tag,
@@ -500,7 +501,12 @@ def _reconcile_unknown_youtube_upload(
     try:
         http = transport or _DefaultTransport()
         access_token = _get_youtube_access_token(config, http)
-        reconciled = reconcile_youtube_upload(expected_tag, access_token, http)
+        reconciled = reconcile_youtube_upload(
+            expected_tag,
+            access_token,
+            http,
+            not_before=parse_timestamp(record.get("intent_at")),
+        )
     except Exception as exc:
         logger.warning(
             "YouTube identity reconcile failed; retry remains blocked: %s",

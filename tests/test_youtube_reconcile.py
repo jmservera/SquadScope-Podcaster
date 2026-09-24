@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -54,7 +55,7 @@ class FakeYouTubeReadback:
     def _page(self, token: str | None) -> dict:
         if self.pages is not None:
             return self.pages[token]
-        return {"items": [{"contentDetails": {"videoId": v["id"]}} for v in self.videos]}
+        return {"items": [_item(v["id"], i) for i, v in enumerate(self.videos)]}
 
     def request(self, url, *, method="GET", headers=None, data=None):
         self.calls.append((method, url))
@@ -80,6 +81,14 @@ class FakeYouTubeReadback:
 
     def request_with_headers(self, url, *, method="GET", headers=None, data=None):
         raise AssertionError(f"reconcile must not open an upload session: {method} {url}")
+
+
+NOW = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
+
+
+def _item(video_id: str, age_minutes: int) -> dict:
+    added = (NOW - timedelta(minutes=age_minutes)).isoformat().replace("+00:00", "Z")
+    return {"snippet": {"publishedAt": added}, "contentDetails": {"videoId": video_id}}
 
 
 def _video(video_id: str, tags: list[str], *, privacy="unlisted", upload="processed") -> dict:
@@ -160,7 +169,7 @@ def test_contradictory_candidate_is_not_bound(video, code):
 
 
 def test_repeated_items_across_pages_are_contradictory():
-    item = {"contentDetails": {"videoId": "v1"}}
+    item = _item("v1", 1)
     fake = FakeYouTubeReadback(
         [_video("v1", [TAG])],
         pages={None: {"items": [item], "nextPageToken": "p2"}, "p2": {"items": [item]}},
@@ -168,16 +177,43 @@ def test_repeated_items_across_pages_are_contradictory():
     assert reconcile_youtube_upload(TAG, "tok", fake).status == CONTRADICTORY
 
 
-def test_pagination_is_bounded_and_scans_second_page():
+def test_scan_stops_once_older_than_intent_window():
     fake = FakeYouTubeReadback(
         [_video("v2", [TAG])],
         pages={
-            None: {"items": [{"contentDetails": {"videoId": "v1"}}], "nextPageToken": "p2"},
-            "p2": {"items": [{"contentDetails": {"videoId": "v2"}}], "nextPageToken": "p3"},
+            None: {"items": [_item("v1", 1)], "nextPageToken": "p2"},
+            "p2": {"items": [_item("v2", 5), _item("old", 600)], "nextPageToken": "p3"},
         },
     )
-    assert reconcile_youtube_upload(TAG, "tok", fake).video_id == "v2"
+    result = reconcile_youtube_upload(TAG, "tok", fake, not_before=NOW - timedelta(minutes=30))
+    assert result.video_id == "v2"
     assert sum("/playlistItems" in url for _, url in fake.calls) == 2
+
+
+def test_page_bound_without_exhaustion_is_contradictory():
+    pages = {
+        None if i == 0 else f"p{i}": {"items": [_item(f"v{i}", i)], "nextPageToken": f"p{i + 1}"}
+        for i in range(6)
+    }
+    fake = FakeYouTubeReadback([_video("v0", [TAG])], pages=pages)
+    result = reconcile_youtube_upload(TAG, "tok", fake, not_before=NOW - timedelta(days=1))
+    assert result.status == CONTRADICTORY
+    assert result.code == "youtube_reconcile_window_not_exhausted"
+    assert reconcile_youtube_upload(TAG, "tok", fake).status == CONTRADICTORY
+
+
+@pytest.mark.parametrize(
+    ("page", "code"),
+    [
+        ({"items": [_item("v1", 5), _item("v2", 1)]}, "youtube_reconcile_unordered_uploads"),
+        ({"items": [{"contentDetails": {"videoId": "v1"}}]}, "youtube_reconcile_malformed_item"),
+        ({"items": [_item("v1", 1)], "nextPageToken": 7}, "youtube_reconcile_malformed_page_token"),
+    ],
+)
+def test_unverifiable_listing_is_contradictory(page, code):
+    fake = FakeYouTubeReadback([_video("v1", [TAG])], pages={None: page})
+    result = reconcile_youtube_upload(TAG, "tok", fake)
+    assert result.status == CONTRADICTORY and result.code == code
 
 
 def test_channel_and_readback_failures_fail_closed():
@@ -193,6 +229,7 @@ def _unknown_record(tag: str | None = TAG) -> dict:
     record = {"status": "published", "outcome": PUBLICATION_UNKNOWN, "publish_run_id": "run-abc"}
     if tag is not None:
         record["identity_tag"] = tag
+        record["intent_at"] = (NOW - timedelta(hours=1)).isoformat()
     return record
 
 

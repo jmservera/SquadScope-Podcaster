@@ -1118,6 +1118,7 @@ class TestRunVideoGeneration:
         assert prior["outcome"] == "publication_unknown"
         assert prior["video_id"] is None
         assert prior["identity_tag"] == expected_tag
+        assert prior["intent_at"] == intent["at"]
 
     @patch("podcaster.video.video_gen.record_episode")
     @patch("podcaster.video.video_compose.compose_video")
