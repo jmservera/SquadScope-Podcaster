@@ -203,10 +203,15 @@ def _warn_degraded_snapshot(
     )
 
 
+_MAX_IDENTITY_LOG_CHARS = 80
+
+
 def _safe_identity_field(value: Any) -> str:
     if not isinstance(value, str):
         return "<invalid>"
-    return ascii(value[:80])
+    # Bound the escaped form: escaping can expand one character to ten.
+    escaped = ascii(value)
+    return escaped if len(escaped) <= _MAX_IDENTITY_LOG_CHARS else escaped[:77] + "..."
 
 
 @final
@@ -464,8 +469,11 @@ def _warn_inconsistent_absent_snapshot(record: Mapping[str, Any]) -> None:
 
 def create_safety_state_from_record(record: Mapping[str, Any]) -> CreateSafetyState | None:
     details = record.get("details")
-    if not isinstance(details, Mapping):
+    if details is None:
         details = {}
+    elif not isinstance(details, Mapping):
+        # A present but malformed safety record must never read as a legacy intent.
+        raise PublicationStateError("create safety evidence details are not an object")
 
     operation = record.get("operation")
     if "create_provenance" in details:

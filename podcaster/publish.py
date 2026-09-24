@@ -2649,6 +2649,10 @@ def _spotify_video_unresolved_create_intent_snapshot(
     if not isinstance(records, list):
         return None
     unresolved_snapshot: ProviderSnapshot | None = None
+    # A non-reconciliation intent can still be resolved by a later provider id or
+    # definite rejection (#693 repeated re-arms), so it only blocks if it remains
+    # the pending intent once every record has been read.
+    unresolved_foreign_provenance = False
     for record in records:
         if (
             not isinstance(record, Mapping)
@@ -2663,6 +2667,7 @@ def _spotify_video_unresolved_create_intent_snapshot(
             continue
         if record.get("provider_artifact_id") or record.get("provider_id"):
             unresolved_snapshot = None
+            unresolved_foreign_provenance = False
             continue
         if (
             record.get("operation") == "create_episode_failure"
@@ -2671,6 +2676,7 @@ def _spotify_video_unresolved_create_intent_snapshot(
             # The provider definitively rejected the create: nothing was created,
             # so there is no unresolved create to recover (and nothing to adopt).
             unresolved_snapshot = None
+            unresolved_foreign_provenance = False
             continue
         if record.get("operation") != "create_episode_intent":
             continue
@@ -2685,9 +2691,9 @@ def _spotify_video_unresolved_create_intent_snapshot(
         except PublicationStateError as exc:
             raise SpotifyDraftReconcileError(str(exc)) from exc
         if state is None or state.provenance != CreateIntentProvenance.RECONCILIATION_BACKED:
-            raise SpotifyDraftReconcileError(
-                "Spotify video create intent evidence has no reconciliation provenance."
-            )
+            unresolved_snapshot = None
+            unresolved_foreign_provenance = True
+            continue
         if state.snapshot_degraded:
             # The record claimed an observed pre-create snapshot that could not be
             # trusted: it stays a blocking unresolved intent, never "no intent".
@@ -2696,6 +2702,10 @@ def _spotify_video_unresolved_create_intent_snapshot(
         if state.snapshot.completeness == SnapshotCompleteness.ABSENT:
             continue
         unresolved_snapshot = state.snapshot
+    if unresolved_foreign_provenance:
+        raise SpotifyDraftReconcileError(
+            "Spotify video create intent evidence has no reconciliation provenance."
+        )
     if (
         unresolved_snapshot is not None
         and unresolved_snapshot.completeness == SnapshotCompleteness.ABSENT

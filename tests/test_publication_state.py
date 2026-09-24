@@ -1062,6 +1062,45 @@ def test_snapshot_ids_are_never_coerced(raw_id):
         )
 
 
+@pytest.mark.parametrize("details", ("x", ["create_provenance"], 1, True))
+def test_present_non_object_details_fail_closed(details):
+    with pytest.raises(PublicationStateError, match="not an object"):
+        create_safety_state_from_record({"operation": "create_episode_intent", "details": details})
+
+
+def test_missing_or_null_details_read_as_legacy_absent_intent():
+    for record in (
+        {"operation": "create_episode_intent"},
+        {"operation": "create_episode_intent", "details": None},
+    ):
+        state = create_safety_state_from_record(record)
+        assert state.provenance == CreateIntentProvenance.RECONCILIATION_BACKED
+        assert state.snapshot.completeness == SnapshotCompleteness.ABSENT
+
+
+def test_degrade_warning_identity_fields_are_bounded_after_escaping(caplog):
+    wide = "\u4e2d" * 80
+    record = {
+        "operation": "create_episode_intent",
+        "job_id": wide,
+        "week": wide,
+        "publish_run_id": wide,
+        "details": {
+            "snapshot_completeness": "complete",
+            "snapshot_evidence_source": "\u200b",
+            "pre_create_episode_ids": [1],
+        },
+    }
+
+    with caplog.at_level("WARNING", logger="podcaster.publication_state"):
+        create_safety_state_from_record(record)
+
+    message = caplog.records[-1].getMessage()
+    job_field = message.split("job_id=", 1)[1].split(" week=", 1)[0]
+    assert len(job_field) <= 80
+    assert len(message) < 600
+
+
 def test_valid_or_absent_snapshot_deserialization_does_not_warn(caplog):
     base = {
         "operation": "create_episode_intent",

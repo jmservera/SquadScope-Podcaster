@@ -2807,6 +2807,7 @@ class TestUploadVideoToEpisode:
             "absent_with_degraded_marker",
             "fractional_id",
             "degraded_reserialized",
+            "non_object_details",
         ),
     )
     def test_tampered_or_reserialized_snapshot_intent_never_creates(
@@ -2840,6 +2841,8 @@ class TestUploadVideoToEpisode:
         details = record["details"]
         if tamper == "fractional_id":
             details["pre_create_episode_ids"] = [554.5]
+        elif tamper == "non_object_details":
+            record["details"] = "tampered"
         elif tamper == "degraded_reserialized":
             details["snapshot_evidence_source"] = "\u200b"
         else:
@@ -4378,6 +4381,65 @@ class TestUploadVideoToEpisode:
         assert result.status == "failed"
         assert result.details["code"] == "unreconciled_create_not_authorized"
         create.assert_not_called()
+
+    @pytest.mark.parametrize("reconcile", ("0", "1"))
+    def test_repeated_credential_rejections_rearm_one_create_each(
+        self, tmp_path, monkeypatch, reconcile
+    ):
+        """#693: each definite rejection of an authorized blind create re-arms once."""
+        import podcaster.publish as pub
+
+        storage = MemoryStorage()
+        identity = PublicationIdentity("job-1", "2026-W37", "1", "a" * 64, "b" * 64)
+        pub.append_evidence(
+            storage,
+            identity,
+            platform="spotify",
+            media_kind="video",
+            operation="create_episode_failure",
+            outcome=pub.MANUAL_HANDOFF_REQUIRED,
+            retry_blocked=False,
+            code="credentials_expired",
+        )
+        monkeypatch.setenv("SPOTIFY_SHOW_ID", "show1")
+        monkeypatch.setenv("SP_DC", "dc")
+        monkeypatch.setenv("SP_KEY", "key")
+        monkeypatch.setenv("PODCASTER_SPOTIFY_RECONCILE", reconcile)
+        monkeypatch.delenv("PODCASTER_SPOTIFY_ALLOW_UNRECONCILED_CREATE", raising=False)
+        session = MagicMock()
+        session.request.return_value = _mock_graphql_listing_resp([])
+        monkeypatch.setattr(pub, "_build_session", lambda *a, **k: session)
+        monkeypatch.setattr(pub, "_resolve_legacy_ids", lambda s, sid: ("99", "7"))
+        monkeypatch.setattr(
+            "podcaster.credential_expiry.notify_credential_expiry", lambda *a, **k: None
+        )
+        create = MagicMock(
+            side_effect=[
+                pub.SpotifyCredentialExpiredError("401"),
+                pub.SpotifyCredentialExpiredError("401"),
+                777,
+            ]
+        )
+        monkeypatch.setattr(pub, "_create_episode", create)
+        self._patch_successful_video_upload(monkeypatch, pub, {})
+
+        results = [
+            pub.upload_video_to_episode(
+                self._video(tmp_path),
+                555,
+                title="My Show",
+                publication_storage=storage,
+                publication_identity_context=identity,
+            )
+            for _ in range(4)
+        ]
+
+        assert [r.status for r in results[:2]] == ["failed", "failed"]
+        assert all(r.details.get("code") == "credentials_expired" for r in results[:2])
+        assert results[2].status == "draft"
+        assert results[2].anchor_episode_id == 777
+        assert results[3].status == "failed"
+        assert create.call_count == 3
 
     def test_reconcile_disabled_authorized_retry_reaches_create_once(self, tmp_path, monkeypatch):
         import podcaster.publish as pub

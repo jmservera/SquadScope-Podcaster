@@ -518,7 +518,12 @@ provenance (`create_episode_intent`: `reconciliation_backed` or
 re-persisted with `snapshot_degraded: true`, so a deserialize/serialize cycle
 keeps it blocking; a non-boolean marker, or one on a non-absent snapshot, fails
 closed. Snapshot episode ids must be exact integers and are never coerced
-(`1.5` is rejected, not read as `1`).
+(`1.5` is rejected, not read as `1`). A present `details` value that is not an
+object fails closed; only an omitted or `null` `details` reads as a legacy
+intent. Identity fields in these warnings are capped at 80 characters after
+escaping. A non-reconciliation (`upload_dispatch`) create intent blocks only while it
+is still the pending intent. A later provider id or definite rejection resolves
+it, so repeated #693 credential re-arms each allow exactly one create.
 
 #### Pagination
 
